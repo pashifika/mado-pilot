@@ -37,14 +37,18 @@ development branch into another, are rejected by the branch policy check.
 
 ## Protected branches
 
-The repository ruleset protects `main` and all `dev/*` branches:
+The repository rulesets protect `main` and all `dev/*` branches:
 
 - Changes must be submitted through a pull request.
 - The branch policy check must pass.
 - Review conversations must be resolved.
 - Only squash merging is allowed.
-- Force pushes and branch deletion are blocked.
+- Force pushes are blocked.
 - Linear history is required.
+
+Deletion is blocked for `main`. Merged topic and `dev/*` branches are deleted
+automatically; deletion remains allowed for `dev/*` so completed release
+branches do not accumulate.
 
 The required approval count is currently zero because a pull request author
 cannot approve their own pull request. Increase it to one or more when another
