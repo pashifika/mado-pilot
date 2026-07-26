@@ -42,9 +42,8 @@ The repository rulesets protect `main` and all `dev/*` branches:
 - Changes must be submitted through a pull request.
 - The branch policy check must pass.
 - Review conversations must be resolved.
-- Only squash merging is allowed.
+- Merge commits, squash merging, and rebasing are allowed.
 - Force pushes are blocked.
-- Linear history is required.
 
 Deletion is blocked for `main`. Merged topic and `dev/*` branches are deleted
 automatically; deletion remains allowed for `dev/*` so completed release
