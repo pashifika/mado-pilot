@@ -1,0 +1,45 @@
+name: Branch policy
+
+on:
+  pull_request:
+    branches:
+      - main
+      - "dev/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-branch-flow:
+    name: Validate branch flow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source and target branches
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dev_pattern='^dev/[0-9]+\.[0-9]+\.[0-9]+$'
+          topic_pattern='^(feat|fix|docs|refactor|test|chore|ci|build|perf)/[a-z0-9][a-z0-9._-]*$'
+
+          if [[ "${BASE_REF}" == "main" ]]; then
+            if [[ ! "${HEAD_REF}" =~ ${dev_pattern} ]]; then
+              echo "::error::Pull requests into main must come from dev/x.y.z."
+              exit 1
+            fi
+            exit 0
+          fi
+
+          if [[ "${BASE_REF}" =~ ${dev_pattern} ]]; then
+            if [[ ! "${HEAD_REF}" =~ ${topic_pattern} ]]; then
+              echo "::error::Pull requests into ${BASE_REF} must come from an allowed topic branch."
+              exit 1
+            fi
+            exit 0
+          fi
+
+          echo "::error::Unsupported target branch: ${BASE_REF}"
+          exit 1
