@@ -1,0 +1,70 @@
+# Dependency policy for the MadoPilot workspace.
+#
+# `docs/third-party-dependencies.md` is the normative policy; this file is its
+# machine-checked form. Every relaxation here must have a matching documented
+# exception with an expiry condition.
+
+[graph]
+# Both initial release targets are evaluated so that a dependency cannot enter
+# the graph on only one supported platform without review.
+targets = ["x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+all-features = true
+
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# A yanked dependency is treated as actionable because it means the committed
+# lockfile no longer resolves to a supported release.
+yanked = "deny"
+# Every entry requires a documented exception in
+# `docs/third-party-dependencies.md` including the reason and the removal
+# condition.
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses that are compatible with distributing an Apache-2.0
+# project. Copyleft and source-available licenses require an explicit decision
+# recorded in an ADR before they are added here.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.93
+# The allowlist is a forward-looking policy statement. Phase 0 has almost no
+# dependencies, so most entries are legitimately unused and must not be reported
+# as findings.
+unused-allowed-license = "allow"
+# Per-crate license exceptions. Each entry requires a documented reason.
+exceptions = []
+
+[licenses.private]
+# The workspace packages are unpublished, and their license metadata is already
+# checked against the root `LICENSE` file by review.
+ignore = true
+
+[bans]
+# Duplicate versions are a review signal rather than a hard failure: a transitive
+# duplicate is often outside the repository's control. The documented resolution
+# is to record why the duplicate is accepted or to unify the requirement.
+multiple-versions = "warn"
+wildcards = "deny"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Git dependencies are not permitted. Adding one requires an ADR that records the
+# reviewed revision and the plan to return to a published release.
+allow-git = []

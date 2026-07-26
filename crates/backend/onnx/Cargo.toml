@@ -1,0 +1,12 @@
+[package]
+name = "mado-pilot-backend-onnx"
+description = "Planned MadoPilot ONNX Runtime OCR and execution-provider adapter."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

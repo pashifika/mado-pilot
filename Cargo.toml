@@ -1,6 +1,71 @@
-[package]
-name = "mado-pilot"
+[workspace]
+resolver = "3"
+members = [
+    "crates/mado-pilot",
+    "crates/automation/core",
+    "crates/automation/capture",
+    "crates/automation/input",
+    "crates/automation/vision",
+    "crates/automation/ocr",
+    "crates/automation/runtime",
+    "crates/automation/assets",
+    "crates/platform/windows",
+    "crates/platform/macos",
+    "crates/backend/opencv",
+    "crates/backend/onnx",
+    "crates/bindings/capi",
+    "crates/support/testkit",
+    "tools/dependency-check",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://github.com/pashifika/mado-pilot"
 
-[dependencies]
+# Product dependencies are added only by the change that implements and tests the
+# behavior requiring them. Entries here are maintenance-tool dependencies.
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+
+# Rust lints. Warnings are promoted to failures by the documented verification
+# sequence and by CI rather than by hard-coding `deny` here, so a local build can
+# still surface every diagnostic at once.
+[workspace.lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+# Unsafe code is permitted where a platform or ABI seam requires it, but it must
+# always be written inside an explicit `unsafe` block that can be reviewed and
+# documented. The workspace deliberately does not forbid unsafe code globally.
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+missing_crate_level_docs = "deny"
+private_intra_doc_links = "warn"
+unescaped_backticks = "warn"
+
+# Clippy selection is deliberately narrow. Each entry has a repository-specific
+# reason; the pedantic and restriction groups are not enabled wholesale.
+[workspace.lints.clippy]
+# Phase 0 forbids placeholder product behavior, and later phases must not ship
+# partially implemented contracts behind a panic.
+todo = "warn"
+unimplemented = "warn"
+# Unsafe code must state why it is sound at the seam that requires it.
+undocumented_unsafe_blocks = "warn"
+# The C ABI converts between Rust and fixed-width C integers; narrowing and
+# sign-changing conversions must be explicitly range-validated.
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+# FFI ownership transfers must be explicit rather than leaked by accident.
+mem_forget = "warn"
+ptr_as_ptr = "warn"
+# Diagnostics go through the documented diagnostic surface, not ad-hoc output.
+dbg_macro = "warn"

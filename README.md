@@ -1,8 +1,131 @@
-# mado-pilot
+# MadoPilot
 
-MadoPilot
+A headless visual automation runtime for applications and agents.
+
+When implemented, MadoPilot will discover windows and displays, capture frame
+streams, map coordinate spaces, match templates, recognize text, wait for visual
+conditions, inject input through explicit platform capabilities, and report
+structured diagnostics — without owning a GUI, tray, overlay, editor, updater,
+scheduler, or scripting language of its own.
+
+## Status: repository baseline, no runtime behavior
+
+**MadoPilot is not usable yet.** This repository currently contains the Phase 0
+baseline: the Cargo workspace, package boundaries and their enforcement, the
+toolchain pin, quality and dependency policy, the architecture baseline, and
+continuous integration for both release targets.
+
+Nothing captures, matches, recognizes, waits, or injects input. The public Rust
+facade and the C ABI package exist as seams and expose no operation, no exported
+symbol, and no generated header. Adding a package here is not a claim that its
+behavior exists.
+
+| Area | Status |
+|---|---|
+| Workspace, package boundaries, dependency enforcement | Implemented |
+| Toolchain pin, lint, formatting, and dependency policy | Implemented |
+| Architecture baseline, validation gates, benchmark format, ADR process | Implemented |
+| Capture, mapping, matching, OCR, watchers, input, assets | Not implemented |
+| Public Rust operations, C ABI, C header, C++ wrapper | Not implemented |
+| Numeric performance budgets, release packaging | Not established |
+
+[docs/architecture.md](docs/architecture.md) is the tracked baseline and records
+the full status table, the package inventory, and the dependency rules.
+
+## Release targets
+
+Version one targets `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`. Each is
+verified natively in continuous integration; a cross-compiled result never stands
+in for the other target. The exact minimum supported Windows and macOS versions
+are still unresolved, along with thirteen other version-one decisions recorded in
+[docs/validation-gates.md](docs/validation-gates.md).
+
+## Integration surfaces
+
+Three surfaces are planned: an idiomatic Rust API through the `mado-pilot` facade
+package, a separately versioned C ABI, and a thin C++ RAII wrapper that consumes
+only the released C ABI.
+
+The public names are reserved so that the language surfaces stay consistent.
+**These are reservations; this repository produces none of these artifacts yet.**
+
+| Artifact | Name |
+|---|---|
+| Rust facade package | `mado-pilot` |
+| Rust import | `mado_pilot` |
+| C header | `include/madopilot/madopilot.h` |
+| C++ header | `include/madopilot/madopilot.hpp` |
+| C symbol prefix | `madopilot_` |
+| C++ namespace | `madopilot` |
+| Windows ABI-major library | `madopilot-1.dll`, `madopilot-1.lib` |
+| macOS ABI-major install name | `libmadopilot.1.dylib` |
+| CMake package and targets | `MadoPilot`, `MadoPilot::C`, `MadoPilot::Cpp` |
+| pkg-config package | `madopilot-1` |
+
+## Repository layout
+
+```text
+crates/mado-pilot          public Rust facade
+crates/automation/*        platform-neutral contracts and orchestration
+crates/platform/*          Windows and macOS capture and input adapters
+crates/backend/*           OpenCV and ONNX Runtime adapters
+crates/bindings/capi       C ABI boundary
+crates/support/testkit     deterministic test support
+tools/dependency-check     workspace inventory and dependency-direction checker
+docs/                      architecture, gates, performance format, ADRs, policy
+```
+
+## Building and verifying
+
+The repository pins Rust 1.97.1 through `rust-toolchain.toml`, so a clean checkout
+with `rustup` available selects the tested compiler. The single committed root
+`Cargo.lock` is used with `--locked`.
+
+```sh
+cargo build --locked --workspace
+cargo test --locked --workspace --all-targets
+```
+
+The full verification sequence — architecture check, formatting, lints,
+tests, documentation, and dependency policy — is in
+[CONTRIBUTING.md](CONTRIBUTING.md#verification). The architecture check is the one
+that is specific to this project:
+
+```sh
+cargo run --locked --package mado-pilot-dependency-check
+```
+
+It prints the resolved workspace inventory and fails when a package is missing,
+unexpected, misplaced, deferred, or connected against the documented dependency
+directions.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Workspace, package responsibilities, dependency allowlist, naming, scope, status |
+| [docs/validation-gates.md](docs/validation-gates.md) | The `G-001`–`G-014` registry of unresolved version-one decisions |
+| [docs/performance.md](docs/performance.md) | Benchmark profile and budget format, with a synthetic example |
+| [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |
+| [docs/adr/0000-template.md](docs/adr/0000-template.md) | Architecture decision record template and when one is required |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Branch strategy, pull request flow, verification sequence, required checks |
+
+## Security and privacy
+
+Screen capture and input injection are sensitive capabilities. MadoPilot adds no
+implicit network access, no automatic privilege escalation, and no hidden
+permission behavior, and its ordinary logs and diagnostics exclude captured
+images, recognized text, and credentials by default. On macOS, permission state is
+probed and reported without presenting permission UI.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the branch strategy and pull
-request policy.
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) for the branch strategy, the pull
+request flow, and the verification sequence, then read
+[docs/architecture.md](docs/architecture.md) before changing package boundaries,
+dependency directions, public naming, or platform support.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE). Every
+Cargo package in the workspace declares `Apache-2.0` to match.

@@ -1,0 +1,18 @@
+[package]
+name = "mado-pilot-capi"
+description = "Planned separately versioned MadoPilot C ABI and ownership boundary."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Phase 0 deliberately builds this package as a plain Rust library. The
+# `cdylib`/`staticlib` artifact kinds, the ABI-major loader names, and the
+# generated C header are produced by the change that implements and tests the
+# first C ABI functions, so that Phase 0 ships no empty native library that
+# appears to be a released artifact.
+
+[lints]
+workspace = true

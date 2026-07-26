@@ -1,0 +1,12 @@
+[package]
+name = "mado-pilot-core"
+description = "Platform-neutral MadoPilot identities, geometry, time, capabilities, errors, and status types."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

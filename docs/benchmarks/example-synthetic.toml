@@ -1,0 +1,80 @@
+# Synthetic format example for the MadoPilot benchmark profile and budget format.
+#
+# THIS FILE IS NOT EVIDENCE. It exists so that a later phase can see every
+# required field and both the hard and the relative budget forms before it records
+# its first real measurement. No benchmark was run to produce it, the fixture does
+# not exist, and every number below is illustrative rather than a product budget.
+#
+# See `docs/performance.md` for the field definitions and `G-013` in
+# `docs/validation-gates.md` for the gate that real budgets resolve.
+
+format_version = 1
+
+[benchmark]
+id = "example-synthetic"
+workload = "format demonstration; no product workload is covered"
+phase = "0"
+status = "format-example"
+normative = false
+measurements_recorded = false
+
+[profile]
+fixture = "docs/benchmarks/example-synthetic (placeholder; no fixture exists)"
+fixture_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+release_target = "aarch64-apple-darwin"
+hardware = "placeholder host: <CPU model>, <memory>, <accelerator or none>"
+os_version = "placeholder: <operating-system version>"
+build_profile = "release, default features"
+warmup_iterations = 20
+sample_count = 200
+correctness_oracle = "each sample's result is compared with the expected output recorded alongside the fixture; a mismatch fails the run before any timing is reported"
+queue_policy = "latest-wins, queue depth 2, dropped and superseded work counted"
+notes = "Replace every placeholder before this file is used as evidence. A profile whose fixture hash is unknown cannot support a budget."
+
+# A hard budget: correctness is a pass-or-fail gate, never a tuned number.
+[[budget]]
+measure = "capture_to_result_latency_p95"
+kind = "hard"
+requirement = "every retained sample matches the expected output recorded with the fixture"
+predicate = "incorrect_sample_count == 0"
+
+# A hard budget for bounded resource use. Unbounded growth is a defect rather
+# than a slow result, so this is a gate and not a ceiling to be raised.
+[[budget]]
+measure = "steady_memory"
+kind = "hard"
+requirement = "steady-state memory does not grow across the sampled run"
+predicate = "steady_memory_growth_bytes == 0"
+
+# An absolute budget: a numeric ceiling that is a property of the product.
+# The value here is illustrative.
+[[budget]]
+measure = "capture_to_result_latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 40.0
+rationale = "illustrative only; a real entry records the measurement and the ADR that set the number"
+
+# A relative budget: a regression ceiling against a named baseline on the same
+# release target and fixture hash. The ratio here is illustrative.
+[[budget]]
+measure = "mapped_bytes_per_result"
+kind = "relative"
+baseline_id = "example-synthetic"
+max_ratio = 1.10
+rationale = "illustrative only; a real entry names a baseline recorded in a tracked benchmark file"
+
+# A relative budget may also bound a ratio measure.
+[[budget]]
+measure = "stale_work_ratio"
+kind = "relative"
+baseline_id = "example-synthetic"
+max_ratio = 1.00
+rationale = "illustrative only; a change that raises stale work is not an improvement even when throughput rises"
+
+[measurements]
+# Phase 0 ran no benchmark. A real file replaces this section with recorded
+# samples rather than omitting it.
+performed = false
+reason = "Phase 0 introduces no performance-sensitive behavior to measure"

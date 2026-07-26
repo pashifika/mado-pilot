@@ -1,0 +1,6 @@
+# Standard stable rustfmt behavior. Only the edition, the matching style edition,
+# and a deterministic line ending are configured so that formatting results are
+# identical on Windows and macOS hosts.
+edition = "2024"
+style_edition = "2024"
+newline_style = "Unix"

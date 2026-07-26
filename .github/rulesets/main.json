@@ -39,6 +39,15 @@
         "required_status_checks": [
           {
             "context": "Validate branch flow"
+          },
+          {
+            "context": "Repository policy"
+          },
+          {
+            "context": "Windows x86_64-pc-windows-msvc"
+          },
+          {
+            "context": "macOS aarch64-apple-darwin"
           }
         ],
         "strict_required_status_checks_policy": true
