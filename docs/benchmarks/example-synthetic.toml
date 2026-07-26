@@ -31,20 +31,21 @@ correctness_oracle = "each sample's result is compared with the expected output 
 queue_policy = "latest-wins, queue depth 2, dropped and superseded work counted"
 notes = "Replace every placeholder before this file is used as evidence. A profile whose fixture hash is unknown cannot support a budget."
 
-# A hard budget: correctness is a pass-or-fail gate, never a tuned number.
+# A hard budget: correctness is a pass-or-fail gate, never a tuned number. It is
+# named after what it gates, not after a latency measure.
 [[budget]]
-measure = "capture_to_result_latency_p95"
+measure = "result_correctness"
 kind = "hard"
 requirement = "every retained sample matches the expected output recorded with the fixture"
-predicate = "incorrect_sample_count == 0"
+predicate = "result_correctness == 0"
 
 # A hard budget for bounded resource use. Unbounded growth is a defect rather
 # than a slow result, so this is a gate and not a ceiling to be raised.
 [[budget]]
-measure = "steady_memory"
+measure = "memory_growth"
 kind = "hard"
 requirement = "steady-state memory does not grow across the sampled run"
-predicate = "steady_memory_growth_bytes == 0"
+predicate = "memory_growth == 0"
 
 # An absolute budget: a numeric ceiling that is a property of the product.
 # The value here is illustrative.

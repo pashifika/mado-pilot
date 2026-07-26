@@ -37,9 +37,13 @@ rejected.
 
 ## Approved sources
 
-Rust dependencies come from the crates.io registry. Git and path dependencies on
-code outside this repository, and any alternate registry, are rejected by
-`cargo deny check sources`.
+Rust dependencies come from the crates.io registry. Git dependencies and alternate
+registries are rejected by `cargo deny check sources`.
+
+Path dependencies are enforced separately, because cargo-deny has no path-location
+rule: the architecture checker rejects any path dependency that does not resolve to
+a workspace member, and rejects a dependency that carries a member's name but
+resolves from a registry or Git source instead of the member itself.
 
 Adding a Git dependency requires an ADR that records the reviewed revision, why a
 published release is unavailable, and the condition for returning to a published
@@ -108,7 +112,8 @@ gates `G-007` and `G-008` in [validation-gates.md](validation-gates.md).
 ## Verification
 
 [../CONTRIBUTING.md](../CONTRIBUTING.md) records the full local verification
-sequence. The dependency-policy step is:
+sequence. The dependency-policy step needs network access, because it fetches the
+RustSec advisory database:
 
 ```sh
 cargo deny --locked check

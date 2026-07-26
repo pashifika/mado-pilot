@@ -458,6 +458,68 @@ pub enum Violation {
         /// How the dependency is declared.
         kind: DependencyKind,
     },
+    /// A dependency carries a workspace member's name but resolves from a
+    /// registry or Git source instead of the member itself.
+    ShadowedMemberDependency {
+        /// Package that declares the dependency.
+        from: String,
+        /// Workspace member name the dependency claims.
+        to: String,
+        /// How the dependency is declared.
+        kind: DependencyKind,
+    },
+    /// A path dependency points at something that is not a workspace member.
+    NonMemberPathDependency {
+        /// Package that declares the dependency.
+        from: String,
+        /// Dependency name.
+        dependency: String,
+        /// Path the dependency points at, as reported by Cargo.
+        path: String,
+    },
+    /// A Phase 0 package is publishable.
+    PublishablePackage {
+        /// Package name.
+        name: String,
+    },
+    /// A package declares an edition other than the workspace edition.
+    UnexpectedEdition {
+        /// Package name.
+        name: String,
+        /// Edition the package declares.
+        edition: String,
+        /// Edition the workspace requires.
+        expected: String,
+    },
+    /// A package declares a license other than the project license.
+    UnexpectedLicense {
+        /// Package name.
+        name: String,
+        /// License the package declares, if any.
+        license: Option<String>,
+        /// License the project requires.
+        expected: String,
+    },
+    /// A package overrides shared metadata that every member must agree on.
+    InconsistentMetadata {
+        /// Package name.
+        name: String,
+        /// Manifest field that disagrees.
+        field: &'static str,
+        /// Value the package declares, if any.
+        value: Option<String>,
+        /// Value the reference package declares, if any.
+        expected: Option<String>,
+        /// Package whose value is treated as the reference.
+        reference: String,
+    },
+    /// A member does not opt into the workspace lint policy.
+    MissingWorkspaceLints {
+        /// Package name.
+        name: String,
+        /// Directory holding the manifest.
+        directory: String,
+    },
 }
 
 impl fmt::Display for Violation {
@@ -518,8 +580,214 @@ impl fmt::Display for Violation {
                 formatter,
                 "package `{from}` declares a {kind} dependency on the maintenance tool `{DEPENDENCY_CHECK}`; repository tooling is never a package dependency"
             ),
+            Self::ShadowedMemberDependency { from, to, kind } => write!(
+                formatter,
+                "`{from}` declares a {kind} dependency named `{to}` that resolves from a registry or Git source instead of the workspace member; use `{{ path = \"...\" }}` so the dependency cannot be satisfied by an unrelated crate of the same name"
+            ),
+            Self::NonMemberPathDependency {
+                from,
+                dependency,
+                path,
+            } => write!(
+                formatter,
+                "`{from}` declares a path dependency `{dependency}` at `{path}`, which is not a workspace member; product code must come from the documented inventory"
+            ),
+            Self::PublishablePackage { name } => write!(
+                formatter,
+                "package `{name}` is publishable; every Phase 0 package must declare `publish = false` until an implemented, tested package intends publication"
+            ),
+            Self::UnexpectedEdition {
+                name,
+                edition,
+                expected,
+            } => write!(
+                formatter,
+                "package `{name}` declares edition `{edition}` but the workspace requires `{expected}`; inherit it with `edition.workspace = true`"
+            ),
+            Self::UnexpectedLicense {
+                name,
+                license,
+                expected,
+            } => {
+                let license = license.as_deref().unwrap_or("no license");
+                write!(
+                    formatter,
+                    "package `{name}` declares `{license}` but the project license is `{expected}`; inherit it with `license.workspace = true`"
+                )
+            }
+            Self::InconsistentMetadata {
+                name,
+                field,
+                value,
+                expected,
+                reference,
+            } => {
+                let value = value.as_deref().unwrap_or("unset");
+                let expected = expected.as_deref().unwrap_or("unset");
+                write!(
+                    formatter,
+                    "package `{name}` declares `{field} = {value}` but `{reference}` declares `{expected}`; every member must inherit this field with `{field}.workspace = true`"
+                )
+            }
+            Self::MissingWorkspaceLints { name, directory } => write!(
+                formatter,
+                "package `{name}` at `{directory}` does not opt into the workspace lint policy; add `[lints]` with `workspace = true`, otherwise the workspace Rust, rustdoc, and Clippy lints are silently disabled for this package"
+            ),
         }
     }
+}
+
+/// Edition every workspace member must use.
+pub const REQUIRED_EDITION: &str = "2024";
+/// License every workspace member must declare, matching the root `LICENSE` file.
+pub const REQUIRED_LICENSE: &str = "Apache-2.0";
+
+/// Manifest metadata observed for one workspace member.
+///
+/// These are the fields the `rust-workspace-baseline` specification requires every
+/// member to share. The checker reads them so that a member cannot silently
+/// override inherited metadata or opt out of the lint policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedMetadata {
+    /// Cargo package name.
+    pub name: String,
+    /// Directory holding the manifest, relative to the workspace root.
+    pub directory: String,
+    /// Declared package version.
+    pub version: String,
+    /// Declared Rust edition.
+    pub edition: String,
+    /// Declared minimum supported Rust version, if any.
+    pub rust_version: Option<String>,
+    /// Declared license expression, if any.
+    pub license: Option<String>,
+    /// Declared repository URL, if any.
+    pub repository: Option<String>,
+    /// Whether Cargo would allow this package to be published.
+    pub publishable: bool,
+    /// Whether the manifest opts into `[workspace.lints]`.
+    pub inherits_workspace_lints: bool,
+}
+
+/// Validates shared package metadata and lint opt-in for every member.
+///
+/// `version`, `rust-version`, and `repository` are checked for agreement rather
+/// than against hard-coded values, so a release version bump does not require a
+/// checker change while a member that overrides an inherited field still fails.
+/// The public facade is the reference; when it is absent the inventory check
+/// already reports it as missing and this check is skipped.
+#[must_use]
+pub fn validate_metadata(members: &[ObservedMetadata]) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let mut members: Vec<&ObservedMetadata> = members.iter().collect();
+    members.sort_by(|left, right| left.name.cmp(&right.name));
+
+    for member in &members {
+        if member.publishable {
+            violations.push(Violation::PublishablePackage {
+                name: member.name.clone(),
+            });
+        }
+        if member.edition != REQUIRED_EDITION {
+            violations.push(Violation::UnexpectedEdition {
+                name: member.name.clone(),
+                edition: member.edition.clone(),
+                expected: REQUIRED_EDITION.to_owned(),
+            });
+        }
+        if member.license.as_deref() != Some(REQUIRED_LICENSE) {
+            violations.push(Violation::UnexpectedLicense {
+                name: member.name.clone(),
+                license: member.license.clone(),
+                expected: REQUIRED_LICENSE.to_owned(),
+            });
+        }
+        if !member.inherits_workspace_lints {
+            violations.push(Violation::MissingWorkspaceLints {
+                name: member.name.clone(),
+                directory: member.directory.clone(),
+            });
+        }
+    }
+
+    let Some(reference) = members.iter().find(|member| member.name == FACADE) else {
+        return violations;
+    };
+
+    for member in &members {
+        if member.name == reference.name {
+            continue;
+        }
+        let shared: [(&'static str, Option<String>, Option<String>); 3] = [
+            (
+                "version",
+                Some(member.version.clone()),
+                Some(reference.version.clone()),
+            ),
+            (
+                "rust-version",
+                member.rust_version.clone(),
+                reference.rust_version.clone(),
+            ),
+            (
+                "repository",
+                member.repository.clone(),
+                reference.repository.clone(),
+            ),
+        ];
+        for (field, value, expected) in shared {
+            if value != expected {
+                violations.push(Violation::InconsistentMetadata {
+                    name: member.name.clone(),
+                    field,
+                    value,
+                    expected,
+                    reference: reference.name.clone(),
+                });
+            }
+        }
+    }
+
+    violations
+}
+
+/// Reports whether a manifest opts into the workspace lint policy.
+///
+/// Cargo metadata does not expose the `[lints]` table, so this reads the manifest
+/// text and recognizes the two canonical spellings:
+///
+/// ```text
+/// [lints]
+/// workspace = true
+/// ```
+///
+/// and the dotted `lints.workspace = true`. An exotic but valid spelling is
+/// reported as missing, which fails loudly with an actionable message rather than
+/// silently accepting a package whose lints are disabled.
+#[must_use]
+pub fn manifest_inherits_workspace_lints(manifest: &str) -> bool {
+    let mut in_lints_table = false;
+    for line in manifest.lines() {
+        let line = match line.split_once('#') {
+            Some((before, _)) => before.trim(),
+            None => line.trim(),
+        };
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_lints_table = line == "[lints]";
+            continue;
+        }
+        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+        if compact == "lints.workspace=true" {
+            return true;
+        }
+        if in_lints_table && compact == "workspace=true" {
+            return true;
+        }
+    }
+    false
 }
 
 /// Validates a normalized workspace graph against the Phase 0 architecture rules.
@@ -586,6 +854,13 @@ fn validate_dependencies(graph: &PackageGraph) -> Vec<Violation> {
     let mut violations = Vec::new();
 
     for edge in graph.edges() {
+        if edge.from == edge.to {
+            // Cargo accepts a package's dev-dependency on itself, and it says
+            // nothing about architecture direction. Treating it as an edge would
+            // reject a legitimate manifest.
+            continue;
+        }
+
         if edge.to == DEPENDENCY_CHECK {
             violations.push(Violation::MaintenanceToolDependency {
                 from: edge.from.clone(),

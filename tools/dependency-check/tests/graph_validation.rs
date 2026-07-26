@@ -197,6 +197,19 @@ fn development_dependency_on_test_support_is_accepted() {
 }
 
 #[test]
+fn a_self_dependency_is_not_an_architecture_edge() {
+    // Cargo accepts a package's dev-dependency on itself. It says nothing about
+    // direction, so rejecting it would block a legitimate manifest.
+    let edges = vec![
+        ObservedEdge::development(CORE, CORE),
+        ObservedEdge::development(RUNTIME, RUNTIME),
+        ObservedEdge::production(FACADE, FACADE),
+    ];
+
+    assert_eq!(validate(&graph_with(edges)), Vec::new());
+}
+
+#[test]
 fn development_dependency_still_follows_the_allowlist() {
     let violations = validate(&graph_with(vec![ObservedEdge::development(
         CORE,

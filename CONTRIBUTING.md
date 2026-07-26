@@ -35,20 +35,25 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 # 4. Tests
 cargo test --locked --workspace --all-targets
 
-# 5. Documentation, with rustdoc warnings promoted to failures
+# 5. Documentation examples. `--all-targets` above deliberately excludes doctests,
+#    so they need their own run.
+cargo test --locked --workspace --doc
+
+# 6. Documentation, with rustdoc warnings promoted to failures
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 
-# 6. Dependency licenses, advisories, sources, and duplicate versions
+# 7. Dependency licenses, advisories, sources, and duplicate versions
 cargo deny --locked check
 ```
 
-On Windows PowerShell, step 5 is:
+On Windows PowerShell, step 6 is:
 
 ```powershell
 $env:RUSTDOCFLAGS = "-D warnings"; cargo doc --locked --workspace --no-deps
 ```
 
-Step 6 needs `cargo-deny`, which is not part of the toolchain:
+Step 7 needs `cargo-deny`, which is not part of the toolchain, and needs network
+access because it fetches the RustSec advisory database:
 
 ```sh
 cargo install --locked cargo-deny
@@ -58,7 +63,7 @@ No step modifies a tracked file. `cargo fmt --all` without `--check` applies the
 formatting that step 2 verifies.
 
 [docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
-dependency policy that step 6 enforces, including the review required before a
+dependency policy that step 7 enforces, including the review required before a
 native library or model file is added.
 
 ## Branch strategy
@@ -134,5 +139,9 @@ its first successful run on the branch it will guard, and only with separate
 maintainer authorization. Enabling a required check that has never reported turns
 every open pull request into a blocked pull request.
 
-Runner labels are pinned to `windows-2025` and `macos-15` so that a hosted-runner
-migration is a reviewed change rather than a silent environment change.
+The native jobs name `windows-2025` and `macos-15` rather than a `-latest` label, so
+moving to a new operating-system version is a reviewed change. Those labels still
+pin only an OS version: GitHub migrates the images behind them on its own schedule,
+so the toolchain and the exact image contents are not frozen by the label. The
+`Repository policy` job deliberately uses the moving `ubuntu-latest`, because it
+verifies host-independent policy rather than a release target.

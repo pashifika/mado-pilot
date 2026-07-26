@@ -255,8 +255,10 @@ appear in this table, and an omitted future edge is always valid.
 The rules the table encodes:
 
 1. `mado-pilot-core` depends on no other MadoPilot package, and on no platform,
-   backend, GUI, or async-executor type. Platform-native handles are never added to
-   it.
+   backend, GUI, or async-executor crate. Platform-native handles are never added
+   to it. The checker enforces the MadoPilot half of this rule; the external-crate
+   half is a review rule, because Phase 0 declares no product dependency and the
+   per-package external allowlist is set by the change that adds the first one.
 2. Contract packages do not depend on adapter packages.
 3. `mado-pilot-runtime` orchestrates contracts and knows no concrete adapter type.
 4. Platform packages implement the capture and input contracts only.
@@ -265,6 +267,13 @@ The rules the table encodes:
    responsibility.
 7. `mado-pilot-capi` depends on `mado-pilot`, never the reverse.
 8. C++ wrapper code consumes only the released C header and library.
+
+The facade's row lists no contract package. That is deliberate — default wiring is
+the facade's only job — but it means every core, capture, input, vision, OCR, or
+asset type the public Rust API exposes must reach callers through
+`mado-pilot-runtime`'s re-exports. Phase 1 will meet this on its first public
+signature. Widening the facade's row is a normative change and needs an ADR, not a
+quiet allowlist edit.
 
 Vision and OCR depend on the capture contract because their public operations
 consume capture-owned frame views. That is a contract-to-contract dependency and
@@ -286,15 +295,34 @@ tooling is invoked, not linked.
 ### Enforcement
 
 `tools/dependency-check` reads `cargo metadata`, normalizes the package graph, and
-validates it against the inventory and the allowlist above. It fails with the
-offending package names, paths, and edges, and exits non-zero. The rules live in a
-pure module with synthetic tests, separately from the Cargo process adapter, so
-every allowed adjacency group and every forbidden direction is covered
-deterministically without running Cargo.
+fails with the offending package names, paths, and edges. The rules live in a pure
+module with synthetic tests, separately from the Cargo process adapter, so every
+allowed adjacency group and every forbidden direction is covered deterministically
+without running Cargo.
+
+It verifies:
+
+- the package inventory — every required package present, at its documented
+  directory, with no unrecognized and no deferred package;
+- that no reserved adapter directory exists, including as a dangling symlink;
+- the dependency allowlist above, for normal, build, and development edges;
+- that a dependency carrying a member's name resolves to that member by path,
+  rather than to a same-named crate from a registry or Git source;
+- that every path dependency resolves to a workspace member;
+- that every member declares `publish = false`, edition `2024`, and the project
+  license, and agrees with the facade on `version`, `rust-version`, and
+  `repository`;
+- that every member opts into the workspace lint policy with
+  `[lints] workspace = true`, since a missing opt-in silently disables the lints
+  for that package and `-D warnings` cannot recover them.
 
 ```sh
 cargo run --locked --package mado-pilot-dependency-check
 ```
+
+Shared metadata is checked for agreement rather than against hard-coded values, so a
+release version bump does not require a checker change while a member that overrides
+an inherited field still fails.
 
 Changing a dependency direction means changing the allowlist, its tests, and this
 document together, with an architecture decision record.
@@ -365,8 +393,15 @@ verification, and reports three stable check names:
 Each job prints `rustc -vV` and the resolved package inventory, so the tested
 environment and any accidental workspace member are observable in the log. Each
 native job asserts its own host triple and fails rather than reporting a
-cross-compiled result as native verification. Runner labels are pinned, so a
-hosted-runner migration is a reviewed change.
+cross-compiled result as native verification.
+
+The native jobs name an operating-system version rather than a `-latest` label, so
+moving to a new OS version is a reviewed change. A label pins only that version;
+GitHub migrates the image behind it on its own schedule, so the label does not
+freeze the image contents. The repository-policy job uses the moving
+`ubuntu-latest` on purpose, because it verifies host-independent policy rather than
+a release target. The pinned toolchain, not the runner label, is what makes compiler
+results reproducible.
 
 Workflows use GitHub-maintained actions pinned to a commit revision, and install
 Rust with the `rustup` already present on hosted runners rather than adding a

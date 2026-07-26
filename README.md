@@ -112,11 +112,16 @@ directions.
 
 ## Security and privacy
 
-Screen capture and input injection are sensitive capabilities. MadoPilot adds no
-implicit network access, no automatic privilege escalation, and no hidden
-permission behavior, and its ordinary logs and diagnostics exclude captured
-images, recognized text, and credentials by default. On macOS, permission state is
-probed and reported without presenting permission UI.
+Screen capture and input injection are sensitive capabilities, so the project
+commits up front to how it will treat them: no implicit network access, no
+automatic privilege escalation, no hidden permission behavior, and ordinary logs
+and diagnostics that exclude captured images, recognized text, and credentials by
+default. On macOS, permission state will be probed and reported without presenting
+permission UI.
+
+These are contract commitments for the implementing changes. Phase 0 requests no
+permission, probes none, and logs nothing, because it performs no capture or
+input.
 
 ## Contributing
 
