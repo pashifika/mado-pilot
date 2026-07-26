@@ -1,0 +1,12 @@
+[package]
+name = "mado-pilot"
+description = "Public Rust facade for the MadoPilot headless visual automation runtime."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

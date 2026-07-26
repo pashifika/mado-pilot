@@ -1,0 +1,12 @@
+[package]
+name = "mado-pilot-ocr"
+description = "MadoPilot OCR source, model, request, result, and text-normalization contracts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

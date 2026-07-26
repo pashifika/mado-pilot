@@ -1,0 +1,191 @@
+name: Rust
+
+# Every job runs on every pull request and release-branch push rather than behind
+# a path filter, because these checks are intended to be required statuses and a
+# skipped required status blocks a pull request instead of passing it.
+on:
+  pull_request:
+    branches:
+      - main
+      - "dev/**"
+  push:
+    branches:
+      - main
+      - "dev/**"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: -D warnings
+
+jobs:
+  repository-policy:
+    name: Repository policy
+    runs-on: ubuntu-latest
+    env:
+      CARGO_DENY_VERSION: 0.20.2
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' rust-toolchain.toml)"
+          if [[ -z "${channel}" ]]; then
+            echo "::error::could not read the pinned channel from rust-toolchain.toml"
+            exit 1
+          fi
+          echo "pinned channel: ${channel}"
+          rustup toolchain install "${channel}" \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
+          rustup default "${channel}"
+
+      - name: Show the tested compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -vV
+          cargo -V
+
+      # This step also prints the resolved workspace package inventory, so an
+      # accidental workspace member is visible in the log as well as failing.
+      - name: Check the workspace inventory and dependency directions
+        shell: bash
+        run: cargo run --locked --package mado-pilot-dependency-check
+
+      - name: Check formatting
+        shell: bash
+        run: cargo fmt --all --check
+
+      - name: Check documentation
+        shell: bash
+        run: cargo doc --locked --workspace --no-deps
+
+      - name: Restore cargo-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ env.CARGO_DENY_VERSION }}
+
+      - name: Check dependency policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v cargo-deny >/dev/null 2>&1; then
+            cargo install --locked cargo-deny --version "${CARGO_DENY_VERSION}"
+          fi
+          cargo deny --version
+          cargo deny --locked check
+
+  windows:
+    name: Windows x86_64-pc-windows-msvc
+    runs-on: windows-2025
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' rust-toolchain.toml)"
+          if [[ -z "${channel}" ]]; then
+            echo "::error::could not read the pinned channel from rust-toolchain.toml"
+            exit 1
+          fi
+          echo "pinned channel: ${channel}"
+          rustup toolchain install "${channel}" \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
+          rustup default "${channel}"
+
+      # A cross-compiled result must never be reported as native verification.
+      - name: Confirm the native release target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -vV
+          cargo -V
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          if [[ "${host}" != "x86_64-pc-windows-msvc" ]]; then
+            echo "::error::expected native host x86_64-pc-windows-msvc but found ${host}"
+            exit 1
+          fi
+
+      - name: Check the workspace inventory and dependency directions
+        shell: bash
+        run: cargo run --locked --package mado-pilot-dependency-check
+
+      - name: Lint the workspace
+        shell: bash
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test the workspace
+        shell: bash
+        run: cargo test --locked --workspace --all-targets
+
+      - name: Check documentation
+        shell: bash
+        run: cargo doc --locked --workspace --no-deps
+
+  macos:
+    name: macOS aarch64-apple-darwin
+    runs-on: macos-15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' rust-toolchain.toml)"
+          if [[ -z "${channel}" ]]; then
+            echo "::error::could not read the pinned channel from rust-toolchain.toml"
+            exit 1
+          fi
+          echo "pinned channel: ${channel}"
+          rustup toolchain install "${channel}" \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
+          rustup default "${channel}"
+
+      # A cross-compiled result must never be reported as native verification.
+      - name: Confirm the native release target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -vV
+          cargo -V
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          if [[ "${host}" != "aarch64-apple-darwin" ]]; then
+            echo "::error::expected native host aarch64-apple-darwin but found ${host}"
+            exit 1
+          fi
+
+      - name: Check the workspace inventory and dependency directions
+        shell: bash
+        run: cargo run --locked --package mado-pilot-dependency-check
+
+      - name: Lint the workspace
+        shell: bash
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test the workspace
+        shell: bash
+        run: cargo test --locked --workspace --all-targets
+
+      - name: Check documentation
+        shell: bash
+        run: cargo doc --locked --workspace --no-deps

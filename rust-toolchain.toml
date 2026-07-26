@@ -1,0 +1,10 @@
+# The pinned toolchain is the tested minimum supported Rust version for the
+# workspace. Changing it requires CI evidence on both release targets and a
+# synchronized update to `docs/architecture.md`.
+#
+# Release targets are not listed here. Each release target is verified natively
+# on its own host so that a cross-compiled result is never reported as native
+# verification.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
