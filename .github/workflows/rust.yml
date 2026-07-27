@@ -27,9 +27,15 @@ env:
   RUSTDOCFLAGS: -D warnings
   # `mado-pilot-backend-opencv` generates its bindings at build time, so OpenCV and
   # a loadable libclang are build prerequisites for the whole workspace rather than
-  # only for the matching tests. Both native jobs provision them and cache what can
-  # be cached; provisioning is the first material addition to this workflow's run
-  # time. See docs/third-party-dependencies.md.
+  # only for the matching tests, and both native jobs provision them before they can
+  # compile anything. Measured on the first run: 36 s to download and extract on
+  # Windows against a cold cache, 129 s for `brew install opencv@4` on macOS, which
+  # is not cached. See docs/third-party-dependencies.md.
+  #
+  # This pin is the **Windows** version only. It names the official prebuilt release
+  # to download, and the `opencv_world<major><minor><patch>` import library inside
+  # it. macOS takes whatever `opencv@4` Homebrew currently carries, which is not the
+  # same version and deliberately is not pinned; the macOS job explains why.
   OPENCV_VERSION: 4.14.0
 
 jobs:
@@ -279,6 +285,13 @@ jobs:
       # the adapter refuses as an unsupported major version. libclang comes from the
       # Command Line Tools the image already has, which is what the `clang-runtime`
       # feature loads.
+      #
+      # The minor version is whatever the runner image's Homebrew carries — 4.13.0
+      # when this was written, against 4.14.0 on both verification hosts. That is
+      # left unpinned on purpose: it costs nothing, because the evidence comes from
+      # the verification hosts rather than from CI, and it buys coverage against a
+      # second OpenCV 4 minor version on every pull request. The check below is
+      # therefore on the major version, which is what the adapter accepts.
       - name: Install OpenCV
         shell: bash
         run: |

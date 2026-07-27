@@ -212,6 +212,14 @@ if the algorithm is the same, so a version difference between the hosts would ma
 the cross-target evidence in
 [evidence/vision-opencv/](evidence/vision-opencv/) unreadable.
 
+CI is a separate matter, and only its Windows job is pinned. Windows downloads the
+same official 4.14.0 prebuilt; macOS installs whatever `opencv@4` Homebrew
+currently carries, which was 4.13.0 on the first run. That is not a gap to close.
+CI's job is native correctness on every pull request, not evidence, and an
+unpinned minor version means every run also checks the adapter against a second
+OpenCV 4 release. The two versions were measured to produce bit-identical fixture
+scores, which is recorded with the evidence.
+
 The adapter accepts major version 4 and reports
 `VisionFault::BackendUnavailable` for anything else. The binding crate also
 supports OpenCV 5, and Phase 1 does not, because nothing has been measured against

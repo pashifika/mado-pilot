@@ -152,3 +152,28 @@ one host can violate on its own.
 
 Reproducing the comparison needs no stored log: the reports are what the tracked
 example prints, and the example searches the fixtures the test suite searches.
+
+## What CI added to this
+
+CI is not a third evidence host — its OpenCV is not pinned on macOS — but the first
+run with provisioning in place produced two measurements that bear on the numbers
+above, and CI logs expire, so they are recorded here.
+
+**A different Windows machine produced the verification host's score bit-for-bit.**
+The GitHub `windows-2025` runner is a virtual machine on unrelated hardware, and it
+reported `0.756341457366943` for the degraded copy — identical to the Intel
+i7-12700KF host, to the last bit. So the `2.98e-7` difference from macOS is a
+property of the target, not of a particular machine.
+
+**OpenCV 4.13.0 and 4.14.0 produced identical scores.** The `macos-15` runner's
+Homebrew carries `opencv@4` 4.13.0, not the 4.14.0 the verification host runs — and
+it reported `0.756341159343719`, bit-identical to the macOS 4.14.0 measurement.
+`matchTemplate`'s numerics did not move across that minor version for this fixture.
+
+The second finding is why macOS CI is left unpinned rather than forced to 4.14.0:
+an unpinned minor version costs nothing and checks the adapter against a second
+OpenCV 4 release on every pull request.
+
+Neither finding changes a tolerance. The `1e-3` band on the degraded copy exists
+because a *future* patch release may move that digit, and two versions agreeing is
+not evidence that all of them will.
