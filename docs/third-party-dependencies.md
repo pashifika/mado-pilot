@@ -88,6 +88,25 @@ release targets, carries an approved license, and comes from crates.io. Prefer t
 standard library and existing workspace capabilities first; prefer a smaller
 dependency surface over a framework that pulls in unrelated features.
 
+## Reviewed decisions not yet in the lockfile
+
+A gate resolution can settle which dependency a later change will need before
+that change exists. Recording the review here means the change that finally adds
+the crate arrives into a decision rather than reopening one, and that a reviewer
+can see the license position was checked when the choice was made.
+
+| Decision | Crates the implementation will need | License position | Recorded in |
+|---|---|---|---|
+| Asset archive container and manifest format | `zip` (default features **off**, `deflate-flate2` only), `flate2`, `sha2`, `serde_json` | Whole closure is MIT, Apache-2.0, or Zlib; all already allowed, no exception needed | [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
+
+Disabling the `zip` crate's default features is part of that decision, not a
+tuning preference: the defaults pull in bzip2, LZMA, PPMd, XZ, Zstd, and AES
+support for compression methods the archive contract does not accept, which
+would add unreviewed parsers to a boundary that reads untrusted input.
+
+The exact versions are pinned by the change that adds them, against the
+lockfile and the advisory database as they stand at that time.
+
 ## Before adding a native dependency
 
 Native dependencies carry deployment obligations that a Cargo check cannot see. A

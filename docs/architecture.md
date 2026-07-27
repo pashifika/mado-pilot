@@ -108,7 +108,9 @@ mado-pilot/
 │   ├── performance.md
 │   ├── third-party-dependencies.md
 │   ├── adr/
-│   └── benchmarks/
+│   ├── benchmarks/
+│   └── evidence/               # measurements a resolved gate rests on
+├── fixtures/                   # tracked test and evidence data
 └── tools/
     └── dependency-check/       # named maintenance tool
 ```
@@ -120,6 +122,15 @@ what it binds, supports, automates, or adapts. There is no `utils` layer, and
 
 `tools/` holds named executable maintenance programs only. It must never become a
 library dependency or a home for miscellaneous code.
+
+`fixtures/` holds test and evidence data that outlives the change that created
+it, grouped by the subject it exercises. Data belongs here rather than beside one
+package when more than one consumer needs it — a contract suite, an example, a
+benchmark, and a gate's evidence can all refer to the same bytes. Every fixture
+group records its provenance and license and pins its contents with a checksum
+file, because a fixture that changes silently invalidates whatever was measured
+against it. `docs/evidence/` holds the measurements themselves, so a number and
+the data behind it are never separated.
 
 ## Package inventory and responsibilities
 
@@ -521,11 +532,19 @@ conditionals to the runtime.
 
 ### Unresolved decisions
 
-Fourteen version-one decisions are deliberately unresolved because the evidence
-that settles them does not exist yet. [validation-gates.md](validation-gates.md)
-records `G-001` through `G-014` with the unresolved decision, the required
-evidence, the due phase, the blocking scope, the status, and the resolution rule
-for each. No gate blocks Phase 0.
+Fourteen version-one decisions were deliberately deferred because the evidence
+that settles them did not exist yet. [validation-gates.md](validation-gates.md)
+records `G-001` through `G-014` with the decision, the required evidence, the due
+phase, the blocking scope, the status, and the resolution rule for each. No gate
+blocked Phase 0.
+
+Thirteen remain open. `G-014` is resolved by
+[ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md), which fixes
+the asset archive container, the manifest serialization, and six implementation
+ceilings that bound what loading an untrusted archive may allocate and expand. A
+caller may configure a limit below a ceiling and may not raise one above it.
+Resolving that gate unblocks implementing archive loading; it does not implement
+it, and no part of this document claims asset loading exists.
 
 ## Implementation status
 
@@ -551,6 +570,7 @@ implemented below describe behavior a caller can use today.
 | Watchers, scheduling, diagnostics | Not implemented |
 | Input injection | Not implemented |
 | Asset manifests and loading | Not implemented |
+| Asset archive container, manifest format, and safety ceilings | Decided and measured, not implemented; see [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 | Public Rust operations | Not implemented |
 | C ABI functions, C header, native libraries | Not implemented |
 | C++ wrapper | Not implemented |

@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "package": {
+    "id": "madopilot.fixture.tiny",
+    "version": "1.0.0"
+  },
+  "license": "Apache-2.0",
+  "provenance": {
+    "created_by": "mado-pilot G-014 probe",
+    "created_for": "docs/evidence/g-014"
+  },
+  "templates": [
+    {
+      "id": "template.0000",
+      "path": "templates/0000-24x24.png",
+      "width": 24,
+      "height": 24,
+      "coordinate_space": "capture_pixels",
+      "content": {
+        "algorithm": "sha256",
+        "value": "4d1b8f348988c4894a809f6a234361d6bf4019238b92112375652591edaaf7d4"
+      },
+      "match_defaults": {
+        "min_score": 0.9,
+        "max_results": 8
+      }
+    },
+    {
+      "id": "template.0001",
+      "path": "templates/0001-32x32.png",
+      "width": 32,
+      "height": 32,
+      "coordinate_space": "capture_pixels",
+      "content": {
+        "algorithm": "sha256",
+        "value": "2dd930e5c7003d9297dcf64b02ef681449fd31bbd7fae3d4ef5296a713442d93"
+      },
+      "match_defaults": {
+        "min_score": 0.9,
+        "max_results": 8
+      }
+    },
+    {
+      "id": "template.0002",
+      "path": "templates/0002-40x40.png",
+      "width": 40,
+      "height": 40,
+      "coordinate_space": "capture_pixels",
+      "content": {
+        "algorithm": "sha256",
+        "value": "bec7b38d45b544003c59ac409f4a9888ef578b7f91ec642a7ef8ee3106819a4b"
+      },
+      "match_defaults": {
+        "min_score": 0.9,
+        "max_results": 8
+      }
+    },
+    {
+      "id": "template.0003",
+      "path": "templates/0003-48x48.png",
+      "width": 48,
+      "height": 48,
+      "coordinate_space": "capture_pixels",
+      "content": {
+        "algorithm": "sha256",
+        "value": "4558596fbca7b9e2fa71b0c488e344783fde672fe5ea5082ac52bafcc2107844"
+      },
+      "match_defaults": {
+        "min_score": 0.9,
+        "max_results": 8
+      }
+    },
+    {
+      "id": "template.0004",
+      "path": "templates/0004-64x64.png",
+      "width": 64,
+      "height": 64,
+      "coordinate_space": "capture_pixels",
+      "content": {
+        "algorithm": "sha256",
+        "value": "b1332cad8d294a359b248e3b8f3ccc8296a6b44d536fda9d550d3cec077ee6a8"
+      },
+      "match_defaults": {
+        "min_score": 0.9,
+        "max_results": 8
+      }
+    },
+    {
+      "id": "template.0005",
+      "path": "templates/0005-96x32.png",
+      "width": 96,
+      "height": 32,
+      "coordinate_space": "capture_pixels",
+      "content": {
+        "algorithm": "sha256",
+        "value": "5340ba86bbdcd7f874ad19a4e00dfa34aaf8c4f03499b01dba97882b3fdd39bb"
+      },
+      "match_defaults": {
+        "min_score": 0.9,
+        "max_results": 8
+      }
+    }
+  ]
+}
