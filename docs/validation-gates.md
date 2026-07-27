@@ -53,7 +53,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
 | [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload |
-| [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Open |
+| [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
 
@@ -293,8 +293,8 @@ budget that is set or relaxed, recording the evidence behind the number.
 
 ## G-014
 
-**Unresolved decision.** The archive entry-count, uncompressed-byte, and
-compression-ratio safety ceilings for asset loading.
+**Decision.** The archive entry-count, uncompressed-byte, and compression-ratio
+safety ceilings for asset loading.
 
 **Required evidence.** Adversarial fixtures covering traversal, links, special
 files, duplicate normalized entries, and decompression bombs, each rejected
@@ -304,7 +304,20 @@ deterministically at the chosen ceilings.
 
 **Blocks.** Version-one archive loading.
 
-**Status.** Open.
+**Status.** Resolved by
+[ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md). The
+container is ZIP restricted to `Stored` and `Deflated`, the manifest is strict
+UTF-8 JSON, and six implementation ceilings are set: 4 MiB of manifest bytes,
+4,096 entries, 64 MiB per entry, 256 MiB of source bytes, 512 MiB of total
+uncompressed bytes, and an expansion ratio of 64. A caller may lower a limit and
+may not raise one. Three ceilings beyond the ones this gate named were added,
+because entry count, expansion bytes, and ratio do not on their own bound what a
+loader allocates.
+
+Resolving the gate does not implement archive loading. The evidence is in
+[evidence/g-014](evidence/g-014/), the fixtures in
+[../fixtures/assets/g-014](../fixtures/assets/g-014/), and the conformance tests
+that enforce the decision are added by the change that implements loading.
 
 **Resolution.** An ADR recording the ceilings and the adversarial fixture results,
 followed by the asset schema and security documentation that states them.
