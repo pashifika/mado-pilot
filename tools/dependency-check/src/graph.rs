@@ -482,36 +482,42 @@ pub enum Violation {
         /// Package name.
         name: String,
     },
-    /// A package declares an edition other than the workspace edition.
-    UnexpectedEdition {
-        /// Package name.
-        name: String,
-        /// Edition the package declares.
-        edition: String,
-        /// Edition the workspace requires.
-        expected: String,
+    /// The root `[workspace.package]` table disagrees with the Phase 0 contract.
+    UnexpectedWorkspaceMetadata {
+        /// Manifest field that disagrees.
+        field: &'static str,
+        /// Value the root workspace manifest declares, if any.
+        value: Option<String>,
+        /// Value the Phase 0 contract requires.
+        expected: &'static str,
     },
-    /// A package declares a license other than the project license.
-    UnexpectedLicense {
-        /// Package name.
-        name: String,
-        /// License the package declares, if any.
-        license: Option<String>,
-        /// License the project requires.
-        expected: String,
+    /// `rust-toolchain.toml` does not pin the tested minimum supported Rust
+    /// version.
+    UnexpectedToolchainChannel {
+        /// Channel the pin file declares, if the file is present and readable.
+        channel: Option<String>,
+        /// Channel the Phase 0 contract requires.
+        expected: &'static str,
     },
-    /// A package overrides shared metadata that every member must agree on.
+    /// A member's resolved metadata disagrees with the root workspace declaration.
     InconsistentMetadata {
         /// Package name.
         name: String,
         /// Manifest field that disagrees.
         field: &'static str,
-        /// Value the package declares, if any.
+        /// Value the package resolves to, if any.
         value: Option<String>,
-        /// Value the reference package declares, if any.
+        /// Value the root workspace manifest declares, if any.
         expected: Option<String>,
-        /// Package whose value is treated as the reference.
-        reference: String,
+    },
+    /// A member does not inherit a shared field from `[workspace.package]`.
+    MissingWorkspaceInheritance {
+        /// Package name.
+        name: String,
+        /// Directory holding the manifest.
+        directory: String,
+        /// Shared field the manifest fails to inherit explicitly.
+        field: &'static str,
     },
     /// A member does not opt into the workspace lint policy.
     MissingWorkspaceLints {
@@ -596,23 +602,22 @@ impl fmt::Display for Violation {
                 formatter,
                 "package `{name}` is publishable; every Phase 0 package must declare `publish = false` until an implemented, tested package intends publication"
             ),
-            Self::UnexpectedEdition {
-                name,
-                edition,
-                expected,
-            } => write!(
-                formatter,
-                "package `{name}` declares edition `{edition}` but the workspace requires `{expected}`; inherit it with `edition.workspace = true`"
-            ),
-            Self::UnexpectedLicense {
-                name,
-                license,
+            Self::UnexpectedWorkspaceMetadata {
+                field,
+                value,
                 expected,
             } => {
-                let license = license.as_deref().unwrap_or("no license");
+                let value = value.as_deref().unwrap_or("unset");
                 write!(
                     formatter,
-                    "package `{name}` declares `{license}` but the project license is `{expected}`; inherit it with `license.workspace = true`"
+                    "the root workspace manifest declares `{field} = {value}` in `[workspace.package]` but the Phase 0 contract requires `{expected}`; changing it is an intentional release decision that updates this checker and `docs/architecture.md` in the same change"
+                )
+            }
+            Self::UnexpectedToolchainChannel { channel, expected } => {
+                let channel = channel.as_deref().unwrap_or("no channel");
+                write!(
+                    formatter,
+                    "`rust-toolchain.toml` pins channel `{channel}` but the Phase 0 contract requires Rust `{expected}`; the pin is the tested minimum supported Rust version, so it moves together with `[workspace.package] rust-version`"
                 )
             }
             Self::InconsistentMetadata {
@@ -620,15 +625,22 @@ impl fmt::Display for Violation {
                 field,
                 value,
                 expected,
-                reference,
             } => {
                 let value = value.as_deref().unwrap_or("unset");
                 let expected = expected.as_deref().unwrap_or("unset");
                 write!(
                     formatter,
-                    "package `{name}` declares `{field} = {value}` but `{reference}` declares `{expected}`; every member must inherit this field with `{field}.workspace = true`"
+                    "package `{name}` resolves `{field} = {value}` but the root workspace manifest declares `{expected}`; every member must inherit this field with `{field}.workspace = true`"
                 )
             }
+            Self::MissingWorkspaceInheritance {
+                name,
+                directory,
+                field,
+            } => write!(
+                formatter,
+                "package `{name}` at `{directory}` does not declare `{field}.workspace = true`; a hard-coded value drifts from `[workspace.package]` silently, even while it happens to agree today"
+            ),
             Self::MissingWorkspaceLints { name, directory } => write!(
                 formatter,
                 "package `{name}` at `{directory}` does not opt into the workspace lint policy; add `[lints]` with `workspace = true`, otherwise the workspace Rust, rustdoc, and Clippy lints are silently disabled for this package"
@@ -637,48 +649,106 @@ impl fmt::Display for Violation {
     }
 }
 
+/// Package version the Phase 0 contract fixes for the whole workspace.
+pub const REQUIRED_VERSION: &str = "0.1.0";
 /// Edition every workspace member must use.
 pub const REQUIRED_EDITION: &str = "2024";
+/// Tested minimum supported Rust version, which is also the pinned toolchain.
+pub const REQUIRED_RUST_VERSION: &str = "1.97.1";
 /// License every workspace member must declare, matching the root `LICENSE` file.
 pub const REQUIRED_LICENSE: &str = "Apache-2.0";
+/// Canonical repository URL every workspace member must identify.
+pub const REQUIRED_REPOSITORY: &str = "https://github.com/pashifika/mado-pilot";
+
+/// Shared `[package]` fields every member must inherit explicitly.
+///
+/// `publish` is deliberately absent. The contract requires every member to be
+/// non-publishable, and Cargo reports resolved publishability, so that rule is
+/// checked from metadata and holds whether a member states `publish = false`
+/// directly or inherits it.
+pub const INHERITED_PACKAGE_FIELDS: &[&str] = &[
+    "version",
+    "edition",
+    "rust-version",
+    "license",
+    "repository",
+];
 
 /// Manifest metadata observed for one workspace member.
 ///
 /// These are the fields the `rust-workspace-baseline` specification requires every
 /// member to share. The checker reads them so that a member cannot silently
-/// override inherited metadata or opt out of the lint policy.
+/// override inherited metadata, hard-code a shared value instead of inheriting it,
+/// or opt out of the lint policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedMetadata {
     /// Cargo package name.
     pub name: String,
     /// Directory holding the manifest, relative to the workspace root.
     pub directory: String,
-    /// Declared package version.
+    /// Resolved package version.
     pub version: String,
-    /// Declared Rust edition.
+    /// Resolved Rust edition.
     pub edition: String,
-    /// Declared minimum supported Rust version, if any.
+    /// Resolved minimum supported Rust version, if any.
     pub rust_version: Option<String>,
-    /// Declared license expression, if any.
+    /// Resolved license expression, if any.
     pub license: Option<String>,
-    /// Declared repository URL, if any.
+    /// Resolved repository URL, if any.
     pub repository: Option<String>,
     /// Whether Cargo would allow this package to be published.
     pub publishable: bool,
+    /// `[package]` fields the manifest inherits with `<field>.workspace = true`.
+    pub inherited_fields: BTreeSet<String>,
     /// Whether the manifest opts into `[workspace.lints]`.
     pub inherits_workspace_lints: bool,
 }
 
-/// Validates shared package metadata and lint opt-in for every member.
+/// Shared metadata the root workspace manifest declares, plus the pinned
+/// toolchain.
 ///
-/// `version`, `rust-version`, and `repository` are checked for agreement rather
-/// than against hard-coded values, so a release version bump does not require a
-/// checker change while a member that overrides an inherited field still fails.
-/// The public facade is the reference; when it is absent the inventory check
-/// already reports it as missing and this check is skipped.
+/// The root manifest is the single source for member values, and these values are
+/// themselves anchored to the Phase 0 contract, so shared metadata cannot drift by
+/// having every member change together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedWorkspaceMetadata {
+    /// `version` in `[workspace.package]`, if declared and non-empty.
+    pub version: Option<String>,
+    /// `edition` in `[workspace.package]`, if declared and non-empty.
+    pub edition: Option<String>,
+    /// `rust-version` in `[workspace.package]`, if declared and non-empty.
+    pub rust_version: Option<String>,
+    /// `license` in `[workspace.package]`, if declared and non-empty.
+    pub license: Option<String>,
+    /// `repository` in `[workspace.package]`, if declared and non-empty.
+    pub repository: Option<String>,
+    /// `channel` in `rust-toolchain.toml`, if the file declares one.
+    pub toolchain_channel: Option<String>,
+}
+
+/// Validates the shared workspace contract, member metadata, and lint opt-in.
+///
+/// The rules are layered so that neither one member nor the workspace as a whole
+/// can drift silently:
+///
+/// 1. The root `[workspace.package]` values must match the Phase 0 contract
+///    constants in this module, and `rust-toolchain.toml` must pin the same Rust
+///    version. A release bump is therefore an intentional, reviewed edit to the
+///    manifest, this checker, and `docs/architecture.md` together, rather than
+///    something the members can agree their way into.
+/// 2. Every member's resolved values must match the root declaration, so a member
+///    cannot override an inherited field. Because the shared values must be present
+///    at the root, a workspace that drops `rust-version` or `repository` everywhere
+///    fails rather than agreeing on nothing.
+/// 3. Every member must inherit the shared fields explicitly. Cargo reports
+///    resolved values, so only the manifest text distinguishes inheritance from a
+///    hard-coded literal that happens to agree today.
 #[must_use]
-pub fn validate_metadata(members: &[ObservedMetadata]) -> Vec<Violation> {
-    let mut violations = Vec::new();
+pub fn validate_metadata(
+    workspace: &ObservedWorkspaceMetadata,
+    members: &[ObservedMetadata],
+) -> Vec<Violation> {
+    let mut violations = validate_workspace_contract(workspace);
     let mut members: Vec<&ObservedMetadata> = members.iter().collect();
     members.sort_by(|left, right| left.name.cmp(&right.name));
 
@@ -688,51 +758,43 @@ pub fn validate_metadata(members: &[ObservedMetadata]) -> Vec<Violation> {
                 name: member.name.clone(),
             });
         }
-        if member.edition != REQUIRED_EDITION {
-            violations.push(Violation::UnexpectedEdition {
-                name: member.name.clone(),
-                edition: member.edition.clone(),
-                expected: REQUIRED_EDITION.to_owned(),
-            });
-        }
-        if member.license.as_deref() != Some(REQUIRED_LICENSE) {
-            violations.push(Violation::UnexpectedLicense {
-                name: member.name.clone(),
-                license: member.license.clone(),
-                expected: REQUIRED_LICENSE.to_owned(),
-            });
-        }
         if !member.inherits_workspace_lints {
             violations.push(Violation::MissingWorkspaceLints {
                 name: member.name.clone(),
                 directory: member.directory.clone(),
             });
         }
-    }
-
-    let Some(reference) = members.iter().find(|member| member.name == FACADE) else {
-        return violations;
-    };
-
-    for member in &members {
-        if member.name == reference.name {
-            continue;
+        for field in INHERITED_PACKAGE_FIELDS {
+            if !member.inherited_fields.contains(*field) {
+                violations.push(Violation::MissingWorkspaceInheritance {
+                    name: member.name.clone(),
+                    directory: member.directory.clone(),
+                    field,
+                });
+            }
         }
-        let shared: [(&'static str, Option<String>, Option<String>); 3] = [
+
+        let shared: [(&'static str, Option<String>, Option<String>); 5] = [
             (
                 "version",
                 Some(member.version.clone()),
-                Some(reference.version.clone()),
+                workspace.version.clone(),
+            ),
+            (
+                "edition",
+                Some(member.edition.clone()),
+                workspace.edition.clone(),
             ),
             (
                 "rust-version",
                 member.rust_version.clone(),
-                reference.rust_version.clone(),
+                workspace.rust_version.clone(),
             ),
+            ("license", member.license.clone(), workspace.license.clone()),
             (
                 "repository",
                 member.repository.clone(),
-                reference.repository.clone(),
+                workspace.repository.clone(),
             ),
         ];
         for (field, value, expected) in shared {
@@ -742,7 +804,6 @@ pub fn validate_metadata(members: &[ObservedMetadata]) -> Vec<Violation> {
                     field,
                     value,
                     expected,
-                    reference: reference.name.clone(),
                 });
             }
         }
@@ -751,43 +812,46 @@ pub fn validate_metadata(members: &[ObservedMetadata]) -> Vec<Violation> {
     violations
 }
 
-/// Reports whether a manifest opts into the workspace lint policy.
-///
-/// Cargo metadata does not expose the `[lints]` table, so this reads the manifest
-/// text and recognizes the two canonical spellings:
-///
-/// ```text
-/// [lints]
-/// workspace = true
-/// ```
-///
-/// and the dotted `lints.workspace = true`. An exotic but valid spelling is
-/// reported as missing, which fails loudly with an actionable message rather than
-/// silently accepting a package whose lints are disabled.
-#[must_use]
-pub fn manifest_inherits_workspace_lints(manifest: &str) -> bool {
-    let mut in_lints_table = false;
-    for line in manifest.lines() {
-        let line = match line.split_once('#') {
-            Some((before, _)) => before.trim(),
-            None => line.trim(),
-        };
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('[') {
-            in_lints_table = line == "[lints]";
-            continue;
-        }
-        let compact: String = line.chars().filter(|c| !c.is_whitespace()).collect();
-        if compact == "lints.workspace=true" {
-            return true;
-        }
-        if in_lints_table && compact == "workspace=true" {
-            return true;
+/// Anchors the root workspace declaration and the toolchain pin to the Phase 0
+/// contract, so that agreement between members is never enough on its own.
+fn validate_workspace_contract(workspace: &ObservedWorkspaceMetadata) -> Vec<Violation> {
+    let mut violations = Vec::new();
+    let contract: [(&'static str, Option<&str>, &'static str); 5] = [
+        ("version", workspace.version.as_deref(), REQUIRED_VERSION),
+        ("edition", workspace.edition.as_deref(), REQUIRED_EDITION),
+        (
+            "rust-version",
+            workspace.rust_version.as_deref(),
+            REQUIRED_RUST_VERSION,
+        ),
+        ("license", workspace.license.as_deref(), REQUIRED_LICENSE),
+        (
+            "repository",
+            workspace.repository.as_deref(),
+            REQUIRED_REPOSITORY,
+        ),
+    ];
+
+    for (field, value, expected) in contract {
+        if value != Some(expected) {
+            violations.push(Violation::UnexpectedWorkspaceMetadata {
+                field,
+                value: value.map(str::to_owned),
+                expected,
+            });
         }
     }
-    false
+
+    // Anchoring both the manifest and the pin file to the same constant is what
+    // keeps them synchronized: a change to either one alone fails here.
+    if workspace.toolchain_channel.as_deref() != Some(REQUIRED_RUST_VERSION) {
+        violations.push(Violation::UnexpectedToolchainChannel {
+            channel: workspace.toolchain_channel.clone(),
+            expected: REQUIRED_RUST_VERSION,
+        });
+    }
+
+    violations
 }
 
 /// Validates a normalized workspace graph against the Phase 0 architecture rules.

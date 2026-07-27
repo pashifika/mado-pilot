@@ -65,7 +65,7 @@ A budget names one measure. The version-one vocabulary is:
 | `model_load_time` | milliseconds | Time to load and initialize an OCR model, including provider selection. |
 | `startup_time` | milliseconds | Time from process start to a usable session. |
 | `result_correctness` | count | Retained samples whose output disagreed with the correctness oracle. A hard gate, never a tuned ceiling. |
-| `memory_growth` | bytes | Change in resident memory across the sampled run. A hard gate: unbounded growth is a defect, not a slow result. |
+| `memory_growth` | bytes | Signed change in resident memory across the sampled run, so a decrease is negative. A hard gate: unbounded growth is a defect, not a slow result, and its predicate bounds growth rather than demanding an exact zero. |
 
 A phase that needs a measure outside this list adds it here in the same change,
 with its unit and its meaning.

@@ -53,7 +53,10 @@ fn main() -> ExitCode {
     };
 
     let mut violations = graph::validate(&observation.graph);
-    violations.extend(graph::validate_metadata(&observation.members));
+    violations.extend(graph::validate_metadata(
+        &observation.workspace,
+        &observation.members,
+    ));
     violations.extend(observation.source_violations.iter().cloned());
     violations.extend(metadata::deferred_directory_violations(
         &observation.workspace_root,
@@ -78,19 +81,15 @@ fn report_compliant(observation: &metadata::WorkspaceObservation) {
         packages.len(),
         edges.len()
     );
-    if let Some(reference) = observation
-        .members
-        .iter()
-        .find(|member| member.name == graph::FACADE)
-    {
-        println!(
-            "  shared metadata: version {}, edition {}, rust-version {}, license {}",
-            reference.version,
-            reference.edition,
-            reference.rust_version.as_deref().unwrap_or("unset"),
-            reference.license.as_deref().unwrap_or("unset"),
-        );
-    }
+    let workspace = &observation.workspace;
+    println!(
+        "  workspace metadata: version {}, edition {}, rust-version {}, license {}, toolchain {}",
+        workspace.version.as_deref().unwrap_or("unset"),
+        workspace.edition.as_deref().unwrap_or("unset"),
+        workspace.rust_version.as_deref().unwrap_or("unset"),
+        workspace.license.as_deref().unwrap_or("unset"),
+        workspace.toolchain_channel.as_deref().unwrap_or("unset"),
+    );
     for package in packages {
         println!("  {} ({})", package.name, package.directory);
     }

@@ -45,7 +45,9 @@ predicate = "result_correctness == 0"
 measure = "memory_growth"
 kind = "hard"
 requirement = "steady-state memory does not grow across the sampled run"
-predicate = "memory_growth == 0"
+# `memory_growth` is a signed change, so a decrease also satisfies the
+# requirement. The predicate bounds growth rather than demanding an exact zero.
+predicate = "memory_growth <= 0"
 
 # An absolute budget: a numeric ceiling that is a property of the product.
 # The value here is illustrative.

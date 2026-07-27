@@ -1,11 +1,12 @@
 //! Cargo process adapter.
 //!
 //! This module is the only part of the checker that runs a subprocess or touches
-//! the filesystem. It converts `cargo metadata` output into the normalized
-//! [`PackageGraph`] that [`crate::graph::validate`] consumes, and probes the
-//! reserved deferred-adapter directories.
+//! the filesystem. It converts `cargo metadata` output plus the on-disk manifests
+//! into the normalized [`PackageGraph`] and metadata that
+//! [`crate::graph::validate`] and [`crate::graph::validate_metadata`] consume, and
+//! probes the reserved deferred-adapter directories.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -15,8 +16,12 @@ use serde::Deserialize;
 
 use crate::graph::{
     DEFERRED_PACKAGES, DependencyKind, ObservedEdge, ObservedMetadata, ObservedPackage,
-    PackageGraph, Violation, manifest_inherits_workspace_lints, normalize_directory,
+    ObservedWorkspaceMetadata, PackageGraph, Violation, normalize_directory,
 };
+use crate::manifest::{Manifest, TOOLCHAIN_TABLE, WORKSPACE_PACKAGE_TABLE};
+
+/// File that pins the tested toolchain, relative to the workspace root.
+pub const TOOLCHAIN_FILE: &str = "rust-toolchain.toml";
 
 /// A failure that prevented the checker from inspecting the workspace.
 ///
@@ -45,6 +50,16 @@ pub enum MetadataError {
     ManifestUnreadable {
         /// Manifest path reported by Cargo.
         manifest_path: PathBuf,
+        /// Underlying filesystem error.
+        source: std::io::Error,
+    },
+    /// The toolchain pin file exists but could not be read.
+    ///
+    /// An absent pin file is a policy violation rather than a tool failure, so it
+    /// is reported as a missing channel instead of this error.
+    ToolchainUnreadable {
+        /// Path the checker tried to read.
+        path: PathBuf,
         /// Underlying filesystem error.
         source: std::io::Error,
     },
@@ -83,8 +98,13 @@ impl fmt::Display for MetadataError {
                 source,
             } => write!(
                 formatter,
-                "could not read workspace member manifest `{}`: {source}",
+                "could not read manifest `{}`: {source}",
                 manifest_path.display()
+            ),
+            Self::ToolchainUnreadable { path, source } => write!(
+                formatter,
+                "could not read toolchain pin `{}`: {source}",
+                path.display()
             ),
         }
     }
@@ -95,7 +115,9 @@ impl Error for MetadataError {
         match self {
             Self::Spawn(source) => Some(source),
             Self::Parse(source) => Some(source),
-            Self::ManifestUnreadable { source, .. } => Some(source),
+            Self::ManifestUnreadable { source, .. } | Self::ToolchainUnreadable { source, .. } => {
+                Some(source)
+            }
             Self::CargoFailed { .. } | Self::ManifestOutsideWorkspace { .. } => None,
         }
     }
@@ -108,6 +130,9 @@ pub struct WorkspaceObservation {
     pub workspace_root: PathBuf,
     /// Normalized package graph of the workspace members.
     pub graph: PackageGraph,
+    /// Shared metadata declared by the root workspace manifest and the toolchain
+    /// pin.
+    pub workspace: ObservedWorkspaceMetadata,
     /// Shared manifest metadata for every member.
     pub members: Vec<ObservedMetadata>,
     /// Violations that only the Cargo adapter can see, because they concern how a
@@ -140,8 +165,26 @@ pub fn read_workspace(manifest_path: Option<&Path>) -> Result<WorkspaceObservati
         });
     }
 
-    let metadata: CargoMetadata =
-        serde_json::from_slice(&output.stdout).map_err(MetadataError::Parse)?;
+    read_metadata_output(&output.stdout)
+}
+
+/// Reads a workspace observation from `cargo metadata --format-version 1` output.
+///
+/// [`read_workspace`] runs Cargo and passes its standard output here. The
+/// separation exists so that the adapter's path, source, and manifest policies can
+/// be exercised against synthetic Cargo output over controlled directories, which
+/// is the only way to reach the failure branches deterministically.
+///
+/// The member manifests, the root workspace manifest, and the toolchain pin are
+/// still read from disk, because Cargo does not report the facts they carry.
+///
+/// # Errors
+///
+/// Returns a [`MetadataError`] when the output cannot be interpreted, a member
+/// manifest lies outside the workspace root or cannot be read, or the toolchain pin
+/// exists but cannot be read.
+pub fn read_metadata_output(output: &[u8]) -> Result<WorkspaceObservation, MetadataError> {
+    let metadata: CargoMetadata = serde_json::from_slice(output).map_err(MetadataError::Parse)?;
     observation_from_metadata(metadata)
 }
 
@@ -177,19 +220,15 @@ fn observation_from_metadata(
     metadata: CargoMetadata,
 ) -> Result<WorkspaceObservation, MetadataError> {
     let workspace_root = PathBuf::from(&metadata.workspace_root);
-    let member_names: BTreeSet<&str> = metadata
-        .packages
-        .iter()
-        .map(|package| package.name.as_str())
-        .collect();
 
-    let mut member_directories = BTreeSet::new();
+    let mut member_directories: BTreeMap<&str, String> = BTreeMap::new();
     for package in &metadata.packages {
-        member_directories.insert(manifest_directory(
-            Path::new(&package.manifest_path),
-            &workspace_root,
-        )?);
+        member_directories.insert(
+            package.name.as_str(),
+            manifest_directory(Path::new(&package.manifest_path), &workspace_root)?,
+        );
     }
+    let member_paths: BTreeSet<&str> = member_directories.values().map(String::as_str).collect();
 
     let mut packages = Vec::with_capacity(metadata.packages.len());
     let mut members = Vec::with_capacity(metadata.packages.len());
@@ -204,13 +243,7 @@ fn observation_from_metadata(
             directory.clone(),
         ));
 
-        let manifest = std::fs::read_to_string(&manifest_path).map_err(|source| {
-            MetadataError::ManifestUnreadable {
-                manifest_path: manifest_path.clone(),
-                source,
-            }
-        })?;
-
+        let manifest = Manifest::parse(&read_manifest(&manifest_path)?);
         members.push(ObservedMetadata {
             name: package.name.clone(),
             directory,
@@ -225,46 +258,70 @@ fn observation_from_metadata(
                 .publish
                 .as_ref()
                 .is_none_or(|registries| !registries.is_empty()),
-            inherits_workspace_lints: manifest_inherits_workspace_lints(&manifest),
+            inherited_fields: manifest.inherited_package_fields(),
+            inherits_workspace_lints: manifest.inherits_workspace_lints(),
         });
 
         for dependency in &package.dependencies {
             let kind = dependency_kind(dependency.kind.as_deref());
+            // Cargo reports the real package in `name` and the manifest-visible
+            // alias of a `package = "..."` rename in `rename`. Both matter: the
+            // visible name is what Rust source imports, and the real name is what
+            // Cargo builds.
+            let visible = dependency.rename.as_deref().unwrap_or(&dependency.name);
 
             // A path dependency must resolve to a workspace member. Anything else
             // would let product code enter the build without appearing in the
             // documented inventory.
-            if let Some(path) = &dependency.path {
-                let relative =
-                    manifest_directory(&Path::new(path).join("Cargo.toml"), &workspace_root)
-                        .ok()
-                        .filter(|relative| member_directories.contains(relative));
-                if relative.is_none() {
-                    violations.push(Violation::NonMemberPathDependency {
-                        from: package.name.clone(),
-                        dependency: dependency.name.clone(),
-                        path: path.clone(),
-                    });
-                    continue;
+            let resolved = match &dependency.path {
+                Some(path) => {
+                    let relative =
+                        manifest_directory(&Path::new(path).join("Cargo.toml"), &workspace_root)
+                            .ok()
+                            .filter(|relative| member_paths.contains(relative.as_str()));
+                    if relative.is_none() {
+                        violations.push(Violation::NonMemberPathDependency {
+                            from: package.name.clone(),
+                            dependency: visible.to_owned(),
+                            path: path.clone(),
+                        });
+                        continue;
+                    }
+                    relative
                 }
-            }
+                None => None,
+            };
 
-            if !member_names.contains(dependency.name.as_str()) {
+            // A dependency claims a member when either the visible name or the real
+            // package name is a member name. The visible name catches a renamed
+            // external crate masquerading as an internal contract package; the real
+            // name catches a same-named crate pulled from a registry or Git source.
+            let claimed = if member_directories.contains_key(visible) {
+                Some(visible)
+            } else if member_directories.contains_key(dependency.name.as_str()) {
+                Some(dependency.name.as_str())
+            } else {
+                None
+            };
+            let Some(member) = claimed else {
                 continue;
-            }
+            };
 
-            // The dependency carries a member's name. Without a path it resolves
-            // from a registry or Git source, so it could be an unrelated crate
-            // that merely shares the name.
-            if dependency.path.is_none() {
+            // The claim holds only when the real package is that member and its path
+            // resolves to that member's own directory. Otherwise the dependency is
+            // satisfied by something other than the inventory package it names.
+            let directory = &member_directories[member];
+            if dependency.name != member || resolved.as_deref() != Some(directory.as_str()) {
                 violations.push(Violation::ShadowedMemberDependency {
                     from: package.name.clone(),
-                    to: dependency.name.clone(),
+                    to: member.to_owned(),
                     kind,
                 });
                 continue;
             }
 
+            // Graph edges use the real package name, which is the package the
+            // architecture allowlist is written against.
             edges.push(ObservedEdge {
                 from: package.name.clone(),
                 to: dependency.name.clone(),
@@ -273,11 +330,56 @@ fn observation_from_metadata(
         }
     }
 
+    let workspace = workspace_metadata(&workspace_root)?;
+
     Ok(WorkspaceObservation {
         workspace_root,
         graph: PackageGraph::new(packages, edges),
+        workspace,
         members,
         source_violations: violations,
+    })
+}
+
+/// Reads the shared metadata declared by the root workspace manifest and the
+/// toolchain pin.
+///
+/// Cargo reports resolved member values, so the root declaration is the only place
+/// the checker can see what members are supposed to inherit.
+fn workspace_metadata(workspace_root: &Path) -> Result<ObservedWorkspaceMetadata, MetadataError> {
+    let root_manifest = workspace_root.join("Cargo.toml");
+    let manifest = Manifest::parse(&read_manifest(&root_manifest)?);
+    let shared = |field: &str| {
+        manifest
+            .string(WORKSPACE_PACKAGE_TABLE, field)
+            .map(str::to_owned)
+    };
+
+    let pin = workspace_root.join(TOOLCHAIN_FILE);
+    let toolchain_channel = match std::fs::read_to_string(&pin) {
+        Ok(text) => Manifest::parse(&text)
+            .string(TOOLCHAIN_TABLE, "channel")
+            .map(str::to_owned),
+        // A missing pin leaves the contributor toolchain unpinned, which the
+        // contract rejects; that is a violation, not a tool failure.
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => None,
+        Err(source) => return Err(MetadataError::ToolchainUnreadable { path: pin, source }),
+    };
+
+    Ok(ObservedWorkspaceMetadata {
+        version: shared("version"),
+        edition: shared("edition"),
+        rust_version: shared("rust-version"),
+        license: shared("license"),
+        repository: shared("repository"),
+        toolchain_channel,
+    })
+}
+
+fn read_manifest(manifest_path: &Path) -> Result<String, MetadataError> {
+    std::fs::read_to_string(manifest_path).map_err(|source| MetadataError::ManifestUnreadable {
+        manifest_path: manifest_path.to_path_buf(),
+        source,
     })
 }
 
@@ -335,6 +437,9 @@ struct CargoPackage {
 #[derive(Debug, Deserialize)]
 struct CargoDependency {
     name: String,
+    /// Manifest-visible alias when the dependency uses `package = "..."`; `None`
+    /// when the dependency is declared under its real package name.
+    rename: Option<String>,
     kind: Option<String>,
     /// Present only for a path dependency; absent for registry and Git sources.
     path: Option<String>,
