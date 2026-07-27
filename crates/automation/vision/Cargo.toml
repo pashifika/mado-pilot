@@ -8,5 +8,8 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+mado-pilot-core = { path = "../core" }
+
 [lints]
 workspace = true

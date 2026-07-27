@@ -106,13 +106,40 @@ dependency surface over a framework that pulls in unrelated features.
 
 | Crate | Used by | Why | License |
 |---|---|---|---|
-| `serde`, `serde_json` | `mado-pilot-adapter-replay` | Reads the replay sequence manifest. JSON is already the manifest serialization chosen for asset packages in [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md), so a reader meets one format rather than two, and both crates were already resolved in the committed lockfile for the maintenance tool | MIT OR Apache-2.0 |
+| `serde`, `serde_json` | `mado-pilot-adapter-replay`, `mado-pilot-assets` | Reads the replay sequence manifest and the asset package manifest. JSON is the manifest serialization [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) chose, so a reader meets one format rather than two, and both crates were already resolved in the committed lockfile for the maintenance tool | MIT OR Apache-2.0 |
+| `zip` 8.6 | `mado-pilot-assets` | Reads the ZIP central directory and decompresses entries. Default features **off**, `deflate-flate2` only | MIT |
+| `flate2` 1.1 | `mado-pilot-assets` | Selects the DEFLATE backend `zip` decompresses with. Not called directly | MIT OR Apache-2.0 |
+| `sha2` 0.11 | `mado-pilot-assets` | Verifies the content hash a manifest declares for each entry | MIT OR Apache-2.0 |
 
 A replay manifest is caller-supplied data. It is parsed into a typed schema that
 rejects unknown fields, and the pixel paths it declares are validated the same
 way an asset package's entry names are — relative, no traversal, no root, no
 drive prefix, no symbolic link — because a source that could name any path would
 be a file-read primitive wearing a capture adapter's clothes.
+
+An asset archive is caller-supplied data of a stronger kind: its metadata is read
+before anything is known about its content. Three consequences of that are
+recorded here rather than left to the implementation.
+
+Disabling the `zip` crate's default features is part of ADR 0001, not a tuning
+preference. The defaults pull in bzip2, LZMA, PPMd, XZ, Zstd, and AES support for
+compression methods the archive contract does not accept, which would add
+unreviewed parsers to a boundary that reads untrusted input. A test that needed a
+richer `zip` feature set would enable those parsers for the whole build graph, so
+the test suite writes the archives it needs with its own stored-only writer
+instead.
+
+`zip`'s `deflate-flate2` feature declares the `flate2` dependency without
+selecting a zlib backend, so the workspace selects one. `flate2`'s default
+`rust_backend` is `miniz_oxide`, which keeps the archive reader free of a native
+C library on both release targets and adds no build-time toolchain requirement.
+
+The resolved closure adds `adler2`, `block-buffer`, `cfg-if`, `const-oid`,
+`cpufeatures`, `crc32fast`, `crypto-common`, `digest`, `equivalent`,
+`hashbrown`, `hybrid-array`, `indexmap`, `libc`, `miniz_oxide`, `simd-adler32`,
+`typed-path`, and `typenum`. Every one offers MIT, Apache-2.0, Zlib, or 0BSD
+terms, so no exception is needed and `cargo deny check licenses` passes without
+one.
 
 ## Reviewed decisions not yet in the lockfile
 
@@ -123,12 +150,7 @@ can see the license position was checked when the choice was made.
 
 | Decision | Crates the implementation will need | License position | Recorded in |
 |---|---|---|---|
-| Asset archive container and manifest format | `zip` (default features **off**, `deflate-flate2` only), `flate2`, `sha2`, `serde_json` | Whole closure is MIT, Apache-2.0, or Zlib; all already allowed, no exception needed | [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
-
-Disabling the `zip` crate's default features is part of that decision, not a
-tuning preference: the defaults pull in bzip2, LZMA, PPMd, XZ, Zstd, and AES
-support for compression methods the archive contract does not accept, which
-would add unreviewed parsers to a boundary that reads untrusted input.
+| _none_ | — | — | — |
 
 The exact versions are pinned by the change that adds them, against the
 lockfile and the advisory database as they stand at that time.

@@ -8,5 +8,15 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+mado-pilot-core = { path = "../core" }
+mado-pilot-vision = { path = "../vision" }
+# Not called directly: it selects the DEFLATE backend `zip` decompresses with.
+flate2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+zip = { workspace = true }
+
 [lints]
 workspace = true
