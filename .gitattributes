@@ -1,0 +1,21 @@
+# Line endings are pinned so that a checkout is byte-identical on Windows and
+# macOS. Verification depends on this: `rustfmt.toml` sets `newline_style = "Unix"`,
+# and the CI toolchain step parses `rust-toolchain.toml` with a line-anchored
+# expression that a CRLF checkout would break.
+#
+# `actions/checkout` does not configure `core.autocrlf`, so without this file the
+# working-tree line endings would depend on each runner image's ambient Git
+# configuration.
+* text=auto eol=lf
+
+# Binary and archive types must never be line-ending converted.
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.onnx binary
+*.dll binary
+*.lib binary
+*.dylib binary
+*.so binary
+*.a binary

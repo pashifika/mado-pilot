@@ -16,6 +16,12 @@ on:
 permissions:
   contents: read
 
+# A superseded run on the same ref is cancelled so that rapid pushes do not queue
+# redundant native jobs. Runs on a base branch are never cancelled.
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTDOCFLAGS: -D warnings
@@ -34,7 +40,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          channel="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' rust-toolchain.toml)"
+          # `.gitattributes` pins the working tree to LF. Stripping `\r` here as well
+          # keeps the line-anchored expression correct even if a runner image ever
+          # checks the file out as CRLF.
+          channel="$(tr -d '\r' < rust-toolchain.toml | sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p')"
           if [[ -z "${channel}" ]]; then
             echo "::error::could not read the pinned channel from rust-toolchain.toml"
             exit 1
@@ -95,7 +104,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          channel="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' rust-toolchain.toml)"
+          # `.gitattributes` pins the working tree to LF. Stripping `\r` here as well
+          # keeps the line-anchored expression correct even if a runner image ever
+          # checks the file out as CRLF.
+          channel="$(tr -d '\r' < rust-toolchain.toml | sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p')"
           if [[ -z "${channel}" ]]; then
             echo "::error::could not read the pinned channel from rust-toolchain.toml"
             exit 1
@@ -115,7 +127,7 @@ jobs:
           set -euo pipefail
           rustc -vV
           cargo -V
-          host="$(rustc -vV | sed -n 's/^host: //p')"
+          host="$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')"
           if [[ "${host}" != "x86_64-pc-windows-msvc" ]]; then
             echo "::error::expected native host x86_64-pc-windows-msvc but found ${host}"
             exit 1
@@ -133,6 +145,11 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      # `--all-targets` deliberately excludes doctests, so they need their own run.
+      - name: Test the documentation examples
+        shell: bash
+        run: cargo test --locked --workspace --doc
+
       - name: Check documentation
         shell: bash
         run: cargo doc --locked --workspace --no-deps
@@ -148,7 +165,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          channel="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' rust-toolchain.toml)"
+          # `.gitattributes` pins the working tree to LF. Stripping `\r` here as well
+          # keeps the line-anchored expression correct even if a runner image ever
+          # checks the file out as CRLF.
+          channel="$(tr -d '\r' < rust-toolchain.toml | sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p')"
           if [[ -z "${channel}" ]]; then
             echo "::error::could not read the pinned channel from rust-toolchain.toml"
             exit 1
@@ -168,7 +188,7 @@ jobs:
           set -euo pipefail
           rustc -vV
           cargo -V
-          host="$(rustc -vV | sed -n 's/^host: //p')"
+          host="$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')"
           if [[ "${host}" != "aarch64-apple-darwin" ]]; then
             echo "::error::expected native host aarch64-apple-darwin but found ${host}"
             exit 1
@@ -185,6 +205,11 @@ jobs:
       - name: Test the workspace
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      # `--all-targets` deliberately excludes doctests, so they need their own run.
+      - name: Test the documentation examples
+        shell: bash
+        run: cargo test --locked --workspace --doc
 
       - name: Check documentation
         shell: bash

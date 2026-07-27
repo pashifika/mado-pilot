@@ -255,8 +255,10 @@ appear in this table, and an omitted future edge is always valid.
 The rules the table encodes:
 
 1. `mado-pilot-core` depends on no other MadoPilot package, and on no platform,
-   backend, GUI, or async-executor type. Platform-native handles are never added to
-   it.
+   backend, GUI, or async-executor crate. Platform-native handles are never added
+   to it. The checker enforces the MadoPilot half of this rule; the external-crate
+   half is a review rule, because Phase 0 declares no product dependency and the
+   per-package external allowlist is set by the change that adds the first one.
 2. Contract packages do not depend on adapter packages.
 3. `mado-pilot-runtime` orchestrates contracts and knows no concrete adapter type.
 4. Platform packages implement the capture and input contracts only.
@@ -265,6 +267,13 @@ The rules the table encodes:
    responsibility.
 7. `mado-pilot-capi` depends on `mado-pilot`, never the reverse.
 8. C++ wrapper code consumes only the released C header and library.
+
+The facade's row lists no contract package. That is deliberate — default wiring is
+the facade's only job — but it means every core, capture, input, vision, OCR, or
+asset type the public Rust API exposes must reach callers through
+`mado-pilot-runtime`'s re-exports. Phase 1 will meet this on its first public
+signature. Widening the facade's row is a normative change and needs an ADR, not a
+quiet allowlist edit.
 
 Vision and OCR depend on the capture contract because their public operations
 consume capture-owned frame views. That is a contract-to-contract dependency and
@@ -285,12 +294,35 @@ tooling is invoked, not linked.
 
 ### Enforcement
 
-`tools/dependency-check` reads `cargo metadata`, normalizes the package graph, and
-validates it against the inventory and the allowlist above. It fails with the
-offending package names, paths, and edges, and exits non-zero. The rules live in a
-pure module with synthetic tests, separately from the Cargo process adapter, so
-every allowed adjacency group and every forbidden direction is covered
-deterministically without running Cargo.
+`tools/dependency-check` reads `cargo metadata` and the tracked manifests,
+normalizes the package graph, and fails with the offending package names, paths, and
+edges. The rules live in pure modules with synthetic tests, separately from the
+Cargo process adapter, so every allowed adjacency group, every forbidden direction,
+and every metadata rule is covered deterministically without running Cargo. The
+adapter's own policies — path resolution, dependency source, `publish` decoding, and
+reserved directories — are covered against synthetic Cargo output over temporary
+directories.
+
+It verifies:
+
+- the package inventory — every required package present, at its documented
+  directory, with no unrecognized and no deferred package;
+- that no reserved adapter directory exists, including as a dangling symlink;
+- the dependency allowlist above, for normal, build, and development edges;
+- that a dependency claiming a member's name resolves to that member by path,
+  rather than to a same-named or renamed crate from a registry or Git source. Cargo
+  reports a `package = "..."` rename's real package separately from its
+  manifest-visible alias, and both are checked, because the alias is what Rust
+  source imports;
+- that every path dependency resolves to a workspace member;
+- that every member is non-publishable;
+- the shared metadata contract recorded under [Toolchain and
+  resolution](#toolchain-and-resolution);
+- that every member opts into the workspace lint policy with
+  `[lints] workspace = true`, since a missing opt-in silently disables the lints
+  for that package and `-D warnings` cannot recover them. Only the root `[lints]`
+  table counts: the same text written inside `[package]` sets an unrelated key and
+  leaves the lints disabled.
 
 ```sh
 cargo run --locked --package mado-pilot-dependency-check
@@ -314,15 +346,43 @@ document together, with an architecture decision record.
 checkout selects the tested toolchain. The pin is also the minimum supported Rust
 version: it is a tested claim rather than an assumed one. It may be lowered later
 only with CI evidence on both release targets against the dependency set that
-exists at that time, recorded in an ADR.
+exists at that time, recorded in an ADR. The architecture checker rejects a pin that
+disagrees with `[workspace.package] rust-version`, so the two cannot drift apart.
 
 Shared package fields are declared in `[workspace.package]` and explicitly
-inherited by every member. Lints are declared in `[workspace.lints]` and inherited
+inherited by every member, which the architecture checker verifies against the
+values in the table above. Lints are declared in `[workspace.lints]` and inherited
 with `[lints] workspace = true` in every member.
 
 The workspace keeps one committed lockfile at the repository root. No member has
 its own lockfile, and verification runs with `--locked` so that a check fails
 rather than silently changing resolution.
+
+### Shared metadata contract
+
+The architecture checker validates shared metadata in three layers, so that neither
+one member nor the workspace as a whole can drift unnoticed:
+
+1. The root `[workspace.package]` values are anchored to the contract values in the
+   table above, and `rust-toolchain.toml` must pin the same Rust version. Checking
+   members against each other is not enough on its own: every member can agree on a
+   value that no longer matches the contract.
+2. Every member's resolved `version`, `edition`, `rust-version`, `license`, and
+   `repository` must equal the root declaration, so a member cannot override an
+   inherited field. Because the root values must be present and non-empty, a
+   workspace that drops `rust-version` or `repository` everywhere fails rather than
+   agreeing on nothing.
+3. Every member must inherit those five fields explicitly with
+   `<field>.workspace = true`. Cargo reports resolved values, so only the manifest
+   text distinguishes inheritance from a hard-coded literal that happens to agree
+   today. `publish` is excluded from this layer: the requirement is that every member
+   is non-publishable, which Cargo's resolved value already answers, so a member may
+   state `publish = false` directly or inherit it from `[workspace.package]`.
+
+Changing the version, the minimum supported Rust version, the license, or the
+repository is therefore an intentional, visible edit: the root manifest, the
+`REQUIRED_*` constants in `tools/dependency-check`, `rust-toolchain.toml` where
+applicable, and this document move together in the same reviewed change.
 
 ## Lints and formatting
 
@@ -365,8 +425,15 @@ verification, and reports three stable check names:
 Each job prints `rustc -vV` and the resolved package inventory, so the tested
 environment and any accidental workspace member are observable in the log. Each
 native job asserts its own host triple and fails rather than reporting a
-cross-compiled result as native verification. Runner labels are pinned, so a
-hosted-runner migration is a reviewed change.
+cross-compiled result as native verification.
+
+The native jobs name an operating-system version rather than a `-latest` label, so
+moving to a new OS version is a reviewed change. A label pins only that version;
+GitHub migrates the image behind it on its own schedule, so the label does not
+freeze the image contents. The repository-policy job uses the moving
+`ubuntu-latest` on purpose, because it verifies host-independent policy rather than
+a release target. The pinned toolchain, not the runner label, is what makes compiler
+results reproducible.
 
 Workflows use GitHub-maintained actions pinned to a commit revision, and install
 Rust with the `rustup` already present on hosted runners rather than adding a

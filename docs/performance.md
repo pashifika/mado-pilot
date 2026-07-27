@@ -64,6 +64,8 @@ A budget names one measure. The version-one vocabulary is:
 | `stale_work_ratio` | ratio | Share of scheduled work that was dropped, coalesced, superseded, rejected, queue-expired, or discarded as stale. |
 | `model_load_time` | milliseconds | Time to load and initialize an OCR model, including provider selection. |
 | `startup_time` | milliseconds | Time from process start to a usable session. |
+| `result_correctness` | count | Retained samples whose output disagreed with the correctness oracle. A hard gate, never a tuned ceiling. |
+| `memory_growth` | bytes | Signed change in resident memory across the sampled run, so a decrease is negative. A hard gate: unbounded growth is a defect, not a slow result, and its predicate bounds growth rather than demanding an exact zero. |
 
 A phase that needs a measure outside this list adds it here in the same change,
 with its unit and its meaning.
@@ -81,6 +83,10 @@ and a `predicate` that the benchmark harness evaluates.
 
 A hard budget failure fails the phase. It is never relaxed to accommodate a
 measurement; the behavior is fixed instead.
+
+Name a hard budget after what it gates — `result_correctness` or `memory_growth` —
+rather than after a latency measure. A correctness gate attached to a latency
+measure reads as a latency budget and invites a later phase to tune it.
 
 ### `absolute`
 
