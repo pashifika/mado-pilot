@@ -28,6 +28,28 @@ pub enum VisionFault {
     InvalidMatchScore,
     /// A match result limit was zero, which asks for no results at all.
     InvalidMatchResultLimit,
+    /// No backend in this build can decode the template's content encoding.
+    UnsupportedTemplateEncoding,
+    /// The backend could not compile the template into its own representation.
+    TemplatePreparationFailed,
+    /// A prepared template was submitted to a backend that did not prepare it.
+    ///
+    /// Compiled template state is backend-private, so using it elsewhere is a
+    /// caller mistake caught before any native value is touched.
+    BackendMismatch,
+    /// The backend could not be loaded or initialized.
+    BackendUnavailable,
+    /// The backend failed while executing a request it had accepted.
+    BackendFailed,
+    /// The backend reported a score that is not a finite value inside
+    /// `0.0..=1.0`.
+    ///
+    /// This is a defect in the backend rather than a property of the request:
+    /// the public score range is the contract every backend is normalized to.
+    BackendScoreOutOfRange,
+    /// The backend reported a candidate that does not lie inside the search
+    /// region it was given.
+    BackendCandidateOutsideRegion,
 }
 
 impl VisionFault {
@@ -39,8 +61,16 @@ impl VisionFault {
             | VisionFault::EmptyTemplateContent
             | VisionFault::EmptyTemplateExtent
             | VisionFault::InvalidMatchScore
-            | VisionFault::InvalidMatchResultLimit => Status::InvalidArgument,
-            VisionFault::UnsupportedTemplateSpace => Status::Unsupported,
+            | VisionFault::InvalidMatchResultLimit
+            | VisionFault::BackendMismatch => Status::InvalidArgument,
+            VisionFault::UnsupportedTemplateSpace | VisionFault::UnsupportedTemplateEncoding => {
+                Status::Unsupported
+            }
+            VisionFault::TemplatePreparationFailed
+            | VisionFault::BackendUnavailable
+            | VisionFault::BackendFailed
+            | VisionFault::BackendScoreOutOfRange
+            | VisionFault::BackendCandidateOutsideRegion => Status::VisionFailed,
         }
     }
 
@@ -54,6 +84,17 @@ impl VisionFault {
             }
             VisionFault::InvalidMatchScore => "minimum match score is outside 0.0..=1.0",
             VisionFault::InvalidMatchResultLimit => "match result limit is zero",
+            VisionFault::UnsupportedTemplateEncoding => {
+                "template content encoding is not supported by this backend"
+            }
+            VisionFault::TemplatePreparationFailed => "backend could not prepare the template",
+            VisionFault::BackendMismatch => "prepared template belongs to another backend",
+            VisionFault::BackendUnavailable => "matching backend is not available",
+            VisionFault::BackendFailed => "matching backend failed",
+            VisionFault::BackendScoreOutOfRange => "backend reported a score outside 0.0..=1.0",
+            VisionFault::BackendCandidateOutsideRegion => {
+                "backend reported a candidate outside the searched region"
+            }
         }
     }
 }

@@ -18,14 +18,31 @@
 //! template source is built from plain values, so a caller may supply one from
 //! bytes it read itself and never adopt the asset manifest at all.
 //!
+//! # What a backend does not decide
+//!
+//! A [`MatchBackend`] compiles a template and finds candidates. Region
+//! resolution, score validation, thresholding, canonical ordering, overlap
+//! suppression, and the result limit are applied by [`Matcher`] afterwards, so
+//! two backends cannot disagree about what a match *is*. This is the same
+//! division the capture package makes between an adapter that supplies pixels
+//! and a stream that assigns identity.
+//!
+//! Three outcomes that look like failures are successes with no matches:
+//! nothing scored high enough, the template is larger than the searched region,
+//! and a clip-permitted region that misses the frame entirely.
+//!
 //! # Implementation status
 //!
-//! Phase 1 stage 3, partial. The template source and its matching defaults are
-//! implemented and tested, because the asset package resolves validated
-//! templates into them. Preprocessing descriptors, prepared templates, matching
-//! requests, matching results, and the backend adapter contract are not: stage 4
-//! adds them together with the OpenCV adapter. No template matching is
-//! available. See `docs/architecture.md`.
+//! Phase 1 stage 4, partial. Template sources, prepared-template ownership,
+//! typed requests and options, backend descriptors, immutable
+//! source-correlated results, and the deterministic rules in [`Matcher`] are
+//! implemented and tested against the controlled backend in
+//! `mado-pilot-testkit`.
+//!
+//! No production backend exists yet, so nothing here matches a real image: the
+//! OpenCV CPU adapter and its algorithm fixtures land in the next stage.
+//! Preprocessing descriptors are not implemented and are not reserved as an
+//! empty seam. See `docs/architecture.md`.
 //!
 //! **Every public name here is provisional.** Naming is settled by gate `G-009`
 //! before Phase 1 exits; see `docs/validation-gates.md`.
@@ -57,10 +74,20 @@
 //! # Ok::<(), mado_pilot_vision::VisionFault>(())
 //! ```
 
+pub mod backend;
 pub mod fault;
+pub mod matcher;
+pub mod prepared;
+pub mod request;
+pub mod result;
 pub mod template;
 
+pub use backend::{BackendDescriptor, BackendRequest, Candidate, MatchBackend, TemplatePayload};
 pub use fault::VisionFault;
+pub use matcher::Matcher;
+pub use prepared::{BackendId, PreparedTemplate};
+pub use request::{MatchOptions, MatchRequest, RegionSelection, Suppression};
+pub use result::{Match, MatchResult};
 pub use template::{
     MatchDefaults, TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest,
 };

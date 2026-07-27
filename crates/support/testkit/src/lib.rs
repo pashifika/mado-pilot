@@ -21,10 +21,16 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 2. Capture doubles and the capture contract suite exist. Input,
-//! vision, and OCR doubles and target lifecycle scripts do not.
+//! Phase 1 stage 4. Capture and vision doubles, a manual clock, and the capture
+//! and vision contract suites exist. Input and OCR doubles and target lifecycle
+//! scripts do not.
 
 pub mod capture_contract;
+pub mod clock;
 pub mod controlled_capture;
+pub mod controlled_matcher;
+pub mod vision_contract;
 
+pub use clock::ManualClock;
 pub use controlled_capture::ControlledCapture;
+pub use controlled_matcher::{Behavior, ControlledMatcher};

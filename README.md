@@ -30,7 +30,9 @@ header. Adding a package here is not a claim that its behavior exists.
 | Identities, geometry, coordinate transforms, deadlines, cancellation, statuses | Implemented |
 | Capture contracts, immutable frames, CPU mapping, deterministic replay | Implemented |
 | Asset manifests, directory/memory/archive loading, archive safety ceilings | Implemented |
-| Native capture, matching, OCR, watchers, input | Not implemented |
+| Template-matching contracts, ordering, suppression, source correlation | Implemented |
+| Native capture, OCR, watchers, input | Not implemented |
+| Template matching against a real image | Not implemented; no backend yet |
 | Public Rust operations, C ABI, C header, C++ wrapper | Not implemented |
 | Numeric performance budgets, release packaging | Not established |
 

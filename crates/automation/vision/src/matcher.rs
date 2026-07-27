@@ -1,0 +1,323 @@
+//! The rules every backend's output is put through.
+//!
+//! Region resolution, thresholding, score validation, canonical ordering,
+//! overlap suppression, and the result limit happen here, once, for every
+//! backend. Two adapters cannot disagree about what a match *is* if neither of
+//! them decides it — the same reason the capture package assigns frame identity
+//! rather than letting each adapter do it.
+//!
+//! Three outcomes that look like failures are deliberately successes with no
+//! matches: nothing scored high enough, the template is larger than the region,
+//! and a clip-permitted region that misses the frame entirely. A caller asked a
+//! well-formed question and the answer is "not there".
+
+use std::sync::Arc;
+
+use mado_pilot_capture::{Frame, FrameView};
+use mado_pilot_core::{
+    ClipPolicy, Error, GeometryFault, Operation, OperationContext, PixelExtent, PixelRect, Result,
+    TransformSnapshot,
+};
+
+use crate::backend::{BackendRequest, Candidate, MatchBackend, candidate_bounds};
+use crate::fault::VisionFault;
+use crate::prepared::PreparedTemplate;
+use crate::request::{MatchOptions, MatchRequest, RegionSelection, Suppression};
+use crate::result::{Match, MatchResult};
+use crate::template::TemplateSource;
+
+/// Applies the public matching rules over one backend.
+///
+/// Cloning shares the backend. A matcher holds no per-request state, so one can
+/// serve any number of concurrent searches.
+#[derive(Debug, Clone)]
+pub struct Matcher {
+    backend: Arc<dyn MatchBackend>,
+}
+
+impl Matcher {
+    /// Builds a matcher over `backend`.
+    #[must_use]
+    pub fn new(backend: Arc<dyn MatchBackend>) -> Self {
+        Self { backend }
+    }
+
+    /// Returns the backend's public identity.
+    #[must_use]
+    pub fn descriptor(&self) -> crate::backend::BackendDescriptor {
+        self.backend.descriptor()
+    }
+
+    /// Compiles a template for this matcher's backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's typed preparation failure, or the operation's
+    /// terminal outcome when it is interrupted.
+    pub fn prepare(
+        &self,
+        source: &TemplateSource,
+        operation: &OperationContext,
+    ) -> Result<PreparedTemplate> {
+        Operation::admit(operation)?;
+        self.backend.prepare(source, operation)
+    }
+
+    /// Searches one exact frame for one prepared template.
+    ///
+    /// The operation context is checked before admission, after mapping, after
+    /// the backend returns, and immediately before the result commits, so a
+    /// backend that finished after cancellation won cannot produce an
+    /// observable result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VisionFault::BackendMismatch`] for a template another backend
+    /// prepared, a geometry error for a region that cannot be resolved under
+    /// its policy, the backend's typed failure, or the operation's terminal
+    /// outcome.
+    pub fn find(
+        &self,
+        request: MatchRequest<'_>,
+        operation: &OperationContext,
+    ) -> Result<MatchResult> {
+        let mut attempt = Operation::admit(operation)?;
+
+        let descriptor = self.backend.descriptor();
+        if request.template().backend().as_str() != descriptor.id() {
+            return Err(VisionFault::BackendMismatch.into());
+        }
+
+        let frame = request.frame();
+        let transform = *frame.transform();
+        let template = request.template();
+
+        let Some(region) = resolve_region(&transform, request.selection())? else {
+            // A clip-permitted region that misses the frame entirely searched a
+            // well-formed nothing.
+            return commit(
+                attempt,
+                frame,
+                &transform,
+                empty_region()?,
+                &descriptor,
+                Vec::new(),
+            );
+        };
+
+        if region.is_empty() || !fits(template.extent(), region) {
+            return commit(attempt, frame, &transform, region, &descriptor, Vec::new());
+        }
+
+        let view = FrameView::new(frame.clone(), region)?;
+        let pixels = view.map(descriptor.format(), operation)?;
+        attempt.checkpoint()?;
+
+        let candidates = self.backend.find(
+            &BackendRequest {
+                template,
+                pixels: &pixels,
+                region,
+                options: request.options(),
+            },
+            operation,
+        )?;
+        attempt.checkpoint()?;
+
+        let matches = normalize(candidates, template, region, request.options())?;
+        commit(attempt, frame, &transform, region, &descriptor, matches)
+    }
+}
+
+/// Resolves a selection into the region to search.
+///
+/// `Ok(None)` means a clip-permitted region that does not overlap the frame at
+/// all, which is a successful search of nothing rather than a bad request. The
+/// same miss under a rejecting policy stays an error, because a caller that
+/// said "reject" asked to be told.
+fn resolve_region(
+    transform: &TransformSnapshot,
+    selection: RegionSelection,
+) -> Result<Option<PixelRect>> {
+    match selection {
+        RegionSelection::FullFrame => Ok(Some(transform.frame_bounds()?)),
+        RegionSelection::Region { rect, policy } => {
+            match transform.resolve_capture_pixels(rect, policy) {
+                Ok(region) => Ok(Some(region)),
+                Err(GeometryFault::OutsideExtent) if policy == ClipPolicy::Clip => Ok(None),
+                Err(fault) => Err(fault.into()),
+            }
+        }
+    }
+}
+
+/// A degenerate region at the frame's origin, for a search that had nothing to
+/// look at. A result must still report *some* searched region, and an empty one
+/// at the origin says "nothing" without implying a location.
+fn empty_region() -> Result<PixelRect> {
+    PixelRect::new(0, 0, 0, 0).map_err(Error::from)
+}
+
+fn fits(template: PixelExtent, region: PixelRect) -> bool {
+    template.width() <= region.width() && template.height() <= region.height()
+}
+
+/// Turns raw candidates into the canonical public collection.
+fn normalize(
+    candidates: Vec<Candidate>,
+    template: &PreparedTemplate,
+    region: PixelRect,
+    options: MatchOptions,
+) -> Result<Vec<Match>> {
+    let mut kept: Vec<Match> = Vec::with_capacity(candidates.len());
+
+    for candidate in candidates {
+        let score = candidate.score();
+        if !score.is_finite() || !(0.0..=1.0).contains(&score) {
+            return Err(VisionFault::BackendScoreOutOfRange.into());
+        }
+        let bounds = candidate_bounds(region, candidate, template.extent())
+            .ok_or(VisionFault::BackendCandidateOutsideRegion)?;
+        if score < options.min_score() {
+            continue;
+        }
+        kept.push(Match::new(template.id().clone(), bounds, score));
+    }
+
+    kept.sort_by(Match::canonical_order);
+
+    if options.suppression() == Suppression::DropOverlapping {
+        let mut survivors: Vec<Match> = Vec::with_capacity(kept.len());
+        for found in kept {
+            let overlaps = survivors.iter().any(|survivor| {
+                survivor
+                    .bounds()
+                    .intersect(found.bounds())
+                    .is_some_and(|shared| !shared.is_empty())
+            });
+            if !overlaps {
+                survivors.push(found);
+            }
+        }
+        kept = survivors;
+    }
+
+    kept.truncate(usize::try_from(options.max_results()).unwrap_or(usize::MAX));
+    Ok(kept)
+}
+
+fn commit(
+    attempt: Operation<'_>,
+    frame: &Frame,
+    transform: &TransformSnapshot,
+    searched: PixelRect,
+    descriptor: &crate::backend::BackendDescriptor,
+    matches: Vec<Match>,
+) -> Result<MatchResult> {
+    let result = MatchResult::new(
+        frame.stamp(),
+        *transform,
+        searched,
+        descriptor.clone(),
+        matches,
+    );
+    attempt.commit(result).map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use mado_pilot_core::{ClipPolicy, CoordinateSpace, PixelExtent, PixelRect, Rect};
+
+    use super::{fits, resolve_region};
+    use crate::request::RegionSelection;
+    use mado_pilot_core::{GeometryRevision, TransformSnapshot};
+
+    fn snapshot() -> TransformSnapshot {
+        TransformSnapshot::frame_only(GeometryRevision::FIRST, PixelExtent::new(200, 100))
+    }
+
+    fn region(space: CoordinateSpace, values: (f64, f64, f64, f64)) -> Rect {
+        Rect::new(space, values.0, values.1, values.2, values.3).expect("valid")
+    }
+
+    #[test]
+    fn a_full_frame_selection_is_the_whole_half_open_extent() {
+        let resolved = resolve_region(&snapshot(), RegionSelection::FullFrame)
+            .expect("resolvable")
+            .expect("present");
+
+        assert_eq!(resolved, PixelRect::new(0, 0, 200, 100).expect("valid"));
+    }
+
+    #[test]
+    fn an_in_bounds_region_resolves_to_itself() {
+        let selection = RegionSelection::Region {
+            rect: region(CoordinateSpace::CapturePixels, (10.0, 20.0, 60.0, 70.0)),
+            policy: ClipPolicy::Reject,
+        };
+        let resolved = resolve_region(&snapshot(), selection)
+            .expect("resolvable")
+            .expect("present");
+
+        assert_eq!(resolved, PixelRect::new(10, 20, 60, 70).expect("valid"));
+    }
+
+    #[test]
+    fn a_normalized_region_resolves_through_the_frames_own_snapshot() {
+        let selection = RegionSelection::Region {
+            rect: region(CoordinateSpace::FrameNormalized, (0.0, 0.0, 0.5, 0.5)),
+            policy: ClipPolicy::Reject,
+        };
+        let resolved = resolve_region(&snapshot(), selection)
+            .expect("resolvable")
+            .expect("present");
+
+        assert_eq!(resolved, PixelRect::new(0, 0, 100, 50).expect("valid"));
+    }
+
+    #[test]
+    fn a_partly_outside_region_clips_when_the_policy_permits_it() {
+        let selection = RegionSelection::Region {
+            rect: region(CoordinateSpace::CapturePixels, (150.0, 50.0, 400.0, 300.0)),
+            policy: ClipPolicy::Clip,
+        };
+        let resolved = resolve_region(&snapshot(), selection)
+            .expect("resolvable")
+            .expect("present");
+
+        assert_eq!(resolved, PixelRect::new(150, 50, 200, 100).expect("valid"));
+    }
+
+    #[test]
+    fn a_region_that_misses_entirely_is_nothing_to_search_rather_than_a_bad_request() {
+        let selection = RegionSelection::Region {
+            rect: region(CoordinateSpace::CapturePixels, (500.0, 500.0, 600.0, 600.0)),
+            policy: ClipPolicy::Clip,
+        };
+
+        assert_eq!(
+            resolve_region(&snapshot(), selection).expect("resolvable"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_same_miss_under_a_rejecting_policy_stays_an_error() {
+        let selection = RegionSelection::Region {
+            rect: region(CoordinateSpace::CapturePixels, (500.0, 500.0, 600.0, 600.0)),
+            policy: ClipPolicy::Reject,
+        };
+
+        assert!(resolve_region(&snapshot(), selection).is_err());
+    }
+
+    #[test]
+    fn a_template_larger_than_the_region_does_not_fit() {
+        let region = PixelRect::new(0, 0, 20, 20).expect("valid");
+
+        assert!(fits(PixelExtent::new(20, 20), region));
+        assert!(fits(PixelExtent::new(1, 1), region));
+        assert!(!fits(PixelExtent::new(21, 20), region));
+        assert!(!fits(PixelExtent::new(20, 21), region));
+    }
+}

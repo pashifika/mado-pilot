@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 mado-pilot-core = { path = "../../automation/core" }
 mado-pilot-capture = { path = "../../automation/capture" }
+mado-pilot-vision = { path = "../../automation/vision" }
 
 [lints]
 workspace = true
