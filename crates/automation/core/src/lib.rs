@@ -1,21 +1,82 @@
 //! Platform-neutral MadoPilot core contracts.
 //!
-//! # Planned responsibility
+//! # Responsibility
 //!
-//! This package owns the vocabulary that every other MadoPilot package shares:
-//! target and stream identities, geometry and coordinate spaces, monotonic time,
-//! operation deadlines and cancellation, capability descriptions, and the shared
-//! error and status types.
+//! This package owns the vocabulary every other MadoPilot package shares: target
+//! and stream identities, frame identity and ordering, coordinate spaces and
+//! validated geometry, frame-time coordinate transforms, the monotonic clock
+//! domain, operation deadlines and cancellation, and the shared status and error
+//! types.
+//!
+//! The rules that make those values trustworthy live here once rather than in
+//! every adapter. A capture adapter does not decide how a frame sequence
+//! advances, and a vision backend does not decide how a fractional region rounds
+//! to pixels; both call into this package, so two adapters cannot disagree.
 //!
 //! # Allowed seam
 //!
 //! This package depends on no other MadoPilot package, and on no Windows, macOS,
 //! OpenCV, ONNX Runtime, GUI, or async-executor type. Platform-native handles are
-//! never added here.
+//! never added here. It has no external dependency at all.
 //!
 //! # Implementation status
 //!
-//! Not implemented. This package currently establishes the repository seam only
-//! and exposes no operation. `docs/architecture.md` records the Phase 0 baseline,
-//! and `docs/validation-gates.md` records the decisions that must be resolved
-//! before the contracts in this package are frozen.
+//! Phase 1 stage 1. The identity, geometry, transform, time, operation-context,
+//! and status contracts below are implemented and tested. Capture, mapping,
+//! assets, matching, input, and OCR are not: this package describes what they
+//! will agree on, not behavior that exists yet.
+//!
+//! **Every public name here is provisional.** Naming is settled by gate `G-009`
+//! before Phase 1 exits, after the Rust example has exercised these types; see
+//! `docs/validation-gates.md`.
+//!
+//! # Where to start
+//!
+//! ```
+//! use std::time::Duration;
+//!
+//! use mado_pilot_core::geometry::{ClipPolicy, CoordinateSpace, PixelExtent, Rect};
+//! use mado_pilot_core::identity::{GeometryRevision, IdentityIssuer, StreamCursor};
+//! use mado_pilot_core::operation::{Operation, OperationContext};
+//! use mado_pilot_core::transform::TransformSnapshot;
+//!
+//! // An engine issues identities that only it accepts.
+//! let issuer = IdentityIssuer::new();
+//! let mut cursor = StreamCursor::new(issuer.issue_stream()?);
+//!
+//! // Each published frame gets a complete identity.
+//! let stamp = cursor.publish(GeometryRevision::FIRST)?;
+//! assert_eq!(stamp.sequence().value(), 0);
+//!
+//! // Geometry is resolved against the frame's own transform snapshot.
+//! let snapshot = TransformSnapshot::frame_only(stamp.geometry(), PixelExtent::new(800, 600));
+//! let region = Rect::new(CoordinateSpace::FrameNormalized, 0.0, 0.0, 0.5, 0.5)?;
+//! let pixels = snapshot.resolve_capture_pixels(region, ClipPolicy::Reject)?;
+//! assert_eq!(pixels.extent(), PixelExtent::new(400, 300));
+//!
+//! // Blocking work carries a deadline and commits exactly one outcome.
+//! let context = OperationContext::new().with_timeout(Duration::from_millis(500))?;
+//! let operation = Operation::admit(&context).expect("not yet expired");
+//! let value = operation.commit(pixels).expect("committed in time");
+//! assert_eq!(value, pixels);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+
+pub mod geometry;
+pub mod identity;
+pub mod operation;
+pub mod status;
+pub mod time;
+pub mod transform;
+
+pub use geometry::{
+    ClipPolicy, CoordinateSpace, GeometryFault, PixelExtent, PixelRect, Point, Rect,
+};
+pub use identity::{
+    EngineId, FrameOrder, FrameSequence, FrameStamp, GeometryRevision, IdentityFault,
+    IdentityIssuer, ProviderId, StreamCursor, StreamEpoch, StreamId, TargetId,
+};
+pub use operation::{CancellationToken, Interruption, Operation, OperationContext};
+pub use status::{Error, Result, Status};
+pub use time::{Clock, MonotonicInstant, SystemClock};
+pub use transform::{Scale, TargetPlacement, TransformSnapshot};

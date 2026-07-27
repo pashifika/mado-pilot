@@ -8,23 +8,27 @@ conditions, inject input through explicit platform capabilities, and report
 structured diagnostics — without owning a GUI, tray, overlay, editor, updater,
 scheduler, or scripting language of its own.
 
-## Status: repository baseline, no runtime behavior
+## Status: shared contracts only, no runtime behavior
 
-**MadoPilot is not usable yet.** This repository currently contains the Phase 0
-baseline: the Cargo workspace, package boundaries and their enforcement, the
-toolchain pin, quality and dependency policy, the architecture baseline, and
-continuous integration for both release targets.
+**MadoPilot is not usable yet.** On top of the repository baseline — the Cargo
+workspace, package boundaries and their enforcement, the toolchain pin, quality
+and dependency policy, the architecture baseline, and continuous integration for
+both release targets — it now contains the platform-neutral vocabulary the rest
+of the system will be built from: identities and frame stamps, coordinate spaces
+and validated geometry, frame-time transforms, operation deadlines and
+cancellation, and the shared status and error types.
 
-Nothing captures, matches, recognizes, waits, or injects input. The public Rust
-facade and the C ABI package exist as seams and expose no operation, no exported
-symbol, and no generated header. Adding a package here is not a claim that its
-behavior exists.
+That is a foundation, not a feature. Nothing captures, matches, recognizes,
+waits, or injects input. The public Rust facade and the C ABI package exist as
+seams and expose no operation, no exported symbol, and no generated header.
+Adding a package here is not a claim that its behavior exists.
 
 | Area | Status |
 |---|---|
 | Workspace, package boundaries, dependency enforcement | Implemented |
 | Toolchain pin, lint, formatting, and dependency policy | Implemented |
 | Architecture baseline, validation gates, benchmark format, ADR process | Implemented |
+| Identities, geometry, coordinate transforms, deadlines, cancellation, statuses | Implemented |
 | Capture, mapping, matching, OCR, watchers, input, assets | Not implemented |
 | Public Rust operations, C ABI, C header, C++ wrapper | Not implemented |
 | Numeric performance budgets, release packaging | Not established |
