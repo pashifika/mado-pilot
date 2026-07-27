@@ -13,6 +13,17 @@ name = "mado-pilot"
 version = "0.1.0"
 
 [[package]]
+name = "mado-pilot-adapter-replay"
+version = "0.1.0"
+dependencies = [
+ "mado-pilot-capture",
+ "mado-pilot-core",
+ "mado-pilot-testkit",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mado-pilot-assets"
 version = "0.1.0"
 
@@ -31,6 +42,9 @@ version = "0.1.0"
 [[package]]
 name = "mado-pilot-capture"
 version = "0.1.0"
+dependencies = [
+ "mado-pilot-core",
+]
 
 [[package]]
 name = "mado-pilot-core"
@@ -67,6 +81,10 @@ version = "0.1.0"
 [[package]]
 name = "mado-pilot-testkit"
 version = "0.1.0"
+dependencies = [
+ "mado-pilot-capture",
+ "mado-pilot-core",
+]
 
 [[package]]
 name = "mado-pilot-vision"

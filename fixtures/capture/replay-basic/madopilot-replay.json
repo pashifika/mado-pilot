@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "targets": [
+    {
+      "name": "panel",
+      "frames": [
+        {
+          "pixels": "frames/0000-8x6.bin",
+          "width": 8,
+          "height": 6,
+          "format": "rgba8",
+          "captured_at_nanos": 0,
+          "continuity": "continuous"
+        },
+        {
+          "pixels": "frames/0001-8x6.bin",
+          "width": 8,
+          "height": 6,
+          "format": "rgba8",
+          "captured_at_nanos": 16000000,
+          "continuity": "continuous"
+        },
+        {
+          "pixels": "frames/0002-12x6.bin",
+          "width": 12,
+          "height": 6,
+          "format": "rgba8",
+          "captured_at_nanos": 32000000,
+          "continuity": "discontinuous"
+        }
+      ]
+    },
+    {
+      "name": "placed",
+      "frames": [
+        {
+          "pixels": "frames/0100-4x4.bin",
+          "width": 4,
+          "height": 4,
+          "format": "rgba8",
+          "captured_at_nanos": 0,
+          "continuity": "continuous",
+          "placement": {
+            "desktop_origin": [
+              100.0,
+              50.0
+            ],
+            "logical_size": [
+              2.0,
+              2.0
+            ],
+            "scale": [
+              2.0,
+              2.0
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

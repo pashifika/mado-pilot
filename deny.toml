@@ -55,7 +55,14 @@ ignore = true
 # duplicate is often outside the repository's control. The documented resolution
 # is to record why the duplicate is accepted or to unify the requirement.
 multiple-versions = "warn"
+# A wildcard version requirement on a registry crate is a supply-chain hazard:
+# it accepts whatever is published next. An intra-workspace path dependency is
+# not that — it resolves to a tracked directory, and the architecture checker
+# already rejects any path dependency that does not resolve to a member. Members
+# also inherit their version from `[workspace.package]`, so writing a literal
+# requirement on each edge would be a drift hazard rather than a safeguard.
 wildcards = "deny"
+allow-wildcard-paths = true
 allow = []
 deny = []
 skip = []

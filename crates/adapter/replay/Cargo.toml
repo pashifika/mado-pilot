@@ -1,6 +1,6 @@
 [package]
-name = "mado-pilot-testkit"
-description = "MadoPilot controlled capture and backend doubles, synthetic clock, and contract-suite support."
+name = "mado-pilot-adapter-replay"
+description = "MadoPilot deterministic replay capture adapter for file and memory sources."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,11 @@ publish = false
 [dependencies]
 mado-pilot-core = { path = "../../automation/core" }
 mado-pilot-capture = { path = "../../automation/capture" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+mado-pilot-testkit = { path = "../../support/testkit" }
 
 [lints]
 workspace = true

@@ -92,6 +92,8 @@ mado-pilot/
 │   │   ├── ocr/
 │   │   ├── runtime/
 │   │   └── assets/
+│   ├── adapter/                # platform-neutral capture and input adapters
+│   │   └── replay/
 │   ├── platform/               # platform capture and input adapters
 │   │   ├── windows/
 │   │   └── macos/
@@ -134,7 +136,7 @@ the data behind it are never separated.
 
 ## Package inventory and responsibilities
 
-The workspace contains exactly fourteen product packages and one maintenance
+The workspace contains exactly fifteen product packages and one maintenance
 package. Directory names are concise; Cargo package names carry the product
 prefix.
 
@@ -148,12 +150,13 @@ prefix.
 | `crates/automation/ocr` | `mado-pilot-ocr` | OCR source, model, request, result, and text-normalization contracts |
 | `crates/automation/runtime` | `mado-pilot-runtime` | Session, scheduling, watcher, cancellation, coalescing, and diagnostic orchestration |
 | `crates/automation/assets` | `mado-pilot-assets` | Versioned manifest, validation, deterministic loading, and source-resolution contracts |
+| `crates/adapter/replay` | `mado-pilot-adapter-replay` | Deterministic replay capture from file and memory sources |
 | `crates/platform/windows` | `mado-pilot-platform-windows` | Planned Windows target, capture, input, permission, and capability adapter |
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Planned macOS target, capture, input, permission, and capability adapter |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | Planned OpenCV template-matching and CPU-preprocessing adapter |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Planned ONNX Runtime OCR and execution-provider adapter |
 | `crates/bindings/capi` | `mado-pilot-capi` | Planned separately versioned C ABI and ownership boundary |
-| `crates/support/testkit` | `mado-pilot-testkit` | Replay, fake input, synthetic clock, backend double, and contract-fixture support |
+| `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture and backend doubles, fake input, synthetic clock, and contract-fixture support |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
 
 Every package in this table is `publish = false`. Publication is enabled for an
@@ -189,6 +192,7 @@ graph TD
     OCR[mado-pilot-ocr]
     Assets[mado-pilot-assets]
     Runtime[mado-pilot-runtime]
+    Replay[mado-pilot-adapter-replay]
     Win[mado-pilot-platform-windows]
     Mac[mado-pilot-platform-macos]
     OpenCV[mado-pilot-backend-opencv]
@@ -214,6 +218,8 @@ graph TD
     Runtime --> OCR
     Runtime --> Assets
 
+    Replay --> Core
+    Replay --> Capture
     Win --> Core
     Win --> Capture
     Win --> Input
@@ -227,6 +233,7 @@ graph TD
     ONNX --> OCR
 
     Facade --> Runtime
+    Facade --> Replay
     Facade --> Win
     Facade --> Mac
     Facade --> OpenCV
@@ -256,11 +263,12 @@ appear in this table, and an omitted future edge is always valid.
 | `mado-pilot-ocr` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-vision` |
 | `mado-pilot-assets` | `mado-pilot-core`, `mado-pilot-vision`, `mado-pilot-ocr` |
 | `mado-pilot-runtime` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-input`, `mado-pilot-vision`, `mado-pilot-ocr`, `mado-pilot-assets` |
+| `mado-pilot-adapter-replay` | `mado-pilot-core`, `mado-pilot-capture` |
 | `mado-pilot-platform-windows` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-input` |
 | `mado-pilot-platform-macos` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-input` |
 | `mado-pilot-backend-opencv` | `mado-pilot-core`, `mado-pilot-vision` |
 | `mado-pilot-backend-onnx` | `mado-pilot-core`, `mado-pilot-vision`, `mado-pilot-ocr` |
-| `mado-pilot` | `mado-pilot-runtime`, `mado-pilot-platform-windows`, `mado-pilot-platform-macos`, `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` |
+| `mado-pilot` | `mado-pilot-runtime`, `mado-pilot-adapter-replay`, `mado-pilot-platform-windows`, `mado-pilot-platform-macos`, `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` |
 | `mado-pilot-capi` | `mado-pilot` |
 | `mado-pilot-testkit` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-input`, `mado-pilot-vision`, `mado-pilot-ocr` |
 | `mado-pilot-dependency-check` | none |
@@ -274,7 +282,10 @@ The rules the table encodes:
    per-package external allowlist is set by the change that adds the first one.
 2. Contract packages do not depend on adapter packages.
 3. `mado-pilot-runtime` orchestrates contracts and knows no concrete adapter type.
-4. Platform packages implement the capture and input contracts only.
+4. Adapter and platform packages implement the capture and input contracts only.
+   `crates/adapter` holds adapters that are platform-neutral — the same source
+   behaves identically on both release targets — while `crates/platform` holds
+   the ones whose behavior is the operating system's.
 5. Backend packages implement the vision or OCR contracts only.
 6. Only `mado-pilot` names a concrete adapter, because default wiring is its
    responsibility.
@@ -563,8 +574,10 @@ implemented below describe behavior a caller can use today.
 | Coordinate spaces, validated geometry, and frame-time transforms | Implemented in `mado-pilot-core` |
 | Monotonic clock domain, operation deadlines, cancellation, terminal-outcome arbitration | Implemented in `mado-pilot-core` |
 | Public statuses and structured errors | Implemented in `mado-pilot-core` |
-| Window and display discovery | Not implemented |
-| Capture, frames, coordinate mapping | Not implemented |
+| Native window and display discovery | Not implemented |
+| Capture contracts, immutable frames, frame views, CPU mapping | Implemented in `mado-pilot-capture` |
+| Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
+| Native window and display capture | Not implemented |
 | Template matching | Not implemented |
 | OCR and model loading | Not implemented |
 | Watchers, scheduling, diagnostics | Not implemented |

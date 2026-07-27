@@ -21,6 +21,8 @@ pub const OCR: &str = "mado-pilot-ocr";
 pub const ASSETS: &str = "mado-pilot-assets";
 /// Cargo package name of the runtime orchestration package.
 pub const RUNTIME: &str = "mado-pilot-runtime";
+/// Cargo package name of the deterministic replay capture adapter package.
+pub const ADAPTER_REPLAY: &str = "mado-pilot-adapter-replay";
 /// Cargo package name of the Windows platform adapter package.
 pub const PLATFORM_WINDOWS: &str = "mado-pilot-platform-windows";
 /// Cargo package name of the macOS platform adapter package.
@@ -45,6 +47,8 @@ pub enum PackageRole {
     Facade,
     /// Platform-neutral contract or orchestration package.
     Automation,
+    /// Platform-neutral capture or input adapter.
+    Adapter,
     /// Platform capture and input adapter.
     Platform,
     /// Vision or OCR backend adapter.
@@ -66,7 +70,12 @@ impl PackageRole {
     pub const fn is_product(self) -> bool {
         matches!(
             self,
-            Self::Facade | Self::Automation | Self::Platform | Self::Backend | Self::Binding
+            Self::Facade
+                | Self::Automation
+                | Self::Adapter
+                | Self::Platform
+                | Self::Backend
+                | Self::Binding
         )
     }
 }
@@ -76,6 +85,7 @@ impl fmt::Display for PackageRole {
         let text = match self {
             Self::Facade => "facade",
             Self::Automation => "automation",
+            Self::Adapter => "adapter",
             Self::Platform => "platform",
             Self::Backend => "backend",
             Self::Binding => "binding",
@@ -108,9 +118,9 @@ pub struct DeferredPackage {
     pub reason: &'static str,
 }
 
-/// The exact Phase 0 workspace inventory.
+/// The exact workspace inventory.
 ///
-/// The fourteen product packages plus this maintenance package are the complete
+/// The fifteen product packages plus this maintenance package are the complete
 /// set of workspace members. Adding a member requires updating this table and the
 /// architecture baseline in the same change.
 pub const REQUIRED_PACKAGES: &[RequiredPackage] = &[
@@ -153,6 +163,11 @@ pub const REQUIRED_PACKAGES: &[RequiredPackage] = &[
         name: ASSETS,
         directory: "crates/automation/assets",
         role: PackageRole::Automation,
+    },
+    RequiredPackage {
+        name: ADAPTER_REPLAY,
+        directory: "crates/adapter/replay",
+        role: PackageRole::Adapter,
     },
     RequiredPackage {
         name: PLATFORM_WINDOWS,
@@ -223,6 +238,7 @@ pub const ALLOWED_DEPENDENCIES: &[(&str, &[&str])] = &[
     (OCR, &[CORE, CAPTURE, VISION]),
     (ASSETS, &[CORE, VISION, OCR]),
     (RUNTIME, &[CORE, CAPTURE, INPUT, VISION, OCR, ASSETS]),
+    (ADAPTER_REPLAY, &[CORE, CAPTURE]),
     (PLATFORM_WINDOWS, &[CORE, CAPTURE, INPUT]),
     (PLATFORM_MACOS, &[CORE, CAPTURE, INPUT]),
     (BACKEND_OPENCV, &[CORE, VISION]),
@@ -231,6 +247,7 @@ pub const ALLOWED_DEPENDENCIES: &[(&str, &[&str])] = &[
         FACADE,
         &[
             RUNTIME,
+            ADAPTER_REPLAY,
             PLATFORM_WINDOWS,
             PLATFORM_MACOS,
             BACKEND_OPENCV,
