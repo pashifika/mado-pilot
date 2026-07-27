@@ -56,6 +56,20 @@ committed lockfile. An advisory affecting a resolved dependency, and a yanked
 resolved version, are both actionable: the fix is to upgrade, to replace the
 dependency, or to record a documented exception.
 
+## Wildcard version requirements
+
+A wildcard version requirement on a registry crate accepts whatever is published
+next, so `cargo deny check bans` rejects it.
+
+Intra-workspace path dependencies are exempt, through
+`allow-wildcard-paths` in `deny.toml`. They are not a supply-chain surface: each
+one resolves to a tracked directory in this repository, and the architecture
+checker independently rejects any path dependency that does not resolve to a
+workspace member, or that carries a member's name while resolving from a registry
+or Git source. Members inherit their version from `[workspace.package]`, so
+writing a literal requirement on every internal edge would create a drift hazard
+without adding a check.
+
 ## Duplicate versions
 
 Duplicate versions are reported as a review signal rather than a hard failure,
@@ -87,6 +101,18 @@ behavior being implemented in the same change, is maintained, builds on both
 release targets, carries an approved license, and comes from crates.io. Prefer the
 standard library and existing workspace capabilities first; prefer a smaller
 dependency surface over a framework that pulls in unrelated features.
+
+## Product dependencies in use
+
+| Crate | Used by | Why | License |
+|---|---|---|---|
+| `serde`, `serde_json` | `mado-pilot-adapter-replay` | Reads the replay sequence manifest. JSON is already the manifest serialization chosen for asset packages in [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md), so a reader meets one format rather than two, and both crates were already resolved in the committed lockfile for the maintenance tool | MIT OR Apache-2.0 |
+
+A replay manifest is caller-supplied data. It is parsed into a typed schema that
+rejects unknown fields, and the pixel paths it declares are validated the same
+way an asset package's entry names are — relative, no traversal, no root, no
+drive prefix, no symbolic link — because a source that could name any path would
+be a file-read primitive wearing a capture adapter's clothes.
 
 ## Reviewed decisions not yet in the lockfile
 

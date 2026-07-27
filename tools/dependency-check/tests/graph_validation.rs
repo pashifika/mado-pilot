@@ -4,8 +4,8 @@
 //! supplied package inventory and edges. Cargo is never invoked.
 
 use mado_pilot_dependency_check::graph::{
-    ALLOWED_DEPENDENCIES, ASSETS, BACKEND_ONNX, BACKEND_OPENCV, CAPI, CAPTURE, CORE,
-    DEPENDENCY_CHECK, FACADE, INPUT, OCR, ObservedEdge, ObservedPackage, PLATFORM_MACOS,
+    ADAPTER_REPLAY, ALLOWED_DEPENDENCIES, ASSETS, BACKEND_ONNX, BACKEND_OPENCV, CAPI, CAPTURE,
+    CORE, DEPENDENCY_CHECK, FACADE, INPUT, OCR, ObservedEdge, ObservedPackage, PLATFORM_MACOS,
     PLATFORM_WINDOWS, PackageGraph, REQUIRED_PACKAGES, RUNTIME, TESTKIT, VISION, Violation,
     validate,
 };
@@ -401,4 +401,70 @@ fn diagnostics_name_the_packages_and_the_allowed_destinations() {
     assert!(message.contains(RUNTIME), "{message}");
     assert!(message.contains(BACKEND_ONNX), "{message}");
     assert!(message.contains(ASSETS), "{message}");
+}
+
+#[test]
+fn the_replay_adapter_may_consume_only_the_contracts_it_implements() {
+    let edges = vec![
+        ObservedEdge::production(ADAPTER_REPLAY, CORE),
+        ObservedEdge::production(ADAPTER_REPLAY, CAPTURE),
+    ];
+
+    assert_eq!(validate(&graph_with(edges)), Vec::new());
+}
+
+#[test]
+fn the_replay_adapter_may_not_reach_past_the_capture_contract() {
+    // Replay implements capture. Reaching input, vision, orchestration, or the
+    // facade would make it something else, and would put an adapter above the
+    // contracts it is supposed to serve.
+    for destination in [INPUT, VISION, OCR, ASSETS, RUNTIME, FACADE, CAPI] {
+        let violations = validate(&graph_with(vec![ObservedEdge::production(
+            ADAPTER_REPLAY,
+            destination,
+        )]));
+        assert_eq!(
+            forbidden_edges(&violations),
+            vec![(ADAPTER_REPLAY, destination)],
+            "the replay adapter must not depend on {destination}"
+        );
+    }
+}
+
+#[test]
+fn only_the_facade_may_name_the_replay_adapter() {
+    assert_eq!(
+        validate(&graph_with(vec![ObservedEdge::production(
+            FACADE,
+            ADAPTER_REPLAY,
+        )])),
+        Vec::new(),
+        "default wiring is the facade's job"
+    );
+
+    for source in [RUNTIME, CAPTURE, VISION, ASSETS, CAPI, TESTKIT] {
+        let violations = validate(&graph_with(vec![ObservedEdge::production(
+            source,
+            ADAPTER_REPLAY,
+        )]));
+        assert_eq!(
+            forbidden_edges(&violations),
+            vec![(source, ADAPTER_REPLAY)],
+            "{source} must not know a concrete capture adapter"
+        );
+    }
+}
+
+#[test]
+fn a_contract_package_may_not_depend_on_the_replay_adapter() {
+    let violations = validate(&graph_with(vec![ObservedEdge::production(
+        CAPTURE,
+        ADAPTER_REPLAY,
+    )]));
+
+    assert_eq!(
+        forbidden_edges(&violations),
+        vec![(CAPTURE, ADAPTER_REPLAY)],
+        "a contract that depended on its own adapter would invert the seam"
+    );
 }

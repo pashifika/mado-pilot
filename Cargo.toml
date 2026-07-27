@@ -9,6 +9,7 @@ members = [
     "crates/automation/ocr",
     "crates/automation/runtime",
     "crates/automation/assets",
+    "crates/adapter/replay",
     "crates/platform/windows",
     "crates/platform/macos",
     "crates/backend/opencv",
