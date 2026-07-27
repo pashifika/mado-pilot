@@ -10,8 +10,10 @@ Detailed frame, capture, OCR, input, runtime scheduling, callback, platform
 behavior, and C ABI contracts are added here by the changes that implement and
 test them, so that this document never describes behavior a reader cannot use.
 
-**Status: Phase 0 — repository and decision baseline. No runtime behavior is
-implemented.** See [Implementation status](#implementation-status).
+**Status: Phase 1 — first vertical slice, in progress. The platform-neutral core
+contracts are implemented; no capture, asset, matching, input, or language
+binding behavior exists yet.** See
+[Implementation status](#implementation-status).
 
 ## Product definition
 
@@ -527,7 +529,9 @@ for each. No gate blocks Phase 0.
 
 ## Implementation status
 
-Phase 0 establishes the repository. It implements no product behavior.
+Phase 0 established the repository and implemented no product behavior. Phase 1
+is delivering the first vertical slice in stages; only the rows marked
+implemented below describe behavior a caller can use today.
 
 | Area | Status |
 |---|---|
@@ -536,6 +540,10 @@ Phase 0 establishes the repository. It implements no product behavior.
 | Architecture baseline, gate registry, benchmark format, ADR process | Implemented |
 | Licensing and dependency policy | Implemented |
 | Repository-policy and native-target CI | Implemented |
+| Identities, frame stamps, and frame ordering | Implemented in `mado-pilot-core` |
+| Coordinate spaces, validated geometry, and frame-time transforms | Implemented in `mado-pilot-core` |
+| Monotonic clock domain, operation deadlines, cancellation, terminal-outcome arbitration | Implemented in `mado-pilot-core` |
+| Public statuses and structured errors | Implemented in `mado-pilot-core` |
 | Window and display discovery | Not implemented |
 | Capture, frames, coordinate mapping | Not implemented |
 | Template matching | Not implemented |
@@ -553,6 +561,32 @@ Phase 0 establishes the repository. It implements no product behavior.
 The existence of a package is not evidence that its behavior exists. Each product
 package documents its own planned responsibility, allowed seam, and implementation
 status in its crate-level documentation.
+
+Nothing in `mado-pilot-core` is a stability promise yet. Its public names are
+provisional until gate [`G-009`](validation-gates.md#g-009) is resolved, which
+happens only after the Phase 1 Rust example has exercised them.
+
+### Core contracts
+
+`mado-pilot-core` is the one package every later package agrees through, so the
+rules that make its values trustworthy live there once instead of in each
+adapter. Two of those rules are worth stating here because they constrain every
+package that follows:
+
+- **Frames are ordered only within one stream**, by epoch and then sequence.
+  Geometry revision travels with a frame as correlation metadata and is never an
+  ordering key, and comparing frames from different streams is refused rather
+  than inferred from timestamps. A sequence that cannot advance without reuse
+  terminates its stream instead of publishing an aliased identity.
+- **A coordinate conversion the frame's own transform snapshot cannot represent
+  fails.** There is no fallback to an identity transform and no consultation of
+  host DPI, because a plausible guess about coordinates places input somewhere
+  the caller did not ask for.
+
+The package has no external dependency and adds none: it is `std` only. The
+per-package external-crate allowlist described under [Dependency
+rules](#dependency-rules) is therefore still set by whichever change adds the
+first product dependency.
 
 ### Phase 0 completion contract
 
