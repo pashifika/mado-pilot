@@ -11,7 +11,8 @@ behavior, and C ABI contracts are added here by the changes that implement and
 test them, so that this document never describes behavior a reader cannot use.
 
 **Status: Phase 1 — first vertical slice, in progress. The platform-neutral core
-contracts are implemented; no capture, asset, matching, input, or language
+contracts, the capture contracts with the deterministic replay adapter, and asset
+package loading are implemented; no template matching, OCR, input, or language
 binding behavior exists yet.** See
 [Implementation status](#implementation-status).
 
@@ -278,8 +279,9 @@ The rules the table encodes:
 1. `mado-pilot-core` depends on no other MadoPilot package, and on no platform,
    backend, GUI, or async-executor crate. Platform-native handles are never added
    to it. The checker enforces the MadoPilot half of this rule; the external-crate
-   half is a review rule, because Phase 0 declares no product dependency and the
-   per-package external allowlist is set by the change that adds the first one.
+   half is a review rule, applied through
+   [third-party-dependencies.md](third-party-dependencies.md) and `cargo deny` by
+   the change that adds each dependency.
 2. Contract packages do not depend on adapter packages.
 3. `mado-pilot-runtime` orchestrates contracts and knows no concrete adapter type.
 4. Adapter and platform packages implement the capture and input contracts only.
@@ -554,8 +556,9 @@ Thirteen remain open. `G-014` is resolved by
 the asset archive container, the manifest serialization, and six implementation
 ceilings that bound what loading an untrusted archive may allocate and expand. A
 caller may configure a limit below a ceiling and may not raise one above it.
-Resolving that gate unblocks implementing archive loading; it does not implement
-it, and no part of this document claims asset loading exists.
+`mado-pilot-assets` implements those ceilings and is verified against the
+adversarial fixtures the gate was resolved with; see
+[Asset packages](#asset-packages).
 
 ## Implementation status
 
@@ -578,12 +581,15 @@ implemented below describe behavior a caller can use today.
 | Capture contracts, immutable frames, frame views, CPU mapping | Implemented in `mado-pilot-capture` |
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
 | Native window and display capture | Not implemented |
+| Template sources and matching defaults | Implemented in `mado-pilot-vision` |
+| Template preprocessing, prepared templates, requests, results, backend contract | Not implemented |
 | Template matching | Not implemented |
 | OCR and model loading | Not implemented |
 | Watchers, scheduling, diagnostics | Not implemented |
 | Input injection | Not implemented |
-| Asset manifests and loading | Not implemented |
-| Asset archive container, manifest format, and safety ceilings | Decided and measured, not implemented; see [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
+| Asset manifests and directory, memory, and archive loading | Implemented in `mado-pilot-assets` |
+| Asset archive container, manifest format, and safety ceilings | Implemented and conformance-tested; decided in [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
+| Asset resolution into OCR model sources | Not implemented |
 | Public Rust operations | Not implemented |
 | C ABI functions, C header, native libraries | Not implemented |
 | C++ wrapper | Not implemented |
@@ -616,10 +622,109 @@ package that follows:
   host DPI, because a plausible guess about coordinates places input somewhere
   the caller did not ask for.
 
-The package has no external dependency and adds none: it is `std` only. The
-per-package external-crate allowlist described under [Dependency
-rules](#dependency-rules) is therefore still set by whichever change adds the
-first product dependency.
+The package has no external dependency and adds none: it is `std` only. Later
+packages do declare product dependencies, so the external-crate half of the
+dependency rules is a review rule enforced through
+[third-party-dependencies.md](third-party-dependencies.md) and `cargo deny`
+rather than through the architecture checker.
+
+### Asset packages
+
+`mado-pilot-assets` loads a package from a local directory, from caller-owned
+memory, or from a local ZIP archive, and commits an immutable package only after
+every check has passed. The three sources are strategies behind one pipeline
+rather than three loaders: they differ in what they can record and in what can go
+wrong while reading them, and not in what makes a package valid. That is what
+lets a package be developed as a directory and shipped as an archive without
+becoming a different package, and it is the property the tracked `tiny` fixture
+pair exists to pin.
+
+Nothing in loading opens a network connection, resolves a URI, downloads missing
+content, executes package content, or writes an entry to a filesystem location
+that a later read would treat as trusted. Archive entries are read in place.
+
+#### The manifest
+
+A version-one manifest is strict UTF-8 JSON at the package-relative path
+`madopilot-package.json`, parsed into a typed schema that rejects unknown fields.
+It declares a schema version, a package identity and version, a license, optional
+provenance, and a list of templates. Each template declares an identity, a
+package-relative path, a pixel extent, the coordinate space that extent is
+expressed in, a SHA-256 content digest, and the matching defaults it was authored
+with.
+
+Parsing happens in two passes. The first reads only the schema version, which is
+what lets a missing version, an unsupported version, and a malformed document be
+three different answers rather than one parse error. The second applies the typed
+schema for that version. A manifest written for a later version therefore fails
+on its version rather than by having half of it silently ignored, which is what
+makes a schema-version bump a usable migration boundary: the container and the
+manifest format are part of what a version-one package *is*, so changing either
+is a schema-version migration and not an implementation detail.
+
+#### Ordered enforcement
+
+Every ceiling is checked before the allocation or expansion it bounds, and the
+stage a package is refused at is part of the contract rather than an
+implementation detail. A package refused later than its documented stage means an
+earlier guard is missing, even though the package was refused.
+
+| Stage | What it checks |
+|---|---|
+| `source` | Total source bytes, before anything is parsed. Directory and memory sources also enumerate here |
+| `directory_pre_parse` | The entry count recorded in the archive trailer, read before the central directory is materialized |
+| `directory_open` | The central directory, and the declared total expansion |
+| `entry_metadata` | Compression method, encryption, name normalization, entry type, duplicate normalized names, declared sizes, and then the aggregate declared ratio |
+| `manifest` | The manifest read under its byte cap, and parsed |
+| `expansion` | Referenced entries streamed in 64 KiB chunks, size-checked on every chunk, hashed, and identified |
+| `commit` | The final operation-context check before one immutable package becomes observable |
+
+The trailer pre-parse exists because opening a central directory allocates in
+proportion to the entry count, so an entry-count ceiling checked after the open is
+checked too late. Recorded metadata may reject but never authorise: an entry is
+cut off at its *declared* size even when a ceiling would have allowed more, so an
+understated declaration is refused after one chunk rather than after a ceiling's
+worth of expansion.
+
+#### Safety ceilings
+
+The six ceilings are fixed by
+[ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) from the
+measurements in [docs/evidence/g-014](evidence/g-014/). A caller may configure any
+limit at or below its ceiling; a limit above one is rejected as an invalid
+argument rather than clamped.
+
+| Ceiling | Value | Applies to |
+|---|---|---|
+| `max_manifest_bytes` | 4 MiB | Every source |
+| `max_entry_count` | 4,096 | Every source |
+| `max_entry_uncompressed_bytes` | 64 MiB | Every source |
+| `max_total_uncompressed_bytes` | 512 MiB | Every source |
+| `max_total_compressed_bytes` | 256 MiB | Archives |
+| `max_compression_ratio` | 64 | Archives |
+
+Two of the six describe archive structure, and an archive is the only source that
+has them: a directory has no compressed representation to expand from. The other
+four bound allocation the loader performs whatever the source is, so directory and
+memory sources are held to them as well. That is an implementation decision, not a
+widening of ADR 0001, which fixes the ceilings for archives and leaves directory
+and memory containment to their own rules.
+
+#### What the fixtures pin
+
+The 23 adversarial archives in
+[fixtures/assets/g-014/adversarial](../fixtures/assets/g-014/adversarial/) each
+cross exactly one rule and stay inside every other one. The conformance suite
+asserts the failure category **and** the stage for every one of them, on both
+release targets, and separately asserts that `SHA256SUMS` still pins every
+tracked fixture and that every tracked fixture is pinned — a silent fixture edit
+invalidates the gate resolution, so it has to be visible.
+
+Two cases are built at test time rather than tracked, because an archive of *N*
+entries is fully described by *N*: the entry-count boundary at 4,096 and 4,097,
+and any package larger than `tiny`. Directory sources can also carry symbolic
+links, hard links, and device nodes that no archive entry can express and that
+Git cannot track portably, so those are created by the directory tests instead.
 
 ### Phase 0 completion contract
 

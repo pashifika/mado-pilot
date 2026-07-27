@@ -314,10 +314,13 @@ may not raise one. Three ceilings beyond the ones this gate named were added,
 because entry count, expansion bytes, and ratio do not on their own bound what a
 loader allocates.
 
-Resolving the gate does not implement archive loading. The evidence is in
-[evidence/g-014](evidence/g-014/), the fixtures in
-[../fixtures/assets/g-014](../fixtures/assets/g-014/), and the conformance tests
-that enforce the decision are added by the change that implements loading.
+The evidence is in [evidence/g-014](evidence/g-014/) and the fixtures in
+[../fixtures/assets/g-014](../fixtures/assets/g-014/). `mado-pilot-assets`
+implements the decision, and its conformance suite asserts the failure category
+and the refusing stage for every tracked adversarial fixture, on both release
+targets. A fixture refused later than its documented stage fails that suite even
+though the package was refused, which is what keeps an earlier guard from being
+quietly removed.
 
 **Resolution.** An ADR recording the ceilings and the adversarial fixture results,
 followed by the asset schema and security documentation that states them.

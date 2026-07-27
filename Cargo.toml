@@ -31,6 +31,16 @@ repository = "https://github.com/pashifika/mado-pilot"
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+# `zip`'s `deflate-flate2` feature declares the flate2 dependency but selects no
+# zlib backend, so the DEFLATE implementation is chosen here instead. flate2's
+# default `rust_backend` is miniz_oxide, which keeps the archive reader free of a
+# native C library on both release targets.
+flate2 = "1.1.9"
+sha2 = "0.11.0"
+# Default features are off by decision, not by preference: they add bzip2, LZMA,
+# PPMd, XZ, Zstd, and AES parsers for compression methods the archive contract
+# does not accept. See docs/adr/0001-asset-archive-container-and-safety-ceilings.md.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 
 # Rust lints. Warnings are promoted to failures by the documented verification
 # sequence and by CI rather than by hard-coding `deny` here, so a local build can
