@@ -15,6 +15,24 @@ member has its own lockfile. Run verification with `--locked` so that a check
 fails instead of silently changing dependency resolution, and commit the lockfile
 change in the same pull request whenever a manifest requirement changes.
 
+## Native development prerequisites
+
+Building the workspace needs an **OpenCV 4 development installation** and a
+**libclang** the binding generator can load. `mado-pilot-backend-opencv` generates
+its bindings at build time, so this is a prerequisite for `cargo build`, not only
+for running the matching tests.
+
+| Host | Install |
+|---|---|
+| macOS | `brew install opencv@4`. Xcode Command Line Tools supply libclang; no Homebrew LLVM and no `PKG_CONFIG_PATH` are needed. |
+| Windows | Extract the official OpenCV prebuilt release, install LLVM, and set the discovery variables. |
+
+[docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
+exact versions, the Windows environment variables, why the discovery is restricted
+rather than ambient, and what fails when the library is absent. This is a
+development prerequisite only: Phase 1 makes no claim about what a release ships,
+which is gate `G-007`.
+
 ## Verification
 
 Run this sequence from the repository root before opening a pull request. The

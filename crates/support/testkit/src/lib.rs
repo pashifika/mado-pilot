@@ -21,14 +21,16 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 4. Capture and vision doubles, a manual clock, and the capture
-//! and vision contract suites exist. Input and OCR doubles and target lifecycle
-//! scripts do not.
+//! Phase 1 stage 4. Capture and vision doubles, a manual clock, a template-image
+//! writer, the matching fixture scene, and the capture and vision contract suites
+//! exist. Input and OCR doubles and target lifecycle scripts do not.
 
 pub mod capture_contract;
 pub mod clock;
 pub mod controlled_capture;
 pub mod controlled_matcher;
+pub mod match_fixtures;
+pub mod png;
 pub mod vision_contract;
 
 pub use clock::ManualClock;

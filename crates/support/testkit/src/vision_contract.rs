@@ -38,10 +38,6 @@ impl TemplatePayload for ForeignPayload {
     }
 }
 
-/// The eight-byte PNG signature, which is all a template source needs to be
-/// well formed. A backend that decodes content supplies its own fixtures.
-pub const PNG_SIGNATURE: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
-
 /// Builds a frame of `extent` filled with `fill`, in `format`.
 ///
 /// # Panics
@@ -50,6 +46,25 @@ pub const PNG_SIGNATURE: &[u8] = &[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b
 /// mistake in the calling test rather than a condition to handle.
 #[must_use]
 pub fn frame(extent: PixelExtent, format: PixelFormat, fill: u8) -> Frame {
+    let count = |value: u32| usize::try_from(value).expect("a test frame stays small");
+    let bytes = count(extent.width()) * count(extent.height()) * count(format.bytes_per_pixel());
+
+    frame_with_pixels(extent, format, vec![fill; bytes])
+}
+
+/// Builds a frame of `extent` from packed `pixels`, in `format`.
+///
+/// The frame is given a fresh stream, its first epoch, and the first geometry
+/// revision, so a test that needs a frame with real content does not have to
+/// reproduce the identity plumbing `Frame::new` cross-checks.
+///
+/// # Panics
+///
+/// Panics when `pixels` is not exactly the packed length `extent` and `format`
+/// require, which is a mistake in the calling test rather than a condition to
+/// handle.
+#[must_use]
+pub fn frame_with_pixels(extent: PixelExtent, format: PixelFormat, pixels: Vec<u8>) -> Frame {
     let issuer = IdentityIssuer::new();
     let mut cursor =
         StreamCursor::new(issuer.issue_stream().expect("an engine can issue a stream"));
@@ -59,19 +74,29 @@ pub fn frame(extent: PixelExtent, format: PixelFormat, fill: u8) -> Frame {
     let stride = usize::try_from(extent.width() * format.bytes_per_pixel())
         .expect("a test frame stays small");
     let descriptor = FrameDescriptor::new(extent, format, stride).expect("a valid descriptor");
-    let pixels = vec![fill; descriptor.byte_len()].into_boxed_slice();
+    assert_eq!(
+        pixels.len(),
+        descriptor.byte_len(),
+        "a frame's pixels must match its descriptor"
+    );
 
     Frame::new(
         stamp,
         MonotonicInstant::ORIGIN,
         descriptor,
         TransformSnapshot::frame_only(GeometryRevision::FIRST, extent),
-        pixels,
+        pixels.into_boxed_slice(),
     )
     .expect("a consistent frame")
 }
 
 /// Builds a template source of `extent` under `id`.
+///
+/// The content is a real encoded image rather than a signature, because a
+/// backend that decodes template bytes has to be given bytes that decode. Its
+/// colour is arbitrary and no check here depends on it: what a backend finds
+/// where needs an image fixture with a known answer, which belongs to that
+/// backend's own algorithm tests.
 ///
 /// # Panics
 ///
@@ -84,7 +109,9 @@ pub fn template(id: &str, extent: PixelExtent) -> TemplateSource {
         extent,
         space: CoordinateSpace::CapturePixels,
         defaults: MatchDefaults::new(0.5, 8).expect("valid defaults"),
-        content: Arc::from(PNG_SIGNATURE),
+        content: Arc::from(
+            crate::png::solid_rgb(extent.width(), extent.height(), [0x40, 0x80, 0xc0]).as_slice(),
+        ),
     })
     .expect("a valid template source")
 }

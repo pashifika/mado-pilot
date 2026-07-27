@@ -241,7 +241,11 @@ pub const ALLOWED_DEPENDENCIES: &[(&str, &[&str])] = &[
     (ADAPTER_REPLAY, &[CORE, CAPTURE]),
     (PLATFORM_WINDOWS, &[CORE, CAPTURE, INPUT]),
     (PLATFORM_MACOS, &[CORE, CAPTURE, INPUT]),
-    (BACKEND_OPENCV, &[CORE, VISION]),
+    // Capture is here for the same reason it is in the vision row: the matching
+    // backend contract hands an adapter a capture-owned CPU mapping and declares
+    // its required pixel format, so an implementation has to name both types.
+    // It is a contract-to-contract edge and exposes no adapter type.
+    (BACKEND_OPENCV, &[CORE, CAPTURE, VISION]),
     (BACKEND_ONNX, &[CORE, VISION, OCR]),
     (
         FACADE,

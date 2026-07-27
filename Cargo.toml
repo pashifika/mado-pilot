@@ -41,6 +41,23 @@ sha2 = "0.11.0"
 # PPMd, XZ, Zstd, and AES parsers for compression methods the archive contract
 # does not accept. See docs/adr/0001-asset-archive-container-and-safety-ceilings.md.
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+# Default features are off so the generated bindings cover only the two OpenCV
+# modules the matching profile uses: `imgcodecs` decodes a template's encoded
+# bytes and `imgproc` supplies the colour conversion and `matchTemplate`. The
+# defaults additionally bind calib3d, dnn, features2d, flann, highgui, ml,
+# objdetect, photo, stitching, video, and videoio, which lengthens the build and
+# would make the adapter fail against an OpenCV installation that omits any of
+# them. See docs/adr/0003-opencv-matching-profile-and-public-score.md.
+#
+# `clang-runtime` makes the binding generator load libclang with `dlopen` and a
+# documented directory search instead of linking it eagerly. Without it the build
+# script resolves `@rpath/libclang.dylib` at load time and aborts on a host whose
+# libclang comes from the Xcode Command Line Tools, which install no rpath entry.
+opencv = { version = "0.99.1", default-features = false, features = [
+    "clang-runtime",
+    "imgcodecs",
+    "imgproc",
+] }
 
 # Rust lints. Warnings are promoted to failures by the documented verification
 # sequence and by CI rather than by hard-coding `deny` here, so a local build can

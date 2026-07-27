@@ -178,6 +178,17 @@ on both release targets, plus a license review of every redistributed artifact.
 
 **Status.** Open.
 
+**Phase 1 input.** Phase 1 links OpenCV 4.14.0 as a *development prerequisite* and
+claims nothing about a release. Two facts it established belong to this gate. The
+library is Apache-2.0, the same licence as this project, so bundling it would add
+an attribution obligation and no new term. And because OpenCV is linked dynamically
+at load time, an absent library stops the process before any MadoPilot code runs,
+so it cannot be reported as an actionable status — the adapter reports an
+unsupported *version* and nothing more. Closing that gap is part of this gate's
+controlled library search paths; it is not `G-008`, whose scope is static-link
+feasibility. See
+[third-party-dependencies.md](third-party-dependencies.md#opencv).
+
 **Resolution.** An ADR recording the profile matrix, the controlled library search
 paths, and the license and notice obligations, followed by updates to
 [third-party-dependencies.md](third-party-dependencies.md) and the packaging

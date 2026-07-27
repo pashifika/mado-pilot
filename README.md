@@ -88,6 +88,14 @@ The repository pins Rust 1.97.1 through `rust-toolchain.toml`, so a clean checko
 with `rustup` available selects the tested compiler. The single committed root
 `Cargo.lock` is used with `--locked`.
 
+Building also needs an **OpenCV 4 development installation** and a **libclang**,
+because the OpenCV matching adapter generates its bindings at build time:
+`brew install opencv@4` on macOS, or the official prebuilt release plus LLVM on
+Windows. This is a development prerequisite and not a statement about what a
+release ships; the exact versions, the Windows discovery variables, and the failure
+modes are in
+[docs/third-party-dependencies.md](docs/third-party-dependencies.md#opencv).
+
 ```sh
 cargo build --locked --workspace
 cargo test --locked --workspace --all-targets
@@ -114,7 +122,8 @@ directions.
 | [docs/validation-gates.md](docs/validation-gates.md) | The `G-001`–`G-014` registry of unresolved version-one decisions |
 | [docs/performance.md](docs/performance.md) | Benchmark profile and budget format, with a synthetic example |
 | [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |
-| [docs/adr/0000-template.md](docs/adr/0000-template.md) | Architecture decision record template and when one is required |
+| [docs/adr/](docs/adr/) | Architecture decision records, and [the template](docs/adr/0000-template.md) with the rule for when one is required |
+| [docs/evidence/](docs/evidence/) | The measurements behind decisions that rest on them |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Branch strategy, pull request flow, verification sequence, required checks |
 
 ## Security and privacy
