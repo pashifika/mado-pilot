@@ -25,6 +25,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTDOCFLAGS: -D warnings
+  # `mado-pilot-backend-opencv` generates its bindings at build time, so OpenCV and
+  # a loadable libclang are build prerequisites for the whole workspace rather than
+  # only for the matching tests. Both native jobs provision them and cache what can
+  # be cached; provisioning is the first material addition to this workflow's run
+  # time. See docs/third-party-dependencies.md.
+  OPENCV_VERSION: 4.14.0
 
 jobs:
   repository-policy:
@@ -73,10 +79,11 @@ jobs:
         shell: bash
         run: cargo fmt --all --check
 
-      - name: Check documentation
-        shell: bash
-        run: cargo doc --locked --workspace --no-deps
-
+      # This job deliberately compiles nothing. Every step above reads manifests,
+      # metadata, or source text, so it needs no OpenCV installation on a host that
+      # is neither release target. Documentation is built in both native jobs
+      # instead, where the compiler that would report a broken link is the one the
+      # product is verified with.
       - name: Restore cargo-deny
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -133,6 +140,71 @@ jobs:
             exit 1
           fi
 
+      # The same official prebuilt archive the Windows verification host uses, so
+      # CI and hands-on verification run one OpenCV build rather than two. The
+      # community Chocolatey package tops out at 4.13.0, which would have made CI
+      # the only host on a different version.
+      - name: Restore OpenCV
+        id: opencv-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: C:\opencv
+          key: opencv-${{ runner.os }}-${{ env.OPENCV_VERSION }}
+
+      - name: Install OpenCV
+        if: steps.opencv-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/opencv/opencv/releases/download/${OPENCV_VERSION}/opencv-${OPENCV_VERSION}-windows.exe"
+          echo "downloading ${url}"
+          curl --fail --location --silent --show-error --output opencv-installer.exe "${url}"
+          # The release artifact is a self-extracting archive, not an installer: it
+          # writes an `opencv/` directory and registers nothing.
+          ./opencv-installer.exe -o"C:\\" -y
+          rm -f opencv-installer.exe
+
+      # Discovery is restricted to the directory above. Without
+      # OPENCV_DISABLE_PROBES the build script would also try pkg-config, CMake, and
+      # vcpkg, any of which could find a different OpenCV than the one named here.
+      - name: Configure the OpenCV and libclang discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="C:/opencv/build"
+          if [[ ! -d "${root}/x64/vc16/lib" ]]; then
+            echo "::error::expected ${root}/x64/vc16/lib; the archive layout changed"
+            exit 1
+          fi
+          # The runner image ships LLVM, but a job that depended on that silently
+          # would fail with a binding-generator error rather than a named cause, so
+          # the location is searched and installed explicitly.
+          libclang=""
+          for candidate in "C:/Program Files/LLVM/bin" "C:/ProgramData/chocolatey/lib/llvm/tools/LLVM/bin"; do
+            if [[ -f "${candidate}/libclang.dll" ]]; then
+              libclang="${candidate}"
+              break
+            fi
+          done
+          if [[ -z "${libclang}" ]]; then
+            echo "no preinstalled libclang found; installing LLVM"
+            choco install llvm --no-progress --yes
+            libclang="C:/Program Files/LLVM/bin"
+          fi
+          if [[ ! -f "${libclang}/libclang.dll" ]]; then
+            echo "::error::expected libclang.dll under ${libclang}"
+            exit 1
+          fi
+          echo "using libclang from ${libclang}"
+          {
+            echo "OPENCV_INCLUDE_PATHS=${root}/include"
+            echo "OPENCV_LINK_PATHS=${root}/x64/vc16/lib"
+            echo "OPENCV_LINK_LIBS=opencv_world${OPENCV_VERSION//./}"
+            echo "OPENCV_DISABLE_PROBES=pkg_config,cmake,vcpkg_cmake,vcpkg"
+            echo "LIBCLANG_PATH=${libclang}"
+          } >> "${GITHUB_ENV}"
+          echo "${root}/x64/vc16/bin" >> "${GITHUB_PATH}"
+
       - name: Check the workspace inventory and dependency directions
         shell: bash
         run: cargo run --locked --package mado-pilot-dependency-check
@@ -153,6 +225,15 @@ jobs:
       - name: Check documentation
         shell: bash
         run: cargo doc --locked --workspace --no-deps
+
+      # Not a check: the report names the OpenCV build this run actually used and the
+      # scores it produced, so a provisioning drift is visible in the log rather than
+      # only in a failing tolerance.
+      - name: Report what this host's OpenCV matched
+        shell: bash
+        run: |
+          cargo run --locked --release --package mado-pilot-backend-opencv \
+            --example match-report -- --label "CI ${{ runner.os }} ${{ runner.arch }}"
 
   macos:
     name: macOS aarch64-apple-darwin
@@ -194,6 +275,32 @@ jobs:
             exit 1
           fi
 
+      # `opencv@4`, not `opencv`: Homebrew's unversioned formula is OpenCV 5, which
+      # the adapter refuses as an unsupported major version. libclang comes from the
+      # Command Line Tools the image already has, which is what the `clang-runtime`
+      # feature loads.
+      - name: Install OpenCV
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install opencv@4
+          prefix="$(brew --prefix opencv@4)"
+          # Set explicitly rather than relying on the formula being linked: it is
+          # keg-only, and whether its pkg-config file reaches the default search path
+          # depends on what else the image has installed.
+          echo "PKG_CONFIG_PATH=${prefix}/lib/pkgconfig" >> "${GITHUB_ENV}"
+
+      - name: Confirm the OpenCV the build will find
+        shell: bash
+        run: |
+          set -euo pipefail
+          found="$(pkg-config --modversion opencv4)"
+          echo "pkg-config reports opencv4 ${found}"
+          if [[ "${found%%.*}" != "4" ]]; then
+            echo "::error::expected an OpenCV 4 installation but found ${found}"
+            exit 1
+          fi
+
       - name: Check the workspace inventory and dependency directions
         shell: bash
         run: cargo run --locked --package mado-pilot-dependency-check
@@ -214,3 +321,12 @@ jobs:
       - name: Check documentation
         shell: bash
         run: cargo doc --locked --workspace --no-deps
+
+      # Not a check: the report names the OpenCV build this run actually used and the
+      # scores it produced, so a provisioning drift is visible in the log rather than
+      # only in a failing tolerance.
+      - name: Report what this host's OpenCV matched
+        shell: bash
+        run: |
+          cargo run --locked --release --package mado-pilot-backend-opencv \
+            --example match-report -- --label "CI ${{ runner.os }} ${{ runner.arch }}"

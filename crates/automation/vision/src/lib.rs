@@ -33,14 +33,13 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 4, partial. Template sources, prepared-template ownership,
-//! typed requests and options, backend descriptors, immutable
-//! source-correlated results, and the deterministic rules in [`Matcher`] are
-//! implemented and tested against the controlled backend in
-//! `mado-pilot-testkit`.
+//! Phase 1 stage 4. Template sources, prepared-template ownership, typed
+//! requests and options, backend descriptors, immutable source-correlated
+//! results, and the deterministic rules in [`Matcher`] are implemented and
+//! tested against two behaviourally distinct backends: the controlled double in
+//! `mado-pilot-testkit` and the OpenCV CPU adapter in
+//! `mado-pilot-backend-opencv`, which both pass the same contract suite.
 //!
-//! No production backend exists yet, so nothing here matches a real image: the
-//! OpenCV CPU adapter and its algorithm fixtures land in the next stage.
 //! Preprocessing descriptors are not implemented and are not reserved as an
 //! empty seam. See `docs/architecture.md`.
 //!

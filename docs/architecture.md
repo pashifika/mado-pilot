@@ -154,7 +154,7 @@ prefix.
 | `crates/adapter/replay` | `mado-pilot-adapter-replay` | Deterministic replay capture from file and memory sources |
 | `crates/platform/windows` | `mado-pilot-platform-windows` | Planned Windows target, capture, input, permission, and capability adapter |
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Planned macOS target, capture, input, permission, and capability adapter |
-| `crates/backend/opencv` | `mado-pilot-backend-opencv` | Planned OpenCV template-matching and CPU-preprocessing adapter |
+| `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Planned ONNX Runtime OCR and execution-provider adapter |
 | `crates/bindings/capi` | `mado-pilot-capi` | Planned separately versioned C ABI and ownership boundary |
 | `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture and backend doubles, fake input, synthetic clock, and contract-fixture support |
@@ -228,6 +228,7 @@ graph TD
     Mac --> Capture
     Mac --> Input
     OpenCV --> Core
+    OpenCV --> Capture
     OpenCV --> Vision
     ONNX --> Core
     ONNX --> Vision
@@ -267,7 +268,7 @@ appear in this table, and an omitted future edge is always valid.
 | `mado-pilot-adapter-replay` | `mado-pilot-core`, `mado-pilot-capture` |
 | `mado-pilot-platform-windows` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-input` |
 | `mado-pilot-platform-macos` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-input` |
-| `mado-pilot-backend-opencv` | `mado-pilot-core`, `mado-pilot-vision` |
+| `mado-pilot-backend-opencv` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-vision` |
 | `mado-pilot-backend-onnx` | `mado-pilot-core`, `mado-pilot-vision`, `mado-pilot-ocr` |
 | `mado-pilot` | `mado-pilot-runtime`, `mado-pilot-adapter-replay`, `mado-pilot-platform-windows`, `mado-pilot-platform-macos`, `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` |
 | `mado-pilot-capi` | `mado-pilot` |
@@ -584,7 +585,9 @@ implemented below describe behavior a caller can use today.
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
 | Template preprocessing descriptors | Not implemented |
-| Template matching against a real image | Not implemented; no production backend exists yet |
+| Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
+| OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
+| Template scaling, rotation, masked matching, GPU execution | Not implemented |
 | OCR and model loading | Not implemented |
 | Watchers, scheduling, diagnostics | Not implemented |
 | Input injection | Not implemented |
@@ -743,8 +746,9 @@ applied once, in the vision package, for every backend:
 
 Two backends are what make this a seam rather than a description of one adapter.
 `mado-pilot-testkit` supplies a controlled matcher whose candidates, latency,
-and failures a test scripts, and the OpenCV CPU adapter will supply real ones.
-Both pass the same contract suite.
+and failures a test scripts, and `mado-pilot-backend-opencv` supplies real ones.
+Both pass the same contract suite, unchanged — a suite that had to be adjusted for
+the production backend would be a description of the double.
 
 Candidates are reported to the vision package in coordinates relative to the
 searched region's origin, and published in full-frame capture pixels. The
@@ -765,6 +769,29 @@ Compiled template state is backend-private. A prepared template carries an
 opaque payload plus the backend that produced it, and submitting it to a
 different backend is refused on that identity before anything touches the
 payload.
+
+A backend's own profile — what preprocessing it performs, which algorithm it runs,
+and how its native scores become public ones — is its decision, and it is a
+documented one rather than an implementation detail, because it determines what a
+score means to a caller. The OpenCV CPU adapter's profile is recorded in
+[ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md): three-channel
+BGR, `TM_CCOEFF_NORMED`, the negative half of the correlation range clamped to no
+match, and non-overlapping peaks as candidates.
+
+Public scores are compared against a tolerance rather than exactly, on one host as
+well as across the two. OpenCV normalizes through integral images and correlates a
+whole region at once, so a score carries rounding from arithmetic involving pixels
+outside its own window: two byte-identical copies of one patch in one image were
+measured at `1.0` and `1.0 - 3.6e-7`. No fixture asserts an ordering between
+candidates whose scores differ by less than the tolerance. The measurements are in
+[evidence/vision-opencv/](evidence/vision-opencv/).
+
+The required OpenCV backend never silently falls back to another implementation.
+It reports an unsupported runtime version as a typed unavailable outcome; an
+absent library remains a process-load failure until gate
+[`G-007`](validation-gates.md#g-007) settles the controlled library search paths,
+which [third-party-dependencies.md](third-party-dependencies.md) records as a
+stated gap rather than a satisfied contract.
 
 ### Phase 0 completion contract
 
