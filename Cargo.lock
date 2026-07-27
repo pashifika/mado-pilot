@@ -205,12 +205,14 @@ version = "0.1.0"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
+ "mado-pilot-vision",
 ]
 
 [[package]]
 name = "mado-pilot-vision"
 version = "0.1.0"
 dependencies = [
+ "mado-pilot-capture",
  "mado-pilot-core",
 ]
 

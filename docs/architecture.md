@@ -581,9 +581,10 @@ implemented below describe behavior a caller can use today.
 | Capture contracts, immutable frames, frame views, CPU mapping | Implemented in `mado-pilot-capture` |
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
 | Native window and display capture | Not implemented |
-| Template sources and matching defaults | Implemented in `mado-pilot-vision` |
-| Template preprocessing, prepared templates, requests, results, backend contract | Not implemented |
-| Template matching | Not implemented |
+| Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
+| Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
+| Template preprocessing descriptors | Not implemented |
+| Template matching against a real image | Not implemented; no production backend exists yet |
 | OCR and model loading | Not implemented |
 | Watchers, scheduling, diagnostics | Not implemented |
 | Input injection | Not implemented |
@@ -725,6 +726,45 @@ entries is fully described by *N*: the entry-count boundary at 4,096 and 4,097,
 and any package larger than `tiny`. Directory sources can also carry symbolic
 links, hard links, and device nodes that no archive entry can express and that
 Git cannot track portably, so those are created by the directory tests instead.
+
+### Template matching
+
+`mado-pilot-vision` owns what a match is. A backend compiles a template and
+reports candidates; everything between a candidate and a published match is
+applied once, in the vision package, for every backend:
+
+| Rule | Applied by |
+|---|---|
+| Region resolution from the exact frame's transform snapshot, under an explicit clipping policy | `mado-pilot-vision` |
+| Public score validation, thresholding | `mado-pilot-vision` |
+| Canonical ordering, overlap suppression, result limit | `mado-pilot-vision` |
+| Result envelope with complete source correlation | `mado-pilot-vision` |
+| Template compilation and candidate extraction | the backend |
+
+Two backends are what make this a seam rather than a description of one adapter.
+`mado-pilot-testkit` supplies a controlled matcher whose candidates, latency,
+and failures a test scripts, and the OpenCV CPU adapter will supply real ones.
+Both pass the same contract suite.
+
+Candidates are reported to the vision package in coordinates relative to the
+searched region's origin, and published in full-frame capture pixels. The
+translation happens in one place, so no adapter can get the offset wrong.
+
+Matches are ordered by descending score, then ascending top, left, bottom, and
+right edges, then template identity. Every tie is broken by a value both release
+targets compute identically, which is what lets two hosts agree on ordering
+without agreeing on the last bit of a float. The result limit is applied only
+after ordering and suppression.
+
+Three outcomes that look like failures are successes with no matches: nothing
+reached the threshold, the template is larger than the searched region, and a
+clip-permitted region that misses the frame entirely. A caller asked a
+well-formed question, and the answer is that it is not there.
+
+Compiled template state is backend-private. A prepared template carries an
+opaque payload plus the backend that produced it, and submitting it to a
+different backend is refused on that identity before anything touches the
+payload.
 
 ### Phase 0 completion contract
 
