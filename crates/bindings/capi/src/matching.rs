@@ -15,9 +15,9 @@
 //! is what makes "which frame is this about" answerable at any later point, and
 //! it is why releasing every other handle cannot invalidate a retained result.
 //!
-//! The effective options are stored here rather than read back out of the
-//! result, because the vision contract's `MatchResult` does not report the
-//! options it was produced with. Recorded against `G-009`.
+//! The effective options are read back out of the result rather than stored
+//! beside it: `MatchResult::options` reports what the search ran under, so this
+//! boundary keeps no second copy that could disagree with it.
 
 use mado_pilot::{
     FindOutcome, FindRequest, MatchOptions, PixelRect, PreparedTemplate, RegionSelection,
@@ -51,7 +51,6 @@ opaque! {
 #[derive(Debug)]
 pub(crate) struct ResultHandle {
     outcome: FindOutcome,
-    options: MatchOptions,
     stream: u64,
 }
 
@@ -163,12 +162,11 @@ fn run_session_find(
         return Err(Fault::abi("`session` is null"));
     };
 
-    // A closed session starts no further work. The check belongs here because
-    // the Rust contract does not make it for a search against an exact frame:
-    // there, the frame is the caller's and the matcher is the engine's, so
-    // nothing below this boundary has a reason to consult the session at all.
-    // The C contract says otherwise, and this is where the two meet. Recorded
-    // against `G-009`.
+    // A closed session starts no further work. The Rust contract now makes the
+    // same check for every frame choice — aligning the two was part of
+    // `docs/adr/0006-public-rust-names-and-compatibility-policy.md` — and this
+    // one stays because it refuses before any pointer below is dereferenced and
+    // reports the boundary's own message and category.
     if session.session().is_closed() {
         return Err(Fault::closed(
             "the session has closed and starts no further work",
@@ -215,7 +213,6 @@ fn run_session_find(
 
     let payload = ResultHandle {
         outcome,
-        options,
         stream: frame.map_or_else(|| session.stream(), FrameHandle::stream),
     };
     // SAFETY: `out_result` was validated by the entry before any work began.
@@ -375,6 +372,8 @@ pub(crate) fn result_options(
         return MADOPILOT_STATUS_INVALID_ARGUMENT;
     };
 
+    let effective = result.outcome.result().options();
+
     // Every field was in effect, so every presence bit is set: this reports what
     // the search actually ran under, not what the caller happened to ask for.
     // SAFETY: `out` was validated above.
@@ -384,9 +383,9 @@ pub(crate) fn result_options(
             flags: MADOPILOT_MATCH_HAS_MIN_SCORE
                 | MADOPILOT_MATCH_HAS_MAX_RESULTS
                 | MADOPILOT_MATCH_HAS_SUPPRESSION,
-            min_score: result.options.min_score(),
-            max_results: result.options.max_results(),
-            suppression: suppression_code(result.options.suppression()),
+            min_score: effective.min_score(),
+            max_results: effective.max_results(),
+            suppression: suppression_code(effective.suppression()),
         });
     }
 

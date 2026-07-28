@@ -192,7 +192,7 @@ impl Fixture {
             .load_package(&PackageSource::directory(package_root()), &operation)
             .expect("the tracked example package loads");
         let template = engine
-            .prepare_template(&package, "panel.patch", &operation)
+            .prepare_from_package(&package, "panel.patch", &operation)
             .expect("prepared");
 
         Self {
@@ -205,7 +205,7 @@ impl Fixture {
 
     fn frame(&self) -> Frame {
         self.session
-            .frame(&FrameRequest::latest(), &self.operation)
+            .acquire_frame(&FrameRequest::latest(), &self.operation)
             .expect("a published frame")
     }
 }
@@ -301,7 +301,7 @@ fn prepare_and_match(fixture: &Fixture) -> Sample {
     let started = Instant::now();
     let template = fixture
         .engine
-        .prepare_template(&package, "panel.patch", &fixture.operation)
+        .prepare_from_package(&package, "panel.patch", &fixture.operation)
         .expect("prepared");
     let outcome = fixture
         .session

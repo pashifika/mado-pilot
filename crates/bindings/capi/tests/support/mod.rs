@@ -220,14 +220,14 @@ impl Flow {
         let mut frame = ptr::null_mut();
         // SAFETY: as above.
         let status = unsafe {
-            (api.session_frame)(
+            (api.session_acquire_frame)(
                 session,
                 &raw const operation,
                 &raw mut frame,
                 ptr::null_mut(),
             )
         };
-        assert_eq!(status, MADOPILOT_STATUS_OK, "session_frame");
+        assert_eq!(status, MADOPILOT_STATUS_OK, "session_acquire_frame");
 
         let package_source = madopilot_package_source_t {
             struct_size: struct_size::<madopilot_package_source_t>(),
@@ -336,7 +336,7 @@ fn prepare(
     // SAFETY: both handles are retained by the caller, and `id` outlives the
     // call.
     let status = unsafe {
-        (api.template_prepare)(
+        (api.template_prepare_from_package)(
             engine,
             package,
             str_view(id),
@@ -345,7 +345,10 @@ fn prepare(
             ptr::null_mut(),
         )
     };
-    assert_eq!(status, MADOPILOT_STATUS_OK, "template_prepare({id})");
+    assert_eq!(
+        status, MADOPILOT_STATUS_OK,
+        "template_prepare_from_package({id})"
+    );
 
     prepared
 }

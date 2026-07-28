@@ -456,7 +456,7 @@ pub(crate) fn session_is_closed(
     MADOPILOT_STATUS_OK
 }
 
-pub(crate) fn session_frame(
+pub(crate) fn session_acquire_frame(
     session: *const madopilot_session_t,
     operation: *const madopilot_operation_t,
     out_frame: *mut *mut madopilot_frame_t,
@@ -490,7 +490,7 @@ fn run_session_frame(
 
     let frame = session
         .session
-        .frame(&FrameRequest::latest(), context.inner())
+        .acquire_frame(&FrameRequest::latest(), context.inner())
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;

@@ -6,8 +6,9 @@
 //! real prefixes, thin handle pointers, and a function-table order that a
 //! refactor cannot quietly rearrange.
 //!
-//! **None of these values is frozen.** `G-010` freezes them; what this file
-//! protects until then is that a change to them is deliberate.
+//! **These values are frozen** for ABI major 1 by
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`. What this file protects is that a
+//! change to any of them fails a test rather than a caller.
 
 use madopilot::layout::{HANDLE_POINTERS, LAYOUT, TypeLayout, report};
 use madopilot::*;
@@ -68,7 +69,7 @@ const TABLE_ORDER: &[&str] = &[
     "package_release",
     "package_describe",
     "package_template_id",
-    "template_prepare",
+    "template_prepare_from_package",
     "template_retain",
     "template_release",
     "template_describe",
@@ -83,7 +84,7 @@ const TABLE_ORDER: &[&str] = &[
     "session_describe",
     "session_close",
     "session_is_closed",
-    "session_frame",
+    "session_acquire_frame",
     "frame_retain",
     "frame_release",
     "frame_stamp",

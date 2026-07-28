@@ -295,9 +295,9 @@ int main(int argc, char** argv)
         madopilot_frame_stamp_t stamp;
         madopilot_frame_info_t frame_info;
 
-        status = api->session_frame(session, &operation, &frame, &error);
-        if (!expect_ok(status, "session_frame")) {
-            report_error("session_frame", error);
+        status = api->session_acquire_frame(session, &operation, &frame, &error);
+        if (!expect_ok(status, "session_acquire_frame")) {
+            report_error("session_acquire_frame", error);
             goto cleanup;
         }
 
@@ -387,16 +387,16 @@ int main(int argc, char** argv)
             }
         }
 
-        status = api->template_prepare(engine, package, borrow("panel.patch"),
+        status = api->template_prepare_from_package(engine, package, borrow("panel.patch"),
                                        &operation, &present, &error);
-        if (!expect_ok(status, "template_prepare(panel.patch)")) {
-            report_error("template_prepare", error);
+        if (!expect_ok(status, "template_prepare_from_package(panel.patch)")) {
+            report_error("template_prepare_from_package", error);
             goto cleanup;
         }
-        status = api->template_prepare(engine, package, borrow("panel.absent"),
+        status = api->template_prepare_from_package(engine, package, borrow("panel.absent"),
                                        &operation, &absent, &error);
-        if (!expect_ok(status, "template_prepare(panel.absent)")) {
-            report_error("template_prepare", error);
+        if (!expect_ok(status, "template_prepare_from_package(panel.absent)")) {
+            report_error("template_prepare_from_package", error);
             goto cleanup;
         }
 
@@ -420,13 +420,13 @@ int main(int argc, char** argv)
         {
             madopilot_template_t* nothing = NULL;
             madopilot_error_t* refusal = NULL;
-            status = api->template_prepare(engine, package, borrow("panel.absent.typo"),
+            status = api->template_prepare_from_package(engine, package, borrow("panel.absent.typo"),
                                            &operation, &nothing, &refusal);
             expect(status == MADOPILOT_STATUS_INVALID_ARGUMENT,
                    "an undeclared template identity is invalid argument");
             expect(nothing == NULL, "a refused preparation leaves its output null");
             printf("undeclared template:\n");
-            report_error("template_prepare", refusal);
+            report_error("template_prepare_from_package", refusal);
         }
     }
 
@@ -524,7 +524,7 @@ int main(int argc, char** argv)
     {
         madopilot_frame_t* after = NULL;
         madopilot_error_t* refusal = NULL;
-        status = api->session_frame(session, &operation, &after, &refusal);
+        status = api->session_acquire_frame(session, &operation, &after, &refusal);
         expect(status == MADOPILOT_STATUS_CLOSED,
                "a closed session publishes nothing further");
         expect(after == NULL, "a refused frame request leaves its output null");

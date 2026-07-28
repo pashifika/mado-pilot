@@ -7,13 +7,14 @@
 //! between them, and that a caller reaches all of it through this package
 //! without naming a contract package.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
-    ClipPolicy, Continuity, CoordinateSpace, Engine, FindRequest, Frame, FrameDescriptor,
-    FrameRequest, MatchOptions, MonotonicInstant, OpenRequest, OperationContext, PackageSource,
-    PixelFormat, PreparedTemplate, REQUIRED_BACKEND, Rect, Session, Status,
+    AssetLimits, ClipPolicy, ContentDigest, Continuity, CoordinateSpace, Engine, FindRequest,
+    Frame, FrameDescriptor, FrameRequest, MatchOptions, MonotonicInstant, OpenRequest,
+    OperationContext, PackageSource, PixelFormat, PreparedTemplate, REQUIRED_BACKEND, Rect,
+    ReplayEngineRequest, Session, Status,
 };
 use mado_pilot_testkit::{match_fixtures, png};
 
@@ -73,7 +74,7 @@ fn prepared(engine: &Engine, id: &str, operation: &OperationContext) -> Prepared
         .load_package(&PackageSource::directory(package_root()), operation)
         .expect("the tracked example package loads");
     engine
-        .prepare_template(&package, id, operation)
+        .prepare_from_package(&package, id, operation)
         .expect("prepared")
 }
 
@@ -151,7 +152,7 @@ fn the_complete_workflow_finds_the_planted_template_in_the_mapped_frame() {
     let operation = OperationContext::new();
     let session = opened(&engine, &operation);
     let frame = session
-        .frame(&FrameRequest::latest(), &operation)
+        .acquire_frame(&FrameRequest::latest(), &operation)
         .expect("a published frame");
     let mapping = frame.map(SOURCE_FORMAT, &operation).expect("mapped");
     let template = prepared(&engine, "panel.patch", &operation);
@@ -184,7 +185,7 @@ fn a_view_scopes_the_search_to_its_own_region_of_its_own_frame() {
     let operation = OperationContext::new();
     let session = opened(&engine, &operation);
     let frame = session
-        .frame(&FrameRequest::latest(), &operation)
+        .acquire_frame(&FrameRequest::latest(), &operation)
         .expect("a published frame");
     let corner = frame
         .view(
@@ -215,7 +216,7 @@ fn a_template_the_frame_does_not_contain_is_a_success_with_no_matches() {
     let operation = OperationContext::new();
     let session = opened(&engine, &operation);
     let frame = session
-        .frame(&FrameRequest::latest(), &operation)
+        .acquire_frame(&FrameRequest::latest(), &operation)
         .expect("a published frame");
     let template = prepared(&engine, "panel.absent", &operation);
 
@@ -268,10 +269,10 @@ fn run_once() -> Run {
     let template = prepared(&engine, "panel.patch", &operation);
 
     let first = session
-        .frame(&FrameRequest::latest(), &operation)
+        .acquire_frame(&FrameRequest::latest(), &operation)
         .expect("a published frame");
     let second = session
-        .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+        .acquire_frame(&FrameRequest::newer_than(first.stamp()), &operation)
         .expect("the replay sequence advances when a consumer asks");
     let outcome = session
         .find_template(
@@ -308,7 +309,7 @@ fn a_mapping_and_an_outcome_stay_valid_after_the_session_closes() {
     let operation = OperationContext::new();
     let session = opened(&engine, &operation);
     let frame = session
-        .frame(&FrameRequest::latest(), &operation)
+        .acquire_frame(&FrameRequest::latest(), &operation)
         .expect("a published frame");
     let template = prepared(&engine, "panel.patch", &operation);
     let mapping = frame.map(SOURCE_FORMAT, &operation).expect("mapped");
@@ -330,7 +331,7 @@ fn a_mapping_and_an_outcome_stay_valid_after_the_session_closes() {
     assert_eq!(outcome.result().matches(), matches.as_slice());
     assert_eq!(
         session
-            .frame(&FrameRequest::latest(), &operation)
+            .acquire_frame(&FrameRequest::latest(), &operation)
             .expect_err("closed")
             .status(),
         Status::Closed
@@ -346,7 +347,7 @@ fn an_unknown_template_identity_is_refused_by_the_package_it_was_asked_of() {
         .expect("loaded");
 
     let error = engine
-        .prepare_template(&package, "panel.nothing", &operation)
+        .prepare_from_package(&package, "panel.nothing", &operation)
         .expect_err("the package declares no such template");
 
     assert_eq!(error.status(), Status::InvalidArgument);
@@ -367,4 +368,101 @@ fn a_package_source_that_is_not_a_package_reports_which_rule_it_broke() {
     assert_eq!(fault.kind(), mado_pilot::AssetFaultKind::MissingManifest);
     assert_eq!(fault.stage(), mado_pilot::LoadStage::Manifest);
     assert_eq!(fault.status(), Status::AssetInvalid);
+}
+
+#[test]
+fn a_host_can_tighten_the_limits_every_package_it_loads_is_held_to() {
+    // The one knob that bounds what an untrusted package may allocate. Before
+    // `ReplayEngineRequest` the facade always wired the defaults, so a host
+    // could read `Engine::limits` and could not change it.
+    let tightened = AssetLimits::default()
+        .with_max_entry_count(1)
+        .expect("below the implementation ceiling");
+    let engine =
+        mado_pilot::replay_engine(ReplayEngineRequest::new(scene_source(1)).with_limits(tightened))
+            .expect("an OpenCV 4 development installation");
+    let operation = OperationContext::new();
+
+    assert_eq!(engine.limits().max_entry_count(), 1);
+
+    // The tracked package has a manifest and two templates, so one entry is not
+    // enough and the tightened ceiling is what refuses it.
+    let fault = engine
+        .load_package(&PackageSource::directory(package_root()), &operation)
+        .expect_err("three entries against a ceiling of one");
+
+    assert_eq!(fault.kind(), mado_pilot::AssetFaultKind::ArchiveLimit);
+    assert_eq!(fault.status(), Status::LimitExceeded);
+
+    // The default path is unchanged, and is what every other test here uses.
+    let default = mado_pilot::replay_engine(scene_source(1)).expect("a default engine");
+    assert_eq!(default.limits(), AssetLimits::default());
+    assert!(
+        default
+            .load_package(&PackageSource::directory(package_root()), &operation)
+            .is_ok()
+    );
+}
+
+#[test]
+fn every_tracked_slice_fixture_still_hashes_to_its_recorded_checksum() {
+    // A benchmark profile's `fixture_sha256` is only evidence if the fixture it
+    // names cannot change underneath it. This is the same rule
+    // `mado-pilot-assets` applies to the `G-014` set, applied to the package
+    // the example, the facade suite, and the benchmark all load.
+    let root = package_root();
+    let sums = std::fs::read_to_string(root.join("SHA256SUMS")).expect("readable");
+    let mut pinned: Vec<String> = Vec::new();
+
+    for line in sums.lines().filter(|line| !line.trim().is_empty()) {
+        let (expected, relative) = line
+            .split_once("  ")
+            .unwrap_or_else(|| panic!("unexpected checksum line: {line}"));
+        let relative = relative.trim().trim_start_matches("./");
+        let bytes = std::fs::read(root.join(relative))
+            .unwrap_or_else(|_| panic!("SHA256SUMS names a missing file: {relative}"));
+
+        assert_eq!(
+            ContentDigest::of(&bytes).to_string(),
+            expected,
+            "{relative} no longer matches the checksum the measurements were taken against"
+        );
+        pinned.push(relative.to_owned());
+    }
+
+    // A fixture added without a checksum would be a file no measurement was
+    // ever taken against.
+    pinned.sort();
+    let mut present = fixture_files(&root, &root);
+    present.sort();
+
+    assert_eq!(
+        pinned, present,
+        "every fixture must be pinned, and every pin must name a fixture"
+    );
+}
+
+/// Returns every pinned fixture file below `directory`, relative to `root`.
+///
+/// `SHA256SUMS` cannot pin itself, and the README describes the package rather
+/// than being part of it.
+fn fixture_files(root: &Path, directory: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(directory).expect("a readable fixture directory") {
+        let path = entry.expect("a readable directory entry").path();
+        if path.is_dir() {
+            found.extend(fixture_files(root, &path));
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .expect("every fixture is below the root")
+            .to_str()
+            .expect("fixture paths are UTF-8")
+            .replace('\\', "/");
+        if relative != "SHA256SUMS" && relative != "README.md" {
+            found.push(relative);
+        }
+    }
+    found
 }

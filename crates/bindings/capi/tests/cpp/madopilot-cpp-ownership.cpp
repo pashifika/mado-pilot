@@ -198,7 +198,7 @@ struct Fixture {
             return false;
         }
 
-        auto taken = session.frame(operation);
+        auto taken = session.acquire_frame(operation);
         if (!check_ok(taken, "session frame")) {
             return false;
         }
@@ -211,14 +211,14 @@ struct Fixture {
         }
         package = loaded_package.take();
 
-        auto patch = engine.prepare_template(package, "panel.patch", operation);
-        if (!check_ok(patch, "prepare_template(panel.patch)")) {
+        auto patch = engine.prepare_from_package(package, "panel.patch", operation);
+        if (!check_ok(patch, "prepare_from_package(panel.patch)")) {
             return false;
         }
         present = patch.take();
 
-        auto nothing = engine.prepare_template(package, "panel.absent", operation);
-        if (!check_ok(nothing, "prepare_template(panel.absent)")) {
+        auto nothing = engine.prepare_from_package(package, "panel.absent", operation);
+        if (!check_ok(nothing, "prepare_from_package(panel.absent)")) {
             return false;
         }
         absent = nothing.take();
@@ -315,7 +315,7 @@ void a_child_outlives_its_parents(Fixture& fixture)
             return;
         }
 
-        auto taken = session.frame(fixture.operation);
+        auto taken = session.acquire_frame(fixture.operation);
         if (!check_ok(taken, "session frame")) {
             return;
         }
@@ -514,7 +514,7 @@ void close_reports_its_outcome(Fixture& fixture)
         check(closed.value(), "the session reports itself closed");
     }
 
-    const auto after = session.frame(fixture.operation);
+    const auto after = session.acquire_frame(fixture.operation);
     check(!after && after.status() == MADOPILOT_STATUS_CLOSED,
           "a closed session starts no further work");
 

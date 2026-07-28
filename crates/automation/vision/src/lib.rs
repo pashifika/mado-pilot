@@ -33,7 +33,7 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 4. Template sources, prepared-template ownership, typed
+//! Phase 1, complete. Template sources, prepared-template ownership, typed
 //! requests and options, backend descriptors, immutable source-correlated
 //! results, and the deterministic rules in [`Matcher`] are implemented and
 //! tested against two behaviourally distinct backends: the controlled double in
@@ -43,8 +43,11 @@
 //! Preprocessing descriptors are not implemented and are not reserved as an
 //! empty seam. See `docs/architecture.md`.
 //!
-//! **Every public name here is provisional.** Naming is settled by gate `G-009`
-//! before Phase 1 exits; see `docs/validation-gates.md`.
+//! **The public names here are reviewed, not yet stable.**
+//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
+//! review that settled them and the policy that now applies: renaming or
+//! removing one is a breaking change needing an ADR and a version bump, while
+//! adding is free. The stability promise itself begins at 1.0.
 //!
 //! # Where to start
 //!

@@ -230,7 +230,7 @@ int main(int argc, char** argv)
 
     // 5. Take one frame and hold it. Everything below searches this exact frame,
     //    not whatever the session publishes later.
-    auto frame_result = session.frame(operation);
+    auto frame_result = session.acquire_frame(operation);
     if (!expect_ok(frame_result, "session frame")) {
         return 1;
     }
@@ -302,14 +302,14 @@ int main(int argc, char** argv)
         }
     }
 
-    auto present_result = engine.prepare_template(package, "panel.patch", operation);
-    if (!expect_ok(present_result, "prepare_template(panel.patch)")) {
+    auto present_result = engine.prepare_from_package(package, "panel.patch", operation);
+    if (!expect_ok(present_result, "prepare_from_package(panel.patch)")) {
         return 1;
     }
     const madopilot::Template present = present_result.take();
 
-    auto absent_result = engine.prepare_template(package, "panel.absent", operation);
-    if (!expect_ok(absent_result, "prepare_template(panel.absent)")) {
+    auto absent_result = engine.prepare_from_package(package, "panel.absent", operation);
+    if (!expect_ok(absent_result, "prepare_from_package(panel.absent)")) {
         return 1;
     }
     const madopilot::Template absent = absent_result.take();
@@ -332,13 +332,13 @@ int main(int argc, char** argv)
     // the failing load below, which is the difference a C++ caller sees.
     {
         const auto refused =
-            engine.prepare_template(package, "panel.absent.typo", operation);
+            engine.prepare_from_package(package, "panel.absent.typo", operation);
         expect(!refused && refused.status() == MADOPILOT_STATUS_INVALID_ARGUMENT,
                "an undeclared template identity is invalid argument");
         expect(refused.error().category() == MADOPILOT_ERROR_CATEGORY_ASSET,
                "the refusal is categorized against the package's contents");
         std::printf("undeclared template:\n");
-        report_error("prepare_template", refused.error());
+        report_error("prepare_from_package", refused.error());
     }
 
     // A package that cannot be read is the failure that does carry the pair:
@@ -449,7 +449,7 @@ int main(int argc, char** argv)
         expect(closed.value(), "the session reports itself closed");
     }
 
-    const auto after = session.frame(operation);
+    const auto after = session.acquire_frame(operation);
     expect(!after && after.status() == MADOPILOT_STATUS_CLOSED,
            "a closed session publishes nothing further");
 

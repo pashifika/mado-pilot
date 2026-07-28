@@ -21,7 +21,7 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 4. Capture and vision doubles, a manual clock, a template-image
+//! Phase 1, complete. Capture and vision doubles, a manual clock, a template-image
 //! writer, the matching fixture scene, and the capture and vision contract suites
 //! exist. Input and OCR doubles and target lifecycle scripts do not.
 

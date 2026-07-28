@@ -8,14 +8,15 @@
  * entry.
  *
  * ============================================================================
- * NOTHING HERE IS STABLE YET.
+ * This header declares no ABI of its own.
  *
- * This header declares no ABI. The only ABI is the C one, and every status
- * value, structure layout, and function-table position it carries is
- * PROVISIONAL under gate `G-010`. Nothing below restates a numeric value from
- * that contract: the enumerated types are aliases of the C types, so a caller
- * writes `MADOPILOT_STATUS_OK` and gets whatever the header it compiled against
- * says that is.
+ * The only ABI is the C one, frozen at 1.0 by
+ * docs/adr/0007-phase-1-c-abi-freeze.md. Nothing below restates a numeric value
+ * from that contract: the enumerated types are aliases of the C types, so a
+ * caller writes `MADOPILOT_STATUS_OK` and gets whatever the header it compiled
+ * against says that is. That stays true now the values are frozen, because a
+ * hand-written mirror fails silently when the C set grows — it compiles, one
+ * value short — and freezing the values does not remove that risk.
  * ============================================================================
  *
  * Requires C++17. See docs/cpp-wrapper.md for the ownership rules and
@@ -69,7 +70,7 @@ using AssetStage = ::madopilot_asset_stage_t;
 
 /* Structures with no borrowed view are passed through as themselves, for the
  * same reason: their fields are the contract's, and a projection would be a
- * copy of a layout that is still provisional. */
+ * second copy of a frozen layout that could only ever drift from it. */
 using Rect = ::madopilot_pixel_rect_t;
 using FrameStamp = ::madopilot_frame_stamp_t;
 using FrameInfo = ::madopilot_frame_info_t;
@@ -1425,14 +1426,17 @@ public:
     }
 
     /// The session's latest published frame.
-    Result<Frame> frame(const Operation& operation) const {
+    ///
+    /// A verb, because this waits: the accessors on this type are nouns and
+    /// none of them blocks.
+    Result<Frame> acquire_frame(const Operation& operation) const {
         if (api_ == nullptr) {
             return detail::no_table<Frame>();
         }
         const auto operation_c = operation.to_c();
         ::madopilot_frame_t* frame = nullptr;
         ::madopilot_error_t* error = nullptr;
-        const Status status = api_->session_frame(handle_, &operation_c, &frame, &error);
+        const Status status = api_->session_acquire_frame(handle_, &operation_c, &frame, &error);
         if (!is_ok(status)) {
             return Result<Frame>::failure(take_error_(api_, status, error));
         }
@@ -1546,7 +1550,7 @@ public:
 
     /// Prepares one template from a loaded package. The result outlives the
     /// package.
-    Result<Template> prepare_template(const Package& package, std::string_view id,
+    Result<Template> prepare_from_package(const Package& package, std::string_view id,
                                       const Operation& operation) const {
         if (api_ == nullptr) {
             return detail::no_table<Template>();
@@ -1554,7 +1558,7 @@ public:
         const auto operation_c = operation.to_c();
         ::madopilot_template_t* prepared = nullptr;
         ::madopilot_error_t* error = nullptr;
-        const Status status = api_->template_prepare(handle_, package.get(),
+        const Status status = api_->template_prepare_from_package(handle_, package.get(),
                                                      detail::as_str(id), &operation_c,
                                                      &prepared, &error);
         if (!is_ok(status)) {

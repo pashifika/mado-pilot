@@ -65,15 +65,29 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 5. The deterministic replay workflow above is implemented on
+//! Phase 1, complete. The deterministic replay workflow above is implemented on
 //! both release targets. Native window and display capture, OCR, watchers,
 //! input injection, diagnostics, and scheduling are **not implemented** and
 //! cannot be reached from here.
 //!
-//! **Every public name here is provisional.** Naming is settled by gate
-//! `G-009` before Phase 1 exits, after this package's example has exercised
-//! the names; see `docs/validation-gates.md`. Nothing here is a stability
-//! promise yet.
+//! # Names, and what may change
+//!
+//! **The names here are reviewed, not yet stable.** Every one of them was
+//! exercised by this package's example, its contract suite, the C ABI, and the
+//! C++ wrapper before being settled;
+//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
+//! review and the six renames it produced.
+//!
+//! What that policy means for a caller: adding an item, a method, or an
+//! enumeration variant is free, and every public enumeration a later phase may
+//! extend is already `#[non_exhaustive]`, so keep a fallback arm. Renaming or
+//! removing one of these names is a breaking change and needs an ADR and a
+//! version bump. The stability promise itself begins at 1.0; this package is
+//! at 0.1.
+//!
+//! The C ABI beneath this one is versioned separately and is already frozen at
+//! 1.0 — see `docs/adr/0007-phase-1-c-abi-freeze.md`. A Rust rename does not
+//! propagate to it.
 //!
 //! # Where to start
 //!
@@ -105,7 +119,7 @@
 //! let session = engine.open(targets[0].id(), &OpenRequest::new(), &operation)?;
 //!
 //! // A mapping outlives the session it came from.
-//! let captured = session.frame(&FrameRequest::latest(), &operation)?;
+//! let captured = session.acquire_frame(&FrameRequest::latest(), &operation)?;
 //! let mapping = captured.map(PixelFormat::Rgba8, &operation)?;
 //! session.close(&operation)?;
 //! assert!(mapping.bytes().iter().all(|byte| *byte == 0x30));
@@ -116,7 +130,7 @@ use std::sync::Arc;
 
 use mado_pilot_adapter_replay::{ReplayProvider, ReplaySource};
 use mado_pilot_backend_opencv::OpenCvBackend;
-use mado_pilot_runtime::{EngineParts, IdentityIssuer, Matcher, PackageLoader};
+use mado_pilot_runtime::{EngineWiring, IdentityIssuer, Matcher, PackageLoader};
 
 /// Replay capture configuration.
 ///
@@ -138,7 +152,68 @@ pub mod replay {
 /// the descriptor of the backend that was actually selected.
 pub const REQUIRED_BACKEND: &str = mado_pilot_backend_opencv::BACKEND_ID;
 
-/// Builds an engine over `source` that matches through the OpenCV CPU backend.
+/// What a replay engine is built from.
+///
+/// The composition root has no type of its own — [`replay_engine`] is a
+/// function, because for Phase 1 there is exactly one adapter pair to wire and
+/// a builder would have named a decision no caller can make. What a caller can
+/// decide is the policy the engine then applies, and this is where that lives:
+/// every later option arrives as a method here rather than as a second
+/// constructor.
+///
+/// A [`ReplaySource`] converts into a request that applies the default limits,
+/// so `replay_engine(source)` stays the whole of the common case.
+#[derive(Debug, Clone)]
+pub struct ReplayEngineRequest {
+    source: ReplaySource,
+    limits: AssetLimits,
+}
+
+impl ReplayEngineRequest {
+    /// Requests an engine over `source` with the default asset limits.
+    #[must_use]
+    pub fn new(source: ReplaySource) -> Self {
+        Self {
+            source,
+            limits: AssetLimits::default(),
+        }
+    }
+
+    /// Applies `limits` to every package the engine loads.
+    ///
+    /// [`AssetLimits`] can only be built at or below the implementation
+    /// ceilings, so this can tighten what an untrusted package may allocate and
+    /// cannot loosen it. [`Engine::limits`] reports what is in effect.
+    #[must_use]
+    pub const fn with_limits(mut self, limits: AssetLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Returns the replay source the engine captures from.
+    #[must_use]
+    pub const fn source(&self) -> &ReplaySource {
+        &self.source
+    }
+
+    /// Returns the limits the engine will apply.
+    #[must_use]
+    pub const fn limits(&self) -> AssetLimits {
+        self.limits
+    }
+}
+
+impl From<ReplaySource> for ReplayEngineRequest {
+    fn from(source: ReplaySource) -> Self {
+        Self::new(source)
+    }
+}
+
+/// Builds an engine over a replay source that matches through the OpenCV CPU
+/// backend.
+///
+/// Takes a [`ReplaySource`] directly for the common case, or a
+/// [`ReplayEngineRequest`] when the host has policy to state.
 ///
 /// The backend is initialized first. A build that cannot use its OpenCV fails
 /// here rather than at the first search, and no other matching implementation
@@ -149,7 +224,9 @@ pub const REQUIRED_BACKEND: &str = mado_pilot_backend_opencv::BACKEND_ID;
 /// Returns [`Status::VisionFailed`] when the required matching backend cannot
 /// be initialized, and a capture failure when the replay source cannot be
 /// accepted.
-pub fn replay_engine(source: ReplaySource) -> Result<Engine> {
+pub fn replay_engine(request: impl Into<ReplayEngineRequest>) -> Result<Engine> {
+    let request = request.into();
+
     // Required, not preferred: constructing the backend is what proves this
     // host's OpenCV is usable, and a failure here leaves no engine that could
     // have fallen back to something else.
@@ -157,26 +234,39 @@ pub fn replay_engine(source: ReplaySource) -> Result<Engine> {
 
     let issuer = Arc::new(IdentityIssuer::new());
     let engine = issuer.engine();
-    let capture = ReplayProvider::new(issuer, source)?;
+    let capture = ReplayProvider::new(issuer, request.source)?;
 
-    Ok(Engine::new(EngineParts {
+    Ok(Engine::new(EngineWiring {
         engine,
         capture: Arc::new(capture),
         matcher: Matcher::new(Arc::new(backend)),
-        loader: PackageLoader::new(),
+        loader: PackageLoader::with_limits(request.limits),
     }))
 }
 
 pub use mado_pilot_runtime::{
-    AssetFault, AssetFaultKind, AssetPackage, CancellationToken, CaptureFault, ClipPolicy, Clock,
-    ContentDigest, Continuity, CoordinateSpace, CoordinateSupport, CpuMapping, Engine, EngineId,
-    Error, FindOutcome, FindRequest, Frame, FrameChoice, FrameDescriptor, FrameOrder, FrameRequest,
-    FrameSelection, FrameSequence, FrameStamp, FrameView, GeometryFault, GeometryRevision,
-    HASH_ALGORITHM, IdentityFault, Interruption, LoadStage, MANIFEST_PATH, Manifest, Match,
-    MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage, MonotonicInstant,
+    AssetFault, AssetFaultKind, AssetLimits, AssetPackage, BackendDescriptor, BackendId,
+    CancellationToken, CaptureFault, ClipPolicy, Clock, ContentDigest, Continuity, CoordinateSpace,
+    CoordinateSupport, CpuMapping, Engine, EngineId, Error, FindOutcome, FindRequest, Frame,
+    FrameDescriptor, FrameOrder, FrameRequest, FrameSelection, FrameSequence, FrameStamp,
+    FrameView, GeometryFault, GeometryRevision, IdentityFault, Interruption, LoadStage, Manifest,
+    Match, MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage, MonotonicInstant,
     OpenRequest, OperationContext, PackagePath, PackageSource, PixelExtent, PixelFormat, PixelRect,
-    Point, PreparedTemplate, Provenance, ProviderId, Rect, RegionSelection, Result, SCHEMA_VERSION,
-    Scale, Session, SessionDescription, Status, StreamEpoch, StreamId, Suppression, SystemClock,
-    TargetDescription, TargetId, TargetPlacement, TemplateDeclaration, TemplateEncoding,
-    TemplateId, TemplateSource, TemplateSourceRequest, TransformSnapshot, VisionFault,
+    Point, PreparedTemplate, Provenance, ProviderId, Rect, RegionSelection, Result, Scale,
+    SearchFrame, Session, SessionDescription, Status, StreamEpoch, StreamId, Suppression,
+    SystemClock, TargetDescription, TargetId, TargetPlacement, TemplateDeclaration,
+    TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest, TransformSnapshot,
+    VisionFault,
+};
+
+/// The asset vocabulary's three module-level constants, qualified.
+///
+/// Their names are unqualified in `mado-pilot-assets`, where the package name
+/// already says which schema, which manifest, and which hash they are about. At
+/// this crate's root nothing says it: `mado_pilot::SCHEMA_VERSION` would sit
+/// beside [`replay::SCHEMA_VERSION`] with no way to tell which schema either
+/// one versions, and a caller importing both would have to alias one anyway.
+pub use mado_pilot_runtime::{
+    HASH_ALGORITHM as ASSET_HASH_ALGORITHM, MANIFEST_PATH as ASSET_MANIFEST_PATH,
+    SCHEMA_VERSION as ASSET_SCHEMA_VERSION,
 };

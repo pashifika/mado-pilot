@@ -582,6 +582,38 @@ fn a_directory_that_is_not_a_package_reports_the_rule_and_the_stage() {
 }
 
 #[test]
+fn preparing_a_template_under_an_expired_deadline_publishes_no_handle() {
+    let api = table();
+    let flow = support::Flow::open();
+    let expired = expired_operation();
+
+    let mut prepared = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: both handles are retained by the flow and every pointer is a live
+    // local.
+    let status = unsafe {
+        (api.template_prepare_from_package)(
+            flow.engine,
+            flow.package,
+            str_view("panel.patch"),
+            &raw const expired,
+            &raw mut prepared,
+            &raw mut error,
+        )
+    };
+
+    // This entry resolves the identity itself rather than going through
+    // `Engine::prepare_from_package`, so it owns its own admission and commit.
+    // A template it compiled and then lost the race for is dropped, not
+    // published.
+    assert_eq!(status, MADOPILOT_STATUS_DEADLINE_EXCEEDED);
+    assert!(prepared.is_null(), "a refused entry writes no handle");
+
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.status, MADOPILOT_STATUS_DEADLINE_EXCEEDED);
+}
+
+#[test]
 fn an_undeclared_template_is_the_callers_mistake_not_an_invalid_package() {
     let api = table();
     let flow = support::Flow::open();
@@ -592,7 +624,7 @@ fn an_undeclared_template_is_the_callers_mistake_not_an_invalid_package() {
     // SAFETY: both handles are retained by the flow and every pointer is a live
     // local.
     let status = unsafe {
-        (api.template_prepare)(
+        (api.template_prepare_from_package)(
             flow.engine,
             flow.package,
             str_view("panel.nothing"),
@@ -607,7 +639,16 @@ fn an_undeclared_template_is_the_callers_mistake_not_an_invalid_package() {
     let detail = support::describe_and_release(api, error);
     assert_eq!(detail.status, MADOPILOT_STATUS_INVALID_ARGUMENT);
     assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ASSET);
-    assert_ne!(detail.flags & MADOPILOT_ERROR_HAS_BACKEND, 0);
+
+    // The rule and the stage, not just the status. Without them this is
+    // indistinguishable from every other malformed request, which is what left
+    // `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` declared and unreachable.
+    assert_ne!(detail.flags & MADOPILOT_ERROR_HAS_ASSET_DETAIL, 0);
+    assert_eq!(detail.asset_fault, MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE);
+    assert_eq!(detail.asset_stage, MADOPILOT_ASSET_STAGE_COMMIT);
+
+    // No backend is named, because the identity was refused before one ran.
+    assert_eq!(detail.flags & MADOPILOT_ERROR_HAS_BACKEND, 0);
 }
 
 // --- Helpers ----------------------------------------------------------------

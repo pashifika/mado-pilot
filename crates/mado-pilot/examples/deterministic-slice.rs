@@ -16,8 +16,9 @@
 //! doing — reading a manifest, normalizing paths, verifying content digests —
 //! is only exercised by real bytes.
 //!
-//! Every name this program uses is provisional until gate `G-009` is resolved.
-//! Reviewing them is part of what the example is for.
+//! Reviewing the names this program uses is part of what it is for, and that
+//! review has happened: see
+//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md`.
 
 use std::path::PathBuf;
 
@@ -68,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Take one frame and hold it. Everything below searches this exact
     //    frame, not whatever the session publishes later.
-    let frame = session.frame(&FrameRequest::latest(), &operation)?;
+    let frame = session.acquire_frame(&FrameRequest::latest(), &operation)?;
     let stamp = frame.stamp();
     println!(
         "frame: epoch {} sequence {} geometry {} {}",
@@ -111,8 +112,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         package.template_count()
     );
 
-    let present = engine.prepare_template(&package, "panel.patch", &operation)?;
-    let absent = engine.prepare_template(&package, "panel.absent", &operation)?;
+    let present = engine.prepare_from_package(&package, "panel.patch", &operation)?;
+    let absent = engine.prepare_from_package(&package, "panel.absent", &operation)?;
 
     // 6. Search that exact frame. Three searches, three different answers.
     let found = session.find_template(
@@ -156,7 +157,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("closed: {}", session.is_closed());
 
     let after_close = session
-        .frame(&FrameRequest::latest(), &operation)
+        .acquire_frame(&FrameRequest::latest(), &operation)
         .expect_err("a closed session publishes nothing further");
     println!("after close: {}", after_close.status());
     assert_eq!(after_close.status(), Status::Closed);

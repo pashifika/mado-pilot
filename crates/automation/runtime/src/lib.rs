@@ -20,7 +20,7 @@
 //! This package depends on the MadoPilot core, capture, vision, and assets
 //! contract packages. It knows no concrete platform or backend adapter type, so
 //! it never depends on the replay, Windows, macOS, OpenCV, or ONNX packages:
-//! [`EngineParts`] is filled in by the public facade, which is where adapter
+//! [`EngineWiring`] is filled in by the public facade, which is where adapter
 //! selection belongs.
 //!
 //! # Re-exports
@@ -33,7 +33,7 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 5. Target discovery and session opening, exact and latest
+//! Phase 1, complete. Target discovery and session opening, exact and latest
 //! frame selection, package loading, template preparation, the deep search, the
 //! result envelope, and explicit close are implemented. There is no scheduler,
 //! no watcher, no bounded work queue, no coalescing policy, and no diagnostic
@@ -41,7 +41,11 @@
 //! change-detection policy remains unresolved; see gate `G-005` in
 //! `docs/validation-gates.md`.
 //!
-//! **Every public name here is provisional** until gate `G-009` is resolved.
+//! **The public names here are reviewed, not yet stable.**
+//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
+//! review that settled them and the policy that now applies: renaming or
+//! removing one is a breaking change needing an ADR and a version bump, while
+//! adding is free. The stability promise itself begins at 1.0.
 //!
 //! # Where to start
 //!
@@ -49,7 +53,7 @@
 //! use std::sync::Arc;
 //!
 //! use mado_pilot_runtime::{
-//!     CaptureProvider, Continuity, Engine, EngineParts, FindRequest, IdentityIssuer, MatchOptions,
+//!     CaptureProvider, Continuity, Engine, EngineWiring, FindRequest, IdentityIssuer, MatchOptions,
 //!     Matcher, OpenRequest, OperationContext, PixelExtent, PixelFormat, PackageLoader,
 //! };
 //! use mado_pilot_testkit::{ControlledCapture, ControlledMatcher, match_fixtures};
@@ -62,7 +66,7 @@
 //!     PixelExtent::new(96, 64),
 //!     PixelFormat::Rgba8,
 //! )?);
-//! let engine = Engine::new(EngineParts {
+//! let engine = Engine::new(EngineWiring {
 //!     engine: issuer.engine(),
 //!     capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
 //!     matcher: Matcher::new(Arc::new(ControlledMatcher::new(PixelFormat::Rgba8))),
@@ -74,7 +78,7 @@
 //! let session = engine.open(targets[0].id(), &OpenRequest::new(), &operation)?;
 //! capture.publish(0x40, Continuity::Continuous)?;
 //!
-//! let template = engine.prepare(&match_fixtures::planted_template("patch"), &operation)?;
+//! let template = engine.prepare_template(&match_fixtures::planted_template("patch"), &operation)?;
 //! let outcome = session.find_template(
 //!     &FindRequest::latest(&template, MatchOptions::from_defaults(template.defaults())),
 //!     &operation,
@@ -91,8 +95,8 @@ pub mod engine;
 pub mod find;
 pub mod session;
 
-pub use engine::{Engine, EngineParts};
-pub use find::{FindOutcome, FindRequest, FrameChoice};
+pub use engine::{Engine, EngineWiring};
+pub use find::{FindOutcome, FindRequest, SearchFrame};
 pub use session::Session;
 
 pub use mado_pilot_assets::{

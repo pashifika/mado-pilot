@@ -38,7 +38,7 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 7. The table's Phase 1 prefix covers build and clock
+//! Phase 1, complete. The table's Phase 1 prefix covers build and clock
 //! information, cancellation, structured errors, engine construction over a
 //! deterministic replay source, asset package loading, template preparation,
 //! target discovery, capture-session lifecycle, latest-frame access, CPU
@@ -52,9 +52,11 @@
 //! header-only.
 //!
 //! **Every status value, structure layout, field offset, and table position
-//! here is provisional.** Gate `G-010` in `docs/validation-gates.md` freezes
-//! them after the evidence this stage produces has been reviewed. Nothing in
-//! this package is an ABI compatibility promise yet.
+//! here is frozen for ABI major 1** by
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`, which resolved gate `G-010`. Within
+//! this major nothing changes its number and nothing moves; a later minor
+//! appends and raises `MADOPILOT_ABI_MINOR`. `tests/abi-compat/` keeps the
+//! frozen header and compiles it against every later build of this library.
 //!
 //! # Where to start
 //!
