@@ -343,16 +343,25 @@ fn match_warm(fixture: &Fixture) -> Sample {
 }
 
 /// Reports whether an outcome found exactly the planted copies.
+///
+/// Compared as a set. Two byte-identical copies correlate at one to within the
+/// tolerance, so which of them the result puts first rests on a difference
+/// smaller than the tolerance, and an oracle that asserted an order would be
+/// asserting the host's rounding rather than the workload's correctness.
 fn planted(outcome: &FindOutcome) -> bool {
     let result = outcome.result();
-    let origins: Vec<(i32, i32)> = result
+    let mut origins: Vec<(i32, i32)> = result
         .matches()
         .iter()
         .map(|found| (found.bounds().left(), found.bounds().top()))
         .collect();
+    origins.sort_unstable_by_key(|&(left, top)| (top, left));
+
+    let mut expected = PLANTED.to_vec();
+    expected.sort_unstable_by_key(|&(left, top)| (top, left));
 
     result.stamp() == outcome.frame().stamp()
-        && origins == PLANTED
+        && origins == expected
         && result
             .matches()
             .iter()

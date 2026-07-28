@@ -81,12 +81,30 @@ fn options(template: &PreparedTemplate) -> MatchOptions {
     MatchOptions::from_defaults(template.defaults())
 }
 
+/// Returns where the matches were found, in a canonical order of this test's own.
+///
+/// Sorted, because the order the result reports is not one a test may assert
+/// against. Two byte-identical copies correlate at one to within the tolerance,
+/// so which of them the result puts first rests on a difference smaller than the
+/// tolerance — and that difference is a property of the host's OpenCV build, not
+/// of the workflow. The adapter's own algorithm tests already compare this way.
 fn origins(result: &mado_pilot::MatchResult) -> Vec<(i32, i32)> {
-    result
+    let mut origins: Vec<(i32, i32)> = result
         .matches()
         .iter()
         .map(|found| (found.bounds().left(), found.bounds().top()))
-        .collect()
+        .collect();
+    origins.sort_unstable_by_key(|&(left, top)| (top, left));
+
+    origins
+}
+
+/// Returns the planted origins in the same canonical order as [`origins`].
+fn planted_origins() -> Vec<(i32, i32)> {
+    let mut expected = PLANTED.to_vec();
+    expected.sort_unstable_by_key(|&(left, top)| (top, left));
+
+    expected
 }
 
 #[test]
@@ -149,7 +167,7 @@ fn the_complete_workflow_finds_the_planted_template_in_the_mapped_frame() {
     assert_eq!(outcome.target(), session.target());
     assert_eq!(outcome.result().stamp(), frame.stamp());
     assert_eq!(outcome.result().backend().id(), REQUIRED_BACKEND);
-    assert_eq!(origins(outcome.result()), PLANTED);
+    assert_eq!(origins(outcome.result()), planted_origins());
     for found in outcome.result().matches() {
         assert!(
             (found.score() - 1.0).abs() <= TOLERANCE,
