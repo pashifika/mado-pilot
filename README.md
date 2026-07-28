@@ -41,15 +41,19 @@ injects input. Adding a package here is not a claim that its behavior exists.
 | C ABI, tracked C header, dynamic library | Implemented for the Phase 1 prefix |
 | Header-only C++ RAII wrapper and CMake targets | Implemented for the Phase 1 prefix |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets, release packaging | Not established |
+| Numeric performance budgets for the Phase 1 workloads | Set on both release targets; see [ADR 0008](docs/adr/0008-phase-1-performance-budgets.md) |
+| Release packaging | Not implemented |
 
-Every public Rust name is provisional until
-[`G-009`](docs/validation-gates.md#g-009) is resolved, and the project makes no
-Rust stability promise before then. Every C status value, structure layout, and
-function-table position is provisional until
-[`G-010`](docs/validation-gates.md#g-010) is resolved, and the project makes no
-ABI compatibility promise before then. The C++ wrapper declares no ABI of its
-own, so it inherits both.
+The public Rust names have been reviewed and settled
+([`G-009`](docs/validation-gates.md#g-009), resolved by
+[ADR 0006](docs/adr/0006-public-rust-names-and-compatibility-policy.md)), but
+they are not yet a stability promise: that begins at 1.0, and until then a
+rename costs an ADR and a version bump rather than being impossible. The C ABI
+is separately versioned and **is** frozen, at ABI 1.0
+([`G-010`](docs/validation-gates.md#g-010), resolved by
+[ADR 0007](docs/adr/0007-phase-1-c-abi-freeze.md)): within ABI major 1 no value
+changes, no field moves, and no function-table entry moves. The C++ wrapper
+declares no ABI of its own and inherits the C one.
 
 [docs/architecture.md](docs/architecture.md) is the tracked baseline and records
 the full status table, the package inventory, and the dependency rules.

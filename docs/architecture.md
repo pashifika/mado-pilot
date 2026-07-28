@@ -71,7 +71,7 @@ Three public surfaces are planned, in this dependency order:
 The C++ wrapper is not a Cargo package. It links through the released C ABI, never
 through Rust internals.
 
-All three exist as of Phase 1 stage 7. [c-abi.md](c-abi.md) is the C boundary's
+All three exist and Phase 1 is complete. [c-abi.md](c-abi.md) is the C boundary's
 own contract document: handle lifetimes, structure-prefix rules, the status
 vocabulary, panic containment, the build prerequisites on each release target,
 and how the hand-written header is verified against the Rust definitions.
@@ -121,7 +121,8 @@ mado-pilot/
 │   │       ├── examples/cpp/   # the C++ example
 │   │       ├── tests/c/        # the C ABI layout probe
 │   │       ├── tests/cpp/      # the C++ ownership probe
-│   │       └── tests/cmake/    # the CMake consumer project
+│   │       ├── tests/cmake/    # the CMake consumer project
+│   │       └── tests/abi-compat/ # one frozen header per released ABI major
 │   └── support/
 │       └── testkit/
 ├── docs/
@@ -531,10 +532,14 @@ none of these headers, libraries, targets, or wrappers.**
 The loader names carry the ABI major version so that an incompatible ABI is a
 different library rather than a silent breakage.
 
-Stable public Rust item names are deliberately not chosen yet; see gate
-[`G-009`](validation-gates.md#g-009). The exact C status codes, function-table
-prefix, and structure layouts are likewise unresolved; see gate
-[`G-010`](validation-gates.md#g-010).
+The public Rust item names were reviewed and settled under gate
+[`G-009`](validation-gates.md#g-009) by
+[ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md); they are the
+`0.x` baseline rather than a stability promise, which begins at 1.0. The C
+status codes, function-table prefix, and structure layouts are frozen at ABI 1.0
+under gate [`G-010`](validation-gates.md#g-010) by
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md), and are versioned separately from
+the Rust names.
 
 `mado-pilot-capi` now builds as a `cdylib` and exports `madopilot_get_api`, and
 `include/madopilot/madopilot.h` exists as a tracked, hand-written header verified
@@ -640,24 +645,26 @@ implemented below describe behavior a caller can use today.
 | Watcher queues, coalescing, diagnostic events, scheduling | Not implemented |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot` |
 | Default adapter wiring and the required-backend rule | Implemented in `mado-pilot` |
-| C ABI functions, C header, dynamic library | Implemented in `mado-pilot-capi` for the Phase 1 prefix; values and layouts provisional under [`G-010`](validation-gates.md#g-010) |
+| C ABI functions, C header, dynamic library | Implemented in `mado-pilot-capi` for the Phase 1 prefix; values and layouts frozen at ABI 1.0 by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented for the Phase 1 prefix as a header-only adapter; decided in [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Not established; format, harness, and correctness oracles only |
+| Numeric performance budgets | Set for the eight Phase 1 workloads on both release targets; decided in [ADR 0008](adr/0008-phase-1-performance-budgets.md). Every later phase's are open under [`G-013`](validation-gates.md#g-013) |
 | Native permission behavior | Not implemented |
-| Release packaging and ABI compatibility testing | Not implemented |
+| Release packaging | Not implemented |
+| ABI compatibility testing | Implemented for the frozen ABI-1.0 header; a release artifact to test against is not |
 
 The existence of a package is not evidence that its behavior exists. Each product
 package documents its own planned responsibility, allowed seam, and implementation
 status in its crate-level documentation.
 
 Nothing in `mado-pilot-core` is a stability promise yet, and neither is anything
-in the facade. Public names stay provisional until gate
-[`G-009`](validation-gates.md#g-009) is resolved. The Rust example that gate
-requires now exists and has exercised the names; the interface review and the
-ADR have not happened, and the questions the example raised are recorded under
-the gate rather than acted on.
+in the facade. Gate [`G-009`](validation-gates.md#g-009) is resolved: the Rust
+example, the C ABI, and the C++ wrapper exercised the provisional names, the
+interface review happened, and
+[ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) records the
+six renames, the four additions, and the policy that now applies. A rename from
+here needs an ADR and a version bump; the promise itself begins at 1.0.
 
 ### Core contracts
 
@@ -868,7 +875,7 @@ trusts its dependencies to have checked.
 
 The engine holds contracts only. It cannot observe which adapter is behind one,
 so no orchestration rule can come to depend on a concrete adapter, and there is
-no plugin registry or public adapter injection: `EngineParts` exists for the
+no plugin registry or public adapter injection: `EngineWiring` exists for the
 facade to fill in and Phase 1 stabilizes nothing about it.
 
 The facade requires the OpenCV CPU backend and never substitutes another
@@ -916,7 +923,7 @@ here so that their absence is a stated scope boundary rather than an untested ga
 | Numeric runtime performance budgets | Not applicable; no measurable workload exists | With the first performance-sensitive workload, under [`G-013`](validation-gates.md#g-013) |
 | Native permission behavior and permission probes | Not applicable; no permission is requested or probed | With the platform adapters in Phase 2 |
 | Native dependency packaging and clean-system loading | Not applicable; no native dependency is declared | With the backend adapters, under [`G-007`](validation-gates.md#g-007) |
-| ABI layout and old-header compatibility | Not applicable in Phase 0; no C ABI symbol, header, or status code existed. Phase 1 stage 6 added the cross-language layout probe and the structure-prefix tests; the frozen old-header fixture still waits on the gate | With the first C ABI functions, under [`G-010`](validation-gates.md#g-010) |
+| ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field on both release targets, the structure-prefix tests cover inputs and outputs in both directions, and `crates/bindings/capi/tests/abi-compat/v1/` is the frozen ABI-1.0 header, compiled against every later library by `c-abi-check` | Resolved under [`G-010`](validation-gates.md#g-010) by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | Capture, mapping, matching, OCR, watcher, and input contract suites | Not applicable; no contract is implemented | With each implementing change |
 
 What Phase 0 does verify is the repository itself: the package inventory and

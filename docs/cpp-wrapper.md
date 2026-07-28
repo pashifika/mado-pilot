@@ -14,11 +14,14 @@ and the contract underneath is [c-abi.md](c-abi.md). Read that one first: every
 rule here is a rule about how the C rules are expressed in C++, and none of them
 replaces one.
 
-## Nothing here is frozen either
+## This wrapper declares no ABI of its own
 
-The wrapper declares no ABI of its own. The only ABI is the C one, and every
-status value, structure layout, and function-table position it carries is
-**provisional** under gate [`G-010`](validation-gates.md#g-010).
+The only ABI is the C one, frozen at 1.0 under gate
+[`G-010`](validation-gates.md#g-010) by
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md). What this header adds is source
+compatibility, governed by the Rust-side policy in
+[ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md): reviewed
+names, not yet a stability promise.
 
 The wrapper is deliberately not a second place those values are written down.
 Its enumerated types are `using` aliases of the C types, so a caller writes
@@ -97,7 +100,7 @@ frame it searched.
 madopilot::Mapping mapping;
 {
     madopilot::Session session = /* ... */;
-    const madopilot::Frame frame = session.frame(operation).take();
+    const madopilot::Frame frame = session.acquire_frame(operation).take();
     mapping = frame.map(request, operation).take();
     session.close(operation);
 }   // session and frame are gone
@@ -141,12 +144,16 @@ if (const auto& detail = error.asset_detail()) {
 }
 ```
 
-Note which operation carries it. A failing `load_package` does. A
-`prepare_template` for an identity the package never declared does not: a
-package that loaded is valid, so that is `MADOPILOT_STATUS_INVALID_ARGUMENT`
-with category `MADOPILOT_ERROR_CATEGORY_ASSET` and no fault pair. The
-distinction is the C ABI's and is recorded against
-[`G-010`](validation-gates.md#g-010).
+Note what the status and the fault pair each tell you. A failing
+`load_package` carries both. So does `prepare_from_package` for an identity the
+package never declared — `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` at
+`MADOPILOT_ASSET_STAGE_COMMIT` — but its *status* is
+`MADOPILOT_STATUS_INVALID_ARGUMENT` rather than
+`MADOPILOT_STATUS_ASSET_INVALID`, because a package that loaded is valid and
+asking it for something it never declared is the caller's mistake. The status
+says whose mistake it was; the fault pair says which one. No backend is named,
+because none ran. See
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
 
 **Zero matches is a success.** A search that qualified nothing returns a
 successful `Result` whose optional match is empty.

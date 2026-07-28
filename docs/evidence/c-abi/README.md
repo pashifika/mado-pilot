@@ -1,8 +1,9 @@
 # C ABI: cross-language layout evidence
 
 This directory holds what the C compiler and `rustc` each measured for the Phase 1
-C structures, on each release target. It is the layout half of the evidence
-[`G-010`](../../validation-gates.md#g-010) needs before it can freeze anything.
+C structures, on each release target. It was the layout half of the evidence
+[`G-010`](../../validation-gates.md#g-010) needed, and is now the record of what
+that gate froze.
 
 The header at `crates/bindings/capi/include/madopilot/madopilot.h` is
 hand-written rather than generated;
@@ -24,19 +25,28 @@ that both compilers produced it.
 That command now also compiles and runs the C++ ownership probe, the C++ example,
 and the CMake consumer project. Those produce no layout numbers — the C++ wrapper
 declares no ABI of its own — so nothing about them is recorded here. What they
-contribute to `G-010` is behavioural, and is tracked in the gate's evidence table
-rather than as a file.
+contributed to `G-010` is behavioural, and is recorded in the gate's evidence
+table rather than as a file.
 
-**Nothing recorded here is frozen.** These are the provisional Phase 1 layouts.
-`G-010` freezes an instance of them through an ADR, and the same change copies the
-header into a permanent old-prefix fixture.
+**What is recorded here is frozen.**
+[ADR 0007](../../adr/0007-phase-1-c-abi-freeze.md) froze these layouts as ABI
+major 1, and the same change copied the header into the permanent old-prefix
+fixture at
+[`tests/abi-compat/v1`](../../../crates/bindings/capi/tests/abi-compat/v1/). A
+report that changes from here is either an additive minor — a new structure, or
+a field appended after every existing one — or a defect.
 
 ## Hosts
 
 | Target | File | Host |
 |---|---|---|
 | `aarch64-apple-darwin` | [layout-aarch64-apple-darwin.txt](layout-aarch64-apple-darwin.txt) | macOS 26.5.2, Apple clang 21.0.0, rustc 1.97.1, OpenCV 4.14.0, CMake 4.4.0 |
-| `x86_64-pc-windows-msvc` | [layout-x86_64-pc-windows-msvc.txt](layout-x86_64-pc-windows-msvc.txt) | Windows 11 x64, MSVC 19.37.32824, rustc 1.97.1, OpenCV 4.14.0, CMake 3.29.5 |
+| `x86_64-pc-windows-msvc` | [layout-x86_64-pc-windows-msvc.txt](layout-x86_64-pc-windows-msvc.txt) | Windows 11 Pro 10.0.26200, MSVC 19.37.32824, rustc 1.97.1, OpenCV 4.14.0, CMake 3.29.5 |
+
+Those rows are no longer transcribed by hand. `c-abi-check` prints the version
+of every tool it uses — both compilers, CMake, and the `rustc` on the other side
+of the comparison — so a run's own output states the conditions it was measured
+under. It used to discover them and throw them away.
 
 The C++ compiler is the same driver as the C one on both hosts, and the CMake
 versions are recorded because stage 7 made CMake a prerequisite of the check

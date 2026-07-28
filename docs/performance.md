@@ -5,19 +5,29 @@ frame mapping, template matching, OCR, watcher scheduling, and acceleration. Eac
 of those phases must be able to show that its behavior is both correct and within
 an agreed cost before the phase exits.
 
-This document defines the format that evidence takes. It deliberately assigns no
-numeric product budget, because no representative workload exists yet: a number
-invented now would be fiction that later evidence has to argue against. Setting a
-numeric budget is gate [`G-013`](validation-gates.md#g-013).
+This document defines the format that evidence takes. Setting a numeric budget
+for a workload is gate [`G-013`](validation-gates.md#g-013), which is resolved
+per phase rather than once: Phase 1's eight workloads have budgets and every
+later phase's are still open.
 
-Phase 0 ran no runtime benchmark. Nothing in this document, and nothing in the
-example it references, is a measured result.
+Nothing in this document is itself a measured result. The numbers live in the
+profiles under [benchmarks/](benchmarks/), each naming the host it was measured
+on, and the example this document references records no measurement at all.
 
 ## Where benchmark files live
 
-A phase commits one file per workload under `docs/benchmarks/`, named
-`<phase>-<workload>.toml`. Each file contains one profile and its budgets, so that
-a budget is never separated from the conditions under which it was measured.
+A phase commits one file per **run** under `docs/benchmarks/`, named
+`<phase>-<workload-set>-<target>.toml`. A file holds exactly one `[profile]` and
+one `[[measurement]]` block per workload, each with its own budgets, so that a
+budget is never separated from the conditions under which it was measured.
+
+One file per run rather than one per workload, because the profile describes the
+run and not the workload: a set of eight workloads measured together on one host
+shares one fixture hash, one target, one machine, one build, and one sample
+count. Eight files would carry eight copies of that and eight chances for them to
+disagree. What must never be shared across a file is the *target* — a budget is
+valid only for the target in its profile — which is why the target is in the
+name.
 
 The format example is
 [benchmarks/example-synthetic.toml](benchmarks/example-synthetic.toml). It is a
@@ -66,9 +76,53 @@ A budget names one measure. The version-one vocabulary is:
 | `startup_time` | milliseconds | Time from process start to a usable session. |
 | `result_correctness` | count | Retained samples whose output disagreed with the correctness oracle. A hard gate, never a tuned ceiling. |
 | `memory_growth` | bytes | Signed change in resident memory across the sampled run, so a decrease is negative. A hard gate: unbounded growth is a defect, not a slow result, and its predicate bounds growth rather than demanding an exact zero. |
+| `latency_p50` | milliseconds | Median of the per-iteration samples for one workload. |
+| `latency_p95` | milliseconds | The 95th percentile of the same samples. Distinct from `capture_to_result_latency_p95`, which is end-to-end from capture to committed result rather than one operation. |
+| `iteration_span_ms` | milliseconds | One clock reading across the whole sampled run, divided by the sample count. It covers everything an iteration does, including the correctness check, so it is an upper bound on the operation rather than a reading of it. Use it where a per-iteration percentile is not expressible; see below. |
+| `peak_allocated_bytes` | bytes | High-water mark of live heap bytes during the sampled run, above what was live before the workload's fixture existed. |
+| `steady_allocated_bytes` | bytes | Live heap bytes when the sampled run finished, above the same baseline, with the fixture still alive. |
+| `allocated_growth_bytes` | bytes | Signed change in live heap bytes across the sampled run alone. A hard gate, on the same terms as `memory_growth`. |
 
 A phase that needs a measure outside this list adds it here in the same change,
 with its unit and its meaning.
+
+### Live heap bytes and resident memory are different measures
+
+`peak_memory`, `steady_memory`, and `memory_growth` are resident memory.
+`peak_allocated_bytes`, `steady_allocated_bytes`, and `allocated_growth_bytes`
+are live heap bytes, counted by a global allocator the benchmark installs. They
+are separate entries rather than a redefinition of the first three, because a
+budget written against one of them does not mean the same thing against the
+other and a reader must never have to guess which was measured.
+
+Phase 1 uses the heap measures. Resident memory is read through a different
+platform API on each release target, it moves with allocator and
+operating-system behaviour that no change to this project can affect, and on a
+workload of this size that noise is larger than the signal. Live heap bytes are
+the same computation on both targets and answer what a bounded-memory gate
+actually asks: does a repeated operation give back what it took. A later phase
+that holds native GPU textures or loads an OCR model will need resident memory
+as well, because those costs are not on the heap this counts.
+
+### When a per-iteration latency cannot be measured
+
+An operation faster than the host clock can express reports zero, and a
+percentile over zeros is not a budget. On `x86_64-pc-windows-msvc`,
+`map_full_frame` measures exactly zero: a mapping whose requested format already
+matches the frame's is shared rather than copied, so the operation is a
+reference-count increment.
+
+A workload in that position is bounded three ways instead, and a latency ceiling
+is not one of them:
+
+- `mapped_bytes_per_result`, which is exact, target-independent, and bounds the
+  behaviour that actually costs something;
+- `iteration_span_ms`, which recovers a number the clock can express by reading
+  it once across hundreds of iterations;
+- the hard memory and correctness gates, which apply to every workload.
+
+Recording that a measurement was zero is not the same as recording that a
+workload is free. A profile says which of these applies and why.
 
 ## Budget kinds
 
@@ -104,6 +158,18 @@ ten percent worse than the recorded baseline on the same target.
 A relative budget requires that the baseline it names exists in a tracked
 benchmark file for the same release target and fixture hash.
 
+## Where a budget attaches
+
+A `[[budget]]` at the top level of a file applies to every measurement in it.
+A `[[measurement.budget]]` applies to the one measurement it sits under. Use the
+first for the gates that are true of the whole run — correctness and bounded
+memory — and the second for anything whose number depends on the workload.
+
+A workload that omits a measure's budget is stating that the measure does not
+bound it. That is a decision the file should explain, not a gap: a latency
+ceiling left out because the operation is faster than the clock says something
+different from one left out because nobody looked.
+
 ## Rules that apply to every budget
 
 - A budget is set, raised, or lowered only with a measurement recorded in the same
@@ -128,23 +194,40 @@ the format for the workloads it introduces, under gate
 
 ## Phase 1 status
 
-Phase 1 delivers the harness and the correctness oracles for the deterministic
-Rust workflow, and **still sets no numeric budget**. `G-013` stays open: a budget
-needs measurements from both release targets, taken on hosts whose CPU and
-operating-system build are stated, and inventing a number from one developer
-machine would be the fiction this document exists to avoid.
+Phase 1 delivers the harness, the correctness oracles, and **the first numeric
+budgets this project has set**. The Phase 1 workloads of
+[`G-013`](validation-gates.md#g-013) are resolved by
+[ADR 0008](adr/0008-phase-1-performance-budgets.md); the gate stays open for
+every later phase.
+
+The two committed profiles are
+[benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml](benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml)
+and
+[benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml](benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml).
+Both were measured on named hosts with the same fixture hash, two hundred
+samples per workload after twenty warm-up iterations, every sample checked
+against its oracle, zero oracle failures on either target.
 
 The harness is a bench target of the `mado-pilot` package, at
-`crates/mado-pilot/benches/deterministic-slice.rs`. It covers six workloads:
+`crates/mado-pilot/benches/deterministic-slice.rs`. It covers eight workloads:
 
 | Workload | What it measures | Correctness oracle |
 |---|---|---|
 | `replay_open` | Discovering targets and opening a session | The session reports the source's own extent and pixel format |
 | `map_full_frame` | Mapping a whole frame to CPU-readable bytes | The mapping covers the whole frame and reports its exact source identity |
 | `map_region_of_interest` | Mapping one region of a held frame | The mapping covers the requested region and no more |
-| `load_package` | Loading and validating a directory package | The package declares both tracked templates |
+| `load_package_directory` | Loading and validating a directory package | The package declares its six tracked templates |
+| `load_package_memory` | The same package, described in caller-owned memory | The committed package equals the one the directory commits |
+| `load_package_archive` | The same package, as a ZIP archive | As above |
 | `prepare_and_match_cold` | Compiling a template and searching with it | Both planted copies are found at their planted offsets, scoring `1.0` within `1e-5` |
 | `match_warm` | Searching with an already-compiled template | As above |
+
+The three loading workloads use the `G-014` tiny package rather than the slice
+package, because it is the only package tracked in more than one form. Same
+bytes, same six templates, three containers: that is what makes the three
+numbers comparable, and `mado-pilot-assets` already asserts that all three
+commit the same package, so a fixture that drifted fails a test before it
+reaches a benchmark.
 
 Every sample is checked against its oracle, including in the run that produces
 timings, because a latency number whose output was never checked is a timing
@@ -154,25 +237,34 @@ The harness has two modes so the oracles can run far more often than the
 timings. `cargo test --locked --workspace --all-targets` executes it with three
 samples per workload and fails on any oracle violation, which puts the whole
 workflow's correctness into the ordinary verification sequence. A timing run is
-explicit, and labels its host because the program does not guess one:
+explicit, and states its host because the program does not guess one:
 
 ```sh
 cargo bench --locked --package mado-pilot --bench deterministic-slice -- \
-    --label "Windows 11 Pro 25H2, Core i7-12700KF"
+    --hardware "Core i7-12700KF, 20 threads, 32 GiB" \
+    --os-version "Windows 11 Pro 10.0.26200 build 26200"
 ```
 
-It prints a profile-shaped report with measurements and no budget. Turning one
-into tracked evidence means recording the exact target triple and the fixture
-hashes alongside it, in a file under `docs/benchmarks/`, in the same change that
-sets the budget it supports.
+The release target is the one condition the program does state for itself, and
+it selects rather than detects it: `std::env::consts` can report the
+architecture and the operating system but not the vendor or the ABI, and a
+triple assembled from the parts that are available would be a guess printed
+where a measurement condition belongs. Anything that is not one of the two
+declared release targets says so.
 
-The harness has been run on both release targets with every oracle satisfied.
-That produced one finding a later budget has to plan around rather than
-discover: on `x86_64-pc-windows-msvc`, `map_full_frame` measures **zero**. The
-mapping is shared rather than copied when the requested format already matches
-the frame's, so the operation is a reference-count increment, and the Windows
-monotonic clock's granularity is coarser than that. A budget for that workload
-therefore cannot be a latency ceiling taken one iteration at a time. It needs a
-measure that does not vanish — `mapped_bytes_per_result` bounds the same
-behavior, and a batched timing over many iterations recovers a number — and the
-same is true of any later operation whose fast path is a pointer copy.
+Turning a run into tracked evidence means adding the budgets and committing it
+under `docs/benchmarks/`, in the same change that sets them.
+
+### The finding the budgets are shaped around
+
+On `x86_64-pc-windows-msvc`, `map_full_frame` measures **zero**. The mapping is
+shared rather than copied when the requested format already matches the frame's,
+so the operation is a reference-count increment, and the Windows monotonic
+clock's granularity is coarser than that. Its median is exactly `0.000000` and
+its 95th percentile is exactly one 100-nanosecond tick.
+
+That workload therefore has no latency budget on either target. It is bounded by
+`mapped_bytes_per_result`, which is exact and target-independent, and by
+`iteration_span_ms`, which recovers a number by reading the clock once across
+two hundred iterations. The same is true of any later operation whose fast path
+is a pointer copy.
