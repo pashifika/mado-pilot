@@ -203,10 +203,20 @@ fn copy_region(
 
     let pixels = frame.pixels();
     let mut output = vec![0u8; descriptor.byte_len()];
+    // Every offset below is checked, including the ones a 64-bit target cannot
+    // overflow. The bounds that make them safe today — `left` and `top` below
+    // `i32::MAX`, four bytes per pixel — are properties of this build's pixel
+    // formats and pointer width rather than of this loop, so a `+` here would be
+    // a silent dependency on both. A wrapped offset would land inside the buffer
+    // and copy the wrong pixels rather than fail.
+    let column_bytes = left
+        .checked_mul(bytes_per_pixel)
+        .ok_or(CaptureFault::InconsistentDescriptor)?;
     for row in 0..usize::try_from(extent.height()).map_err(|_| CaptureFault::RegionOutsideFrame)? {
-        let source_start = (top + row)
-            .checked_mul(source.stride())
-            .and_then(|offset| offset.checked_add(left * bytes_per_pixel))
+        let source_start = top
+            .checked_add(row)
+            .and_then(|line| line.checked_mul(source.stride()))
+            .and_then(|offset| offset.checked_add(column_bytes))
             .ok_or(CaptureFault::InconsistentDescriptor)?;
         let source_end = source_start
             .checked_add(row_bytes)
@@ -214,9 +224,14 @@ fn copy_region(
         let source_row = pixels
             .get(source_start..source_end)
             .ok_or(CaptureFault::ByteLengthMismatch)?;
-        let target_start = row * row_bytes;
+        let target_start = row
+            .checked_mul(row_bytes)
+            .ok_or(CaptureFault::InconsistentDescriptor)?;
+        let target_end = target_start
+            .checked_add(row_bytes)
+            .ok_or(CaptureFault::InconsistentDescriptor)?;
         let target_row = output
-            .get_mut(target_start..target_start + row_bytes)
+            .get_mut(target_start..target_end)
             .ok_or(CaptureFault::ByteLengthMismatch)?;
         target_row.copy_from_slice(source_row);
     }
