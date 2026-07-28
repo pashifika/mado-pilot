@@ -260,3 +260,12 @@ fn the_tracked_fixture_is_the_one_the_oracle_describes() {
     assert!(!panel.declares_placement());
     assert!(source.targets()[1].declares_placement());
 }
+
+#[test]
+fn every_tracked_fixture_still_hashes_to_its_recorded_checksum() {
+    // The tracked frames are what make this suite's identity and geometry
+    // assertions mean anything: one frame repeats the previous frame's bytes
+    // exactly, and one changes extent. A silent edit to either would leave the
+    // assertions passing while testing something else.
+    capture_contract::verify_fixture_checksums(&fixture_directory());
+}

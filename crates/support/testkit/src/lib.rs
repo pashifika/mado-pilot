@@ -4,7 +4,9 @@
 //!
 //! Doubles and shared contract suites that let every adapter be exercised the
 //! same way: a capture provider a test drives by hand, and the capture contract
-//! suite both it and the production replay adapter must pass.
+//! suite both it and the production replay adapter must pass. It also holds the
+//! measurement scaffolding the two benchmark targets share, so that the profile
+//! format `docs/performance.md` defines has one printer rather than two.
 //!
 //! Two implementations is the point. A contract that only one adapter satisfied
 //! would be a description of that adapter, and the paths that matter most —
@@ -22,13 +24,16 @@
 //! # Implementation status
 //!
 //! Phase 1, complete. Capture and vision doubles, a manual clock, a template-image
-//! writer, the matching fixture scene, and the capture and vision contract suites
-//! exist. Input and OCR doubles and target lifecycle scripts do not.
+//! writer, the matching fixture scene, the capture and vision contract suites,
+//! and the benchmark harness exist. Input and OCR doubles and target lifecycle
+//! scripts do not.
 
+pub mod bench_harness;
 pub mod capture_contract;
 pub mod clock;
 pub mod controlled_capture;
 pub mod controlled_matcher;
+pub mod fixture_checksums;
 pub mod match_fixtures;
 pub mod png;
 pub mod vision_contract;
