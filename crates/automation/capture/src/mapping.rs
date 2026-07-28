@@ -240,7 +240,32 @@ fn swap_red_and_blue(pixels: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use mado_pilot_core::{CancellationToken, OperationContext, PixelExtent, PixelRect, Status};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use mado_pilot_core::{
+        CancellationToken, Clock, MonotonicInstant, OperationContext, PixelExtent, PixelRect,
+        Status,
+    };
+
+    #[derive(Debug, Default)]
+    struct AdvanceAfterAdmission {
+        reads: AtomicUsize,
+    }
+
+    impl Clock for AdvanceAfterAdmission {
+        fn now(&self) -> MonotonicInstant {
+            let reads = self.reads.fetch_add(1, Ordering::Relaxed);
+            MonotonicInstant::ORIGIN
+                .checked_add(if reads == 0 {
+                    Duration::ZERO
+                } else {
+                    Duration::from_millis(2)
+                })
+                .expect("test instant is representable")
+        }
+    }
 
     use crate::descriptor::PixelFormat;
     use crate::frame::{FrameView, testing};
@@ -355,20 +380,23 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_after_the_copy_still_discards_the_mapping() {
+    fn deadline_after_the_copy_still_discards_the_mapping() {
         let frame = testing::any_frame(8, 6, 0x50);
-        let token = CancellationToken::new();
-        let context = OperationContext::new().with_cancellation(token.clone());
-        // Admitted, then cancelled while the copy is conceptually in flight.
+        let clock = Arc::new(AdvanceAfterAdmission::default());
+        let deadline = MonotonicInstant::ORIGIN
+            .checked_add(Duration::from_millis(1))
+            .expect("test deadline is representable");
+        let context = OperationContext::new()
+            .with_clock(clock)
+            .with_deadline(deadline);
         let region = PixelRect::new(0, 0, 4, 3).expect("valid");
         let view = FrameView::new(frame, region).expect("valid");
-        token.cancel();
 
         let error = view
             .map(PixelFormat::Bgra8, &context)
-            .expect_err("cancelled");
+            .expect_err("deadline wins after the copy and before commit");
 
-        assert_eq!(error.status(), Status::Cancelled);
+        assert_eq!(error.status(), Status::DeadlineExceeded);
     }
 
     #[test]

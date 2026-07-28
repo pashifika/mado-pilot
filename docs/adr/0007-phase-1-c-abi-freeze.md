@@ -17,8 +17,9 @@ to freeze one well did not exist yet.
 It exists now. Six environments — two macOS hosts, two Windows hosts, and both CI
 runners, spanning two MSVC majors, two OpenCV minors, and a CMake 3 against a
 CMake 4 — produce a **byte-identical 222-line layout report**, measured twice per
-host, once by `rustc` and once by that host's C compiler. Sixty-six tests in six
-suites cover owned-handle lifecycles, structure-size negotiation in both
+host, once by `rustc` and once by that host's C compiler. Sixty-nine tests in six
+suites cover owned-handle lifecycles, independent failure-output initialization,
+structure-size negotiation in both
 directions, pointer and output-state validation, error ownership, and panic
 containment. Both examples run the same flow and are required to print the same
 match rectangles and the same scores.
@@ -100,6 +101,15 @@ use. `madopilot_get_api` refuses a different ABI major with
 
 ### Structure layouts
 
+Semantic numeric values and frozen version/report fields use fixed-width C
+integer types: structure sizes and reported table sizes are `uint32_t`, while row
+strides and semantic result/package counts are `uint64_t`. `size_t` is limited to
+ABI-native addressability quantities: pointer-view lengths, replay input counts
+and element strides, target-list counts, accessor indexes, and the caller-known
+table extent passed to negotiation. Both release targets are 64-bit, and those
+deliberate choices are part of the frozen ABI-1.0 layout rather than implicit
+Rust-size leaks.
+
 Frozen as measured. The complete per-field report is the tracked evidence in
 [../evidence/c-abi/](../evidence/c-abi/), one file per release target, and the
 two are byte-identical. The type-level totals:
@@ -147,11 +157,12 @@ exists from the smaller of its own `sizeof` and the returned table's
 ### Output states
 
 Every function-table entry returns a status and reports values only through
-outputs, and every output is initialized to its documented failure state
-*before* the request is validated: owned handle outputs to null, structures
-through their failure prefix, scalars to zero. On failure they stay that way. An
-entry taking `out_error` may be passed null there and then reports the status
-only.
+outputs, and every independently valid output is initialized to its documented
+failure state *before* the request is validated: owned handle outputs to null,
+structures through their failure prefix, scalars to zero. An invalid sibling
+output does not short-circuit that initialization. On failure valid outputs stay
+in their failure state. An entry taking `out_error` may be passed null there and
+then reports the status only.
 
 ### Ownership
 

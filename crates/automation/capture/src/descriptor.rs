@@ -183,6 +183,17 @@ impl CoordinateSupport {
         }
     }
 
+    /// Frame-local and target-normalized conversions, for a source that declares
+    /// the target's content extent without logical or desktop placement.
+    #[must_use]
+    pub const fn with_target_extent() -> Self {
+        Self {
+            target_normalized: true,
+            target_logical: false,
+            desktop_logical: false,
+        }
+    }
+
     /// Every conversion, for a source that declares a full target placement.
     #[must_use]
     pub const fn with_target_placement() -> Self {
@@ -411,6 +422,17 @@ mod tests {
         assert!(support.supports(CoordinateSpace::CapturePixels));
         assert!(support.supports(CoordinateSpace::FrameNormalized));
         assert!(!support.supports(CoordinateSpace::TargetNormalized));
+        assert!(!support.supports(CoordinateSpace::TargetLogical));
+        assert!(!support.supports(CoordinateSpace::DesktopLogical));
+    }
+
+    #[test]
+    fn a_declared_target_extent_supports_only_target_normalized_conversion() {
+        let support = CoordinateSupport::with_target_extent();
+
+        assert!(support.supports(CoordinateSpace::CapturePixels));
+        assert!(support.supports(CoordinateSpace::FrameNormalized));
+        assert!(support.supports(CoordinateSpace::TargetNormalized));
         assert!(!support.supports(CoordinateSpace::TargetLogical));
         assert!(!support.supports(CoordinateSpace::DesktopLogical));
     }

@@ -264,11 +264,12 @@ pub(crate) fn session_open(
     out_session: *mut *mut madopilot_session_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_session, "out_session")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
+    if let Err(fault) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe {
+            boundary::begin_handle_and_error_out(out_session, "out_session", out_error)
+        }
+    {
         return fault.status();
     }
     hooks::reach(hooks::Site::Entry);
@@ -462,11 +463,10 @@ pub(crate) fn session_acquire_frame(
     out_frame: *mut *mut madopilot_frame_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_frame, "out_frame")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
+    if let Err(fault) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe { boundary::begin_handle_and_error_out(out_frame, "out_frame", out_error) }
+    {
         return fault.status();
     }
     hooks::reach(hooks::Site::Entry);
@@ -596,11 +596,12 @@ pub(crate) fn frame_map(
     out_mapping: *mut *mut madopilot_mapping_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_mapping, "out_mapping")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
+    if let Err(fault) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe {
+            boundary::begin_handle_and_error_out(out_mapping, "out_mapping", out_error)
+        }
+    {
         return fault.status();
     }
     hooks::reach(hooks::Site::Entry);

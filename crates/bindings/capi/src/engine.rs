@@ -251,11 +251,10 @@ pub(crate) fn create(
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_engine, "out_engine")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
+    if let Err(fault) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe { boundary::begin_handle_and_error_out(out_engine, "out_engine", out_error) }
+    {
         return fault.status();
     }
     hooks::reach(hooks::Site::Entry);
@@ -315,11 +314,12 @@ pub(crate) fn discover(
     out_targets: *mut *mut madopilot_target_list_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_targets, "out_targets")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
+    if let Err(fault) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe {
+            boundary::begin_handle_and_error_out(out_targets, "out_targets", out_error)
+        }
+    {
         return fault.status();
     }
     hooks::reach(hooks::Site::Entry);

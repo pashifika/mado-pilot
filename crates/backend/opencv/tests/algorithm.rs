@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use mado_pilot_capture::PixelFormat;
 use mado_pilot_core::{
-    ClipPolicy, CoordinateSpace, OperationContext, PixelExtent, PixelRect, Rect, Status,
+    ClipPolicy, CoordinateSpace, Error, GeometryFault, OperationContext, PixelExtent, PixelRect,
+    Rect, Status,
 };
 use mado_pilot_testkit::match_fixtures::{
     DEGRADED, PATCH, PLANTED, SCENE, absent_template, planted_template,
@@ -19,7 +20,7 @@ use mado_pilot_testkit::match_fixtures::{
 use mado_pilot_testkit::{match_fixtures, png, vision_contract};
 use mado_pilot_vision::{
     MatchBackend, MatchDefaults, MatchOptions, MatchRequest, MatchResult, Matcher, RegionSelection,
-    TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest, VisionFault,
+    Suppression, TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest, VisionFault,
 };
 
 use mado_pilot_backend_opencv::OpenCvBackend;
@@ -139,6 +140,53 @@ fn bounds_of(result: &MatchResult) -> Vec<PixelRect> {
 
 fn rect(left: f64, top: f64, right: f64, bottom: f64) -> Rect {
     Rect::new(CoordinateSpace::CapturePixels, left, top, right, bottom).expect("a valid rectangle")
+}
+
+/// Builds a repeated non-uniform pattern with exact matches at x=0, 2, and 4.
+/// The four-pixel-wide placements overlap, so only `KeepAll` may report all three.
+fn overlapping_fixture() -> (mado_pilot_capture::Frame, TemplateSource) {
+    let template_extent = PixelExtent::new(4, 4);
+    let frame_extent = PixelExtent::new(8, 4);
+    let color = |x: u32| {
+        if x.is_multiple_of(2) {
+            [0xf0, 0x20, 0x40]
+        } else {
+            [0x10, 0xd0, 0x80]
+        }
+    };
+
+    let mut template_rgb = Vec::new();
+    for _ in 0..template_extent.height() {
+        for x in 0..template_extent.width() {
+            template_rgb.extend_from_slice(&color(x));
+        }
+    }
+
+    let mut frame_pixels = Vec::new();
+    for _ in 0..frame_extent.height() {
+        for x in 0..frame_extent.width() {
+            let [red, green, blue] = color(x);
+            frame_pixels.extend_from_slice(&[red, green, blue, 0xff]);
+        }
+    }
+
+    let frame = vision_contract::frame_with_pixels(frame_extent, PixelFormat::Rgba8, frame_pixels);
+    let encoded = png::encode_rgb(
+        template_extent.width(),
+        template_extent.height(),
+        &template_rgb,
+    );
+    let template = TemplateSource::new(TemplateSourceRequest {
+        id: TemplateId::new("periodic").expect("non-empty"),
+        encoding: TemplateEncoding::Png,
+        extent: template_extent,
+        space: CoordinateSpace::CapturePixels,
+        defaults: MatchDefaults::new(0.99, 3).expect("valid defaults"),
+        content: Arc::from(encoded.as_slice()),
+    })
+    .expect("a valid template source");
+
+    (frame, template)
 }
 
 #[test]
@@ -311,6 +359,58 @@ fn a_clipped_region_reports_full_frame_coordinates() {
     );
     assert_eq!(result.matches().len(), 1);
     assert_eq!(result.matches()[0].bounds(), expected);
+}
+
+#[test]
+fn an_explicit_empty_region_is_invalid_geometry() {
+    let matcher = matcher();
+    let frame = match_fixtures::scene_frame(PixelFormat::Rgba8);
+    let prepared = matcher
+        .prepare(&planted_template("patch"), &OperationContext::new())
+        .expect("the patch prepares");
+    let error = matcher
+        .find(
+            MatchRequest::new(
+                &frame,
+                RegionSelection::Region {
+                    rect: rect(12.0, 12.0, 12.0, 24.0),
+                    policy: ClipPolicy::Clip,
+                },
+                &prepared,
+                options(0.9),
+            ),
+            &OperationContext::new(),
+        )
+        .expect_err("an explicit empty ROI is malformed rather than absent");
+
+    assert_eq!(error, Error::from(GeometryFault::EmptyRegion));
+}
+
+#[test]
+fn keep_all_reports_overlapping_opencv_candidates() {
+    let matcher = matcher();
+    let (frame, template) = overlapping_fixture();
+    let prepared = matcher
+        .prepare(&template, &OperationContext::new())
+        .expect("the periodic template prepares");
+    let options =
+        MatchOptions::from_defaults(template.defaults()).with_suppression(Suppression::KeepAll);
+    let result = matcher
+        .find(
+            MatchRequest::new(&frame, RegionSelection::FullFrame, &prepared, options),
+            &OperationContext::new(),
+        )
+        .expect("the repeated pattern searches");
+
+    assert_eq!(
+        bounds_of(&result),
+        vec![
+            PixelRect::new(0, 0, 4, 4).expect("valid"),
+            PixelRect::new(2, 0, 6, 4).expect("valid"),
+            PixelRect::new(4, 0, 8, 4).expect("valid"),
+        ],
+        "KeepAll must not be converted to overlap suppression by the backend"
+    );
 }
 
 #[test]

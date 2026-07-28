@@ -399,6 +399,210 @@ fn a_null_required_output_is_refused() {
 }
 
 #[test]
+fn every_multi_output_entry_clears_a_valid_error_when_the_primary_output_is_null() {
+    let api = table();
+
+    assert_primary_rejection_clears_error(api, "engine_create", |out_error| unsafe {
+        (api.engine_create)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
+    });
+    assert_primary_rejection_clears_error(api, "package_load", |out_error| unsafe {
+        (api.package_load)(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null_mut(),
+            out_error,
+        )
+    });
+    assert_primary_rejection_clears_error(
+        api,
+        "template_prepare_from_package",
+        |out_error| unsafe {
+            (api.template_prepare_from_package)(
+                ptr::null(),
+                ptr::null(),
+                madopilot_str_t::empty(),
+                ptr::null(),
+                ptr::null_mut(),
+                out_error,
+            )
+        },
+    );
+    assert_primary_rejection_clears_error(api, "engine_discover", |out_error| unsafe {
+        (api.engine_discover)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
+    });
+    assert_primary_rejection_clears_error(api, "session_open", |out_error| unsafe {
+        (api.session_open)(
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            ptr::null(),
+            ptr::null_mut(),
+            out_error,
+        )
+    });
+    assert_primary_rejection_clears_error(api, "session_acquire_frame", |out_error| unsafe {
+        (api.session_acquire_frame)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
+    });
+    assert_primary_rejection_clears_error(api, "frame_map", |out_error| unsafe {
+        (api.frame_map)(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null_mut(),
+            out_error,
+        )
+    });
+    assert_primary_rejection_clears_error(api, "session_find", |out_error| unsafe {
+        (api.session_find)(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            ptr::null_mut(),
+            out_error,
+        )
+    });
+}
+
+#[test]
+fn every_multi_output_entry_clears_a_valid_error_when_the_primary_output_is_misaligned() {
+    let api = table();
+
+    with_misaligned_handle_output(|out_engine| {
+        assert_primary_rejection_clears_error(api, "engine_create", |out_error| unsafe {
+            (api.engine_create)(ptr::null(), ptr::null(), out_engine, out_error)
+        });
+    });
+    with_misaligned_handle_output(|out_package| {
+        assert_primary_rejection_clears_error(api, "package_load", |out_error| unsafe {
+            (api.package_load)(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                out_package,
+                out_error,
+            )
+        });
+    });
+    with_misaligned_handle_output(|out_template| {
+        assert_primary_rejection_clears_error(
+            api,
+            "template_prepare_from_package",
+            |out_error| unsafe {
+                (api.template_prepare_from_package)(
+                    ptr::null(),
+                    ptr::null(),
+                    madopilot_str_t::empty(),
+                    ptr::null(),
+                    out_template,
+                    out_error,
+                )
+            },
+        );
+    });
+    with_misaligned_handle_output(|out_targets| {
+        assert_primary_rejection_clears_error(api, "engine_discover", |out_error| unsafe {
+            (api.engine_discover)(ptr::null(), ptr::null(), out_targets, out_error)
+        });
+    });
+    with_misaligned_handle_output(|out_session| {
+        assert_primary_rejection_clears_error(api, "session_open", |out_error| unsafe {
+            (api.session_open)(
+                ptr::null(),
+                ptr::null(),
+                0,
+                ptr::null(),
+                ptr::null(),
+                out_session,
+                out_error,
+            )
+        });
+    });
+    with_misaligned_handle_output(|out_frame| {
+        assert_primary_rejection_clears_error(api, "session_acquire_frame", |out_error| unsafe {
+            (api.session_acquire_frame)(ptr::null(), ptr::null(), out_frame, out_error)
+        });
+    });
+    with_misaligned_handle_output(|out_mapping| {
+        assert_primary_rejection_clears_error(api, "frame_map", |out_error| unsafe {
+            (api.frame_map)(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                out_mapping,
+                out_error,
+            )
+        });
+    });
+    with_misaligned_handle_output(|out_result| {
+        assert_primary_rejection_clears_error(api, "session_find", |out_error| unsafe {
+            (api.session_find)(ptr::null(), ptr::null(), ptr::null(), out_result, out_error)
+        });
+    });
+}
+
+#[test]
+fn every_multi_output_entry_clears_a_valid_primary_when_the_error_output_is_misaligned() {
+    let api = table();
+
+    assert_error_rejection_clears_primary("engine_create", |out_engine, out_error| unsafe {
+        (api.engine_create)(ptr::null(), ptr::null(), out_engine, out_error)
+    });
+    assert_error_rejection_clears_primary("package_load", |out_package, out_error| unsafe {
+        (api.package_load)(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            out_package,
+            out_error,
+        )
+    });
+    assert_error_rejection_clears_primary(
+        "template_prepare_from_package",
+        |out_template, out_error| unsafe {
+            (api.template_prepare_from_package)(
+                ptr::null(),
+                ptr::null(),
+                madopilot_str_t::empty(),
+                ptr::null(),
+                out_template,
+                out_error,
+            )
+        },
+    );
+    assert_error_rejection_clears_primary("engine_discover", |out_targets, out_error| unsafe {
+        (api.engine_discover)(ptr::null(), ptr::null(), out_targets, out_error)
+    });
+    assert_error_rejection_clears_primary("session_open", |out_session, out_error| unsafe {
+        (api.session_open)(
+            ptr::null(),
+            ptr::null(),
+            0,
+            ptr::null(),
+            ptr::null(),
+            out_session,
+            out_error,
+        )
+    });
+    assert_error_rejection_clears_primary("session_acquire_frame", |out_frame, out_error| unsafe {
+        (api.session_acquire_frame)(ptr::null(), ptr::null(), out_frame, out_error)
+    });
+    assert_error_rejection_clears_primary("frame_map", |out_mapping, out_error| unsafe {
+        (api.frame_map)(
+            ptr::null(),
+            ptr::null(),
+            ptr::null(),
+            out_mapping,
+            out_error,
+        )
+    });
+    assert_error_rejection_clears_primary("session_find", |out_result, out_error| unsafe {
+        (api.session_find)(ptr::null(), ptr::null(), ptr::null(), out_result, out_error)
+    });
+}
+
+#[test]
 fn a_behaviour_bearing_entry_rejects_a_null_handle() {
     let api = table();
     let mut count = 42_usize;
@@ -666,8 +870,91 @@ fn build_info() -> madopilot_build_info_t {
     }
 }
 
-fn create_with_frame(
+fn assert_primary_rejection_clears_error(
     api: &'static madopilot_api_t,
+    entry: &str,
+    invoke: impl FnOnce(*mut *mut madopilot_error_t) -> madopilot_status_t,
+) {
+    let sentinel = error_sentinel(api);
+    let mut error = sentinel;
+
+    let status = invoke(&raw mut error);
+    assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT, "{entry}");
+    assert!(
+        error.is_null(),
+        "{entry} must clear a valid out_error even when its primary output is invalid"
+    );
+
+    // SAFETY: null is the documented no-op cleanup path. `sentinel` is the
+    // original owned handle saved before the output slot was cleared.
+    unsafe {
+        assert_eq!(
+            (api.error_release)(error),
+            MADOPILOT_STATUS_OK,
+            "{entry} must leave no stale release path"
+        );
+        assert_eq!(
+            (api.error_release)(sentinel),
+            MADOPILOT_STATUS_OK,
+            "release the saved sentinel owner"
+        );
+    }
+}
+
+fn assert_error_rejection_clears_primary<T>(
+    entry: &str,
+    invoke: impl FnOnce(*mut *mut T, *mut *mut madopilot_error_t) -> madopilot_status_t,
+) {
+    let mut primary = ptr::NonNull::<T>::dangling().as_ptr();
+
+    with_misaligned_handle_output(|out_error| {
+        let status = invoke(&raw mut primary, out_error);
+        assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT, "{entry}");
+    });
+    assert!(
+        primary.is_null(),
+        "{entry} must clear a valid primary output even when out_error is invalid"
+    );
+}
+
+fn error_sentinel(api: &'static madopilot_api_t) -> *mut madopilot_error_t {
+    let scene = Scene::new();
+    let mut invalid_operation = operation();
+    invalid_operation.struct_size = 0;
+    let mut engine = ptr::null_mut();
+    let mut error = ptr::null_mut();
+
+    // SAFETY: all outputs are live locals. The undersized operation is rejected
+    // after output initialization and produces an owned public error handle.
+    let status = unsafe {
+        (api.engine_create)(
+            scene.source(),
+            &raw const invalid_operation,
+            &raw mut engine,
+            &raw mut error,
+        )
+    };
+    assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+    assert!(engine.is_null());
+    assert!(!error.is_null());
+
+    error
+}
+
+fn with_misaligned_handle_output<T>(invoke: impl FnOnce(*mut *mut T)) {
+    let mut storage = [0_usize; 2];
+    let output = storage
+        .as_mut_ptr()
+        .cast::<u8>()
+        .wrapping_add(1)
+        .cast::<*mut T>();
+    assert!(!output.is_aligned());
+
+    invoke(output);
+}
+
+fn create_with_frame(
+    api: &madopilot_api_t,
     frame: &madopilot_replay_frame_t,
     count: usize,
     stride: usize,

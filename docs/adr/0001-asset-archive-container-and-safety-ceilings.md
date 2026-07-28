@@ -51,16 +51,24 @@ Three rules govern how the ceilings are applied.
 
 **Enforce before the cost.** Every ceiling is checked before the allocation or
 expansion it bounds, in this order: total source bytes; the entry count recorded
-in the archive trailer, read before the central directory is materialized; the
-declared total uncompressed bytes; per-entry declared sizes, entry types, and
-normalized names; the aggregate declared ratio; the manifest; then streamed
-expansion.
+in one unambiguous single-disk archive trailer, read before the central directory
+is materialized; a bounded, allocation-free scan proving that the selected
+central-directory header sequence agrees with that trailer; the declared total
+uncompressed bytes; per-entry declared sizes, entry types, and normalized names;
+the aggregate declared ratio; the manifest; then streamed expansion. Ambiguous
+trailers, disagreeing single-disk count fields, and fallback EOCD candidates are
+malformed archives rather than alternate interpretations.
 
 **Recorded metadata may reject, never authorise.** A size or count recorded in
 an archive is attacker-controlled. It may be used to stop early, and it must be
 re-checked against bytes actually produced. An entry is cut off at its declared
 size even when a ceiling would have allowed more, so an understated declaration
 is rejected after one chunk rather than after a ceiling's worth of expansion.
+Because a successfully read entry must produce exactly its declared uncompressed
+length, the expansion-stage observed-ratio cross-check is mathematically
+identical to the aggregate declared-ratio check against the same recorded
+compressed lengths. Actual work is independently bounded by source, per-entry,
+and total-uncompressed ceilings; the ratio is never the sole authorization.
 
 **No trusted extraction.** Archive entries are read in place and never written
 to a filesystem location that later reads treat as trusted. Entry names are
@@ -132,8 +140,10 @@ decision does not support.
 
 **Performance.** The guards are not a measurable tax on legitimate packages: the
 representative 512-template package validates end to end in 6,694 µs on Apple
-Silicon and 6,258 µs on Windows, and the entry-count pre-parse that avoids the
-largest unguarded allocation costs under a microsecond and 144 bytes on both.
+Silicon and 6,258 µs on Windows. The evidence probe's entry-count extraction that
+avoids the largest unguarded allocation costs under a microsecond and 144 bytes on
+both. The implementation additionally performs the bounded header-consistency scan
+above before handing the archive to the ZIP reader.
 
 **What this does not decide.** Directory and memory sources are not archives and
 are not bounded by these ceilings; they have their own containment rules.

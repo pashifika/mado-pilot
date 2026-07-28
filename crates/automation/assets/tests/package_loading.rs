@@ -7,11 +7,15 @@
 //! a tracked valid fixture is for.
 
 use std::sync::Arc;
+#[cfg(unix)]
+use std::time::Duration;
 
 use mado_pilot_assets::{
     AssetFaultKind, AssetLimits, ContentDigest, LoadStage, MANIFEST_PATH, MemoryPackage,
     PackageLoader, PackageSource,
 };
+#[cfg(unix)]
+use mado_pilot_core::MonotonicInstant;
 use mado_pilot_core::{CoordinateSpace, OperationContext, PixelExtent};
 use mado_pilot_vision::TemplateEncoding;
 
@@ -21,6 +25,8 @@ use support::{
     ArchiveEntry, PNG_SIGNATURE, TempDir, empty_manifest, load, tiny_archive, tiny_directory,
     tiny_manifest_bytes, tiny_memory_package, write_archive,
 };
+#[cfg(unix)]
+use support::{ReplacingClock, WritingClock};
 
 #[test]
 fn the_tracked_tiny_package_loads_from_a_directory() {
@@ -52,6 +58,72 @@ fn an_archive_read_from_bytes_matches_the_same_archive_read_from_a_file() {
     let from_bytes = load(&PackageSource::archive_bytes(bytes)).expect("valid");
 
     assert_eq!(from_file, from_bytes);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_archive_path_replaced_between_identity_checks_is_refused() {
+    let package = TempDir::new("archive-identity-swap");
+    let staged = TempDir::new("archive-identity-replacement");
+    let bytes = std::fs::read(tiny_archive()).expect("readable fixture archive");
+    let target = package.write("package.zip", &bytes);
+    let replacement = staged.write("replacement.zip", &bytes);
+    let clock = Arc::new(ReplacingClock::new(2, &target, replacement));
+    let context = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(60)));
+
+    let fault = PackageLoader::new()
+        .load(&PackageSource::archive_file(&target), &context)
+        .expect_err("an identity-changing replacement is refused");
+
+    assert!(clock.replaced(), "the controlled replacement must have run");
+    assert_eq!(fault.kind(), AssetFaultKind::SourceChanged);
+    assert_eq!(fault.stage(), LoadStage::Source);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_late_archive_path_replacement_invalidates_the_retained_snapshot() {
+    let package = TempDir::new("archive-late-path-swap");
+    let staged = TempDir::new("archive-late-path-replacement");
+    let bytes = std::fs::read(tiny_archive()).expect("readable fixture archive");
+    let target = package.write("package.zip", &bytes);
+    let replacement = staged.write("replacement.zip", b"not an archive");
+    let clock = Arc::new(ReplacingClock::new(3, &target, replacement));
+    let context = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(60)));
+
+    let fault = PackageLoader::new()
+        .load(&PackageSource::archive_file(&target), &context)
+        .expect_err("a removed source path invalidates the retained snapshot");
+
+    assert!(clock.replaced(), "the controlled replacement must have run");
+    assert_eq!(fault.kind(), AssetFaultKind::SourceChanged);
+    assert_eq!(fault.stage(), LoadStage::DirectoryPreParse);
+}
+
+#[cfg(unix)]
+#[test]
+fn same_length_archive_mutation_invalidates_the_retained_snapshot() {
+    let package = TempDir::new("archive-in-place-mutation");
+    let bytes = std::fs::read(tiny_archive()).expect("readable fixture archive");
+    let target = package.write("package.zip", &bytes);
+    let mut replacement = bytes.into_boxed_slice();
+    replacement[0] ^= 0xff;
+    let clock = Arc::new(WritingClock::new(3, &target, replacement));
+    let context = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(60)));
+
+    let fault = PackageLoader::new()
+        .load(&PackageSource::archive_file(&target), &context)
+        .expect_err("in-place mutation invalidates the retained archive snapshot");
+
+    assert!(clock.written(), "the controlled rewrite must have run");
+    assert_eq!(fault.kind(), AssetFaultKind::SourceChanged);
+    assert_eq!(fault.stage(), LoadStage::DirectoryPreParse);
 }
 
 #[test]
@@ -265,6 +337,41 @@ fn duplicate_normalized_names_are_refused_from_memory_too() {
 
     assert_eq!(fault.kind(), AssetFaultKind::DuplicatePath);
     assert_eq!(fault.stage(), LoadStage::EntryMetadata);
+}
+
+#[test]
+fn distinct_template_ids_cannot_reference_the_same_normalized_entry() {
+    let content = PNG_SIGNATURE.to_vec();
+    let digest = ContentDigest::of(&content);
+    let manifest = format!(
+        r#"{{
+          "schema_version": 1,
+          "package": {{ "id": "madopilot.test.duplicate-reference", "version": "1.0.0" }},
+          "license": "Apache-2.0",
+          "templates": [
+            {{
+              "id": "first", "path": "templates/button.png", "width": 4, "height": 4,
+              "coordinate_space": "capture_pixels",
+              "content": {{ "algorithm": "sha256", "value": "{digest}" }},
+              "match_defaults": {{ "min_score": 0.9, "max_results": 1 }}
+            }},
+            {{
+              "id": "second", "path": "./templates//button.png", "width": 4, "height": 4,
+              "coordinate_space": "capture_pixels",
+              "content": {{ "algorithm": "sha256", "value": "{digest}" }},
+              "match_defaults": {{ "min_score": 0.9, "max_results": 1 }}
+            }}
+          ]
+        }}"#
+    );
+    let source = MemoryPackage::new()
+        .with_entry(MANIFEST_PATH, manifest.into_bytes())
+        .with_entry("templates/button.png", content);
+
+    let fault = load(&PackageSource::memory(source)).expect_err("refused");
+
+    assert_eq!(fault.kind(), AssetFaultKind::DuplicatePath);
+    assert_eq!(fault.stage(), LoadStage::Manifest);
 }
 
 #[test]

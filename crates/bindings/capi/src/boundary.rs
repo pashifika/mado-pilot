@@ -240,6 +240,35 @@ pub(crate) unsafe fn begin_error_out<T>(ptr: *mut *mut T) -> Result<(), Fault> {
     unsafe { begin_handle_out(ptr, "out_error") }
 }
 
+/// Initializes a required owned-handle output and an optional error output.
+///
+/// The outputs are independent: every valid output is set to null even when the
+/// other output is invalid. When both are invalid, the primary output's fault
+/// takes precedence.
+///
+/// # Errors
+///
+/// Rejects a null or misaligned primary output and a misaligned error output.
+///
+/// # Safety
+///
+/// Each output must independently satisfy the contract of
+/// [`begin_handle_out`] or [`begin_error_out`].
+pub(crate) unsafe fn begin_handle_and_error_out<T, E>(
+    out_handle: *mut *mut T,
+    handle_name: &'static str,
+    out_error: *mut *mut E,
+) -> Result<(), Fault> {
+    // Evaluate both initializers before combining their results so a fault in
+    // one output cannot short-circuit initialization of the other.
+    // SAFETY: forwarded unchanged from this function's own contract.
+    let handle = unsafe { begin_handle_out(out_handle, handle_name) };
+    // SAFETY: as above.
+    let error = unsafe { begin_error_out(out_error) };
+
+    handle.and(error)
+}
+
 /// Validates a scalar output and sets it to `failure`.
 ///
 /// # Errors

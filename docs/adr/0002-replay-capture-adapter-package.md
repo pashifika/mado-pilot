@@ -44,8 +44,18 @@ placement, described by a JSON manifest for a directory source or supplied
 directly for a memory source.
 
 **The adapter publishes through the capture package's stream state** rather than
-assigning identity itself, and advances its sequence when a consumer asks for a
-newer frame rather than on a timer.
+assigning identity itself, and advances its sequence when an admitted consumer
+request asks for a newer frame rather than on a timer. Cancellation or deadline
+expiry that wins before admission does not consume the finite source. Once that
+source is exhausted, a newer-than request returns the typed stream-ended capture
+fault, mapped to the Phase 1 closed status.
+
+**A replay target name is a configuration key, not continuity metadata.** Phase 1
+requires names to be unique inside one immutable replay source so callers can
+select configured fixtures, but target identity still comes only from the
+engine/provider issuer. The replay provider has no target-replacement lifecycle;
+providers that do expose replacement targets must issue a new identity even when
+descriptive metadata repeats.
 
 ## Alternatives
 

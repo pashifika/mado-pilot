@@ -9,8 +9,8 @@ use mado_pilot_capture::{
     CaptureProvider, Continuity, FrameDescriptor, FrameRequest, OpenRequest, PixelFormat,
 };
 use mado_pilot_core::{
-    ClipPolicy, CoordinateSpace, FrameOrder, IdentityIssuer, MonotonicInstant, OperationContext,
-    PixelExtent, Point, Rect, Status,
+    CancellationToken, ClipPolicy, CoordinateSpace, FrameOrder, IdentityIssuer, MonotonicInstant,
+    OperationContext, PixelExtent, Point, Rect, Status,
 };
 use mado_pilot_testkit::capture_contract;
 
@@ -106,6 +106,143 @@ fn a_repeated_frame_is_still_a_new_frame() {
 }
 
 #[test]
+fn an_already_cancelled_newer_than_request_does_not_advance_replay() {
+    let provider = memory_provider();
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let session = provider
+        .open(target.id(), &OpenRequest::new(), &operation)
+        .expect("opened");
+    let first = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let cancelled = OperationContext::new().with_cancellation(cancellation);
+
+    let error = session
+        .frame(&FrameRequest::newer_than(first.stamp()), &cancelled)
+        .expect_err("cancelled before admission");
+
+    assert_eq!(error.status(), Status::Cancelled);
+    assert_eq!(
+        session
+            .frame(&FrameRequest::latest(), &operation)
+            .expect("current frame")
+            .stamp(),
+        first.stamp(),
+        "a rejected request must not publish the next replay frame"
+    );
+    assert_eq!(
+        session
+            .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+            .expect("next frame remains available")
+            .stamp()
+            .sequence()
+            .value(),
+        1,
+        "a rejected request must not consume the next replay frame"
+    );
+}
+
+#[test]
+fn an_already_expired_newer_than_request_does_not_advance_replay() {
+    let provider = memory_provider();
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let session = provider
+        .open(target.id(), &OpenRequest::new(), &operation)
+        .expect("opened");
+    let first = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    let expired = OperationContext::new().with_deadline(MonotonicInstant::ORIGIN);
+
+    let error = session
+        .frame(&FrameRequest::newer_than(first.stamp()), &expired)
+        .expect_err("expired before admission");
+
+    assert_eq!(error.status(), Status::DeadlineExceeded);
+    assert_eq!(
+        session
+            .frame(&FrameRequest::latest(), &operation)
+            .expect("current frame")
+            .stamp(),
+        first.stamp(),
+        "a rejected request must not publish the next replay frame"
+    );
+    assert_eq!(
+        session
+            .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+            .expect("next frame remains available")
+            .stamp()
+            .sequence()
+            .value(),
+        1,
+        "a rejected request must not consume the next replay frame"
+    );
+}
+
+#[test]
+fn a_satisfiable_newer_than_request_is_rejected_after_closing_begins() {
+    let provider = memory_provider();
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let session = provider
+        .open(target.id(), &OpenRequest::new(), &operation)
+        .expect("opened");
+    let first = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    session
+        .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+        .expect("second frame");
+    let expired = OperationContext::new().with_deadline(MonotonicInstant::ORIGIN);
+    assert_eq!(
+        session.close(&expired).expect_err("close expires").status(),
+        Status::DeadlineExceeded
+    );
+
+    let error = session
+        .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+        .expect_err("closing rejects cached fast path");
+
+    assert_eq!(error.status(), Status::Closed);
+}
+
+#[test]
+fn a_foreign_stream_request_does_not_advance_replay() {
+    let provider = memory_provider();
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let session = provider
+        .open(target.id(), &OpenRequest::new(), &operation)
+        .expect("opened");
+    let other = provider
+        .open(target.id(), &OpenRequest::new(), &operation)
+        .expect("opened another stream");
+    let first = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    let foreign = other
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("foreign frame");
+
+    let error = session
+        .frame(&FrameRequest::newer_than(foreign.stamp()), &operation)
+        .expect_err("foreign stream");
+
+    assert_eq!(error.status(), Status::InvalidArgument);
+    assert_eq!(
+        session
+            .frame(&FrameRequest::latest(), &operation)
+            .expect("current frame")
+            .stamp(),
+        first.stamp()
+    );
+}
+
+#[test]
 fn an_extent_change_starts_a_later_epoch() {
     let provider = fixture_provider();
     let operation = OperationContext::new();
@@ -130,6 +267,37 @@ fn an_extent_change_starts_a_later_epoch() {
         current.stamp().geometry().value() > 0,
         "an extent change advances the geometry revision"
     );
+}
+
+#[test]
+fn an_older_frame_keeps_its_geometry_and_pixels_after_an_extent_change() {
+    let provider = fixture_provider();
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let session = provider
+        .open(target.id(), &OpenRequest::new(), &operation)
+        .expect("opened");
+    let original = session
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("first frame");
+    let original_stamp = original.stamp();
+    let original_transform = *original.transform();
+
+    let repeated = session
+        .frame(&FrameRequest::newer_than(original_stamp), &operation)
+        .expect("repeated frame");
+    let changed = session
+        .frame(&FrameRequest::newer_than(repeated.stamp()), &operation)
+        .expect("extent change");
+
+    let mapping = original
+        .map(PixelFormat::Rgba8, &operation)
+        .expect("old frame still maps");
+    assert_eq!(mapping.stamp(), original_stamp);
+    assert_eq!(*mapping.transform(), original_transform);
+    assert_eq!(mapping.descriptor().extent(), PixelExtent::new(8, 6));
+    assert_ne!(mapping.stamp().geometry(), changed.stamp().geometry());
+    assert_ne!(mapping.descriptor().extent(), changed.descriptor().extent());
 }
 
 #[test]
@@ -162,15 +330,26 @@ fn an_exhausted_sequence_is_reported_rather_than_waited_out() {
 }
 
 #[test]
-fn target_conversions_are_available_only_where_the_source_declares_a_placement() {
+fn target_normalized_needs_only_content_extent_while_logical_spaces_need_placement() {
     let provider = fixture_provider();
     let operation = OperationContext::new();
     let targets = provider.discover(&operation).expect("discovered");
 
     assert!(
+        targets[0]
+            .coordinates()
+            .supports(CoordinateSpace::TargetNormalized),
+        "the source declares the target content extent"
+    );
+    assert!(
         !targets[0]
             .coordinates()
             .supports(CoordinateSpace::TargetLogical)
+    );
+    assert!(
+        !targets[0]
+            .coordinates()
+            .supports(CoordinateSpace::DesktopLogical)
     );
     assert!(
         targets[1]
@@ -189,6 +368,13 @@ fn target_conversions_are_available_only_where_the_source_declares_a_placement()
         .frame(&FrameRequest::latest(), &operation)
         .expect("frame");
 
+    let normalized = Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5).expect("valid");
+    let normalized_pixels = unplaced
+        .transform()
+        .convert_point(normalized, CoordinateSpace::CapturePixels)
+        .expect("target content extent is authoritative");
+    assert_eq!((normalized_pixels.x(), normalized_pixels.y()), (4.0, 3.0));
+
     let logical = Point::new(CoordinateSpace::TargetLogical, 1.0, 1.0).expect("valid");
     assert_eq!(
         unplaced
@@ -200,11 +386,53 @@ fn target_conversions_are_available_only_where_the_source_declares_a_placement()
         "capture pixels are never assumed to be logical units"
     );
 
+    let desktop = Point::new(CoordinateSpace::DesktopLogical, 1.0, 1.0).expect("valid");
+    assert_eq!(
+        unplaced
+            .transform()
+            .convert_point(desktop, CoordinateSpace::CapturePixels)
+            .err()
+            .map(|fault| fault.status()),
+        Some(Status::Unsupported),
+        "desktop placement is never inferred"
+    );
+
     let converted = placed
         .transform()
         .convert_point(logical, CoordinateSpace::CapturePixels)
         .expect("the placement makes this authoritative");
     assert_eq!((converted.x(), converted.y()), (2.0, 2.0));
+}
+
+#[test]
+fn frame_view_preserves_unsupported_status_and_rejects_actual_outside_geometry() {
+    let provider = fixture_provider();
+    let operation = OperationContext::new();
+    let target = provider.discover(&operation).expect("discovered").remove(0);
+    let frame = provider
+        .open(target.id(), &OpenRequest::new(), &operation)
+        .expect("opened")
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("frame");
+    let unsupported =
+        Rect::new(CoordinateSpace::TargetLogical, 0.0, 0.0, 1.0, 1.0).expect("valid geometry");
+    let outside =
+        Rect::new(CoordinateSpace::CapturePixels, 0.0, 0.0, 9.0, 6.0).expect("valid geometry");
+
+    assert_eq!(
+        frame
+            .view(unsupported, ClipPolicy::Reject)
+            .expect_err("conversion is unsupported")
+            .status(),
+        Status::Unsupported
+    );
+    assert_eq!(
+        frame
+            .view(outside, ClipPolicy::Reject)
+            .expect_err("region is outside")
+            .status(),
+        Status::InvalidArgument
+    );
 }
 
 #[test]

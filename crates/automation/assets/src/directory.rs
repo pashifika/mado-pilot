@@ -1,33 +1,29 @@
 //! Reading a package out of a directory tree the operating system owns.
 //!
-//! A directory is the one source that can change underneath the loader, so
-//! every file's length and modification time are recorded when the tree is
-//! walked and re-checked after its bytes are read. A disagreement is reported
-//! as a changed source rather than repaired, because a package assembled from
-//! two versions of a directory is not a package anybody asked for.
+//! A directory is the one source that can change underneath the loader. The
+//! walk therefore retains the root, enumerates and opens Unix children relative
+//! to retained directory handles, and pins Windows paths by denying write/delete
+//! sharing. Regular-file handles remain retained through validation. Later path
+//! replacement cannot redirect a read, while in-place mutation of an opened file
+//! is detected before and after its bytes are consumed.
 //!
 //! The walk visits names in sorted order. Directory iteration order is the
 //! filesystem's business and differs between the two release targets, so a
 //! loader that inherited it would report different failures for the same tree.
 
-use std::fs::{self, File};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use mado_pilot_core::Operation;
 
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
+use crate::filesystem::{self, NodeKind, OpenedFile, OpenedNode};
 use crate::limits::AssetLimits;
 use crate::reader::{EntryKind, EntryReader, EntryStorage, RawEntry, read_capped};
 
-/// What the walk recorded about one file, so a later read can prove it did not
-/// move underneath us.
-#[derive(Debug, Clone)]
-struct Snapshot {
-    path: PathBuf,
-    len: u64,
-    modified: Option<SystemTime>,
+enum Snapshot {
+    Regular(OpenedFile),
+    Unsupported,
 }
 
 struct DirectoryReader {
@@ -44,55 +40,55 @@ impl EntryReader for DirectoryReader {
     ) -> Result<Arc<[u8]>, AssetFault> {
         let snapshot = self
             .snapshots
-            .get(index)
+            .get_mut(index)
             .ok_or_else(|| AssetFault::new(AssetFaultKind::MissingEntry, stage))?;
+        let Snapshot::Regular(snapshot) = snapshot else {
+            return Err(AssetFault::new(AssetFaultKind::UnsupportedEntryType, stage));
+        };
 
-        let mut file = File::open(&snapshot.path)
-            .map_err(|_| AssetFault::new(AssetFaultKind::SourceUnreadable, stage))?;
-        let bytes = read_capped(&mut file, declared, stage, operation).map_err(|fault| {
-            // A length disagreement on a mutable source is more likely to be the
-            // source moving than the loader miscounting, and saying so is the
-            // more actionable diagnostic.
-            if fault.kind() == AssetFaultKind::DeclaredSizeMismatch && changed(snapshot) {
-                return AssetFault::new(AssetFaultKind::SourceChanged, stage);
-            }
-            fault
-        })?;
-
-        if changed(snapshot) {
+        if snapshot.changed() {
+            return Err(AssetFault::new(AssetFaultKind::SourceChanged, stage));
+        }
+        let bytes =
+            read_capped(snapshot.file_mut(), declared, stage, operation).map_err(|fault| {
+                if fault.kind() == AssetFaultKind::DeclaredSizeMismatch && snapshot.changed() {
+                    return AssetFault::new(AssetFaultKind::SourceChanged, stage);
+                }
+                fault
+            })?;
+        if snapshot.changed() {
             return Err(AssetFault::new(AssetFaultKind::SourceChanged, stage));
         }
         Ok(Arc::from(bytes))
     }
 }
 
-fn changed(snapshot: &Snapshot) -> bool {
-    let Ok(metadata) = fs::symlink_metadata(&snapshot.path) else {
-        return true;
-    };
-    metadata.len() != snapshot.len || metadata.modified().ok() != snapshot.modified
-}
-
 /// Walks `root` and returns its entry table.
 ///
 /// # Errors
 ///
-/// Returns [`AssetFaultKind::SourceUnreadable`] when the root cannot be walked
+/// Returns [`AssetFaultKind::SourceUnreadable`] when the root cannot be walked,
+/// [`AssetFaultKind::SourceChanged`] when stable identity cannot be established,
 /// and [`AssetFaultKind::ArchiveLimit`] when the tree holds more entries or
-/// more bytes than the limits admit. Both report [`LoadStage::Source`]: a
-/// directory has no trailer and no central directory to stage the checks
-/// against, so the walk is the earliest point either can be known.
+/// bytes than the limits admit. All report [`LoadStage::Source`].
 pub(crate) fn open(
     root: &Path,
     limits: AssetLimits,
+    operation: &mut Operation<'_>,
 ) -> Result<(Box<dyn EntryReader>, Vec<RawEntry>), AssetFault> {
+    let root_node = filesystem::open_stable(root, LoadStage::Source, operation)?;
+    if root_node.kind() != NodeKind::Directory {
+        return Err(fault(AssetFaultKind::SourceUnreadable));
+    }
     let mut walked = Walk {
         limits,
+        operation,
         entries: Vec::new(),
         snapshots: Vec::new(),
         total_bytes: 0,
+        traversed_nodes: 0,
     };
-    walked.visit(root, &mut Vec::new())?;
+    walked.visit(root_node, &mut Vec::new())?;
 
     Ok((
         Box::new(DirectoryReader {
@@ -102,24 +98,29 @@ pub(crate) fn open(
     ))
 }
 
-struct Walk {
+struct Walk<'operation, 'context> {
     limits: AssetLimits,
+    operation: &'operation mut Operation<'context>,
     entries: Vec<RawEntry>,
     snapshots: Vec<Snapshot>,
     total_bytes: u64,
+    traversed_nodes: u64,
 }
 
-impl Walk {
-    fn visit(&mut self, directory: &Path, prefix: &mut Vec<String>) -> Result<(), AssetFault> {
-        let mut children = read_sorted(directory)?;
-        for (name, path) in children.drain(..) {
-            let metadata =
-                fs::symlink_metadata(&path).map_err(|_| fault(AssetFaultKind::SourceUnreadable))?;
-            let file_type = metadata.file_type();
+impl Walk<'_, '_> {
+    fn visit(&mut self, opened: OpenedNode, prefix: &mut Vec<String>) -> Result<(), AssetFault> {
+        let children = self.read_sorted(&opened)?;
+        if opened.changed() {
+            return Err(fault(AssetFaultKind::SourceChanged));
+        }
 
-            if file_type.is_dir() {
+        for name in children {
+            let child =
+                filesystem::open_child_stable(&opened, &name, LoadStage::Source, self.operation)?;
+
+            if child.kind() == NodeKind::Directory {
                 prefix.push(name);
-                self.visit(&path, prefix)?;
+                self.visit(child, prefix)?;
                 prefix.pop();
                 continue;
             }
@@ -128,30 +129,59 @@ impl Walk {
             let recorded = prefix.join("/");
             prefix.pop();
 
-            let kind = if file_type.is_file() {
-                EntryKind::Regular
-            } else {
-                // Symbolic links, hard-link targets that no longer resolve to a
-                // file, devices, sockets, and FIFOs all land here. None of them
-                // is opened, followed, or read.
-                EntryKind::Other
-            };
-            let declared_size = metadata.len();
-
+            let declared_size = child.len();
+            let accepted = child.kind() == NodeKind::Regular && child.has_single_link();
             self.push(RawEntry {
                 name: recorded.into_bytes(),
-                kind,
+                kind: if accepted {
+                    EntryKind::Regular
+                } else {
+                    EntryKind::Other
+                },
                 storage: EntryStorage::Accepted,
                 declared_size,
                 compressed_size: declared_size,
             })?;
-            self.snapshots.push(Snapshot {
-                path,
-                len: declared_size,
-                modified: metadata.modified().ok(),
+            self.snapshots.push(if accepted {
+                Snapshot::Regular(
+                    child
+                        .into_file()
+                        .ok_or_else(|| fault(AssetFaultKind::SourceChanged))?,
+                )
+            } else {
+                Snapshot::Unsupported
             });
         }
+        if opened.changed() {
+            return Err(fault(AssetFaultKind::SourceChanged));
+        }
         Ok(())
+    }
+
+    fn read_sorted(&mut self, directory: &OpenedNode) -> Result<Vec<String>, AssetFault> {
+        checkpoint(self.operation)?;
+        let listing = filesystem::read_children(directory, LoadStage::Source)?;
+        let mut children = Vec::new();
+        for child in listing {
+            checkpoint(self.operation)?;
+            let child = child.map_err(|_| fault(AssetFaultKind::SourceUnreadable))?;
+            self.traversed_nodes = self
+                .traversed_nodes
+                .checked_add(1)
+                .ok_or_else(|| fault(AssetFaultKind::ArithmeticOverflow))?;
+            if self.traversed_nodes > u64::from(self.limits.max_entry_count()) {
+                return Err(fault(AssetFaultKind::ArchiveLimit));
+            }
+            // A name the platform cannot express as UTF-8 cannot be a package
+            // path, and is refused rather than silently skipped.
+            let name = child
+                .into_string()
+                .map_err(|_| fault(AssetFaultKind::UnsafePath))?;
+            children.push(name);
+        }
+        checkpoint(self.operation)?;
+        children.sort();
+        Ok(children)
     }
 
     fn push(&mut self, entry: RawEntry) -> Result<(), AssetFault> {
@@ -172,22 +202,10 @@ impl Walk {
     }
 }
 
-fn read_sorted(directory: &Path) -> Result<Vec<(String, PathBuf)>, AssetFault> {
-    let listing = fs::read_dir(directory).map_err(|_| fault(AssetFaultKind::SourceUnreadable))?;
-    let mut children = Vec::new();
-    for child in listing {
-        let child = child.map_err(|_| fault(AssetFaultKind::SourceUnreadable))?;
-        // A name the platform cannot express as UTF-8 cannot be a package path,
-        // and is refused as an entry rather than skipped: a package that silently
-        // lost a file is worse than one that failed to load.
-        let name = child
-            .file_name()
-            .into_string()
-            .map_err(|_| fault(AssetFaultKind::UnsafePath))?;
-        children.push((name, child.path()));
-    }
-    children.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(children)
+fn checkpoint(operation: &mut Operation<'_>) -> Result<(), AssetFault> {
+    operation
+        .checkpoint()
+        .map_err(|interruption| AssetFault::interrupted(interruption, LoadStage::Source))
 }
 
 const fn fault(kind: AssetFaultKind) -> AssetFault {
@@ -197,19 +215,16 @@ const fn fault(kind: AssetFaultKind) -> AssetFault {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
 
     use mado_pilot_core::{Operation, OperationContext};
 
-    use super::{DirectoryReader, Snapshot, fs};
+    use std::fs;
+
+    use super::{DirectoryReader, Snapshot};
     use crate::fault::{AssetFaultKind, LoadStage};
+    use crate::filesystem;
     use crate::reader::EntryReader;
 
-    /// A source changing *during* a load cannot be staged through the public
-    /// loader: it is synchronous, so there is no moment between the walk and the
-    /// read for a test to act in. These tests stage the same disagreement the
-    /// loader would see, by handing the reader a snapshot that no longer
-    /// describes the file.
     fn scratch(label: &str, content: &[u8]) -> std::path::PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -222,7 +237,7 @@ mod tests {
         path
     }
 
-    fn read(snapshot: Snapshot, declared: u64) -> Result<usize, AssetFaultKind> {
+    fn read(snapshot: Snapshot, declared: u64) -> Result<Vec<u8>, AssetFaultKind> {
         let context = OperationContext::new();
         let mut operation = Operation::admit(&context).expect("admitted");
         let mut reader = DirectoryReader {
@@ -230,7 +245,7 @@ mod tests {
         };
         reader
             .read_entry(0, declared, LoadStage::Expansion, &mut operation)
-            .map(|bytes| bytes.len())
+            .map(|bytes| bytes.to_vec())
             .map_err(|fault| {
                 assert_eq!(fault.stage(), LoadStage::Expansion);
                 fault.kind()
@@ -238,12 +253,11 @@ mod tests {
     }
 
     fn snapshot_of(path: &std::path::Path) -> Snapshot {
-        let metadata = fs::symlink_metadata(path).expect("readable");
-        Snapshot {
-            path: path.to_path_buf(),
-            len: metadata.len(),
-            modified: metadata.modified().ok(),
-        }
+        let context = OperationContext::new();
+        let mut operation = Operation::admit(&context).expect("admitted");
+        let opened = filesystem::open_stable(path, LoadStage::Source, &mut operation)
+            .expect("stable regular file");
+        Snapshot::Regular(opened.into_file().expect("opened handle"))
     }
 
     #[test]
@@ -251,40 +265,53 @@ mod tests {
         let path = scratch("unchanged", b"abcd");
         let snapshot = snapshot_of(&path);
 
-        assert_eq!(read(snapshot, 4), Ok(4));
+        assert_eq!(read(snapshot, 4), Ok(b"abcd".to_vec()));
         let _ = fs::remove_file(&path);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn a_file_that_grew_since_the_walk_is_reported_as_a_changed_source() {
-        let path = scratch("grown", b"abcdefgh");
-        let mut snapshot = snapshot_of(&path);
-        // The walk saw four bytes; the file now holds eight.
-        snapshot.len = 4;
+    fn a_file_that_grew_after_its_handle_was_retained_is_reported_as_changed() {
+        let path = scratch("grown", b"abcd");
+        let snapshot = snapshot_of(&path);
+        fs::write(&path, b"abcdefgh").expect("the file remains writable");
 
         assert_eq!(read(snapshot, 4), Err(AssetFaultKind::SourceChanged));
         let _ = fs::remove_file(&path);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_file_edited_in_place_without_changing_length_is_still_caught() {
         let path = scratch("touched", b"abcd");
-        let mut snapshot = snapshot_of(&path);
-        snapshot.modified = snapshot
-            .modified
-            .map(|instant| instant - Duration::from_secs(60));
+        let snapshot = snapshot_of(&path);
+        fs::write(&path, b"wxyz").expect("the file remains writable");
 
         assert_eq!(read(snapshot, 4), Err(AssetFaultKind::SourceChanged));
         let _ = fs::remove_file(&path);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn a_file_removed_since_the_walk_is_reported_as_unreadable() {
+    fn removing_the_path_invalidates_the_retained_snapshot() {
         let path = scratch("removed", b"abcd");
         let snapshot = snapshot_of(&path);
         fs::remove_file(&path).expect("removable");
 
-        assert_eq!(read(snapshot, 4), Err(AssetFaultKind::SourceUnreadable));
+        assert_eq!(read(snapshot, 4), Err(AssetFaultKind::SourceChanged));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_the_path_invalidates_without_reading_the_replacement() {
+        let path = scratch("replaced", b"original");
+        let replacement = scratch("replacement", b"external");
+        let snapshot = snapshot_of(&path);
+        fs::remove_file(&path).expect("removable");
+        fs::rename(&replacement, &path).expect("replacement can take the path");
+
+        assert_eq!(read(snapshot, 8), Err(AssetFaultKind::SourceChanged));
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

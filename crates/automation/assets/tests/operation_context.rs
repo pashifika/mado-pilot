@@ -20,7 +20,7 @@ use mado_pilot_core::{CancellationToken, MonotonicInstant, OperationContext, Sta
 
 mod support;
 
-use support::{CancellingClock, TickingClock, tiny_archive, tiny_directory};
+use support::{CancellingClock, TempDir, TickingClock, tiny_archive, tiny_directory};
 
 /// A deadline no sweep can reach: the clock would have to be read 3.6 million
 /// times.
@@ -42,13 +42,17 @@ fn checks_for(source: &PackageSource) -> u64 {
 
 #[test]
 fn a_load_that_begins_already_cancelled_never_opens_the_source() {
+    let missing = {
+        let temporary = TempDir::new("cancelled-before-enumeration");
+        temporary.path().to_path_buf()
+    };
     let token = CancellationToken::new();
     token.cancel();
     let context = OperationContext::new().with_cancellation(token);
 
     let fault = PackageLoader::new()
-        .load(&PackageSource::directory(tiny_directory()), &context)
-        .expect_err("cancelled");
+        .load(&PackageSource::directory(missing), &context)
+        .expect_err("cancelled before the missing source can be opened");
 
     assert_eq!(fault.kind(), AssetFaultKind::Cancelled);
     assert_eq!(fault.stage(), LoadStage::Source);
@@ -57,17 +61,40 @@ fn a_load_that_begins_already_cancelled_never_opens_the_source() {
 
 #[test]
 fn a_load_that_begins_already_expired_never_opens_the_source() {
+    let missing = {
+        let temporary = TempDir::new("expired-before-enumeration");
+        temporary.path().to_path_buf()
+    };
     let context = OperationContext::new()
         .with_clock(Arc::new(TickingClock::new()))
         .with_deadline(MonotonicInstant::ORIGIN);
 
     let fault = PackageLoader::new()
-        .load(&PackageSource::directory(tiny_directory()), &context)
-        .expect_err("expired");
+        .load(&PackageSource::directory(missing), &context)
+        .expect_err("expired before the missing source can be opened");
 
     assert_eq!(fault.kind(), AssetFaultKind::DeadlineExceeded);
     assert_eq!(fault.stage(), LoadStage::Source);
     assert_eq!(fault.status(), Status::DeadlineExceeded);
+}
+
+#[test]
+fn a_deadline_during_directory_enumeration_is_reported_at_the_source_stage() {
+    let temporary = TempDir::new("deadline-during-enumeration");
+    temporary.write(mado_pilot_assets::MANIFEST_PATH, &support::empty_manifest());
+    for index in 0..16 {
+        temporary.write(&format!("entries/{index:02}.bin"), b"entry");
+    }
+    let context = OperationContext::new()
+        .with_clock(Arc::new(TickingClock::new()))
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(5)));
+
+    let fault = PackageLoader::new()
+        .load(&PackageSource::directory(temporary.path()), &context)
+        .expect_err("the deadline expires while the tree is enumerated");
+
+    assert_eq!(fault.kind(), AssetFaultKind::DeadlineExceeded);
+    assert_eq!(fault.stage(), LoadStage::Source);
 }
 
 #[test]

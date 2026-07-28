@@ -14,7 +14,6 @@
 //! [ADR 0001]: https://github.com/pashifika/mado-pilot/blob/main/docs/adr/0001-asset-archive-container-and-safety-ceilings.md
 
 use std::collections::BTreeMap;
-use std::fs::{self, File};
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -22,6 +21,7 @@ use mado_pilot_core::{Operation, OperationContext};
 use mado_pilot_vision::{TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest};
 
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
+use crate::filesystem::{self, NodeKind};
 use crate::limits::AssetLimits;
 use crate::manifest::{ContentDigest, MANIFEST_PATH, Manifest, from_vision};
 use crate::package::AssetPackage;
@@ -96,7 +96,7 @@ fn load(
     let mut operation = Operation::admit(context)
         .map_err(|interruption| AssetFault::interrupted(interruption, LoadStage::Source))?;
 
-    let (mut reader, raw) = open(source, limits)?;
+    let (mut reader, raw) = open(source, limits, &mut operation)?;
     checkpoint(&mut operation, LoadStage::Source)?;
 
     let table = validate_entries(&raw, limits, source.is_archive())?;
@@ -116,24 +116,39 @@ fn load(
 fn open(
     source: &PackageSource,
     limits: AssetLimits,
+    operation: &mut Operation<'_>,
 ) -> Result<(Box<dyn EntryReader>, Vec<RawEntry>), AssetFault> {
     match source {
-        PackageSource::Directory(root) => directory::open(root, limits),
+        PackageSource::Directory(root) => directory::open(root, limits, operation),
         PackageSource::Memory(package) => memory::open(package, limits),
         PackageSource::ArchiveFile(path) => {
-            let length = fs::metadata(path)
-                .map_err(|_| AssetFault::new(AssetFaultKind::SourceUnreadable, LoadStage::Source))?
-                .len();
-            let file = File::open(path).map_err(|_| {
+            let opened = filesystem::open_stable(path, LoadStage::Source, operation)?;
+            if opened.kind() != NodeKind::Regular || !opened.has_single_link() {
+                return Err(AssetFault::new(
+                    AssetFaultKind::SourceUnreadable,
+                    LoadStage::Source,
+                ));
+            }
+            let length = opened.len();
+            let source = opened
+                .into_file()
+                .ok_or_else(|| AssetFault::new(AssetFaultKind::SourceChanged, LoadStage::Source))?;
+            let reader = source.try_clone_reader().map_err(|_| {
                 AssetFault::new(AssetFaultKind::SourceUnreadable, LoadStage::Source)
             })?;
-            archive::open(file, length, limits)
+            archive::open(reader, length, limits, operation, Some(source))
         }
         PackageSource::ArchiveBytes(bytes) => {
             let length = u64::try_from(bytes.len()).map_err(|_| {
                 AssetFault::new(AssetFaultKind::ArithmeticOverflow, LoadStage::Source)
             })?;
-            archive::open(Cursor::new(Arc::clone(bytes)), length, limits)
+            archive::open(
+                Cursor::new(Arc::clone(bytes)),
+                length,
+                limits,
+                operation,
+                None,
+            )
         }
     }
 }

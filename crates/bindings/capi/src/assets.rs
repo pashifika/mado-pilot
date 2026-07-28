@@ -109,11 +109,12 @@ pub(crate) fn package_load(
     out_package: *mut *mut madopilot_package_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_package, "out_package")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
+    if let Err(fault) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe {
+            boundary::begin_handle_and_error_out(out_package, "out_package", out_error)
+        }
+    {
         return fault.status();
     }
     hooks::reach(hooks::Site::Entry);
@@ -279,11 +280,12 @@ pub(crate) fn template_prepare_from_package(
     out_template: *mut *mut madopilot_template_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_template, "out_template")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
+    if let Err(fault) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe {
+            boundary::begin_handle_and_error_out(out_template, "out_template", out_error)
+        }
+    {
         return fault.status();
     }
     hooks::reach(hooks::Site::Entry);

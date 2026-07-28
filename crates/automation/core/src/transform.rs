@@ -7,8 +7,8 @@
 //! Every conversion is explicit about both spaces, and a conversion the snapshot
 //! cannot represent fails. In particular a snapshot that knows nothing about the
 //! target does not fall back to treating logical units as pixels, and never
-//! consults host DPI: a plausible guess about coordinates produces input
-//! delivered to the wrong place, which is worse than a refusal.
+//! consults host DPI: target-normalized conversion requires a declared target
+//! content extent, while logical conversion requires authoritative placement.
 
 use crate::geometry::{
     ClipPolicy, CoordinateSpace, GeometryFault, PixelExtent, PixelRect, Point, Rect, ceil_to_pixel,
@@ -125,13 +125,15 @@ impl TargetPlacement {
 /// The geometry that was authoritative when one frame was captured.
 ///
 /// A snapshot always knows the frame's own extent, so conversions between capture
-/// pixels and frame-normalized coordinates are always available. Everything that
-/// refers to a target requires a [`TargetPlacement`], which a provider supplies
-/// only when it actually knows where the target is.
+/// pixels and frame-normalized coordinates are always available. Target-normalized
+/// conversion additionally requires a declared target content extent. Target-logical
+/// and desktop-logical conversion require a [`TargetPlacement`], which a provider
+/// supplies only when it has authoritative logical geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TransformSnapshot {
     geometry: GeometryRevision,
     frame_extent: PixelExtent,
+    target_extent: Option<PixelExtent>,
     target: Option<TargetPlacement>,
 }
 
@@ -145,6 +147,25 @@ impl TransformSnapshot {
         Self {
             geometry,
             frame_extent,
+            target_extent: None,
+            target: None,
+        }
+    }
+
+    /// Builds a snapshot for a frame that covers a target with a declared extent.
+    ///
+    /// This supports target-normalized conversion without asserting any logical
+    /// scale or desktop placement.
+    #[must_use]
+    pub const fn with_target_extent(
+        geometry: GeometryRevision,
+        frame_extent: PixelExtent,
+        target_extent: PixelExtent,
+    ) -> Self {
+        Self {
+            geometry,
+            frame_extent,
+            target_extent: Some(target_extent),
             target: None,
         }
     }
@@ -159,6 +180,7 @@ impl TransformSnapshot {
         Self {
             geometry,
             frame_extent,
+            target_extent: Some(frame_extent),
             target: Some(placement),
         }
     }
@@ -178,6 +200,12 @@ impl TransformSnapshot {
         self.frame_extent
     }
 
+    /// Returns the declared target content extent, when the provider supplied one.
+    #[must_use]
+    pub const fn target_extent(&self) -> Option<PixelExtent> {
+        self.target_extent
+    }
+
     /// Returns the target placement, when the provider supplied one.
     #[must_use]
     pub const fn target(&self) -> Option<TargetPlacement> {
@@ -191,9 +219,11 @@ impl TransformSnapshot {
             CoordinateSpace::CapturePixels | CoordinateSpace::FrameNormalized => {
                 !self.frame_extent.is_empty()
             }
-            CoordinateSpace::TargetNormalized
-            | CoordinateSpace::TargetLogical
-            | CoordinateSpace::DesktopLogical => {
+            CoordinateSpace::TargetNormalized => {
+                self.target_extent.is_some_and(|extent| !extent.is_empty())
+                    && !self.frame_extent.is_empty()
+            }
+            CoordinateSpace::TargetLogical | CoordinateSpace::DesktopLogical => {
                 self.target.is_some() && !self.frame_extent.is_empty()
             }
         }
@@ -281,9 +311,9 @@ impl TransformSnapshot {
         match from {
             CoordinateSpace::CapturePixels => Ok((x, y)),
             // A target-normalized coordinate maps onto the frame the same way a
-            // frame-normalized one does, because a placement asserts that the
-            // frame covers exactly the target. What differs is that the target
-            // spaces require that assertion to have been made at all.
+            // frame-normalized one does because the declared content extent
+            // asserts that the frame covers the target. Logical target spaces
+            // still require authoritative placement metadata.
             CoordinateSpace::FrameNormalized | CoordinateSpace::TargetNormalized => {
                 Ok((x * frame_width, y * frame_height))
             }
@@ -450,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn target_normalized_requires_a_placement_even_though_it_scales_like_the_frame() {
+    fn target_normalized_requires_content_extent_but_not_placement() {
         let point = Point::new(TARGET_NORMALIZED, 0.5, 0.5).expect("valid");
 
         assert_eq!(
@@ -458,10 +488,19 @@ mod tests {
             Err(GeometryFault::ConversionUnsupported)
         );
 
-        let converted = with_target()
+        let snapshot = TransformSnapshot::with_target_extent(
+            GeometryRevision::FIRST,
+            PixelExtent::new(1920, 1080),
+            PixelExtent::new(1920, 1080),
+        );
+        let converted = snapshot
             .convert_point(point, PIXELS)
-            .expect("supported");
+            .expect("content extent is sufficient");
+
         assert_eq!((converted.x(), converted.y()), (960.0, 540.0));
+        assert!(snapshot.supports(TARGET_NORMALIZED));
+        assert!(!snapshot.supports(TARGET_LOGICAL));
+        assert!(!snapshot.supports(DESKTOP));
     }
 
     #[test]

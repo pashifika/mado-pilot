@@ -2,21 +2,23 @@
 //!
 //! `matchTemplate` scores every offset at which the template fits, so one real
 //! match arrives as a smooth hill of thousands of high values rather than as one
-//! finding. Reporting every offset would report that match thousands of times,
-//! and the public suppression rule cannot repair it afterwards: that rule drops
-//! a candidate overlapping a canonically *earlier* survivor, so the survivor of
-//! a hill would be its top-left pixel rather than its peak.
+//! finding. Materializing that entire dense map as public candidates would make
+//! a permissive threshold consume unbounded result memory.
 //!
-//! The adapter therefore reports peaks. It repeatedly takes the greatest
-//! remaining score and suppresses every offset that would overlap it, which
-//! yields a non-overlapping candidate set in descending score order — the set
-//! the matcher's canonical ordering, overlap suppression, and result limit would
-//! keep from a dense map anyway, arrived at without materializing the map's
-//! every offset as a public candidate.
+//! The adapter therefore emits a bounded canonical prefix. It repeatedly takes
+//! the greatest *public* score, breaking ties row-major exactly as the matcher
+//! does. `DropOverlapping` removes the selected placement's overlap window;
+//! `KeepAll` removes only the selected offset. The request's public result limit
+//! is also the backend candidate budget, so extraction performs at most that many
+//! map scans without changing any result the matcher could publish through that
+//! limit. The matcher still reapplies thresholding, ordering, suppression, and
+//! truncation as the public authority.
 //!
-//! Nothing here names OpenCV or a vision type. It is arithmetic over a slice of
-//! scores, which is what makes the decisions in it testable without a native
-//! library and identical on both release targets.
+//! The arithmetic here is independent of OpenCV's native types, which makes the
+//! bounded extraction rules directly testable and identical on both release
+//! targets.
+
+use mado_pilot_vision::Suppression;
 
 /// One extracted peak: an offset from the searched region's origin, and the
 /// public score at that offset.
@@ -63,34 +65,35 @@ pub(crate) struct PeakSearch {
     pub(crate) template_height: usize,
     /// The lowest public score worth reporting.
     pub(crate) min_score: f64,
-    /// The largest number of peaks to report.
-    pub(crate) max_results: usize,
+    /// The maximum candidates emitted to the matcher. This equals the public
+    /// result limit and is safe because extraction follows the same canonical
+    /// order and requested suppression before consuming one budget slot.
+    pub(crate) candidate_budget: usize,
+    /// The request's overlap policy. Only `DropOverlapping` may remove neighbors.
+    pub(crate) suppression: Suppression,
 }
 
-/// Extracts non-overlapping peaks from `scores`, greatest first.
+/// Extracts the bounded candidate prefix from `scores`, greatest first.
 ///
 /// `scores` is a row-major map of `search.width` by `search.height` values, one
 /// per offset at which the template fits the searched region.
 ///
-/// Selection reads the *raw* score, so two offsets that clamp to the same public
-/// score are still visited in the order their correlation ranks them. Ties are
-/// broken by row and then column, which is the order the scan visits offsets in
-/// and also the matcher's canonical order, so the choice is deterministic on
-/// both release targets without depending on any reduction OpenCV performs.
+/// Selection reads the mapped public score. Two raw values that clamp to the
+/// same public score therefore tie and are broken by row and then column, which
+/// is the matcher's canonical geometry order for a fixed template extent.
 ///
 /// An offset whose value is not finite is skipped rather than reported or
 /// treated as a failure: `TM_CCOEFF_NORMED` normalizes by the variance of the
 /// template and of the window, so a uniform window has no correlation to
 /// express, and no correlation is not evidence of a match.
 ///
-/// The work is bounded by `search.max_results` scans of the map, and each scan
-/// suppresses at least the offset it selected, so a caller's result limit is
-/// also its bound on the search.
+/// The work is bounded by `search.candidate_budget` scans of the map, and each
+/// scan removes at least the selected offset.
 pub(crate) fn peaks(scores: &[f32], search: PeakSearch) -> Vec<Peak> {
     let offsets = search.width.saturating_mul(search.height);
     if offsets == 0
         || scores.len() < offsets
-        || search.max_results == 0
+        || search.candidate_budget == 0
         || search.template_width == 0
         || search.template_height == 0
     {
@@ -102,34 +105,40 @@ pub(crate) fn peaks(scores: &[f32], search: PeakSearch) -> Vec<Peak> {
     let mut remaining = scores[..offsets].to_vec();
     let mut found = Vec::new();
 
-    while found.len() < search.max_results {
-        let Some((left, top, raw)) = greatest(&remaining, search.width) else {
+    while found.len() < search.candidate_budget {
+        let Some((left, top, score)) = greatest(&remaining, search.width) else {
             break;
         };
-        let score = public_score(raw);
         if score < search.min_score {
             // Every remaining offset scores no higher than this one, so no
             // further scan can qualify.
             break;
         }
         found.push(Peak { left, top, score });
-        suppress(&mut remaining, search, left, top);
+        if search.suppression == Suppression::DropOverlapping {
+            suppress(&mut remaining, search, left, top);
+        } else {
+            // `KeepAll` — and any future policy the public matcher understands —
+            // must reach that matcher without implicit overlap suppression.
+            remaining[top * search.width + left] = f32::NAN;
+        }
     }
 
     found
 }
 
-/// Returns the greatest finite offset in `remaining`, scanning row-major so the
-/// first of several equal values wins.
-fn greatest(remaining: &[f32], width: usize) -> Option<(usize, usize, f32)> {
-    let mut best: Option<(usize, usize, f32)> = None;
+/// Returns the greatest finite public score in `remaining`, scanning row-major
+/// so the first of several public-score ties wins.
+fn greatest(remaining: &[f32], width: usize) -> Option<(usize, usize, f64)> {
+    let mut best: Option<(usize, usize, f64)> = None;
 
     for (index, &value) in remaining.iter().enumerate() {
         if !value.is_finite() {
             continue;
         }
-        if best.is_none_or(|(_, _, current)| value > current) {
-            best = Some((index % width, index / width, value));
+        let score = public_score(value);
+        if best.is_none_or(|(_, _, current)| score > current) {
+            best = Some((index % width, index / width, score));
         }
     }
 
@@ -161,6 +170,8 @@ fn suppress(remaining: &mut [f32], search: PeakSearch, left: usize, top: usize) 
 
 #[cfg(test)]
 mod tests {
+    use mado_pilot_vision::Suppression;
+
     use super::{Peak, PeakSearch, peaks, public_score};
 
     /// A search over a `width` by `height` map for a 2 by 2 template.
@@ -171,7 +182,8 @@ mod tests {
             template_width: 2,
             template_height: 2,
             min_score: 0.5,
-            max_results: 8,
+            candidate_budget: 8,
+            suppression: Suppression::DropOverlapping,
         }
     }
 
@@ -242,6 +254,22 @@ mod tests {
     }
 
     #[test]
+    fn keep_all_does_not_suppress_overlapping_offsets() {
+        let scores = [0.90, 0.80, 0.70];
+        let mut search = search(3, 1);
+        search.template_height = 1;
+        search.suppression = Suppression::KeepAll;
+
+        let found = peaks(&scores, search);
+
+        assert_eq!(
+            found.iter().map(|peak| peak.left).collect::<Vec<_>>(),
+            vec![0, 1, 2],
+            "overlapping offsets remain candidates when the request keeps all"
+        );
+    }
+
+    #[test]
     fn equal_scores_are_taken_in_row_then_column_order() {
         let scores = [
             0.50, 0.50, 0.80, //
@@ -279,13 +307,36 @@ mod tests {
         let mut search = search(4, 1);
         search.template_width = 1;
         search.template_height = 1;
-        search.max_results = 2;
+        search.candidate_budget = 2;
 
         let found = peaks(&scores, search);
 
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].left, 3);
         assert_eq!(found[1].left, 2);
+    }
+
+    #[test]
+    fn a_public_score_tie_is_broken_before_the_backend_result_budget() {
+        let scores = [1.0, 1.000_000_1];
+        let mut search = search(2, 1);
+        search.template_width = 1;
+        search.template_height = 1;
+        search.min_score = 1.0;
+        search.candidate_budget = 1;
+        search.suppression = Suppression::KeepAll;
+
+        let found = peaks(&scores, search);
+
+        assert_eq!(
+            found,
+            vec![Peak {
+                left: 0,
+                top: 0,
+                score: 1.0,
+            }],
+            "equal public scores use canonical geometry before the budget truncates"
+        );
     }
 
     #[test]
@@ -317,17 +368,17 @@ mod tests {
             found,
             vec![
                 Peak {
-                    left: 1,
-                    top: 0,
-                    score: 0.0
-                },
-                Peak {
                     left: 0,
                     top: 0,
                     score: 0.0
                 },
+                Peak {
+                    left: 1,
+                    top: 0,
+                    score: 0.0
+                },
             ],
-            "selection still ranks by correlation even where the public score ties"
+            "clamped public-score ties use canonical geometry rather than raw correlation"
         );
 
         search.min_score = 0.000_001;

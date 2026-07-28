@@ -78,6 +78,13 @@ All three exist and Phase 1 is complete. [c-abi.md](c-abi.md) is the C boundary'
 own contract document: handle lifetimes, structure-prefix rules, the status
 vocabulary, panic containment, the build prerequisites on each release target,
 and how the hand-written header is verified against the Rust definitions.
+Semantic numeric values and frozen version/report fields use fixed-width C
+integer types: structure sizes and reported table sizes are `uint32_t`, while row
+strides and semantic result/package counts are `uint64_t`. `size_t` is limited to
+ABI-native addressability quantities: pointer-view lengths, replay input counts
+and element strides, target-list counts, accessor indexes, and the caller-known
+table extent passed to negotiation. Those choices are frozen for ABI 1.0 on the
+two 64-bit release targets.
 [cpp-wrapper.md](cpp-wrapper.md) is the C++ adapter's: move-only owners,
 explicit `clone` and `close`, the exception-free `Result`, borrowed views and
 their owners, and the CMake targets.
@@ -696,7 +703,13 @@ rather than through the architecture checker.
 
 `mado-pilot-assets` loads a package from a local directory, from caller-owned
 memory, or from a local ZIP archive, and commits an immutable package only after
-every check has passed. The three sources are strategies behind one pipeline
+every check has passed. Mutable filesystem sources establish identity through
+verified retained handles: hard links and reparse/link entries are rejected,
+Unix directory children are enumerated and opened relative to retained directory
+handles, and Windows retained sources deny write and delete sharing. Archive and
+entry handles are revalidated around metadata and byte reads, so path replacement
+or in-place mutation cannot redirect or silently change the committed bytes. The
+three sources are strategies behind one pipeline
 rather than three loaders: they differ in what they can record and in what can go
 wrong while reading them, and not in what makes a package valid. That is what
 lets a package be developed as a directory and shipped as an archive without
@@ -735,8 +748,8 @@ earlier guard is missing, even though the package was refused.
 
 | Stage | What it checks |
 |---|---|
-| `source` | Total source bytes, before anything is parsed. Directory and memory sources also enumerate here |
-| `directory_pre_parse` | The entry count recorded in the archive trailer, read before the central directory is materialized |
+| `source` | Total source bytes, before anything is parsed. Directory traversal is handle-bound, operation-aware, and node-bounded here |
+| `directory_pre_parse` | One unambiguous single-disk EOCD/ZIP64 trailer, its entry count, and a bounded no-allocation scan of the selected central-directory headers before the central directory is materialized |
 | `directory_open` | The central directory, and the declared total expansion |
 | `entry_metadata` | Compression method, encryption, name normalization, entry type, duplicate normalized names, declared sizes, and then the aggregate declared ratio |
 | `manifest` | The manifest read under its byte cap, and parsed |
@@ -745,7 +758,10 @@ earlier guard is missing, even though the package was refused.
 
 The trailer pre-parse exists because opening a central directory allocates in
 proportion to the entry count, so an entry-count ceiling checked after the open is
-checked too late. Recorded metadata may reject but never authorise: an entry is
+checked too late. Count fields for a single disk must agree; ambiguous or fallback
+trailers are rejected, and the bounded header scan proves that the trailer selected
+under the ceiling is the directory the ZIP reader will open. Recorded metadata may
+reject but never authorise: an entry is
 cut off at its *declared* size even when a ceiling would have allowed more, so an
 understated declaration is refused after one chunk rather than after a ceiling's
 worth of expansion.
@@ -761,7 +777,7 @@ argument rather than clamped.
 | Ceiling | Value | Applies to |
 |---|---|---|
 | `max_manifest_bytes` | 4 MiB | Every source |
-| `max_entry_count` | 4,096 | Every source |
+| `max_entry_count` | 4,096 | Every source; files and structural directories consume the directory traversal budget |
 | `max_entry_uncompressed_bytes` | 64 MiB | Every source |
 | `max_total_uncompressed_bytes` | 512 MiB | Every source |
 | `max_total_compressed_bytes` | 256 MiB | Archives |
@@ -769,8 +785,10 @@ argument rather than clamped.
 
 Two of the six describe archive structure, and an archive is the only source that
 has them: a directory has no compressed representation to expand from. The other
-four bound allocation the loader performs whatever the source is, so directory and
-memory sources are held to them as well. That is an implementation decision, not a
+four bound work or allocation the loader performs whatever the source is, so
+directory and memory sources are held to them as well. Directory enumeration
+consumes the entry budget before retaining each name, preventing wide or empty
+subtrees from bypassing it. That is an implementation decision, not a
 widening of ADR 0001, which fixes the ceilings for archives and leaves directory
 and memory containment to their own rules.
 
@@ -800,9 +818,9 @@ applied once, in the vision package, for every backend:
 |---|---|
 | Region resolution from the exact frame's transform snapshot, under an explicit clipping policy | `mado-pilot-vision` |
 | Public score validation, thresholding | `mado-pilot-vision` |
-| Canonical ordering, overlap suppression, result limit | `mado-pilot-vision` |
+| Canonical ordering, overlap suppression, result limit | `mado-pilot-vision`; a bounded backend extractor may emit only the same observable prefix, which vision revalidates |
 | Result envelope with complete source correlation | `mado-pilot-vision` |
-| Template compilation and candidate extraction | the backend |
+| Template compilation and bounded candidate extraction | the backend |
 
 Two backends are what make this a seam rather than a description of one adapter.
 `mado-pilot-testkit` supplies a controlled matcher whose candidates, latency,
@@ -812,7 +830,10 @@ the production backend would be a description of the double.
 
 Candidates are reported to the vision package in coordinates relative to the
 searched region's origin, and published in full-frame capture pixels. The
-translation happens in one place, so no adapter can get the offset wrong.
+translation happens in one place, so no adapter can get the offset wrong. A
+backend may bound dense-map work by emitting the request's canonical public
+prefix only when it applies the same public-score ordering and suppression
+policy; vision validates and reapplies those rules before publication.
 
 Matches are ordered by descending score, then ascending top, left, bottom, and
 right edges, then template identity. Every tie is broken by a value both release
@@ -822,7 +843,9 @@ after ordering and suppression.
 
 Three outcomes that look like failures are successes with no matches: nothing
 reached the threshold, the template is larger than the searched region, and a
-clip-permitted region that misses the frame entirely. A caller asked a
+clip-permitted region that misses the frame entirely. An explicitly empty ROI is
+invalid instead; it is not the same request as a valid ROI clipped to no
+intersection. A caller asked a
 well-formed question, and the answer is that it is not there.
 
 Compiled template state is backend-private. A prepared template carries an
@@ -836,7 +859,8 @@ documented one rather than an implementation detail, because it determines what 
 score means to a caller. The OpenCV CPU adapter's profile is recorded in
 [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md): three-channel
 BGR, `TM_CCOEFF_NORMED`, the negative half of the correlation range clamped to no
-match, and non-overlapping peaks as candidates.
+match, and suppression-aware bounded candidate extraction in canonical public
+score order.
 
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a

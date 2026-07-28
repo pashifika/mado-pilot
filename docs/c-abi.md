@@ -121,8 +121,15 @@ declares it**.
 Two structures carry no `struct_size`: `madopilot_str_t` and
 `madopilot_bytes_t`. They are the boundary's primitives rather than extensible
 records — they appear inside other structures, so growing one would move every
-field after it. A later phase that needs more than a pointer and a length
-introduces a different type.
+field after it. Semantic numeric fields and frozen version/report fields use
+fixed-width integer types: every structure size and reported table size is
+`uint32_t`, while row strides and semantic result/package counts are `uint64_t`.
+`size_t` is limited to ABI-native addressability quantities: pointer-view
+lengths, replay input frame counts and element strides, target-list counts,
+accessor indexes, and the caller-known table extent passed to
+`madopilot_get_api`. These choices are frozen by ADR 0007 on the two 64-bit
+release targets. A later phase that needs a different representation introduces
+a different type or ABI major.
 
 An array of versioned structures needs its element stride passed explicitly:
 `madopilot_source_t.frame_stride` is `sizeof(madopilot_replay_frame_t)` as the
@@ -132,10 +139,11 @@ declare.
 
 ## Validation, and what an output looks like on failure
 
-Before a request is validated, every valid output is set to its documented
-failure state: an owned handle output to null, a structure through its failure
-prefix, a scalar to zero. On failure they stay that way, so a caller never sees a
-partially initialized value.
+Before a request is validated, every independently valid output is set to its
+documented failure state: an owned handle output to null, a structure through its
+failure prefix, a scalar to zero. An invalid sibling output does not prevent that
+initialization. On failure valid outputs stay that way, so a caller never sees a
+partially initialized or stale value.
 
 Validated before use: every pointer-length pair, every active tagged-source
 field, every integer conversion, every alignment requirement, every offset,

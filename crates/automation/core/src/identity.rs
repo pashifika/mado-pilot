@@ -486,7 +486,7 @@ fn next_ordinal(counter: &AtomicU64) -> Result<NonZeroU64, IdentityFault> {
 /// The rules that make a frame identity trustworthy live here once, rather than
 /// in every capture adapter: sequences start at zero, advance exactly once per
 /// published frame, reset when an epoch begins, and never wrap.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StreamCursor {
     stream: StreamId,
     epoch: StreamEpoch,

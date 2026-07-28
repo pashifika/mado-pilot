@@ -211,11 +211,15 @@ impl Manifest {
         }
 
         let mut identities = BTreeSet::new();
+        let mut paths = BTreeSet::new();
         let mut templates = Vec::with_capacity(raw.templates.len());
         for declaration in raw.templates {
             let declared = declaration.validate()?;
             if !identities.insert(declared.id.clone()) {
                 return Err(fault(AssetFaultKind::DuplicateIdentity));
+            }
+            if !paths.insert(declared.path.clone()) {
+                return Err(fault(AssetFaultKind::DuplicatePath));
             }
             templates.push(declared);
         }

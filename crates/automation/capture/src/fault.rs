@@ -20,6 +20,8 @@ pub enum CaptureFault {
     ByteLengthMismatch,
     /// The requested pixel format is not one this package can produce.
     UnsupportedFormat,
+    /// The frame has no authoritative mapping for the requested coordinate space.
+    UnsupportedCoordinate,
     /// A region fell outside the frame it was taken from.
     RegionOutsideFrame,
     /// The target identity was issued by another engine or another provider.
@@ -49,9 +51,9 @@ impl CaptureFault {
             | CaptureFault::ForeignTarget
             | CaptureFault::UnknownTarget
             | CaptureFault::ForeignStream => Status::InvalidArgument,
-            CaptureFault::UnsupportedFormat | CaptureFault::UnsupportedOption => {
-                Status::Unsupported
-            }
+            CaptureFault::UnsupportedFormat
+            | CaptureFault::UnsupportedCoordinate
+            | CaptureFault::UnsupportedOption => Status::Unsupported,
             CaptureFault::SessionClosed | CaptureFault::StreamEnded => Status::Closed,
             CaptureFault::SourceInvalid => Status::CaptureFailed,
         }
@@ -62,6 +64,9 @@ impl CaptureFault {
             CaptureFault::InconsistentDescriptor => "frame descriptor is internally inconsistent",
             CaptureFault::ByteLengthMismatch => "pixel bytes do not match the descriptor length",
             CaptureFault::UnsupportedFormat => "requested pixel format is not supported",
+            CaptureFault::UnsupportedCoordinate => {
+                "frame transform does not support the requested coordinate space"
+            }
             CaptureFault::RegionOutsideFrame => "region falls outside its source frame",
             CaptureFault::ForeignTarget => "target identity was not issued by this provider",
             CaptureFault::UnknownTarget => "no such target",
@@ -101,6 +106,10 @@ mod tests {
         );
         assert_eq!(
             CaptureFault::UnsupportedFormat.status(),
+            Status::Unsupported
+        );
+        assert_eq!(
+            CaptureFault::UnsupportedCoordinate.status(),
             Status::Unsupported
         );
         assert_eq!(CaptureFault::SessionClosed.status(), Status::Closed);

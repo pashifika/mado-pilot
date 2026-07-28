@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use mado_pilot_core::{
     Error, FrameOrder, FrameStamp, GeometryRevision, MonotonicInstant, Operation, OperationContext,
-    Result, Status, StreamCursor, StreamId, TargetPlacement, TransformSnapshot,
+    PixelExtent, Result, Status, StreamCursor, StreamId, TargetPlacement, TransformSnapshot,
 };
 
 use crate::descriptor::FrameDescriptor;
@@ -119,6 +119,7 @@ pub enum Lifecycle {
 pub struct StreamState {
     inner: Mutex<Inner>,
     published: Condvar,
+    target_extent: Option<PixelExtent>,
 }
 
 #[derive(Debug)]
@@ -134,6 +135,16 @@ impl StreamState {
     /// Starts a stream at epoch zero with nothing published.
     #[must_use]
     pub fn new(stream: StreamId) -> Self {
+        Self::build(stream, None)
+    }
+
+    /// Starts a stream whose frames cover a target with a declared content extent.
+    #[must_use]
+    pub fn with_target_extent(stream: StreamId, target_extent: PixelExtent) -> Self {
+        Self::build(stream, Some(target_extent))
+    }
+
+    fn build(stream: StreamId, target_extent: Option<PixelExtent>) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 cursor: StreamCursor::new(stream),
@@ -143,6 +154,7 @@ impl StreamState {
                 waiters: 0,
             }),
             published: Condvar::new(),
+            target_extent,
         }
     }
 
@@ -192,22 +204,25 @@ impl StreamState {
             publication.continuity
         };
 
+        let mut geometry = inner.geometry;
+        let mut cursor = inner.cursor.clone();
         if continuity != Continuity::Continuous {
-            inner.geometry = inner
-                .geometry
+            geometry = geometry
                 .next()
                 .ok_or_else(|| Error::new(Status::LimitExceeded, "geometry revisions exhausted"))?;
         }
         if continuity == Continuity::Discontinuous && inner.latest.is_some() {
-            inner.cursor.begin_epoch()?;
+            cursor.begin_epoch()?;
         }
 
-        let geometry = inner.geometry;
         let extent = publication.descriptor.extent();
-        let stamp = inner.cursor.publish(geometry)?;
-        let transform = match publication.placement {
-            Some(placement) => TransformSnapshot::with_target(geometry, extent, placement),
-            None => TransformSnapshot::frame_only(geometry, extent),
+        let stamp = cursor.publish(geometry)?;
+        let transform = match (publication.placement, self.target_extent) {
+            (Some(placement), _) => TransformSnapshot::with_target(geometry, extent, placement),
+            (None, Some(target_extent)) => {
+                TransformSnapshot::with_target_extent(geometry, extent, target_extent)
+            }
+            (None, None) => TransformSnapshot::frame_only(geometry, extent),
         };
         let frame = Frame::new(
             stamp,
@@ -217,6 +232,8 @@ impl StreamState {
             publication.pixels,
         )?;
 
+        inner.cursor = cursor;
+        inner.geometry = geometry;
         inner.latest = Some(frame.clone());
         drop(inner);
         self.published.notify_all();
@@ -235,12 +252,12 @@ impl StreamState {
         loop {
             {
                 let mut inner = self.lock();
+                if inner.lifecycle != Lifecycle::Open {
+                    return Err(CaptureFault::SessionClosed.into());
+                }
                 if let Some(frame) = qualifying(&inner, request)? {
                     drop(inner);
                     return Ok(attempt.commit(frame)?);
-                }
-                if inner.lifecycle != Lifecycle::Open {
-                    return Err(CaptureFault::SessionClosed.into());
                 }
                 inner.waiters += 1;
                 let (mut inner, _) = self
@@ -292,11 +309,19 @@ impl StreamState {
                     return Ok(attempt.commit(())?);
                 }
                 if inner.waiters == 0 {
-                    let mut inner = inner;
-                    inner.lifecycle = Lifecycle::Closed;
-                    inner.latest = None;
                     drop(inner);
-                    return Ok(attempt.commit(())?);
+                    // The caller clock is invoked by commit, so final arbitration
+                    // happens without the stream mutex held and before the
+                    // irreversible Closed transition.
+                    attempt.commit(())?;
+                    let mut inner = self.lock();
+                    if inner.lifecycle != Lifecycle::Closed {
+                        debug_assert_eq!(inner.lifecycle, Lifecycle::Closing);
+                        debug_assert_eq!(inner.waiters, 0);
+                        inner.lifecycle = Lifecycle::Closed;
+                        inner.latest = None;
+                    }
+                    return Ok(());
                 }
                 let _unused = self
                     .published
@@ -336,13 +361,41 @@ fn qualifying(inner: &Inner, request: &FrameRequest) -> Result<Option<Frame>> {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::Duration;
 
     use mado_pilot_core::{
-        CancellationToken, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, Scale,
-        Status, TargetPlacement,
+        CancellationToken, Clock, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent,
+        Scale, Status, TargetPlacement,
     };
+
+    #[derive(Debug)]
+    struct OriginClock;
+
+    impl Clock for OriginClock {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ExpireAtCommitClock {
+        reads: AtomicUsize,
+    }
+
+    impl Clock for ExpireAtCommitClock {
+        fn now(&self) -> MonotonicInstant {
+            let elapsed = if self.reads.fetch_add(1, Ordering::Relaxed) == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(2)
+            };
+            MonotonicInstant::ORIGIN
+                .checked_add(elapsed)
+                .expect("test instant is representable")
+        }
+    }
 
     use super::{Continuity, FrameRequest, Lifecycle, Publication, StreamState};
     use crate::descriptor::{FrameDescriptor, PixelFormat};
@@ -423,6 +476,34 @@ mod tests {
         assert_eq!(reshaped.stamp().epoch().value(), 1);
         assert_eq!(reshaped.stamp().sequence().value(), 0);
         assert_eq!(reshaped.stamp().geometry().value(), 1);
+    }
+
+    #[test]
+    fn a_rejected_publication_preserves_identity_and_geometry() {
+        let state = state();
+        let first = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let descriptor =
+            FrameDescriptor::packed(PixelExtent::new(8, 8), PixelFormat::Rgba8).expect("valid");
+
+        let error = state
+            .publish(Publication {
+                captured_at: MonotonicInstant::ORIGIN,
+                descriptor,
+                placement: None,
+                pixels: vec![2; descriptor.byte_len() - 1].into_boxed_slice(),
+                continuity: Continuity::Discontinuous,
+            })
+            .expect_err("malformed pixels are rejected");
+        let next = state
+            .publish(publication(4, 4, 3, Continuity::Continuous))
+            .expect("the next valid frame publishes");
+
+        assert_eq!(error.status(), Status::InvalidArgument);
+        assert_eq!(next.stamp().epoch(), first.stamp().epoch());
+        assert_eq!(next.stamp().sequence().value(), 1);
+        assert_eq!(next.stamp().geometry(), first.stamp().geometry());
     }
 
     #[test]
@@ -646,37 +727,55 @@ mod tests {
     }
 
     #[test]
-    fn a_close_that_expires_leaves_the_stream_closing_for_a_later_attempt() {
-        let state = Arc::new(state());
-        let current = state
+    fn expiry_at_final_close_commit_does_not_publish_the_closed_transition() {
+        let state = state();
+        state
             .publish(publication(4, 4, 1, Continuity::Continuous))
             .expect("published");
+        let deadline = MonotonicInstant::ORIGIN
+            .checked_add(Duration::from_millis(1))
+            .expect("representable deadline");
+        let expiring = OperationContext::new()
+            .with_clock(Arc::new(ExpireAtCommitClock::default()))
+            .with_deadline(deadline);
 
-        // A waiter that never gives up keeps the drain from completing.
-        let waiter_state = Arc::clone(&state);
-        let waiter = thread::spawn(move || {
-            let context = OperationContext::new()
-                .with_timeout(Duration::from_millis(200))
-                .expect("representable");
-            waiter_state
-                .frame(&FrameRequest::newer_than(current.stamp()), &context)
-                .expect_err("the stream closes under it")
-        });
-        thread::sleep(Duration::from_millis(5));
+        let error = state
+            .drain(&expiring)
+            .expect_err("deadline wins final commit");
 
-        let closing = OperationContext::new()
-            .with_timeout(Duration::from_millis(1))
-            .expect("representable");
-        let first = state.drain(&closing);
+        assert_eq!(error.status(), Status::DeadlineExceeded);
+        assert_eq!(state.lifecycle(), Lifecycle::Closing);
+        state
+            .drain(&OperationContext::new())
+            .expect("a later close finishes");
+        assert_eq!(state.lifecycle(), Lifecycle::Closed);
+    }
 
-        waiter.join().expect("waiter finished");
-        let second = OperationContext::new();
-        state.drain(&second).expect("a later close finishes");
+    #[test]
+    fn a_close_that_expires_leaves_the_stream_closing_for_a_later_attempt() {
+        let state = state();
+        state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let expired = OperationContext::new()
+            .with_clock(Arc::new(OriginClock))
+            .with_deadline(MonotonicInstant::ORIGIN);
 
-        assert!(
-            first.is_err() || state.lifecycle() == Lifecycle::Closed,
-            "an expired drain must not report success while waiters remain"
+        let error = state.drain(&expired).expect_err("deadline wins admission");
+
+        assert_eq!(error.status(), Status::DeadlineExceeded);
+        assert_eq!(state.lifecycle(), Lifecycle::Closing);
+        assert_eq!(
+            state
+                .frame(&FrameRequest::latest(), &OperationContext::new())
+                .expect_err("closing refuses new work")
+                .status(),
+            Status::Closed
         );
+
+        state
+            .drain(&OperationContext::new())
+            .expect("a later close finishes");
         assert_eq!(state.lifecycle(), Lifecycle::Closed);
     }
 }
