@@ -71,11 +71,17 @@ Three public surfaces are planned, in this dependency order:
 The C++ wrapper is not a Cargo package. It links through the released C ABI, never
 through Rust internals.
 
-The first two exist as of Phase 1 stage 6. [c-abi.md](c-abi.md) is the C
-boundary's own contract document: handle lifetimes, structure-prefix rules, the
-status vocabulary, panic containment, the build prerequisites on each release
-target, and how the hand-written header is verified against the Rust
-definitions.
+All three exist as of Phase 1 stage 7. [c-abi.md](c-abi.md) is the C boundary's
+own contract document: handle lifetimes, structure-prefix rules, the status
+vocabulary, panic containment, the build prerequisites on each release target,
+and how the hand-written header is verified against the Rust definitions.
+[cpp-wrapper.md](cpp-wrapper.md) is the C++ adapter's: move-only owners,
+explicit `clone` and `close`, the exception-free `Result`, borrowed views and
+their owners, and the CMake targets.
+
+The C++ wrapper is header-only and produces no artifact of its own, so the C ABI
+remains the only ABI the project has; see
+[ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md).
 
 ## Workspace layout
 
@@ -109,14 +115,19 @@ mado-pilot/
 │   │   └── onnx/
 │   ├── bindings/
 │   │   └── capi/
-│   │       ├── include/        # the tracked C header
+│   │       ├── CMakeLists.txt  # the MadoPilot::C and MadoPilot::Cpp targets
+│   │       ├── include/        # the tracked C header and C++ wrapper
 │   │       ├── examples/c/     # the C example
-│   │       └── tests/c/        # the C ABI layout probe
+│   │       ├── examples/cpp/   # the C++ example
+│   │       ├── tests/c/        # the C ABI layout probe
+│   │       ├── tests/cpp/      # the C++ ownership probe
+│   │       └── tests/cmake/    # the CMake consumer project
 │   └── support/
 │       └── testkit/
 ├── docs/
 │   ├── architecture.md
 │   ├── c-abi.md
+│   ├── cpp-wrapper.md
 │   ├── validation-gates.md
 │   ├── performance.md
 │   ├── third-party-dependencies.md
@@ -166,7 +177,7 @@ prefix.
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Planned macOS target, capture, input, permission, and capability adapter |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Planned ONNX Runtime OCR and execution-provider adapter |
-| `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary |
+| `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
 | `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture and backend doubles, fake input, synthetic clock, and contract-fixture support |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
 
@@ -303,7 +314,10 @@ The rules the table encodes:
 6. Only `mado-pilot` names a concrete adapter, because default wiring is its
    responsibility.
 7. `mado-pilot-capi` depends on `mado-pilot`, never the reverse.
-8. C++ wrapper code consumes only the released C header and library.
+8. C++ wrapper code consumes only the released C header and library. It is not a
+   Cargo package and the dependency checker does not see it; the rule is enforced
+   by the wrapper having nothing else to include and by the CMake consumer test
+   linking `MadoPilot::Cpp` alone.
 
 The facade's row lists no contract package. That is deliberate — default wiring is
 the facade's only job — but it means every core, capture, input, vision, OCR, or
@@ -526,11 +540,22 @@ prefix, and structure layouts are likewise unresolved; see gate
 `include/madopilot/madopilot.h` exists as a tracked, hand-written header verified
 against the Rust definitions by a cross-language layout probe; see
 [ADR 0004](adr/0004-c-header-authorship-and-abi-verification.md) and
-[c-abi.md](c-abi.md). Two of the reservations above are not yet produced. The
-`staticlib` kind is withheld because [`G-008`](validation-gates.md#g-008) has not
-recorded which static dependency combinations are supported, and the ABI-major
-decorated loader names are applied by release packaging, which Phase 1 does not
-implement: what is built today is the undecorated development artifact.
+[c-abi.md](c-abi.md).
+
+`include/madopilot/madopilot.hpp`, the namespace `madopilot`, and the CMake
+targets `MadoPilot::C` and `MadoPilot::Cpp` now exist as well. The wrapper is
+header-only, so `MadoPilot::Cpp` is an `INTERFACE` target and produces no
+artifact; see [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) and
+[cpp-wrapper.md](cpp-wrapper.md).
+
+Three reservations above are still not produced. The `staticlib` kind is withheld
+because [`G-008`](validation-gates.md#g-008) has not recorded which static
+dependency combinations are supported; the ABI-major decorated loader names are
+applied by release packaging, which Phase 1 does not implement, so what is built
+today is the undecorated development artifact; and no pkg-config file is
+generated, for the same packaging reason. The CMake project likewise has no
+install or export set, so consumption is from the development tree with
+`add_subdirectory` rather than with `find_package`.
 
 ## Version-one scope
 
@@ -617,7 +642,8 @@ implemented below describe behavior a caller can use today.
 | Default adapter wiring and the required-backend rule | Implemented in `mado-pilot` |
 | C ABI functions, C header, dynamic library | Implemented in `mado-pilot-capi` for the Phase 1 prefix; values and layouts provisional under [`G-010`](validation-gates.md#g-010) |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
-| C++ wrapper | Not implemented |
+| C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented for the Phase 1 prefix as a header-only adapter; decided in [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) |
+| CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
 | Numeric performance budgets | Not established; format, harness, and correctness oracles only |
 | Native permission behavior | Not implemented |
 | Release packaging and ABI compatibility testing | Not implemented |

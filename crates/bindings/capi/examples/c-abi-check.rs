@@ -1,17 +1,29 @@
-//! Compiles the C header against this library and checks that they agree.
+//! Compiles the C and C++ surfaces against this library and checks that they
+//! agree with it and with each other.
 //!
 //! The header is hand-written, so its agreement with the Rust `#[repr(C)]`
-//! definitions is proved rather than assumed. This program:
+//! definitions is proved rather than assumed, and the C++ wrapper is
+//! header-only, so it has no artifact of its own that a build would otherwise
+//! exercise. This program:
 //!
 //! 1. compiles and runs `tests/c/madopilot-abi-layout.c`, which reports sizes,
 //!    alignments, and field offsets as the C compiler produced them;
 //! 2. compares that report line by line against the same values measured from
 //!    the Rust definitions;
 //! 3. compiles, links, and runs `examples/c/deterministic-slice.c` against the
-//!    built library and checks its outcome.
+//!    built library and checks its outcome;
+//! 4. compiles, links, and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
+//!    static assertions prove the wrapper's ownership shape at compile time and
+//!    whose checks prove its behaviour at run time;
+//! 5. compiles, links, and runs `examples/cpp/deterministic-slice.cpp` and
+//!    checks that it answers exactly what the C example answered;
+//! 6. configures, builds, and runs the CMake consumer project in
+//!    `tests/cmake/`, which reaches the library only through `MadoPilot::C` and
+//!    `MadoPilot::Cpp`.
 //!
 //! Two compilers, one comparison. A divergence names the structure and the
-//! field. See `docs/adr/0004-c-header-authorship-and-abi-verification.md`.
+//! field. See `docs/adr/0004-c-header-authorship-and-abi-verification.md` and
+//! `docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md`.
 //!
 //! ```text
 //! cargo build --locked --package mado-pilot-capi
@@ -33,11 +45,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let paths = Paths::discover()?;
 
     println!("host: {label}");
-    println!("compiler: {}", paths.compiler.to_string_lossy());
+    println!("c compiler: {}", paths.cc.to_string_lossy());
+    println!("c++ compiler: {}", paths.cxx.to_string_lossy());
+    println!("cmake: {}", paths.cmake.to_string_lossy());
     println!("library: {}", paths.library.display());
 
     check_layout(&paths)?;
-    run_example(&paths, &label)?;
+    run_c_example(&paths, &label)?;
+    check_cpp_ownership(&paths)?;
+    run_cpp_example(&paths, &label)?;
+    check_cmake_consumer(&paths)?;
 
     println!("c-abi-check complete");
 
@@ -58,6 +75,13 @@ fn label() -> String {
     "unlabelled host".to_owned()
 }
 
+/// Which compiler and which dialect a source is built with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Language {
+    C,
+    Cpp,
+}
+
 /// Everything this program has to find before it can do anything.
 #[derive(Debug)]
 struct Paths {
@@ -73,7 +97,11 @@ struct Paths {
     /// Where this program writes the programs it builds.
     scratch: PathBuf,
     /// The C compiler.
-    compiler: OsString,
+    cc: OsString,
+    /// The C++ compiler.
+    cxx: OsString,
+    /// The CMake executable.
+    cmake: OsString,
 }
 
 impl Paths {
@@ -123,16 +151,19 @@ impl Paths {
             artifacts,
             library,
             scratch,
-            compiler: compiler(),
+            cc: compiler(Language::C),
+            cxx: compiler(Language::Cpp),
+            cmake: cmake()?,
         })
     }
 
+    /// The directory holding `madopilot/madopilot.h` and `madopilot.hpp`.
     fn include(&self) -> PathBuf {
         self.root.join("crates/bindings/capi/include")
     }
 
-    /// The directory holding `deterministic-scene.h`, which the example
-    /// includes.
+    /// The directory holding `deterministic-scene.h`, which both examples and
+    /// the C++ ownership probe include.
     fn shared_sources(&self) -> PathBuf {
         self.root.join("crates/bindings/capi/examples")
     }
@@ -183,20 +214,103 @@ fn import_library(artifacts: &Path, library: &Path) -> PathBuf {
     artifacts.join("madopilot.lib")
 }
 
-/// Returns the C compiler to use.
+/// Returns the compiler to use for a language.
 ///
-/// `CC` first, so a host with more than one toolchain can say which. Otherwise
-/// the release target's own compiler: MSVC on Windows, and whatever `cc` is on
-/// macOS, which is the Command Line Tools clang.
-fn compiler() -> OsString {
-    if let Some(configured) = env::var_os("CC") {
+/// `CC` and `CXX` first, so a host with more than one toolchain can say which.
+/// Otherwise the release target's own compiler: MSVC on Windows, where one
+/// driver builds both languages, and `cc`/`c++` on macOS, which are the Command
+/// Line Tools clang.
+fn compiler(language: Language) -> OsString {
+    let configured = match language {
+        Language::C => env::var_os("CC"),
+        Language::Cpp => env::var_os("CXX"),
+    };
+    if let Some(configured) = configured {
         return configured;
     }
     if cfg!(target_os = "windows") {
         return OsString::from("cl");
     }
 
-    OsString::from("cc")
+    match language {
+        Language::C => OsString::from("cc"),
+        Language::Cpp => OsString::from("c++"),
+    }
+}
+
+/// Returns the CMake executable, and fails with an actionable message if there
+/// is none.
+///
+/// `CMAKE` first. Then whatever is on `PATH`. On Windows, finally the copy
+/// Visual Studio ships, which `vcvars64.bat` does not put on `PATH` — this
+/// check already requires that environment, and `VSINSTALLDIR` is set inside
+/// it, so the fallback costs nothing where it is needed.
+fn cmake() -> Result<OsString, Box<dyn std::error::Error>> {
+    if let Some(configured) = env::var_os("CMAKE") {
+        if launches(&configured) {
+            return Ok(configured);
+        }
+        return Err(format!(
+            "`CMAKE` names `{}`, which could not be run.",
+            configured.to_string_lossy()
+        )
+        .into());
+    }
+
+    let mut candidates = vec![OsString::from("cmake")];
+    if let Some(root) = env::var_os("VSINSTALLDIR") {
+        candidates.push(
+            PathBuf::from(root)
+                .join(r"Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe")
+                .into_os_string(),
+        );
+    }
+
+    for candidate in candidates {
+        if launches(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    let hint = if cfg!(target_os = "windows") {
+        "\nVisual Studio ships one under \
+         `%VSINSTALLDIR%\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin`, \
+         which is found automatically inside a Developer Command Prompt. Set `CMAKE` \
+         to name one explicitly."
+    } else {
+        "\nSet `CMAKE` to name one explicitly."
+    };
+
+    Err(format!("no CMake 3.22 or later was found on `PATH`.{hint}").into())
+}
+
+fn launches(program: &OsString) -> bool {
+    Command::new(program)
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// Returns the `ctest` beside a given `cmake`.
+///
+/// They are installed together, so the one next to the CMake actually in use is
+/// the matching one even when another is on `PATH`.
+fn ctest(cmake: &OsString) -> OsString {
+    let path = PathBuf::from(cmake);
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return OsString::from("ctest");
+    };
+
+    parent
+        .join(if cfg!(target_os = "windows") {
+            "ctest.exe"
+        } else {
+            "ctest"
+        })
+        .into_os_string()
 }
 
 fn is_msvc(compiler: &OsString) -> bool {
@@ -205,34 +319,47 @@ fn is_msvc(compiler: &OsString) -> bool {
     name == "cl" || name.ends_with("cl.exe") || name.ends_with("/cl") || name.ends_with("\\cl.exe")
 }
 
-/// Compiles `source` into `output`, linking the library when asked.
+/// Compiles `source` into a program named `name`, linking the library when
+/// asked.
 fn compile(
     paths: &Paths,
+    language: Language,
+    name: &str,
     source: &Path,
-    output: &Path,
     link: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if !source.exists() {
         return Err(format!(
-            "{} does not exist.\nThe C sources are tracked; check out the whole \
+            "{} does not exist.\nThe C and C++ sources are tracked; check out the whole \
              `crates/bindings/capi/` directory.",
             source.display()
         )
         .into());
     }
 
-    let object = paths.scratch.join(
-        source
-            .with_extension(if is_msvc(&paths.compiler) { "obj" } else { "o" })
-            .file_name()
-            .ok_or("the source has no file name")?,
-    );
-    let mut command = Command::new(&paths.compiler);
+    let compiler = match language {
+        Language::C => &paths.cc,
+        Language::Cpp => &paths.cxx,
+    };
+    let output = paths.program(name);
+    // Named after the program rather than after the source: the C and C++
+    // examples share a file name, and two object files called
+    // `deterministic-slice.o` would be one object file.
+    let object = paths.scratch.join(format!(
+        "{name}.{}",
+        if is_msvc(compiler) { "obj" } else { "o" }
+    ));
+    let mut command = Command::new(compiler);
 
-    if is_msvc(&paths.compiler) {
+    if is_msvc(compiler) {
+        command.arg("/nologo");
+        match language {
+            Language::C => command.arg("/std:c11"),
+            // `/EHsc` because the standard library this wrapper uses assumes
+            // exceptions are enabled, even though the wrapper never throws one.
+            Language::Cpp => command.arg("/std:c++17").arg("/EHsc"),
+        };
         command
-            .arg("/nologo")
-            .arg("/std:c11")
             .arg("/W3")
             .arg(format!("/I{}", paths.include().display()))
             .arg(format!("/I{}", paths.shared_sources().display()))
@@ -247,8 +374,11 @@ fn compile(
             command.arg(&paths.link);
         }
     } else {
+        command.arg(match language {
+            Language::C => "-std=c11",
+            Language::Cpp => "-std=c++17",
+        });
         command
-            .arg("-std=c11")
             .arg("-Wall")
             .arg("-Wextra")
             .arg("-I")
@@ -256,7 +386,7 @@ fn compile(
             .arg("-I")
             .arg(paths.shared_sources())
             .arg("-o")
-            .arg(output)
+            .arg(&output)
             .arg(source);
         if link {
             command
@@ -268,24 +398,25 @@ fn compile(
         }
     }
 
-    let output = command.output().map_err(|error| {
+    let result = command.output().map_err(|error| {
         let hint = if cfg!(target_os = "windows") {
             "\nOn Windows, `cl` is only on `PATH` inside a Developer Command \
-             Prompt or after `vcvars64.bat`. Set `CC` to use a different compiler."
+             Prompt or after `vcvars64.bat`. Set `CC` or `CXX` to use a different \
+             compiler."
         } else {
-            "\nSet `CC` to name a compiler explicitly."
+            "\nSet `CC` or `CXX` to name a compiler explicitly."
         };
         format!(
-            "could not run the C compiler `{}`: {error}{hint}",
-            paths.compiler.to_string_lossy()
+            "could not run the compiler `{}`: {error}{hint}",
+            compiler.to_string_lossy()
         )
     })?;
-    report_output("compile", &output);
-    if !output.status.success() {
+    report_output("compile", &result);
+    if !result.status.success() {
         return Err(format!("compiling {} failed", source.display()).into());
     }
 
-    Ok(())
+    Ok(output)
 }
 
 /// Runs a built program with the library reachable, and returns its output.
@@ -296,9 +427,16 @@ fn run(
 ) -> Result<Output, Box<dyn std::error::Error>> {
     let mut command = Command::new(program);
     command.args(arguments);
+    reachable(paths, &mut command)?;
 
-    // Windows has no rpath: the loader searches the executable's directory and
-    // then `PATH`, so the library's directory is prepended for the child only.
+    Ok(command.output()?)
+}
+
+/// Puts the library's directory where the child process's loader will find it.
+///
+/// Windows has no rpath: the loader searches the executable's directory and then
+/// `PATH`, so the library's directory is prepended for the child only.
+fn reachable(paths: &Paths, command: &mut Command) -> Result<(), Box<dyn std::error::Error>> {
     if cfg!(target_os = "windows") {
         let existing = env::var_os("PATH").unwrap_or_default();
         let mut search = vec![paths.artifacts.clone()];
@@ -306,7 +444,7 @@ fn run(
         command.env("PATH", env::join_paths(search)?);
     }
 
-    Ok(command.output()?)
+    Ok(())
 }
 
 fn report_output(what: &str, output: &Output) {
@@ -327,9 +465,8 @@ fn check_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
     let source = paths
         .root
         .join("crates/bindings/capi/tests/c/madopilot-abi-layout.c");
-    let program = paths.program("madopilot-abi-layout");
     // The probe only includes the header, so it needs no library to link.
-    compile(paths, &source, &program, false)?;
+    let program = compile(paths, Language::C, "madopilot-abi-layout", &source, false)?;
 
     let output = run(paths, &program, &[])?;
     report_output("layout probe", &output);
@@ -382,37 +519,197 @@ fn diff(expected: &str, measured: &str) -> Vec<String> {
     differences
 }
 
+/// The tracked deterministic asset package both examples load.
+fn package(paths: &Paths) -> String {
+    paths
+        .root
+        .join("fixtures/assets/phase1-slice")
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Compiles, links, and runs the C example against the built library.
-fn run_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn run_c_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::Error>> {
     let source = paths
         .root
         .join("crates/bindings/capi/examples/c/deterministic-slice.c");
-    let program = paths.program("deterministic-slice");
-    compile(paths, &source, &program, true)?;
+    let program = compile(paths, Language::C, "deterministic-slice-c", &source, true)?;
 
-    let package = paths.root.join("fixtures/assets/phase1-slice");
-    let package = package.to_string_lossy().into_owned();
+    let package = package(paths);
     let output = run(paths, &program, &["--package", &package, "--label", label])?;
 
+    check_example("C", &output)
+}
+
+/// Compiles, links, and runs the C++ example, which answers the same questions.
+fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let source = paths
+        .root
+        .join("crates/bindings/capi/examples/cpp/deterministic-slice.cpp");
+    let program = compile(
+        paths,
+        Language::Cpp,
+        "deterministic-slice-cpp",
+        &source,
+        true,
+    )?;
+
+    let package = package(paths);
+    let output = run(paths, &program, &["--package", &package, "--label", label])?;
+
+    check_example("C++", &output)
+}
+
+/// Checks an example's outcome, and that it reached the end.
+///
+/// Each example checks its own expectations and exits non-zero on the first
+/// surprise. These lines guard against one exiting zero without having got
+/// there, and are the same for both languages because both must answer the same
+/// question with the same numbers.
+fn check_example(language: &str, output: &Output) -> Result<(), Box<dyn std::error::Error>> {
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     print!("{stdout}");
-    report_output("example", &output);
+    report_output(&format!("{language} example"), output);
 
     if !output.status.success() {
-        return Err("the C example reported a failure".into());
+        return Err(format!("the {language} example reported a failure").into());
     }
 
-    // The example checks its own expectations, so this is a guard against it
-    // exiting zero without having reached the end.
     for required in [
         "deterministic slice complete",
         "absent template: 0 match(es)",
         "mapping still readable after close",
+        "panel.patch at [20, 32) x [12, 22) score 1.000000",
+        "panel.patch at [60, 72) x [40, 50) score 1.000000",
     ] {
         if !stdout.contains(required) {
-            return Err(format!("the C example never printed `{required}`").into());
+            return Err(format!("the {language} example never printed `{required}`").into());
         }
     }
 
     Ok(())
+}
+
+/// Compiles and runs the C++ ownership probe.
+///
+/// Its static assertions are checked by the compile; its behaviour checks are
+/// checked by the run.
+fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    let source = paths
+        .root
+        .join("crates/bindings/capi/tests/cpp/madopilot-cpp-ownership.cpp");
+    let program = compile(
+        paths,
+        Language::Cpp,
+        "madopilot-cpp-ownership",
+        &source,
+        true,
+    )?;
+
+    let package = package(paths);
+    let output = run(paths, &program, &["--package", &package])?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    print!("{stdout}");
+    report_output("C++ ownership probe", &output);
+
+    if !output.status.success() {
+        return Err("the C++ ownership probe reported a failure".into());
+    }
+    if !stdout.contains("madopilot-cpp-ownership complete") {
+        return Err("the C++ ownership probe never reached the end".into());
+    }
+
+    Ok(())
+}
+
+/// Configures, builds, and runs the CMake consumer project.
+///
+/// It is a separate project with its own cache: it knows the two target names
+/// and nothing else, so a `MadoPilot::Cpp` that failed to carry its include
+/// directory or to bring `MadoPilot::C` with it would fail here.
+fn check_cmake_consumer(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    let source = paths.root.join("crates/bindings/capi/tests/cmake");
+    let build = paths.scratch.join("cmake");
+    let package = paths.root.join("crates/bindings/capi");
+
+    // One configuration on both single-config and multi-config generators: the
+    // former reads CMAKE_BUILD_TYPE, the latter ignores it and takes `--config`.
+    // No generator is named, so each host uses the one it has — Ninja is not
+    // guaranteed on either runner, and MSBuild and Unix Makefiles are.
+    let configure = cmake_step(
+        paths,
+        &paths.cmake.clone(),
+        &[
+            OsString::from("-S"),
+            source.clone().into_os_string(),
+            OsString::from("-B"),
+            build.clone().into_os_string(),
+            OsString::from(format!("-DMADOPILOT_SOURCE_DIR={}", package.display())),
+            OsString::from(format!(
+                "-DMADOPILOT_ARTIFACT_DIR={}",
+                paths.artifacts.display()
+            )),
+            OsString::from("-DCMAKE_BUILD_TYPE=Release"),
+        ],
+        "cmake configure",
+    )?;
+    if !configure.status.success() {
+        return Err("configuring the CMake consumer project failed".into());
+    }
+
+    let built = cmake_step(
+        paths,
+        &paths.cmake.clone(),
+        &[
+            OsString::from("--build"),
+            build.clone().into_os_string(),
+            OsString::from("--config"),
+            OsString::from("Release"),
+        ],
+        "cmake build",
+    )?;
+    if !built.status.success() {
+        return Err("building the CMake consumer project failed".into());
+    }
+
+    let tested = cmake_step(
+        paths,
+        &ctest(&paths.cmake),
+        &[
+            OsString::from("--test-dir"),
+            build.into_os_string(),
+            OsString::from("--build-config"),
+            OsString::from("Release"),
+            OsString::from("--output-on-failure"),
+        ],
+        "ctest",
+    )?;
+    let stdout = String::from_utf8_lossy(&tested.stdout).into_owned();
+    if !tested.status.success() {
+        print!("{stdout}");
+        return Err("the CMake consumer tests failed".into());
+    }
+
+    println!("cmake: the consumer project built and both consumers ran");
+
+    Ok(())
+}
+
+fn cmake_step(
+    paths: &Paths,
+    program: &OsString,
+    arguments: &[OsString],
+    what: &str,
+) -> Result<Output, Box<dyn std::error::Error>> {
+    let mut command = Command::new(program);
+    command.args(arguments);
+    reachable(paths, &mut command)?;
+
+    let output = command
+        .output()
+        .map_err(|error| format!("could not run `{}`: {error}", program.to_string_lossy()))?;
+    report_output(what, &output);
+
+    Ok(output)
 }

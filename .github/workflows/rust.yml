@@ -232,19 +232,23 @@ jobs:
         shell: bash
         run: cargo doc --locked --workspace --no-deps
 
-      # The first check in this repository that is not `cargo` alone. It compiles
+      # The only check in this repository that is not `cargo` alone. It compiles
       # the tracked C header with the release target's own C compiler — MSVC here,
       # the Xcode Command Line Tools on macOS — and compares the layout it produces
-      # field by field against the one `rustc` produced, then builds and runs the C
-      # example against the library. The Ubuntu repository-policy job deliberately
-      # compiles nothing and does not run this. See
-      # docs/adr/0004-c-header-authorship-and-abi-verification.md.
+      # field by field against the one `rustc` produced; then builds and runs the C
+      # example, the C++ ownership probe, and the C++ example against the library;
+      # then configures, builds, and runs the CMake consumer project. The Ubuntu
+      # repository-policy job deliberately compiles nothing and does not run this.
+      # See docs/adr/0004-c-header-authorship-and-abi-verification.md and
+      # docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md.
       # `cl` is installed on this image but is not on `PATH` until the developer
       # environment is entered, so the step runs under `cmd` and calls
       # `vcvars64.bat` itself rather than exporting a whole environment to later
       # steps. The install path is discovered with `vswhere` instead of being
-      # hard-coded, because it carries the Visual Studio edition.
-      - name: Check the C ABI header and example
+      # hard-coded, because it carries the Visual Studio edition. That environment
+      # also sets `VSINSTALLDIR`, through which the check finds the CMake Visual
+      # Studio ships if the runner image ever stops carrying one on `PATH`.
+      - name: Check the C ABI and the C++ wrapper
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
@@ -360,14 +364,17 @@ jobs:
         shell: bash
         run: cargo doc --locked --workspace --no-deps
 
-      # The first check in this repository that is not `cargo` alone. It compiles
-      # the tracked C header with the release target's own C compiler — MSVC here,
-      # the Xcode Command Line Tools on macOS — and compares the layout it produces
-      # field by field against the one `rustc` produced, then builds and runs the C
-      # example against the library. The Ubuntu repository-policy job deliberately
-      # compiles nothing and does not run this. See
-      # docs/adr/0004-c-header-authorship-and-abi-verification.md.
-      - name: Check the C ABI header and example
+      # The only check in this repository that is not `cargo` alone. It compiles
+      # the tracked C header with the release target's own C compiler — the Xcode
+      # Command Line Tools here, MSVC on Windows — and compares the layout it
+      # produces field by field against the one `rustc` produced; then builds and
+      # runs the C example, the C++ ownership probe, and the C++ example against
+      # the library; then configures, builds, and runs the CMake consumer project.
+      # The Ubuntu repository-policy job deliberately compiles nothing and does
+      # not run this. See
+      # docs/adr/0004-c-header-authorship-and-abi-verification.md and
+      # docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md.
+      - name: Check the C ABI and the C++ wrapper
         shell: bash
         run: |
           cargo build --locked --package mado-pilot-capi

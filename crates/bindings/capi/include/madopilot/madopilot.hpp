@@ -1,0 +1,1708 @@
+/*
+ * MadoPilot C++ wrapper — Phase 1 prefix.
+ *
+ * A header-only RAII adapter over the released C ABI. It owns handles, turns
+ * statuses into an exception-free `Result`, and copies the text a caller needs
+ * after a C handle is gone. It performs no capture, mapping, matching,
+ * coordinate, or status logic of its own: every answer here came from a C table
+ * entry.
+ *
+ * ============================================================================
+ * NOTHING HERE IS STABLE YET.
+ *
+ * This header declares no ABI. The only ABI is the C one, and every status
+ * value, structure layout, and function-table position it carries is
+ * PROVISIONAL under gate `G-010`. Nothing below restates a numeric value from
+ * that contract: the enumerated types are aliases of the C types, so a caller
+ * writes `MADOPILOT_STATUS_OK` and gets whatever the header it compiled against
+ * says that is.
+ * ============================================================================
+ *
+ * Requires C++17. See docs/cpp-wrapper.md for the ownership rules and
+ * docs/c-abi.md for the contract underneath them.
+ */
+
+#ifndef MADOPILOT_MADOPILOT_HPP
+#define MADOPILOT_MADOPILOT_HPP
+
+#include "madopilot/madopilot.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+/* MSVC reports 199711L in `__cplusplus` unless /Zc:__cplusplus is passed, and
+ * puts the real value in `_MSVC_LANG`. Reading the wrong one would reject a
+ * conforming compiler. No macro is left defined afterwards. */
+#if (defined(_MSVC_LANG) && _MSVC_LANG < 201703L) || \
+    (!defined(_MSVC_LANG) && __cplusplus < 201703L)
+#  error "madopilot.hpp requires C++17 or later"
+#endif
+
+namespace madopilot {
+
+/* ---------------------------------------------------------------------------
+ * The C vocabulary, unchanged
+ *
+ * These are aliases, not new enumerations. Re-declaring the C constants as
+ * `enum class` members would create a second vocabulary that has to be reviewed
+ * and frozen alongside the first, and it would compile happily while the two
+ * drifted apart. A caller writes the `MADOPILOT_*` constant the C header and
+ * docs/c-abi.md already document.
+ * ------------------------------------------------------------------------ */
+
+using Status = ::madopilot_status_t;
+using ErrorCategory = ::madopilot_error_category_t;
+using Space = ::madopilot_space_t;
+using PixelFormat = ::madopilot_pixel_format_t;
+using ClipPolicy = ::madopilot_clip_policy_t;
+using Continuity = ::madopilot_continuity_t;
+using Suppression = ::madopilot_suppression_t;
+using SourceKind = ::madopilot_source_kind_t;
+using PackageSourceKind = ::madopilot_package_source_kind_t;
+using AssetFault = ::madopilot_asset_fault_t;
+using AssetStage = ::madopilot_asset_stage_t;
+
+/* Structures with no borrowed view are passed through as themselves, for the
+ * same reason: their fields are the contract's, and a projection would be a
+ * copy of a layout that is still provisional. */
+using Rect = ::madopilot_pixel_rect_t;
+using FrameStamp = ::madopilot_frame_stamp_t;
+using FrameInfo = ::madopilot_frame_info_t;
+using SessionInfo = ::madopilot_session_info_t;
+using EffectiveMatchOptions = ::madopilot_match_options_t;
+
+/// True when a status is the success value.
+inline bool is_ok(Status status) noexcept { return status == MADOPILOT_STATUS_OK; }
+
+/* ---------------------------------------------------------------------------
+ * Borrowed views
+ *
+ * The C ABI hands back pointer-length views into memory a handle owns. These
+ * two types say so in their name and offer the copy that outlives the owner.
+ * ------------------------------------------------------------------------ */
+
+/// UTF-8 text borrowed from a retained owner.
+///
+/// Valid only while the owner named by the accessor that produced it is
+/// retained. Call `to_string()` for text that must outlive it.
+class BorrowedStr {
+public:
+    BorrowedStr() noexcept = default;
+
+    explicit BorrowedStr(::madopilot_str_t view) noexcept : view_(view) {}
+
+    /// The borrowed text. Empty rather than null when the library wrote no view.
+    std::string_view view() const noexcept {
+        return view_.data == nullptr ? std::string_view{}
+                                     : std::string_view(view_.data, view_.len);
+    }
+
+    // NOLINTNEXTLINE(google-explicit-constructor) — a borrowed view is a
+    // string_view; requiring a cast at every use would only add noise.
+    operator std::string_view() const noexcept { return view(); }
+
+    /// An owned copy whose lifetime is independent of the C handle.
+    std::string to_string() const { return std::string(view()); }
+
+    const char* data() const noexcept { return view_.data; }
+    std::size_t size() const noexcept { return view_.len; }
+    bool empty() const noexcept { return view_.len == 0; }
+
+    /// The C view this wraps, for a caller that needs it back.
+    ::madopilot_str_t raw() const noexcept { return view_; }
+
+private:
+    ::madopilot_str_t view_{nullptr, 0};
+};
+
+/// Bytes borrowed from a retained owner, on the same terms as `BorrowedStr`.
+class BorrowedBytes {
+public:
+    BorrowedBytes() noexcept = default;
+
+    explicit BorrowedBytes(::madopilot_bytes_t view) noexcept : view_(view) {}
+
+    const std::uint8_t* data() const noexcept { return view_.data; }
+    std::size_t size() const noexcept { return view_.len; }
+    bool empty() const noexcept { return view_.len == 0; }
+    const std::uint8_t* begin() const noexcept { return view_.data; }
+    const std::uint8_t* end() const noexcept {
+        return view_.data == nullptr ? nullptr : view_.data + view_.len;
+    }
+
+    /// An owned copy whose lifetime is independent of the C handle.
+    std::vector<std::uint8_t> to_vector() const {
+        return view_.data == nullptr ? std::vector<std::uint8_t>{}
+                                     : std::vector<std::uint8_t>(begin(), end());
+    }
+
+    ::madopilot_bytes_t raw() const noexcept { return view_; }
+
+private:
+    ::madopilot_bytes_t view_{nullptr, 0};
+};
+
+namespace detail {
+
+/// Value-initializes a versioned structure and declares its size.
+///
+/// Every extensible C structure begins with `struct_size`, and a caller sets it
+/// to `sizeof` as its own header declares it. Doing that here once means no call
+/// site can forget it or write a stale number.
+template <class T>
+inline T sized() noexcept {
+    T value{};
+    value.struct_size = static_cast<std::uint32_t>(sizeof(T));
+    return value;
+}
+
+inline ::madopilot_str_t as_str(std::string_view text) noexcept {
+    ::madopilot_str_t view{};
+    view.data = text.data();
+    view.len = text.size();
+    return view;
+}
+
+inline ::madopilot_bytes_t as_bytes(const std::uint8_t* data, std::size_t len) noexcept {
+    ::madopilot_bytes_t view{};
+    view.data = data;
+    view.len = len;
+    return view;
+}
+
+} // namespace detail
+
+/* ---------------------------------------------------------------------------
+ * Errors
+ * ------------------------------------------------------------------------ */
+
+/// Which asset rule was broken, and how far loading had got.
+///
+/// Package loading is the one Phase 1 operation whose failures a caller may
+/// reasonably tell apart by more than a status: a bad content hash and an unsafe
+/// entry path are both `MADOPILOT_STATUS_ASSET_INVALID`. Collapsing the pair
+/// into the status would throw away detail the C ABI keeps on purpose.
+struct AssetDetail {
+    AssetFault fault = MADOPILOT_ASSET_FAULT_UNKNOWN;
+    AssetStage stage = MADOPILOT_ASSET_STAGE_UNKNOWN;
+};
+
+/// A failure, owned by C++.
+///
+/// Constructing one copies everything out of the C error handle and releases it
+/// immediately, so nothing here borrows and there is no global or thread-local
+/// last-error slot to consult. A failure belongs to the call that produced it.
+class Error {
+public:
+    Error() noexcept = default;
+
+    /// A failure with a status and no error handle, which is what an accessor
+    /// that takes no `out_error` reports.
+    static Error from_status(Status status) {
+        Error error;
+        error.status_ = status;
+        return error;
+    }
+
+    Status status() const noexcept { return status_; }
+    ErrorCategory category() const noexcept { return category_; }
+
+    /// Redacted diagnostic text, owned. Never required for control flow, and
+    /// never carrying captured pixels or recognized text.
+    const std::string& message() const noexcept { return message_; }
+
+    /// The backend that failed, when the library named one.
+    const std::optional<std::string>& backend() const noexcept { return backend_; }
+
+    /// The asset fault and stage, when the failure came from package loading.
+    const std::optional<AssetDetail>& asset_detail() const noexcept { return asset_; }
+
+    bool ok() const noexcept { return status_ == MADOPILOT_STATUS_OK; }
+
+private:
+    friend Error take_error_(const ::madopilot_api_t* api, Status status,
+                             ::madopilot_error_t* error);
+
+    Status status_ = MADOPILOT_STATUS_OK;
+    ErrorCategory category_ = MADOPILOT_ERROR_CATEGORY_UNSPECIFIED;
+    std::string message_;
+    std::optional<std::string> backend_;
+    std::optional<AssetDetail> asset_;
+};
+
+/// Describes an owned C error, copies everything out of it, and releases it.
+///
+/// Called on every failing path, including the ones whose caller never looks at
+/// the text: the handle is released either way.
+inline Error take_error_(const ::madopilot_api_t* api, Status status,
+                         ::madopilot_error_t* error) {
+    Error out = Error::from_status(status);
+    if (api == nullptr || error == nullptr) {
+        return out;
+    }
+
+    ::madopilot_error_detail_t detail = detail::sized<::madopilot_error_detail_t>();
+    if (api->error_describe(error, &detail) == MADOPILOT_STATUS_OK) {
+        // The status the error carries is the authority; the one the entry
+        // returned is the same value, and this keeps them from diverging.
+        out.status_ = detail.status;
+        out.category_ = detail.category;
+        out.message_ = BorrowedStr(detail.message).to_string();
+        if ((detail.flags & MADOPILOT_ERROR_HAS_BACKEND) != 0u) {
+            out.backend_ = BorrowedStr(detail.backend).to_string();
+        }
+        if ((detail.flags & MADOPILOT_ERROR_HAS_ASSET_DETAIL) != 0u) {
+            out.asset_ = AssetDetail{detail.asset_fault, detail.asset_stage};
+        }
+    }
+    api->error_release(error);
+
+    return out;
+}
+
+/* ---------------------------------------------------------------------------
+ * Result
+ *
+ * The default interface. No wrapper operation throws to report a MadoPilot
+ * failure; only allocating the owned error text can throw, and that is
+ * `std::bad_alloc` rather than a translated status.
+ * ------------------------------------------------------------------------ */
+
+/// A value or a failure. Move-only when `T` is.
+template <class T>
+class Result {
+public:
+    static Result success(T value) {
+        Result result;
+        result.value_.emplace(std::move(value));
+        return result;
+    }
+
+    static Result failure(Error error) {
+        Result result;
+        result.error_ = std::move(error);
+        return result;
+    }
+
+    bool ok() const noexcept { return value_.has_value(); }
+    explicit operator bool() const noexcept { return ok(); }
+
+    /// The C status. `MADOPILOT_STATUS_OK` exactly when `ok()`.
+    Status status() const noexcept { return error_.status(); }
+
+    /// The failure. On success this is a default error whose status is OK.
+    const Error& error() const noexcept { return error_; }
+
+    T& value() noexcept { return *value_; }
+    const T& value() const noexcept { return *value_; }
+
+    /// Moves the value out. Valid only when `ok()`.
+    T take() { return std::move(*value_); }
+
+private:
+    Result() = default;
+
+    std::optional<T> value_;
+    /// Default-constructed, and therefore OK, on the success path.
+    Error error_;
+};
+
+/// A completed-or-failed operation with no value, such as `Session::close`.
+template <>
+class Result<void> {
+public:
+    static Result success() { return Result(); }
+
+    static Result failure(Error error) {
+        Result result;
+        result.error_ = std::move(error);
+        return result;
+    }
+
+    bool ok() const noexcept { return error_.ok(); }
+    explicit operator bool() const noexcept { return ok(); }
+    Status status() const noexcept { return error_.status(); }
+    const Error& error() const noexcept { return error_; }
+
+private:
+    Result() = default;
+
+    Error error_;
+};
+
+namespace detail {
+
+/// The status for "there is no library to ask".
+///
+/// The wrapper originates a status in exactly two places, both of them this
+/// one: an owner that never held a table, and — as
+/// `MADOPILOT_STATUS_INTERNAL` — a negotiation that reported success without
+/// returning one. Every other status in a `Result` came from a C entry,
+/// including the refusal an emptied owner gets: an emptied owner keeps the
+/// table it came from and forwards its null handle to it.
+template <class T>
+inline Result<T> no_table() {
+    return Result<T>::failure(Error::from_status(MADOPILOT_STATUS_INVALID_ARGUMENT));
+}
+
+/// A move-only owner of one reference-counted C handle.
+///
+/// `Derived` supplies `retain_handle` and `release_handle`. Copy operations are
+/// deleted so that a refcount bump is never hidden behind an assignment; the
+/// explicit way to take a second reference is `clone()`.
+template <class Derived, class Handle>
+class Owner {
+public:
+    Owner() noexcept = default;
+
+    Owner(const Owner&) = delete;
+    Owner& operator=(const Owner&) = delete;
+
+    Owner(Owner&& other) noexcept : api_(other.api_), handle_(other.handle_) {
+        other.handle_ = nullptr;
+    }
+
+    Owner& operator=(Owner&& other) noexcept {
+        if (this != &other) {
+            reset();
+            api_ = other.api_;
+            handle_ = other.handle_;
+            other.handle_ = nullptr;
+        }
+        return *this;
+    }
+
+    /// Releases the owned reference. Never throws, and never reports: a
+    /// destructor cannot answer a caller, which is why a failable operation such
+    /// as session close stays explicit.
+    ~Owner() { reset(); }
+
+    /// True when this owner holds no reference.
+    bool empty() const noexcept { return handle_ == nullptr; }
+    explicit operator bool() const noexcept { return handle_ != nullptr; }
+
+    /// The owned handle, or null. Borrowed: it stays valid while this owner does.
+    Handle* get() const noexcept { return handle_; }
+
+    /// The negotiated table this owner calls through, or null.
+    ///
+    /// An emptied owner keeps it, so an operation on an emptied owner is refused
+    /// by the C boundary with its own status rather than by the wrapper.
+    const ::madopilot_api_t* api() const noexcept { return api_; }
+
+    /// Drops the owned reference and leaves this owner empty.
+    void reset() noexcept {
+        if (handle_ != nullptr) {
+            Derived::release_handle(api_, handle_);
+            handle_ = nullptr;
+        }
+    }
+
+    /// Gives up the reference without releasing it. The caller owns it now.
+    Handle* release() noexcept {
+        Handle* handle = handle_;
+        handle_ = nullptr;
+        return handle;
+    }
+
+    /// Takes a second owned reference, explicitly.
+    ///
+    /// Both owners remain valid and independent; the referenced state lives
+    /// until the last one is destroyed. Cloning an empty owner yields an empty
+    /// owner.
+    Derived clone() const noexcept {
+        if (handle_ == nullptr) {
+            Derived copy;
+            copy.api_ = api_;
+            return copy;
+        }
+        Derived::retain_handle(api_, handle_);
+        return Derived(api_, handle_);
+    }
+
+protected:
+    Owner(const ::madopilot_api_t* api, Handle* handle) noexcept
+        : api_(api), handle_(handle) {}
+
+    const ::madopilot_api_t* api_ = nullptr;
+    Handle* handle_ = nullptr;
+};
+
+} // namespace detail
+
+/* ---------------------------------------------------------------------------
+ * Typed Phase 1 requests
+ *
+ * Each of these owns whatever its C structure points at, so a `to_c()` value is
+ * usable for as long as the request object is alive and no longer.
+ * ------------------------------------------------------------------------ */
+
+class Cancellation;
+
+/// A deadline and a cancellation token, carried into every blocking call.
+///
+/// The deadline is an ABSOLUTE instant in the library's own monotonic domain,
+/// read from `Api::clock_now()` and added to. It is not a duration and not a
+/// wall clock. A default `Operation` has neither deadline nor cancellation.
+///
+/// An operation borrows its cancellation token: the `Cancellation` owner must
+/// outlive every call this operation is passed to.
+class Operation {
+public:
+    Operation() noexcept = default;
+
+    /// Sets the absolute deadline, in nanoseconds of the library's clock domain.
+    Operation& deadline(std::uint64_t absolute_nanos) noexcept {
+        has_deadline_ = true;
+        deadline_ = absolute_nanos;
+        return *this;
+    }
+
+    Operation& no_deadline() noexcept {
+        has_deadline_ = false;
+        deadline_ = 0;
+        return *this;
+    }
+
+    /// Borrows a cancellation token. The token must outlive this operation's use.
+    Operation& cancellation(const Cancellation& token) noexcept;
+
+    Operation& no_cancellation() noexcept {
+        cancellation_ = nullptr;
+        return *this;
+    }
+
+    ::madopilot_operation_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_operation_t>();
+        value.flags = has_deadline_ ? MADOPILOT_OPERATION_HAS_DEADLINE : 0u;
+        value.deadline_nanos = deadline_;
+        value.cancellation = cancellation_;
+        return value;
+    }
+
+private:
+    bool has_deadline_ = false;
+    std::uint64_t deadline_ = 0;
+    const ::madopilot_cancellation_t* cancellation_ = nullptr;
+};
+
+/// One replay frame supplied as raw pixels.
+///
+/// The pixels are borrowed until `Api::create_engine` returns, which copies
+/// them; the caller's storage is its own again afterwards.
+class ReplayFrame {
+public:
+    ReplayFrame() noexcept = default;
+
+    ReplayFrame& extent(std::uint32_t width, std::uint32_t height) noexcept {
+        width_ = width;
+        height_ = height;
+        return *this;
+    }
+
+    ReplayFrame& format(PixelFormat format) noexcept {
+        format_ = format;
+        return *this;
+    }
+
+    ReplayFrame& continuity(Continuity continuity) noexcept {
+        continuity_ = continuity;
+        return *this;
+    }
+
+    ReplayFrame& pixels(const std::uint8_t* data, std::size_t len) noexcept {
+        pixels_ = data;
+        pixels_len_ = len;
+        return *this;
+    }
+
+    /// Places the frame at an instant in the replay timeline. Omitted, it sits
+    /// at the clock origin.
+    ReplayFrame& captured_at(std::uint64_t nanos) noexcept {
+        captured_at_ = nanos;
+        return *this;
+    }
+
+    /// Bytes per row for a padded source. Omitted, rows are packed.
+    ReplayFrame& stride(std::uint64_t bytes) noexcept {
+        stride_ = bytes;
+        return *this;
+    }
+
+    ::madopilot_replay_frame_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_replay_frame_t>();
+        value.width = width_;
+        value.height = height_;
+        value.format = format_;
+        value.continuity = continuity_;
+        value.pixels = detail::as_bytes(pixels_, pixels_len_);
+        value.captured_at_nanos = captured_at_;
+        value.stride = stride_;
+        return value;
+    }
+
+private:
+    std::uint32_t width_ = 0;
+    std::uint32_t height_ = 0;
+    PixelFormat format_ = MADOPILOT_PIXEL_FORMAT_RGBA8;
+    Continuity continuity_ = MADOPILOT_CONTINUITY_CONTINUOUS;
+    const std::uint8_t* pixels_ = nullptr;
+    std::size_t pixels_len_ = 0;
+    std::uint64_t captured_at_ = 0;
+    std::uint64_t stride_ = 0;
+};
+
+/// Where an engine's frames come from.
+class Source {
+public:
+    /// Frames supplied from memory, under a target name.
+    static Source replay_memory(std::string_view target_name) {
+        Source source;
+        source.kind_ = MADOPILOT_SOURCE_REPLAY_MEMORY;
+        source.target_name_ = std::string(target_name);
+        return source;
+    }
+
+    /// A tracked replay directory. An empty target name takes the default.
+    static Source replay_directory(std::string_view directory,
+                                   std::string_view target_name = {}) {
+        Source source;
+        source.kind_ = MADOPILOT_SOURCE_REPLAY_DIRECTORY;
+        source.directory_ = std::string(directory);
+        source.target_name_ = std::string(target_name);
+        return source;
+    }
+
+    /// Appends one frame to a memory source.
+    Source& frame(const ReplayFrame& frame) {
+        frames_.push_back(frame.to_c());
+        return *this;
+    }
+
+    ::madopilot_source_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_source_t>();
+        value.kind = kind_;
+        value.directory = detail::as_str(directory_);
+        value.frames = frames_.empty() ? nullptr : frames_.data();
+        value.frame_count = frames_.size();
+        // The stride between elements of an array this header declared. A caller
+        // built against an older header has smaller elements, and the library
+        // cannot guess the spacing of an array it did not declare.
+        value.frame_stride = sizeof(::madopilot_replay_frame_t);
+        value.target_name = detail::as_str(target_name_);
+        return value;
+    }
+
+private:
+    SourceKind kind_ = MADOPILOT_SOURCE_REPLAY_MEMORY;
+    std::string directory_;
+    std::string target_name_;
+    std::vector<::madopilot_replay_frame_t> frames_;
+};
+
+/// Where an asset package is read from.
+class PackageSource {
+public:
+    static PackageSource directory(std::string_view path) {
+        PackageSource source;
+        source.kind_ = MADOPILOT_PACKAGE_SOURCE_DIRECTORY;
+        source.path_ = std::string(path);
+        return source;
+    }
+
+    static PackageSource archive_file(std::string_view path) {
+        PackageSource source;
+        source.kind_ = MADOPILOT_PACKAGE_SOURCE_ARCHIVE_FILE;
+        source.path_ = std::string(path);
+        return source;
+    }
+
+    /// Archive bytes borrowed until the load call returns.
+    static PackageSource archive_bytes(const std::uint8_t* data, std::size_t len) {
+        PackageSource source;
+        source.kind_ = MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES;
+        source.archive_ = data;
+        source.archive_len_ = len;
+        return source;
+    }
+
+    ::madopilot_package_source_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_package_source_t>();
+        value.kind = kind_;
+        value.path = detail::as_str(path_);
+        value.archive = detail::as_bytes(archive_, archive_len_);
+        return value;
+    }
+
+private:
+    PackageSourceKind kind_ = MADOPILOT_PACKAGE_SOURCE_DIRECTORY;
+    std::string path_;
+    const std::uint8_t* archive_ = nullptr;
+    std::size_t archive_len_ = 0;
+};
+
+/// How to open a session. Without either format the adapter's own layout is taken.
+class OpenRequest {
+public:
+    OpenRequest() noexcept = default;
+
+    OpenRequest& require_format(PixelFormat format) noexcept {
+        flags_ |= MADOPILOT_OPEN_HAS_REQUIRED_FORMAT;
+        required_ = format;
+        return *this;
+    }
+
+    OpenRequest& prefer_format(PixelFormat format) noexcept {
+        flags_ |= MADOPILOT_OPEN_HAS_PREFERRED_FORMAT;
+        preferred_ = format;
+        return *this;
+    }
+
+    ::madopilot_open_request_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_open_request_t>();
+        value.flags = flags_;
+        value.required_format = required_;
+        value.preferred_format = preferred_;
+        return value;
+    }
+
+private:
+    std::uint32_t flags_ = 0;
+    PixelFormat required_ = MADOPILOT_PIXEL_FORMAT_RGBA8;
+    PixelFormat preferred_ = MADOPILOT_PIXEL_FORMAT_RGBA8;
+};
+
+/// How to map a frame. Without a region the whole frame is mapped.
+class MapRequest {
+public:
+    MapRequest() noexcept = default;
+
+    MapRequest& format(PixelFormat format) noexcept {
+        format_ = format;
+        return *this;
+    }
+
+    /// Maps a sub-rectangle. The rectangle names the space it is measured in.
+    MapRequest& region(Rect region) noexcept {
+        flags_ |= MADOPILOT_MAP_HAS_REGION;
+        region_ = region;
+        return *this;
+    }
+
+    MapRequest& clip_policy(ClipPolicy policy) noexcept {
+        clip_ = policy;
+        return *this;
+    }
+
+    ::madopilot_map_request_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_map_request_t>();
+        value.flags = flags_;
+        value.format = format_;
+        value.clip_policy = clip_;
+        value.region = region_;
+        return value;
+    }
+
+private:
+    std::uint32_t flags_ = 0;
+    PixelFormat format_ = MADOPILOT_PIXEL_FORMAT_RGBA8;
+    ClipPolicy clip_ = MADOPILOT_CLIP_POLICY_REJECT;
+    Rect region_{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+};
+
+/// Thresholds for one search. Every omitted field takes the template's default.
+class MatchOptions {
+public:
+    MatchOptions() noexcept = default;
+
+    MatchOptions& min_score(double score) noexcept {
+        flags_ |= MADOPILOT_MATCH_HAS_MIN_SCORE;
+        min_score_ = score;
+        return *this;
+    }
+
+    MatchOptions& max_results(std::uint32_t limit) noexcept {
+        flags_ |= MADOPILOT_MATCH_HAS_MAX_RESULTS;
+        max_results_ = limit;
+        return *this;
+    }
+
+    MatchOptions& suppression(Suppression suppression) noexcept {
+        flags_ |= MADOPILOT_MATCH_HAS_SUPPRESSION;
+        suppression_ = suppression;
+        return *this;
+    }
+
+    ::madopilot_match_options_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_match_options_t>();
+        value.flags = flags_;
+        value.min_score = min_score_;
+        value.max_results = max_results_;
+        value.suppression = suppression_;
+        return value;
+    }
+
+private:
+    std::uint32_t flags_ = 0;
+    double min_score_ = 0.0;
+    std::uint32_t max_results_ = 0;
+    Suppression suppression_ = MADOPILOT_SUPPRESSION_DROP_OVERLAPPING;
+};
+
+/* ---------------------------------------------------------------------------
+ * Projections of the C output structures that carry borrowed views
+ * ------------------------------------------------------------------------ */
+
+/// What the loaded library is. Both views are static and valid while it is loaded.
+struct BuildInfo {
+    std::uint32_t abi_major = 0;
+    std::uint32_t abi_minor = 0;
+    /// `sizeof` the library's own function table.
+    std::uint32_t table_size = 0;
+    BorrowedStr library_version;
+    BorrowedStr required_backend;
+};
+
+/// One discovered capture target. Both views borrow from the `TargetList`.
+struct TargetDescriptor {
+    std::uint32_t flags = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    PixelFormat format = MADOPILOT_PIXEL_FORMAT_RGBA8;
+    /// A bit set: bit `1 << space` is set when that space converts.
+    std::int32_t coordinate_spaces = 0;
+    BorrowedStr name;
+    BorrowedStr provider;
+
+    bool supports_placement() const noexcept {
+        return (flags & MADOPILOT_TARGET_SUPPORTS_PLACEMENT) != 0u;
+    }
+
+    bool supports_space(Space space) const noexcept {
+        if (space < 0 || space >= 31) {
+            return false;
+        }
+        return (coordinate_spaces & (1 << space)) != 0;
+    }
+};
+
+/// A completed mapping. The bytes borrow from the `Mapping`.
+struct Image {
+    std::uint32_t flags = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    PixelFormat format = MADOPILOT_PIXEL_FORMAT_RGBA8;
+    Space space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    std::uint64_t stride = 0;
+    BorrowedBytes bytes;
+    Rect region{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+
+    /// True when the bytes are shared with the frame rather than copied out.
+    bool shared() const noexcept { return (flags & MADOPILOT_IMAGE_SHARED) != 0u; }
+};
+
+/// What a loaded package declares. Every view borrows from the `Package`.
+struct PackageInfo {
+    std::uint64_t template_count = 0;
+    BorrowedStr package_id;
+    BorrowedStr package_version;
+    BorrowedStr license;
+};
+
+/// What a prepared template is. Both views borrow from the `Template`.
+struct TemplateInfo {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    double min_score = 0.0;
+    BorrowedStr id;
+    BorrowedStr backend;
+    std::uint32_t max_results = 0;
+    Space space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+};
+
+/// What one completed search produced. Both views borrow from the `MatchResult`.
+///
+/// A `match_count` of zero is a successful answer, not a failure.
+struct ResultInfo {
+    std::uint64_t match_count = 0;
+    BorrowedStr backend_id;
+    BorrowedStr backend_version;
+    Rect searched{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+};
+
+/// One match. `template_id` borrows from the `MatchResult`.
+struct Match {
+    double score = 0.0;
+    BorrowedStr template_id;
+    /// Coordinate-qualified: the rectangle names the space it is measured in.
+    Rect bounds{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+};
+
+/* ---------------------------------------------------------------------------
+ * Owners
+ * ------------------------------------------------------------------------ */
+
+/// A cancellation token. Cancelling it ends every operation carrying it.
+class Cancellation : public detail::Owner<Cancellation, ::madopilot_cancellation_t> {
+public:
+    Cancellation() noexcept = default;
+
+    Result<void> cancel() const {
+        if (api_ == nullptr) {
+            return Result<void>::failure(
+                Error::from_status(MADOPILOT_STATUS_INVALID_ARGUMENT));
+        }
+        const Status status = api_->cancellation_cancel(handle_);
+        return is_ok(status) ? Result<void>::success()
+                             : Result<void>::failure(Error::from_status(status));
+    }
+
+    Result<bool> is_cancelled() const {
+        if (api_ == nullptr) {
+            return detail::no_table<bool>();
+        }
+        std::int32_t cancelled = 0;
+        const Status status = api_->cancellation_is_cancelled(handle_, &cancelled);
+        return is_ok(status) ? Result<bool>::success(cancelled != 0)
+                             : Result<bool>::failure(Error::from_status(status));
+    }
+
+private:
+    friend class Api;
+    friend class detail::Owner<Cancellation, ::madopilot_cancellation_t>;
+
+    Cancellation(const ::madopilot_api_t* api, ::madopilot_cancellation_t* handle) noexcept
+        : Owner(api, handle) {}
+
+    static void retain_handle(const ::madopilot_api_t* api,
+                              ::madopilot_cancellation_t* handle) noexcept {
+        api->cancellation_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_cancellation_t* handle) noexcept {
+        api->cancellation_release(handle);
+    }
+};
+
+inline Operation& Operation::cancellation(const Cancellation& token) noexcept {
+    cancellation_ = token.get();
+    return *this;
+}
+
+/// An immutable list of discovered targets. Every string it hands out borrows
+/// from it.
+class TargetList : public detail::Owner<TargetList, ::madopilot_target_list_t> {
+public:
+    TargetList() noexcept = default;
+
+    Result<std::size_t> count() const {
+        if (api_ == nullptr) {
+            return detail::no_table<std::size_t>();
+        }
+        std::size_t value = 0;
+        const Status status = api_->target_list_count(handle_, &value);
+        return is_ok(status) ? Result<std::size_t>::success(value)
+                             : Result<std::size_t>::failure(Error::from_status(status));
+    }
+
+    /// One target. An index at or beyond the count is refused by the C boundary.
+    ///
+    /// The returned `name` and `provider` stay valid while this list is retained.
+    ///
+    /// Named `at` rather than `get` because `get()` is already the owner's own
+    /// accessor for the handle it holds.
+    Result<TargetDescriptor> at(std::size_t index) const {
+        if (api_ == nullptr) {
+            return detail::no_table<TargetDescriptor>();
+        }
+        auto target = detail::sized<::madopilot_target_t>();
+        const Status status = api_->target_list_get(handle_, index, &target);
+        if (!is_ok(status)) {
+            return Result<TargetDescriptor>::failure(Error::from_status(status));
+        }
+
+        TargetDescriptor out;
+        out.flags = target.flags;
+        out.width = target.width;
+        out.height = target.height;
+        out.format = target.format;
+        out.coordinate_spaces = target.coordinate_spaces;
+        out.name = BorrowedStr(target.name);
+        out.provider = BorrowedStr(target.provider);
+
+        return Result<TargetDescriptor>::success(out);
+    }
+
+private:
+    friend class Engine;
+    friend class detail::Owner<TargetList, ::madopilot_target_list_t>;
+
+    TargetList(const ::madopilot_api_t* api, ::madopilot_target_list_t* handle) noexcept
+        : Owner(api, handle) {}
+
+    static void retain_handle(const ::madopilot_api_t* api,
+                              ::madopilot_target_list_t* handle) noexcept {
+        api->target_list_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_target_list_t* handle) noexcept {
+        api->target_list_release(handle);
+    }
+};
+
+/// An immutable loaded asset package. Its strings borrow from it.
+class Package : public detail::Owner<Package, ::madopilot_package_t> {
+public:
+    Package() noexcept = default;
+
+    Result<PackageInfo> describe() const {
+        if (api_ == nullptr) {
+            return detail::no_table<PackageInfo>();
+        }
+        auto info = detail::sized<::madopilot_package_info_t>();
+        const Status status = api_->package_describe(handle_, &info);
+        if (!is_ok(status)) {
+            return Result<PackageInfo>::failure(Error::from_status(status));
+        }
+
+        PackageInfo out;
+        out.template_count = info.template_count;
+        out.package_id = BorrowedStr(info.package_id);
+        out.package_version = BorrowedStr(info.package_version);
+        out.license = BorrowedStr(info.license);
+
+        return Result<PackageInfo>::success(out);
+    }
+
+    /// One declared template identity, borrowed from this package.
+    Result<BorrowedStr> template_id(std::size_t index) const {
+        if (api_ == nullptr) {
+            return detail::no_table<BorrowedStr>();
+        }
+        ::madopilot_str_t id{nullptr, 0};
+        const Status status = api_->package_template_id(handle_, index, &id);
+        return is_ok(status) ? Result<BorrowedStr>::success(BorrowedStr(id))
+                             : Result<BorrowedStr>::failure(Error::from_status(status));
+    }
+
+private:
+    friend class Engine;
+    friend class detail::Owner<Package, ::madopilot_package_t>;
+
+    Package(const ::madopilot_api_t* api, ::madopilot_package_t* handle) noexcept
+        : Owner(api, handle) {}
+
+    static void retain_handle(const ::madopilot_api_t* api,
+                              ::madopilot_package_t* handle) noexcept {
+        api->package_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_package_t* handle) noexcept {
+        api->package_release(handle);
+    }
+};
+
+/// An immutable prepared template. It outlives the package it was compiled from.
+class Template : public detail::Owner<Template, ::madopilot_template_t> {
+public:
+    Template() noexcept = default;
+
+    Result<TemplateInfo> describe() const {
+        if (api_ == nullptr) {
+            return detail::no_table<TemplateInfo>();
+        }
+        auto info = detail::sized<::madopilot_template_info_t>();
+        const Status status = api_->template_describe(handle_, &info);
+        if (!is_ok(status)) {
+            return Result<TemplateInfo>::failure(Error::from_status(status));
+        }
+
+        TemplateInfo out;
+        out.width = info.width;
+        out.height = info.height;
+        out.min_score = info.min_score;
+        out.id = BorrowedStr(info.id);
+        out.backend = BorrowedStr(info.backend);
+        out.max_results = info.max_results;
+        out.space = info.space;
+
+        return Result<TemplateInfo>::success(out);
+    }
+
+private:
+    friend class Engine;
+    friend class detail::Owner<Template, ::madopilot_template_t>;
+
+    Template(const ::madopilot_api_t* api, ::madopilot_template_t* handle) noexcept
+        : Owner(api, handle) {}
+
+    static void retain_handle(const ::madopilot_api_t* api,
+                              ::madopilot_template_t* handle) noexcept {
+        api->template_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_template_t* handle) noexcept {
+        api->template_release(handle);
+    }
+};
+
+/// A completed CPU mapping. Its bytes stay readable while it is retained, after
+/// the frame, the session, and the engine are gone.
+class Mapping : public detail::Owner<Mapping, ::madopilot_mapping_t> {
+public:
+    Mapping() noexcept = default;
+
+    /// The descriptor and the borrowed bytes. The bytes are valid while this
+    /// mapping is retained and become invalid at its final release.
+    Result<Image> describe() const {
+        if (api_ == nullptr) {
+            return detail::no_table<Image>();
+        }
+        auto image = detail::sized<::madopilot_image_t>();
+        const Status status = api_->mapping_describe(handle_, &image);
+        if (!is_ok(status)) {
+            return Result<Image>::failure(Error::from_status(status));
+        }
+
+        Image out;
+        out.flags = image.flags;
+        out.width = image.width;
+        out.height = image.height;
+        out.format = image.format;
+        out.space = image.space;
+        out.stride = image.stride;
+        out.bytes = BorrowedBytes(image.bytes);
+        out.region = image.region;
+
+        return Result<Image>::success(out);
+    }
+
+    /// The complete identity of the frame this mapping came from.
+    Result<FrameStamp> stamp() const {
+        if (api_ == nullptr) {
+            return detail::no_table<FrameStamp>();
+        }
+        auto value = detail::sized<FrameStamp>();
+        const Status status = api_->mapping_stamp(handle_, &value);
+        return is_ok(status) ? Result<FrameStamp>::success(value)
+                             : Result<FrameStamp>::failure(Error::from_status(status));
+    }
+
+private:
+    friend class Frame;
+    friend class detail::Owner<Mapping, ::madopilot_mapping_t>;
+
+    Mapping(const ::madopilot_api_t* api, ::madopilot_mapping_t* handle) noexcept
+        : Owner(api, handle) {}
+
+    static void retain_handle(const ::madopilot_api_t* api,
+                              ::madopilot_mapping_t* handle) noexcept {
+        api->mapping_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_mapping_t* handle) noexcept {
+        api->mapping_release(handle);
+    }
+};
+
+/// One published immutable frame.
+class Frame : public detail::Owner<Frame, ::madopilot_frame_t> {
+public:
+    Frame() noexcept = default;
+
+    /// Stream, epoch, sequence, and geometry revision: the complete identity.
+    Result<FrameStamp> stamp() const {
+        if (api_ == nullptr) {
+            return detail::no_table<FrameStamp>();
+        }
+        auto value = detail::sized<FrameStamp>();
+        const Status status = api_->frame_stamp(handle_, &value);
+        return is_ok(status) ? Result<FrameStamp>::success(value)
+                             : Result<FrameStamp>::failure(Error::from_status(status));
+    }
+
+    Result<FrameInfo> describe() const {
+        if (api_ == nullptr) {
+            return detail::no_table<FrameInfo>();
+        }
+        auto value = detail::sized<FrameInfo>();
+        const Status status = api_->frame_describe(handle_, &value);
+        return is_ok(status) ? Result<FrameInfo>::success(value)
+                             : Result<FrameInfo>::failure(Error::from_status(status));
+    }
+
+    /// Maps pixels out of this frame. The mapping outlives this frame.
+    Result<Mapping> map(const MapRequest& request, const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<Mapping>();
+        }
+        const auto request_c = request.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_mapping_t* mapping = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status =
+            api_->frame_map(handle_, &request_c, &operation_c, &mapping, &error);
+        if (!is_ok(status)) {
+            return Result<Mapping>::failure(take_error_(api_, status, error));
+        }
+
+        return Result<Mapping>::success(Mapping(api_, mapping));
+    }
+
+private:
+    friend class Session;
+    friend class detail::Owner<Frame, ::madopilot_frame_t>;
+
+    Frame(const ::madopilot_api_t* api, ::madopilot_frame_t* handle) noexcept
+        : Owner(api, handle) {}
+
+    static void retain_handle(const ::madopilot_api_t* api,
+                              ::madopilot_frame_t* handle) noexcept {
+        api->frame_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_frame_t* handle) noexcept {
+        api->frame_release(handle);
+    }
+};
+
+/// One template search.
+///
+/// The word `template` cannot name a member in C++, so the template to search
+/// for is supplied by `search_for`. The request borrows both handles: the
+/// `Frame` and `Template` owners must outlive the call it is passed to.
+class FindRequest {
+public:
+    FindRequest() noexcept = default;
+
+    /// Searches this exact frame. Without it, the session's latest frame is
+    /// searched — a different question as soon as a second frame is published.
+    FindRequest& frame(const Frame& frame) noexcept {
+        frame_ = frame.get();
+        return *this;
+    }
+
+    FindRequest& latest_frame() noexcept {
+        frame_ = nullptr;
+        return *this;
+    }
+
+    /// The prepared template to look for. Required.
+    FindRequest& search_for(const Template& prepared) noexcept {
+        template_ = prepared.get();
+        return *this;
+    }
+
+    /// Restricts the search to a sub-rectangle of the frame.
+    FindRequest& region(Rect region) noexcept {
+        flags_ |= MADOPILOT_FIND_HAS_REGION;
+        region_ = region;
+        return *this;
+    }
+
+    FindRequest& clip_policy(ClipPolicy policy) noexcept {
+        clip_ = policy;
+        return *this;
+    }
+
+    /// Overrides the prepared template's own defaults for this search.
+    FindRequest& options(const MatchOptions& options) {
+        options_ = options.to_c();
+        return *this;
+    }
+
+    ::madopilot_find_request_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_find_request_t>();
+        value.flags = flags_;
+        value.frame = frame_;
+        value.tmpl = template_;
+        value.options = options_.has_value() ? &*options_ : nullptr;
+        value.region = region_;
+        value.clip_policy = clip_;
+        return value;
+    }
+
+private:
+    std::uint32_t flags_ = 0;
+    const ::madopilot_frame_t* frame_ = nullptr;
+    const ::madopilot_template_t* template_ = nullptr;
+    std::optional<::madopilot_match_options_t> options_;
+    Rect region_{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+    ClipPolicy clip_ = MADOPILOT_CLIP_POLICY_REJECT;
+};
+
+/// An immutable completed search.
+///
+/// It owns the exact frame it searched, so it stays correlated after the
+/// session, the template, the package, and the engine are gone.
+class MatchResult : public detail::Owner<MatchResult, ::madopilot_result_t> {
+public:
+    MatchResult() noexcept = default;
+
+    /// Match count, backend identity, and the searched rectangle. The two
+    /// backend views borrow from this result.
+    Result<ResultInfo> describe() const {
+        if (api_ == nullptr) {
+            return detail::no_table<ResultInfo>();
+        }
+        auto info = detail::sized<::madopilot_result_info_t>();
+        const Status status = api_->result_describe(handle_, &info);
+        if (!is_ok(status)) {
+            return Result<ResultInfo>::failure(Error::from_status(status));
+        }
+
+        ResultInfo out;
+        out.match_count = info.match_count;
+        out.backend_id = BorrowedStr(info.backend_id);
+        out.backend_version = BorrowedStr(info.backend_version);
+        out.searched = info.searched;
+
+        return Result<ResultInfo>::success(out);
+    }
+
+    /// The complete identity of the frame that was searched.
+    Result<FrameStamp> stamp() const {
+        if (api_ == nullptr) {
+            return detail::no_table<FrameStamp>();
+        }
+        auto value = detail::sized<FrameStamp>();
+        const Status status = api_->result_stamp(handle_, &value);
+        return is_ok(status) ? Result<FrameStamp>::success(value)
+                             : Result<FrameStamp>::failure(Error::from_status(status));
+    }
+
+    /// The options the search actually ran under, not the ones requested.
+    Result<EffectiveMatchOptions> options() const {
+        if (api_ == nullptr) {
+            return detail::no_table<EffectiveMatchOptions>();
+        }
+        auto value = detail::sized<EffectiveMatchOptions>();
+        const Status status = api_->result_options(handle_, &value);
+        return is_ok(status)
+                   ? Result<EffectiveMatchOptions>::success(value)
+                   : Result<EffectiveMatchOptions>::failure(Error::from_status(status));
+    }
+
+    /// One match. An index at or beyond the count is refused by the C boundary.
+    ///
+    /// The returned `template_id` stays valid while this result is retained.
+    Result<Match> match_at(std::size_t index) const {
+        if (api_ == nullptr) {
+            return detail::no_table<Match>();
+        }
+        auto match = detail::sized<::madopilot_match_t>();
+        const Status status = api_->result_match(handle_, index, &match);
+        if (!is_ok(status)) {
+            return Result<Match>::failure(Error::from_status(status));
+        }
+
+        Match out;
+        out.score = match.score;
+        out.template_id = BorrowedStr(match.template_id);
+        out.bounds = match.bounds;
+
+        return Result<Match>::success(out);
+    }
+
+    /// The highest-scoring match, or nothing.
+    ///
+    /// A search that qualified nothing is a successful answer to a well-formed
+    /// question, so this succeeds with an empty optional rather than failing.
+    Result<std::optional<Match>> first_match() const {
+        auto info = describe();
+        if (!info) {
+            return Result<std::optional<Match>>::failure(info.error());
+        }
+        if (info.value().match_count == 0) {
+            return Result<std::optional<Match>>::success(std::optional<Match>{});
+        }
+
+        auto match = match_at(0);
+        if (!match) {
+            return Result<std::optional<Match>>::failure(match.error());
+        }
+
+        return Result<std::optional<Match>>::success(std::optional<Match>(match.take()));
+    }
+
+    /// Every match, in the order the backend's canonical ordering produced.
+    ///
+    /// Each `template_id` borrows from this result, exactly as `match_at` does.
+    Result<std::vector<Match>> matches() const {
+        auto info = describe();
+        if (!info) {
+            return Result<std::vector<Match>>::failure(info.error());
+        }
+
+        std::vector<Match> out;
+        out.reserve(static_cast<std::size_t>(info.value().match_count));
+        for (std::uint64_t index = 0; index < info.value().match_count; ++index) {
+            auto match = match_at(static_cast<std::size_t>(index));
+            if (!match) {
+                return Result<std::vector<Match>>::failure(match.error());
+            }
+            out.push_back(match.take());
+        }
+
+        return Result<std::vector<Match>>::success(std::move(out));
+    }
+
+private:
+    friend class Session;
+    friend class detail::Owner<MatchResult, ::madopilot_result_t>;
+
+    MatchResult(const ::madopilot_api_t* api, ::madopilot_result_t* handle) noexcept
+        : Owner(api, handle) {}
+
+    static void retain_handle(const ::madopilot_api_t* api,
+                              ::madopilot_result_t* handle) noexcept {
+        api->result_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_result_t* handle) noexcept {
+        api->result_release(handle);
+    }
+};
+
+/// An open capture session.
+///
+/// Destroying a session releases the reference but does not close it. Close is
+/// explicit and status-returning because a destructor cannot report a failed
+/// drain.
+class Session : public detail::Owner<Session, ::madopilot_session_t> {
+public:
+    Session() noexcept = default;
+
+    Result<SessionInfo> describe() const {
+        if (api_ == nullptr) {
+            return detail::no_table<SessionInfo>();
+        }
+        auto value = detail::sized<SessionInfo>();
+        const Status status = api_->session_describe(handle_, &value);
+        return is_ok(status) ? Result<SessionInfo>::success(value)
+                             : Result<SessionInfo>::failure(Error::from_status(status));
+    }
+
+    /// Closes the session and reports the outcome.
+    ///
+    /// Idempotent: a later call observes the C ABI's own idempotent behaviour.
+    /// A failure here is returned, never swallowed by destruction.
+    Result<void> close(const Operation& operation) const {
+        if (api_ == nullptr) {
+            return Result<void>::failure(
+                Error::from_status(MADOPILOT_STATUS_INVALID_ARGUMENT));
+        }
+        const auto operation_c = operation.to_c();
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->session_close(handle_, &operation_c, &error);
+        if (!is_ok(status)) {
+            return Result<void>::failure(take_error_(api_, status, error));
+        }
+
+        return Result<void>::success();
+    }
+
+    Result<bool> is_closed() const {
+        if (api_ == nullptr) {
+            return detail::no_table<bool>();
+        }
+        std::int32_t closed = 0;
+        const Status status = api_->session_is_closed(handle_, &closed);
+        return is_ok(status) ? Result<bool>::success(closed != 0)
+                             : Result<bool>::failure(Error::from_status(status));
+    }
+
+    /// The session's latest published frame.
+    Result<Frame> frame(const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<Frame>();
+        }
+        const auto operation_c = operation.to_c();
+        ::madopilot_frame_t* frame = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->session_frame(handle_, &operation_c, &frame, &error);
+        if (!is_ok(status)) {
+            return Result<Frame>::failure(take_error_(api_, status, error));
+        }
+
+        return Result<Frame>::success(Frame(api_, frame));
+    }
+
+    /// Searches a frame for one prepared template.
+    ///
+    /// A search that qualified nothing succeeds with a zero-match result,
+    /// correlated with the searched frame exactly as a non-empty one is.
+    Result<MatchResult> find(const FindRequest& request, const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<MatchResult>();
+        }
+        const auto request_c = request.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_result_t* result = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status =
+            api_->session_find(handle_, &request_c, &operation_c, &result, &error);
+        if (!is_ok(status)) {
+            return Result<MatchResult>::failure(take_error_(api_, status, error));
+        }
+
+        return Result<MatchResult>::success(MatchResult(api_, result));
+    }
+
+private:
+    friend class Engine;
+    friend class detail::Owner<Session, ::madopilot_session_t>;
+
+    Session(const ::madopilot_api_t* api, ::madopilot_session_t* handle) noexcept
+        : Owner(api, handle) {}
+
+    static void retain_handle(const ::madopilot_api_t* api,
+                              ::madopilot_session_t* handle) noexcept {
+        api->session_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_session_t* handle) noexcept {
+        api->session_release(handle);
+    }
+};
+
+/// The root handle: a configured deterministic source and the backends it wires.
+class Engine : public detail::Owner<Engine, ::madopilot_engine_t> {
+public:
+    Engine() noexcept = default;
+
+    Result<TargetList> discover(const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<TargetList>();
+        }
+        const auto operation_c = operation.to_c();
+        ::madopilot_target_list_t* targets = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status =
+            api_->engine_discover(handle_, &operation_c, &targets, &error);
+        if (!is_ok(status)) {
+            return Result<TargetList>::failure(take_error_(api_, status, error));
+        }
+
+        return Result<TargetList>::success(TargetList(api_, targets));
+    }
+
+    /// Opens a session on one discovered target.
+    ///
+    /// The target identity is copied, so the list may be released immediately.
+    Result<Session> open_session(const TargetList& targets, std::size_t index,
+                                 const OpenRequest& request,
+                                 const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<Session>();
+        }
+        const auto request_c = request.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_session_t* session = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->session_open(handle_, targets.get(), index, &request_c,
+                                                 &operation_c, &session, &error);
+        if (!is_ok(status)) {
+            return Result<Session>::failure(take_error_(api_, status, error));
+        }
+
+        return Result<Session>::success(Session(api_, session));
+    }
+
+    /// Loads and validates one asset package.
+    ///
+    /// A failure here is the one that carries `AssetDetail`: which rule was
+    /// broken and how far loading had got.
+    Result<Package> load_package(const PackageSource& source,
+                                 const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<Package>();
+        }
+        const auto source_c = source.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_package_t* package = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status =
+            api_->package_load(handle_, &source_c, &operation_c, &package, &error);
+        if (!is_ok(status)) {
+            return Result<Package>::failure(take_error_(api_, status, error));
+        }
+
+        return Result<Package>::success(Package(api_, package));
+    }
+
+    /// Prepares one template from a loaded package. The result outlives the
+    /// package.
+    Result<Template> prepare_template(const Package& package, std::string_view id,
+                                      const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<Template>();
+        }
+        const auto operation_c = operation.to_c();
+        ::madopilot_template_t* prepared = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->template_prepare(handle_, package.get(),
+                                                     detail::as_str(id), &operation_c,
+                                                     &prepared, &error);
+        if (!is_ok(status)) {
+            return Result<Template>::failure(take_error_(api_, status, error));
+        }
+
+        return Result<Template>::success(Template(api_, prepared));
+    }
+
+private:
+    friend class Api;
+    friend class detail::Owner<Engine, ::madopilot_engine_t>;
+
+    Engine(const ::madopilot_api_t* api, ::madopilot_engine_t* handle) noexcept
+        : Owner(api, handle) {}
+
+    static void retain_handle(const ::madopilot_api_t* api,
+                              ::madopilot_engine_t* handle) noexcept {
+        api->engine_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_engine_t* handle) noexcept {
+        api->engine_release(handle);
+    }
+};
+
+/* ---------------------------------------------------------------------------
+ * The negotiated table
+ * ------------------------------------------------------------------------ */
+
+/// The negotiated function table, and the root of everything else.
+///
+/// This is the one copyable type here. It owns nothing: the table belongs to the
+/// library, is valid while it is loaded, and is never released. Every owner
+/// keeps its own pointer to it, so the wrapper needs no global state.
+class Api {
+public:
+    Api() noexcept = default;
+
+    /// Negotiates the ABI this header declares.
+    static Result<Api> load() {
+        return load(MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR, sizeof(::madopilot_api_t));
+    }
+
+    /// Negotiates explicitly, for a caller that accepts an older minor or that
+    /// declares it understands only a prefix of the table.
+    static Result<Api> load(std::uint32_t abi_major, std::uint32_t min_abi_minor,
+                            std::size_t caller_struct_size) {
+        const ::madopilot_api_t* table = nullptr;
+        const Status status =
+            ::madopilot_get_api(abi_major, min_abi_minor, caller_struct_size, &table);
+        if (!is_ok(status) || table == nullptr) {
+            return Result<Api>::failure(Error::from_status(
+                is_ok(status) ? MADOPILOT_STATUS_INTERNAL : status));
+        }
+
+        return Result<Api>::success(Api(table));
+    }
+
+    bool empty() const noexcept { return table_ == nullptr; }
+    explicit operator bool() const noexcept { return table_ != nullptr; }
+
+    /// The negotiated table, for a caller that needs an entry this wrapper does
+    /// not expose.
+    const ::madopilot_api_t* table() const noexcept { return table_; }
+
+    /// What the loaded library is. Both views are valid while it is loaded.
+    Result<BuildInfo> describe_build() const {
+        if (table_ == nullptr) {
+            return detail::no_table<BuildInfo>();
+        }
+        auto build = detail::sized<::madopilot_build_info_t>();
+        const Status status = table_->describe_build(&build);
+        if (!is_ok(status)) {
+            return Result<BuildInfo>::failure(Error::from_status(status));
+        }
+
+        BuildInfo out;
+        out.abi_major = build.abi_major;
+        out.abi_minor = build.abi_minor;
+        out.table_size = build.table_size;
+        out.library_version = BorrowedStr(build.library_version);
+        out.required_backend = BorrowedStr(build.required_backend);
+
+        return Result<BuildInfo>::success(out);
+    }
+
+    /// The current instant in the library's monotonic domain. Add to it to build
+    /// the absolute deadline an `Operation` carries.
+    Result<std::uint64_t> clock_now() const {
+        if (table_ == nullptr) {
+            return detail::no_table<std::uint64_t>();
+        }
+        std::uint64_t nanos = 0;
+        const Status status = table_->clock_now(&nanos);
+        return is_ok(status) ? Result<std::uint64_t>::success(nanos)
+                             : Result<std::uint64_t>::failure(Error::from_status(status));
+    }
+
+    /// A stable lowercase slug for a status, borrowed from the library's static
+    /// storage and therefore valid while it is loaded.
+    BorrowedStr status_text(Status status) const noexcept {
+        ::madopilot_str_t text{nullptr, 0};
+        if (table_ != nullptr) {
+            table_->status_text(status, &text);
+        }
+        return BorrowedStr(text);
+    }
+
+    Result<Cancellation> create_cancellation() const {
+        if (table_ == nullptr) {
+            return detail::no_table<Cancellation>();
+        }
+        ::madopilot_cancellation_t* cancellation = nullptr;
+        const Status status = table_->cancellation_create(&cancellation);
+        if (!is_ok(status)) {
+            return Result<Cancellation>::failure(Error::from_status(status));
+        }
+
+        return Result<Cancellation>::success(Cancellation(table_, cancellation));
+    }
+
+    /// Builds an engine over a deterministic source. Replay pixels supplied from
+    /// memory are copied during this call.
+    Result<Engine> create_engine(const Source& source, const Operation& operation) const {
+        if (table_ == nullptr) {
+            return detail::no_table<Engine>();
+        }
+        const auto source_c = source.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_engine_t* engine = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status =
+            table_->engine_create(&source_c, &operation_c, &engine, &error);
+        if (!is_ok(status)) {
+            return Result<Engine>::failure(take_error_(table_, status, error));
+        }
+
+        return Result<Engine>::success(Engine(table_, engine));
+    }
+
+private:
+    explicit Api(const ::madopilot_api_t* table) noexcept : table_(table) {}
+
+    const ::madopilot_api_t* table_ = nullptr;
+};
+
+} // namespace madopilot
+
+#endif /* MADOPILOT_MADOPILOT_HPP */

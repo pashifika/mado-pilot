@@ -11,6 +11,10 @@ The declarations themselves live in
 and a complete working caller is
 [`crates/bindings/capi/examples/c/deterministic-slice.c`](../crates/bindings/capi/examples/c/deterministic-slice.c).
 
+A C++ caller uses the header-only RAII wrapper over this contract rather than
+calling the table directly; see [cpp-wrapper.md](cpp-wrapper.md). Everything
+below still applies to it, because it is the same contract.
+
 ## Nothing here is frozen yet
 
 Every status value, structure layout, field offset, and function-table position
@@ -185,7 +189,11 @@ A related line worth knowing: asking a **loaded** package for a template identit
 it never declared is `MADOPILOT_STATUS_INVALID_ARGUMENT`, not
 `MADOPILOT_STATUS_ASSET_INVALID`. A package that loaded is valid; the mistake is
 the caller's. The error's category is still `MADOPILOT_ERROR_CATEGORY_ASSET`,
-because the mistake is about the package's contents.
+because the mistake is about the package's contents. That refusal does **not**
+carry the fault pair: `MADOPILOT_ERROR_HAS_ASSET_DETAIL` is set by package
+loading only, so `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` is declared but not
+reachable through the Phase 1 table. Recorded against
+[`G-010`](validation-gates.md#g-010).
 
 There is no global, thread-local, or engine-wide last-error slot. A failure
 belongs to the call that produced it, and a slot would make two threads' failures
@@ -239,23 +247,26 @@ needs the same OpenCV a Rust host does; see
 stops the process at load time, before any MadoPilot code runs, so it is not
 reachable as a status — recorded against [`G-007`](validation-gates.md#g-007).
 
-Compiling the C example additionally needs a C toolchain. Both are the release
-target's own, and neither CI runner nor either verification host installs
-anything extra for it:
+Compiling the examples additionally needs a C and C++ toolchain, and the check
+needs **CMake 3.22 or later** for the consumer-project step. All of them are the
+release target's own, and neither CI runner nor either verification host
+installs anything extra for them:
 
 | Target | Compiler | Flags used by the check |
 |---|---|---|
-| `aarch64-apple-darwin` | Xcode Command Line Tools `cc` | `-std=c11 -Wall -Wextra` |
-| `x86_64-pc-windows-msvc` | MSVC `cl` | `/std:c11 /W3` |
+| `aarch64-apple-darwin` | Xcode Command Line Tools `cc`, `c++` | `-std=c11` / `-std=c++17`, `-Wall -Wextra` |
+| `x86_64-pc-windows-msvc` | MSVC `cl` | `/std:c11` / `/std:c++17 /EHsc`, `/W3` |
 
-Set `CC` to choose a different compiler.
+Set `CC`, `CXX`, or `CMAKE` to choose a different one.
 
 **On Windows, run the check from a Developer Command Prompt**, or call
 `vcvars64.bat` first. `cl` is not on `PATH` in a plain shell even when Visual
 Studio is installed, and it needs `INCLUDE` and `LIB` set to find the C runtime
 headers and import libraries. `c-abi-check` says so when it cannot launch the
 compiler. The Windows CI job discovers the install path with `vswhere` and calls
-`vcvars64.bat` itself, so nothing has to be hard-coded there either.
+`vcvars64.bat` itself, so nothing has to be hard-coded there either. That same
+environment sets `VSINSTALLDIR`, through which the check finds the CMake Visual
+Studio ships when none is on `PATH`.
 
 One Windows-specific trap is worth knowing because it looks like a missing file:
 MSVC cannot open a source or include path in the `\\?\C:\...` extended-length
@@ -268,6 +279,7 @@ a compiler.
 ```sh
 cargo build --locked --package mado-pilot-capi
 cc -std=c11 -I crates/bindings/capi/include \
+   -I crates/bindings/capi/examples \
    -o deterministic-slice \
    crates/bindings/capi/examples/c/deterministic-slice.c \
    target/debug/libmadopilot.dylib -Wl,-rpath,target/debug
@@ -276,6 +288,13 @@ cc -std=c11 -I crates/bindings/capi/include \
 
 On Windows, link `target\debug\madopilot.dll.lib` and put `target\debug` on
 `PATH` before running.
+
+The second include directory is for `deterministic-scene.h`, which holds the
+deterministic scene both the C and C++ examples build their replay frame from. A
+program of your own needs only the first.
+
+CMake targets are available as well, and are what a C++ consumer uses; see
+[cpp-wrapper.md](cpp-wrapper.md#building-against-it).
 
 ## How the header is verified
 
@@ -293,6 +312,10 @@ size, alignment, and field offset as the C compiler produced them; compares the
 report line by line against the same values measured from the Rust definitions;
 and then compiles, links, and runs the C example and checks its outcome. Two
 compilers, one comparison — a divergence names the structure and the field.
+
+The same command continues into the C++ surface: the ownership probe, the C++
+example, and the CMake consumer project. See
+[cpp-wrapper.md](cpp-wrapper.md#how-the-wrapper-is-verified).
 
 The invariants that hold without a C compiler — `struct_size` first, mandatory
 prefixes that land on field boundaries, thin handle pointers, and the
