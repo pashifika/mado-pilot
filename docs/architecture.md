@@ -333,9 +333,10 @@ The rules the table encodes:
 The facade's row lists no contract package. That is deliberate — default wiring is
 the facade's only job — but it means every core, capture, input, vision, OCR, or
 asset type the public Rust API exposes must reach callers through
-`mado-pilot-runtime`'s re-exports. Phase 1 will meet this on its first public
-signature. Widening the facade's row is a normative change and needs an ADR, not a
-quiet allowlist edit.
+`mado-pilot-runtime`'s re-exports. Phase 1 meets this: every contract type the
+facade exposes is re-exported from runtime, and the facade's own dependency row
+adds only `mado-pilot-adapter-replay` and `mado-pilot-backend-opencv`. Widening
+that row is a normative change and needs an ADR, not a quiet allowlist edit.
 
 Vision and OCR depend on the capture contract because their public operations
 consume capture-owned frame views. That is a contract-to-contract dependency and
@@ -621,8 +622,9 @@ adversarial fixtures the gate was resolved with; see
 ## Implementation status
 
 Phase 0 established the repository and implemented no product behavior. Phase 1
-is delivering the first vertical slice in stages; only the rows marked
-implemented below describe behavior a caller can use today.
+delivered the first vertical slice and is complete. Only the rows marked
+implemented below describe behavior a caller can use today; the rest name
+responsibilities a later phase takes on.
 
 | Area | Status |
 |---|---|
