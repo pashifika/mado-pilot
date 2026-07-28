@@ -131,6 +131,12 @@ impl Paths {
         self.root.join("crates/bindings/capi/include")
     }
 
+    /// The directory holding `deterministic-scene.h`, which the example
+    /// includes.
+    fn shared_sources(&self) -> PathBuf {
+        self.root.join("crates/bindings/capi/examples")
+    }
+
     fn program(&self, name: &str) -> PathBuf {
         self.scratch.join(if cfg!(target_os = "windows") {
             format!("{name}.exe")
@@ -229,6 +235,7 @@ fn compile(
             .arg("/std:c11")
             .arg("/W3")
             .arg(format!("/I{}", paths.include().display()))
+            .arg(format!("/I{}", paths.shared_sources().display()))
             .arg(format!("/Fe:{}", output.display()))
             // Named explicitly rather than as a directory: an argument ending in
             // a separator is exactly what Windows command-line quoting mangles,
@@ -246,6 +253,8 @@ fn compile(
             .arg("-Wextra")
             .arg("-I")
             .arg(paths.include())
+            .arg("-I")
+            .arg(paths.shared_sources())
             .arg("-o")
             .arg(output)
             .arg(source);
