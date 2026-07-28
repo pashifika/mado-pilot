@@ -1,0 +1,268 @@
+# Phase 1 deterministic slice, measured on aarch64-apple-darwin.
+#
+# Produced by `crates/mado-pilot/benches/deterministic-slice.rs`:
+#
+#   cargo bench --locked --package mado-pilot --bench deterministic-slice -- \
+#       --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
+#       --os-version "macOS 26.5.2 build 25F84"
+#
+# Every measurement below is that run's output, unedited. The budgets are added
+# here and are set by `docs/adr/0008-phase-1-performance-budgets.md`, which
+# resolved the Phase 1 workloads under `G-013`.
+#
+# These budgets are regression ceilings, not product requirements. Nothing about
+# this workload has a user-facing latency target yet, and inventing one would be
+# the fiction `docs/performance.md` exists to avoid. Each is three times the
+# measured value, rounded up to a readable number: loose enough to survive a
+# loaded developer machine, tight enough that a structural regression fails.
+
+format_version = 1
+
+[benchmark]
+id = "phase-1-deterministic-slice-aarch64-apple-darwin"
+workload = "the Phase 1 deterministic replay workflow, eight operations"
+phase = "1"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "fixtures/assets/phase1-slice for matching, fixtures/assets/g-014/valid for loading, mado-pilot-testkit match_fixtures for the scene"
+fixture_sha256 = "1defbfec6e34530c0322e8afaf740485a318facc5b864ded8f1b2e8fe4b1af87"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 cores, 32 GiB"
+os_version = "macOS 26.5.2 build 25F84"
+build_profile = "cargo bench, default features, debug_assertions=false"
+warmup_iterations = 20
+sample_count = 200
+correctness_oracle = "every retained sample is checked; each measurement states its own oracle"
+queue_policy = "none; every Phase 1 operation is synchronous and no work is queued"
+notes = "Apple clang 21.0.0, CMake 4.4.0, rustc 1.97.1, OpenCV 4.14.0. `fixture_sha256` is the digest of the two tracked SHA256SUMS files, which between them pin every fixture file the harness reads. The same digest appears in the x86_64-pc-windows-msvc profile, so the two targets measured the same bytes."
+
+# --- Budgets that apply to every measurement in this file -------------------
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+# A signed change, so a decrease also satisfies the requirement. Bounded rather
+# than exactly zero, per `docs/performance.md`. One page is the bound because a
+# leak of even 24 bytes per iteration would exceed it over 200 samples, while a
+# one-off allocation the allocator rounded up would not.
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 524288
+rationale = "the whole deterministic slice fits in half a mebibyte of live heap; the largest measured workload is load_package_archive at 193418 bytes"
+
+# --- Per-workload measurements and budgets ----------------------------------
+
+[[measurement]]
+workload = "replay_open"
+correctness_oracle = "the session reports the source's own extent and pixel format"
+result_correctness = 0
+latency_p50_ms = 0.000708
+latency_p95_ms = 0.000750
+iteration_span_ms = 0.000881
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 95070
+steady_allocated_bytes = 69705
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0025
+  rationale = "three times the measured 0.000750"
+
+[[measurement]]
+workload = "map_full_frame"
+correctness_oracle = "the mapping covers the whole frame and reports its exact identity"
+result_correctness = 0
+latency_p50_ms = 0.000041
+latency_p95_ms = 0.000042
+iteration_span_ms = 0.000075
+mapped_bytes_per_result = 24576
+peak_allocated_bytes = 69705
+steady_allocated_bytes = 69705
+allocated_growth_bytes = 0
+
+  # No latency percentile budget, deliberately. This workload measures exactly
+  # zero on x86_64-pc-windows-msvc: a mapping whose requested format already
+  # matches the frame's is shared rather than copied, so the operation is a
+  # reference-count increment and the Windows clock is coarser than that. A
+  # ceiling on a quantised reading would be a budget on the clock. The two
+  # budgets below bound the same behaviour without depending on the clock's
+  # resolution, and the rule is stated for both targets so the two files agree
+  # about what this workload is allowed to do.
+  [[measurement.budget]]
+  measure = "iteration_span_ms"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.00025
+  rationale = "three times the measured 0.000075, from one clock reading across 200 iterations rather than 200 readings"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 24576
+  rationale = "96x64 at four bytes per pixel, exactly once; a change that copies rather than shares would still map this, and a change that maps twice would not"
+
+[[measurement]]
+workload = "map_region_of_interest"
+correctness_oracle = "the mapping covers the requested region and no more"
+result_correctness = 0
+latency_p50_ms = 0.000209
+latency_p95_ms = 0.000250
+iteration_span_ms = 0.000295
+mapped_bytes_per_result = 6144
+peak_allocated_bytes = 75849
+steady_allocated_bytes = 69705
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.001
+  rationale = "three times the measured 0.000250"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 6144
+  rationale = "64x24 at four bytes per pixel; a region mapping that mapped the whole frame would be four times this and is the regression this bounds"
+
+[[measurement]]
+workload = "load_package_directory"
+correctness_oracle = "the package declares its six tracked templates"
+result_correctness = 0
+latency_p50_ms = 0.170166
+latency_p95_ms = 0.186708
+iteration_span_ms = 0.173746
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 147771
+steady_allocated_bytes = 69705
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.6
+  rationale = "three times the measured 0.186708"
+
+[[measurement]]
+workload = "load_package_memory"
+correctness_oracle = "the committed package equals the one the same files commit as a directory"
+result_correctness = 0
+latency_p50_ms = 0.011208
+latency_p95_ms = 0.011334
+iteration_span_ms = 0.012172
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 74183
+steady_allocated_bytes = 69705
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.04
+  rationale = "three times the measured 0.011334"
+
+[[measurement]]
+workload = "load_package_archive"
+correctness_oracle = "the committed package equals the one the same files commit as a directory"
+result_correctness = 0
+latency_p50_ms = 0.069375
+latency_p95_ms = 0.080417
+iteration_span_ms = 0.072454
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 193418
+steady_allocated_bytes = 69705
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.25
+  rationale = "three times the measured 0.080417"
+
+[[measurement]]
+workload = "prepare_and_match_cold"
+correctness_oracle = "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5"
+result_correctness = 0
+latency_p50_ms = 0.256791
+latency_p95_ms = 0.283500
+iteration_span_ms = 0.364866
+mapped_bytes_per_result = 24576
+peak_allocated_bytes = 140196
+steady_allocated_bytes = 69705
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 1.0
+  rationale = "three times the measured 0.283500"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 24576
+  rationale = "the searched region is the whole frame and the matcher maps it once into the backend's format"
+
+[[measurement]]
+workload = "match_warm"
+correctness_oracle = "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5"
+result_correctness = 0
+latency_p50_ms = 0.251625
+latency_p95_ms = 0.277625
+iteration_span_ms = 0.255964
+mapped_bytes_per_result = 24576
+peak_allocated_bytes = 113077
+steady_allocated_bytes = 69705
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 1.0
+  rationale = "three times the measured 0.277625"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 24576
+  rationale = "as prepare_and_match_cold; a prepared template does not change what a search maps"
