@@ -17,6 +17,7 @@ use std::cmp::Ordering;
 use mado_pilot_core::{FrameStamp, PixelRect, TransformSnapshot};
 
 use crate::backend::BackendDescriptor;
+use crate::request::MatchOptions;
 use crate::template::TemplateId;
 
 /// One reported match.
@@ -83,6 +84,7 @@ pub struct MatchResult {
     transform: TransformSnapshot,
     searched: PixelRect,
     backend: BackendDescriptor,
+    options: MatchOptions,
     matches: Vec<Match>,
 }
 
@@ -92,6 +94,7 @@ impl MatchResult {
         transform: TransformSnapshot,
         searched: PixelRect,
         backend: BackendDescriptor,
+        options: MatchOptions,
         matches: Vec<Match>,
     ) -> Self {
         Self {
@@ -99,6 +102,7 @@ impl MatchResult {
             transform,
             searched,
             backend,
+            options,
             matches,
         }
     }
@@ -132,6 +136,18 @@ impl MatchResult {
     #[must_use]
     pub const fn backend(&self) -> &BackendDescriptor {
         &self.backend
+    }
+
+    /// Returns the options the search actually ran under.
+    ///
+    /// Every other condition a caller might want to compare two results by is
+    /// already here — the frame identity, the searched region, the backend — so
+    /// the threshold and the result limit belong here too. Without them a
+    /// caller holding a result cannot tell whether an empty answer means
+    /// "nothing is there" or "nothing scored that high".
+    #[must_use]
+    pub const fn options(&self) -> MatchOptions {
+        self.options
     }
 
     /// Returns the matches, in canonical order.

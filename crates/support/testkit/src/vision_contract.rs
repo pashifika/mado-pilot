@@ -311,6 +311,34 @@ pub fn a_result_correlates_with_its_exact_source(backend: Arc<dyn MatchBackend>)
     assert_eq!(result.backend().id(), matcher.descriptor().id());
 }
 
+/// A result reports the options its search actually ran under.
+///
+/// # Panics
+///
+/// Panics when the search fails or the result reports different options from
+/// the ones the request carried.
+pub fn a_result_reports_the_options_it_ran_under(backend: Arc<dyn MatchBackend>) {
+    let matcher = Matcher::new(backend);
+    let prepared = matcher
+        .prepare(
+            &template("t", PixelExtent::new(8, 8)),
+            &OperationContext::new(),
+        )
+        .expect("prepares");
+    let image = frame(PixelExtent::new(64, 48), matcher.descriptor().format(), 0);
+
+    let result = matcher
+        .find(
+            MatchRequest::new(&image, RegionSelection::FullFrame, &prepared, options()),
+            &OperationContext::new(),
+        )
+        .expect("searches");
+
+    // Without this a caller holding an empty result cannot tell "nothing is
+    // there" from "nothing scored that high".
+    assert_eq!(result.options(), options());
+}
+
 /// Runs every backend-independent check against `backend`.
 ///
 /// # Panics
@@ -324,4 +352,5 @@ pub fn run(backend: &Arc<dyn MatchBackend>) {
     a_template_larger_than_the_region_finds_nothing(Arc::clone(backend));
     a_region_that_misses_the_frame_finds_nothing(Arc::clone(backend));
     a_result_correlates_with_its_exact_source(Arc::clone(backend));
+    a_result_reports_the_options_it_ran_under(Arc::clone(backend));
 }
