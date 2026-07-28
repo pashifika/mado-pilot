@@ -21,6 +21,12 @@ The report files here are the agreed output of that comparison. A file is
 therefore evidence of two things at once: what the layout *is* on that target, and
 that both compilers produced it.
 
+That command now also compiles and runs the C++ ownership probe, the C++ example,
+and the CMake consumer project. Those produce no layout numbers — the C++ wrapper
+declares no ABI of its own — so nothing about them is recorded here. What they
+contribute to `G-010` is behavioural, and is tracked in the gate's evidence table
+rather than as a file.
+
 **Nothing recorded here is frozen.** These are the provisional Phase 1 layouts.
 `G-010` freezes an instance of them through an ADR, and the same change copies the
 header into a permanent old-prefix fixture.
@@ -29,8 +35,15 @@ header into a permanent old-prefix fixture.
 
 | Target | File | Host |
 |---|---|---|
-| `aarch64-apple-darwin` | [layout-aarch64-apple-darwin.txt](layout-aarch64-apple-darwin.txt) | macOS 26.5.2, Apple clang 21.0.0, rustc 1.97.1, OpenCV 4.14.0 |
-| `x86_64-pc-windows-msvc` | [layout-x86_64-pc-windows-msvc.txt](layout-x86_64-pc-windows-msvc.txt) | Windows 11 x64, MSVC 19.37.32824, rustc 1.97.1, OpenCV 4.14.0 |
+| `aarch64-apple-darwin` | [layout-aarch64-apple-darwin.txt](layout-aarch64-apple-darwin.txt) | macOS 26.5.2, Apple clang 21.0.0, rustc 1.97.1, OpenCV 4.14.0, CMake 4.4.0 |
+| `x86_64-pc-windows-msvc` | [layout-x86_64-pc-windows-msvc.txt](layout-x86_64-pc-windows-msvc.txt) | Windows 11 x64, MSVC 19.37.32824, rustc 1.97.1, OpenCV 4.14.0, CMake 3.29.5 |
+
+The C++ compiler is the same driver as the C one on both hosts, and the CMake
+versions are recorded because stage 7 made CMake a prerequisite of the check
+that produced these reports. Neither report changed when it did: the C++ wrapper
+is header-only and declares no ABI, so it adds nothing to lay out. The two
+versions above are also the widest spread the check has been run against — a
+CMake 3 and a CMake 4 — against a declared minimum of 3.22.
 
 **The two reports are byte-identical.** That is worth stating because it was not
 required: the C ABI is per-platform, and two targets are free to lay the same

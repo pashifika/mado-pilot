@@ -8,6 +8,13 @@
 //! structures with documented mandatory prefixes, explicit pointer-length views,
 //! module-owned allocation and release, and panic containment at every entry.
 //!
+//! It also holds the artifacts that are not Rust: the tracked C header, the
+//! header-only C++ wrapper over it, both examples, the layout and ownership
+//! probes, and the CMake project that defines `MadoPilot::C` and
+//! `MadoPilot::Cpp`. None of those is a Cargo target — cargo ignores a directory
+//! under `examples/` or `tests/` with no `main.rs` — and the C++ wrapper is not
+//! a Cargo package. They live here because they are this boundary.
+//!
 //! # Allowed seam
 //!
 //! This package depends on the `mado-pilot` facade only. The facade never
@@ -31,13 +38,18 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 6. The table's Phase 1 prefix covers build and clock
+//! Phase 1 stage 7. The table's Phase 1 prefix covers build and clock
 //! information, cancellation, structured errors, engine construction over a
 //! deterministic replay source, asset package loading, template preparation,
 //! target discovery, capture-session lifecycle, latest-frame access, CPU
 //! mapping, template matching, and immutable result access. It contains no
 //! input, OCR, watcher, query, callback, or native-frame entry, and none of
 //! those is reserved as a null table slot: a later phase appends them.
+//!
+//! The C++ wrapper covers exactly that prefix and declares no ABI of its own,
+//! so it adds no compatibility surface;
+//! `docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md` records why it is
+//! header-only.
 //!
 //! **Every status value, structure layout, field offset, and table position
 //! here is provisional.** Gate `G-010` in `docs/validation-gates.md` freezes
@@ -48,8 +60,10 @@
 //!
 //! `include/madopilot/madopilot.h` is the contract as a C caller reads it, and
 //! `examples/c/deterministic-slice.c` is the complete Phase 1 flow in C.
-//! `docs/c-abi.md` records the ownership, structure-prefix, status, and build
-//! rules both of those depend on.
+//! `include/madopilot/madopilot.hpp` and `examples/cpp/deterministic-slice.cpp`
+//! are the same two in C++. `docs/c-abi.md` records the ownership,
+//! structure-prefix, status, and build rules all of those depend on, and
+//! `docs/cpp-wrapper.md` records what the C++ adapter adds on top.
 
 // The C surface is named the way C names it. Rust casing here would make the
 // header and the definitions it mirrors two vocabularies for one contract.

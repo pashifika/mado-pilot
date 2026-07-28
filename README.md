@@ -8,19 +8,23 @@ conditions, inject input through explicit platform capabilities, and report
 structured diagnostics — without owning a GUI, tray, overlay, editor, updater,
 scheduler, or scripting language of its own.
 
-## Status: one deterministic Rust workflow, no native capture
+## Status: one deterministic workflow in three languages, no native capture
 
 **MadoPilot is not usable for real automation yet.** What works end to end is a
 deterministic workflow over *replayed* frames: configure a replay source and
 require the OpenCV CPU backend, discover and open a target, take a frame, map
 it, load an asset package, prepare a template, find it in that exact frame, and
-close. That runs on both release targets and is what
-`crates/mado-pilot/examples/deterministic-slice.rs` does.
+close. That runs on both release targets, from Rust, from C, and from C++, and
+the three examples answer the same questions with the same numbers:
+
+```text
+crates/mado-pilot/examples/deterministic-slice.rs
+crates/bindings/capi/examples/c/deterministic-slice.c
+crates/bindings/capi/examples/cpp/deterministic-slice.cpp
+```
 
 Nothing captures a real window, recognizes text, waits on a condition, or
-injects input. The C ABI package still exposes no operation, no exported symbol,
-and no generated header. Adding a package here is not a claim that its behavior
-exists.
+injects input. Adding a package here is not a claim that its behavior exists.
 
 | Area | Status |
 |---|---|
@@ -34,12 +38,18 @@ exists.
 | Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
 | Native capture, OCR, watchers, input | Not implemented |
-| C ABI, C header, C++ wrapper | Not implemented |
+| C ABI, tracked C header, dynamic library | Implemented for the Phase 1 prefix |
+| Header-only C++ RAII wrapper and CMake targets | Implemented for the Phase 1 prefix |
+| C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
 | Numeric performance budgets, release packaging | Not established |
 
 Every public Rust name is provisional until
 [`G-009`](docs/validation-gates.md#g-009) is resolved, and the project makes no
-Rust stability promise before then.
+Rust stability promise before then. Every C status value, structure layout, and
+function-table position is provisional until
+[`G-010`](docs/validation-gates.md#g-010) is resolved, and the project makes no
+ABI compatibility promise before then. The C++ wrapper declares no ABI of its
+own, so it inherits both.
 
 [docs/architecture.md](docs/architecture.md) is the tracked baseline and records
 the full status table, the package inventory, and the dependency rules.
@@ -56,23 +66,25 @@ are still unresolved, along with thirteen other version-one decisions recorded i
 
 Three surfaces are planned: an idiomatic Rust API through the `mado-pilot` facade
 package, a separately versioned C ABI, and a thin C++ RAII wrapper that consumes
-only the released C ABI.
+only the released C ABI. The public names are reserved so that the language
+surfaces stay consistent.
 
-The public names are reserved so that the language surfaces stay consistent.
-**These are reservations; this repository produces none of these artifacts yet.**
+| Artifact | Name | State |
+|---|---|---|
+| Rust facade package | `mado-pilot` | Exists |
+| Rust import | `mado_pilot` | Exists |
+| C header | `include/madopilot/madopilot.h` | Exists, tracked and hand-written |
+| C++ header | `include/madopilot/madopilot.hpp` | Exists, header-only |
+| C symbol prefix | `madopilot_` | Exists — `madopilot_get_api` is the one exported symbol |
+| C++ namespace | `madopilot` | Exists |
+| CMake package and targets | `MadoPilot`, `MadoPilot::C`, `MadoPilot::Cpp` | Exist, for development-tree consumption |
+| Windows ABI-major library | `madopilot-1.dll`, `madopilot-1.lib` | Reserved; release packaging is not implemented |
+| macOS ABI-major install name | `libmadopilot.1.dylib` | Reserved; release packaging is not implemented |
+| pkg-config package | `madopilot-1` | Reserved; not generated |
 
-| Artifact | Name |
-|---|---|
-| Rust facade package | `mado-pilot` |
-| Rust import | `mado_pilot` |
-| C header | `include/madopilot/madopilot.h` |
-| C++ header | `include/madopilot/madopilot.hpp` |
-| C symbol prefix | `madopilot_` |
-| C++ namespace | `madopilot` |
-| Windows ABI-major library | `madopilot-1.dll`, `madopilot-1.lib` |
-| macOS ABI-major install name | `libmadopilot.1.dylib` |
-| CMake package and targets | `MadoPilot`, `MadoPilot::C`, `MadoPilot::Cpp` |
-| pkg-config package | `madopilot-1` |
+[docs/c-abi.md](docs/c-abi.md) and [docs/cpp-wrapper.md](docs/cpp-wrapper.md) are
+the two boundaries' contract documents: handle lifetimes, ownership rules,
+borrowed views, structure-prefix negotiation, and how to build against each.
 
 ## Repository layout
 
@@ -81,7 +93,7 @@ crates/mado-pilot          public Rust facade
 crates/automation/*        platform-neutral contracts and orchestration
 crates/platform/*          Windows and macOS capture and input adapters
 crates/backend/*           OpenCV and ONNX Runtime adapters
-crates/bindings/capi       C ABI boundary
+crates/bindings/capi       C ABI boundary, C++ wrapper, and CMake targets
 crates/support/testkit     deterministic test support
 tools/dependency-check     workspace inventory and dependency-direction checker
 docs/                      architecture, gates, performance format, ADRs, policy
@@ -131,6 +143,8 @@ directions.
 | Document | Contents |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Workspace, package responsibilities, dependency allowlist, naming, scope, status |
+| [docs/c-abi.md](docs/c-abi.md) | The C boundary's contract: handles, structure prefixes, statuses, panic containment, building against it |
+| [docs/cpp-wrapper.md](docs/cpp-wrapper.md) | The C++ adapter's contract: move-only owners, `Result`, borrowed views, the CMake targets |
 | [docs/validation-gates.md](docs/validation-gates.md) | The `G-001`–`G-014` registry of unresolved version-one decisions |
 | [docs/performance.md](docs/performance.md) | Benchmark profile and budget format, the Phase 1 workloads, and their correctness oracles |
 | [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |

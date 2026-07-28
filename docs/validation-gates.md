@@ -250,10 +250,12 @@ spend well.
 | 10 | `MatchResult` does not report the options the search ran under | Every other correlation a caller might want is on the result: the stamp, the searched region, the backend. The effective threshold and limit are not, so the C ABI stores them beside the result to answer `result_options` |
 | 11 | `StreamId` and `TargetId` have no fixed-width projection | Both are opaque with private ordinals, and `FrameStamp::new` exists for "a boundary that cannot carry the type". The C ABI has to mint its own per-session stream number, which correlates its own frames correctly and cannot be compared with anything a Rust caller sees |
 | 12 | `Session::find_template` against an exact frame succeeds after close | Nothing below the session has a reason to consult it: the frame is the caller's and the matcher is the engine's. Defensible in Rust, but the C contract says a closed session starts no work, so the C boundary adds the check |
+| 13 | `Engine::prepare_template` flattens the `AssetFault` that `AssetPackage::template` produced | The asset layer answers an undeclared identity with `AssetFaultKind::UnknownTemplate` and a stage. The facade returns a plain `Error`, so the kind and the stage are gone before any binding sees them, and `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` is a C value nothing can produce |
 
-Questions 10 to 12 were raised by writing the C ABI over these names in stage 6.
-They are recorded here rather than under `G-010` because each is a property of the
-Rust surface underneath, and only question 12 has a C-side answer already.
+Questions 10 to 12 were raised by writing the C ABI over these names in stage 6,
+and question 13 by writing the C++ error type over it in stage 7. They are
+recorded here rather than under `G-010` because each is a property of the Rust
+surface underneath, and only question 12 has a C-side answer already.
 
 Two interface gaps are recorded here as well, because the example is what found
 them and neither is a naming question:
@@ -303,7 +305,10 @@ Required evidence, and where it stands:
 | Evidence | State |
 |---|---|
 | C example exercising the complete Phase 1 flow | Present, and run on both release targets |
-| C++ example | Stage 7 |
+| C++ example | Present, and required to print the same match rectangles and scores as the C example |
+| C++ ownership behaviour | Present: `static_assert`s for the move-only shape, and run-time checks for clone independence, parent and child lifetime, borrowed-view stability, zero-match success, close reporting, and concurrent const access |
+| C++ surface exclusion | Present as a tracked-header inventory test that needs no C++ compiler |
+| CMake consumption | Present as a separate consumer project linking `MadoPilot::C` and `MadoPilot::Cpp` under CTest |
 | Owned-handle lifecycle tests | Present: retain/release balance, null no-ops, parent/child independence, concurrent const access, close races |
 | Structure-size negotiation tests | Present: truncated below the mandatory prefix, an older valid prefix defaulting the rest, and unknown trailing bytes ignored, for inputs and outputs |
 | Pointer and output-state validation tests | Present: null with a nonzero length, overflowing count and stride, an element stride below the mandatory prefix, unrecognized tags, non-UTF-8, and the failure state every output is left in |
@@ -326,6 +331,37 @@ a provisional choice rather than a considered one:
 3. **A structure field is `tmpl`, not `template`.** The C++ wrapper includes this
    header and `template` is a keyword there. Either the field name stays awkward
    or the concept is renamed in C; both are compatibility decisions.
+
+   Stage 7 measured what the keyword actually costs, which is more than the one
+   field. `template` cannot name a member *function* either, so the C++ request
+   builder needed `FindRequest::search_for` rather than the obvious name, and
+   any later accessor that would be exactly `template` is impossible in the same
+   way. What the keyword does **not** block is the type: `madopilot::Template`
+   compiles, because only the lowercase word is reserved. So the concept can keep
+   its name everywhere a type appears and can never keep it where a member does.
+   Renaming the concept in C — to `pattern`, say — would make one name work in
+   both languages; keeping `tmpl` leaves exactly one awkward field and one
+   C++-side workaround, both of which now have a caller demonstrating them.
+
+Stage 7 added three more the resolving ADR should settle:
+
+4. **`MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` is declared but unreachable.**
+   `MADOPILOT_ERROR_HAS_ASSET_DETAIL` is set by package loading only. The one
+   operation that can meet an undeclared identity, `template_prepare`, reports
+   through the facade's flattened `Error` and so carries no fault pair — see
+   `G-009` question 13 for the Rust half. Either the value goes, or the detail
+   reaches the operation that needs it.
+5. **The asset detail is the only structured detail any error carries.** A C++
+   `Result` exposes it as an optional accessor, which works, but it is a
+   one-off: no other subsystem has an equivalent, so a caller learns a shape that
+   applies to one operation. Decide whether the pattern generalizes before it is
+   frozen, because a second one added later has to fit beside this one.
+6. **Nothing in the C vocabulary is machine-readable.** The C++ wrapper aliases
+   the C types rather than re-declaring them, precisely so that the two cannot
+   drift, and the cost is that a C++ caller writes `MADOPILOT_STATUS_OK` instead
+   of a scoped enumerator. Once the values are frozen, a generated or
+   hand-written `enum class` mirror becomes safe; until then it would be a second
+   thing to freeze. Record whether the freeze is expected to enable one.
 
 ## G-011
 
