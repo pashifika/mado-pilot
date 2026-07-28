@@ -28,20 +28,24 @@ Both runs report the same `fixture_sha256`, so the two targets measured the same
 bytes. Two hundred samples per workload after twenty warm-up iterations, every
 sample checked against its oracle, zero oracle failures on either target.
 
-Four things the harness did not measure before this change, and now does:
-loading the same package from memory and from an archive as well as from a
-directory, `mapped_bytes_per_result`, live-heap peak and growth, and one
-batched span per workload.
+Five things were not measured before this change and now are: loading the same
+package from memory and from an archive as well as from a directory,
+`mapped_bytes_per_result`, live-heap peak and growth, one batched span per
+workload, and the cost of crossing the C ABI.
 
 ## Decision
 
-### The eight Phase 1 workloads have budgets, in two committed profiles
+### Thirteen workloads have budgets, in four committed profiles
 
-[benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml](benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml)
-and
-[benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml](benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml).
-Each holds one profile, eight measurements, three budgets that apply to the
-whole file, and twelve workload-specific budgets.
+Two benchmarks, each measured on both release targets:
+
+| Benchmark | Profiles | Covers |
+|---|---|---|
+| `deterministic-slice` | [aarch64](benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml), [x86_64](benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml) | The eight-operation Rust workflow |
+| `c-boundary` | [aarch64](benchmarks/phase-1-c-boundary-aarch64-apple-darwin.toml), [x86_64](benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml) | What the C ABI costs, against the same work through the facade |
+
+Each file holds one profile, its measurements, three budgets that apply to the
+whole file, and the workload-specific budgets.
 
 ### The budgets are regression ceilings, and say so
 
@@ -66,6 +70,27 @@ loosening one does.
   because a leak of even twenty-four bytes per iteration exceeds it over two
   hundred samples while a single rounded-up allocation does not. Both targets
   measured **zero** on all eight workloads.
+
+### A faster measurement is not by itself an improvement
+
+[performance.md](../performance.md) states the rule this ADR is bound by: a
+higher rate is not an improvement when it increases stale work, increases
+memory, or produces incorrect results. The numeric ceilings below are the least
+interesting part of these profiles, because a change can pass every one of them
+and still be a regression.
+
+What enforces the rule for these eight workloads is the two hard gates and
+`mapped_bytes_per_result`. A change that made a mapping faster by copying
+rather than sharing would leave every latency ceiling satisfied and would show
+up as mapped bytes it did not previously spend; a change that made matching
+faster by retaining state between searches would show up as allocation growth.
+Neither is caught by a latency number, which is why removing either budget as
+redundant would be removing the part that does the work.
+
+Phase 1 has no queue, so `stale_work_ratio` has nothing to measure and no
+profile carries it. The first phase with a watcher or a bounded work queue adds
+it, and the rule bites hardest there: that is the phase where a higher capture
+rate can genuinely make results worse.
 
 ### `peak_allocated_bytes` is capped at half a mebibyte
 
@@ -96,6 +121,55 @@ The same two budgets are written into both files even though only one target has
 the problem, so that the two profiles agree about what the workload is allowed
 to do rather than describing it differently depending on the clock.
 
+### The C ABI is not a material cost, and that is now measured
+
+Task 9.2 asks for "any material C ABI startup overhead". Whether it is material
+was the question, and answering it by reasoning about function calls would have
+been an assertion. Each workload that has a Rust equivalent is measured twice,
+in one process, one build, one run, so the difference between a pair is the
+boundary rather than the conditions.
+
+| | aarch64-apple-darwin | x86_64-pc-windows-msvc |
+|---|---|---|
+| `negotiate_table` | below the clock's resolution | below the clock's resolution |
+| `engine_create`, C − Rust | +0.12 µs | +0.30 µs |
+| `match_warm`, C − Rust | +0.25 µs (0.1%) | +9.0 µs (3.4%) |
+
+Negotiation is what a C caller pays before it holds anything, happens once, and
+does not register on either host's monotonic clock. Engine creation costs a
+fixed sub-microsecond amount more through the table — a large *proportion* of a
+very small number, which is why the absolute figure is the one that matters.
+
+The warm-match row is the one worth reading carefully. The C path is four table
+entries: `session_find`, `result_describe`, and one `result_match` per match,
+each validating a size-versioned structure at the boundary. The Rust path is one
+call and a slice read. So the cost is per crossing rather than per unit of work,
+and a caller that reads many matches out of one result pays it many times. Nine
+microseconds against a 267-microsecond search is not material; the same four
+crossings against an operation a hundred times cheaper would be.
+
+That is the finding, and it is a property of the boundary rather than of this
+workload: **the C ABI costs a fixed amount per entry, so what makes it material
+is the number of crossings, not the size of the work behind them.** A later
+phase that adds a per-frame entry point should measure it rather than assume
+this result transfers.
+
+Budgets are set on the C workloads only. The Rust halves carry none, and the
+profiles say why: they are the control that makes the C number interpretable,
+and the Rust workflow's own ceilings are in the `deterministic-slice` profile
+for the same target. A second set here would be the same claim measured twice
+and free to disagree with itself.
+
+`negotiate_table` gets the same treatment as `map_full_frame` for the same
+reason — its median is zero on both targets — so it is bounded by
+`iteration_span_ms` rather than by a percentile.
+
+What this does **not** measure is dynamic loading. The benchmark links the
+library, so the `LoadLibrary` or `dlopen` a real C host performs once at startup
+is outside every window. That is stated in the profiles rather than left for a
+reader to infer, because "C ABI startup overhead" could reasonably be read to
+include it.
+
 ### Live heap, not resident memory
 
 `peak_memory`, `steady_memory`, and `memory_growth` remain defined as resident
@@ -125,21 +199,24 @@ that is the one thing that must never be shared across a file.
 Worth recording because the numbers, not the budgets, are the evidence:
 
 - **Directory loading is the widest gap between the targets**: 0.187 ms at the
-  95th percentile on macOS against 1.029 ms on Windows, roughly five times, for
+  95th percentile on macOS against 0.981 ms on Windows, roughly five times, for
   seven file opens and their metadata. This is why a budget is per target and
   why one target's number never satisfies the other's.
-- **Memory loading is within two percent across targets** — 0.0113 against
-  0.0121 ms — because no filesystem is involved. The pair is the clearest
-  available statement of what the container costs as opposed to what the host's
-  filesystem does.
-- **Archive loading sits between them** and costs more heap than any other
-  workload, which is expected: it inflates entries it has already bounded.
-- **Warm matching is not much cheaper than cold** — 0.278 against 0.284 ms on
-  macOS — because a 12×10 template is cheap to compile relative to searching a
-  96×64 frame. The pair will separate as templates grow, and it is recorded now
-  so that the day it does, there is something to compare against.
-- **Every workload's `allocated_growth_bytes` is zero on both targets**, which
-  is the single most useful line in either file.
+- **Memory loading is within ten percent across targets** — 0.0113 against
+  0.0124 ms — because no filesystem is involved. Set beside the directory pair,
+  it separates what the container costs from what the host's filesystem does,
+  and says that essentially all of that five-times gap is the filesystem.
+- **Archive loading sits between them** — 0.072 against 0.277 ms — and costs
+  more heap than any other workload, which is expected: it inflates entries it
+  has already bounded.
+- **Warm matching is barely cheaper than cold** — 0.265 against 0.280 ms on
+  macOS, 0.278 against 0.305 on Windows — because a 12×10 template is cheap to
+  compile relative to searching a 96×64 frame. The pair will separate as
+  templates grow, and it is recorded now so that the day it does, there is
+  something to compare against.
+- **Every workload's `allocated_growth_bytes` is zero on both targets**, across
+  both benchmarks and all thirteen workloads, which is the single most useful
+  line in any of the four files.
 
 ## Alternatives
 
@@ -178,8 +255,8 @@ about what the workload is.
   phase's performance gate and is investigated rather than accommodated;
   changing a ceiling in either direction requires a re-measurement in the same
   change and an ADR.
-- **Both files must be regenerated together.** They share a `fixture_sha256`,
-  and a change to any tracked fixture invalidates both. The fixture is pinned by
+- **The four files must be regenerated together.** Each benchmark's pair shares
+  a `fixture_sha256`, and a change to any tracked fixture invalidates them. The fixture is pinned by
   `SHA256SUMS` in two directories, each enforced by a test that checks both
   directions — every listed file matches, and every file is listed.
 - **Re-measuring needs the Windows host.** The macOS numbers can be regenerated
@@ -190,7 +267,9 @@ about what the workload is.
   watcher scheduling, and acceleration each introduce workloads that need their
   own measurements and their own record.
 - **The harness is now the thing to keep honest.** It grew a global allocator, a
-  batched span, and three loading workloads in this change. Its oracles run
+  batched span, three loading workloads, and a second benchmark in this change.
+  The scaffolding those two share lives in `mado-pilot-testkit`, so the profile
+  format has one printer rather than two that can drift apart. Its oracles run
   under `cargo test --locked --workspace --all-targets` on both targets and in
   CI, so a harness that stopped checking its output would fail a test rather
   than quietly report faster numbers.

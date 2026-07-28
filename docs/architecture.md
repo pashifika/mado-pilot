@@ -10,10 +10,13 @@ Detailed frame, capture, OCR, input, runtime scheduling, callback, platform
 behavior, and C ABI contracts are added here by the changes that implement and
 test them, so that this document never describes behavior a reader cannot use.
 
-**Status: Phase 1 — first vertical slice, in progress. The platform-neutral core
-contracts, the capture contracts with the deterministic replay adapter, and asset
-package loading are implemented; no template matching, OCR, input, or language
-binding behavior exists yet.** See
+**Status: Phase 1 complete — the first vertical slice ships end to end.** The
+platform-neutral core contracts, the capture contracts with the deterministic
+replay adapter, asset package loading, template matching through the OpenCV CPU
+backend, runtime orchestration, the Rust facade, the C ABI frozen at 1.0, and the
+header-only C++ wrapper are implemented and verified natively on both release
+targets. Native window and display capture, OCR, input injection, watchers,
+scheduling, diagnostics, and release packaging do not exist. See
 [Implementation status](#implementation-status).
 
 ## Product definition
@@ -649,7 +652,7 @@ implemented below describe behavior a caller can use today.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented for the Phase 1 prefix as a header-only adapter; decided in [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Set for the eight Phase 1 workloads on both release targets; decided in [ADR 0008](adr/0008-phase-1-performance-budgets.md). Every later phase's are open under [`G-013`](validation-gates.md#g-013) |
+| Numeric performance budgets | Set for the thirteen Phase 1 workloads on both release targets, across the Rust workflow and the C boundary; decided in [ADR 0008](adr/0008-phase-1-performance-budgets.md). Every later phase's are open under [`G-013`](validation-gates.md#g-013) |
 | Native permission behavior | Not implemented |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for the frozen ABI-1.0 header; a release artifact to test against is not |

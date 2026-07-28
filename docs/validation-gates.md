@@ -358,14 +358,15 @@ runs on.
 deliberately assigned no numeric product budget.
 
 **Phase 1 is resolved** by
-[ADR 0008](adr/0008-phase-1-performance-budgets.md). Eight workloads are measured
-on both release targets — Apple M1 Pro under macOS 26.5.2 and Core i7-12700KF
-under Windows 11 Pro 26200 — with the same fixture hash, two hundred samples
-each after twenty warm-up iterations, every sample checked against its oracle,
-and zero oracle failures on either target. The profiles are
-[benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml](benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml)
-and
-[benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml](benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml).
+[ADR 0008](adr/0008-phase-1-performance-budgets.md). Thirteen workloads across
+two benchmarks are measured on both release targets — Apple M1 Pro under macOS
+26.5.2 and Core i7-12700KF under Windows 11 Pro 26200 — two hundred samples each
+after twenty warm-up iterations, every sample checked against its oracle, and
+zero oracle failures anywhere. Four profiles are committed under
+[benchmarks/](benchmarks/): `phase-1-deterministic-slice-*` for the eight-operation
+Rust workflow and `phase-1-c-boundary-*` for what the C ABI costs. Each
+benchmark's two profiles share a fixture hash, so both targets measured the same
+bytes.
 
 Two hard gates apply to every workload on both targets — `result_correctness` is
 zero and `allocated_growth_bytes` is bounded at one page, and both targets
@@ -379,6 +380,16 @@ on `x86_64-pc-windows-msvc`, because a matching-format mapping is a
 reference-count increment and the host clock is coarser than that. It is bounded
 by `mapped_bytes_per_result` and by a batched `iteration_span_ms` instead, on
 both targets, so the two profiles agree about what the workload may do.
+`negotiate_table` is bounded the same way, for the same reason.
+
+Task 9.2's "any material C ABI startup overhead" is answered rather than
+assumed. The boundary costs a fixed amount per table entry: negotiation does not
+register on either host's clock, engine creation costs a sub-microsecond
+constant more than the facade, and a warm match costs 0.1% more on
+`aarch64-apple-darwin` and 3.4% more on `x86_64-pc-windows-msvc` across four
+crossings. It is not material at this size of work, and the ADR records why that
+conclusion does not automatically transfer to a later phase's per-frame entry
+point.
 
 Everything after Phase 1 stays open. Capture, OCR, watcher scheduling, and
 acceleration each introduce workloads that need their own measurements and their

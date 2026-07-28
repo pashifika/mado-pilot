@@ -200,16 +200,25 @@ budgets this project has set**. The Phase 1 workloads of
 [ADR 0008](adr/0008-phase-1-performance-budgets.md); the gate stays open for
 every later phase.
 
-The two committed profiles are
-[benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml](benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml)
-and
-[benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml](benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml).
-Both were measured on named hosts with the same fixture hash, two hundred
-samples per workload after twenty warm-up iterations, every sample checked
-against its oracle, zero oracle failures on either target.
+There are two benchmarks, each committed for both release targets:
 
-The harness is a bench target of the `mado-pilot` package, at
-`crates/mado-pilot/benches/deterministic-slice.rs`. It covers eight workloads:
+| Benchmark | Profiles | Covers |
+|---|---|---|
+| `deterministic-slice` | [aarch64](benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml), [x86_64](benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml) | The eight-operation Rust workflow |
+| `c-boundary` | [aarch64](benchmarks/phase-1-c-boundary-aarch64-apple-darwin.toml), [x86_64](benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml) | What the C ABI costs, against the same work through the facade |
+
+Every profile was measured on a named host, two hundred samples per workload
+after twenty warm-up iterations, every sample checked against its oracle, zero
+oracle failures anywhere. Each benchmark's two profiles share a fixture hash.
+
+The scaffolding both share — the sampling loop, the allocation accounting, and
+the report — is `mado_pilot_testkit::bench_harness`, so the format described
+above has one printer rather than two that can drift.
+
+### The Rust workflow
+
+A bench target of the `mado-pilot` package, at
+`crates/mado-pilot/benches/deterministic-slice.rs`, covering eight workloads:
 
 | Workload | What it measures | Correctness oracle |
 |---|---|---|
@@ -255,6 +264,31 @@ declared release targets says so.
 Turning a run into tracked evidence means adding the budgets and committing it
 under `docs/benchmarks/`, in the same change that sets them.
 
+### The C boundary
+
+A bench target of the `mado-pilot-capi` package, at
+`crates/bindings/capi/benches/c-boundary.rs`. Each workload that has a Rust
+equivalent is measured twice, in one process and one run, so the difference
+between a pair is the boundary rather than the conditions.
+
+| Workload | What it measures |
+|---|---|
+| `negotiate_table` | `madopilot_get_api`, the whole of what a C caller pays before it holds anything |
+| `engine_create_c` / `_rust` | Building an engine over the deterministic scene |
+| `match_warm_c` / `_rust` | One search with a prepared template, and reading every match back |
+
+The answer is that the boundary costs a fixed amount per entry rather than a
+proportion of the work: negotiation does not register on either host's clock,
+engine creation costs a sub-microsecond constant more, and a warm match costs
+0.1% more on `aarch64-apple-darwin` and 3.4% more on `x86_64-pc-windows-msvc`
+across four table calls. What makes the boundary material is therefore the
+number of crossings, not the size of the work behind them; see
+[ADR 0008](adr/0008-phase-1-performance-budgets.md).
+
+Dynamic loading is not covered. The benchmark links the library, so the
+`LoadLibrary` or `dlopen` a real C host performs once at startup is outside
+every measured window.
+
 ### The finding the budgets are shaped around
 
 On `x86_64-pc-windows-msvc`, `map_full_frame` measures **zero**. The mapping is
@@ -266,5 +300,5 @@ its 95th percentile is exactly one 100-nanosecond tick.
 That workload therefore has no latency budget on either target. It is bounded by
 `mapped_bytes_per_result`, which is exact and target-independent, and by
 `iteration_span_ms`, which recovers a number by reading the clock once across
-two hundred iterations. The same is true of any later operation whose fast path
-is a pointer copy.
+two hundred iterations. `negotiate_table` is bounded the same way for the same
+reason, and so is any later operation whose fast path is a pointer copy.
