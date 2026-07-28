@@ -8,5 +8,17 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+mado-pilot-adapter-replay = { path = "../adapter/replay" }
+mado-pilot-backend-opencv = { path = "../backend/opencv" }
+mado-pilot-runtime = { path = "../automation/runtime" }
+
+[dev-dependencies]
+mado-pilot-testkit = { path = "../support/testkit" }
+
+[[bench]]
+name = "deterministic-slice"
+harness = false
+
 [lints]
 workspace = true

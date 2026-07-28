@@ -229,6 +229,40 @@ see the naming baseline in [architecture.md](architecture.md).
 **Resolution.** An ADR recording the reviewed names and the compatibility policy
 that then applies to them.
 
+**Phase 1 input.** The deterministic Rust workflow and its example now exist, so
+the required evidence is being accumulated rather than waited for. The questions
+below were raised by writing that example and its tests against the provisional
+names. They are recorded, not decided: renaming any of them before the whole
+surface is reviewed would spend the one compatibility break this gate exists to
+spend well.
+
+| # | Question | Why it was raised |
+|---|---|---|
+| 1 | `mado_pilot::replay_engine` is a free function, so the composition root has no type of its own | A builder type would be a discoverable home and an additive place for later options — asset limits, a second backend — at the cost of one more name to settle |
+| 2 | Runtime's `FindRequest` and `FindOutcome` sit beside vision's `MatchRequest` and `MatchResult` | A caller writes `FindRequest`, then reads `outcome.result()` and gets a `MatchResult`. Two request types and two result types, one word apart, in one import list |
+| 3 | `Engine::prepare` and `Engine::prepare_template` read as near-synonyms | They differ only in whether the template came from an asset package. The distinction is real; the names do not carry it |
+| 4 | `EngineParts` names the shape rather than the role | It is the wiring seam a composition root fills. "Parts" says none of that |
+| 5 | `FrameChoice::Latest` and capture's `FrameSelection::Latest` are two "latest" concepts on two types | One asks a session for a frame; the other tells a search which frame to use. A caller meets both in the same call site |
+| 6 | Two `SCHEMA_VERSION` constants exist, the asset manifest's at the crate root and the replay manifest's under `mado_pilot::replay` | The module qualifies one of them, and nothing qualifies the other. The root constant's meaning is not visible from its name |
+| 7 | `REQUIRED_BACKEND` is a `&str` policy value, not the backend-selection axis | Phase 1 has one production matching backend, so no selection type exists to name. A second backend has to introduce that axis and decide whether this constant survives it |
+| 8 | `Session::frame` is a noun and `Session::find_template` is a verb phrase | Both are operations that can block, and one of them does not look like it |
+| 9 | `FindOutcome` owns the frame it searched | It is what keeps "which frame is this about" answerable after close, and it pins that frame's pixels for the outcome's lifetime. `into_result` is the release path; whether owning is the right default is a review question |
+
+Two interface gaps are recorded here as well, because the example is what found
+them and neither is a naming question:
+
+- **A caller cannot build an in-memory asset package through the public surface
+  alone.** A manifest must declare a SHA-256 digest for every entry and the
+  loader verifies it, but nothing public computes one, so `PackageSource::memory`
+  requires the caller to add a hashing crate. A `ContentDigest::of(bytes)`
+  constructor would close it. The Phase 1 example sidesteps the gap by loading a
+  tracked package from a directory.
+- **A host cannot tighten the asset limits it loads under.** `AssetLimits` can be
+  configured at or below every ceiling and `Engine::limits` reports what is in
+  effect, but `replay_engine` always wires the defaults, so the one knob that
+  bounds what an untrusted package may allocate is unreachable from the facade.
+  An additive constructor closes it; which one depends on question 1 above.
+
 ## G-010
 
 **Unresolved decision.** The exact version-one C status codes, the mandatory

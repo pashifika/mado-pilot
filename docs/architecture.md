@@ -594,10 +594,13 @@ implemented below describe behavior a caller can use today.
 | Asset manifests and directory, memory, and archive loading | Implemented in `mado-pilot-assets` |
 | Asset archive container, manifest format, and safety ceilings | Implemented and conformance-tested; decided in [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 | Asset resolution into OCR model sources | Not implemented |
-| Public Rust operations | Not implemented |
+| Deep search orchestration, result envelope, final operation commit | Implemented in `mado-pilot-runtime` |
+| Watcher queues, coalescing, diagnostic events, scheduling | Not implemented |
+| Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot` |
+| Default adapter wiring and the required-backend rule | Implemented in `mado-pilot` |
 | C ABI functions, C header, native libraries | Not implemented |
 | C++ wrapper | Not implemented |
-| Numeric performance budgets | Not established; format only |
+| Numeric performance budgets | Not established; format, harness, and correctness oracles only |
 | Native permission behavior | Not implemented |
 | Release packaging and ABI compatibility testing | Not implemented |
 
@@ -605,9 +608,12 @@ The existence of a package is not evidence that its behavior exists. Each produc
 package documents its own planned responsibility, allowed seam, and implementation
 status in its crate-level documentation.
 
-Nothing in `mado-pilot-core` is a stability promise yet. Its public names are
-provisional until gate [`G-009`](validation-gates.md#g-009) is resolved, which
-happens only after the Phase 1 Rust example has exercised them.
+Nothing in `mado-pilot-core` is a stability promise yet, and neither is anything
+in the facade. Public names stay provisional until gate
+[`G-009`](validation-gates.md#g-009) is resolved. The Rust example that gate
+requires now exists and has exercised the names; the interface review and the
+ADR have not happened, and the questions the example raised are recorded under
+the gate rather than acted on.
 
 ### Core contracts
 
@@ -792,6 +798,48 @@ absent library remains a process-load failure until gate
 [`G-007`](validation-gates.md#g-007) settles the controlled library search paths,
 which [third-party-dependencies.md](third-party-dependencies.md) records as a
 stated gap rather than a satisfied contract.
+
+### The public Rust workflow
+
+`mado-pilot-runtime` composes the capture, asset, and vision contracts, and
+`mado-pilot` chooses which adapters satisfy them. The split is what keeps the
+composition root free of behavior and the orchestration free of adapters, and it
+decides where each rule lives:
+
+| Decision | Owned by |
+|---|---|
+| Which frame identity a result is about, and whether that frame is even this session's | `mado-pilot-runtime` |
+| Acquiring a frame and searching it as one operation with one terminal outcome | `mado-pilot-runtime` |
+| The result envelope that names the target and carries the searched frame | `mado-pilot-runtime` |
+| Resolving a packaged template and compiling it under one operation | `mado-pilot-runtime` |
+| Which capture adapter and which matching backend exist at all | `mado-pilot` |
+| The curated public surface, and which contract types reach a caller | `mado-pilot` |
+
+A deep search is one operation from admission to envelope, so the frame it
+acquired, the search it ran, and the answer it commits cannot belong to three
+different races. Each contract underneath also arbitrates its own terminal
+outcome, which makes the engine's final commit the last guard rather than the
+only one — deliberately, because the alternative is an orchestration layer that
+trusts its dependencies to have checked.
+
+The engine holds contracts only. It cannot observe which adapter is behind one,
+so no orchestration rule can come to depend on a concrete adapter, and there is
+no plugin registry or public adapter injection: `EngineParts` exists for the
+facade to fill in and Phase 1 stabilizes nothing about it.
+
+The facade requires the OpenCV CPU backend and never substitutes another
+implementation. There is no backend-selection argument, because Phase 1 has
+exactly one production matching backend and a selection type would name a choice
+no caller can make; a second backend arrives with its own constructor rather than
+by changing the existing one. The backend is initialized before anything else is
+wired, so an unusable OpenCV fails engine construction rather than the first
+search, and leaves no half-configured engine behind.
+
+The facade's dependency row still lists no contract package, so every core,
+capture, vision, or asset type its public API exposes is re-exported by
+`mado-pilot-runtime`. The one exception a reader will notice is
+`mado_pilot::replay`, which re-exports the replay adapter's own configuration
+types: those describe a concrete adapter the facade is entitled to name.
 
 ### Phase 0 completion contract
 

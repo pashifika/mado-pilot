@@ -125,3 +125,54 @@ Phase 0 delivers this format and the synthetic example. It sets no numeric budge
 records no measurement, and makes no performance claim. Each later phase populates
 the format for the workloads it introduces, under gate
 [`G-013`](validation-gates.md#g-013).
+
+## Phase 1 status
+
+Phase 1 delivers the harness and the correctness oracles for the deterministic
+Rust workflow, and **still sets no numeric budget**. `G-013` stays open: a budget
+needs measurements from both release targets, taken on hosts whose CPU and
+operating-system build are stated, and inventing a number from one developer
+machine would be the fiction this document exists to avoid.
+
+The harness is a bench target of the `mado-pilot` package, at
+`crates/mado-pilot/benches/deterministic-slice.rs`. It covers six workloads:
+
+| Workload | What it measures | Correctness oracle |
+|---|---|---|
+| `replay_open` | Discovering targets and opening a session | The session reports the source's own extent and pixel format |
+| `map_full_frame` | Mapping a whole frame to CPU-readable bytes | The mapping covers the whole frame and reports its exact source identity |
+| `map_region_of_interest` | Mapping one region of a held frame | The mapping covers the requested region and no more |
+| `load_package` | Loading and validating a directory package | The package declares both tracked templates |
+| `prepare_and_match_cold` | Compiling a template and searching with it | Both planted copies are found at their planted offsets, scoring `1.0` within `1e-5` |
+| `match_warm` | Searching with an already-compiled template | As above |
+
+Every sample is checked against its oracle, including in the run that produces
+timings, because a latency number whose output was never checked is a timing
+experiment rather than evidence.
+
+The harness has two modes so the oracles can run far more often than the
+timings. `cargo test --locked --workspace --all-targets` executes it with three
+samples per workload and fails on any oracle violation, which puts the whole
+workflow's correctness into the ordinary verification sequence. A timing run is
+explicit, and labels its host because the program does not guess one:
+
+```sh
+cargo bench --locked --package mado-pilot --bench deterministic-slice -- \
+    --label "Windows 11 Pro 25H2, Core i7-12700KF"
+```
+
+It prints a profile-shaped report with measurements and no budget. Turning one
+into tracked evidence means recording the exact target triple and the fixture
+hashes alongside it, in a file under `docs/benchmarks/`, in the same change that
+sets the budget it supports.
+
+The harness has been run on both release targets with every oracle satisfied.
+That produced one finding a later budget has to plan around rather than
+discover: on `x86_64-pc-windows-msvc`, `map_full_frame` measures **zero**. The
+mapping is shared rather than copied when the requested format already matches
+the frame's, so the operation is a reference-count increment, and the Windows
+monotonic clock's granularity is coarser than that. A budget for that workload
+therefore cannot be a latency ceiling taken one iteration at a time. It needs a
+measure that does not vanish — `mapped_bytes_per_result` bounds the same
+behavior, and a batched timing over many iterations recovers a number — and the
+same is true of any later operation whose fast path is a pointer copy.
