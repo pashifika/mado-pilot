@@ -218,6 +218,25 @@ anything. It names no backend, because none ran. The status says whose mistake
 it was and the fault pair says which one; see
 [ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
 
+**A caller-supplied region must be in capture pixels**, and any other coordinate
+space is `MADOPILOT_STATUS_INVALID_ARGUMENT` with
+`MADOPILOT_ERROR_CATEGORY_ABI`. That applies to `madopilot_map_request_t.region`
+and `madopilot_find_request_t.region`, and it is a property of this table rather
+than of the runtime underneath: the Phase 1 prefix has no coordinate-conversion
+entry, so a rectangle it accepts is one it can use without converting, and a
+caller converts before it asks. It is `MADOPILOT_STATUS_INVALID_ARGUMENT` rather
+than `MADOPILOT_STATUS_UNSUPPORTED` because the request names a space this table
+does not read at all, which is the same answer an unrecognized space tag gets;
+reserving `MADOPILOT_STATUS_UNSUPPORTED` for a request the table does read and
+cannot satisfy keeps the two distinguishable. The Rust facade, which does have a
+conversion, answers the equivalent question with its own unsupported-coordinate
+outcome instead: the two surfaces differ here, and the C prefix is deliberately
+the narrower of them.
+
+`madopilot_pixel_rect_t.space` is still read in the other direction: on a
+rectangle the library writes, it names whichever space that rectangle was
+measured in.
+
 There is no global, thread-local, or engine-wide last-error slot. A failure
 belongs to the call that produced it, and a slot would make two threads' failures
 each other's business. `out_error` may be null, and then only the status is
@@ -240,6 +259,11 @@ The Phase 1 table ends at match-result access. There is no entry for input
 delivery, OCR model loading or recognition, watchers, query handles, callbacks,
 callback unregistration, or platform-native frame extensions, and none of them is
 reserved as a null slot. A later phase appends them.
+
+There is also no coordinate-conversion entry, which is why a caller-supplied
+region must already be in capture pixels. The Rust facade does convert, so this
+is one place the C prefix is narrower than the surface beneath it rather than a
+thinner spelling of the same thing.
 
 ## Building against the library
 

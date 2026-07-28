@@ -85,6 +85,29 @@ subsystem produced it, which is what lets `MADOPILOT_STATUS_INVALID_ARGUMENT`
 distinguish a boundary refusal (`_ABI`) from a template identity a package does
 not declare (`_ASSET`).
 
+A boundary refusal does not go through the mapping above at all, because it
+originates here rather than in the facade. The two the Phase 1 prefix produces
+are a malformed request — a null pointer with a length, a size below a mandatory
+prefix, an unrecognized tag, an overflowing span — and a **caller-supplied region
+whose coordinate space is not `MADOPILOT_SPACE_CAPTURE_PIXELS`**. Both are
+`MADOPILOT_STATUS_INVALID_ARGUMENT` with `MADOPILOT_ERROR_CATEGORY_ABI`.
+
+The second one is worth naming because the Rust facade answers the equivalent
+question differently: it has a coordinate transform, so it returns its own
+unsupported-coordinate outcome, which maps to `MADOPILOT_STATUS_UNSUPPORTED`.
+This prefix has no conversion entry, so a region in a space it does not read is
+a request it cannot interpret rather than one it read and cannot satisfy — the
+same answer an unrecognized space tag gets, and the distinction that keeps
+`MADOPILOT_STATUS_UNSUPPORTED` meaning "read and unsatisfiable". The consequence
+is that the C prefix is deliberately narrower than the Rust surface here, and a
+C caller converts before it asks. `docs/c-abi.md` states the rule where a caller
+reads it, `crates/bindings/capi/include/madopilot/madopilot.h` states it at both
+region fields, and `crates/bindings/capi/tests/abi.rs` asserts the status and the
+category for all four unaccepted spaces on both entries so the two cannot drift.
+A later phase that appends a conversion entry may revisit which status a
+convertible-but-unsupported space gets; appending one does not change this rule
+for the regions frozen here.
+
 ### The mandatory table prefix
 
 ```c

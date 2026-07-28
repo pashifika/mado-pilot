@@ -350,7 +350,15 @@ typedef struct madopilot_result_t madopilot_result_t;
  * how much of what it knows is really there.
  * ------------------------------------------------------------------------ */
 
-/* A half-open rectangle: [left, right) x [top, bottom). Not versioned. */
+/* A half-open rectangle: [left, right) x [top, bottom). Not versioned.
+ *
+ * `space` is read in one direction and written in the other. On a rectangle the
+ * library WRITES it names whichever space the library measured that rectangle
+ * in. On a rectangle a caller SUPPLIES — the region fields of
+ * madopilot_map_request_t and madopilot_find_request_t — Phase 1 accepts
+ * MADOPILOT_SPACE_CAPTURE_PIXELS only, and any other space is
+ * MADOPILOT_STATUS_INVALID_ARGUMENT. The Phase 1 table has no
+ * coordinate-conversion entry, so a caller converts before it asks. */
 typedef struct madopilot_pixel_rect_t {
     madopilot_space_t space;
     int32_t left;
@@ -472,6 +480,8 @@ typedef struct madopilot_map_request_t {
     uint32_t flags; /* MADOPILOT_MAP_HAS_REGION */
     madopilot_pixel_format_t format;
     madopilot_clip_policy_t clip_policy;
+    /* MADOPILOT_SPACE_CAPTURE_PIXELS only; any other space is
+     * MADOPILOT_STATUS_INVALID_ARGUMENT. */
     madopilot_pixel_rect_t region;
 } madopilot_map_request_t;
 
@@ -501,6 +511,8 @@ typedef struct madopilot_find_request_t {
     const madopilot_frame_t* frame;
     const madopilot_template_t* tmpl;         /* Required. */
     const madopilot_match_options_t* options; /* Null: template defaults. */
+    /* MADOPILOT_SPACE_CAPTURE_PIXELS only; any other space is
+     * MADOPILOT_STATUS_INVALID_ARGUMENT. */
     madopilot_pixel_rect_t region;
     madopilot_clip_policy_t clip_policy;
 } madopilot_find_request_t;

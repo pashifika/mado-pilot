@@ -225,6 +225,15 @@ Rectangles stay coordinate-qualified. `Match::bounds` and `ResultInfo::searched`
 are `madopilot_pixel_rect_t` under the alias `Rect`, and each names the space it
 is measured in rather than reducing to an integer pair.
 
+A `Rect` the caller *supplies* is the other direction, and is narrower:
+`MapRequest::region` and `FindRequest::region` accept
+`MADOPILOT_SPACE_CAPTURE_PIXELS` only, because the Phase 1 C prefix has no
+coordinate-conversion entry for the wrapper to delegate one to. Any other space
+comes back as a failed `Result` carrying
+`MADOPILOT_STATUS_INVALID_ARGUMENT` — the C entry's own answer, unchanged and
+not thrown. Converting before asking is the caller's step; see
+[c-abi.md](c-abi.md).
+
 ## Threads
 
 Const accessors on an immutable owner are safe from several threads at once

@@ -855,6 +855,151 @@ fn an_undeclared_template_is_the_callers_mistake_not_an_invalid_package() {
     assert_eq!(detail.flags & MADOPILOT_ERROR_HAS_BACKEND, 0);
 }
 
+// --- The one coordinate space a caller may supply ---------------------------
+
+/// Every coordinate space this build has a number for, other than the one a
+/// caller-supplied region may use.
+const UNACCEPTED_SPACES: [madopilot_space_t; 4] = [
+    MADOPILOT_SPACE_FRAME_NORMALIZED,
+    MADOPILOT_SPACE_TARGET_NORMALIZED,
+    MADOPILOT_SPACE_TARGET_LOGICAL,
+    MADOPILOT_SPACE_DESKTOP_LOGICAL,
+];
+
+/// The status is asserted, not merely the failure.
+///
+/// The Phase 1 prefix has no coordinate-conversion entry, so a region in a space
+/// it does not read is invalid argument from the boundary rather than
+/// `MADOPILOT_STATUS_UNSUPPORTED`, which stays reserved for a request the table
+/// does read and cannot satisfy. `docs/c-abi.md` documents that split, and the
+/// Rust facade — which does convert — answers the equivalent question with its
+/// own unsupported-coordinate outcome instead. A test that only asked "did it
+/// fail" would pass whichever of the two the boundary happened to return.
+#[test]
+fn a_mapping_region_outside_capture_pixels_is_refused_by_the_boundary() {
+    let api = table();
+    let flow = support::Flow::open();
+    let operation = operation();
+
+    for space in UNACCEPTED_SPACES {
+        let request = madopilot_map_request_t {
+            struct_size: struct_size::<madopilot_map_request_t>(),
+            flags: MADOPILOT_MAP_HAS_REGION,
+            format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+            clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+            region: madopilot_pixel_rect_t {
+                space,
+                left: 0,
+                top: 0,
+                right: 4,
+                bottom: 4,
+            },
+        };
+        let mut mapping = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        // SAFETY: the frame is retained by the flow and every pointer is a live
+        // local.
+        let status = unsafe {
+            (api.frame_map)(
+                flow.frame,
+                &raw const request,
+                &raw const operation,
+                &raw mut mapping,
+                &raw mut error,
+            )
+        };
+
+        assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT, "space {space}");
+        assert!(mapping.is_null(), "space {space} publishes no mapping");
+
+        let detail = support::describe_and_release(api, error);
+        assert_eq!(detail.status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+        assert_eq!(
+            detail.category, MADOPILOT_ERROR_CATEGORY_ABI,
+            "the boundary refused it, so capture never saw it"
+        );
+    }
+}
+
+#[test]
+fn a_search_region_outside_capture_pixels_is_refused_the_same_way() {
+    let api = table();
+    let flow = support::Flow::open();
+    let operation = operation();
+
+    for space in UNACCEPTED_SPACES {
+        let mut request = flow.find_request();
+        request.flags = MADOPILOT_FIND_HAS_REGION;
+        request.region = madopilot_pixel_rect_t {
+            space,
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 4,
+        };
+
+        let mut result = ptr::null_mut();
+        let mut error = ptr::null_mut();
+        // SAFETY: every handle the request names is retained by the flow and
+        // every pointer is a live local.
+        let status = unsafe {
+            (api.session_find)(
+                flow.session,
+                &raw const request,
+                &raw const operation,
+                &raw mut result,
+                &raw mut error,
+            )
+        };
+
+        // The two entries must not drift: a caller that learned the rule from
+        // one of them applies it to the other.
+        assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT, "space {space}");
+        assert!(result.is_null(), "space {space} publishes no result");
+
+        let detail = support::describe_and_release(api, error);
+        assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
+    }
+}
+
+#[test]
+fn a_capture_pixel_region_is_the_one_a_caller_may_supply() {
+    let api = table();
+    let flow = support::Flow::open();
+    let operation = operation();
+
+    let request = madopilot_map_request_t {
+        struct_size: struct_size::<madopilot_map_request_t>(),
+        flags: MADOPILOT_MAP_HAS_REGION,
+        format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+        clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+        region: madopilot_pixel_rect_t {
+            space: MADOPILOT_SPACE_CAPTURE_PIXELS,
+            left: 0,
+            top: 0,
+            right: 4,
+            bottom: 4,
+        },
+    };
+    let mut mapping = ptr::null_mut();
+    // SAFETY: the frame is retained by the flow and every pointer is a live
+    // local.
+    let status = unsafe {
+        (api.frame_map)(
+            flow.frame,
+            &raw const request,
+            &raw const operation,
+            &raw mut mapping,
+            ptr::null_mut(),
+        )
+    };
+
+    assert_eq!(status, MADOPILOT_STATUS_OK);
+    assert!(!mapping.is_null());
+    // SAFETY: the mapping was produced by this table and is owned here.
+    unsafe { (api.mapping_release)(mapping) };
+}
+
 // --- Helpers ----------------------------------------------------------------
 
 fn build_info() -> madopilot_build_info_t {

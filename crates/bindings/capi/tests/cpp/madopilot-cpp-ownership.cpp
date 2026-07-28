@@ -473,8 +473,14 @@ void zero_matches_is_a_success(Fixture& fixture)
     }
 }
 
-/// A coordinate space the replay transform does not support is the C ABI's
-/// refusal, carried through unchanged.
+/// A caller-supplied region must be in capture pixels. Any other space is the
+/// C ABI's own refusal, carried through unchanged and not converted.
+///
+/// The status is asserted rather than merely checked for failure: the Phase 1
+/// prefix has no coordinate-conversion entry, so a region it does not read is
+/// invalid argument from the boundary, not `MADOPILOT_STATUS_UNSUPPORTED`. That
+/// distinction is what `docs/c-abi.md` documents, and a check that only asked
+/// "did it fail" would pass whichever status the boundary chose.
 void an_unsupported_coordinate_space_is_refused(Fixture& fixture)
 {
     madopilot::Rect region{MADOPILOT_SPACE_TARGET_LOGICAL, 0, 0, 4, 4};
@@ -484,6 +490,10 @@ void an_unsupported_coordinate_space_is_refused(Fixture& fixture)
 
     const auto refused = fixture.frame.map(request, fixture.operation);
     check(!refused, "a region in an unsupported space does not map");
+    check(refused.status() == MADOPILOT_STATUS_INVALID_ARGUMENT,
+          "and is invalid argument, because the prefix converts nothing");
+    check(refused.error().category() == MADOPILOT_ERROR_CATEGORY_ABI,
+          "reported by the boundary rather than by capture");
 
     // The same call through the raw table, to prove the wrapper changed nothing.
     const auto request_c = request.to_c();
@@ -496,6 +506,14 @@ void an_unsupported_coordinate_space_is_refused(Fixture& fixture)
     fixture.api.table()->mapping_release(mapping);
 
     check(refused.status() == direct, "and the wrapper reports what the C entry did");
+
+    // A search region is held to the same rule, so the two entries cannot drift.
+    madopilot::FindRequest search;
+    search.frame(fixture.frame).search_for(fixture.present).region(region);
+    const auto unsearched = fixture.session.find(search, fixture.operation);
+    check(!unsearched, "a search region in an unsupported space does not search");
+    check(unsearched.status() == MADOPILOT_STATUS_INVALID_ARGUMENT,
+          "with the same status the mapping entry gave");
 }
 
 /// Close is explicit, idempotent, and reports its outcome to the caller.
