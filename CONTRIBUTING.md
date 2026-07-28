@@ -62,7 +62,18 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 
 # 7. Dependency licenses, advisories, sources, and duplicate versions
 cargo deny --locked check
+
+# 8. The C ABI: the header against the Rust definitions, and the C example
+#    against the built library. Only run natively on a release target.
+cargo build --locked --package mado-pilot-capi
+cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
+
+Step 8 is the first check in this repository that is not `cargo` alone: it needs
+a C compiler, which on both release targets is the one the platform already has —
+MSVC on Windows, the Xcode Command Line Tools on macOS. Set `CC` to choose a
+different one. [docs/c-abi.md](docs/c-abi.md) records what it compiles and why the
+header is verified this way rather than generated.
 
 On Windows PowerShell, step 6 is:
 

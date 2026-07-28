@@ -247,6 +247,13 @@ spend well.
 | 7 | `REQUIRED_BACKEND` is a `&str` policy value, not the backend-selection axis | Phase 1 has one production matching backend, so no selection type exists to name. A second backend has to introduce that axis and decide whether this constant survives it |
 | 8 | `Session::frame` is a noun and `Session::find_template` is a verb phrase | Both are operations that can block, and one of them does not look like it |
 | 9 | `FindOutcome` owns the frame it searched | It is what keeps "which frame is this about" answerable after close, and it pins that frame's pixels for the outcome's lifetime. `into_result` is the release path; whether owning is the right default is a review question |
+| 10 | `MatchResult` does not report the options the search ran under | Every other correlation a caller might want is on the result: the stamp, the searched region, the backend. The effective threshold and limit are not, so the C ABI stores them beside the result to answer `result_options` |
+| 11 | `StreamId` and `TargetId` have no fixed-width projection | Both are opaque with private ordinals, and `FrameStamp::new` exists for "a boundary that cannot carry the type". The C ABI has to mint its own per-session stream number, which correlates its own frames correctly and cannot be compared with anything a Rust caller sees |
+| 12 | `Session::find_template` against an exact frame succeeds after close | Nothing below the session has a reason to consult it: the frame is the caller's and the matcher is the engine's. Defensible in Rust, but the C contract says a closed session starts no work, so the C boundary adds the check |
+
+Questions 10 to 12 were raised by writing the C ABI over these names in stage 6.
+They are recorded here rather than under `G-010` because each is a property of the
+Rust surface underneath, and only question 12 has a C-side answer already.
 
 Two interface gaps are recorded here as well, because the example is what found
 them and neither is a naming question:
@@ -282,6 +289,43 @@ old-header-prefix compatibility claim.
 
 **Resolution.** An ADR freezing the allocation and layout rules, followed by the
 ABI layout and old-header compatibility tests that enforce them.
+
+**Phase 1 input.** The Phase 1 C prefix now exists. `mado-pilot-capi` exports
+`madopilot_get_api`, builds as a `cdylib`, and carries a tracked hand-written
+header at `crates/bindings/capi/include/madopilot/madopilot.h`;
+[ADR 0004](adr/0004-c-header-authorship-and-abi-verification.md) records why the
+header is authored rather than generated and how it is verified, and
+[c-abi.md](c-abi.md) is the contract document. **None of the values or layouts it
+carries is stable, and the repository does not describe them as stable.**
+
+Required evidence, and where it stands:
+
+| Evidence | State |
+|---|---|
+| C example exercising the complete Phase 1 flow | Present, and run on both release targets |
+| C++ example | Stage 7 |
+| Owned-handle lifecycle tests | Present: retain/release balance, null no-ops, parent/child independence, concurrent const access, close races |
+| Structure-size negotiation tests | Present: truncated below the mandatory prefix, an older valid prefix defaulting the rest, and unknown trailing bytes ignored, for inputs and outputs |
+| Pointer and output-state validation tests | Present: null with a nonzero length, overflowing count and stride, an element stride below the mandatory prefix, unrecognized tags, non-UTF-8, and the failure state every output is left in |
+| Error-ownership tests | Present, including the asset kind and stage that a single status cannot carry |
+| Layout checks on both release targets | Present as a cross-language probe comparing `rustc` and the C compiler field by field; recorded per host under [evidence/](evidence/) |
+| Rust-error-to-C-status mapping review | Not done. The mapping exists and is tested; the review that freezes it has not happened |
+| Frozen old-prefix fixture | Not created. It is created by the change that resolves this gate, from the header as it stands then |
+
+Three decisions the resolving ADR has to settle explicitly, because stage 6 made
+a provisional choice rather than a considered one:
+
+1. **`MADOPILOT_STATUS_INTERNAL_PANIC` is the only C-only status.** Everything
+   else mirrors `mado_pilot::Status` one for one. Whether the C vocabulary should
+   diverge further — a distinct status for an unsupported ABI, for instance,
+   rather than reusing `MADOPILOT_STATUS_UNSUPPORTED` — is open.
+2. **The top-level handle is called `madopilot_engine_t`.** The specification
+   calls it a context. The Rust type is `Engine`, and `madopilot_operation_t` is
+   already the per-call context, so two things called "context" seemed worse than
+   one name that disagrees with the specification. Settle which word wins.
+3. **A structure field is `tmpl`, not `template`.** The C++ wrapper includes this
+   header and `template` is a keyword there. Either the field name stays awkward
+   or the concept is renamed in C; both are compatibility decisions.
 
 ## G-011
 

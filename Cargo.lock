@@ -269,6 +269,10 @@ dependencies = [
 [[package]]
 name = "mado-pilot-capi"
 version = "0.1.0"
+dependencies = [
+ "mado-pilot",
+ "mado-pilot-testkit",
+]
 
 [[package]]
 name = "mado-pilot-capture"
