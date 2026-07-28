@@ -71,6 +71,12 @@ Three public surfaces are planned, in this dependency order:
 The C++ wrapper is not a Cargo package. It links through the released C ABI, never
 through Rust internals.
 
+The first two exist as of Phase 1 stage 6. [c-abi.md](c-abi.md) is the C
+boundary's own contract document: handle lifetimes, structure-prefix rules, the
+status vocabulary, panic containment, the build prerequisites on each release
+target, and how the hand-written header is verified against the Rust
+definitions.
+
 ## Workspace layout
 
 The repository root is a virtual Cargo workspace with `resolver = "3"` and
@@ -103,10 +109,14 @@ mado-pilot/
 │   │   └── onnx/
 │   ├── bindings/
 │   │   └── capi/
+│   │       ├── include/        # the tracked C header
+│   │       ├── examples/c/     # the C example
+│   │       └── tests/c/        # the C ABI layout probe
 │   └── support/
 │       └── testkit/
 ├── docs/
 │   ├── architecture.md
+│   ├── c-abi.md
 │   ├── validation-gates.md
 │   ├── performance.md
 │   ├── third-party-dependencies.md
@@ -156,7 +166,7 @@ prefix.
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Planned macOS target, capture, input, permission, and capability adapter |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Planned ONNX Runtime OCR and execution-provider adapter |
-| `crates/bindings/capi` | `mado-pilot-capi` | Planned separately versioned C ABI and ownership boundary |
+| `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary |
 | `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture and backend doubles, fake input, synthetic clock, and contract-fixture support |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
 
@@ -510,10 +520,17 @@ different library rather than a silent breakage.
 Stable public Rust item names are deliberately not chosen yet; see gate
 [`G-009`](validation-gates.md#g-009). The exact C status codes, function-table
 prefix, and structure layouts are likewise unresolved; see gate
-[`G-010`](validation-gates.md#g-010). `mado-pilot-capi` therefore builds as a plain
-Rust library in Phase 0: the `cdylib` and `staticlib` artifact kinds, the loader
-names above, and the generated header are produced by the change that implements
-and tests the first C ABI functions.
+[`G-010`](validation-gates.md#g-010).
+
+`mado-pilot-capi` now builds as a `cdylib` and exports `madopilot_get_api`, and
+`include/madopilot/madopilot.h` exists as a tracked, hand-written header verified
+against the Rust definitions by a cross-language layout probe; see
+[ADR 0004](adr/0004-c-header-authorship-and-abi-verification.md) and
+[c-abi.md](c-abi.md). Two of the reservations above are not yet produced. The
+`staticlib` kind is withheld because [`G-008`](validation-gates.md#g-008) has not
+recorded which static dependency combinations are supported, and the ABI-major
+decorated loader names are applied by release packaging, which Phase 1 does not
+implement: what is built today is the undecorated development artifact.
 
 ## Version-one scope
 
@@ -598,7 +615,8 @@ implemented below describe behavior a caller can use today.
 | Watcher queues, coalescing, diagnostic events, scheduling | Not implemented |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot` |
 | Default adapter wiring and the required-backend rule | Implemented in `mado-pilot` |
-| C ABI functions, C header, native libraries | Not implemented |
+| C ABI functions, C header, dynamic library | Implemented in `mado-pilot-capi` for the Phase 1 prefix; values and layouts provisional under [`G-010`](validation-gates.md#g-010) |
+| C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ wrapper | Not implemented |
 | Numeric performance budgets | Not established; format, harness, and correctness oracles only |
 | Native permission behavior | Not implemented |
@@ -872,7 +890,7 @@ here so that their absence is a stated scope boundary rather than an untested ga
 | Numeric runtime performance budgets | Not applicable; no measurable workload exists | With the first performance-sensitive workload, under [`G-013`](validation-gates.md#g-013) |
 | Native permission behavior and permission probes | Not applicable; no permission is requested or probed | With the platform adapters in Phase 2 |
 | Native dependency packaging and clean-system loading | Not applicable; no native dependency is declared | With the backend adapters, under [`G-007`](validation-gates.md#g-007) |
-| ABI layout and old-header compatibility | Not applicable; no C ABI symbol, header, or status code exists | With the first C ABI functions, under [`G-010`](validation-gates.md#g-010) |
+| ABI layout and old-header compatibility | Not applicable in Phase 0; no C ABI symbol, header, or status code existed. Phase 1 stage 6 added the cross-language layout probe and the structure-prefix tests; the frozen old-header fixture still waits on the gate | With the first C ABI functions, under [`G-010`](validation-gates.md#g-010) |
 | Capture, mapping, matching, OCR, watcher, and input contract suites | Not applicable; no contract is implemented | With each implementing change |
 
 What Phase 0 does verify is the repository itself: the package inventory and

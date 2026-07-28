@@ -1,0 +1,324 @@
+/*
+ * Reports what the C compiler laid the public structures out as.
+ *
+ * The header is hand-written, so something has to prove it and the Rust
+ * definitions agree. This program is one half of that proof: it prints sizes,
+ * alignments, and field offsets as the C compiler produced them, and
+ * `examples/c-abi-check.rs` compares the output line by line against the same
+ * values measured from the Rust `#[repr(C)]` definitions. Two compilers, one
+ * comparison; a divergence names the structure and the field.
+ *
+ * The _Static_asserts below are the part that does not need the comparison:
+ * they hold on any conforming target and would fail at compile time.
+ *
+ * Requires C11 for _Static_assert.
+ */
+
+#include <stdio.h>
+#include <stddef.h>
+
+#include "madopilot/madopilot.h"
+
+#if defined(_MSC_VER)
+#  define MADOPILOT_ALIGNOF(T) __alignof(T)
+#else
+#  define MADOPILOT_ALIGNOF(T) _Alignof(T)
+#endif
+
+#define TYPE(T) \
+    printf("type %s size=%zu align=%zu\n", #T, sizeof(T), (size_t)MADOPILOT_ALIGNOF(T))
+#define FIELD(T, F) \
+    printf("field %s.%s offset=%zu\n", #T, #F, (size_t)offsetof(T, F))
+#define HANDLE(T)                                                     \
+    printf("handle %s size=%zu align=%zu\n", #T, sizeof(const T*),    \
+           (size_t)MADOPILOT_ALIGNOF(const T*))
+
+/* Every versioned structure begins with struct_size. A caller reads that field
+ * before it knows anything else about the structure, so its position is the one
+ * layout property the whole negotiation rests on. */
+#define FIRST_FIELD_IS_STRUCT_SIZE(T) \
+    _Static_assert(offsetof(T, struct_size) == 0, #T " begins with struct_size")
+
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_build_info_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_operation_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_frame_stamp_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_frame_info_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_image_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_target_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_session_info_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_open_request_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_map_request_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_match_options_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_find_request_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_match_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_result_info_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_package_info_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_template_info_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_error_detail_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_replay_frame_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_source_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_package_source_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_api_t);
+
+/* The second field is 32 bits wide, so no implicit padding is introduced
+ * between it and struct_size. Checking one representative of each of the two
+ * shapes is enough; the offset comparison covers the rest. */
+_Static_assert(offsetof(madopilot_operation_t, flags) == 4,
+               "struct_size is followed immediately by a 32-bit field");
+_Static_assert(offsetof(madopilot_source_t, kind) == 4,
+               "a tagged structure puts its discriminant in the same slot");
+
+/* The table's mandatory prefix has to be a real prefix of the table. */
+_Static_assert(MADOPILOT_API_SIZE_INFORMATION <= sizeof(madopilot_api_t),
+               "the mandatory table prefix fits inside the table");
+
+int main(void)
+{
+    TYPE(madopilot_str_t);
+    FIELD(madopilot_str_t, data);
+    FIELD(madopilot_str_t, len);
+
+    TYPE(madopilot_bytes_t);
+    FIELD(madopilot_bytes_t, data);
+    FIELD(madopilot_bytes_t, len);
+
+    TYPE(madopilot_pixel_rect_t);
+    FIELD(madopilot_pixel_rect_t, space);
+    FIELD(madopilot_pixel_rect_t, left);
+    FIELD(madopilot_pixel_rect_t, top);
+    FIELD(madopilot_pixel_rect_t, right);
+    FIELD(madopilot_pixel_rect_t, bottom);
+
+    TYPE(madopilot_build_info_t);
+    FIELD(madopilot_build_info_t, struct_size);
+    FIELD(madopilot_build_info_t, flags);
+    FIELD(madopilot_build_info_t, abi_major);
+    FIELD(madopilot_build_info_t, abi_minor);
+    FIELD(madopilot_build_info_t, table_size);
+    FIELD(madopilot_build_info_t, reserved);
+    FIELD(madopilot_build_info_t, library_version);
+    FIELD(madopilot_build_info_t, required_backend);
+
+    TYPE(madopilot_operation_t);
+    FIELD(madopilot_operation_t, struct_size);
+    FIELD(madopilot_operation_t, flags);
+    FIELD(madopilot_operation_t, deadline_nanos);
+    FIELD(madopilot_operation_t, cancellation);
+
+    TYPE(madopilot_frame_stamp_t);
+    FIELD(madopilot_frame_stamp_t, struct_size);
+    FIELD(madopilot_frame_stamp_t, flags);
+    FIELD(madopilot_frame_stamp_t, stream);
+    FIELD(madopilot_frame_stamp_t, epoch);
+    FIELD(madopilot_frame_stamp_t, sequence);
+    FIELD(madopilot_frame_stamp_t, geometry);
+
+    TYPE(madopilot_frame_info_t);
+    FIELD(madopilot_frame_info_t, struct_size);
+    FIELD(madopilot_frame_info_t, flags);
+    FIELD(madopilot_frame_info_t, width);
+    FIELD(madopilot_frame_info_t, height);
+    FIELD(madopilot_frame_info_t, format);
+    FIELD(madopilot_frame_info_t, space);
+    FIELD(madopilot_frame_info_t, stride);
+    FIELD(madopilot_frame_info_t, bounds);
+
+    TYPE(madopilot_image_t);
+    FIELD(madopilot_image_t, struct_size);
+    FIELD(madopilot_image_t, flags);
+    FIELD(madopilot_image_t, width);
+    FIELD(madopilot_image_t, height);
+    FIELD(madopilot_image_t, format);
+    FIELD(madopilot_image_t, space);
+    FIELD(madopilot_image_t, stride);
+    FIELD(madopilot_image_t, bytes);
+    FIELD(madopilot_image_t, region);
+
+    TYPE(madopilot_target_t);
+    FIELD(madopilot_target_t, struct_size);
+    FIELD(madopilot_target_t, flags);
+    FIELD(madopilot_target_t, width);
+    FIELD(madopilot_target_t, height);
+    FIELD(madopilot_target_t, format);
+    FIELD(madopilot_target_t, coordinate_spaces);
+    FIELD(madopilot_target_t, name);
+    FIELD(madopilot_target_t, provider);
+
+    TYPE(madopilot_session_info_t);
+    FIELD(madopilot_session_info_t, struct_size);
+    FIELD(madopilot_session_info_t, flags);
+    FIELD(madopilot_session_info_t, stream);
+    FIELD(madopilot_session_info_t, width);
+    FIELD(madopilot_session_info_t, height);
+    FIELD(madopilot_session_info_t, format);
+    FIELD(madopilot_session_info_t, coordinate_spaces);
+
+    TYPE(madopilot_open_request_t);
+    FIELD(madopilot_open_request_t, struct_size);
+    FIELD(madopilot_open_request_t, flags);
+    FIELD(madopilot_open_request_t, required_format);
+    FIELD(madopilot_open_request_t, preferred_format);
+
+    TYPE(madopilot_map_request_t);
+    FIELD(madopilot_map_request_t, struct_size);
+    FIELD(madopilot_map_request_t, flags);
+    FIELD(madopilot_map_request_t, format);
+    FIELD(madopilot_map_request_t, clip_policy);
+    FIELD(madopilot_map_request_t, region);
+
+    TYPE(madopilot_match_options_t);
+    FIELD(madopilot_match_options_t, struct_size);
+    FIELD(madopilot_match_options_t, flags);
+    FIELD(madopilot_match_options_t, min_score);
+    FIELD(madopilot_match_options_t, max_results);
+    FIELD(madopilot_match_options_t, suppression);
+
+    TYPE(madopilot_find_request_t);
+    FIELD(madopilot_find_request_t, struct_size);
+    FIELD(madopilot_find_request_t, flags);
+    FIELD(madopilot_find_request_t, frame);
+    FIELD(madopilot_find_request_t, tmpl);
+    FIELD(madopilot_find_request_t, options);
+    FIELD(madopilot_find_request_t, region);
+    FIELD(madopilot_find_request_t, clip_policy);
+
+    TYPE(madopilot_match_t);
+    FIELD(madopilot_match_t, struct_size);
+    FIELD(madopilot_match_t, flags);
+    FIELD(madopilot_match_t, score);
+    FIELD(madopilot_match_t, template_id);
+    FIELD(madopilot_match_t, bounds);
+
+    TYPE(madopilot_result_info_t);
+    FIELD(madopilot_result_info_t, struct_size);
+    FIELD(madopilot_result_info_t, flags);
+    FIELD(madopilot_result_info_t, match_count);
+    FIELD(madopilot_result_info_t, backend_id);
+    FIELD(madopilot_result_info_t, backend_version);
+    FIELD(madopilot_result_info_t, searched);
+
+    TYPE(madopilot_package_info_t);
+    FIELD(madopilot_package_info_t, struct_size);
+    FIELD(madopilot_package_info_t, flags);
+    FIELD(madopilot_package_info_t, template_count);
+    FIELD(madopilot_package_info_t, package_id);
+    FIELD(madopilot_package_info_t, package_version);
+    FIELD(madopilot_package_info_t, license);
+
+    TYPE(madopilot_template_info_t);
+    FIELD(madopilot_template_info_t, struct_size);
+    FIELD(madopilot_template_info_t, flags);
+    FIELD(madopilot_template_info_t, width);
+    FIELD(madopilot_template_info_t, height);
+    FIELD(madopilot_template_info_t, min_score);
+    FIELD(madopilot_template_info_t, id);
+    FIELD(madopilot_template_info_t, backend);
+    FIELD(madopilot_template_info_t, max_results);
+    FIELD(madopilot_template_info_t, space);
+
+    TYPE(madopilot_error_detail_t);
+    FIELD(madopilot_error_detail_t, struct_size);
+    FIELD(madopilot_error_detail_t, flags);
+    FIELD(madopilot_error_detail_t, status);
+    FIELD(madopilot_error_detail_t, category);
+    FIELD(madopilot_error_detail_t, asset_fault);
+    FIELD(madopilot_error_detail_t, asset_stage);
+    FIELD(madopilot_error_detail_t, message);
+    FIELD(madopilot_error_detail_t, backend);
+
+    TYPE(madopilot_replay_frame_t);
+    FIELD(madopilot_replay_frame_t, struct_size);
+    FIELD(madopilot_replay_frame_t, flags);
+    FIELD(madopilot_replay_frame_t, width);
+    FIELD(madopilot_replay_frame_t, height);
+    FIELD(madopilot_replay_frame_t, format);
+    FIELD(madopilot_replay_frame_t, continuity);
+    FIELD(madopilot_replay_frame_t, pixels);
+    FIELD(madopilot_replay_frame_t, captured_at_nanos);
+    FIELD(madopilot_replay_frame_t, stride);
+
+    TYPE(madopilot_source_t);
+    FIELD(madopilot_source_t, struct_size);
+    FIELD(madopilot_source_t, kind);
+    FIELD(madopilot_source_t, directory);
+    FIELD(madopilot_source_t, frames);
+    FIELD(madopilot_source_t, frame_count);
+    FIELD(madopilot_source_t, frame_stride);
+    FIELD(madopilot_source_t, target_name);
+
+    TYPE(madopilot_package_source_t);
+    FIELD(madopilot_package_source_t, struct_size);
+    FIELD(madopilot_package_source_t, kind);
+    FIELD(madopilot_package_source_t, path);
+    FIELD(madopilot_package_source_t, archive);
+
+    TYPE(madopilot_api_t);
+    FIELD(madopilot_api_t, struct_size);
+    FIELD(madopilot_api_t, abi_major);
+    FIELD(madopilot_api_t, abi_minor);
+    FIELD(madopilot_api_t, reserved);
+    FIELD(madopilot_api_t, describe_build);
+    FIELD(madopilot_api_t, clock_now);
+    FIELD(madopilot_api_t, status_text);
+    FIELD(madopilot_api_t, cancellation_create);
+    FIELD(madopilot_api_t, cancellation_retain);
+    FIELD(madopilot_api_t, cancellation_release);
+    FIELD(madopilot_api_t, cancellation_cancel);
+    FIELD(madopilot_api_t, cancellation_is_cancelled);
+    FIELD(madopilot_api_t, error_retain);
+    FIELD(madopilot_api_t, error_release);
+    FIELD(madopilot_api_t, error_describe);
+    FIELD(madopilot_api_t, engine_create);
+    FIELD(madopilot_api_t, engine_retain);
+    FIELD(madopilot_api_t, engine_release);
+    FIELD(madopilot_api_t, package_load);
+    FIELD(madopilot_api_t, package_retain);
+    FIELD(madopilot_api_t, package_release);
+    FIELD(madopilot_api_t, package_describe);
+    FIELD(madopilot_api_t, package_template_id);
+    FIELD(madopilot_api_t, template_prepare);
+    FIELD(madopilot_api_t, template_retain);
+    FIELD(madopilot_api_t, template_release);
+    FIELD(madopilot_api_t, template_describe);
+    FIELD(madopilot_api_t, engine_discover);
+    FIELD(madopilot_api_t, target_list_retain);
+    FIELD(madopilot_api_t, target_list_release);
+    FIELD(madopilot_api_t, target_list_count);
+    FIELD(madopilot_api_t, target_list_get);
+    FIELD(madopilot_api_t, session_open);
+    FIELD(madopilot_api_t, session_retain);
+    FIELD(madopilot_api_t, session_release);
+    FIELD(madopilot_api_t, session_describe);
+    FIELD(madopilot_api_t, session_close);
+    FIELD(madopilot_api_t, session_is_closed);
+    FIELD(madopilot_api_t, session_frame);
+    FIELD(madopilot_api_t, frame_retain);
+    FIELD(madopilot_api_t, frame_release);
+    FIELD(madopilot_api_t, frame_stamp);
+    FIELD(madopilot_api_t, frame_describe);
+    FIELD(madopilot_api_t, frame_map);
+    FIELD(madopilot_api_t, mapping_retain);
+    FIELD(madopilot_api_t, mapping_release);
+    FIELD(madopilot_api_t, mapping_describe);
+    FIELD(madopilot_api_t, mapping_stamp);
+    FIELD(madopilot_api_t, session_find);
+    FIELD(madopilot_api_t, result_retain);
+    FIELD(madopilot_api_t, result_release);
+    FIELD(madopilot_api_t, result_describe);
+    FIELD(madopilot_api_t, result_stamp);
+    FIELD(madopilot_api_t, result_options);
+    FIELD(madopilot_api_t, result_match);
+
+    HANDLE(madopilot_cancellation_t);
+    HANDLE(madopilot_error_t);
+    HANDLE(madopilot_engine_t);
+    HANDLE(madopilot_target_list_t);
+    HANDLE(madopilot_package_t);
+    HANDLE(madopilot_template_t);
+    HANDLE(madopilot_session_t);
+    HANDLE(madopilot_frame_t);
+    HANDLE(madopilot_mapping_t);
+    HANDLE(madopilot_result_t);
+
+    return 0;
+}

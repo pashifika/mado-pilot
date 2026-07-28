@@ -1,6 +1,6 @@
 [package]
 name = "mado-pilot-capi"
-description = "Planned separately versioned MadoPilot C ABI and ownership boundary."
+description = "Separately versioned MadoPilot C ABI and ownership boundary."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,27 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-# Phase 0 deliberately builds this package as a plain Rust library. The
-# `cdylib`/`staticlib` artifact kinds, the ABI-major loader names, and the
-# generated C header are produced by the change that implements and tests the
-# first C ABI functions, so that Phase 0 ships no empty native library that
-# appears to be a released artifact.
+# The C ABI ships as a dynamic library under the reserved `madopilot_` symbol
+# prefix. The `lib` kind is kept because this package's own tests and its
+# `c-abi-check` example link it as an ordinary Rust library.
+#
+# `staticlib` is deliberately absent. Gate `G-008` has not recorded which static
+# dependency combinations are supported, and emitting that artifact would
+# advertise a claim the project has not made.
+#
+# The reserved ABI-major loader names `madopilot-1.dll` and
+# `libmadopilot.1.dylib` are applied by release packaging, which Phase 1 does not
+# implement. What is built here is the undecorated development artifact; see
+# `docs/c-abi.md`.
+[lib]
+name = "madopilot"
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+mado-pilot = { path = "../../mado-pilot" }
+
+[dev-dependencies]
+mado-pilot-testkit = { path = "../../support/testkit" }
 
 [lints]
 workspace = true

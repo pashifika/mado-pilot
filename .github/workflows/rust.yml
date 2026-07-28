@@ -232,6 +232,31 @@ jobs:
         shell: bash
         run: cargo doc --locked --workspace --no-deps
 
+      # The first check in this repository that is not `cargo` alone. It compiles
+      # the tracked C header with the release target's own C compiler — MSVC here,
+      # the Xcode Command Line Tools on macOS — and compares the layout it produces
+      # field by field against the one `rustc` produced, then builds and runs the C
+      # example against the library. The Ubuntu repository-policy job deliberately
+      # compiles nothing and does not run this. See
+      # docs/adr/0004-c-header-authorship-and-abi-verification.md.
+      # `cl` is installed on this image but is not on `PATH` until the developer
+      # environment is entered, so the step runs under `cmd` and calls
+      # `vcvars64.bat` itself rather than exporting a whole environment to later
+      # steps. The install path is discovered with `vswhere` instead of being
+      # hard-coded, because it carries the Visual Studio edition.
+      - name: Check the C ABI header and example
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT (
+            echo ::error::no Visual Studio C++ toolset was found on this runner
+            exit /b 1
+          )
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cl 2>&1 | findstr /i "Microsoft" || exit /b 1
+          cargo build --locked --package mado-pilot-capi || exit /b 1
+          cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" || exit /b 1
+
       # Not a check: the report names the OpenCV build this run actually used and the
       # scores it produced, so a provisioning drift is visible in the log rather than
       # only in a failing tolerance.
@@ -334,6 +359,20 @@ jobs:
       - name: Check documentation
         shell: bash
         run: cargo doc --locked --workspace --no-deps
+
+      # The first check in this repository that is not `cargo` alone. It compiles
+      # the tracked C header with the release target's own C compiler — MSVC here,
+      # the Xcode Command Line Tools on macOS — and compares the layout it produces
+      # field by field against the one `rustc` produced, then builds and runs the C
+      # example against the library. The Ubuntu repository-policy job deliberately
+      # compiles nothing and does not run this. See
+      # docs/adr/0004-c-header-authorship-and-abi-verification.md.
+      - name: Check the C ABI header and example
+        shell: bash
+        run: |
+          cargo build --locked --package mado-pilot-capi
+          cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
+            --label "CI ${{ runner.os }} ${{ runner.arch }}"
 
       # Not a check: the report names the OpenCV build this run actually used and the
       # scores it produced, so a provisioning drift is visible in the log rather than
