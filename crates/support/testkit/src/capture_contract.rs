@@ -9,6 +9,19 @@
 use mado_pilot_capture::{CaptureProvider, FrameRequest, OpenRequest, PixelFormat};
 use mado_pilot_core::{CancellationToken, FrameOrder, IdentityIssuer, OperationContext, Status};
 
+/// Checks that a tracked capture fixture directory still matches its
+/// `SHA256SUMS`, in both directions.
+///
+/// Re-exported here so a capture fixture's suite reaches it beside the contract
+/// checks it already runs, rather than reaching past them into another module.
+///
+/// # Panics
+///
+/// As [`crate::fixture_checksums::verify`].
+pub fn verify_fixture_checksums(root: &std::path::Path) {
+    crate::fixture_checksums::verify(root);
+}
+
 /// Runs every contract check against `provider`.
 ///
 /// `provider` must offer at least one target and must be able to publish at

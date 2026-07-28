@@ -15,15 +15,28 @@ A C++ caller uses the header-only RAII wrapper over this contract rather than
 calling the table directly; see [cpp-wrapper.md](cpp-wrapper.md). Everything
 below still applies to it, because it is the same contract.
 
-## Nothing here is frozen yet
+## This ABI is frozen at 1.0
 
 Every status value, structure layout, field offset, and function-table position
-is **provisional**. Gate [`G-010`](validation-gates.md#g-010) freezes them once
-the Phase 1 evidence has been reviewed, and until then they may change without an
-ABI major bump. A caller recompiles against the header it links with.
+is **frozen for ABI major 1** by
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md), which resolved gate
+[`G-010`](validation-gates.md#g-010). Within this major:
 
-What is *not* provisional is the shape of the rules below. Those are what
-`G-010` will be freezing an instance of.
+- no status, category, asset-fault, or asset-stage value changes its number;
+- no structure field moves, and none is removed;
+- no function-table entry moves, and none is removed;
+- a later minor appends — to the end of a structure or the end of the table —
+  and raises `MADOPILOT_ABI_MINOR`.
+
+A different ABI major is a different library, and `madopilot_get_api` refuses it.
+Use the smaller of your `sizeof` and the returned table's `struct_size` to decide
+which members exist.
+
+The promise is checked rather than stated: `crates/bindings/capi/tests/abi-compat/`
+keeps this header as a compatibility fixture, and `c-abi-check` compiles a C
+program against that frozen copy — never the working one — links it to the
+library built now, negotiates at both the full size and the mandatory prefix, and
+runs the whole flow.
 
 ## One exported symbol
 
@@ -189,11 +202,13 @@ A related line worth knowing: asking a **loaded** package for a template identit
 it never declared is `MADOPILOT_STATUS_INVALID_ARGUMENT`, not
 `MADOPILOT_STATUS_ASSET_INVALID`. A package that loaded is valid; the mistake is
 the caller's. The error's category is still `MADOPILOT_ERROR_CATEGORY_ASSET`,
-because the mistake is about the package's contents. That refusal does **not**
-carry the fault pair: `MADOPILOT_ERROR_HAS_ASSET_DETAIL` is set by package
-loading only, so `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` is declared but not
-reachable through the Phase 1 table. Recorded against
-[`G-010`](validation-gates.md#g-010).
+because the mistake is about the package's contents. That refusal **does** carry
+the fault pair — `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` at
+`MADOPILOT_ASSET_STAGE_COMMIT` — because `template_prepare_from_package`
+resolves the identity against the package before asking the backend for
+anything. It names no backend, because none ran. The status says whose mistake
+it was and the fault pair says which one; see
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
 
 There is no global, thread-local, or engine-wide last-error slot. A failure
 belongs to the call that produced it, and a slot would make two threads' failures
@@ -325,11 +340,17 @@ function-table order — are checked by `cargo test` in
 Both native CI jobs run the C check on every pull request. The Ubuntu
 repository-policy job deliberately compiles nothing and does not.
 
-## When `G-010` resolves
+## What the freeze recorded
 
-The gate is resolved by an ADR that records the exact status values, the
-mandatory table prefix, the structure sizes, alignments, and field offsets, and
-the Rust-error-to-C-status mapping. The same change copies the then-current
-header into a fixture directory unchanged, and every later library in the same
-ABI major is compiled, linked, and run against that frozen fixture. Until that
-happens, the repository does not describe any of these values as stable.
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md) carries the thirteen status values
+with their numbers, the forty-byte mandatory table prefix, every structure's
+size, alignment, and mandatory prefix, the output-state and ownership rules, and
+the Rust-error-to-C-status mapping including why
+`MADOPILOT_STATUS_INTERNAL_PANIC` is the only C-only value and why a Rust status
+added later reports as `MADOPILOT_STATUS_INTERNAL` until an ABI minor gives it
+one. The per-field offsets are the tracked reports under
+[evidence/c-abi/](evidence/c-abi/), one per release target and byte-identical.
+
+Adding a fixture is how a later ABI major is released, and an existing fixture is
+never edited; the rule is in
+[`tests/abi-compat/README.md`](../crates/bindings/capi/tests/abi-compat/README.md).

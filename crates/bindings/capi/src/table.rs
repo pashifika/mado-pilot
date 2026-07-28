@@ -16,8 +16,9 @@
 //! a caller needs before it has anything else, through the dependency order of
 //! everything it can then do.
 //!
-//! **Until gate `G-010` freezes this, the order and the numbers are
-//! provisional.** A caller recompiles against the header it links with.
+//! **The order is frozen for ABI major 1** by
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`. No entry moves and none is removed;
+//! a later minor appends to the end and raises `MADOPILOT_ABI_MINOR`.
 //!
 //! # Where the unsafe boundary is
 //!
@@ -46,7 +47,8 @@ pub const MADOPILOT_ABI_MAJOR: u32 = 1;
 
 /// The ABI minor version this library implements.
 ///
-/// Zero while `G-010` is open. A later minor only ever appends.
+/// Zero at the freeze. A later minor only ever appends, so a caller that
+/// negotiates a minor it knows gets at least the entries it knows.
 pub const MADOPILOT_ABI_MINOR: u32 = 0;
 
 /// The library package version, for [`madopilot_build_info_t::library_version`].
@@ -184,14 +186,14 @@ table! {
         out_id: *mut madopilot_str_t,
     ) => crate::assets::package_template_id;
     /// Compiles the template `id` names in `package` for this engine's backend.
-    template_prepare(
+    template_prepare_from_package(
         engine: *const crate::engine::madopilot_engine_t,
         package: *const crate::assets::madopilot_package_t,
         id: madopilot_str_t,
         operation: *const crate::types::madopilot_operation_t,
         out_template: *mut *mut crate::assets::madopilot_template_t,
         out_error: *mut *mut crate::error::madopilot_error_t,
-    ) => crate::assets::template_prepare;
+    ) => crate::assets::template_prepare_from_package;
     /// Adds one owned reference. Null is a no-op.
     template_retain(
         tmpl: *const crate::assets::madopilot_template_t,
@@ -279,12 +281,12 @@ table! {
     ) => crate::capture::session_is_closed;
 
     /// Returns the session's maintained latest frame.
-    session_frame(
+    session_acquire_frame(
         session: *const crate::capture::madopilot_session_t,
         operation: *const crate::types::madopilot_operation_t,
         out_frame: *mut *mut crate::capture::madopilot_frame_t,
         out_error: *mut *mut crate::error::madopilot_error_t,
-    ) => crate::capture::session_frame;
+    ) => crate::capture::session_acquire_frame;
     /// Adds one owned reference. Null is a no-op.
     frame_retain(frame: *const crate::capture::madopilot_frame_t) => crate::capture::frame_retain;
     /// Drops one owned reference. Null is a no-op.

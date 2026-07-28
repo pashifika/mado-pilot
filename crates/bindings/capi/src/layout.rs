@@ -8,9 +8,9 @@
 //! the first difference. See
 //! `docs/adr/0004-c-header-authorship-and-abi-verification.md`.
 //!
-//! The report is also the evidence `G-010` needs from both release targets, so
-//! it is written in a format that is stable to diff and cheap to paste into a
-//! record.
+//! The report is also the evidence `G-010` froze, taken on both release
+//! targets, so it is written in a format that is stable to diff and cheap to
+//! paste into a record.
 
 use std::mem::offset_of;
 
@@ -276,7 +276,7 @@ pub const LAYOUT: &[TypeLayout] = &[
         package_release,
         package_describe,
         package_template_id,
-        template_prepare,
+        template_prepare_from_package,
         template_retain,
         template_release,
         template_describe,
@@ -291,7 +291,7 @@ pub const LAYOUT: &[TypeLayout] = &[
         session_describe,
         session_close,
         session_is_closed,
-        session_frame,
+        session_acquire_frame,
         frame_retain,
         frame_release,
         frame_stamp,

@@ -17,7 +17,10 @@
 //!    whose checks prove its behaviour at run time;
 //! 5. compiles, links, and runs `examples/cpp/deterministic-slice.cpp` and
 //!    checks that it answers exactly what the C example answered;
-//! 6. configures, builds, and runs the CMake consumer project in
+//! 6. compiles every frozen header fixture under `tests/abi-compat/` against
+//!    its own header rather than the working one, links it to this library, and
+//!    checks that it still negotiates and still gets the same answers;
+//! 7. configures, builds, and runs the CMake consumer project in
 //!    `tests/cmake/`, which reaches the library only through `MadoPilot::C` and
 //!    `MadoPilot::Cpp`.
 //!
@@ -45,15 +48,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let paths = Paths::discover()?;
 
     println!("host: {label}");
-    println!("c compiler: {}", paths.cc.to_string_lossy());
-    println!("c++ compiler: {}", paths.cxx.to_string_lossy());
-    println!("cmake: {}", paths.cmake.to_string_lossy());
+    println!("c compiler: {}", described(&paths.cc));
+    println!("c++ compiler: {}", described(&paths.cxx));
+    println!("cmake: {}", described(&paths.cmake));
+    println!("rustc: {}", described(&rustc()));
     println!("library: {}", paths.library.display());
 
     check_layout(&paths)?;
     run_c_example(&paths, &label)?;
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
+    check_frozen_headers(&paths)?;
     check_cmake_consumer(&paths)?;
 
     println!("c-abi-check complete");
@@ -166,6 +171,17 @@ impl Paths {
     /// the C++ ownership probe include.
     fn shared_sources(&self) -> PathBuf {
         self.root.join("crates/bindings/capi/examples")
+    }
+
+    /// The include directory of one frozen header fixture.
+    ///
+    /// It holds a complete `madopilot/madopilot.h` of its own, so a program
+    /// compiled with this in place of [`Paths::include`] cannot reach the
+    /// working header even by accident.
+    fn frozen_include(&self, version: &str) -> PathBuf {
+        self.root
+            .join("crates/bindings/capi/tests/abi-compat")
+            .join(version)
     }
 
     fn program(&self, name: &str) -> PathBuf {
@@ -291,6 +307,47 @@ fn launches(program: &OsString) -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+/// Returns `<name> (<version>)`, or just the name when it will not say.
+///
+/// The exact toolchain versions are a measurement condition: the evidence this
+/// program produces is reproducible only if a reader knows which compilers
+/// produced it. They were being discovered and thrown away — `launches` ran
+/// `--version` and kept nothing but the exit status — which is why the tracked
+/// evidence had to be annotated by hand.
+///
+/// Two conventions, because the compilers do not share one. MSVC prints its
+/// banner on stderr when run with no arguments and treats `--version` as a
+/// source file it cannot open; clang, gcc, CMake, and rustc answer `--version`
+/// on stdout.
+fn described(program: &OsString) -> String {
+    let name = program.to_string_lossy().into_owned();
+    let mut command = Command::new(program);
+    let banner = is_msvc(program);
+    if !banner {
+        command.arg("--version");
+    }
+
+    let Ok(output) = command.output() else {
+        return name;
+    };
+    let text = String::from_utf8_lossy(if banner {
+        &output.stderr
+    } else {
+        &output.stdout
+    });
+    let Some(first) = text.lines().map(str::trim).find(|line| !line.is_empty()) else {
+        return name;
+    };
+
+    format!("{name} ({first})")
+}
+
+/// Returns the `rustc` that built this program, so the report names the
+/// compiler on both sides of the comparison.
+fn rustc() -> OsString {
+    env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
+}
+
 /// Returns the `ctest` beside a given `cmake`.
 ///
 /// They are installed together, so the one next to the CMake actually in use is
@@ -319,10 +376,27 @@ fn is_msvc(compiler: &OsString) -> bool {
     name == "cl" || name.ends_with("cl.exe") || name.ends_with("/cl") || name.ends_with("\\cl.exe")
 }
 
-/// Compiles `source` into a program named `name`, linking the library when
+/// Compiles `source` against the working header, linking the library when
 /// asked.
 fn compile(
     paths: &Paths,
+    language: Language,
+    name: &str,
+    source: &Path,
+    link: bool,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    compile_with(paths, &paths.include(), language, name, source, link)
+}
+
+/// Compiles `source` against the headers in `include`.
+///
+/// The include directory is a parameter rather than a constant so that a frozen
+/// header fixture can be compiled in place of the working one. Exactly one
+/// header directory is passed, never both: a fixture that could fall through to
+/// the working header would pass on the day it should fail.
+fn compile_with(
+    paths: &Paths,
+    include: &Path,
     language: Language,
     name: &str,
     source: &Path,
@@ -361,7 +435,7 @@ fn compile(
         };
         command
             .arg("/W3")
-            .arg(format!("/I{}", paths.include().display()))
+            .arg(format!("/I{}", include.display()))
             .arg(format!("/I{}", paths.shared_sources().display()))
             .arg(format!("/Fe:{}", output.display()))
             // Named explicitly rather than as a directory: an argument ending in
@@ -382,7 +456,7 @@ fn compile(
             .arg("-Wall")
             .arg("-Wextra")
             .arg("-I")
-            .arg(paths.include())
+            .arg(include)
             .arg("-I")
             .arg(paths.shared_sources())
             .arg("-o")
@@ -619,6 +693,51 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
     if !stdout.contains("madopilot-cpp-ownership complete") {
         return Err("the C++ ownership probe never reached the end".into());
     }
+
+    Ok(())
+}
+
+/// Every released header this library still promises to serve.
+///
+/// One entry per frozen ABI-major header. A later phase that adds entries adds
+/// a fixture beside the existing ones rather than editing them, so the list
+/// only ever grows and each entry keeps saying what one released header saw.
+const FROZEN_HEADERS: &[&str] = &["v1"];
+
+/// Compiles, links, negotiates, and runs each frozen header's fixture against
+/// the library built now.
+///
+/// The fixture is compiled with its own include directory *instead of* the
+/// working one, so it cannot reach the current header. That is the whole
+/// mechanism: the day the working header gains an entry, this program still
+/// compiles against the frozen declarations, and negotiation is what tells it
+/// how much of the table it may use.
+fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    for version in FROZEN_HEADERS {
+        let include = paths.frozen_include(version);
+        let source = include.join("old-prefix.c");
+        let name = format!("madopilot-abi-compat-{version}");
+        let program = compile_with(paths, &include, Language::C, &name, &source, true)?;
+
+        let package = package(paths);
+        let output = run(paths, &program, &["--package", &package])?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        print!("{stdout}");
+        report_output(&name, &output);
+
+        if !output.status.success() {
+            return Err(format!("the frozen {version} header no longer works").into());
+        }
+        if !stdout.contains(&format!("{name} complete")) {
+            return Err(format!("the frozen {version} fixture never reached the end").into());
+        }
+    }
+
+    println!(
+        "abi compatibility: {} frozen header(s) still compile, link, negotiate, and run",
+        FROZEN_HEADERS.len()
+    );
 
     Ok(())
 }

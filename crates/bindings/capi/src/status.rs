@@ -4,9 +4,13 @@
 //! outcome that has no Rust counterpart because it is the boundary's own: a
 //! contained panic. A caller never has to parse a message to decide what to do.
 //!
-//! **Every number here is provisional.** Gate `G-010` freezes them; until it
-//! does, a caller must recompile against the header it links with rather than
-//! hard-code a value it read once.
+//! **Every number here is frozen for ABI major 1** by
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`, which also freezes the mapping
+//! below one arm at a time. `MADOPILOT_STATUS_INTERNAL_PANIC` is the only value
+//! with no Rust counterpart; `Status` is `#[non_exhaustive]`, so a status added
+//! to Rust later reports as `MADOPILOT_STATUS_INTERNAL` here until an ABI minor
+//! gives it a value of its own. Reusing the nearest existing status instead
+//! would tell a C caller something specific and wrong.
 
 use mado_pilot::Status;
 
@@ -51,7 +55,8 @@ pub const MADOPILOT_STATUS_INTERNAL_PANIC: madopilot_status_t = 12;
 /// The subsystem a failure came from.
 ///
 /// A caller that reports failures to a human uses this to say *where*; a caller
-/// that branches uses the status. Provisional under `G-010` with the rest.
+/// that branches uses the status. Frozen with the rest; it is a second axis,
+/// chosen at the call site rather than derived from the status.
 pub type madopilot_error_category_t = i32;
 
 /// The failure has no more specific category than its status.

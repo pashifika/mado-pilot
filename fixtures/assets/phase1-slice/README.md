@@ -6,9 +6,17 @@ from disk instead of each building one, and so the repository has one worked
 manifest that is not gate evidence.
 
 It is not `G-014` evidence. The adversarial and representative fixtures that
-resolved that gate are in [../g-014](../g-014/) and are pinned by their own
-`SHA256SUMS`; this package is pinned by the digests inside its own manifest,
-which the loader verifies on every load.
+resolved that gate are in [../g-014](../g-014/) and are pinned separately.
+
+This package is pinned twice, because the two pins cover different things. The
+digests **inside** `madopilot-package.json` cover the template bytes and are
+verified by the loader on every load, so a package that loads has already proved
+its own contents. `SHA256SUMS` covers the manifest as well, which nothing else
+can: a manifest that changed its own declared digests would still load. That
+second pin is what a benchmark profile's `fixture_sha256` rests on, and
+`every_tracked_slice_fixture_still_hashes_to_its_recorded_checksum` in
+`crates/mado-pilot/tests/deterministic_workflow.rs` enforces both directions —
+every listed file matches, and every file is listed.
 
 ## What is in it
 
@@ -49,4 +57,10 @@ shasum -a 256 fixtures/assets/phase1-slice/templates/*.png
 ```
 
 A digest that is not updated fails the load with a hash mismatch, so a stale
-regeneration is visible immediately.
+regeneration is visible immediately. Then regenerate `SHA256SUMS`, which covers
+the rewritten manifest too:
+
+```sh
+cd fixtures/assets/phase1-slice
+find . -type f ! -name SHA256SUMS ! -name README.md | sort | xargs shasum -a 256 > SHA256SUMS
+```

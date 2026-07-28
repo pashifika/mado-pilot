@@ -45,12 +45,15 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 stage 4, implemented for the Phase 1 profile. Preprocessing
+//! Phase 1, complete, implemented for the Phase 1 profile. Preprocessing
 //! descriptors, scaling, masked matching, rotation, pyramids, and GPU execution
 //! are not implemented and are not reserved as empty seams.
 //!
-//! **Every public name here is provisional.** Naming is settled by gate `G-009`
-//! before Phase 1 exits.
+//! **The public names here are reviewed, not yet stable.**
+//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
+//! review that settled them and the policy that now applies: renaming or
+//! removing one is a breaking change needing an ADR and a version bump, while
+//! adding is free. The stability promise itself begins at 1.0.
 //!
 //! # Where to start
 //!

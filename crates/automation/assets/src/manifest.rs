@@ -19,6 +19,7 @@ use std::fmt;
 use mado_pilot_core::{CoordinateSpace, PixelExtent};
 use mado_pilot_vision::{MatchDefaults, TemplateId, VisionFault};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
 use crate::path::PackagePath;
@@ -37,6 +38,21 @@ pub const HASH_ALGORITHM: &str = "sha256";
 pub struct ContentDigest([u8; 32]);
 
 impl ContentDigest {
+    /// Returns the digest of `content` under [`HASH_ALGORITHM`].
+    ///
+    /// A manifest must declare a digest for every entry and the loader verifies
+    /// each one, so without this a caller assembling a package in memory had to
+    /// add a hashing dependency of its own to state a value this package
+    /// already computes. It is the same computation the loader performs, which
+    /// is what makes a package built through it load rather than fail on its
+    /// first hash.
+    #[must_use]
+    pub fn of(content: &[u8]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        Self(<[u8; 32]>::from(hasher.finalize()))
+    }
+
     /// Parses a 64-character hexadecimal digest, in either letter case.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {

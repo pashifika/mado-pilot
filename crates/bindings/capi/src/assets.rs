@@ -271,7 +271,7 @@ pub(crate) fn package_template_id(
     }
 }
 
-pub(crate) fn template_prepare(
+pub(crate) fn template_prepare_from_package(
     engine: *const madopilot_engine_t,
     package: *const madopilot_package_t,
     id: madopilot_str_t,
@@ -318,13 +318,23 @@ fn run_template_prepare(
     let context = unsafe { operation::context(operation) }?;
     context.admit()?;
 
-    // A package that loaded is valid, so an identity it never declared reaches
-    // the caller as invalid argument rather than as an asset failure. The
-    // facade already draws that line; this keeps the category on the right side
-    // of it, because the mistake is about the package's contents and not about
-    // anything the backend did.
+    // Resolved here rather than through `Engine::prepare_from_package`, which
+    // flattens the asset layer's typed fault into a plain error. Resolution is
+    // the only step of that method that can produce one, and a C caller that
+    // loses it is left with a status shared by every other malformed request —
+    // the reason `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` existed with nothing
+    // able to produce it. A Rust caller recovers the same detail the same way,
+    // by asking the package; see `AssetPackage::resolve_template`.
+    //
+    // A package that loaded is valid, so an identity it never declared is still
+    // invalid argument rather than an asset failure. The kind and the stage say
+    // which mistake it was; the status says whose.
+    // No checkpoint between the two: resolution is a lookup in a committed
+    // package, not work worth interrupting, and the entry already admitted.
+    let source = package.resolve_template(id).map_err(Fault::from_asset)?;
+
     let prepared = engine
-        .prepare_template(package, id, context.inner())
+        .prepare_template(&source, context.inner())
         .map_err(|error| {
             let category = if error.status() == Status::InvalidArgument {
                 MADOPILOT_ERROR_CATEGORY_ASSET

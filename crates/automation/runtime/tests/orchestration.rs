@@ -32,7 +32,7 @@ fn opened(harness: &Harness, operation: &OperationContext) -> mado_pilot_runtime
 fn prepared(harness: &Harness, operation: &OperationContext) -> PreparedTemplate {
     harness
         .engine
-        .prepare(&match_fixtures::planted_template("patch"), operation)
+        .prepare_template(&match_fixtures::planted_template("patch"), operation)
         .expect("prepared")
 }
 
@@ -81,7 +81,7 @@ fn a_later_publication_does_not_replace_the_frame_a_request_named() {
     let session = opened(&harness, &operation);
     let template = prepared(&harness, &operation);
     let held = session
-        .frame(&FrameRequest::latest(), &operation)
+        .acquire_frame(&FrameRequest::latest(), &operation)
         .expect("got the first frame");
 
     // A newer frame arrives before the search runs. The request named an exact
@@ -110,7 +110,7 @@ fn a_latest_search_after_a_later_publication_uses_the_later_frame() {
     let session = opened(&harness, &operation);
     let template = prepared(&harness, &operation);
     let held = session
-        .frame(&FrameRequest::latest(), &operation)
+        .acquire_frame(&FrameRequest::latest(), &operation)
         .expect("got the first frame");
     harness
         .capture
@@ -144,7 +144,7 @@ fn a_frame_another_session_published_is_refused_before_the_backend() {
         .expect("published");
     let template = prepared(&harness, &operation);
     let foreign = other
-        .frame(&FrameRequest::latest(), &operation)
+        .acquire_frame(&FrameRequest::latest(), &operation)
         .expect("the other session's frame");
 
     let error = session
@@ -315,7 +315,7 @@ fn closing_twice_succeeds_and_a_closed_session_publishes_nothing_further() {
     assert!(session.is_closed());
     assert_eq!(
         session
-            .frame(&FrameRequest::latest(), &operation)
+            .acquire_frame(&FrameRequest::latest(), &operation)
             .expect_err("closed")
             .status(),
         Status::Closed
@@ -342,6 +342,36 @@ fn a_search_on_a_closed_session_reports_closure_rather_than_a_stale_frame() {
 }
 
 #[test]
+fn a_closed_session_refuses_an_exact_frame_search_it_needs_nothing_from_capture_for() {
+    let harness = Harness::silent();
+    let operation = OperationContext::new();
+    let session = opened(&harness, &operation);
+    let template = prepared(&harness, &operation);
+    let frame = session
+        .acquire_frame(&FrameRequest::latest(), &operation)
+        .expect("a published frame");
+    session.close(&operation).expect("closed");
+
+    // Everything this search needs is already in the caller's hands, so nothing
+    // below the session would have consulted it. Close is still the session's
+    // answer: a caller must not have to know which frame it asked for to know
+    // whether closure is observed.
+    let error = session
+        .find_template(
+            &FindRequest::exact(&frame, &template, options(&template)),
+            &operation,
+        )
+        .expect_err("a closed session starts no search");
+
+    assert_eq!(error.status(), Status::Closed);
+    assert_eq!(harness.matcher.find_count(), 0);
+
+    // The frame itself is the caller's and outlives the session, which is a
+    // different rule and is not weakened by the one above.
+    assert!(frame.map(PixelFormat::Rgba8, &operation).is_ok());
+}
+
+#[test]
 fn an_unknown_template_identity_is_refused_before_the_backend() {
     let harness = Harness::silent();
     let operation = OperationContext::new();
@@ -355,7 +385,7 @@ fn an_unknown_template_identity_is_refused_before_the_backend() {
 
     let error = harness
         .engine
-        .prepare_template(&package, "panel.absent-entirely", &operation)
+        .prepare_from_package(&package, "panel.absent-entirely", &operation)
         .expect_err("the package contains no such template");
 
     // A package that loaded is valid; asking it for something it never
@@ -383,7 +413,7 @@ fn a_packaged_template_is_prepared_for_the_engines_own_backend() {
 
     let template = harness
         .engine
-        .prepare_template(&package, "panel.patch", &operation)
+        .prepare_from_package(&package, "panel.patch", &operation)
         .expect("prepared");
 
     assert_eq!(template.backend().as_str(), harness.engine.backend().id());
@@ -398,7 +428,7 @@ fn a_backend_that_cannot_prepare_reports_a_vision_failure() {
 
     let error = harness
         .engine
-        .prepare(&match_fixtures::planted_template("patch"), &operation)
+        .prepare_template(&match_fixtures::planted_template("patch"), &operation)
         .expect_err("the backend refused");
 
     assert_eq!(error.status(), Status::VisionFailed);

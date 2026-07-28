@@ -12,7 +12,9 @@
 
 use std::path::Path;
 
-use mado_pilot_assets::{AssetFaultKind, AssetLimits, LoadStage, PackageLoader, PackageSource};
+use mado_pilot_assets::{
+    AssetFaultKind, AssetLimits, ContentDigest, LoadStage, PackageLoader, PackageSource,
+};
 use mado_pilot_core::{OperationContext, Status};
 
 mod support;
@@ -383,13 +385,8 @@ fn fixture_files(root: &Path, directory: &Path) -> Vec<String> {
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    // The public constructor, so a caller assembling a manifest needs no
+    // hashing dependency of its own. These tests used to carry three copies of
+    // the same computation, which is what the gap looked like from the inside.
+    ContentDigest::of(bytes).to_string()
 }

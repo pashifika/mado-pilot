@@ -24,7 +24,7 @@ use mado_pilot_vision::{MatchOptions, MatchResult, PreparedTemplate, RegionSelec
 /// must keep a fallback arm.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub enum FrameChoice<'a> {
+pub enum SearchFrame<'a> {
     /// The session's current published frame, acquired inside the search's own
     /// operation.
     Latest,
@@ -38,7 +38,7 @@ pub enum FrameChoice<'a> {
 /// built for and the outcome owns everything it reports.
 #[derive(Debug)]
 pub struct FindRequest<'a> {
-    frame: FrameChoice<'a>,
+    frame: SearchFrame<'a>,
     region: RegionSelection,
     template: &'a PreparedTemplate,
     options: MatchOptions,
@@ -49,7 +49,7 @@ impl<'a> FindRequest<'a> {
     #[must_use]
     pub const fn latest(template: &'a PreparedTemplate, options: MatchOptions) -> Self {
         Self {
-            frame: FrameChoice::Latest,
+            frame: SearchFrame::Latest,
             region: RegionSelection::FullFrame,
             template,
             options,
@@ -64,7 +64,7 @@ impl<'a> FindRequest<'a> {
         options: MatchOptions,
     ) -> Self {
         Self {
-            frame: FrameChoice::Exact(frame),
+            frame: SearchFrame::Exact(frame),
             region: RegionSelection::FullFrame,
             template,
             options,
@@ -87,7 +87,7 @@ impl<'a> FindRequest<'a> {
         options: MatchOptions,
     ) -> Result<Self, Error> {
         Ok(Self {
-            frame: FrameChoice::Exact(view.frame()),
+            frame: SearchFrame::Exact(view.frame()),
             region: RegionSelection::pixels(view.region(), ClipPolicy::Reject)?,
             template,
             options,
@@ -103,7 +103,7 @@ impl<'a> FindRequest<'a> {
 
     /// Returns which frame the search runs against.
     #[must_use]
-    pub const fn frame(&self) -> FrameChoice<'a> {
+    pub const fn frame(&self) -> SearchFrame<'a> {
         self.frame
     }
 

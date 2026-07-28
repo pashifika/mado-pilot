@@ -312,7 +312,7 @@ fn a_session_outlives_the_target_list_it_was_opened_from() {
     let mut frame = ptr::null_mut();
     // SAFETY: the session is retained here and outlives the call.
     let status = unsafe {
-        (api.session_frame)(
+        (api.session_acquire_frame)(
             session,
             &raw const operation,
             &raw mut frame,
@@ -532,7 +532,7 @@ fn close_is_idempotent_and_refuses_later_work() {
     let mut error = ptr::null_mut();
     // SAFETY: as above.
     let status = unsafe {
-        (api.session_frame)(
+        (api.session_acquire_frame)(
             flow.session,
             &raw const operation,
             &raw mut frame,

@@ -12,8 +12,11 @@
 //! per opened session from a process-wide counter that never reuses a value
 //! while the library is loaded. It correlates frames, results, and sessions with
 //! each other exactly as the Rust identity does; it is not the Rust identity,
-//! and a host that mixes both surfaces cannot compare them. Recorded against
-//! `G-009` as an interface gap rather than papered over.
+//! and a host that mixes both surfaces cannot compare them. Reviewed and kept
+//! that way by `docs/adr/0006-public-rust-names-and-compatibility-policy.md`:
+//! `StreamId` stays opaque, because the incomparability is unobservable while a
+//! C caller creates its own engine, and the right projection depends on whether
+//! engine identity has to travel with the ordinal.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;

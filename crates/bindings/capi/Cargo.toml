@@ -24,6 +24,13 @@ publish = false
 name = "madopilot"
 crate-type = ["lib", "cdylib"]
 
+# The C boundary's cost, measured against the same work through the facade in
+# the same process. `harness = false` because it prints a benchmark profile
+# rather than running libtest cases.
+[[bench]]
+name = "c-boundary"
+harness = false
+
 [dependencies]
 mado-pilot = { path = "../../mado-pilot" }
 

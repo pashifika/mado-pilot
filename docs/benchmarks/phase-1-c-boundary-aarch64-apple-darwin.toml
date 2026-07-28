@@ -1,0 +1,180 @@
+# What the C ABI costs, measured on aarch64-apple-darwin.
+#
+# Produced by `crates/bindings/capi/benches/c-boundary.rs`:
+#
+#   cargo bench --locked --package mado-pilot-capi --bench c-boundary -- \
+#       --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
+#       --os-version "macOS 26.5.2 build 25F84"
+#
+# Task 9.2 asks for "any material C ABI startup overhead". Whether it is
+# material is the question, so each workload that has a Rust equivalent is
+# measured twice — once through the negotiated function table and once through
+# the facade — in one process, one build, one run. The difference between a pair
+# is the boundary; a C number on its own would only say how fast this host is.
+#
+# What is not measured here is dynamic loading. This benchmark links the
+# library, so the `LoadLibrary` or `dlopen` a real C host performs once at
+# startup is outside every window below and is not claimed to be covered.
+#
+# Budgets are on the C workloads only, and are set by
+# `docs/adr/0008-phase-1-performance-budgets.md`.
+
+format_version = 1
+
+[benchmark]
+id = "phase-1-c-boundary-aarch64-apple-darwin"
+workload = "the C ABI's cost, against the same work through the Rust facade"
+phase = "1"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "fixtures/assets/phase1-slice, mado-pilot-testkit match_fixtures for the scene"
+fixture_sha256 = "293050009da09f14f272919e3df33738c138a26863948309736303db9fc04492"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 cores, 32 GiB"
+os_version = "macOS 26.5.2 build 25F84"
+build_profile = "cargo bench, default features, debug_assertions=false"
+warmup_iterations = 20
+sample_count = 200
+correctness_oracle = "every retained sample is checked; each measurement states its own oracle"
+queue_policy = "none; every Phase 1 operation is synchronous and no work is queued"
+notes = "Apple clang 21.0.0, CMake 4.4.0, rustc 1.97.1, OpenCV 4.14.0. `fixture_sha256` matches the other target's profile for the same benchmark, so both measured the same bytes."
+
+# --- Budgets that apply to every measurement in this file -------------------
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+# A signed change, so a decrease also satisfies the requirement. Bounded
+# rather than exactly zero, per docs/performance.md. One page, because a
+# leak of even twenty-four bytes per iteration exceeds it over two hundred
+# samples while a single rounded-up allocation does not.
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 524288
+rationale = "half a mebibyte of live heap for the whole run; the largest measured workload here is 121526 bytes"
+
+# --- Per-workload measurements and budgets ----------------------------------
+
+[[measurement]]
+workload = "negotiate_table"
+correctness_oracle = "the table reports this header's ABI major and is at least its size"
+result_correctness = 0
+latency_p50_ms = 0.000000
+latency_p95_ms = 0.000042
+iteration_span_ms = 0.000044
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 0
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+
+  # No latency percentile budget. This workload's median is 0.000000 on at
+  # least one release target, because the operation is faster than that
+  # host's monotonic clock can express. A ceiling on a quantised reading
+  # would be a budget on the clock. The rule is written into both targets'
+  # files so the two agree about what the workload may do.
+  [[measurement.budget]]
+  measure = "iteration_span_ms"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.00015
+  rationale = "three times the measured 0.000044, from one clock reading across the whole sampled run"
+
+[[measurement]]
+workload = "engine_create_c"
+correctness_oracle = "the engine discovers the source's one target"
+result_correctness = 0
+latency_p50_ms = 0.000792
+latency_p95_ms = 0.001125
+iteration_span_ms = 0.001111
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 103558
+steady_allocated_bytes = 78106
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.004
+  rationale = "three times the measured 0.001125"
+
+[[measurement]]
+workload = "engine_create_rust"
+correctness_oracle = "the engine discovers the source's one target"
+result_correctness = 0
+latency_p50_ms = 0.000667
+latency_p95_ms = 0.000708
+iteration_span_ms = 0.000892
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 100511
+steady_allocated_bytes = 75197
+allocated_growth_bytes = 0
+
+  # No budget. This is the control for the C workload above it: it exists
+  # so the pair can be compared in one process, one build, one run. The
+  # Rust workflow's own ceilings are in the deterministic-slice profile for
+  # this target, and a second set here would be the same claim measured
+  # twice and free to disagree with itself.
+
+[[measurement]]
+workload = "match_warm_c"
+correctness_oracle = "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5"
+result_correctness = 0
+latency_p50_ms = 0.252000
+latency_p95_ms = 0.266834
+iteration_span_ms = 0.253919
+mapped_bytes_per_result = 24576
+peak_allocated_bytes = 121526
+steady_allocated_bytes = 78106
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 1.0
+  rationale = "three times the measured 0.266834"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 24576
+  rationale = "96x64 at four bytes per pixel, exactly once, into the format the backend requires"
+
+[[measurement]]
+workload = "match_warm_rust"
+correctness_oracle = "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5"
+result_correctness = 0
+latency_p50_ms = 0.251750
+latency_p95_ms = 0.268292
+iteration_span_ms = 0.253448
+mapped_bytes_per_result = 24576
+peak_allocated_bytes = 118601
+steady_allocated_bytes = 75197
+allocated_growth_bytes = 0
+
+  # No budget. This is the control for the C workload above it: it exists
+  # so the pair can be compared in one process, one build, one run. The
+  # Rust workflow's own ceilings are in the deterministic-slice profile for
+  # this target, and a second set here would be the same claim measured
+  # twice and free to disagree with itself.

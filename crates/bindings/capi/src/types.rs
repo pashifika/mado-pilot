@@ -24,8 +24,9 @@
 //! growing one would move every field after it; a later phase that needs more
 //! introduces a different type instead.
 //!
-//! **Every layout, offset, and numeric value in this module is provisional**
-//! until gate `G-010` freezes it.
+//! **Every layout, offset, and numeric value in this module is frozen** for
+//! ABI major 1 by `docs/adr/0007-phase-1-c-abi-freeze.md`. The measured totals
+//! are in that record and the per-field report is in `docs/evidence/c-abi/`.
 
 use mado_pilot::{
     AssetFaultKind, ClipPolicy, Continuity, CoordinateSpace, LoadStage, PixelFormat, Suppression,

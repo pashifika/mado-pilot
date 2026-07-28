@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use mado_pilot_assets::{AssetPackage, MemoryPackage, PackageLoader, PackageSource};
+use mado_pilot_assets::{AssetPackage, ContentDigest, MemoryPackage, PackageLoader, PackageSource};
 use mado_pilot_core::OperationContext;
 
 /// Returns the root of the tracked `G-014` fixture set.
@@ -161,15 +161,7 @@ pub(crate) fn empty_manifest() -> Vec<u8> {
 
 /// Returns the lowercase hexadecimal SHA-256 of `bytes`.
 pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    ContentDigest::of(bytes).to_string()
 }
 
 /// Builds a manifest declaring one template whose digest matches `content`.

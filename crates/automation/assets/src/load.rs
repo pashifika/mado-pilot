@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use mado_pilot_core::{Operation, OperationContext};
 use mado_pilot_vision::{TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest};
-use sha2::{Digest, Sha256};
 
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
 use crate::limits::AssetLimits;
@@ -266,7 +265,7 @@ fn expand(
             operation,
         )?;
 
-        if digest_of(&content) != declaration.digest() {
+        if ContentDigest::of(&content) != declaration.digest() {
             return Err(AssetFault::new(
                 AssetFaultKind::HashMismatch,
                 LoadStage::Expansion,
@@ -304,12 +303,6 @@ fn expand(
     }
 
     Ok(templates)
-}
-
-fn digest_of(content: &[u8]) -> ContentDigest {
-    let mut hasher = Sha256::new();
-    hasher.update(content);
-    ContentDigest::from(<[u8; 32]>::from(hasher.finalize()))
 }
 
 fn checkpoint(operation: &mut Operation<'_>, stage: LoadStage) -> Result<(), AssetFault> {

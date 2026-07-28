@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use mado_pilot_assets::{
-    AssetFaultKind, AssetLimits, LoadStage, MANIFEST_PATH, MemoryPackage, PackageLoader,
-    PackageSource,
+    AssetFaultKind, AssetLimits, ContentDigest, LoadStage, MANIFEST_PATH, MemoryPackage,
+    PackageLoader, PackageSource,
 };
 use mado_pilot_core::{CoordinateSpace, OperationContext, PixelExtent};
 use mado_pilot_vision::TemplateEncoding;
@@ -18,8 +18,8 @@ use mado_pilot_vision::TemplateEncoding;
 mod support;
 
 use support::{
-    ArchiveEntry, TempDir, empty_manifest, load, tiny_archive, tiny_directory, tiny_manifest_bytes,
-    tiny_memory_package, write_archive,
+    ArchiveEntry, PNG_SIGNATURE, TempDir, empty_manifest, load, tiny_archive, tiny_directory,
+    tiny_manifest_bytes, tiny_memory_package, write_archive,
 };
 
 #[test]
@@ -149,6 +149,46 @@ fn a_memory_package_survives_the_buffers_it_was_built_from() {
 
     let template = package.resolve_template("template.0004").expect("declared");
     assert!(template.content().starts_with(&[0x89, b'P', b'N', b'G']));
+}
+
+#[test]
+fn a_memory_package_can_be_assembled_with_nothing_but_the_public_surface() {
+    // Every entry needs a declared digest and the loader verifies each one, so
+    // before `ContentDigest::of` existed a caller assembling a package in
+    // memory had to add a hashing crate to state a value this crate already
+    // computed. Nothing outside `mado_pilot_assets` is used here.
+    let content = PNG_SIGNATURE.to_vec();
+    let digest = ContentDigest::of(&content);
+    let manifest = format!(
+        r#"{{
+          "schema_version": 1,
+          "package": {{ "id": "madopilot.test.assembled", "version": "1.0.0" }},
+          "license": "Apache-2.0",
+          "templates": [ {{
+            "id": "assembled", "path": "templates/only.png", "width": 4, "height": 4,
+            "coordinate_space": "capture_pixels",
+            "content": {{ "algorithm": "sha256", "value": "{digest}" }},
+            "match_defaults": {{ "min_score": 0.9, "max_results": 2 }}
+          }} ]
+        }}"#
+    )
+    .into_bytes();
+
+    let package = load(&PackageSource::memory(
+        MemoryPackage::new()
+            .with_entry(MANIFEST_PATH, manifest)
+            .with_entry("templates/only.png", content.clone()),
+    ))
+    .expect("a package whose digests were computed through the public constructor loads");
+
+    assert_eq!(package.template_count(), 1);
+    let template = package.resolve_template("assembled").expect("declared");
+    assert_eq!(template.content(), content.as_slice());
+
+    // The same computation the loader performs, which is why the load above
+    // did not fail on its first hash.
+    assert_eq!(ContentDigest::of(&content), digest);
+    assert_eq!(ContentDigest::parse(&digest.to_string()), Some(digest));
 }
 
 #[test]
@@ -344,13 +384,8 @@ fn template_file_name(index: u32) -> String {
 }
 
 fn hex_sha256(bytes: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    // The public constructor, so a caller assembling a manifest needs no
+    // hashing dependency of its own. These tests used to carry three copies of
+    // the same computation, which is what the gap looked like from the inside.
+    ContentDigest::of(bytes).to_string()
 }

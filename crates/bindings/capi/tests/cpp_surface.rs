@@ -11,9 +11,11 @@
 //! `Ocr` type here would be a promise the library underneath cannot keep, and
 //! it would compile perfectly.
 //!
-//! **None of these names is frozen.** `G-010` freezes the C contract beneath
-//! them; what this file protects until then is that a change to the C++ surface
-//! is deliberate.
+//! The C contract beneath these names is frozen by
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`. The C++ surface is not an ABI and
+//! is governed by the Rust-side policy in
+//! `docs/adr/0006-public-rust-names-and-compatibility-policy.md`; what this
+//! file protects is that a change to it is deliberate.
 
 use std::path::PathBuf;
 
@@ -226,8 +228,9 @@ fn the_header_restates_no_status_value() {
         assert!(
             !statement.starts_with("enum "),
             "the wrapper declares no enumeration of its own, but this line does: \
-             `{statement}`. The C vocabulary is provisional under `G-010` and must \
-             have exactly one definition."
+             `{statement}`. A hand-written mirror of a frozen C constant set \
+             fails silently when that set grows — it compiles, one value short — \
+             so the vocabulary must have exactly one definition."
         );
     }
 }

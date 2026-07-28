@@ -276,7 +276,7 @@ int main(void)
     FIELD(madopilot_api_t, package_release);
     FIELD(madopilot_api_t, package_describe);
     FIELD(madopilot_api_t, package_template_id);
-    FIELD(madopilot_api_t, template_prepare);
+    FIELD(madopilot_api_t, template_prepare_from_package);
     FIELD(madopilot_api_t, template_retain);
     FIELD(madopilot_api_t, template_release);
     FIELD(madopilot_api_t, template_describe);
@@ -291,7 +291,7 @@ int main(void)
     FIELD(madopilot_api_t, session_describe);
     FIELD(madopilot_api_t, session_close);
     FIELD(madopilot_api_t, session_is_closed);
-    FIELD(madopilot_api_t, session_frame);
+    FIELD(madopilot_api_t, session_acquire_frame);
     FIELD(madopilot_api_t, frame_retain);
     FIELD(madopilot_api_t, frame_release);
     FIELD(madopilot_api_t, frame_stamp);

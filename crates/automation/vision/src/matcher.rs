@@ -101,12 +101,21 @@ impl Matcher {
                 &transform,
                 empty_region()?,
                 &descriptor,
+                request.options(),
                 Vec::new(),
             );
         };
 
         if region.is_empty() || !fits(template.extent(), region) {
-            return commit(attempt, frame, &transform, region, &descriptor, Vec::new());
+            return commit(
+                attempt,
+                frame,
+                &transform,
+                region,
+                &descriptor,
+                request.options(),
+                Vec::new(),
+            );
         }
 
         let view = FrameView::new(frame.clone(), region)?;
@@ -125,7 +134,15 @@ impl Matcher {
         attempt.checkpoint()?;
 
         let matches = normalize(candidates, template, region, request.options())?;
-        commit(attempt, frame, &transform, region, &descriptor, matches)
+        commit(
+            attempt,
+            frame,
+            &transform,
+            region,
+            &descriptor,
+            request.options(),
+            matches,
+        )
     }
 }
 
@@ -212,6 +229,7 @@ fn commit(
     transform: &TransformSnapshot,
     searched: PixelRect,
     descriptor: &crate::backend::BackendDescriptor,
+    options: MatchOptions,
     matches: Vec<Match>,
 ) -> Result<MatchResult> {
     let result = MatchResult::new(
@@ -219,6 +237,7 @@ fn commit(
         *transform,
         searched,
         descriptor.clone(),
+        options,
         matches,
     );
     attempt.commit(result).map_err(Error::from)

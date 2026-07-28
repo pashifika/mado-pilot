@@ -13,7 +13,7 @@ use mado_pilot_capture::{CaptureFault, CaptureSession, Frame, FrameRequest, Sess
 use mado_pilot_core::{Operation, OperationContext, Result, StreamId, TargetId};
 use mado_pilot_vision::{MatchRequest, Matcher};
 
-use crate::find::{FindOutcome, FindRequest, FrameChoice};
+use crate::find::{FindOutcome, FindRequest, SearchFrame};
 
 /// An open capture session that can search its own frames.
 ///
@@ -59,6 +59,10 @@ impl Session {
 
     /// Returns the frame `request` asks for, waiting when necessary.
     ///
+    /// A verb, because this can block: asking for the latest frame waits until
+    /// one exists. The accessors on this type are nouns and none of them waits
+    /// for anything.
+    ///
     /// Frame identity, ordering, and latest-frame semantics are the capture
     /// package's; this hands the request to the adapter unchanged.
     ///
@@ -67,7 +71,11 @@ impl Session {
     /// Returns a closed outcome once the session is closing, an
     /// invalid-argument outcome for a stamp from another stream, and the
     /// operation's terminal outcome when cancellation or the deadline wins.
-    pub fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
+    pub fn acquire_frame(
+        &self,
+        request: &FrameRequest,
+        operation: &OperationContext,
+    ) -> Result<Frame> {
         self.capture.frame(request, operation)
     }
 
@@ -86,12 +94,20 @@ impl Session {
     /// instead of a sequence that is correct only because each of its steps
     /// happened to check.
     ///
+    /// A closed session starts no search, whichever frame the request names.
+    /// Searching an exact frame the caller already holds needs nothing from the
+    /// capture side and would otherwise succeed after close, but "this session
+    /// is finished" is the session's answer to give, and a caller that has to
+    /// know which frame it asked for to predict whether close is observed has
+    /// been handed two contracts instead of one.
+    ///
     /// # Errors
     ///
-    /// Returns an invalid-argument outcome for a frame published by another
-    /// stream, the capture failure for an acquisition that could not be
-    /// satisfied, the vision failure for a search that could not run, and the
-    /// operation's terminal outcome when cancellation or the deadline wins.
+    /// Returns a closed outcome once the session is closing, an
+    /// invalid-argument outcome for a frame published by another stream, the
+    /// capture failure for an acquisition that could not be satisfied, the
+    /// vision failure for a search that could not run, and the operation's
+    /// terminal outcome when cancellation or the deadline wins.
     pub fn find_template(
         &self,
         request: &FindRequest<'_>,
@@ -99,9 +115,13 @@ impl Session {
     ) -> Result<FindOutcome> {
         let mut attempt = Operation::admit(operation)?;
 
+        if self.capture.is_closed() {
+            return Err(CaptureFault::SessionClosed.into());
+        }
+
         let frame = match request.frame() {
-            FrameChoice::Latest => self.capture.frame(&FrameRequest::latest(), operation)?,
-            FrameChoice::Exact(frame) => {
+            SearchFrame::Latest => self.capture.frame(&FrameRequest::latest(), operation)?,
+            SearchFrame::Exact(frame) => {
                 // A frame from another stream would produce an envelope naming
                 // this session's target for content it never published.
                 if frame.stamp().stream() != self.description.stream() {

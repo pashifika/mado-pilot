@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use mado_pilot_runtime::{
-    CaptureProvider, Engine, EngineParts, IdentityIssuer, Matcher, PackageLoader, PixelExtent,
+    CaptureProvider, Engine, EngineWiring, IdentityIssuer, Matcher, PackageLoader, PixelExtent,
     PixelFormat,
 };
 use mado_pilot_testkit::{ControlledCapture, ControlledMatcher};
@@ -35,7 +35,7 @@ impl Harness {
                 .expect("a valid controlled provider"),
         );
         let matcher = Arc::new(matcher);
-        let engine = Engine::new(EngineParts {
+        let engine = Engine::new(EngineWiring {
             engine: issuer.engine(),
             capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
             matcher: Matcher::new(Arc::clone(&matcher) as Arc<dyn MatchBackend>),

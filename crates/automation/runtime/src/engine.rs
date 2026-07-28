@@ -21,7 +21,7 @@ use crate::session::Session;
 /// facade is the only package that fills it in, because naming a concrete
 /// adapter is the facade's responsibility and nobody else's.
 #[derive(Debug)]
-pub struct EngineParts {
+pub struct EngineWiring {
     /// The identity every target and stream this engine accepts is scoped to.
     pub engine: EngineId,
     /// The capture adapter that discovers targets and opens sessions.
@@ -44,12 +44,12 @@ pub struct Engine {
 impl Engine {
     /// Builds an engine from wired contract dependencies.
     #[must_use]
-    pub fn new(parts: EngineParts) -> Self {
+    pub fn new(wiring: EngineWiring) -> Self {
         Self {
-            engine: parts.engine,
-            capture: parts.capture,
-            matcher: parts.matcher,
-            loader: parts.loader,
+            engine: wiring.engine,
+            capture: wiring.capture,
+            matcher: wiring.matcher,
+            loader: wiring.loader,
         }
     }
 
@@ -128,13 +128,15 @@ impl Engine {
     /// A template source does not have to come from an asset package: the
     /// vision contract accepts one built from bytes a caller read itself, and
     /// an engine that only accepted packaged templates would make the manifest
-    /// mandatory for a caller that has no use for it.
+    /// mandatory for a caller that has no use for it. The packaged form is
+    /// [`Engine::prepare_from_package`]; the two differ in where the source
+    /// comes from and in nothing else.
     ///
     /// # Errors
     ///
     /// Returns the backend's typed preparation failure, and the operation's
     /// terminal outcome when cancellation or the deadline wins.
-    pub fn prepare(
+    pub fn prepare_template(
         &self,
         source: &TemplateSource,
         operation: &OperationContext,
@@ -160,7 +162,7 @@ impl Engine {
     /// something it never declared is the caller's mistake — the backend's
     /// typed preparation failure, and the operation's terminal outcome when
     /// cancellation or the deadline wins.
-    pub fn prepare_template(
+    pub fn prepare_from_package(
         &self,
         package: &AssetPackage,
         id: &str,

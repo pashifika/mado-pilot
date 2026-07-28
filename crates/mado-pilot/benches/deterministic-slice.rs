@@ -1,35 +1,40 @@
-//! Timing harness for the six Phase 1 workloads, with a correctness oracle on
-//! every sample.
+//! Timing, memory, and mapped-byte measurements for the Phase 1 Rust workflow,
+//! with a correctness oracle on every sample.
 //!
-//! This sets **no numeric budget**. Gate `G-013` in `docs/validation-gates.md`
-//! is what sets one, and it needs measurements from both release targets that
-//! do not exist yet. What exists here is the harness that produces them, and
-//! the oracle each workload is checked against — because a latency number whose
-//! output was never checked is a timing experiment rather than evidence, which
-//! is the rule `docs/performance.md` states.
+//! Gate `G-013` in `docs/validation-gates.md` is what sets a budget, and
+//! `docs/benchmarks/` is where the set ones live. What is here are the eight
+//! workloads and the oracle each is checked against — because a latency number
+//! whose output was never checked is a timing experiment rather than evidence,
+//! which is the rule `docs/performance.md` states.
+//!
+//! The sampling loop, the allocation accounting, and the report belong to
+//! `mado_pilot_testkit::bench_harness`, which the C boundary benchmark in
+//! `mado-pilot-capi` also uses, so the two emit the same profile shape.
 //!
 //! Two modes, because the same oracles are worth running far more often than
 //! the timings are:
 //!
 //! ```text
 //! cargo test  --locked --workspace --all-targets            # oracles, three samples
-//! cargo bench --locked --package mado-pilot -- --label "..."  # full run, TOML report
+//! cargo bench --locked --package mado-pilot --bench deterministic-slice -- \
+//!     --hardware "..." --os-version "..."                   # full run, TOML report
 //! ```
-//!
-//! The label is the operator's to supply and nothing here guesses it. A CPU
-//! model this program detected would be a guess recorded as a measurement
-//! condition.
 
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
-    ClipPolicy, Continuity, CoordinateSpace, Engine, FindOutcome, FindRequest, Frame,
-    FrameDescriptor, FrameRequest, MatchOptions, MonotonicInstant, OpenRequest, OperationContext,
-    PackageSource, PixelFormat, PreparedTemplate, Rect, Session,
+    AssetPackage, ClipPolicy, ContentDigest, Continuity, CoordinateSpace, Engine, FindOutcome,
+    FindRequest, Frame, FrameDescriptor, FrameRequest, MatchOptions, MemoryPackage,
+    MonotonicInstant, OpenRequest, OperationContext, PackageSource, PixelFormat, PreparedTemplate,
+    Rect, Session,
 };
-use mado_pilot_testkit::match_fixtures;
+use mado_pilot_testkit::bench_harness::{Accounting, Benchmark, Plan, Profile, Sample, measure};
+use mado_pilot_testkit::{bench_harness, match_fixtures};
+
+#[global_allocator]
+static ALLOCATOR: Accounting = Accounting;
 
 /// The layout the replay source publishes.
 const SOURCE_FORMAT: PixelFormat = PixelFormat::Rgba8;
@@ -46,28 +51,97 @@ const ROI: (f64, f64, f64, f64) = (16.0, 8.0, 64.0, 40.0);
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let full = arguments.iter().any(|argument| argument == "--bench");
-    let label = label(&arguments).unwrap_or_else(|| "unlabelled".to_owned());
-    let plan = if full { Plan::full() } else { Plan::smoke() };
+    let plan = Plan::from(&arguments);
+    let (hardware, os_version) = Profile::host(&arguments);
 
     let workloads = [
-        measure("replay_open", plan, open_session),
-        measure("map_full_frame", plan, map_full_frame),
-        measure("map_region_of_interest", plan, map_region),
-        measure("load_package", plan, load_package),
-        measure("prepare_and_match_cold", plan, prepare_and_match),
-        measure("match_warm", plan, match_warm),
+        measure(
+            "replay_open",
+            "the session reports the source's own extent and pixel format",
+            plan,
+            Fixture::new,
+            open_session,
+        ),
+        measure(
+            "map_full_frame",
+            "the mapping covers the whole frame and reports its exact identity",
+            plan,
+            Fixture::new,
+            map_full_frame,
+        ),
+        measure(
+            "map_region_of_interest",
+            "the mapping covers the requested region and no more",
+            plan,
+            Fixture::new,
+            map_region,
+        ),
+        measure(
+            "load_package_directory",
+            "the package declares its six tracked templates",
+            plan,
+            Fixture::new,
+            load_directory,
+        ),
+        measure(
+            "load_package_memory",
+            "the committed package equals the one the same files commit as a directory",
+            plan,
+            Fixture::new,
+            load_memory,
+        ),
+        measure(
+            "load_package_archive",
+            "the committed package equals the one the same files commit as a directory",
+            plan,
+            Fixture::new,
+            load_archive,
+        ),
+        measure(
+            PLANTED_ORACLE.0,
+            PLANTED_ORACLE.1,
+            plan,
+            Fixture::new,
+            prepare_and_match,
+        ),
+        measure(
+            "match_warm",
+            PLANTED_ORACLE.1,
+            plan,
+            Fixture::new,
+            match_warm,
+        ),
     ];
 
-    let failures: usize = workloads.iter().map(|workload| workload.incorrect).sum();
-    if full {
-        report(&label, plan, &workloads);
-    } else {
-        println!(
-            "deterministic-slice: {} workloads, {} samples each, {failures} oracle failure(s)",
-            workloads.len(),
-            plan.samples
+    let failures: usize = workloads
+        .iter()
+        .map(bench_harness::Workload::incorrect)
+        .sum();
+    if arguments.iter().any(|argument| argument == "--bench") {
+        bench_harness::report(
+            &Benchmark {
+                id: "phase-1-deterministic-slice",
+                workload: "the Phase 1 deterministic replay workflow, eight operations",
+                phase: "1",
+            },
+            &Profile {
+                fixture: "fixtures/assets/phase1-slice for matching, \
+                          fixtures/assets/g-014/valid for loading, \
+                          mado-pilot-testkit match_fixtures for the scene"
+                    .to_owned(),
+                fixture_sha256: fixture_digest().to_string(),
+                hardware,
+                os_version,
+                correctness_oracle: "every retained sample is checked; \
+                                     each measurement states its own oracle",
+                queue_policy: "none; every Phase 1 operation is synchronous \
+                               and no work is queued",
+            },
+            plan,
+            &workloads,
         );
+    } else {
+        bench_harness::summarize("deterministic-slice", plan, &workloads);
     }
 
     assert_eq!(
@@ -76,99 +150,11 @@ fn main() {
     );
 }
 
-/// How many iterations a run discards and how many it keeps.
-#[derive(Debug, Clone, Copy)]
-struct Plan {
-    warmup: usize,
-    samples: usize,
-}
-
-impl Plan {
-    /// Enough samples for the oracles, not enough for a percentile.
-    const fn smoke() -> Self {
-        Self {
-            warmup: 1,
-            samples: 3,
-        }
-    }
-
-    const fn full() -> Self {
-        Self {
-            warmup: 20,
-            samples: 200,
-        }
-    }
-}
-
-/// One workload's samples and how many of them failed their oracle.
-#[derive(Debug)]
-struct Workload {
-    name: &'static str,
-    oracle: &'static str,
-    elapsed: Vec<Duration>,
-    incorrect: usize,
-}
-
-impl Workload {
-    /// Returns the `percentile`-th sample, in milliseconds.
-    fn percentile(&self, percentile: f64) -> f64 {
-        let mut sorted = self.elapsed.clone();
-        sorted.sort_unstable();
-        let last = sorted.len().saturating_sub(1);
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "an index into a sample vector whose length is far below the f64 mantissa"
-        )]
-        let index = ((last as f64) * percentile).round() as usize;
-        sorted.get(index).copied().unwrap_or_default().as_secs_f64() * 1_000.0
-    }
-}
-
-/// What one iteration of a workload reports.
-#[derive(Debug)]
-struct Sample {
-    elapsed: Duration,
-    correct: bool,
-}
-
-/// Runs `workload` through its warmup and its samples.
-fn measure(name: &'static str, plan: Plan, workload: fn(&Fixture) -> Sample) -> Workload {
-    let fixture = Fixture::new();
-    for _ in 0..plan.warmup {
-        workload(&fixture);
-    }
-
-    let mut elapsed = Vec::with_capacity(plan.samples);
-    let mut incorrect = 0;
-    for _ in 0..plan.samples {
-        let sample = workload(&fixture);
-        if !sample.correct {
-            incorrect += 1;
-        }
-        elapsed.push(sample.elapsed);
-    }
-
-    Workload {
-        name,
-        oracle: oracle(name),
-        elapsed,
-        incorrect,
-    }
-}
-
-/// Returns what each workload's output is checked against.
-fn oracle(name: &str) -> &'static str {
-    match name {
-        "replay_open" => "the session reports the source's own extent and pixel format",
-        "map_full_frame" => "the mapping covers the whole frame and reports its exact identity",
-        "map_region_of_interest" => "the mapping covers the requested region and no more",
-        "load_package" => "the package declares both tracked templates",
-        _ => {
-            "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5"
-        }
-    }
-}
+/// The name and oracle the two matching workloads share.
+const PLANTED_ORACLE: (&str, &str) = (
+    "prepare_and_match_cold",
+    "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5",
+);
 
 /// Everything a workload needs that is not what it measures.
 #[derive(Debug)]
@@ -177,6 +163,11 @@ struct Fixture {
     operation: OperationContext,
     session: Session,
     template: PreparedTemplate,
+    /// The `G-014` tiny package as a directory, which the other two source
+    /// kinds are checked against.
+    tiny_directory: AssetPackage,
+    /// The same files, described in caller-owned memory.
+    tiny_memory: MemoryPackage,
 }
 
 impl Fixture {
@@ -192,20 +183,25 @@ impl Fixture {
             .load_package(&PackageSource::directory(package_root()), &operation)
             .expect("the tracked example package loads");
         let template = engine
-            .prepare_template(&package, "panel.patch", &operation)
+            .prepare_from_package(&package, "panel.patch", &operation)
             .expect("prepared");
+        let tiny_directory = engine
+            .load_package(&PackageSource::directory(tiny_directory()), &operation)
+            .expect("the tracked G-014 tiny package loads");
 
         Self {
             engine,
             operation,
             session,
             template,
+            tiny_directory,
+            tiny_memory: tiny_memory_package(),
         }
     }
 
     fn frame(&self) -> Frame {
         self.session
-            .frame(&FrameRequest::latest(), &self.operation)
+            .acquire_frame(&FrameRequest::latest(), &self.operation)
             .expect("a published frame")
     }
 }
@@ -226,7 +222,7 @@ fn open_session(fixture: &Fixture) -> Sample {
         && session.description().format() == SOURCE_FORMAT;
     session.close(&fixture.operation).expect("closed");
 
-    Sample { elapsed, correct }
+    Sample::unmapped(elapsed, correct)
 }
 
 fn map_full_frame(fixture: &Fixture) -> Sample {
@@ -237,11 +233,11 @@ fn map_full_frame(fixture: &Fixture) -> Sample {
         .expect("mapped");
     let elapsed = started.elapsed();
 
-    Sample {
+    Sample::new(
         elapsed,
-        correct: mapping.stamp() == frame.stamp()
-            && mapping.bytes().len() == frame.descriptor().byte_len(),
-    }
+        mapping.stamp() == frame.stamp() && mapping.bytes().len() == frame.descriptor().byte_len(),
+        mapping.bytes().len() as u64,
+    )
 }
 
 fn map_region(fixture: &Fixture) -> Sample {
@@ -262,28 +258,59 @@ fn map_region(fixture: &Fixture) -> Sample {
     let expected = u64::from(region.region().width())
         * u64::from(region.region().height())
         * u64::from(SOURCE_FORMAT.bytes_per_pixel());
-    Sample {
+    Sample::new(
         elapsed,
-        correct: mapping.region() == region.region()
+        mapping.region() == region.region()
             && u64::try_from(mapping.bytes().len()).is_ok_and(|mapped| mapped == expected),
-    }
+        mapping.bytes().len() as u64,
+    )
 }
 
-fn load_package(fixture: &Fixture) -> Sample {
+fn load_directory(fixture: &Fixture) -> Sample {
     let started = Instant::now();
     let package = fixture
         .engine
         .load_package(
-            &PackageSource::directory(package_root()),
+            &PackageSource::directory(tiny_directory()),
             &fixture.operation,
         )
         .expect("loaded");
     let elapsed = started.elapsed();
 
-    Sample {
+    Sample::unmapped(
         elapsed,
-        correct: package.template_count() == 2 && package.resolve_template("panel.patch").is_ok(),
-    }
+        package.template_count() == 6 && package == fixture.tiny_directory,
+    )
+}
+
+fn load_memory(fixture: &Fixture) -> Sample {
+    // The description is built once, in the fixture: assembling it reads six
+    // files from disk, which is the directory workload's cost and not this
+    // one's. What is measured here is validating and committing a package whose
+    // bytes the caller already holds.
+    let source = PackageSource::memory(fixture.tiny_memory.clone());
+    let started = Instant::now();
+    let package = fixture
+        .engine
+        .load_package(&source, &fixture.operation)
+        .expect("loaded");
+    let elapsed = started.elapsed();
+
+    Sample::unmapped(elapsed, package == fixture.tiny_directory)
+}
+
+fn load_archive(fixture: &Fixture) -> Sample {
+    let started = Instant::now();
+    let package = fixture
+        .engine
+        .load_package(
+            &PackageSource::archive_file(tiny_archive()),
+            &fixture.operation,
+        )
+        .expect("loaded");
+    let elapsed = started.elapsed();
+
+    Sample::unmapped(elapsed, package == fixture.tiny_directory)
 }
 
 fn prepare_and_match(fixture: &Fixture) -> Sample {
@@ -301,7 +328,7 @@ fn prepare_and_match(fixture: &Fixture) -> Sample {
     let started = Instant::now();
     let template = fixture
         .engine
-        .prepare_template(&package, "panel.patch", &fixture.operation)
+        .prepare_from_package(&package, "panel.patch", &fixture.operation)
         .expect("prepared");
     let outcome = fixture
         .session
@@ -316,10 +343,11 @@ fn prepare_and_match(fixture: &Fixture) -> Sample {
         .expect("searched");
     let elapsed = started.elapsed();
 
-    Sample {
+    Sample::new(
         elapsed,
-        correct: planted(&outcome),
-    }
+        planted(&outcome),
+        searched_bytes(fixture, &outcome),
+    )
 }
 
 fn match_warm(fixture: &Fixture) -> Sample {
@@ -336,10 +364,26 @@ fn match_warm(fixture: &Fixture) -> Sample {
         .expect("searched");
     let elapsed = started.elapsed();
 
-    Sample {
+    Sample::new(
         elapsed,
-        correct: planted(&outcome),
-    }
+        planted(&outcome),
+        searched_bytes(fixture, &outcome),
+    )
+}
+
+/// Returns the frame bytes one search mapped into CPU memory.
+///
+/// Derived rather than observed, from two things the result reports: the region
+/// that was actually searched, after any clipping, and the pixel format the
+/// backend requires. The matcher maps the searched region into that format
+/// exactly once per search, so this is the rule it follows rather than an
+/// estimate of it. A backend that mapped twice would break the rule, not this
+/// arithmetic.
+fn searched_bytes(fixture: &Fixture, outcome: &FindOutcome) -> u64 {
+    let searched = outcome.result().searched();
+    let format = fixture.engine.backend().format();
+
+    u64::from(searched.width()) * u64::from(searched.height()) * u64::from(format.bytes_per_pixel())
 }
 
 /// Reports whether an outcome found exactly the planted copies.
@@ -368,64 +412,30 @@ fn planted(outcome: &FindOutcome) -> bool {
             .all(|found| (found.score() - 1.0).abs() <= TOLERANCE)
 }
 
-/// Prints a profile-shaped report with no budget in it.
-fn report(label: &str, plan: Plan, workloads: &[Workload]) {
-    println!("format_version = 1");
-    println!();
-    println!("[benchmark]");
-    println!("id = \"phase-1-deterministic-slice\"");
-    println!("workload = \"the Phase 1 deterministic replay workflow, six operations\"");
-    println!("phase = \"1\"");
-    println!("status = \"harness-output\"");
-    println!("normative = false");
-    println!("budgets_set = false");
-    println!("# G-013 sets numeric budgets; this run records measurements only.");
-    println!();
-    println!("[profile]");
-    println!(
-        "fixture = \"mado-pilot-testkit match_fixtures scene, fixtures/assets/phase1-slice package\""
-    );
-    // Arch and operating system are what the program can know. The exact target
-    // triple, the CPU model, and the operating-system build are the operator's
-    // to state when this output is turned into a tracked profile.
-    println!("arch = \"{}\"", std::env::consts::ARCH);
-    println!("os = \"{}\"", std::env::consts::OS);
-    println!("label = \"{}\"", escape(label));
-    println!("build_profile = \"cargo bench, default features\"");
-    println!("warmup_iterations = {}", plan.warmup);
-    println!("sample_count = {}", plan.samples);
-    println!(
-        "queue_policy = \"none; every Phase 1 operation is synchronous and no work is queued\""
-    );
-    println!();
+// --- Fixtures ----------------------------------------------------------------
 
-    for workload in workloads {
-        println!("[[measurement]]");
-        println!("workload = \"{}\"", workload.name);
-        println!("correctness_oracle = \"{}\"", workload.oracle);
-        println!("result_correctness = {}", workload.incorrect);
-        println!("latency_p50_ms = {:.6}", workload.percentile(0.50));
-        println!("latency_p95_ms = {:.6}", workload.percentile(0.95));
-        println!();
+/// Returns one digest covering every tracked fixture this benchmark reads.
+///
+/// Each fixture set is pinned by its own `SHA256SUMS`, so hashing those files
+/// pins every file they list with one number. A file added to a fixture set and
+/// left out of its `SHA256SUMS` is invisible here, which is the same hole the
+/// checksum files have and is why a test checks that every present file is
+/// listed as well as that every listed file matches.
+fn fixture_digest() -> ContentDigest {
+    let mut combined = Vec::new();
+    for sums in [
+        fixtures().join("assets/phase1-slice/SHA256SUMS"),
+        fixtures().join("assets/g-014/SHA256SUMS"),
+    ] {
+        combined.extend_from_slice(&std::fs::read(&sums).unwrap_or_else(|error| {
+            panic!(
+                "{} is a tracked fixture checksum file: {error}",
+                sums.display()
+            )
+        }));
     }
-}
 
-/// Returns the `--label` argument, when one was supplied.
-fn label(arguments: &[String]) -> Option<String> {
-    let mut iterator = arguments.iter();
-    while let Some(argument) = iterator.next() {
-        if argument == "--label" {
-            return iterator.next().cloned();
-        }
-        if let Some(value) = argument.strip_prefix("--label=") {
-            return Some(value.to_owned());
-        }
-    }
-    None
-}
-
-fn escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    ContentDigest::of(&combined)
 }
 
 fn scene_source() -> ReplaySource {
@@ -447,6 +457,62 @@ fn scene_source() -> ReplaySource {
     .expect("a valid source")
 }
 
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
+}
+
 fn package_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/assets/phase1-slice")
+    fixtures().join("assets/phase1-slice")
+}
+
+/// The `G-014` tiny package as a directory.
+///
+/// The loading workloads use it rather than the two-template slice package
+/// because it is the only package tracked in more than one form, which is what
+/// makes the three source kinds comparable: same bytes, same six templates,
+/// three containers. Its equivalence across the three is asserted by
+/// `mado-pilot-assets`, so a fixture that drifted would fail a test before it
+/// reached a benchmark.
+fn tiny_directory() -> PathBuf {
+    fixtures().join("assets/g-014/valid/tiny-directory")
+}
+
+fn tiny_archive() -> PathBuf {
+    fixtures().join("assets/g-014/valid/valid-tiny.zip")
+}
+
+/// Describes the tiny package's files in caller-owned memory.
+fn tiny_memory_package() -> MemoryPackage {
+    let root = tiny_directory();
+    let mut package = MemoryPackage::new();
+    for relative in tracked_files(&root, &root) {
+        let bytes = std::fs::read(root.join(&relative)).expect("a readable fixture");
+        package = package.with_entry(relative, bytes);
+    }
+
+    package
+}
+
+/// Lists every file under `directory`, as package-relative slash-separated
+/// names.
+fn tracked_files(root: &Path, directory: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(directory).expect("a readable fixture directory") {
+        let path = entry.expect("a readable directory entry").path();
+        if path.is_dir() {
+            found.extend(tracked_files(root, &path));
+            continue;
+        }
+        found.push(
+            path.strip_prefix(root)
+                .expect("a path below the root")
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/"),
+        );
+    }
+    found.sort();
+
+    found
 }

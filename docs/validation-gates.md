@@ -48,11 +48,11 @@ registry is itself a Phase 0 deliverable.
 | [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open |
 | [`G-007`](#g-007) | Native dependency bundling profiles | Before Phase 5 implementation | Release packaging | Open |
 | [`G-008`](#g-008) | Static-library feasibility | Before Phase 5 exit | Static artifact claim only | Open |
-| [`G-009`](#g-009) | Stable public Rust item names | Before Phase 1 exit | Rust stability promise | Open |
-| [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Open |
+| [`G-009`](#g-009) | Stable public Rust item names | Before Phase 1 exit | Rust stability promise | Resolved by [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) |
+| [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's eight resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md) |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -214,7 +214,8 @@ their evidence, or withdraws the static artifact claim.
 
 ## G-009
 
-**Unresolved decision.** The stable public Rust item names of the facade.
+**Decision.** The reviewed public Rust item names of the facade, and the
+compatibility policy that now applies to them.
 
 **Required evidence.** The Phase 1 vertical slice with working Rust examples, and
 an interface review of the names those examples exercise.
@@ -223,60 +224,43 @@ an interface review of the names those examples exercise.
 
 **Blocks.** Any Rust API stability promise.
 
-**Status.** Open. Phase 0 deliberately reserves package and artifact names only;
-see the naming baseline in [architecture.md](architecture.md).
+**Status.** Resolved by
+[ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md). The review
+took the thirteen questions and two interface gaps this gate had accumulated —
+raised by writing the Rust example, the C ABI, and the C++ wrapper against the
+provisional names — and settled every one.
+
+Six items were renamed: `EngineParts` to `EngineWiring`, `FrameChoice` to
+`SearchFrame`, `Engine::prepare` to `Engine::prepare_template`, the old
+`Engine::prepare_template` to `Engine::prepare_from_package`, `Session::frame` to
+`Session::acquire_frame`, and the three asset constants at the facade root to
+`ASSET_SCHEMA_VERSION`, `ASSET_MANIFEST_PATH`, and `ASSET_HASH_ALGORITHM`. Four
+things were added: `MatchResult::options`, `ContentDigest::of`,
+`ReplayEngineRequest` — which closes the asset-limits gap — and facade
+re-exports of `AssetLimits`, `BackendDescriptor`, and `BackendId`, three types
+public methods returned but no caller could name. One behaviour was aligned:
+`Session::find_template` now reports `Status::Closed` for every frame choice, so
+the Rust and C surfaces agree about what a closed session does.
+
+The rest were kept with the reason recorded, including the two the ADR expects to
+revisit: `StreamId` and `TargetId` stay opaque with no fixed-width projection,
+which becomes a real defect only when one engine is shared across the language
+boundary, and `REQUIRED_BACKEND` stays a `&str` policy constant until a second
+backend introduces a selection axis to name.
+
+The policy: these names are the `0.x` baseline and are reviewed rather than
+stable. Renaming or removing one is a breaking change needing a superseding ADR
+and a version bump; adding is free; changing what a name means while keeping it
+is refused outright. The promise begins at 1.0.
 
 **Resolution.** An ADR recording the reviewed names and the compatibility policy
 that then applies to them.
 
-**Phase 1 input.** The deterministic Rust workflow and its example now exist, so
-the required evidence is being accumulated rather than waited for. The questions
-below were raised by writing that example and its tests against the provisional
-names. They are recorded, not decided: renaming any of them before the whole
-surface is reviewed would spend the one compatibility break this gate exists to
-spend well.
-
-| # | Question | Why it was raised |
-|---|---|---|
-| 1 | `mado_pilot::replay_engine` is a free function, so the composition root has no type of its own | A builder type would be a discoverable home and an additive place for later options — asset limits, a second backend — at the cost of one more name to settle |
-| 2 | Runtime's `FindRequest` and `FindOutcome` sit beside vision's `MatchRequest` and `MatchResult` | A caller writes `FindRequest`, then reads `outcome.result()` and gets a `MatchResult`. Two request types and two result types, one word apart, in one import list |
-| 3 | `Engine::prepare` and `Engine::prepare_template` read as near-synonyms | They differ only in whether the template came from an asset package. The distinction is real; the names do not carry it |
-| 4 | `EngineParts` names the shape rather than the role | It is the wiring seam a composition root fills. "Parts" says none of that |
-| 5 | `FrameChoice::Latest` and capture's `FrameSelection::Latest` are two "latest" concepts on two types | One asks a session for a frame; the other tells a search which frame to use. A caller meets both in the same call site |
-| 6 | Two `SCHEMA_VERSION` constants exist, the asset manifest's at the crate root and the replay manifest's under `mado_pilot::replay` | The module qualifies one of them, and nothing qualifies the other. The root constant's meaning is not visible from its name |
-| 7 | `REQUIRED_BACKEND` is a `&str` policy value, not the backend-selection axis | Phase 1 has one production matching backend, so no selection type exists to name. A second backend has to introduce that axis and decide whether this constant survives it |
-| 8 | `Session::frame` is a noun and `Session::find_template` is a verb phrase | Both are operations that can block, and one of them does not look like it |
-| 9 | `FindOutcome` owns the frame it searched | It is what keeps "which frame is this about" answerable after close, and it pins that frame's pixels for the outcome's lifetime. `into_result` is the release path; whether owning is the right default is a review question |
-| 10 | `MatchResult` does not report the options the search ran under | Every other correlation a caller might want is on the result: the stamp, the searched region, the backend. The effective threshold and limit are not, so the C ABI stores them beside the result to answer `result_options` |
-| 11 | `StreamId` and `TargetId` have no fixed-width projection | Both are opaque with private ordinals, and `FrameStamp::new` exists for "a boundary that cannot carry the type". The C ABI has to mint its own per-session stream number, which correlates its own frames correctly and cannot be compared with anything a Rust caller sees |
-| 12 | `Session::find_template` against an exact frame succeeds after close | Nothing below the session has a reason to consult it: the frame is the caller's and the matcher is the engine's. Defensible in Rust, but the C contract says a closed session starts no work, so the C boundary adds the check |
-| 13 | `Engine::prepare_template` flattens the `AssetFault` that `AssetPackage::template` produced | The asset layer answers an undeclared identity with `AssetFaultKind::UnknownTemplate` and a stage. The facade returns a plain `Error`, so the kind and the stage are gone before any binding sees them, and `MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` is a C value nothing can produce |
-
-Questions 10 to 12 were raised by writing the C ABI over these names in stage 6,
-and question 13 by writing the C++ error type over it in stage 7. They are
-recorded here rather than under `G-010` because each is a property of the Rust
-surface underneath, and only question 12 has a C-side answer already.
-
-Two interface gaps are recorded here as well, because the example is what found
-them and neither is a naming question:
-
-- **A caller cannot build an in-memory asset package through the public surface
-  alone.** A manifest must declare a SHA-256 digest for every entry and the
-  loader verifies it, but nothing public computes one, so `PackageSource::memory`
-  requires the caller to add a hashing crate. A `ContentDigest::of(bytes)`
-  constructor would close it. The Phase 1 example sidesteps the gap by loading a
-  tracked package from a directory.
-- **A host cannot tighten the asset limits it loads under.** `AssetLimits` can be
-  configured at or below every ceiling and `Engine::limits` reports what is in
-  effect, but `replay_engine` always wires the defaults, so the one knob that
-  bounds what an untrusted package may allocate is unreachable from the facade.
-  An additive constructor closes it; which one depends on question 1 above.
-
 ## G-010
 
-**Unresolved decision.** The exact version-one C status codes, the mandatory
-function-table prefix, the structure layouts, and the mapping from Rust errors to
-C status values.
+**Decision.** The exact version-one C status codes, the mandatory function-table
+prefix, the structure layouts, and the mapping from Rust errors to C status
+values.
 
 **Required evidence.** The Phase 1 minimal C ABI exercised by C and C++ examples,
 with owned-handle lifecycle, structure-size negotiation, and error-ownership tests
@@ -287,81 +271,41 @@ passing.
 **Blocks.** The ABI compatibility baseline, and therefore every later
 old-header-prefix compatibility claim.
 
-**Status.** Open. This gate is deliberately separate from `G-011`.
+**Status.** Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md). The ABI is
+frozen at major 1, minor 0: thirteen status values with fixed numbers, a
+forty-byte mandatory table prefix ending at `status_text`, twenty-three
+structures whose sizes, alignments, and field offsets are the tracked reports in
+[evidence/c-abi/](evidence/c-abi/), and a Rust-to-C status mapping with one arm
+per `Status`.
+
+Every row of this gate's evidence table is now filled. The two that were
+outstanding: the mapping review happened and is recorded in the ADR — including
+why `MADOPILOT_STATUS_INTERNAL_PANIC` is the only C-only value and why a
+`Status` added to Rust later reports as `MADOPILOT_STATUS_INTERNAL` rather than
+as the nearest existing category — and the frozen old-prefix fixture exists at
+`crates/bindings/capi/tests/abi-compat/v1/`, where `c-abi-check` compiles a C
+program against the frozen header instead of the working one, links it to the
+library built now, negotiates at both the full table size and the mandatory
+prefix, and runs the complete flow.
+
+The six decisions this gate held were settled as: the C status vocabulary does
+not diverge further; the root handle stays `madopilot_engine_t` and the
+specification's wording follows the code rather than the other way round;
+`tmpl` stays and `template` stays the concept, at the cost of one awkward field
+and a permanent C++ member-naming constraint;
+`MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` is now reachable, because
+`template_prepare_from_package` resolves the identity before asking the backend
+for anything; the asset detail does not generalize and a second structured
+detail is appended rather than folded into it; and freezing the values makes a
+generated C++ mirror safe but not a hand-written one, so the wrapper keeps
+aliasing.
+
+Two function-table entries were renamed in the same change, before the freeze
+took effect: `session_frame` to `session_acquire_frame` and `template_prepare`
+to `template_prepare_from_package`. Their offsets did not move.
 
 **Resolution.** An ADR freezing the allocation and layout rules, followed by the
 ABI layout and old-header compatibility tests that enforce them.
-
-**Phase 1 input.** The Phase 1 C prefix now exists. `mado-pilot-capi` exports
-`madopilot_get_api`, builds as a `cdylib`, and carries a tracked hand-written
-header at `crates/bindings/capi/include/madopilot/madopilot.h`;
-[ADR 0004](adr/0004-c-header-authorship-and-abi-verification.md) records why the
-header is authored rather than generated and how it is verified, and
-[c-abi.md](c-abi.md) is the contract document. **None of the values or layouts it
-carries is stable, and the repository does not describe them as stable.**
-
-Required evidence, and where it stands:
-
-| Evidence | State |
-|---|---|
-| C example exercising the complete Phase 1 flow | Present, and run on both release targets |
-| C++ example | Present, and required to print the same match rectangles and scores as the C example |
-| C++ ownership behaviour | Present: `static_assert`s for the move-only shape, and run-time checks for clone independence, parent and child lifetime, borrowed-view stability, zero-match success, close reporting, and concurrent const access |
-| C++ surface exclusion | Present as a tracked-header inventory test that needs no C++ compiler |
-| CMake consumption | Present as a separate consumer project linking `MadoPilot::C` and `MadoPilot::Cpp` under CTest |
-| Owned-handle lifecycle tests | Present: retain/release balance, null no-ops, parent/child independence, concurrent const access, close races |
-| Structure-size negotiation tests | Present: truncated below the mandatory prefix, an older valid prefix defaulting the rest, and unknown trailing bytes ignored, for inputs and outputs |
-| Pointer and output-state validation tests | Present: null with a nonzero length, overflowing count and stride, an element stride below the mandatory prefix, unrecognized tags, non-UTF-8, and the failure state every output is left in |
-| Error-ownership tests | Present, including the asset kind and stage that a single status cannot carry |
-| Layout checks on both release targets | Present as a cross-language probe comparing `rustc` and the C compiler field by field; recorded per host under [evidence/](evidence/) |
-| Rust-error-to-C-status mapping review | Not done. The mapping exists and is tested; the review that freezes it has not happened |
-| Frozen old-prefix fixture | Not created. It is created by the change that resolves this gate, from the header as it stands then |
-
-Three decisions the resolving ADR has to settle explicitly, because stage 6 made
-a provisional choice rather than a considered one:
-
-1. **`MADOPILOT_STATUS_INTERNAL_PANIC` is the only C-only status.** Everything
-   else mirrors `mado_pilot::Status` one for one. Whether the C vocabulary should
-   diverge further — a distinct status for an unsupported ABI, for instance,
-   rather than reusing `MADOPILOT_STATUS_UNSUPPORTED` — is open.
-2. **The top-level handle is called `madopilot_engine_t`.** The specification
-   calls it a context. The Rust type is `Engine`, and `madopilot_operation_t` is
-   already the per-call context, so two things called "context" seemed worse than
-   one name that disagrees with the specification. Settle which word wins.
-3. **A structure field is `tmpl`, not `template`.** The C++ wrapper includes this
-   header and `template` is a keyword there. Either the field name stays awkward
-   or the concept is renamed in C; both are compatibility decisions.
-
-   Stage 7 measured what the keyword actually costs, which is more than the one
-   field. `template` cannot name a member *function* either, so the C++ request
-   builder needed `FindRequest::search_for` rather than the obvious name, and
-   any later accessor that would be exactly `template` is impossible in the same
-   way. What the keyword does **not** block is the type: `madopilot::Template`
-   compiles, because only the lowercase word is reserved. So the concept can keep
-   its name everywhere a type appears and can never keep it where a member does.
-   Renaming the concept in C — to `pattern`, say — would make one name work in
-   both languages; keeping `tmpl` leaves exactly one awkward field and one
-   C++-side workaround, both of which now have a caller demonstrating them.
-
-Stage 7 added three more the resolving ADR should settle:
-
-4. **`MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE` is declared but unreachable.**
-   `MADOPILOT_ERROR_HAS_ASSET_DETAIL` is set by package loading only. The one
-   operation that can meet an undeclared identity, `template_prepare`, reports
-   through the facade's flattened `Error` and so carries no fault pair — see
-   `G-009` question 13 for the Rust half. Either the value goes, or the detail
-   reaches the operation that needs it.
-5. **The asset detail is the only structured detail any error carries.** A C++
-   `Result` exposes it as an optional accessor, which works, but it is a
-   one-off: no other subsystem has an equivalent, so a caller learns a shape that
-   applies to one operation. Decide whether the pattern generalizes before it is
-   frozen, because a second one added later has to fit beside this one.
-6. **Nothing in the C vocabulary is machine-readable.** The C++ wrapper aliases
-   the C types rather than re-declaring them, precisely so that the two cannot
-   drift, and the cost is that a C++ caller writes `MADOPILOT_STATUS_OK` instead
-   of a scoped enumerator. Once the values are frozen, a generated or
-   hand-written `enum class` mirror becomes safe; until then it would be a second
-   thing to freeze. Record whether the freeze is expected to enable one.
 
 ## G-011
 
@@ -410,8 +354,46 @@ runs on.
 
 **Blocks.** That phase's exit.
 
-**Status.** Open per workload. Phase 0 defines the profile and budget format and
-deliberately assigns no numeric product budget.
+**Status.** Open per workload. Phase 0 defined the profile and budget format and
+deliberately assigned no numeric product budget.
+
+**Phase 1 is resolved** by
+[ADR 0008](adr/0008-phase-1-performance-budgets.md). Thirteen workloads across
+two benchmarks are measured on both release targets — Apple M1 Pro under macOS
+26.5.2 and Core i7-12700KF under Windows 11 Pro 26200 — two hundred samples each
+after twenty warm-up iterations, every sample checked against its oracle, and
+zero oracle failures anywhere. Four profiles are committed under
+[benchmarks/](benchmarks/): `phase-1-deterministic-slice-*` for the eight-operation
+Rust workflow and `phase-1-c-boundary-*` for what the C ABI costs. Each
+benchmark's two profiles share a fixture hash, so both targets measured the same
+bytes.
+
+Two hard gates apply to every workload on both targets — `result_correctness` is
+zero and `allocated_growth_bytes` is bounded at one page, and both targets
+measured zero growth everywhere. Live heap peaks below half a mebibyte across
+the whole slice. The numeric latency ceilings are regression ceilings rather
+than product requirements, set at three times the measured value, and the ADR
+says so rather than dressing them as a requirement nobody has stated.
+
+`map_full_frame` deliberately has **no** latency budget: it measures exactly zero
+on `x86_64-pc-windows-msvc`, because a matching-format mapping is a
+reference-count increment and the host clock is coarser than that. It is bounded
+by `mapped_bytes_per_result` and by a batched `iteration_span_ms` instead, on
+both targets, so the two profiles agree about what the workload may do.
+`negotiate_table` is bounded the same way, for the same reason.
+
+Task 9.2's "any material C ABI startup overhead" is answered rather than
+assumed. The boundary costs a fixed amount per table entry: negotiation does not
+register on either host's clock, engine creation costs a sub-microsecond
+constant more than the facade, and a warm match costs 0.1% more on
+`aarch64-apple-darwin` and 3.4% more on `x86_64-pc-windows-msvc` across four
+crossings. It is not material at this size of work, and the ADR records why that
+conclusion does not automatically transfer to a later phase's per-frame entry
+point.
+
+Everything after Phase 1 stays open. Capture, OCR, watcher scheduling, and
+acceleration each introduce workloads that need their own measurements and their
+own record.
 
 **Resolution.** Committed benchmark profiles and budgets plus an ADR for each
 budget that is set or relaxed, recording the evidence behind the number.
