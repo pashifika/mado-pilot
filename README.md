@@ -8,19 +8,19 @@ conditions, inject input through explicit platform capabilities, and report
 structured diagnostics — without owning a GUI, tray, overlay, editor, updater,
 scheduler, or scripting language of its own.
 
-## Status: contracts and two subsystems, no end-to-end workflow
+## Status: one deterministic Rust workflow, no native capture
 
-**MadoPilot is not usable yet.** On top of the repository baseline — the Cargo
-workspace, package boundaries and their enforcement, the toolchain pin, quality
-and dependency policy, the architecture baseline, and continuous integration for
-both release targets — it contains the platform-neutral vocabulary the rest of
-the system is built from, the capture contracts with a deterministic replay
-adapter behind them, and validated asset package loading.
+**MadoPilot is not usable for real automation yet.** What works end to end is a
+deterministic workflow over *replayed* frames: configure a replay source and
+require the OpenCV CPU backend, discover and open a target, take a frame, map
+it, load an asset package, prepare a template, find it in that exact frame, and
+close. That runs on both release targets and is what
+`crates/mado-pilot/examples/deterministic-slice.rs` does.
 
-That is a foundation, not a feature. Nothing captures a real window, matches,
-recognizes, waits, or injects input. The public Rust facade and the C ABI package
-exist as seams and expose no operation, no exported symbol, and no generated
-header. Adding a package here is not a claim that its behavior exists.
+Nothing captures a real window, recognizes text, waits on a condition, or
+injects input. The C ABI package still exposes no operation, no exported symbol,
+and no generated header. Adding a package here is not a claim that its behavior
+exists.
 
 | Area | Status |
 |---|---|
@@ -31,10 +31,15 @@ header. Adding a package here is not a claim that its behavior exists.
 | Capture contracts, immutable frames, CPU mapping, deterministic replay | Implemented |
 | Asset manifests, directory/memory/archive loading, archive safety ceilings | Implemented |
 | Template-matching contracts, ordering, suppression, source correlation | Implemented |
+| Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
+| Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
 | Native capture, OCR, watchers, input | Not implemented |
-| Template matching against a real image | Not implemented; no backend yet |
-| Public Rust operations, C ABI, C header, C++ wrapper | Not implemented |
+| C ABI, C header, C++ wrapper | Not implemented |
 | Numeric performance budgets, release packaging | Not established |
+
+Every public Rust name is provisional until
+[`G-009`](docs/validation-gates.md#g-009) is resolved, and the project makes no
+Rust stability promise before then.
 
 [docs/architecture.md](docs/architecture.md) is the tracked baseline and records
 the full status table, the package inventory, and the dependency rules.
@@ -101,6 +106,13 @@ cargo build --locked --workspace
 cargo test --locked --workspace --all-targets
 ```
 
+The deterministic workflow is runnable, and running it is the shortest check
+that this host's OpenCV, the replay adapter, and the asset loader all agree:
+
+```sh
+cargo run --locked --package mado-pilot --example deterministic-slice
+```
+
 The full verification sequence — architecture check, formatting, lints,
 tests, documentation, and dependency policy — is in
 [CONTRIBUTING.md](CONTRIBUTING.md#verification). The architecture check is the one
@@ -120,7 +132,7 @@ directions.
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Workspace, package responsibilities, dependency allowlist, naming, scope, status |
 | [docs/validation-gates.md](docs/validation-gates.md) | The `G-001`–`G-014` registry of unresolved version-one decisions |
-| [docs/performance.md](docs/performance.md) | Benchmark profile and budget format, with a synthetic example |
+| [docs/performance.md](docs/performance.md) | Benchmark profile and budget format, the Phase 1 workloads, and their correctness oracles |
 | [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |
 | [docs/adr/](docs/adr/) | Architecture decision records, and [the template](docs/adr/0000-template.md) with the rule for when one is required |
 | [docs/evidence/](docs/evidence/) | The measurements behind decisions that rest on them |

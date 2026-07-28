@@ -96,6 +96,21 @@ pub fn absent_rgb() -> Vec<u8> {
     rgb
 }
 
+/// Returns the scene as packed row-major pixels in `format`.
+///
+/// A capture adapter is fed raw pixels rather than a frame, so a replay source
+/// built from this scene and a frame built from it are the same image by
+/// construction instead of by two generators agreeing.
+///
+/// # Panics
+///
+/// Panics for a format that is not four bytes per pixel, which no supported
+/// format is.
+#[must_use]
+pub fn scene_pixels(format: PixelFormat) -> Vec<u8> {
+    to_four_channel(&scene_rgb(), format)
+}
+
 /// Builds the scene as an immutable frame in `format`.
 ///
 /// # Panics
@@ -104,7 +119,7 @@ pub fn absent_rgb() -> Vec<u8> {
 /// format is.
 #[must_use]
 pub fn scene_frame(format: PixelFormat) -> Frame {
-    crate::vision_contract::frame_with_pixels(SCENE, format, to_four_channel(&scene_rgb(), format))
+    crate::vision_contract::frame_with_pixels(SCENE, format, scene_pixels(format))
 }
 
 /// Builds a template source for the patch the scene contains.

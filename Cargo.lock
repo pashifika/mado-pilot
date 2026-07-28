@@ -220,6 +220,12 @@ dependencies = [
 [[package]]
 name = "mado-pilot"
 version = "0.1.0"
+dependencies = [
+ "mado-pilot-adapter-replay",
+ "mado-pilot-backend-opencv",
+ "mado-pilot-runtime",
+ "mado-pilot-testkit",
+]
 
 [[package]]
 name = "mado-pilot-adapter-replay"
@@ -302,6 +308,13 @@ version = "0.1.0"
 [[package]]
 name = "mado-pilot-runtime"
 version = "0.1.0"
+dependencies = [
+ "mado-pilot-assets",
+ "mado-pilot-capture",
+ "mado-pilot-core",
+ "mado-pilot-testkit",
+ "mado-pilot-vision",
+]
 
 [[package]]
 name = "mado-pilot-testkit"
