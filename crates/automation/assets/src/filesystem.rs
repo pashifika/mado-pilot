@@ -653,6 +653,20 @@ mod platform {
         Unreadable,
     }
 
+    /// Opens one node by path, exactly as the caller spelled it.
+    ///
+    /// The path is passed through unchanged, so the Win32 limit of 260 applies
+    /// and a source whose deepest path exceeds it reports `Unreadable`. Rust's
+    /// `std` rewrites such a path into `\\?\` form; this does not, and the
+    /// difference is deliberate rather than overlooked. Verbatim paths are not
+    /// normalized by Win32 — `.` and `..` are passed to the filesystem instead
+    /// of being resolved — and the containment rules this module enforces are
+    /// written against the normalized form. Changing that is a change to link
+    /// containment on Windows and belongs with the review that establishes it,
+    /// not with a caller that wanted a longer path.
+    ///
+    /// What it costs is bounded: a package path is `templates/panel.png`, and a
+    /// source that cannot be opened is a typed fault rather than a wrong answer.
     pub(super) fn open_once(path: &Path) -> Result<OpenedNode, OpenError> {
         let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
         if wide.contains(&0) {

@@ -355,6 +355,17 @@ mod tests {
         assert_eq!(fault.kind(), AssetFaultKind::MissingEntry);
     }
 
+    /// The longest path a Windows call accepts without the verbatim prefix.
+    ///
+    /// `filesystem`'s Windows `open_once` hands `CreateFileW` the path as it was
+    /// built, so the walk stops here whatever the depth ceiling says. Rust's own
+    /// `create_dir_all` does not stop: it rewrites a long path into `\\?\` form,
+    /// so a tree this test can create is not necessarily one the adapter can
+    /// walk. That gap is what made the first version of this test assert the
+    /// ceiling and measure the path limit.
+    #[cfg(windows)]
+    const WINDOWS_PATH_LIMIT: usize = 259;
+
     /// A tree deeper than the ceiling is refused, and refused as a typed fault.
     ///
     /// This asserts the ceiling holds, not that it averts an abort: with the
@@ -365,13 +376,36 @@ mod tests {
     #[test]
     fn a_directory_nested_past_the_depth_ceiling_is_refused() {
         let root = std::env::temp_dir().join(format!(
-            "mado-pilot-assets-deep-{}-{}",
+            "mp-deep-{}-{}",
             std::process::id(),
             DEPTH_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
         let mut path = root.clone();
-        for level in 0..=super::MAX_DIRECTORY_DEPTH + 1 {
-            path.push(format!("l{level}"));
+        // One character per level, and a short root. The tree has to be deeper
+        // than the ceiling and still openable, and on Windows sixty-six levels
+        // named `l0`..`l65` under a temporary directory is already past what
+        // `CreateFileW` accepts — the walk then reports an unreadable source
+        // from a level well above the ceiling.
+        for _ in 0..=super::MAX_DIRECTORY_DEPTH + 1 {
+            path.push("d");
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+
+            // Counted as UTF-16, which is what the API is given, rather than as
+            // bytes: a host whose temporary directory is not ASCII would fail
+            // this on its encoding rather than on its length.
+            let length = path.as_os_str().encode_wide().count();
+            assert!(
+                length <= WINDOWS_PATH_LIMIT,
+                "this host's temporary directory leaves no room for a tree past \
+                 the depth ceiling: the deepest path is {length} UTF-16 units and \
+                 a Windows call without the verbatim prefix stops at \
+                 {WINDOWS_PATH_LIMIT}. The walk would report an unreadable source \
+                 before reaching the ceiling, and this test would pass or fail on \
+                 something it is not about."
+            );
         }
         fs::create_dir_all(&path).expect("a writable temporary tree");
 
