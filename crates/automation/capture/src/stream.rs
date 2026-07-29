@@ -5,6 +5,7 @@
 //! revisions, latest-frame semantics, and close behavior cannot differ between
 //! a replay source and a native one.
 
+use std::fmt;
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -56,6 +57,70 @@ pub struct Publication {
     pub pixels: Box<[u8]>,
     /// How this frame relates to the previous one.
     pub continuity: Continuity,
+}
+
+/// A stream refusal that returns the Adapter's complete owned publication.
+///
+/// [`StreamState::publish_recoverable`] returns this value when publication
+/// fails before any authoritative stream state is committed. The Adapter may
+/// inspect the public error, retry or restore the unchanged publication, or
+/// consume both with [`RefusedPublication::into_parts`].
+pub struct RefusedPublication {
+    error: Error,
+    publication: Publication,
+}
+
+impl RefusedPublication {
+    fn new(error: Error, publication: Publication) -> Self {
+        Self { error, publication }
+    }
+
+    /// Returns the public error that refused publication.
+    #[must_use]
+    pub const fn error(&self) -> &Error {
+        &self.error
+    }
+
+    /// Returns the unchanged owned publication.
+    #[must_use]
+    pub const fn publication(&self) -> &Publication {
+        &self.publication
+    }
+
+    /// Consumes the refusal and returns only its public error.
+    #[must_use]
+    pub fn into_error(self) -> Error {
+        self.error
+    }
+
+    /// Consumes the refusal and returns only the unchanged publication.
+    #[must_use]
+    pub fn into_publication(self) -> Publication {
+        self.publication
+    }
+
+    /// Consumes the refusal and returns its public error and unchanged
+    /// publication.
+    #[must_use]
+    pub fn into_parts(self) -> (Error, Publication) {
+        (self.error, self.publication)
+    }
+}
+
+impl fmt::Debug for RefusedPublication {
+    /// Formats the refusal and safe publication metadata, never pixel content.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RefusedPublication")
+            .field("status", &self.error.status())
+            .field("detail", &self.error.detail())
+            .field("captured_at", &self.publication.captured_at)
+            .field("descriptor", &self.publication.descriptor)
+            .field("placement", &self.publication.placement)
+            .field("continuity", &self.publication.continuity)
+            .field("bytes", &self.publication.pixels.len())
+            .finish()
+    }
 }
 
 /// Which frame a caller wants.
@@ -198,9 +263,37 @@ impl StreamState {
     /// scale to the published extent, and an identity fault when an epoch or
     /// sequence counter is exhausted.
     pub fn publish(&self, publication: Publication) -> Result<Frame> {
+        self.publish_recoverable(publication)
+            .map_err(RefusedPublication::into_error)
+    }
+
+    /// Publishes one frame, returning the owned publication on refusal.
+    ///
+    /// This has the same success, identity, validation, and state-commit rules
+    /// as [`StreamState::publish`]. Unlike that convenience operation, a
+    /// refusal returns both the public error and the complete unchanged
+    /// [`Publication`], allowing an Adapter to restore expensive owned storage
+    /// without copying it before publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefusedPublication`] for every ordinary publication error.
+    /// No lifecycle-adjacent state, cursor, epoch, sequence, geometry revision,
+    /// or current frame is committed when this operation refuses a publication.
+    ///
+    /// The error is intentionally returned inline: boxing it would add an
+    /// allocation exactly when an Adapter needs ownership recovery.
+    #[allow(clippy::result_large_err)]
+    pub fn publish_recoverable(
+        &self,
+        publication: Publication,
+    ) -> std::result::Result<Frame, RefusedPublication> {
         let mut inner = self.lock();
         if inner.lifecycle != Lifecycle::Open {
-            return Err(CaptureFault::SessionClosed.into());
+            return Err(RefusedPublication::new(
+                CaptureFault::SessionClosed.into(),
+                publication,
+            ));
         }
 
         let current = inner.latest.as_ref();
@@ -226,32 +319,46 @@ impl StreamState {
             publication.continuity
         };
 
-        let mut geometry = inner.geometry;
-        let mut cursor = inner.cursor.clone();
-        if continuity != Continuity::Continuous {
-            geometry = geometry
-                .next()
-                .ok_or_else(|| Error::new(Status::LimitExceeded, "geometry revisions exhausted"))?;
-        }
-        if continuity == Continuity::Discontinuous && inner.latest.is_some() {
-            cursor.begin_epoch()?;
-        }
+        let prepared: Result<_> = (|| {
+            let mut geometry = inner.geometry;
+            let mut cursor = inner.cursor.clone();
+            if continuity != Continuity::Continuous {
+                geometry = geometry.next().ok_or_else(|| {
+                    Error::new(Status::LimitExceeded, "geometry revisions exhausted")
+                })?;
+            }
+            if continuity == Continuity::Discontinuous && inner.latest.is_some() {
+                cursor.begin_epoch()?;
+            }
 
-        let extent = publication.descriptor.extent();
-        let stamp = cursor.publish(geometry)?;
-        let transform = match (publication.placement, self.covers_target) {
-            (Some(placement), _) => TransformSnapshot::with_target(geometry, extent, placement)
-                .map_err(|_| CaptureFault::InconsistentDescriptor)?,
-            (None, true) => TransformSnapshot::with_target_extent(geometry, extent),
-            (None, false) => TransformSnapshot::frame_only(geometry, extent),
+            let extent = publication.descriptor.extent();
+            let stamp = cursor.publish(geometry)?;
+            let transform = match (publication.placement, self.covers_target) {
+                (Some(placement), _) => TransformSnapshot::with_target(geometry, extent, placement)
+                    .map_err(|_| CaptureFault::InconsistentDescriptor)?,
+                (None, true) => TransformSnapshot::with_target_extent(geometry, extent),
+                (None, false) => TransformSnapshot::frame_only(geometry, extent),
+            };
+            Frame::validate(
+                stamp,
+                publication.descriptor,
+                &transform,
+                publication.pixels.len(),
+            )?;
+            Ok((cursor, geometry, stamp, transform))
+        })();
+        let (cursor, geometry, stamp, transform) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => return Err(RefusedPublication::new(error, publication)),
         };
-        let frame = Frame::new(
-            stamp,
-            publication.captured_at,
-            publication.descriptor,
-            transform,
-            publication.pixels,
-        )?;
+
+        let Publication {
+            captured_at,
+            descriptor,
+            pixels,
+            ..
+        } = publication;
+        let frame = Frame::from_validated(stamp, captured_at, descriptor, transform, pixels);
 
         inner.cursor = cursor;
         inner.geometry = geometry;
@@ -539,6 +646,188 @@ mod tests {
         assert_eq!(next.stamp().epoch(), first.stamp().epoch());
         assert_eq!(next.stamp().sequence().value(), 1);
         assert_eq!(next.stamp().geometry(), first.stamp().geometry());
+    }
+
+    #[test]
+    fn a_closed_stream_returns_the_complete_publication() {
+        let state = state();
+        let current = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let request = publication(4, 4, 173, Continuity::GeometryChanged);
+        let pixels = request.pixels.as_ptr();
+        let captured_at = request.captured_at;
+        let descriptor = request.descriptor;
+        let placement = request.placement;
+        let continuity = request.continuity;
+        state.begin_close();
+
+        let refused = state
+            .publish_recoverable(request)
+            .expect_err("closing returns publication ownership");
+
+        assert_eq!(refused.error().status(), Status::Closed);
+        assert_eq!(refused.publication().pixels.as_ptr(), pixels);
+        assert_eq!(refused.publication().captured_at, captured_at);
+        assert_eq!(refused.publication().descriptor, descriptor);
+        assert_eq!(refused.publication().placement, placement);
+        assert_eq!(refused.publication().continuity, continuity);
+        assert_eq!(
+            state.current().expect("current frame remains").stamp(),
+            current.stamp()
+        );
+        assert_eq!(state.lifecycle(), Lifecycle::Closing);
+    }
+
+    #[test]
+    fn malformed_pixels_are_returned_without_advancing_stream_state() {
+        let state = state();
+        let first = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let descriptor =
+            FrameDescriptor::packed(PixelExtent::new(8, 8), PixelFormat::Rgba8).expect("valid");
+        let request = Publication {
+            captured_at: MonotonicInstant::ORIGIN,
+            descriptor,
+            placement: None,
+            pixels: vec![181; descriptor.byte_len() - 1].into_boxed_slice(),
+            continuity: Continuity::Discontinuous,
+        };
+        let pixels = request.pixels.as_ptr();
+
+        let refused = state
+            .publish_recoverable(request)
+            .expect_err("malformed pixels are returned");
+
+        assert_eq!(refused.error().status(), Status::InvalidArgument);
+        assert_eq!(refused.publication().pixels.as_ptr(), pixels);
+        assert_eq!(
+            refused.publication().pixels.len(),
+            descriptor.byte_len() - 1
+        );
+        assert_eq!(
+            state.current().expect("current frame remains").stamp(),
+            first.stamp()
+        );
+
+        let next = state
+            .publish(publication(4, 4, 3, Continuity::Continuous))
+            .expect("the next valid frame publishes");
+        assert_eq!(next.stamp().epoch(), first.stamp().epoch());
+        assert_eq!(next.stamp().sequence().value(), 1);
+        assert_eq!(next.stamp().geometry(), first.stamp().geometry());
+    }
+
+    #[test]
+    fn inconsistent_geometry_is_returned_without_advancing_stream_state() {
+        let state = state();
+        let first = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let mut request = publication(4, 4, 191, Continuity::GeometryChanged);
+        request.placement = Some(placement((0.0, 0.0), (2.0, 4.0)));
+        let pixels = request.pixels.as_ptr();
+
+        let refused = state
+            .publish_recoverable(request)
+            .expect_err("inconsistent geometry is returned");
+
+        assert_eq!(refused.error().status(), Status::InvalidArgument);
+        assert_eq!(refused.publication().pixels.as_ptr(), pixels);
+        assert_eq!(
+            state.current().expect("current frame remains").stamp(),
+            first.stamp()
+        );
+
+        let next = state
+            .publish(publication(4, 4, 3, Continuity::Continuous))
+            .expect("the next valid frame publishes");
+        assert_eq!(next.stamp().sequence().value(), 1);
+        assert_eq!(next.stamp().geometry(), first.stamp().geometry());
+    }
+
+    #[test]
+    fn legacy_publication_keeps_success_and_failure_behavior() {
+        let issuer = IdentityIssuer::new();
+        let stream = issuer.issue_stream().expect("issued");
+        let legacy = StreamState::new(stream);
+        let recoverable = StreamState::new(stream);
+
+        let legacy_frame = legacy
+            .publish(publication(4, 4, 7, Continuity::Continuous))
+            .expect("legacy publication succeeds");
+        let recoverable_frame = recoverable
+            .publish_recoverable(publication(4, 4, 7, Continuity::Continuous))
+            .expect("recoverable publication succeeds");
+
+        assert_eq!(legacy_frame.stamp(), recoverable_frame.stamp());
+        assert_eq!(legacy_frame.descriptor(), recoverable_frame.descriptor());
+        assert_eq!(legacy_frame.transform(), recoverable_frame.transform());
+
+        let descriptor =
+            FrameDescriptor::packed(PixelExtent::new(8, 8), PixelFormat::Rgba8).expect("valid");
+        let malformed = || Publication {
+            captured_at: MonotonicInstant::ORIGIN,
+            descriptor,
+            placement: None,
+            pixels: vec![199; descriptor.byte_len() - 1].into_boxed_slice(),
+            continuity: Continuity::Discontinuous,
+        };
+        let legacy_error = legacy
+            .publish(malformed())
+            .expect_err("legacy publication refuses malformed pixels");
+        let recoverable_error = recoverable
+            .publish_recoverable(malformed())
+            .expect_err("recoverable publication refuses malformed pixels")
+            .into_error();
+
+        assert_eq!(legacy_error, recoverable_error);
+        assert_eq!(
+            legacy.current().expect("legacy current frame").stamp(),
+            legacy_frame.stamp()
+        );
+        assert_eq!(
+            recoverable
+                .current()
+                .expect("recoverable current frame")
+                .stamp(),
+            recoverable_frame.stamp()
+        );
+    }
+
+    #[test]
+    fn refused_publication_debug_output_never_contains_pixel_content() {
+        let state = state();
+        let descriptor =
+            FrameDescriptor::packed(PixelExtent::new(2, 2), PixelFormat::Rgba8).expect("valid");
+        let request = Publication {
+            captured_at: MonotonicInstant::ORIGIN,
+            descriptor,
+            placement: None,
+            pixels: vec![
+                17, 23, 91, 201, 17, 23, 91, 201, 17, 23, 91, 201, 17, 23, 91,
+            ]
+            .into_boxed_slice(),
+            continuity: Continuity::Continuous,
+        };
+
+        let refused = state
+            .publish_recoverable(request)
+            .expect_err("short pixels are refused");
+        let text = format!("{refused:?}");
+
+        assert!(text.contains("RefusedPublication"), "{text}");
+        assert!(text.contains("InvalidArgument"), "{text}");
+        assert!(text.contains("descriptor"), "{text}");
+        assert!(text.contains("bytes: 15"), "{text}");
+        assert!(
+            !text.contains("[17, 23, 91, 201"),
+            "captured pixels leaked into diagnostics: {text}"
+        );
+        let (error, publication) = refused.into_parts();
+        assert_eq!(error.status(), Status::InvalidArgument);
+        assert_eq!(publication.pixels.len(), 15);
     }
 
     #[test]

@@ -10,8 +10,9 @@
 //!
 //! Publication order between concurrent advances is bought by a reservation
 //! rather than by nesting those locks. Exactly one advance at a time owns the
-//! head of the sequence, so frames reach the stream in source order even though
-//! the sequence mutex is released before every publication.
+//! removed head of the sequence. It restores that exact frame on interruption
+//! or stream refusal, so frames reach the stream in source order even though the
+//! sequence mutex is released before every publication.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -21,8 +22,7 @@ use std::time::Duration;
 
 use mado_pilot_capture::{
     CaptureFault, CaptureProvider, CaptureSession, CoordinateSupport, Frame, FrameRequest,
-    FrameSelection, Lifecycle, OpenRequest, Publication, SessionDescription, StreamState,
-    TargetDescription,
+    FrameSelection, Lifecycle, OpenRequest, SessionDescription, StreamState, TargetDescription,
 };
 use mado_pilot_core::{
     FrameOrder, GeometryRevision, IdentityIssuer, Operation, OperationContext, ProviderId, Result,
@@ -203,11 +203,9 @@ struct Remainder {
     frames: VecDeque<ReplayFrame>,
     /// Set while one advance owns the head frame and has not finished with it.
     ///
-    /// This is what keeps concurrent advances in source order. The head is not
-    /// removed when it is claimed, so a request that never publishes leaves the
-    /// sequence exactly as it found it; the flag is what stops a second request
-    /// from claiming the same frame, or from claiming the one behind it and
-    /// publishing out of order.
+    /// This is what keeps concurrent advances in source order. The head moves
+    /// into its reservation while claimed; the flag stops a second request from
+    /// claiming the frame behind it and publishing out of order.
     reserved: bool,
 }
 
@@ -223,16 +221,14 @@ impl Remainder {
 /// One advance's exclusive claim on the next frame of a sequence.
 ///
 /// A claim is reversible until it publishes. Dropping it without a successful
-/// publication leaves the sequence untouched and lets the next advance proceed,
-/// which is what allows the operation's final arbitration to happen after the
-/// frame is owned and before anything about it is observable.
+/// publication returns the exact frame to the source head and lets the next
+/// advance proceed, which is what allows the operation's final arbitration to
+/// happen after the frame is owned and before anything about it is observable.
 #[derive(Debug)]
 struct Reservation<'session> {
     session: &'session ReplaySession,
-    /// The claimed frame, taken when the publication is attempted.
+    /// The claimed frame, moved out of the source queue.
     frame: Option<ReplayFrame>,
-    /// Set once the stream has accepted the frame.
-    published: bool,
 }
 
 impl Reservation<'_> {
@@ -240,41 +236,40 @@ impl Reservation<'_> {
     ///
     /// # Errors
     ///
-    /// Returns whatever the stream refused the publication with. The claim is
-    /// released without consuming the frame in that case, so a refused request
-    /// leaves the sequence available to the next one.
+    /// Returns whatever the stream refused the publication with. The exact
+    /// publication allocation is converted back into the claimed replay frame
+    /// in that case, so dropping the reservation restores the source head.
     fn publish(mut self) -> Result<Frame> {
         let frame = self
             .frame
             .take()
             .expect("a reservation holds its frame until it publishes");
-        let publication = Publication {
-            captured_at: frame.captured_at(),
-            descriptor: frame.descriptor(),
-            placement: frame.placement(),
-            continuity: frame.continuity(),
-            pixels: frame.into_pixels(),
-        };
-        let published = self.session.state.publish(publication)?;
-        self.published = true;
-        Ok(published)
+        match self
+            .session
+            .state
+            .publish_recoverable(frame.into_publication())
+        {
+            Ok(published) => Ok(published),
+            Err(refused) => {
+                let (error, publication) = refused.into_parts();
+                self.frame = Some(ReplayFrame::from_publication(publication));
+                Err(error)
+            }
+        }
     }
 }
 
 impl Drop for Reservation<'_> {
-    /// Releases the claim, consuming the frame only if it was published.
+    /// Releases the claim, restoring the frame unless publication consumed it.
     ///
     /// This runs inside the uninterruptible window after an advance commits, so
     /// its blocking `lock_remainder` is worth naming: the only other holders of
-    /// that mutex are another `Drop` doing this same `pop_front` and a
-    /// [`ReplaySession::try_reserve`] that already declined to block. The
-    /// longest thing it can wait behind is that `try_reserve`'s deep copy of
-    /// the head frame's pixels.
+    /// that mutex are another `Drop` doing this same constant-time restoration
+    /// and a [`ReplaySession::try_reserve`] that already declined to block.
     fn drop(&mut self) {
         let mut remainder = self.session.lock_remainder();
-        // The sequence advances because a frame was published, and only then.
-        if self.published {
-            remainder.frames.pop_front();
+        if let Some(frame) = self.frame.take() {
+            remainder.frames.push_front(frame);
         }
         remainder.reserved = false;
     }
@@ -342,22 +337,14 @@ impl ReplaySession {
         if remainder.reserved {
             return Ok(None);
         }
-        // Cloning a `ReplayFrame` deep-copies its pixels, so for a large frame
-        // this is a whole-buffer copy holding the sequence mutex. It is the
-        // longest critical section this mutex has, and the one a committed
-        // advance's claim release can wait behind. Replay sources are fixtures
-        // rather than live capture, so the copy is affordable here; a provider
-        // serving large frames at rate would hand out shared pixels instead.
         let frame = remainder
             .frames
-            .front()
-            .cloned()
+            .pop_front()
             .ok_or(CaptureFault::StreamEnded)?;
         remainder.reserved = true;
         Ok(Some(Reservation {
             session: self,
             frame: Some(frame),
-            published: false,
         }))
     }
 
@@ -527,8 +514,8 @@ mod tests {
         session: Weak<ReplaySession>,
         claimed: Arc<Handshake>,
         contended: Arc<Handshake>,
-        /// How many frames the sequence must still hold at that moment.
-        unconsumed: usize,
+        /// How many frames remain queued behind the reserved head.
+        queued: usize,
         interrupted_a_claim: AtomicBool,
     }
 
@@ -537,14 +524,14 @@ mod tests {
             session: &Arc<ReplaySession>,
             claimed: Arc<Handshake>,
             contended: Arc<Handshake>,
-            unconsumed: usize,
+            queued: usize,
         ) -> Self {
             Self {
                 reads: AtomicUsize::new(0),
                 session: Arc::downgrade(session),
                 claimed,
                 contended,
-                unconsumed,
+                queued,
                 interrupted_a_claim: AtomicBool::new(false),
             }
         }
@@ -566,7 +553,7 @@ mod tests {
             if let Some(session) = self.session.upgrade() {
                 let remainder = session.lock_remainder();
                 self.interrupted_a_claim.store(
-                    contended && remainder.reserved && remainder.frames.len() == self.unconsumed,
+                    contended && remainder.reserved && remainder.frames.len() == self.queued,
                     Ordering::Relaxed,
                 );
             }
@@ -589,17 +576,17 @@ mod tests {
     struct CloseAtCommit {
         reads: AtomicUsize,
         session: Weak<ReplaySession>,
-        /// How many frames the sequence must still hold at that moment.
-        unconsumed: usize,
+        /// How many frames remain queued behind the reserved head.
+        queued: usize,
         refused_a_claim: AtomicBool,
     }
 
     impl CloseAtCommit {
-        fn new(session: &Arc<ReplaySession>, unconsumed: usize) -> Self {
+        fn new(session: &Arc<ReplaySession>, queued: usize) -> Self {
             Self {
                 reads: AtomicUsize::new(0),
                 session: Arc::downgrade(session),
-                unconsumed,
+                queued,
                 refused_a_claim: AtomicBool::new(false),
             }
         }
@@ -618,7 +605,7 @@ mod tests {
                 {
                     let remainder = session.lock_remainder();
                     self.refused_a_claim.store(
-                        remainder.reserved && remainder.frames.len() == self.unconsumed,
+                        remainder.reserved && remainder.frames.len() == self.queued,
                         Ordering::Relaxed,
                     );
                 }
@@ -842,6 +829,46 @@ mod tests {
     }
 
     #[test]
+    fn a_successful_advance_transfers_the_replay_pixel_allocation() {
+        let session = session();
+        let first = session.state.current().expect("first frame");
+        let (source_pixels, descriptor, captured_at, placement, continuity) = {
+            let remainder = session.lock_remainder();
+            let next = remainder.frames.front().expect("next frame");
+            (
+                next.pixels().as_ptr() as usize,
+                next.descriptor(),
+                next.captured_at(),
+                next.placement(),
+                next.continuity(),
+            )
+        };
+
+        let published = session
+            .frame(
+                &FrameRequest::newer_than(first.stamp()),
+                &OperationContext::new(),
+            )
+            .expect("next frame publishes");
+        let mapping = published
+            .map(PixelFormat::Rgba8, &OperationContext::new())
+            .expect("matching format maps");
+
+        assert!(
+            mapping.is_shared(),
+            "the full matching mapping shares storage"
+        );
+        assert_eq!(mapping.bytes().as_ptr() as usize, source_pixels);
+        assert_eq!(published.descriptor(), descriptor);
+        assert_eq!(published.captured_at(), captured_at);
+        assert_eq!(published.transform().target(), placement);
+        assert_eq!(continuity, Continuity::Continuous);
+        let remainder = session.lock_remainder();
+        assert_eq!(remainder.frames.len(), 1);
+        assert!(!remainder.reserved);
+    }
+
+    #[test]
     fn a_deadline_while_waiting_for_the_replay_queue_consumes_nothing() {
         let session = session();
         let first = session.state.current().expect("first frame");
@@ -879,15 +906,26 @@ mod tests {
         let session = session();
         let first = session.state.current().expect("first frame");
         let first_stamp = first.stamp();
+        let (claimed_pixels, descriptor, captured_at, placement, continuity) = {
+            let remainder = session.lock_remainder();
+            let next = remainder.frames.front().expect("next frame");
+            (
+                next.pixels().as_ptr() as usize,
+                next.descriptor(),
+                next.captured_at(),
+                next.placement(),
+                next.continuity(),
+            )
+        };
         let claimed = Arc::new(Handshake::default());
         let contended = Arc::new(Handshake::default());
-        // Two frames are left after the session published its first, and both
-        // must still be there while the claim on the head is arbitrated.
+        // Two frames are left after the session published its first. The claim
+        // owns the head while the second frame remains in the queue.
         let clock = Arc::new(InterruptAtCommit::new(
             &session,
             Arc::clone(&claimed),
             Arc::clone(&contended),
-            2,
+            1,
         ));
         let expires = MonotonicInstant::ORIGIN
             .checked_add(Duration::from_millis(1))
@@ -950,15 +988,22 @@ mod tests {
             1,
             "the interrupted request advanced no identity"
         );
+        let mapping = published
+            .map(PixelFormat::Rgba8, &OperationContext::new())
+            .expect("frame maps");
         assert!(
-            published
-                .map(PixelFormat::Rgba8, &OperationContext::new())
-                .expect("frame maps")
-                .bytes()
-                .iter()
-                .all(|byte| *byte == 1),
+            mapping.bytes().iter().all(|byte| *byte == 1),
             "the frame the interrupted request claimed was left for the next one"
         );
+        assert_eq!(
+            mapping.bytes().as_ptr() as usize,
+            claimed_pixels,
+            "rollback returns the exact allocation to the follower"
+        );
+        assert_eq!(published.descriptor(), descriptor);
+        assert_eq!(published.captured_at(), captured_at);
+        assert_eq!(published.transform().target(), placement);
+        assert_eq!(continuity, Continuity::Continuous);
         let remainder = session.lock_remainder();
         assert_eq!(
             remainder.frames.len(),
@@ -969,6 +1014,8 @@ mod tests {
             !remainder.reserved,
             "an interrupted claim is released, not leaked"
         );
+        let head = remainder.frames.front().expect("last frame remains");
+        assert!(head.pixels().iter().all(|byte| *byte == 2));
     }
 
     #[test]
@@ -1023,9 +1070,20 @@ mod tests {
     fn a_publication_refused_after_the_claim_leaves_the_frame_queued() {
         let session = session();
         let first = session.state.current().expect("first frame");
-        // Two frames are left after the session published its first, and the
-        // claimed one must still be there once the stream has refused it.
-        let clock = Arc::new(CloseAtCommit::new(&session, 2));
+        let (claimed_pixels, descriptor, captured_at, placement, continuity) = {
+            let remainder = session.lock_remainder();
+            let next = remainder.frames.front().expect("next frame");
+            (
+                next.pixels().as_ptr() as usize,
+                next.descriptor(),
+                next.captured_at(),
+                next.placement(),
+                next.continuity(),
+            )
+        };
+        // The claim owns the head while one later frame remains queued. A
+        // refusal must restore that exact head before releasing the claim.
+        let clock = Arc::new(CloseAtCommit::new(&session, 1));
         let deadline = MonotonicInstant::ORIGIN
             .checked_add(Duration::from_secs(1))
             .expect("representable deadline");
@@ -1055,6 +1113,13 @@ mod tests {
             !remainder.reserved,
             "a refused publication releases the claim it was holding"
         );
+        let restored = remainder.frames.front().expect("refused head restored");
+        assert_eq!(restored.pixels().as_ptr() as usize, claimed_pixels);
+        assert!(restored.pixels().iter().all(|byte| *byte == 1));
+        assert_eq!(restored.descriptor(), descriptor);
+        assert_eq!(restored.captured_at(), captured_at);
+        assert_eq!(restored.placement(), placement);
+        assert_eq!(restored.continuity(), continuity);
     }
 
     #[test]

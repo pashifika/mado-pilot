@@ -21,6 +21,9 @@
 //! later one, or closing the session cannot invalidate anything a caller already
 //! holds. Mapped bytes borrow from the mapping, so the compiler enforces the
 //! lifetime rule the C ABI will later have to state in prose.
+//! [`StreamState::publish_recoverable`] additionally lets an Adapter recover
+//! the complete owned [`Publication`] when the stream refuses it, without
+//! changing the existing [`StreamState::publish`] contract.
 //!
 //! Frame storage is private and there is no public storage enum. Phase 1 frames
 //! are always CPU bytes, but Windows frames will be GPU textures, and a caller
@@ -60,4 +63,7 @@ pub use fault::CaptureFault;
 pub use frame::{Frame, FrameView};
 pub use mapping::CpuMapping;
 pub use session::{CaptureProvider, CaptureSession, OpenRequest};
-pub use stream::{Continuity, FrameRequest, FrameSelection, Lifecycle, Publication, StreamState};
+pub use stream::{
+    Continuity, FrameRequest, FrameSelection, Lifecycle, Publication, RefusedPublication,
+    StreamState,
+};
