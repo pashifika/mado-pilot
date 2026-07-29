@@ -1182,26 +1182,19 @@ fn a_directory_that_is_not_a_package_reports_the_rule_and_the_stage() {
 }
 
 #[test]
-fn an_archive_view_above_the_engines_source_ceiling_is_refused_before_it_is_read() {
+fn a_null_archive_view_carrying_a_length_is_a_malformed_request_whatever_the_length() {
     let api = table();
     let flow = support::Flow::open();
     let operation = operation();
 
-    // One byte past the source ceiling every engine this ABI builds is held to,
-    // declared against a null pointer. Both halves matter. The length is what
-    // has to be refused: believing it would make the boundary copy the caller's
-    // buffer into an owned archive before the loader could apply the same
-    // ceiling, so the tightened limit would cost exactly the allocation it
-    // exists to prevent. And the null pointer is what proves the order — the
-    // declaration alone is enough to refuse, so nothing was read, no slice was
-    // formed over the caller's memory, and no copy was made. A boundary that
-    // resolved the view first would report the null pointer under
-    // `MADOPILOT_ERROR_CATEGORY_ABI` instead.
-    //
-    // The ceiling comes from the facade rather than as a number, because a C
-    // caller cannot configure limits through this ABI: the engine every entry
-    // here builds applies the implementation ceilings, so that is the limit this
-    // test has to be written against.
+    // A null pointer with a length is a view that cannot exist, and ADR 0007
+    // freezes that as an invalid argument of the boundary's own category. The
+    // length here is one byte past the source ceiling this ABI's engines apply,
+    // which is what makes the case worth a test: the boundary also refuses an
+    // oversized archive length before it copies anything, and that refusal
+    // carries an asset status. It may not answer first. A caller that passed a
+    // malformed view would otherwise be told it asked for too much memory, and
+    // the one thing it needs to hear is that its view is not a view.
     let above_ceiling = usize::try_from(mado_pilot::AssetLimits::MAX_TOTAL_COMPRESSED_BYTES + 1)
         .expect("the source ceiling fits an object size on both release targets");
     let source = madopilot_package_source_t {
@@ -1215,9 +1208,9 @@ fn an_archive_view_above_the_engines_source_ceiling_is_refused_before_it_is_read
     };
     let mut package = ptr::null_mut();
     let mut error = ptr::null_mut();
-    // SAFETY: every pointer is a live local, the engine is retained by the flow,
-    // and the archive view is refused on its declared length before the pointer
-    // it carries is used for anything.
+    // SAFETY: every pointer is a live local and the engine is retained by the
+    // flow. The archive view is refused on its shape, so its null pointer is
+    // never read and no slice is formed over it.
     let status = unsafe {
         (api.package_load)(
             flow.engine,
@@ -1227,15 +1220,13 @@ fn an_archive_view_above_the_engines_source_ceiling_is_refused_before_it_is_read
             &raw mut error,
         )
     };
-    assert_eq!(status, MADOPILOT_STATUS_LIMIT_EXCEEDED);
+    assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
     assert!(package.is_null(), "the owned output stays null");
 
     let detail = support::describe_and_release(api, error);
-    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ASSET);
-    assert_eq!(detail.asset_fault, MADOPILOT_ASSET_FAULT_ARCHIVE_LIMIT);
     assert_eq!(
-        detail.asset_stage, MADOPILOT_ASSET_STAGE_SOURCE,
-        "the ceiling is the loader's own source-byte ceiling, applied where the copy would be"
+        detail.category, MADOPILOT_ERROR_CATEGORY_ABI,
+        "the refusal is the boundary's own, not the loader's bounded-resource result"
     );
 }
 
@@ -1540,10 +1531,58 @@ fn assert_output_prefixes<S: Copy>(
         }
     }
 
-    // A caller built against a newer header declares more than this library
-    // knows, which stays supported: the extra bytes are the ones it fills in
-    // itself, and the reported size says how far this library got.
-    assert_output_accepts(entry, whole + 64, whole, &invoke);
+    assert_output_clamps_a_newer_header(entry, whole, &invoke);
+}
+
+/// Asserts that a caller declaring more than this library knows is served, told
+/// how much of what it knows is really there, and left holding its own tail.
+///
+/// The buffer is the structure *plus* the tail the declaration promises, because
+/// the boundary's contract is that `struct_size` names writable bytes: passing
+/// the address of a bare `S` while declaring more would be this test lying to the
+/// entry it is checking, and it would have no trailing bytes to look at
+/// afterwards. Those bytes are the property — a newer header's fields are the
+/// caller's to fill, and this library may not touch them.
+fn assert_output_clamps_a_newer_header<S: Copy>(
+    entry: &str,
+    whole: u32,
+    invoke: &impl Fn(*mut S) -> madopilot_status_t,
+) {
+    /// The bytes a newer header is imagined to have added.
+    const TAIL: usize = 64;
+
+    /// `S` followed by that tail, at `S`'s own alignment.
+    ///
+    /// `repr(C)` and a byte array put the tail at exactly `size_of::<S>()`: the
+    /// structure's own size already covers its trailing padding, and a `[u8; N]`
+    /// needs no alignment of its own.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct WithTail<S: Copy> {
+        value: S,
+        tail: [u8; TAIL],
+    }
+
+    // SAFETY: `S` satisfies `poisoned`'s contract, and a byte array beside it
+    // has no invalid bit pattern either.
+    let mut buffer: WithTail<S> = unsafe { poisoned() };
+    let declared = whole + u32::try_from(TAIL).expect("the tail is small");
+    set_struct_size(&mut buffer.value, declared);
+
+    let status = invoke(&raw mut buffer.value);
+    assert_eq!(
+        status, MADOPILOT_STATUS_OK,
+        "{entry} refused an output declaring {declared} bytes, which is a newer caller"
+    );
+    assert_eq!(
+        struct_size_of(&buffer.value),
+        whole,
+        "{entry} reports what it populated, not the larger size it was handed"
+    );
+    assert!(
+        buffer.tail.iter().all(|byte| *byte == POISON),
+        "{entry} wrote into the {TAIL} bytes only the caller's own header knows"
+    );
 }
 
 /// Asserts that `declared` is refused with no byte of the output written.

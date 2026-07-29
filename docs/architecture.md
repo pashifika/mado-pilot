@@ -812,8 +812,14 @@ describing a directory the reader no longer opens — and the reader's own
 reservation is made before any later check could refuse it. An archive file is
 therefore copied once, after the source-size gate that bounds the copy and with
 the handle re-proved after it, and the pre-parse, the reader, and every entry then
-read that copy. A source that changes mid-load is still refused as a changed
-source; what the copy removes is the window in which a change could be believed.
+read that copy.
+
+What the retained handle then guarantees is stated as what it is. A change the
+loader observes — around the copy, or at any later check — refuses the load as a
+changed source. A change that lands after the last of those checks does not,
+because the bytes it would have affected were already read: the load commits the
+archive it read. The guarantee is that a committed package comes from exactly one
+version of the file, not that every external write during a load is reported.
 
 Recorded metadata may reject but never authorise: an entry is
 cut off at its *declared* size even when a ceiling would have allowed more, so an

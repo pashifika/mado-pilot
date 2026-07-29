@@ -88,30 +88,32 @@ impl madopilot_bytes_t {
     }
 }
 
-/// Resolves `view` into borrowed bytes.
+/// Validates a byte view's pointer-length shape and returns the length it
+/// describes.
+///
+/// The shape and nothing else, so this reads no byte the view points at. A null
+/// pointer carrying a length and a length that cannot be an object size are both
+/// malformed requests — the refusal ADR 0007 freezes as
+/// `MADOPILOT_STATUS_INVALID_ARGUMENT` with `MADOPILOT_ERROR_CATEGORY_ABI` — and
+/// they are refusals about the declaration rather than about the content.
+///
+/// Separated from [`bytes`] so an entry that has to decide something *from* the
+/// length can decide it before a slice over the range exists: a view that becomes
+/// owned storage is sized by its own declaration, and the ceiling on that
+/// allocation has to be applied before the allocation, without that taking
+/// precedence over the shape rules the released ABI already fixed.
 ///
 /// # Errors
 ///
-/// Rejects a null pointer with a nonzero length before reading anything.
-///
-/// # Safety
-///
-/// `view.data` must point to `view.len` readable bytes that stay valid and
-/// unmodified for the duration of the call.
-pub(crate) unsafe fn bytes<'a>(
-    view: madopilot_bytes_t,
-    field: &'static str,
-) -> Result<&'a [u8], Fault> {
-    if view.data.is_null() {
-        if view.len == 0 {
-            return Ok(&[]);
-        }
+/// Rejects a null pointer with a nonzero length, and a length above
+/// `isize::MAX`.
+pub(crate) fn byte_len(view: madopilot_bytes_t, field: &'static str) -> Result<usize, Fault> {
+    if view.data.is_null() && view.len != 0 {
         return Err(Fault::abi(format!(
             "`{field}` is a null pointer with length {}",
             view.len
         )));
     }
-
     // A length that cannot be an object size cannot describe one, and rejecting
     // it here is what keeps every later offset and stride calculation inside the
     // range the address space can represent.
@@ -122,10 +124,34 @@ pub(crate) unsafe fn bytes<'a>(
         )));
     }
 
+    Ok(view.len)
+}
+
+/// Resolves `view` into borrowed bytes.
+///
+/// # Errors
+///
+/// As [`byte_len`], whose checks this performs before reading anything.
+///
+/// # Safety
+///
+/// `view.data` must point to `view.len` readable bytes that stay valid and
+/// unmodified for the duration of the call.
+pub(crate) unsafe fn bytes<'a>(
+    view: madopilot_bytes_t,
+    field: &'static str,
+) -> Result<&'a [u8], Fault> {
+    let len = byte_len(view, field)?;
+    if view.data.is_null() {
+        // The one view a null pointer may describe, which `byte_len` has just
+        // proved is this one: no pointer, no bytes, and no slice to form.
+        return Ok(&[]);
+    }
+
     // SAFETY: the pointer is non-null, the length is a representable object
     // size, and the caller contract documented on this function requires the
     // range to be readable and unmodified for the call.
-    Ok(unsafe { slice::from_raw_parts(view.data, view.len) })
+    Ok(unsafe { slice::from_raw_parts(view.data, len) })
 }
 
 /// Resolves `view` into a borrowed UTF-8 string.

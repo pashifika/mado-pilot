@@ -17,10 +17,15 @@
 //! the reader's own trailer search, the central directory, and every entry — so
 //! there is one sequence of bytes for the whole load and no window between two
 //! reads of it. The copy is bounded by the same configured source ceiling that
-//! admitted the file, and a rewrite during the copy is reported as a changed
-//! source rather than absorbed. The `SourceChanged` checks after it are kept:
-//! nothing can redirect what the loader reads any more, but a source that changed
-//! mid-load is still a load a caller should not be handed a package from.
+//! admitted the file.
+//!
+//! The `SourceChanged` checks around and after the copy are kept, and what they
+//! guarantee is worth stating exactly. A change the loader observes — before the
+//! copy, during it, or at any later check — refuses the load. A change that lands
+//! after the last of those checks does not: the bytes were already read, so the
+//! load commits the archive it read. What is guaranteed is not that every
+//! external write is reported, which nothing holding a copy could promise, but
+//! that a committed package is assembled from exactly one version of the file.
 //!
 //! # The archive-only stages
 //!
@@ -148,6 +153,13 @@ fn snapshot(
     operation: &mut Operation<'_>,
 ) -> Result<Vec<u8>, AssetFault> {
     let length = usize::try_from(source_len).map_err(|_| overflow_at(LoadStage::Source))?;
+    // Before the reservation, not only before each chunk: the reservation is the
+    // largest single resource this stage takes, and an operation that was
+    // cancelled or expired since admission has no claim on it. Checking after it
+    // would also let an allocation failure report an unreadable source over a
+    // terminal outcome that had already been decided.
+    checkpoint(operation, LoadStage::Source)?;
+
     let mut bytes = Vec::new();
     // The one allocation the source ceiling bounds, and it is requested rather
     // than assumed: a host that cannot satisfy a length inside that ceiling

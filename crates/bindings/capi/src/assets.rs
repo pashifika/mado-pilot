@@ -207,6 +207,14 @@ fn run_package_load(
 /// the typed bounded-resource refusal instead of the allocation it asked to
 /// avoid.
 ///
+/// Which leaves three questions about one view, in this order: is the view a
+/// shape a view may have, is the length one this engine will own, and what do the
+/// bytes say. The first is a malformed request and the released ABI fixes its
+/// status and category, so it cannot be answered second — a null pointer carrying
+/// a length is that refusal whether the length is one byte or a gigabyte. The
+/// second has to precede the copy, which is the whole point. The third is the
+/// only one that reads the caller's memory.
+///
 /// [`AssetLimits::with_max_total_compressed_bytes`]: mado_pilot::AssetLimits::with_max_total_compressed_bytes
 ///
 /// # Safety
@@ -228,15 +236,15 @@ unsafe fn package_source(
             Ok(mado_pilot::PackageSource::archive_file(path))
         }
         MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES => {
-            // The declared length, before the view is resolved: this is the
-            // check that has to happen without touching the caller's bytes, and
-            // resolving the view is what would touch them.
-            let declared = u64::try_from(source.archive.len).map_err(|_| {
-                Fault::abi(format!(
-                    "`archive` declares {} bytes, which is not a representable length",
-                    source.archive.len
-                ))
-            })?;
+            // The view's shape first, because a null pointer carrying a length is
+            // a malformed request whatever that length is, and the released ABI
+            // fixes that refusal. Then the length against the ceiling, which is
+            // the check that has to happen while the caller's bytes are still
+            // untouched. Only then the range itself.
+            let declared =
+                u64::try_from(view::byte_len(source.archive, "archive")?).map_err(|_| {
+                    Fault::internal("an archive length inside the address space exceeds `u64`")
+                })?;
             if declared > limits.max_total_compressed_bytes() {
                 return Err(Fault::from_asset(AssetFault::new(
                     AssetFaultKind::ArchiveLimit,
@@ -249,7 +257,10 @@ unsafe fn package_source(
             if bytes.is_empty() {
                 return Err(Fault::abi("`archive` is empty"));
             }
-            Ok(mado_pilot::PackageSource::archive_bytes(bytes.to_vec()))
+            // The slice, not a `Vec` of it: the package source owns an
+            // `Arc<[u8]>`, and a `Vec` on the way there is a second allocation
+            // and a second copy of an archive that may be at the ceiling.
+            Ok(mado_pilot::PackageSource::archive_bytes(bytes))
         }
         other => Err(Fault::abi(format!(
             "unrecognized package source kind {other}"
@@ -471,4 +482,77 @@ pub(crate) fn template_describe(
     }
 
     MADOPILOT_STATUS_OK
+}
+
+#[cfg(test)]
+mod tests {
+    use mado_pilot::AssetLimits;
+
+    use super::{
+        MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES, madopilot_bytes_t, madopilot_package_source_t,
+        madopilot_str_t, package_source,
+    };
+    use crate::status::{MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_LIMIT_EXCEEDED};
+
+    /// An archive-bytes source over `archive`, as a caller would declare it.
+    fn source(archive: madopilot_bytes_t) -> madopilot_package_source_t {
+        madopilot_package_source_t {
+            struct_size: crate::layout::struct_size::<madopilot_package_source_t>(),
+            kind: MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES,
+            path: madopilot_str_t::empty(),
+            archive,
+        }
+    }
+
+    fn limits(ceiling: u64) -> AssetLimits {
+        AssetLimits::ceiling()
+            .with_max_total_compressed_bytes(ceiling)
+            .expect("below the implementation ceiling")
+    }
+
+    /// The ceiling, against a buffer that is entirely readable.
+    ///
+    /// Configured small rather than exercised at 256 MiB, because what is being
+    /// checked is the *order* — the refusal arrives while the archive is still the
+    /// caller's — and a test that had to allocate the ceiling to see it would be
+    /// paying the cost this refusal exists to avoid.
+    #[test]
+    fn a_declared_length_above_the_configured_ceiling_is_refused_before_the_copy() {
+        let buffer = [0xffu8; 8];
+        let view = madopilot_bytes_t {
+            data: buffer.as_ptr(),
+            len: buffer.len(),
+        };
+
+        // SAFETY: the view describes `buffer`, a live local, for the call.
+        let refused = unsafe { package_source(&source(view), limits(4)) }
+            .expect_err("eight bytes are above a four byte ceiling");
+        assert_eq!(refused.status(), MADOPILOT_STATUS_LIMIT_EXCEEDED);
+
+        // SAFETY: as above. Exactly at the ceiling is a caller that fits, which
+        // is what says the comparison is not off by one in the safe direction.
+        let accepted = unsafe { package_source(&source(view), limits(8)) }
+            .expect("eight bytes are within an eight byte ceiling");
+        assert!(accepted.is_archive());
+    }
+
+    /// A malformed view is malformed whatever it declares.
+    ///
+    /// The shape rules are frozen for ABI major 1 as invalid-argument refusals of
+    /// the boundary's own category, so the ceiling may not answer first: a null
+    /// pointer carrying a length is not a caller asking for too much memory, it is
+    /// a caller describing a view that cannot exist.
+    #[test]
+    fn a_null_view_carrying_a_length_is_refused_as_malformed_rather_than_as_a_limit() {
+        let view = madopilot_bytes_t {
+            data: std::ptr::null(),
+            len: usize::try_from(AssetLimits::MAX_TOTAL_COMPRESSED_BYTES + 1)
+                .expect("the ceiling fits an object size on both release targets"),
+        };
+
+        // SAFETY: nothing reads the view: the pointer is refused on its shape.
+        let refused = unsafe { package_source(&source(view), limits(4)) }
+            .expect_err("a null pointer with a length is not a view");
+        assert_eq!(refused.status(), MADOPILOT_STATUS_INVALID_ARGUMENT);
+    }
 }
