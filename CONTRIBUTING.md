@@ -70,6 +70,30 @@ cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
+Step 4 needs one thing of a Windows host: the privilege to create a symbolic
+link. Two tests in `mado-pilot-adapter-replay` prove that a linked path component
+cannot reach outside a replay source, and they are the only coverage of that
+rule. A host that cannot create the link has proven nothing, so they fail rather
+than return early — a skipped test and a passing one are the same line of output,
+and a green suite has to mean the case ran. The failure names the requirement and
+carries `Os { code: 1314 }`, which is `ERROR_PRIVILEGE_NOT_HELD`.
+
+Turn on **Settings → System → For developers → Developer Mode**. It takes effect
+in a console opened afterwards, with no reboot, and `cmd` confirms it:
+
+```bat
+reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /v AllowDevelopmentWithoutDevLicense
+```
+
+`0x1` is on. An elevated prompt also holds the privilege, but do not verify from
+one: `cargo` writes `target/` as whoever ran it, and mixing elevated and ordinary
+runs in one working copy produces permission failures later that look like
+anything but their cause.
+
+Running with `-- --skip a_symlinked_` gets the rest of the suite through on a host
+without the privilege. That run is not a verification: it is exactly the silent
+gap the two tests were changed to expose, so record it as what it is.
+
 Step 8 is the only check in this repository that is not `cargo` alone. It needs a
 C compiler, a C++ compiler, and CMake 3.22 or later. On both release targets the
 compilers are the ones the platform already has — MSVC on Windows, the Xcode

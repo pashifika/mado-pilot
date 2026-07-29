@@ -883,6 +883,12 @@ mod tests {
     // than return early: both names are release targets, a skip and a pass are
     // indistinguishable in the default test output because libtest discards a
     // passing test's writes, and a green suite has to mean the case ran.
+    //
+    // That makes the privilege a host requirement of `cargo test` on Windows, and
+    // CONTRIBUTING.md's verification section states it — how to turn Developer
+    // Mode on, how to confirm it, and why an elevated prompt is the wrong way
+    // around it. A requirement a verifier meets as a surprising failure is a
+    // requirement that was not written down.
     const LINK_REQUIRED: &str = "this host cannot create a symbolic link, so the containment this \
                                  test exists to prove would go unverified; Windows needs Developer \
                                  Mode or SeCreateSymbolicLinkPrivilege";
