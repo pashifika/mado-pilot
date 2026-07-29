@@ -265,7 +265,13 @@ mod platform {
         fn fdopendir(file_descriptor: i32) -> *mut DirectoryStream;
         fn readdir(directory: *mut DirectoryStream) -> *mut DirectoryEntry;
         fn closedir(directory: *mut DirectoryStream) -> i32;
-        fn openat(directory: i32, path: *const c_char, flags: i32, mode: u32) -> i32;
+        // Declared variadic because it is: `int openat(int, const char *, int, ...)`.
+        // On `aarch64-apple-darwin` a variadic argument goes on the stack while a
+        // fixed one goes in a register, so a fourth *fixed* parameter would put
+        // the mode where the callee does not look for it. Nothing here passes a
+        // creation flag, so no mode is passed either; a future `O_CREAT` must add
+        // one as the variadic argument it is.
+        fn openat(directory: i32, path: *const c_char, flags: i32, ...) -> i32;
         #[cfg(any(target_os = "linux", target_os = "android"))]
         fn __errno_location() -> *mut i32;
         #[cfg(not(any(target_os = "linux", target_os = "android")))]
@@ -318,7 +324,6 @@ mod platform {
                 directory.as_raw_fd(),
                 child_name.as_ptr(),
                 NO_FOLLOW | NONBLOCK | CLOSE_ON_EXEC,
-                0,
             )
         };
         if descriptor < 0 {

@@ -56,7 +56,7 @@
 //! | Session closed | [`Status::Closed`] |
 //! | Capture failed | [`Status::CaptureFailed`] |
 //! | Asset package refused | [`Status::AssetInvalid`] |
-//! | A documented asset ceiling would have been exceeded | [`Status::LimitExceeded`] |
+//! | A documented asset ceiling would have been exceeded, or a counter reached its end: geometry revisions, stream epochs, frame sequence numbers, or the identity space | [`Status::LimitExceeded`] |
 //! | Matching backend unavailable or failed | [`Status::VisionFailed`] |
 //! | An invariant this implementation is responsible for did not hold | [`Status::Internal`] |
 //!
@@ -67,14 +67,14 @@
 //! always [`Status::AssetInvalid`]: a package that would cross one of the
 //! archive ceilings reports [`Status::LimitExceeded`]; a compression method,
 //! schema version, content source, coordinate space, hash algorithm, or content
-//! encoding this build does not implement reports [`Status::Unsupported`]; a
-//! configured limit above the implementation ceiling, or a template identity the
-//! committed package does not declare, reports [`Status::InvalidArgument`]; a
-//! load interrupted before it committed reports [`Status::Cancelled`] or
-//! [`Status::DeadlineExceeded`]; and a size computation this loader is
-//! responsible for preventing reports [`Status::Internal`]. Branch on
-//! [`AssetFault::kind`] when the rule matters and on the status when only the
-//! category does.
+//! encoding this build does not implement, and an encrypted archive entry,
+//! report [`Status::Unsupported`]; a configured limit above the implementation
+//! ceiling, or a template identity the committed package does not declare,
+//! reports [`Status::InvalidArgument`]; a load interrupted before it committed
+//! reports [`Status::Cancelled`] or [`Status::DeadlineExceeded`]; and a size
+//! computation this loader is responsible for preventing reports
+//! [`Status::Internal`]. Branch on [`AssetFault::kind`] when the rule matters
+//! and on the status when only the category does.
 //!
 //! # Implementation status
 //!

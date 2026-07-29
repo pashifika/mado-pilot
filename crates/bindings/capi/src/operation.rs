@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use mado_pilot::{CancellationToken, Clock, MonotonicInstant, OperationContext, SystemClock};
 
-use crate::boundary::{Input, covers, declared, prefixes};
+use crate::boundary::{covers, declared, inputs, prefixes};
 use crate::error::Fault;
 use crate::handle::opaque;
 use crate::status::MADOPILOT_STATUS_OK;
@@ -40,37 +40,39 @@ impl Cancellation {
     }
 }
 
-impl Input for madopilot_operation_t {
-    // Through `flags`. A caller with nothing to say about deadlines or
-    // cancellation still has to say that, because an absent operation structure
-    // and one that declares neither are different requests.
-    const MANDATORY: usize = 8;
-    const NAME: &'static str = "madopilot_operation_t";
-    const PREFIXES: &'static [usize] = prefixes!(
-        madopilot_operation_t,
-        struct_size,
-        flags,
-        deadline_nanos,
-        cancellation,
-    );
-    // `cancellation` carries no presence bit: null is its documented absent
-    // value, so a prefix that omits it says the same thing the field would.
-    const PRESENCE: &'static [(u32, usize)] = &[(
-        MADOPILOT_OPERATION_HAS_DEADLINE,
-        covers!(madopilot_operation_t, deadline_nanos: u64),
-    )];
+inputs! {
+    impl Input for madopilot_operation_t {
+        // Through `flags`. A caller with nothing to say about deadlines or
+        // cancellation still has to say that, because an absent operation structure
+        // and one that declares neither are different requests.
+        const MANDATORY: usize = 8;
+        const NAME: &'static str = "madopilot_operation_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_operation_t,
+            struct_size,
+            flags,
+            deadline_nanos,
+            cancellation,
+        );
+        // `cancellation` carries no presence bit: null is its documented absent
+        // value, so a prefix that omits it says the same thing the field would.
+        const PRESENCE: &'static [(u32, usize)] = &[(
+            MADOPILOT_OPERATION_HAS_DEADLINE,
+            covers!(madopilot_operation_t, deadline_nanos: u64),
+        )];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            flags: 0,
-            deadline_nanos: 0,
-            cancellation: std::ptr::null(),
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                deadline_nanos: 0,
+                cancellation: std::ptr::null(),
+            }
         }
-    }
 
-    fn presence_bits(&self) -> u32 {
-        self.flags
+        fn presence_bits(&self) -> u32 {
+            self.flags
+        }
     }
 }
 

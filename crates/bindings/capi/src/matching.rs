@@ -20,10 +20,11 @@
 //! boundary keeps no second copy that could disagree with it.
 
 use mado_pilot::{
-    FindOutcome, FindRequest, MatchOptions, PixelRect, PreparedTemplate, RegionSelection,
+    Error, FindOutcome, FindRequest, MatchOptions, PixelRect, PreparedTemplate, RegionSelection,
+    Status,
 };
 
-use crate::boundary::{self, Input, Out, Versioned, covers, declared, prefixes};
+use crate::boundary::{self, Out, Versioned, covers, declared, inputs, prefixes};
 use crate::capture::{FrameHandle, SessionHandle, madopilot_session_t, rect, stamp};
 use crate::engine::report;
 use crate::error::{Fault, madopilot_error_t};
@@ -55,80 +56,82 @@ pub(crate) struct ResultHandle {
     stream: u64,
 }
 
-impl Input for madopilot_find_request_t {
-    // Through `tmpl`: which frame and which template is the whole question.
-    const MANDATORY: usize = 24;
-    const NAME: &'static str = "madopilot_find_request_t";
-    const PREFIXES: &'static [usize] = prefixes!(
-        madopilot_find_request_t,
-        struct_size,
-        flags,
-        frame,
-        tmpl,
-        options,
-        region,
-        clip_policy,
-    );
-    const PRESENCE: &'static [(u32, usize)] = &[(
-        MADOPILOT_FIND_HAS_REGION,
-        covers!(madopilot_find_request_t, region: madopilot_pixel_rect_t),
-    )];
+inputs! {
+    impl Input for madopilot_find_request_t {
+        // Through `tmpl`: which frame and which template is the whole question.
+        const MANDATORY: usize = 24;
+        const NAME: &'static str = "madopilot_find_request_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_find_request_t,
+            struct_size,
+            flags,
+            frame,
+            tmpl,
+            options,
+            region,
+            clip_policy,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[(
+            MADOPILOT_FIND_HAS_REGION,
+            covers!(madopilot_find_request_t, region: madopilot_pixel_rect_t),
+        )];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            flags: 0,
-            frame: std::ptr::null(),
-            tmpl: std::ptr::null(),
-            options: std::ptr::null(),
-            region: madopilot_pixel_rect_t::empty(),
-            clip_policy: crate::types::MADOPILOT_CLIP_POLICY_REJECT,
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                frame: std::ptr::null(),
+                tmpl: std::ptr::null(),
+                options: std::ptr::null(),
+                region: madopilot_pixel_rect_t::empty(),
+                clip_policy: crate::types::MADOPILOT_CLIP_POLICY_REJECT,
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            self.flags
         }
     }
 
-    fn presence_bits(&self) -> u32 {
-        self.flags
-    }
-}
+    impl Input for madopilot_match_options_t {
+        // Through `flags`: an options structure that sets no bit is the documented
+        // way of saying "the template's own defaults".
+        const MANDATORY: usize = 8;
+        const NAME: &'static str = "madopilot_match_options_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_match_options_t,
+            struct_size,
+            flags,
+            min_score,
+            max_results,
+            suppression,
+        );
+        // The mandatory prefix stops at `flags`, so every one of these bits can name
+        // a field the caller's own size leaves out. Honoring one there would put
+        // `cleared`'s zero where the template's default belongs, and a `min_score`
+        // of zero is the threshold that qualifies everything.
+        const PRESENCE: &'static [(u32, usize)] = &[
+            (
+                MADOPILOT_MATCH_HAS_MIN_SCORE,
+                covers!(madopilot_match_options_t, min_score: f64),
+            ),
+            (
+                MADOPILOT_MATCH_HAS_MAX_RESULTS,
+                covers!(madopilot_match_options_t, max_results: u32),
+            ),
+            (
+                MADOPILOT_MATCH_HAS_SUPPRESSION,
+                covers!(madopilot_match_options_t, suppression: madopilot_suppression_t),
+            ),
+        ];
 
-impl Input for madopilot_match_options_t {
-    // Through `flags`: an options structure that sets no bit is the documented
-    // way of saying "the template's own defaults".
-    const MANDATORY: usize = 8;
-    const NAME: &'static str = "madopilot_match_options_t";
-    const PREFIXES: &'static [usize] = prefixes!(
-        madopilot_match_options_t,
-        struct_size,
-        flags,
-        min_score,
-        max_results,
-        suppression,
-    );
-    // The mandatory prefix stops at `flags`, so every one of these bits can name
-    // a field the caller's own size leaves out. Honoring one there would put
-    // `cleared`'s zero where the template's default belongs, and a `min_score`
-    // of zero is the threshold that qualifies everything.
-    const PRESENCE: &'static [(u32, usize)] = &[
-        (
-            MADOPILOT_MATCH_HAS_MIN_SCORE,
-            covers!(madopilot_match_options_t, min_score: f64),
-        ),
-        (
-            MADOPILOT_MATCH_HAS_MAX_RESULTS,
-            covers!(madopilot_match_options_t, max_results: u32),
-        ),
-        (
-            MADOPILOT_MATCH_HAS_SUPPRESSION,
-            covers!(madopilot_match_options_t, suppression: madopilot_suppression_t),
-        ),
-    ];
+        fn defaults() -> Self {
+            Self::cleared(0)
+        }
 
-    fn defaults() -> Self {
-        Self::cleared(0)
-    }
-
-    fn presence_bits(&self) -> u32 {
-        self.flags
+        fn presence_bits(&self) -> u32 {
+            self.flags
+        }
     }
 }
 
@@ -216,9 +219,7 @@ fn run_session_find(
     // one stays because it refuses before any pointer below is dereferenced and
     // reports the boundary's own message and category.
     if session.session().is_closed() {
-        return Err(Fault::closed(
-            "the session has closed and starts no further work",
-        ));
+        return Err(Fault::closed(SESSION_CLOSED));
     }
 
     // SAFETY: the caller keeps the request structure readable for the call.
@@ -248,10 +249,7 @@ fn run_session_find(
     let outcome = session
         .session()
         .find_template(&find, context.inner())
-        .map_err(|error| {
-            Fault::from_error(&error, MADOPILOT_ERROR_CATEGORY_VISION)
-                .with_backend(session.backend())
-        })?;
+        .map_err(|error| search_failure(&error, session.backend()))?;
     hooks::reach(hooks::Site::AfterTemporary);
 
     // The search produced a perfectly good answer, and the operation may still
@@ -267,6 +265,28 @@ fn run_session_find(
     unsafe { out_result.write(handle::into_raw(payload)) };
 
     Ok(())
+}
+
+/// What a session that has stopped accepting work reports, whichever side
+/// observes it.
+const SESSION_CLOSED: &str = "the session has closed and starts no further work";
+
+/// Reports why a search produced no outcome.
+///
+/// One case needs naming. A session that has begun closing but not finished
+/// draining refuses work and is not what `session_is_closed` calls closed, so
+/// the fast path above lets it through and the search refuses it instead. The
+/// outcome is the same `MADOPILOT_STATUS_CLOSED` either way, and the report says
+/// so: a lifecycle refusal keeps the capture category and the boundary's own
+/// message rather than arriving as a vision failure because of which side
+/// happened to observe it. Every other failure is the search's own, and carries
+/// the backend that ran it.
+fn search_failure(error: &Error, backend: &str) -> Fault {
+    if error.status() == Status::Closed {
+        return Fault::closed(SESSION_CLOSED);
+    }
+
+    Fault::from_error(error, MADOPILOT_ERROR_CATEGORY_VISION).with_backend(backend)
 }
 
 fn resolve_options(
@@ -488,5 +508,87 @@ pub(crate) fn result_match(
             MADOPILOT_STATUS_OK
         }
         Err(fault) => fault.status(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::error::{self, madopilot_error_t};
+    use crate::status::{
+        MADOPILOT_ERROR_CATEGORY_CAPTURE, MADOPILOT_STATUS_CLOSED, MADOPILOT_STATUS_VISION_FAILED,
+        madopilot_error_category_t,
+    };
+    use crate::types::madopilot_error_detail_t;
+    use crate::{handle, view};
+
+    use super::{
+        Error, Fault, MADOPILOT_ERROR_CATEGORY_VISION, MADOPILOT_STATUS_OK, SESSION_CLOSED, Status,
+        Versioned, madopilot_status_t, search_failure,
+    };
+
+    const BACKEND: &str = "test-backend";
+
+    /// The status, category, and message a C caller reads back out of `fault`.
+    ///
+    /// Read through the boundary's own accessor rather than out of the fault's
+    /// fields, because what this pins is what a caller can observe.
+    fn reported(fault: Fault) -> (madopilot_status_t, madopilot_error_category_t, String) {
+        let size = u32::try_from(size_of::<madopilot_error_detail_t>())
+            .expect("a structure of a few dozen bytes");
+        let mut detail = <madopilot_error_detail_t as Versioned>::failure(size);
+        let handle: *mut madopilot_error_t = handle::into_raw(fault);
+
+        assert_eq!(
+            error::describe(handle, &raw mut detail),
+            MADOPILOT_STATUS_OK
+        );
+        // SAFETY: the message view borrows from the fault behind `handle`, which
+        // is still retained here, and `describe` wrote it from a `&str`.
+        let message = unsafe { view::string(detail.message, "message") }
+            .expect("the message the fault was built from")
+            .to_owned();
+        // The handle is the one produced above and this is its final release,
+        // which is why the message is copied first.
+        error::release(handle);
+
+        (detail.status, detail.category, message)
+    }
+
+    /// A session that refuses work because it is closing reports what a closed
+    /// session reports.
+    ///
+    /// The two are refused on different sides — the fast path in
+    /// `run_session_find` catches only a session whose close has finished, and
+    /// the search itself catches one that has merely begun — and a caller
+    /// cannot tell which side it reached. Reporting the same outcome as a
+    /// capture-lifecycle refusal one way and a vision failure the other would
+    /// make the category describe the implementation rather than the failure.
+    #[test]
+    fn a_search_refused_because_the_session_is_closing_reports_the_lifecycle_refusal() {
+        let closing = Error::new(Status::Closed, "the session is closing");
+
+        assert_eq!(
+            reported(search_failure(&closing, BACKEND)),
+            reported(Fault::closed(SESSION_CLOSED))
+        );
+        assert_eq!(
+            reported(search_failure(&closing, BACKEND)).0,
+            MADOPILOT_STATUS_CLOSED
+        );
+        assert_eq!(
+            reported(search_failure(&closing, BACKEND)).1,
+            MADOPILOT_ERROR_CATEGORY_CAPTURE
+        );
+    }
+
+    /// Every other search failure is still the search's own.
+    #[test]
+    fn a_search_that_could_not_run_reports_a_vision_failure() {
+        let unavailable = Error::new(Status::VisionFailed, "the backend is unavailable");
+        let (status, category, message) = reported(search_failure(&unavailable, BACKEND));
+
+        assert_eq!(status, MADOPILOT_STATUS_VISION_FAILED);
+        assert_eq!(category, MADOPILOT_ERROR_CATEGORY_VISION);
+        assert_eq!(message, "the backend is unavailable");
     }
 }

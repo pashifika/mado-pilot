@@ -1,8 +1,15 @@
 # Frozen header compatibility fixtures
 
-Each subdirectory is one released C header, kept exactly as it was released,
+Each subdirectory is one released C header's declarations — every structure,
+field, enumerator and function-table entry as that release declared them —
 together with a C program written against it. `c-abi-check` compiles every
 fixture against its own header and links it to the library built now.
+
+Declarations rather than the file: a frozen header is never edited, while the
+working header keeps gaining comments that declare nothing. Nothing here
+compares the two files, and a comparison that did would report those comments as
+a difference. What is compared is the frozen declarations against the library
+built now, which is what the ABI-major promise is about.
 
 This is what makes the ABI-major promise checkable instead of stated. Preserving
 field and function-table ordering within a major version is a rule that costs
@@ -34,7 +41,7 @@ Task 9.9 names four verbs, and each is a step of the run:
   mandatory prefix. The second is the old-prefix path exercised for real: a
   caller declaring forty bytes against a four-hundred-byte table, told the
   library's size rather than its own. It is also why the fixture is not a
-  tautology on the day it is created, when the two headers are still identical.
+  tautology while the frozen declarations and the working ones still agree.
 - **executes** — the whole Phase 1 flow, checking the same match rectangles and
   scores both examples print.
 

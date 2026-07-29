@@ -454,7 +454,13 @@ mod contained {
     const LOOP_ERROR: i32 = 62;
 
     unsafe extern "C" {
-        fn openat(directory: i32, path: *const c_char, flags: i32, mode: u32) -> i32;
+        // Declared variadic because it is: `int openat(int, const char *, int, ...)`.
+        // On `aarch64-apple-darwin` a variadic argument goes on the stack while a
+        // fixed one goes in a register, so a fourth *fixed* parameter would put
+        // the mode where the callee does not look for it. Nothing here passes a
+        // creation flag, so no mode is passed either; a future `O_CREAT` must add
+        // one as the variadic argument it is.
+        fn openat(directory: i32, path: *const c_char, flags: i32, ...) -> i32;
     }
 
     pub(super) fn open_pixel_file(
@@ -492,7 +498,6 @@ mod contained {
                 directory.as_raw_fd(),
                 name.as_ptr(),
                 NO_FOLLOW | NONBLOCK | CLOSE_ON_EXEC,
-                0,
             )
         };
         if descriptor < 0 {

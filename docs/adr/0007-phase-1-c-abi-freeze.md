@@ -245,12 +245,15 @@ before it can cross into C.
 
 ### The compatibility fixture
 
-`crates/bindings/capi/tests/abi-compat/v1/` holds this header exactly as frozen,
-plus a C program written against it. `c-abi-check` compiles that program with the
-frozen directory **in place of** the working include path, links it to the
-library built now, and runs it. Today the two headers are identical and the check
-passes trivially; the fixture is created while it is trivial so that it exists on
-the day it is not.
+`crates/bindings/capi/tests/abi-compat/v1/` holds this header's declarations as
+frozen — every structure, field, enumerator and function-table entry — plus a C
+program written against it. `c-abi-check` compiles that program with the frozen
+directory **in place of** the working include path, links it to the library
+built now, and runs it. On the day of the freeze the two files were identical
+and the check passed trivially; the fixture is created while it is trivial so
+that it exists on the day it is not. The working header has gained comments
+since, which costs the fixture nothing: no check compares the two files, and
+what the frozen declarations are checked against is the library.
 
 It is not entirely trivial even now: the program negotiates twice, once at the
 frozen header's full 424 bytes and once at the 40-byte mandatory prefix, and

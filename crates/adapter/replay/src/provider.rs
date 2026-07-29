@@ -1,8 +1,21 @@
 //! The replay capture provider and the sessions it opens.
+//!
+//! # Lock discipline
+//!
+//! A session owns two locks: the mutex around its remaining frame sequence and
+//! the one inside the capture package's [`StreamState`]. Neither is held while
+//! the other is taken, and neither is held while the caller's operation context
+//! is consulted, because that context's clock and cancellation token are the
+//! caller's own code.
+//!
+//! Publication order between concurrent advances is bought by a reservation
+//! rather than by nesting those locks. Exactly one advance at a time owns the
+//! head of the sequence, so frames reach the stream in source order even though
+//! the sequence mutex is released before every publication.
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::{Arc, Mutex, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::Duration;
 
@@ -12,7 +25,8 @@ use mado_pilot_capture::{
     TargetDescription,
 };
 use mado_pilot_core::{
-    FrameOrder, IdentityIssuer, Operation, OperationContext, ProviderId, Result, TargetId,
+    FrameOrder, GeometryRevision, IdentityIssuer, Operation, OperationContext, ProviderId, Result,
+    TargetId, TransformSnapshot,
 };
 
 use crate::source::{ReplayFrame, ReplaySource, ReplayTarget};
@@ -121,6 +135,7 @@ impl CaptureProvider for ReplayProvider {
         {
             return Err(CaptureFault::UnsupportedOption.into());
         }
+        validate_placements(source)?;
 
         let stream = self.issuer.issue_stream()?;
         let description = SessionDescription::new(
@@ -133,12 +148,41 @@ impl CaptureProvider for ReplayProvider {
         let session = ReplaySession {
             description,
             state: StreamState::with_target_extent(stream),
-            remaining: Mutex::new(source.clone().into_frames().into()),
+            remaining: Mutex::new(Remainder::new(source.clone().into_frames())),
         };
         session.advance(operation)?;
 
         Ok(attempt.commit(Arc::new(session) as Arc<dyn CaptureSession>)?)
     }
+}
+
+/// Refuses a target any of whose frames contradicts its own declared placement.
+///
+/// The whole sequence is checked before a session exists, not one frame at a
+/// time as each reaches the head. A manifest is configuration, and a manifest
+/// whose third frame declares four logical units across eight pixels is a
+/// configuration mistake at the moment it is read — reporting it three frames
+/// later would mean the caller already believed the source was good, and the
+/// session would then have nothing useful to do: publication is what removes a
+/// frame from the sequence, so a frame publication will always refuse would sit
+/// at the head and fail every later request identically.
+///
+/// The check is the constructor publication itself uses, so the two cannot
+/// drift apart. Only coverage is being decided here and coverage does not
+/// depend on the revision, so the first one stands in for whichever revision
+/// the frame is eventually published under.
+fn validate_placements(target: &ReplayTarget) -> Result<()> {
+    for frame in target.frames() {
+        if let Some(placement) = frame.placement() {
+            TransformSnapshot::with_target(
+                GeometryRevision::FIRST,
+                frame.descriptor().extent(),
+                placement,
+            )
+            .map_err(|_| CaptureFault::InconsistentDescriptor)?;
+        }
+    }
+    Ok(())
 }
 
 /// One open replay session.
@@ -150,11 +194,100 @@ impl CaptureProvider for ReplayProvider {
 struct ReplaySession {
     description: SessionDescription,
     state: StreamState,
-    remaining: Mutex<VecDeque<ReplayFrame>>,
+    remaining: Mutex<Remainder>,
+}
+
+/// The part of a replay sequence that has not been published yet.
+#[derive(Debug)]
+struct Remainder {
+    frames: VecDeque<ReplayFrame>,
+    /// Set while one advance owns the head frame and has not finished with it.
+    ///
+    /// This is what keeps concurrent advances in source order. The head is not
+    /// removed when it is claimed, so a request that never publishes leaves the
+    /// sequence exactly as it found it; the flag is what stops a second request
+    /// from claiming the same frame, or from claiming the one behind it and
+    /// publishing out of order.
+    reserved: bool,
+}
+
+impl Remainder {
+    fn new(frames: Vec<ReplayFrame>) -> Self {
+        Self {
+            frames: frames.into(),
+            reserved: false,
+        }
+    }
+}
+
+/// One advance's exclusive claim on the next frame of a sequence.
+///
+/// A claim is reversible until it publishes. Dropping it without a successful
+/// publication leaves the sequence untouched and lets the next advance proceed,
+/// which is what allows the operation's final arbitration to happen after the
+/// frame is owned and before anything about it is observable.
+#[derive(Debug)]
+struct Reservation<'session> {
+    session: &'session ReplaySession,
+    /// The claimed frame, taken when the publication is attempted.
+    frame: Option<ReplayFrame>,
+    /// Set once the stream has accepted the frame.
+    published: bool,
+}
+
+impl Reservation<'_> {
+    /// Publishes the claimed frame and reports the identity the stream gave it.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the stream refused the publication with. The claim is
+    /// released without consuming the frame in that case, so a refused request
+    /// leaves the sequence available to the next one.
+    fn publish(mut self) -> Result<Frame> {
+        let frame = self
+            .frame
+            .take()
+            .expect("a reservation holds its frame until it publishes");
+        let publication = Publication {
+            captured_at: frame.captured_at(),
+            descriptor: frame.descriptor(),
+            placement: frame.placement(),
+            continuity: frame.continuity(),
+            pixels: frame.into_pixels(),
+        };
+        let published = self.session.state.publish(publication)?;
+        self.published = true;
+        Ok(published)
+    }
+}
+
+impl Drop for Reservation<'_> {
+    /// Releases the claim, consuming the frame only if it was published.
+    ///
+    /// This runs inside the uninterruptible window after an advance commits, so
+    /// its blocking `lock_remainder` is worth naming: the only other holders of
+    /// that mutex are another `Drop` doing this same `pop_front` and a
+    /// [`ReplaySession::try_reserve`] that already declined to block. The
+    /// longest thing it can wait behind is that `try_reserve`'s deep copy of
+    /// the head frame's pixels.
+    fn drop(&mut self) {
+        let mut remainder = self.session.lock_remainder();
+        // The sequence advances because a frame was published, and only then.
+        if self.published {
+            remainder.frames.pop_front();
+        }
+        remainder.reserved = false;
+    }
 }
 
 impl ReplaySession {
     /// Publishes the next frame of the sequence.
+    ///
+    /// The frame is claimed first, arbitrated second, published third. Claiming
+    /// is reversible and publishing is what makes the frame observable, so the
+    /// operation's single terminal outcome is decided while nothing has changed
+    /// yet: a cancellation or an expired deadline reaching the commit consumes
+    /// no frame, publishes nothing, and advances no identity.
     ///
     /// # Errors
     ///
@@ -164,53 +297,74 @@ impl ReplaySession {
     /// rather than left to discover it when the deadline expires.
     fn advance(&self, operation: &OperationContext) -> Result<Frame> {
         let mut attempt = Operation::admit(operation)?;
-        self.wait_until_queue_available(&mut attempt)?;
-        // The clock is caller-supplied, so final arbitration must happen without
-        // an internal mutex held. Once committed, the short queue/publication
-        // transaction below contains no caller callback or blocking backend work.
-        attempt.commit(())?;
+        let reserved = self.reserve(&mut attempt)?;
+        // What is committed is the right to publish exactly this frame, which
+        // is the operation's real subject and is already held by the time it is
+        // arbitrated. An interruption drops the claim instead of returning it.
+        // The clock is caller-supplied, so this happens with no lock held.
+        //
+        // What follows the commit is uninterruptible by contract, so what it
+        // may contain is a claim in itself: one `StreamState::publish`, then
+        // the claim release in `Reservation::drop`. That release takes the
+        // sequence mutex and blocks, but only ever behind another advance's
+        // own short critical section — never behind caller code, a backend, or
+        // another operation's publication.
+        let reserved = attempt.commit(reserved)?;
+        reserved.publish()
+    }
 
-        let mut remaining = self
-            .remaining
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let frame = remaining
+    /// Waits until this request owns the next frame of the sequence.
+    fn reserve(&self, attempt: &mut Operation<'_>) -> Result<Reservation<'_>> {
+        loop {
+            if let Some(reservation) = self.try_reserve()? {
+                return Ok(reservation);
+            }
+            attempt.checkpoint()?;
+            thread::sleep(LOCK_POLL_INTERVAL);
+        }
+    }
+
+    /// Claims the head of the sequence when no other advance holds it.
+    ///
+    /// Returns `Ok(None)` while another advance owns the head or is between
+    /// operations on the sequence, which is the caller's cue to consult its
+    /// operation context and try again.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureFault::StreamEnded`] for an exhausted sequence.
+    fn try_reserve(&self) -> Result<Option<Reservation<'_>>> {
+        let mut remainder = match self.remaining.try_lock() {
+            Ok(remainder) => remainder,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Ok(None),
+        };
+        if remainder.reserved {
+            return Ok(None);
+        }
+        // Cloning a `ReplayFrame` deep-copies its pixels, so for a large frame
+        // this is a whole-buffer copy holding the sequence mutex. It is the
+        // longest critical section this mutex has, and the one a committed
+        // advance's claim release can wait behind. Replay sources are fixtures
+        // rather than live capture, so the copy is affordable here; a provider
+        // serving large frames at rate would hand out shared pixels instead.
+        let frame = remainder
+            .frames
             .front()
             .cloned()
             .ok_or(CaptureFault::StreamEnded)?;
-        let publication = Publication {
-            captured_at: frame.captured_at(),
-            descriptor: frame.descriptor(),
-            placement: frame.placement(),
-            continuity: frame.continuity(),
-            pixels: frame.into_pixels(),
-        };
-        let published = self.state.publish(publication)?;
-        remaining.pop_front();
-        Ok(published)
+        remainder.reserved = true;
+        Ok(Some(Reservation {
+            session: self,
+            frame: Some(frame),
+            published: false,
+        }))
     }
 
-    fn wait_until_queue_available(&self, attempt: &mut Operation<'_>) -> Result<()> {
-        loop {
-            match self.remaining.try_lock() {
-                Ok(remaining) => {
-                    if remaining.is_empty() {
-                        return Err(CaptureFault::StreamEnded.into());
-                    }
-                    return Ok(());
-                }
-                Err(TryLockError::Poisoned(poisoned)) => {
-                    if poisoned.into_inner().is_empty() {
-                        return Err(CaptureFault::StreamEnded.into());
-                    }
-                    return Ok(());
-                }
-                Err(TryLockError::WouldBlock) => {
-                    attempt.checkpoint()?;
-                    thread::sleep(LOCK_POLL_INTERVAL);
-                }
-            }
-        }
+    fn lock_remainder(&self) -> MutexGuard<'_, Remainder> {
+        self.remaining
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -323,6 +477,211 @@ mod tests {
         }
     }
 
+    /// How long a test barrier waits before it declares the interleaving lost.
+    ///
+    /// Reaching it is a failure, not a timing tolerance: every wait in these
+    /// tests is released by another thread's progress, never by elapsed time.
+    const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// A one-shot barrier two test threads use to force one interleaving.
+    #[derive(Debug, Default)]
+    struct Handshake {
+        raised: Mutex<bool>,
+        reached: Condvar,
+    }
+
+    impl Handshake {
+        fn raise(&self) {
+            let mut raised = self
+                .raised
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *raised = true;
+            self.reached.notify_all();
+        }
+
+        /// Blocks until [`Handshake::raise`], reporting whether it arrived.
+        fn wait(&self) -> bool {
+            let raised = self
+                .raised
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (raised, timeout) = self
+                .reached
+                .wait_timeout_while(raised, HANDSHAKE_TIMEOUT, |raised| !*raised)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *raised && !timeout.timed_out()
+        }
+    }
+
+    /// Expires a request's deadline exactly at its final arbitration.
+    ///
+    /// The first read is admission and passes. Every later read is the commit,
+    /// which an advance reaches holding its claim on the next frame and having
+    /// published nothing. That read announces the claim, waits for a second
+    /// request to be spinning behind it, records what the sequence looked like
+    /// while both were true, and only then reports the deadline as expired.
+    #[derive(Debug)]
+    struct InterruptAtCommit {
+        reads: AtomicUsize,
+        session: Weak<ReplaySession>,
+        claimed: Arc<Handshake>,
+        contended: Arc<Handshake>,
+        /// How many frames the sequence must still hold at that moment.
+        unconsumed: usize,
+        interrupted_a_claim: AtomicBool,
+    }
+
+    impl InterruptAtCommit {
+        fn new(
+            session: &Arc<ReplaySession>,
+            claimed: Arc<Handshake>,
+            contended: Arc<Handshake>,
+            unconsumed: usize,
+        ) -> Self {
+            Self {
+                reads: AtomicUsize::new(0),
+                session: Arc::downgrade(session),
+                claimed,
+                contended,
+                unconsumed,
+                interrupted_a_claim: AtomicBool::new(false),
+            }
+        }
+
+        /// Reports whether the interruption landed on a claimed, unpublished
+        /// frame while a second request waited behind it.
+        fn interrupted_a_claim(&self) -> bool {
+            self.interrupted_a_claim.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Clock for InterruptAtCommit {
+        fn now(&self) -> MonotonicInstant {
+            if self.reads.fetch_add(1, Ordering::Relaxed) == 0 {
+                return MonotonicInstant::ORIGIN;
+            }
+            self.claimed.raise();
+            let contended = self.contended.wait();
+            if let Some(session) = self.session.upgrade() {
+                let remainder = session.lock_remainder();
+                self.interrupted_a_claim.store(
+                    contended && remainder.reserved && remainder.frames.len() == self.unconsumed,
+                    Ordering::Relaxed,
+                );
+            }
+            MonotonicInstant::ORIGIN
+                .checked_add(Duration::from_millis(2))
+                .expect("test instant is representable")
+        }
+    }
+
+    /// Closes the stream exactly at a request's final arbitration.
+    ///
+    /// The first read is admission and passes. The second is the commit, which
+    /// an advance reaches holding its claim on the next frame. Closing there is
+    /// the one thing that refuses a publication the commit has already
+    /// authorised, so the request runs the whole claim-arbitrate-publish
+    /// sequence and is turned away by the stream at the last step — the path
+    /// that decides whether a refused publication consumes the frame it failed
+    /// to publish.
+    #[derive(Debug)]
+    struct CloseAtCommit {
+        reads: AtomicUsize,
+        session: Weak<ReplaySession>,
+        /// How many frames the sequence must still hold at that moment.
+        unconsumed: usize,
+        refused_a_claim: AtomicBool,
+    }
+
+    impl CloseAtCommit {
+        fn new(session: &Arc<ReplaySession>, unconsumed: usize) -> Self {
+            Self {
+                reads: AtomicUsize::new(0),
+                session: Arc::downgrade(session),
+                unconsumed,
+                refused_a_claim: AtomicBool::new(false),
+            }
+        }
+
+        /// Reports whether the refusal met a claimed, unpublished frame.
+        fn refused_a_claim(&self) -> bool {
+            self.refused_a_claim.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Clock for CloseAtCommit {
+        fn now(&self) -> MonotonicInstant {
+            if self.reads.fetch_add(1, Ordering::Relaxed) == 1
+                && let Some(session) = self.session.upgrade()
+            {
+                {
+                    let remainder = session.lock_remainder();
+                    self.refused_a_claim.store(
+                        remainder.reserved && remainder.frames.len() == self.unconsumed,
+                        Ordering::Relaxed,
+                    );
+                }
+                session.state.begin_close();
+            }
+            // The deadline this clock is paired with is never reached: the
+            // request must be refused by the stream, not interrupted before it
+            // gets there.
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    /// How many refused claim attempts a waiting request tolerates.
+    ///
+    /// [`SignalWhenWaiting`] advances one [`WAIT_STEP`] per refusal, so this is
+    /// a count of refusals rather than an elapsed time. Reaching it means the
+    /// claim ahead was never released, which is a wedged session: it must fail
+    /// the test with a deadline the same round it happens, not spin the run
+    /// until something outside kills it.
+    const REFUSAL_BUDGET: u32 = 500;
+
+    /// How far [`SignalWhenWaiting`] advances for each refused claim.
+    const WAIT_STEP: Duration = Duration::from_millis(1);
+
+    /// Announces that a request has been refused the next frame at least once.
+    ///
+    /// The first read is admission, which happens before the request has looked
+    /// at the sequence. Every later read is a checkpoint in the wait for a
+    /// claim, so a second read is proof that this request found the frame
+    /// already claimed and is waiting behind it.
+    #[derive(Debug)]
+    struct SignalWhenWaiting {
+        reads: AtomicUsize,
+        waiting: Arc<Handshake>,
+    }
+
+    impl SignalWhenWaiting {
+        fn new(waiting: Arc<Handshake>) -> Self {
+            Self {
+                reads: AtomicUsize::new(0),
+                waiting,
+            }
+        }
+    }
+
+    impl Clock for SignalWhenWaiting {
+        fn now(&self) -> MonotonicInstant {
+            let reads = self.reads.fetch_add(1, Ordering::Relaxed);
+            if reads == 0 {
+                return MonotonicInstant::ORIGIN;
+            }
+            self.waiting.raise();
+            // Every refusal moves this request's clock forward. The wait is
+            // released by the claim ahead being released, so the advance is
+            // dead code in a healthy run; a claim that is never released hits
+            // the deadline instead of spinning, which is the difference
+            // between a failing test and a hanging one.
+            MonotonicInstant::ORIGIN
+                .checked_add(WAIT_STEP * u32::try_from(reads).unwrap_or(u32::MAX))
+                .expect("test instant is representable")
+        }
+    }
+
     #[derive(Debug)]
     struct QueueObservingClock {
         session: Weak<ReplaySession>,
@@ -382,7 +741,7 @@ mod tests {
                 CoordinateSupport::with_target_extent(),
             ),
             state: StreamState::with_target_extent(stream),
-            remaining: Mutex::new(frames),
+            remaining: Mutex::new(Remainder::new(frames)),
         });
         session
             .advance(&OperationContext::new())
@@ -392,17 +751,28 @@ mod tests {
 
     /// Builds a one-frame source whose declared placement is `placement`.
     fn placed_source(extent: PixelExtent, placement: TargetPlacement) -> ReplaySource {
-        let descriptor = FrameDescriptor::packed(extent, PixelFormat::Rgba8).expect("valid");
-        let frame = ReplayFrame::new(
-            descriptor,
-            MonotonicInstant::ORIGIN,
-            Continuity::Continuous,
-            Some(placement),
-            vec![0; descriptor.byte_len()].into_boxed_slice(),
-        )
-        .expect("valid replay frame");
+        placed_sequence(vec![(extent, placement)])
+    }
+
+    /// Builds a source whose frames carry the extent and placement they pair.
+    fn placed_sequence(frames: Vec<(PixelExtent, TargetPlacement)>) -> ReplaySource {
+        let frames = frames
+            .into_iter()
+            .map(|(extent, placement)| {
+                let descriptor =
+                    FrameDescriptor::packed(extent, PixelFormat::Rgba8).expect("valid");
+                ReplayFrame::new(
+                    descriptor,
+                    MonotonicInstant::ORIGIN,
+                    Continuity::Continuous,
+                    Some(placement),
+                    vec![0; descriptor.byte_len()].into_boxed_slice(),
+                )
+                .expect("valid replay frame")
+            })
+            .collect();
         ReplaySource::from_targets(vec![
-            ReplayTarget::new("placed", vec![frame]).expect("valid target"),
+            ReplayTarget::new("placed", frames).expect("valid target"),
         ])
         .expect("valid source")
     }
@@ -435,6 +805,25 @@ mod tests {
     }
 
     #[test]
+    fn a_source_whose_later_placement_does_not_cover_its_frame_fails_to_open() {
+        let covers_eight_by_six =
+            TargetPlacement::new((0.0, 0.0), (8.0, 6.0), Scale::new(1.0, 1.0).expect("valid"))
+                .expect("valid");
+
+        // The second frame is twice as wide as the placement it declares, and a
+        // session would not reach it until the first frame had already
+        // published. A manifest is checked as a whole, so the caller learns
+        // this before it holds a session that cannot get past frame two.
+        let error = open_first_target(placed_sequence(vec![
+            (PixelExtent::new(8, 6), covers_eight_by_six),
+            (PixelExtent::new(16, 6), covers_eight_by_six),
+        ]))
+        .expect_err("an inconsistent placement anywhere in the sequence is refused");
+
+        assert_eq!(error.status(), Status::InvalidArgument);
+    }
+
+    #[test]
     fn a_source_whose_placement_covers_its_frame_opens() {
         let extent = PixelExtent::new(8, 6);
         let consistent = TargetPlacement::new(
@@ -456,10 +845,7 @@ mod tests {
     fn a_deadline_while_waiting_for_the_replay_queue_consumes_nothing() {
         let session = session();
         let first = session.state.current().expect("first frame");
-        let remaining = session
-            .remaining
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let remaining = session.lock_remainder();
         let deadline = MonotonicInstant::ORIGIN
             .checked_add(Duration::from_millis(1))
             .expect("representable deadline");
@@ -472,7 +858,11 @@ mod tests {
             .expect_err("deadline wins while the queue is contended");
 
         assert_eq!(error.status(), Status::DeadlineExceeded);
-        assert_eq!(remaining.len(), 2, "the next replay frame remains queued");
+        assert_eq!(
+            remaining.frames.len(),
+            2,
+            "the next replay frame remains queued"
+        );
         drop(remaining);
 
         let next = session
@@ -482,6 +872,103 @@ mod tests {
             )
             .expect("the unconsumed frame still publishes");
         assert_eq!(next.stamp().sequence().value(), 1);
+    }
+
+    #[test]
+    fn an_interruption_after_the_next_frame_is_claimed_consumes_nothing() {
+        let session = session();
+        let first = session.state.current().expect("first frame");
+        let first_stamp = first.stamp();
+        let claimed = Arc::new(Handshake::default());
+        let contended = Arc::new(Handshake::default());
+        // Two frames are left after the session published its first, and both
+        // must still be there while the claim on the head is arbitrated.
+        let clock = Arc::new(InterruptAtCommit::new(
+            &session,
+            Arc::clone(&claimed),
+            Arc::clone(&contended),
+            2,
+        ));
+        let expires = MonotonicInstant::ORIGIN
+            .checked_add(Duration::from_millis(1))
+            .expect("representable deadline");
+        // The follower's deadline is a refusal budget, not a timeout: it can
+        // only be reached by being refused the claim REFUSAL_BUDGET times,
+        // which happens if and only if the claim ahead is never released.
+        let budget_exhausted = MonotonicInstant::ORIGIN
+            .checked_add(WAIT_STEP * REFUSAL_BUDGET)
+            .expect("representable deadline");
+
+        let interrupted = {
+            let session = Arc::clone(&session);
+            let clock = Arc::clone(&clock);
+            thread::spawn(move || {
+                let operation = OperationContext::new()
+                    .with_clock(clock)
+                    .with_deadline(expires);
+                session.frame(&FrameRequest::newer_than(first_stamp), &operation)
+            })
+        };
+
+        // The claiming request is now parked inside its own final arbitration,
+        // holding the next frame and having published nothing. Only then does a
+        // second request start, so it is guaranteed to meet the claim.
+        assert!(
+            claimed.wait(),
+            "the first request reached its final arbitration"
+        );
+        let follower = {
+            let session = Arc::clone(&session);
+            let contended = Arc::clone(&contended);
+            thread::spawn(move || {
+                let operation = OperationContext::new()
+                    .with_clock(Arc::new(SignalWhenWaiting::new(contended)))
+                    .with_deadline(budget_exhausted);
+                session.frame(&FrameRequest::newer_than(first_stamp), &operation)
+            })
+        };
+
+        let error = interrupted
+            .join()
+            .expect("the claiming thread finished")
+            .expect_err("the deadline wins after the frame is claimed");
+        let published = follower
+            .join()
+            .expect("the following thread finished")
+            .expect(
+                "the released frame publishes for the request behind it; an exceeded deadline \
+                 here means the interrupted claim was never released",
+            );
+
+        assert_eq!(error.status(), Status::DeadlineExceeded);
+        assert!(
+            clock.interrupted_a_claim(),
+            "the interruption must land between the claim and the publication"
+        );
+        assert_eq!(
+            published.stamp().sequence().value(),
+            1,
+            "the interrupted request advanced no identity"
+        );
+        assert!(
+            published
+                .map(PixelFormat::Rgba8, &OperationContext::new())
+                .expect("frame maps")
+                .bytes()
+                .iter()
+                .all(|byte| *byte == 1),
+            "the frame the interrupted request claimed was left for the next one"
+        );
+        let remainder = session.lock_remainder();
+        assert_eq!(
+            remainder.frames.len(),
+            1,
+            "exactly one frame was consumed, by the request that published it"
+        );
+        assert!(
+            !remainder.reserved,
+            "an interrupted claim is released, not leaked"
+        );
     }
 
     #[test]
@@ -507,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn close_rejection_does_not_remove_the_next_replay_frame() {
+    fn a_newer_than_request_after_closing_never_reaches_the_replay_sequence() {
         let session = session();
         let first = session.state.current().expect("first frame");
         session.state.begin_close();
@@ -520,14 +1007,53 @@ mod tests {
             .expect_err("closing rejects publication");
 
         assert_eq!(error.status(), Status::Closed);
+        let remainder = session.lock_remainder();
         assert_eq!(
-            session
-                .remaining
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .len(),
+            remainder.frames.len(),
             2,
-            "a rejected publication leaves the finite source intact"
+            "a request refused before the sequence is consulted consumes nothing"
+        );
+        assert!(
+            !remainder.reserved,
+            "a request refused before the sequence is consulted claims nothing"
+        );
+    }
+
+    #[test]
+    fn a_publication_refused_after_the_claim_leaves_the_frame_queued() {
+        let session = session();
+        let first = session.state.current().expect("first frame");
+        // Two frames are left after the session published its first, and the
+        // claimed one must still be there once the stream has refused it.
+        let clock = Arc::new(CloseAtCommit::new(&session, 2));
+        let deadline = MonotonicInstant::ORIGIN
+            .checked_add(Duration::from_secs(1))
+            .expect("representable deadline");
+        let operation = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(deadline);
+
+        // Closing begins inside this request's final arbitration, so unlike a
+        // session that was already closing it gets all the way to a claimed
+        // frame and a committed right to publish it before the stream refuses.
+        let error = session
+            .frame(&FrameRequest::newer_than(first.stamp()), &operation)
+            .expect_err("a stream that began closing refuses the publication");
+
+        assert_eq!(error.status(), Status::Closed);
+        assert!(
+            clock.refused_a_claim(),
+            "the refusal must land on a claimed, unpublished frame"
+        );
+        let remainder = session.lock_remainder();
+        assert_eq!(
+            remainder.frames.len(),
+            2,
+            "a frame that failed to publish is not consumed"
+        );
+        assert!(
+            !remainder.reserved,
+            "a refused publication releases the claim it was holding"
         );
     }
 
@@ -547,14 +1073,7 @@ mod tests {
             .expect_err("closing takes precedence over request qualification");
 
         assert_eq!(error.status(), Status::Closed);
-        assert_eq!(
-            session
-                .remaining
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .len(),
-            2
-        );
+        assert_eq!(session.lock_remainder().frames.len(), 2);
     }
 
     #[test]
@@ -562,10 +1081,7 @@ mod tests {
         let session = session();
         let first = session.state.current().expect("first frame");
         let first_stamp = first.stamp();
-        let remaining = session
-            .remaining
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let remaining = session.lock_remainder();
         let contenders = Arc::new((Mutex::new(0usize), Condvar::new()));
         let deadline = MonotonicInstant::ORIGIN
             .checked_add(Duration::from_secs(1))

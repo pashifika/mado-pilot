@@ -30,11 +30,14 @@ table rather than as a file.
 
 **What is recorded here is frozen.**
 [ADR 0007](../../adr/0007-phase-1-c-abi-freeze.md) froze these layouts as ABI
-major 1, and the same change copied the header into the permanent old-prefix
-fixture at
-[`tests/abi-compat/v1`](../../../crates/bindings/capi/tests/abi-compat/v1/). A
-report that changes from here is either an additive minor — a new structure, or
-a field appended after every existing one — or a defect.
+major 1, and the same change copied the header's declarations into the permanent
+old-prefix fixture at
+[`tests/abi-compat/v1`](../../../crates/bindings/capi/tests/abi-compat/v1/),
+where they are not edited again. The working header has gained comments since,
+so the two files no longer match byte for byte; nothing compares them, and what
+the fixture pins is the declarations these reports measured. A report that
+changes from here is either an additive minor — a new structure, or a field
+appended after every existing one — or a defect.
 
 ## Hosts
 

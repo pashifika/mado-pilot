@@ -347,13 +347,15 @@ typedef struct madopilot_result_t madopilot_result_t;
  * A size describes a prefix, so it also has to end where a prefix can end.
  * Three further sizes are MADOPILOT_STATUS_INVALID_ARGUMENT for that reason,
  * each refused rather than adjusted to something nearby: a struct_size that
- * stops inside a field, because the field would be neither supplied nor
- * omitted; an element of a caller-declared array whose struct_size is above
- * that array's element stride, because the two declarations describe different
- * extents; and a struct_size that does not reach a field whose presence bit is
- * set, because the field the bit names would carry the omitted-field default
- * under the caller's own claim that it was supplied. Every size this header
- * declares satisfies all three.
+ * stops inside a field of the structure the library declares, because the field
+ * would be neither supplied nor omitted — a size at or above the library's own
+ * comes from a newer header, so its extra bytes are the trailing bytes above
+ * rather than a field that library could place; an element of a caller-declared
+ * array whose struct_size is above that array's element stride, because the two
+ * declarations describe different extents; and a struct_size that does not
+ * reach a field whose presence bit is set, because the field the bit names would
+ * carry the omitted-field default under the caller's own claim that it was
+ * supplied. Every size this header declares satisfies all three.
  *
  * For an output structure the same size is a promise in the other direction:
  * the library writes only within it, and writes back the number of bytes it

@@ -18,7 +18,7 @@ use mado_pilot::{
     PixelRect, Rect, Session,
 };
 
-use crate::boundary::{self, Input, Out, Versioned, covers, declared, prefixes};
+use crate::boundary::{self, Out, Versioned, covers, declared, inputs, prefixes};
 use crate::engine::{TargetList, madopilot_engine_t, madopilot_target_list_t, next_stream, report};
 use crate::error::{self, Fault, madopilot_error_t};
 use crate::handle::opaque;
@@ -108,72 +108,74 @@ pub(crate) struct MappingHandle {
     stream: u64,
 }
 
-impl Input for madopilot_open_request_t {
-    // Through `flags`. A caller with no format preference still has to supply a
-    // request, because "any layout" is a decision.
-    const MANDATORY: usize = 8;
-    const NAME: &'static str = "madopilot_open_request_t";
-    const PREFIXES: &'static [usize] = prefixes!(
-        madopilot_open_request_t,
-        struct_size,
-        flags,
-        required_format,
-        preferred_format,
-    );
-    const PRESENCE: &'static [(u32, usize)] = &[
-        (
-            MADOPILOT_OPEN_HAS_REQUIRED_FORMAT,
-            covers!(madopilot_open_request_t, required_format: madopilot_pixel_format_t),
-        ),
-        (
-            MADOPILOT_OPEN_HAS_PREFERRED_FORMAT,
-            covers!(madopilot_open_request_t, preferred_format: madopilot_pixel_format_t),
-        ),
-    ];
+inputs! {
+    impl Input for madopilot_open_request_t {
+        // Through `flags`. A caller with no format preference still has to supply a
+        // request, because "any layout" is a decision.
+        const MANDATORY: usize = 8;
+        const NAME: &'static str = "madopilot_open_request_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_open_request_t,
+            struct_size,
+            flags,
+            required_format,
+            preferred_format,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[
+            (
+                MADOPILOT_OPEN_HAS_REQUIRED_FORMAT,
+                covers!(madopilot_open_request_t, required_format: madopilot_pixel_format_t),
+            ),
+            (
+                MADOPILOT_OPEN_HAS_PREFERRED_FORMAT,
+                covers!(madopilot_open_request_t, preferred_format: madopilot_pixel_format_t),
+            ),
+        ];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            flags: 0,
-            required_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
-            preferred_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                required_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+                preferred_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            self.flags
         }
     }
 
-    fn presence_bits(&self) -> u32 {
-        self.flags
-    }
-}
+    impl Input for madopilot_map_request_t {
+        // Through `format`: the layout the bytes must be in is the request.
+        const MANDATORY: usize = 12;
+        const NAME: &'static str = "madopilot_map_request_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_map_request_t,
+            struct_size,
+            flags,
+            format,
+            clip_policy,
+            region,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[(
+            MADOPILOT_MAP_HAS_REGION,
+            covers!(madopilot_map_request_t, region: madopilot_pixel_rect_t),
+        )];
 
-impl Input for madopilot_map_request_t {
-    // Through `format`: the layout the bytes must be in is the request.
-    const MANDATORY: usize = 12;
-    const NAME: &'static str = "madopilot_map_request_t";
-    const PREFIXES: &'static [usize] = prefixes!(
-        madopilot_map_request_t,
-        struct_size,
-        flags,
-        format,
-        clip_policy,
-        region,
-    );
-    const PRESENCE: &'static [(u32, usize)] = &[(
-        MADOPILOT_MAP_HAS_REGION,
-        covers!(madopilot_map_request_t, region: madopilot_pixel_rect_t),
-    )];
-
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            flags: 0,
-            format: MADOPILOT_PIXEL_FORMAT_RGBA8,
-            clip_policy: crate::types::MADOPILOT_CLIP_POLICY_REJECT,
-            region: madopilot_pixel_rect_t::empty(),
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+                clip_policy: crate::types::MADOPILOT_CLIP_POLICY_REJECT,
+                region: madopilot_pixel_rect_t::empty(),
+            }
         }
-    }
 
-    fn presence_bits(&self) -> u32 {
-        self.flags
+        fn presence_bits(&self) -> u32 {
+            self.flags
+        }
     }
 }
 

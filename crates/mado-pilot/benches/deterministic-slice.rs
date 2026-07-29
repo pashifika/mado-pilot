@@ -21,6 +21,7 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
@@ -143,47 +144,115 @@ fn main() {
     // After the report, so a run that fails a gate still emits the numbers that
     // explain the failure.
     bench_harness::enforce_hard_budgets(&workloads);
-    mappings_take_the_paths_their_recorded_bytes_assume();
+    MAPPING_PATHS.assert_every_iteration_took_the_path_its_bytes_assume(plan);
 }
 
-/// Asserts the share-versus-copy decision the two mapping workloads' recorded
-/// bytes assume.
+/// Which path each mapping iteration took, counted as it took it.
 ///
-/// `mapped_bytes_per_result` is `mapping.bytes().len()` for both of them, and
-/// that number is the same whether the mapping shared the frame's storage or
-/// copied it — so no budget on it can see a mapping that stopped sharing.
-/// What can see it is the decision itself: a full-frame mapping in the source
-/// format shares, and a region mapping owns its packed copy.
+/// `mapped_bytes_per_result` is `mapping.bytes().len()` for both mapping
+/// workloads, and that number is the same whether the mapping shared the
+/// frame's storage or copied it — so no budget on it can see a mapping that
+/// stopped sharing. What can see it is the decision itself: a full-frame
+/// mapping in the source format shares the frame's storage, and a region
+/// mapping owns its packed copy.
 ///
-/// Once per run rather than once per sample, because it is a property of the
-/// path rather than of an iteration, and here rather than in a workload's
-/// oracle so that the profiles' recorded `correctness_oracle` strings keep
-/// describing exactly what each retained sample was checked against. It fails
-/// the benchmark on both the `cargo bench` and the `cargo test` path, which is
-/// the enforcement a hard budget gets.
-fn mappings_take_the_paths_their_recorded_bytes_assume() {
-    let fixture = Fixture::new();
-    let frame = fixture.frame();
+/// Every iteration is counted, warmup included, because a mapping that shared
+/// on its first call and copied afterwards satisfies a check made once and is
+/// exactly the regression a per-result byte count cannot see either.
+///
+/// Counted here rather than folded into a sample's `correct` flag: that flag is
+/// what each profile's recorded `correctness_oracle` string describes and what
+/// its `result_correctness` counts, and this is a property of the path rather
+/// than of a result. Asserted once after the report, so it fails the benchmark
+/// on both the `cargo bench` and the `cargo test` path, which is the
+/// enforcement a hard budget gets.
+///
+/// Each count is taken after the sample's own `elapsed` reading and allocates
+/// nothing, so no latency percentile and no allocation number can move. It does
+/// land inside `iteration_span`, which the harness times across the whole
+/// sample loop, so two relaxed atomic increments per iteration are charged
+/// against the sub-microsecond `iteration_span_ms` ceiling both target profiles
+/// state for `map_full_frame`. That charge is expected to be nanoseconds but is
+/// measured on neither release target; read a miss on that ceiling with it in
+/// mind.
+static MAPPING_PATHS: MappingPaths = MappingPaths::new();
 
-    let whole = frame
-        .map(SOURCE_FORMAT, &fixture.operation)
-        .expect("mapped");
-    assert!(
-        whole.is_shared(),
-        "map_full_frame maps a whole frame in its own format, which shares the \
-         frame's storage rather than copying it; a copy costs the frame's bytes \
-         per result and reports the same mapped_bytes_per_result as sharing"
-    );
+/// The tally [`MAPPING_PATHS`] keeps.
+#[derive(Debug)]
+struct MappingPaths {
+    full_frames: AtomicU64,
+    /// Whole-frame mappings that copied, which is the regression.
+    copied_full_frames: AtomicU64,
+    regions: AtomicU64,
+    /// Region mappings that shared, which is the other one.
+    shared_regions: AtomicU64,
+}
 
-    let mapped = region_of_interest(&frame)
-        .map(SOURCE_FORMAT, &fixture.operation)
-        .expect("mapped");
-    assert!(
-        !mapped.is_shared(),
-        "map_region_of_interest maps a sub-rectangle, which owns a packed copy; \
-         a shared mapping would be the whole frame's storage reported under a \
-         region's byte count"
-    );
+impl MappingPaths {
+    const fn new() -> Self {
+        Self {
+            full_frames: AtomicU64::new(0),
+            copied_full_frames: AtomicU64::new(0),
+            regions: AtomicU64::new(0),
+            shared_regions: AtomicU64::new(0),
+        }
+    }
+
+    /// Records how one whole-frame mapping in the source format came out.
+    fn record_full_frame(&self, shared: bool) {
+        self.full_frames.fetch_add(1, Ordering::Relaxed);
+        if !shared {
+            self.copied_full_frames.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Records how one region mapping came out.
+    fn record_region(&self, shared: bool) {
+        self.regions.fetch_add(1, Ordering::Relaxed);
+        if shared {
+            self.shared_regions.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Fails the run when any iteration took the other path.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a whole-frame mapping copied, when a region mapping shared,
+    /// or when a workload was observed fewer times than the run retained
+    /// samples — the last so that a benchmark which stopped mapping cannot pass
+    /// this by having nothing to report.
+    fn assert_every_iteration_took_the_path_its_bytes_assume(&self, plan: Plan) {
+        let full_frames = self.full_frames.load(Ordering::Relaxed);
+        let copied = self.copied_full_frames.load(Ordering::Relaxed);
+        let regions = self.regions.load(Ordering::Relaxed);
+        let shared = self.shared_regions.load(Ordering::Relaxed);
+
+        assert_eq!(
+            copied, 0,
+            "map_full_frame maps a whole frame in its own format, which shares \
+             the frame's storage rather than copying it, but {copied} of \
+             {full_frames} iterations copied; a copy costs the frame's bytes \
+             per result and reports the same mapped_bytes_per_result as sharing"
+        );
+        assert_eq!(
+            shared, 0,
+            "map_region_of_interest maps a sub-rectangle, which owns a packed \
+             copy, but {shared} of {regions} iterations shared; a shared \
+             mapping is the whole frame's storage reported under a region's \
+             byte count"
+        );
+
+        let retained = plan.samples() as u64;
+        assert!(
+            full_frames >= retained && regions >= retained,
+            "each mapping workload runs once per warmup and retained \
+             iteration, so at least {retained} of each were expected, but \
+             {full_frames} whole-frame and {regions} region mappings were \
+             observed; a count below that means this check passed because \
+             nothing mapped"
+        );
+    }
 }
 
 /// The name and oracle the two matching workloads share.
@@ -269,6 +338,7 @@ fn map_full_frame(fixture: &Fixture) -> Sample {
         .expect("mapped");
     let elapsed = started.elapsed();
 
+    MAPPING_PATHS.record_full_frame(mapping.is_shared());
     Sample::new(
         elapsed,
         mapping.stamp() == frame.stamp() && mapping.bytes().len() == frame.descriptor().byte_len(),
@@ -285,6 +355,7 @@ fn map_region(fixture: &Fixture) -> Sample {
         .expect("mapped");
     let elapsed = started.elapsed();
 
+    MAPPING_PATHS.record_region(mapping.is_shared());
     let expected = u64::from(region.region().width())
         * u64::from(region.region().height())
         * u64::from(SOURCE_FORMAT.bytes_per_pixel());

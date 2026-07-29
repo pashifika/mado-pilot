@@ -17,7 +17,7 @@
 
 use mado_pilot::{AssetPackage, Engine, PreparedTemplate, Status};
 
-use crate::boundary::{self, Input, Out, Versioned, prefixes};
+use crate::boundary::{self, Out, Versioned, inputs, prefixes};
 use crate::engine::{madopilot_engine_t, report};
 use crate::error::{Fault, madopilot_error_t};
 use crate::handle::opaque;
@@ -51,27 +51,29 @@ opaque! {
     madopilot_template_t => PreparedTemplate
 }
 
-impl Input for madopilot_package_source_t {
-    // Through `path`. The archive-bytes kind supplies its content in the field
-    // after it, and a caller that uses that kind says so with a larger size.
-    const MANDATORY: usize = 24;
-    const NAME: &'static str = "madopilot_package_source_t";
-    const PREFIXES: &'static [usize] =
-        prefixes!(madopilot_package_source_t, struct_size, kind, path, archive);
-    const PRESENCE: &'static [(u32, usize)] = &[];
+inputs! {
+    impl Input for madopilot_package_source_t {
+        // Through `path`. The archive-bytes kind supplies its content in the field
+        // after it, and a caller that uses that kind says so with a larger size.
+        const MANDATORY: usize = 24;
+        const NAME: &'static str = "madopilot_package_source_t";
+        const PREFIXES: &'static [usize] =
+            prefixes!(madopilot_package_source_t, struct_size, kind, path, archive);
+        const PRESENCE: &'static [(u32, usize)] = &[];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            kind: MADOPILOT_PACKAGE_SOURCE_DIRECTORY,
-            path: madopilot_str_t::empty(),
-            archive: madopilot_bytes_t::empty(),
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                kind: MADOPILOT_PACKAGE_SOURCE_DIRECTORY,
+                path: madopilot_str_t::empty(),
+                archive: madopilot_bytes_t::empty(),
+            }
         }
-    }
 
-    fn presence_bits(&self) -> u32 {
-        // The second field is `kind`, a discriminant rather than a bit set.
-        0
+        fn presence_bits(&self) -> u32 {
+            // The second field is `kind`, a discriminant rather than a bit set.
+            0
+        }
     }
 }
 

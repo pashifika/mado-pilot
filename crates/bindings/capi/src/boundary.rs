@@ -26,7 +26,12 @@
 use std::panic::{self, AssertUnwindSafe};
 
 use crate::error::Fault;
+use crate::layout::{LAYOUT, TypeLayout};
 use crate::status::{MADOPILOT_STATUS_INTERNAL_PANIC, madopilot_status_t};
+use crate::types::{
+    madopilot_find_request_t, madopilot_map_request_t, madopilot_match_options_t,
+    madopilot_open_request_t, madopilot_operation_t,
+};
 
 /// Runs one table entry with a panic containment fence around it.
 ///
@@ -66,9 +71,8 @@ pub(crate) trait Versioned: Copy {
 ///
 /// The offsets come from the compiler rather than from a written table, so a
 /// field that moves takes the list with it. What a reader still has to check is
-/// that every field is named, which
-/// `tests::every_input_prefix_list_names_every_field` proves against the same
-/// layout report the C probe is diffed against.
+/// that every field is named, which [`check_input_tables`] proves against the
+/// same layout report the C probe is diffed against.
 macro_rules! prefixes {
     ($ty:ty $(, $field:ident)+ $(,)?) => {
         &[$(std::mem::offset_of!($ty, $field),)+ size_of::<$ty>()]
@@ -118,6 +122,13 @@ pub(crate) const fn declares(table: &[(u32, usize)], bit: u32) -> bool {
 macro_rules! declared {
     ($value:expr, $ty:ty, $bit:expr $(,)?) => {{
         const {
+            // Honoring a bit reads the same table the checks are about, so the
+            // structure's tables are held to being consistent here too. This
+            // block is written against a named type rather than a type
+            // parameter, so it is evaluated when this site is compiled — no
+            // caller has to reach the site for the check to run.
+            $crate::boundary::check_input_tables::<$ty>();
+
             assert!(
                 $crate::boundary::declares(<$ty as $crate::boundary::Input>::PRESENCE, $bit),
                 concat!(
@@ -139,8 +150,54 @@ macro_rules! declared {
 
 pub(crate) use declared;
 
+/// A structure that reached [`Input`] through [`inputs!`].
+///
+/// [`Input`] requires it and nothing but [`inputs!`] implements it, so an
+/// implementation written any other way does not compile — whatever way its
+/// header happens to be spelled, on one line or several, qualified or not.
+///
+/// The requirement exists so that the checks an input structure's tables have
+/// to pass arrive with the implementation rather than only when something reads
+/// the structure. What those checks stand between is a presence bit the
+/// boundary cannot refuse and a caller's prefix read as though it covered a
+/// field it stops short of.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` implements `Input` without registering as one",
+    label = "not registered",
+    note = "write the implementation inside `inputs!`, which registers the structure and writes the checks its tables have to pass"
+)]
+pub(crate) trait Registered: Copy {}
+
+/// Implements [`Input`] for each structure named, and registers it.
+///
+/// Registration is not a second list to keep in step with the first: the
+/// implementations are the list. Each invocation emits the implementations it
+/// was given, unchanged, and beside each of them a `const` item that runs
+/// [`check_input_tables`] for that structure. A `const` item is evaluated
+/// wherever it is written — at module scope, inside a function body, in code no
+/// test and no caller ever reaches — so implementing the trait and being
+/// checked are one act, and no invocation of this macro can be positioned
+/// somewhere its checks do not run.
+macro_rules! inputs {
+    ($(
+        $(#[$attr:meta])*
+        impl Input for $ty:ty { $($body:tt)* }
+    )+) => {
+        $(
+            impl $crate::boundary::Registered for $ty {}
+
+            $(#[$attr])*
+            impl $crate::boundary::Input for $ty { $($body)* }
+
+            const _: () = $crate::boundary::check_input_tables::<$ty>();
+        )+
+    };
+}
+
+pub(crate) use inputs;
+
 /// A size-versioned structure the caller supplies.
-pub(crate) trait Input: Copy {
+pub(crate) trait Input: Registered {
     /// The smallest `struct_size` that describes a usable request.
     const MANDATORY: usize;
     /// The structure's C name, for diagnostics.
@@ -314,6 +371,13 @@ pub(crate) unsafe fn read_element<S: Input>(ptr: *const S, stride: usize) -> Res
 /// As [`read_input`], except that a supplied `stride` is the readable extent
 /// instead of the structure's own declared size.
 unsafe fn read<S: Input>(ptr: *const S, stride: Option<usize>) -> Result<S, Fault> {
+    // Nothing at run time: this is where every rule below reads `S`'s tables,
+    // so it is where the tables are held to being consistent. Instantiating
+    // this function for a structure evaluates the block, which makes an
+    // unchecked table a compile error at the first site that would have relied
+    // on it — including for an implementation written outside `inputs!`.
+    const { check_input_tables::<S>() };
+
     if ptr.is_null() {
         return Err(Fault::abi(format!("the {} argument is null", S::NAME)));
     }
@@ -557,40 +621,176 @@ const fn narrow(size: usize) -> u32 {
     }
 }
 
-/// What a check of one input structure is handed: its name, its legal prefixes,
-/// its presence table, and its mandatory prefix.
-#[cfg(test)]
-type InputCheck<'a> = &'a dyn Fn(&'static str, &'static [usize], &'static [(u32, usize)], usize);
-
-/// Runs `check` over every structure a caller supplies.
+/// Every structure that owns a family of presence flags in the header.
 ///
-/// Rust cannot enumerate the implementations of a trait, so the list is written
-/// out. What keeps a written list from going stale is
-/// [`tests::for_every_input_visits_every_input_implementation`], which reads the
-/// implementations back out of this crate's own source and requires the two to
-/// name the same structures.
-#[cfg(test)]
-fn for_every_input(check: InputCheck) {
-    fn one<S: Input>(check: InputCheck) {
-        check(S::NAME, S::PREFIXES, S::PRESENCE, S::MANDATORY);
+/// A structure carrying presence bits has to appear here, and
+/// [`check_input_tables`] will not compile it otherwise. The comparison against
+/// the header itself is in this module's tests, where the header can be read as
+/// text; this list is what stops a structure from being left out of that
+/// comparison, which is a failure the comparison cannot see — a table nobody
+/// looks at and a header flag nobody claims look exactly alike from inside a
+/// loop over the tables that are listed.
+///
+/// Each entry names its owner through the type rather than by repeating a
+/// string, and the tests hold this list and their own family table to the same
+/// membership.
+const FAMILY_OWNERS: &[&str] = &[
+    <madopilot_operation_t as Input>::NAME,
+    <madopilot_open_request_t as Input>::NAME,
+    <madopilot_map_request_t as Input>::NAME,
+    <madopilot_find_request_t as Input>::NAME,
+    <madopilot_match_options_t as Input>::NAME,
+];
+
+/// Whether `list` holds `value`.
+///
+/// A `const fn` so that [`check_input_tables`] can ask the question while the
+/// structure whose table it is asking about is being compiled.
+const fn lists(list: &[usize], value: usize) -> bool {
+    let mut index = 0;
+    while index < list.len() {
+        if list[index] == value {
+            return true;
+        }
+        index += 1;
     }
 
-    one::<crate::types::madopilot_operation_t>(check);
-    one::<crate::types::madopilot_source_t>(check);
-    one::<crate::types::madopilot_replay_frame_t>(check);
-    one::<crate::types::madopilot_package_source_t>(check);
-    one::<crate::types::madopilot_open_request_t>(check);
-    one::<crate::types::madopilot_map_request_t>(check);
-    one::<crate::types::madopilot_find_request_t>(check);
-    one::<crate::types::madopilot_match_options_t>(check);
+    false
+}
+
+/// Whether two names are the same name.
+///
+/// `str` comparison is not available in a `const fn`, and the names being
+/// compared are C identifiers, so the bytes are compared directly.
+const fn same(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+
+    true
+}
+
+/// What the compiler measured `name` as.
+///
+/// Panics when the layout report does not measure the structure at all, which
+/// would leave [`check_input_tables`] comparing a prefix list against nothing.
+const fn measured(name: &str) -> &'static TypeLayout {
+    let mut index = 0;
+    while index < LAYOUT.len() {
+        if same(LAYOUT[index].name, name) {
+            return &LAYOUT[index];
+        }
+        index += 1;
+    }
+
+    panic!("the layout report does not measure this structure, so its prefix list is unverifiable");
+}
+
+/// Runs every check one input structure's tables have to pass, while that
+/// structure is being compiled.
+///
+/// Rust cannot enumerate the implementations of a trait, and const evaluation
+/// is what stands in for enumerating them. The checks are written against one
+/// structure at a time and run from two places that cannot be avoided: a
+/// `const` item [`inputs!`] emits beside each implementation, which is
+/// evaluated wherever it was written — module, function body, or code nothing
+/// ever reaches — and [`read`], which runs them for every structure it is
+/// instantiated for, whoever wrote that structure's implementation. Neither
+/// depends on a test being collected, so no implementation can be positioned
+/// somewhere its tables go unchecked.
+///
+/// Every message is a literal because a `const` panic cannot format one. The
+/// structure is named by the diagnostic itself, which reports the failure as
+/// `check_input_tables::<the structure>`.
+pub(crate) const fn check_input_tables<S: Input>() {
+    // The caller's declared size is held to the same rule the library's own
+    // mandatory prefixes are held to by
+    // `tests/layout.rs::every_mandatory_prefix_is_a_real_field_boundary`. That
+    // rule is only as good as the boundary list it is checked against, so the
+    // list is compared field for field with the layout report the C probe is
+    // diffed against.
+    let layout = measured(S::NAME);
+    assert!(
+        S::PREFIXES.len() == layout.fields.len() + 1,
+        "the prefix list does not name every one of the structure's fields"
+    );
+
+    let mut index = 0;
+    while index < layout.fields.len() {
+        assert!(
+            S::PREFIXES[index] == layout.fields[index].offset,
+            "the prefix list does not match the layout report field for field"
+        );
+        index += 1;
+    }
+    assert!(
+        S::PREFIXES[layout.fields.len()] == layout.size,
+        "the prefix list does not end at the size the layout report measured"
+    );
+
+    assert!(
+        lists(S::PREFIXES, S::MANDATORY),
+        "the mandatory prefix ends inside a field"
+    );
+
+    assert!(
+        S::PRESENCE.is_empty() || owns_a_family(S::NAME),
+        "the structure carries presence bits that belong to no family in `FAMILY_OWNERS`, so the header and this table are never compared; add its family there"
+    );
+
+    let mut index = 0;
+    while index < S::PRESENCE.len() {
+        let (_, required) = S::PRESENCE[index];
+        assert!(
+            lists(S::PREFIXES, required),
+            "a presence bit requires a prefix that is not a field boundary"
+        );
+        assert!(
+            required > S::MANDATORY,
+            "a presence bit names a field the mandatory prefix already covers, so the bit can never be refused"
+        );
+
+        let mut earlier = 0;
+        while earlier < index {
+            assert!(
+                S::PRESENCE[earlier].1 != required,
+                "two presence bits require the same prefix, so one of them names the wrong field"
+            );
+            earlier += 1;
+        }
+
+        index += 1;
+    }
+}
+
+/// Whether [`FAMILY_OWNERS`] lists `name`.
+const fn owns_a_family(name: &str) -> bool {
+    let mut index = 0;
+    while index < FAMILY_OWNERS.len() {
+        if same(FAMILY_OWNERS[index], name) {
+            return true;
+        }
+        index += 1;
+    }
+
+    false
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::path::PathBuf;
-
-    use crate::layout::{LAYOUT, TypeLayout};
+    use super::{
+        FAMILY_OWNERS, Input, madopilot_find_request_t, madopilot_map_request_t,
+        madopilot_match_options_t, madopilot_open_request_t, madopilot_operation_t,
+    };
 
     /// The header, read as text rather than compiled.
     ///
@@ -599,17 +799,53 @@ mod tests {
     /// that caller whether or not this crate accounted for it.
     const HEADER: &str = include_str!("../include/madopilot/madopilot.h");
 
+    /// One family of presence flags, and the structure whose table owns it.
+    struct PresenceFamily {
+        /// What every flag of the family is named with.
+        prefix: &'static str,
+        /// The owning structure's C name.
+        owner: &'static str,
+        /// The owning structure's presence table.
+        table: &'static [(u32, usize)],
+    }
+
     /// Which input structure each family of presence flags belongs to.
     ///
     /// A flag whose name matches no family here is not skipped: the test below
     /// fails and names it, so a new family is a decision someone writes down
-    /// rather than one the parser makes silently.
-    const PRESENCE_FAMILIES: &[(&str, &str)] = &[
-        ("MADOPILOT_OPERATION_HAS_", "madopilot_operation_t"),
-        ("MADOPILOT_OPEN_HAS_", "madopilot_open_request_t"),
-        ("MADOPILOT_MAP_HAS_", "madopilot_map_request_t"),
-        ("MADOPILOT_FIND_HAS_", "madopilot_find_request_t"),
-        ("MADOPILOT_MATCH_HAS_", "madopilot_match_options_t"),
+    /// rather than one the parser makes silently. The same holds in the other
+    /// direction, from [`super::FAMILY_OWNERS`], which a structure carrying
+    /// presence bits has to appear in to compile at all, and which this list is
+    /// held to member for member.
+    ///
+    /// Each entry names its owner through the type rather than by repeating a
+    /// string, which is what ties the family to the table beside it.
+    const PRESENCE_FAMILIES: &[PresenceFamily] = &[
+        PresenceFamily {
+            prefix: "MADOPILOT_OPERATION_HAS_",
+            owner: <madopilot_operation_t as Input>::NAME,
+            table: <madopilot_operation_t as Input>::PRESENCE,
+        },
+        PresenceFamily {
+            prefix: "MADOPILOT_OPEN_HAS_",
+            owner: <madopilot_open_request_t as Input>::NAME,
+            table: <madopilot_open_request_t as Input>::PRESENCE,
+        },
+        PresenceFamily {
+            prefix: "MADOPILOT_MAP_HAS_",
+            owner: <madopilot_map_request_t as Input>::NAME,
+            table: <madopilot_map_request_t as Input>::PRESENCE,
+        },
+        PresenceFamily {
+            prefix: "MADOPILOT_FIND_HAS_",
+            owner: <madopilot_find_request_t as Input>::NAME,
+            table: <madopilot_find_request_t as Input>::PRESENCE,
+        },
+        PresenceFamily {
+            prefix: "MADOPILOT_MATCH_HAS_",
+            owner: <madopilot_match_options_t as Input>::NAME,
+            table: <madopilot_match_options_t as Input>::PRESENCE,
+        },
     ];
 
     /// Flags on structures the library writes.
@@ -624,67 +860,77 @@ mod tests {
         "MADOPILOT_ERROR_HAS_BACKEND",
     ];
 
-    fn measured(name: &str) -> &'static TypeLayout {
-        LAYOUT
-            .iter()
-            .find(|layout| layout.name == name)
-            .unwrap_or_else(|| panic!("`{name}` is measured by the layout report"))
-    }
-
-    /// Every input structure's name and presence table.
-    fn presence_tables() -> Vec<(&'static str, &'static [(u32, usize)])> {
-        let tables = RefCell::new(Vec::new());
-        super::for_every_input(&|name, _, presence, _| tables.borrow_mut().push((name, presence)));
-
-        tables.into_inner()
-    }
-
-    /// Every `Input` implementation this crate's source declares, by type name.
+    /// The families this module compares are exactly the families the
+    /// structures declare.
     ///
-    /// The type name is what `super::for_every_input` is compared against
-    /// because [`Input::NAME`] is already tied to it:
-    /// `every_input_prefix_list_names_every_field` looks the name up in the
-    /// layout report, whose entries are `stringify!` of the measured type.
-    fn implemented_inputs() -> Vec<String> {
-        let mut names = Vec::new();
-        let mut pending = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+    /// [`super::FAMILY_OWNERS`] is what a structure carrying presence bits has
+    /// to appear in to compile, and it is checked while that structure is
+    /// compiled rather than while a test runs. It is only worth that if it and
+    /// the list the comparisons below iterate name the same structures, so the
+    /// two are held to each other here.
+    #[test]
+    fn every_structure_that_declares_a_family_has_one_here() {
+        let compared: Vec<&str> = PRESENCE_FAMILIES
+            .iter()
+            .map(|family| family.owner)
+            .collect();
 
-        while let Some(directory) = pending.pop() {
-            let entries = std::fs::read_dir(&directory)
-                .unwrap_or_else(|error| panic!("`{}` is readable: {error}", directory.display()));
+        assert_eq!(
+            compared.as_slice(),
+            FAMILY_OWNERS,
+            "`FAMILY_OWNERS` and `PRESENCE_FAMILIES` name different structures, so a structure can satisfy the one that is checked at compile time and still be compared against the header by nothing"
+        );
+    }
 
-            for entry in entries {
-                let path = entry
-                    .expect("a directory entry under this crate's own source is readable")
-                    .path();
-                if path.is_dir() {
-                    pending.push(path);
-                    continue;
-                }
-                if path.extension().is_none_or(|extension| extension != "rs") {
-                    continue;
-                }
-
-                let source = std::fs::read_to_string(&path)
-                    .unwrap_or_else(|error| panic!("`{}` is readable: {error}", path.display()));
-                names.extend(source.lines().filter_map(|line| {
-                    line.trim_start()
-                        .strip_prefix("impl Input for ")
-                        .map(|rest| rest.trim_end_matches('{').trim().to_owned())
-                }));
+    /// A presence table carries no bit the header does not declare for that
+    /// structure.
+    ///
+    /// The opposite direction of the test below, and the weaker of the two: a
+    /// bit the header does not declare makes the boundary refuse a prefix no
+    /// documented caller can ask for, rather than accept one it should refuse.
+    /// It is still a table and a header that disagree, and one of them is
+    /// wrong.
+    #[test]
+    fn every_bit_a_presence_table_carries_is_a_flag_the_header_declares() {
+        let flags = header_flags();
+        for family in PRESENCE_FAMILIES {
+            for &(bit, _) in family.table {
+                assert!(
+                    flags
+                        .iter()
+                        .any(|&(flag, value)| value == bit && flag.starts_with(family.prefix)),
+                    "{}'s presence table carries bit {bit:#x}, which the header declares as no flag of that structure",
+                    family.owner
+                );
             }
         }
-        names.sort_unstable();
-
-        names
     }
 
-    /// Every flag the header's `Flags` section defines, with its value.
+    /// Every flag the header defines, with its value.
     ///
-    /// The section is the filter rather than the name, so a flag that does not
-    /// follow the `_HAS_` convention is still accounted for. A value is read as
-    /// the token after the name, which leaves a trailing comment out of it.
+    /// Two filters, because neither alone accounts for every flag. The `Flags`
+    /// section catches one that does not follow the `_HAS_` convention, and the
+    /// name shape catches a presence bit filed somewhere else in the header —
+    /// where the section scan would never look, and where the obligation this
+    /// list exists to state is exactly as real.
     fn header_flags() -> Vec<(&'static str, u32)> {
+        let mut flags = flags_section();
+        for line in HEADER.lines() {
+            let Some((name, literal)) = define(line) else {
+                continue;
+            };
+            if !is_presence_name(name) || flags.iter().any(|&(known, _)| known == name) {
+                continue;
+            }
+
+            flags.push((name, flag_value(name, literal)));
+        }
+
+        flags
+    }
+
+    /// Every flag the header's `Flags` section defines, in declaration order.
+    fn flags_section() -> Vec<(&'static str, u32)> {
         let mut lines = HEADER.lines().skip_while(|line| line.trim() != "* Flags");
         assert!(
             lines.next().is_some(),
@@ -697,24 +943,11 @@ mod tests {
             if line.starts_with("/* ---") {
                 break;
             }
-            let Some(definition) = line.strip_prefix("#define ") else {
+            let Some((name, literal)) = define(line) else {
                 continue;
             };
 
-            let mut tokens = definition.split_whitespace();
-            let name = tokens.next().expect("a `#define` names something");
-            let literal = tokens
-                .next()
-                .unwrap_or_else(|| panic!("the header defines `{name}` with no value"));
-            let digits = literal.trim_end_matches(['u', 'U', 'l', 'L']);
-            let value = digits
-                .strip_prefix("0x")
-                .map_or_else(|| digits.parse(), |hex| u32::from_str_radix(hex, 16))
-                .unwrap_or_else(|_| {
-                    panic!("the header defines `{name}` as `{literal}`, which is not an integer")
-                });
-
-            flags.push((name, value));
+            flags.push((name, flag_value(name, literal)));
         }
 
         assert!(
@@ -725,38 +958,43 @@ mod tests {
         flags
     }
 
-    /// The caller's declared size is held to the same rule the library's own
-    /// mandatory prefixes are held to by
-    /// `tests/layout.rs::every_mandatory_prefix_is_a_real_field_boundary`. That
-    /// rule is only as good as the boundary list it is checked against, so the
-    /// list is compared field for field with the layout report the C probe is
-    /// diffed against.
-    /// Every structure `for_every_input` hands to a check is one the source
-    /// implements, and every one the source implements is handed over.
+    /// Splits `#define NAME VALUE` into its name and its value token.
     ///
-    /// The three checks below are only as complete as that list, and Rust gives
-    /// them no way to notice a ninth implementation. Reading the `impl Input
-    /// for` lines back out of `src/` is that way: the list and the source are
-    /// two independent statements of the same set, and a new implementation
-    /// that reaches only one of them fails here.
-    #[test]
-    fn for_every_input_visits_every_input_implementation() {
-        let implemented = implemented_inputs();
-        assert!(
-            !implemented.is_empty(),
-            "the source names no `Input` implementation at all, so this comparison would be vacuous"
-        );
+    /// The indentation the header's platform branches use is accepted, and a
+    /// value is the token after the name, which leaves a trailing comment out of
+    /// it.
+    fn define(line: &'static str) -> Option<(&'static str, Option<&'static str>)> {
+        let directive = line
+            .trim_start()
+            .strip_prefix('#')?
+            .trim_start()
+            .strip_prefix("define ")?;
 
-        let mut visited: Vec<String> = presence_tables()
-            .into_iter()
-            .map(|(name, _)| name.to_owned())
-            .collect();
-        visited.sort_unstable();
+        let mut tokens = directive.split_whitespace();
+        let name = tokens.next()?;
 
-        assert_eq!(
-            visited, implemented,
-            "`for_every_input` and the `impl Input for` lines under `src/` name different structures, so an implementation is either checked by nothing or checked twice"
-        );
+        Some((name, tokens.next()))
+    }
+
+    /// Whether a name follows the convention for a presence bit,
+    /// `MADOPILOT_<structure>_HAS_<field>`.
+    fn is_presence_name(name: &str) -> bool {
+        name.starts_with("MADOPILOT_") && name.contains("_HAS_")
+    }
+
+    /// Reads a flag's value, which is an integer literal with an optional width
+    /// suffix.
+    fn flag_value(name: &str, literal: Option<&str>) -> u32 {
+        let literal =
+            literal.unwrap_or_else(|| panic!("the header defines `{name}` with no value"));
+        let digits = literal.trim_end_matches(['u', 'U', 'l', 'L']);
+
+        digits
+            .strip_prefix("0x")
+            .map_or_else(|| digits.parse(), |hex| u32::from_str_radix(hex, 16))
+            .unwrap_or_else(|_| {
+                panic!("the header defines `{name}` as `{literal}`, which is not an integer")
+            })
     }
 
     /// Every flag a caller can set is either an input bit the boundary can
@@ -769,108 +1007,25 @@ mod tests {
     /// exist, so it is what the tables are compared against.
     #[test]
     fn every_flag_the_header_declares_is_an_input_bit_or_an_output_flag() {
-        let tables = presence_tables();
-
         for (name, value) in header_flags() {
             if OUTPUT_FLAGS.contains(&name) {
                 continue;
             }
 
-            let owner = PRESENCE_FAMILIES
+            let family = PRESENCE_FAMILIES
                 .iter()
-                .find(|(family, _)| name.starts_with(family))
+                .find(|family| name.starts_with(family.prefix))
                 .unwrap_or_else(|| {
                     panic!(
                         "the header declares `{name}`, which belongs to no known input structure; add its family to `PRESENCE_FAMILIES`, or add the name to `OUTPUT_FLAGS` if the library writes the flag rather than reads it"
                     )
-                })
-                .1;
-            let presence = tables
-                .iter()
-                .find(|(structure, _)| *structure == owner)
-                .unwrap_or_else(|| panic!("`{owner}` implements `Input`"))
-                .1;
+                });
 
             assert!(
-                presence.iter().any(|&(bit, _)| bit == value),
-                "the header declares `{name}` as {value:#x}, which {owner}'s presence table omits, so a prefix that stops short of the field it names would be defaulted instead of refused"
+                family.table.iter().any(|&(bit, _)| bit == value),
+                "the header declares `{name}` as {value:#x}, which {}'s presence table omits, so a prefix that stops short of the field it names would be defaulted instead of refused",
+                family.owner
             );
         }
-    }
-
-    #[test]
-    fn every_presence_table_entry_is_a_flag_the_header_declares() {
-        let declared = header_flags();
-
-        for (name, presence) in presence_tables() {
-            for &(bit, _) in presence {
-                assert!(
-                    declared.iter().any(|&(flag, value)| value == bit
-                        && PRESENCE_FAMILIES
-                            .iter()
-                            .any(|(family, owner)| *owner == name && flag.starts_with(family))),
-                    "{name}'s presence table carries bit {bit:#x}, which the header declares as no flag of that structure"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn every_input_prefix_list_names_every_field() {
-        super::for_every_input(&|name, prefixes, _, _| {
-            let layout = measured(name);
-            let expected: Vec<usize> = layout
-                .fields
-                .iter()
-                .map(|field| field.offset)
-                .chain([layout.size])
-                .collect();
-
-            assert_eq!(
-                prefixes,
-                expected.as_slice(),
-                "{name} does not list every one of its field offsets"
-            );
-        });
-    }
-
-    #[test]
-    fn every_input_mandatory_prefix_is_one_of_its_legal_prefixes() {
-        super::for_every_input(&|name, prefixes, _, mandatory| {
-            assert!(
-                prefixes.contains(&mandatory),
-                "{name}'s {mandatory} byte mandatory prefix ends inside a field"
-            );
-        });
-    }
-
-    #[test]
-    fn every_presence_bit_needs_a_prefix_that_ends_at_a_field_boundary() {
-        super::for_every_input(&|name, prefixes, presence, mandatory| {
-            for &(bit, required) in presence {
-                assert!(
-                    prefixes.contains(&required),
-                    "{name}'s presence bit {bit:#x} requires {required} bytes, which is not a field boundary"
-                );
-                assert!(
-                    required > mandatory,
-                    "{name}'s presence bit {bit:#x} names a field the mandatory prefix already covers, so the bit can never be refused"
-                );
-            }
-        });
-    }
-
-    #[test]
-    fn no_two_presence_bits_of_one_structure_name_the_same_field() {
-        super::for_every_input(&|name, _, presence, _| {
-            for (index, &(bit, required)) in presence.iter().enumerate() {
-                assert!(
-                    !presence[..index]
-                        .iter()
-                        .any(|&(_, earlier)| earlier == required),
-                    "{name}'s presence bit {bit:#x} requires the same {required} byte prefix as an earlier bit"
-                );
-            }
-        });
     }
 }

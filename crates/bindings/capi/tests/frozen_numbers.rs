@@ -28,6 +28,11 @@ const HEADER: &str = include_str!("../include/madopilot/madopilot.h");
 /// Anything the header declares with a `MADOPILOT_` name and no integer literal
 /// has to be listed here, so a new one cannot be quietly skipped by the parser
 /// below.
+///
+/// Preprocessor spellings only. An enumerator always has a number whether or
+/// not the header writes one out, so listing one here would drop a frozen value
+/// out of the freeze rather than record that it has none;
+/// `no_enumerator_is_excused_from_the_freeze` refuses that entry.
 const NOT_A_NUMBER: &[&str] = &[
     // The include guard.
     "MADOPILOT_MADOPILOT_H",
@@ -180,12 +185,20 @@ fn every_frozen_number_is_the_one_this_library_defines() {
 
 #[test]
 fn the_header_declares_no_number_the_freeze_does_not_cover() {
-    for (name, declared) in header_symbols() {
+    for (name, declared, kind) in header_symbols() {
         let Some(declared) = declared else {
             assert!(
-                NOT_A_NUMBER.contains(&name),
+                kind != Declaration::Enumerator,
+                "the header declares the enumerator `{name}` and this parser could not read its \
+                 value. An enumerator has a number whichever way it is written, so give it an \
+                 explicit integer literal in the header and freeze that number here. Excusing it \
+                 would take a value a caller can read back out of the freeze."
+            );
+            assert!(
+                NOT_A_NUMBER.contains(&name.as_str()),
                 "the header declares `{name}` without an integer literal, and nothing here says \
-                 whether it is a frozen number. Add it to the freeze table or to NOT_A_NUMBER."
+                 whether it is a frozen number. Freeze its value, or — only if it is a macro that \
+                 expands to no number at all — record it in NOT_A_NUMBER."
             );
             continue;
         };
@@ -207,14 +220,32 @@ fn the_header_declares_no_number_the_freeze_does_not_cover() {
     }
 }
 
+/// The escape hatch for a symbol with no number never covers an enumerator.
+///
+/// An enumerator's value exists whether or not the header writes one out, so
+/// moving its name here would make the suite green by dropping a frozen number
+/// out of the freeze — the failure this file exists to prevent. The test above
+/// already refuses the entry when it meets one; this one refuses it up front, so
+/// the list can be read as the promise it makes.
+#[test]
+fn no_enumerator_is_excused_from_the_freeze() {
+    for (name, _, kind) in header_symbols() {
+        assert!(
+            kind != Declaration::Enumerator || !NOT_A_NUMBER.contains(&name.as_str()),
+            "`{name}` is an enumerator and NOT_A_NUMBER excuses it from the freeze. An enumerator \
+             carries a number a caller can read, so it belongs in the freeze table instead."
+        );
+    }
+}
+
 #[test]
 fn every_frozen_number_is_declared_by_the_header() {
     let declared = header_symbols();
 
     for (name, _, frozen) in FROZEN {
-        let (_, value) = declared
+        let (_, value, _) = declared
             .iter()
-            .find(|(declared, _)| declared == name)
+            .find(|(declared, _, _)| declared == name)
             .unwrap_or_else(|| {
                 panic!(
                     "`{name}` is frozen at {frozen} and the header declares no such name; within \
@@ -229,16 +260,51 @@ fn every_frozen_number_is_declared_by_the_header() {
     }
 }
 
-/// Every `MADOPILOT_`-prefixed name the header declares, with its value.
+/// How the header spells one declaration.
+///
+/// The distinction the tests need is whether a value exists at all. A macro may
+/// expand to something that is not a number; an enumerator always has one, so a
+/// value this parser could not read is a parse failure rather than a symbol
+/// with nothing to freeze.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Declaration {
+    /// A preprocessor `#define`.
+    Define,
+    /// A name inside an `enum { … }` block.
+    Enumerator,
+    /// A `MADOPILOT_`-prefixed name somewhere else — today, the export macro
+    /// standing in front of a function declaration.
+    Other,
+}
+
+/// Every `MADOPILOT_`-prefixed name the header declares, with its value and how
+/// it is spelled.
 ///
 /// `None` means the declaration carries no integer literal, which the tests
 /// above require to be an accounted-for exception rather than something the
 /// parser stepped over.
-fn header_symbols() -> Vec<(&'static str, Option<i64>)> {
+fn header_symbols() -> Vec<(String, Option<i64>, Declaration)> {
     let mut declared = Vec::new();
+    let mut in_comment = false;
+    let mut in_enum = false;
 
     for line in HEADER.lines() {
+        // Comments come off before anything is parsed. The header's style puts
+        // them on the line above, but one written after a value used to leave
+        // the value unreadable and the symbol reported as undeclared.
+        let line = uncommented(line, &mut in_comment);
         let line = line.trim();
+
+        // `enum { … };`. Which block a name sits in is what tells an enumerator
+        // from a macro, and the two are held to different rules.
+        if line.starts_with("enum") && line.ends_with('{') {
+            in_enum = true;
+            continue;
+        }
+        if in_enum && line.starts_with('}') {
+            in_enum = false;
+            continue;
+        }
 
         // `#  define NAME VALUE`, with the indentation the platform branches use.
         let define = line
@@ -246,16 +312,30 @@ fn header_symbols() -> Vec<(&'static str, Option<i64>)> {
             .map(str::trim_start)
             .and_then(|directive| directive.strip_prefix("define "));
 
-        let (name, value) = if let Some(rest) = define {
+        let (name, value, kind) = if let Some(rest) = define {
             let mut tokens = rest.split_whitespace();
             let Some(name) = tokens.next() else { continue };
-            (name, tokens.next())
+            (name, tokens.next(), Declaration::Define)
         } else if line.starts_with("MADOPILOT_") {
+            let kind = if in_enum {
+                Declaration::Enumerator
+            } else {
+                Declaration::Other
+            };
+
             // An enumerator, `NAME = VALUE,`. A declaration without one is not
             // a number and is reported as such rather than skipped.
             match line.split_once('=') {
-                Some((name, value)) => (name.trim(), Some(value.trim().trim_end_matches(','))),
-                None => (line.split_whitespace().next().unwrap_or(line), None::<&str>),
+                Some((name, value)) => (
+                    name.trim(),
+                    Some(value.trim().trim_end_matches(',').trim()),
+                    kind,
+                ),
+                None => (
+                    line.split_whitespace().next().unwrap_or(line),
+                    None::<&str>,
+                    kind,
+                ),
             }
         } else {
             continue;
@@ -264,7 +344,7 @@ fn header_symbols() -> Vec<(&'static str, Option<i64>)> {
         if !name.starts_with("MADOPILOT_") {
             continue;
         }
-        declared.push((name, value.and_then(integer)));
+        declared.push((name.to_owned(), value.and_then(integer), kind));
     }
 
     assert!(
@@ -273,6 +353,46 @@ fn header_symbols() -> Vec<(&'static str, Option<i64>)> {
     );
 
     declared
+}
+
+/// Returns `line` with its comments removed, carrying block state to the next
+/// line.
+///
+/// Spans are removed rather than the line truncated at the first marker, so a
+/// declaration that follows a comment on the same line is still parsed instead
+/// of silently disappearing.
+fn uncommented(line: &str, in_comment: &mut bool) -> String {
+    let mut code = String::with_capacity(line.len());
+    let mut rest = line;
+
+    while !rest.is_empty() {
+        if *in_comment {
+            let Some(end) = rest.find("*/") else { break };
+            *in_comment = false;
+            rest = &rest[end + "*/".len()..];
+            continue;
+        }
+
+        let block = rest.find("/*");
+        let to_end = rest.find("//");
+        match (block, to_end) {
+            (Some(at), _) if to_end.is_none_or(|to_end| at < to_end) => {
+                code.push_str(&rest[..at]);
+                *in_comment = true;
+                rest = &rest[at + "/*".len()..];
+            }
+            (_, Some(at)) => {
+                code.push_str(&rest[..at]);
+                break;
+            }
+            (_, None) => {
+                code.push_str(rest);
+                break;
+            }
+        }
+    }
+
+    code
 }
 
 /// Reads a C integer literal, decimal or hexadecimal, with any width suffix.

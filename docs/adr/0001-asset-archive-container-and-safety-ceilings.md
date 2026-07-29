@@ -72,6 +72,23 @@ paid for the substitute directory, so it makes the assertion true unconditionall
 rather than before the cost; the first guard is what keeps the cost bounded for
 the candidates the reader reaches first.
 
+That requirement also fixes where a ZIP64 record may sit. A ZIP64 trailer is
+accepted only at a zero archive offset: the directory offset the record states
+must be the directory's physical position, and the record must begin at exactly
+the offset its locator advertises. The reader finds that record by searching
+*forward* from the advertised offset and takes the first candidate that parses,
+so a nonzero archive offset opens a stretch of file between the record the
+pre-parse validated and the one the reader will reach; a record planted there is
+the one that gets opened, on an entry count the pre-parse never saw, and the
+reader reserves in proportion to that count before the post-open comparison can
+refuse. The observable consequence is that an archive behind a prepended stub
+still loads when its trailer is zip32 and is refused as a malformed archive at
+the pre-parse when its trailer is ZIP64. The asymmetry is the reader's search
+direction rather than a preference, and it costs nothing a package needs: 4,096
+entries and 256 MiB of source both sit far inside what zip32 addresses, so ZIP64
+is unreachable from size here and a ZIP64 trailer reaches this loader only from a
+writer that emits the markers unconditionally.
+
 **Recorded metadata may reject, never authorise.** A size or count recorded in
 an archive is attacker-controlled. It may be used to stop early, and it must be
 re-checked against bytes actually produced. An entry is cut off at its declared
@@ -125,6 +142,15 @@ ceiling alone does not bound the central directory, which scales with entry
 count independently of any expansion, and does not bound the single largest
 allocation, which is the manifest.
 
+**Scanning the gap for a ZIP64 signature instead of requiring a zero archive
+offset.** Rejected as conservative where an exact rule was available. Refusing
+any ZIP64 end-of-central-directory signature between the advertised and the
+physical record offset would also close the forward search's window, but the
+reader skips candidates that fail to parse, so a signature scan would refuse
+legitimate archives over incidental bytes in a stub, and it would read up to the
+whole file to do it. Requiring the two offsets to agree costs no extra read and
+puts the validated record where the search looks first.
+
 ## Consequences
 
 **For integrators.** A package must fit inside the ceilings above. The most
@@ -153,15 +179,16 @@ decision does not support.
 
 **A `zip` version bump is a review step, not a routine update.** The trailer
 rules above are written against how `zip` 8.6.0 finds and accepts a trailer, so
-a bump must re-verify three sites in the new version: `spec.rs:806`, the
+a bump must re-verify four sites in the new version: `spec.rs:805`, the
 whole-file backward search for the end-of-central-directory signature;
 `spec.rs:823-828`, the relaxed comment check that accepts a record with trailing
-bytes after it; and `read/zip_archive.rs:167-205`, the fallback to an earlier
-candidate and the reservation it makes before the entry count can be compared.
-Widen or narrow any of the three and the pre-parse is guarding a different set
-of candidates than the reader will reach. The same sentence is carried as a
-comment in `crates/automation/assets/src/archive.rs` beside the cross-check it
-protects.
+bytes after it; `spec.rs:939-958`, the forward search for the ZIP64 record from
+the offset its locator advertises; and `read/zip_archive.rs:167-205`, the
+fallback to an earlier candidate and the reservation it makes before the entry
+count can be compared. Widen or narrow any of the four and the pre-parse is
+guarding a different set of candidates than the reader will reach. The same
+reasoning is carried as comments in `crates/automation/assets/src/archive.rs`,
+beside the cross-check and the ZIP64 offset rule they protect.
 
 **Performance.** The guards are not a measurable tax on legitimate packages: the
 representative 512-template package validates end to end in 6,694 µs on Apple
@@ -193,6 +220,11 @@ above are added; the disposable probe that produced them is removed.
   is asserted against archives the test builds, because an archive of N empty
   entries is fully described by N and storing two of them would cost most of the
   fixture directory. Everything whose exact bytes are the test stays tracked.
+- The stub asymmetry is asserted in both directions against archives the test
+  builds: a prepended stub ahead of a zip32 trailer loads and leaves the
+  pre-parse and the reader on one directory, while the same stub ahead of a
+  ZIP64 trailer is refused at the pre-parse, with and without a record planted
+  in the window the stub would have opened.
 - `fixtures/assets/g-014/SHA256SUMS` pins every fixture, so a silent fixture
   edit invalidates the evidence visibly rather than quietly.
 - The representative packages must load successfully, and the directory and

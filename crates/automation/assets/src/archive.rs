@@ -112,7 +112,7 @@ pub(crate) fn open<R: Read + Seek + 'static>(
     ensure_unchanged(source.as_ref(), LoadStage::DirectoryOpen)?;
     // Re-proving the pre-parse against what the reader actually opened, rather
     // than assuming the two agree. `zip` 8.6.0 searches the whole file backwards
-    // for a trailer (`spec.rs:806`), accepts one whose comment merely fits inside
+    // for a trailer (`spec.rs:805`), accepts one whose comment merely fits inside
     // the file rather than ending it (`spec.rs:823-828`), and falls back to an
     // earlier record when it rejects the first (`read/zip_archive.rs:167-173`).
     // The pre-parse refuses every record the fallback would reach first, so a
@@ -195,9 +195,10 @@ struct RecordedDirectory {
 ///
 /// The selected EOCD must account for the exact suffix through its comment
 /// length. Single-disk count fields must agree, and ZIP64 records must be the
-/// fixed record directly preceding their locator. This intentionally rejects
-/// ambiguous trailers that `zip` could otherwise backtrack past after the
-/// pre-parser had trusted a smaller count.
+/// fixed record directly preceding their locator, at the offset that locator
+/// advertises. This intentionally rejects ambiguous trailers that `zip` could
+/// otherwise backtrack past — or, in the ZIP64 case, search forward past — after
+/// the pre-parser had trusted a smaller count.
 fn recorded_directory<R: Read + Seek>(
     reader: &mut R,
     source_len: u64,
@@ -339,15 +340,20 @@ fn zip64_directory<R: Read + Seek>(
     let start = physical_record_offset
         .checked_sub(directory_size)
         .ok_or_else(pre_parse_malformed)?;
-    let archive_offset = start
-        .checked_sub(directory_offset)
-        .ok_or_else(pre_parse_malformed)?;
+    // A prepended stub is permitted for a zip32 trailer but refused here, and the
+    // asymmetry is the reader's, not a preference. `zip` finds the ZIP64 record by
+    // a *forward* search from the offset the locator advertises
+    // (`spec.rs:939-958`), taking the first record that parses. Any archive offset
+    // therefore opens a `[advertised, physical)` window ahead of the record
+    // validated above, and a decoy planted in that window is reached first: its
+    // entry count is one nothing here counted, and `read/zip_archive.rs:184-200`
+    // reserves for it before the cross-check at the call site can refuse. A zero
+    // archive offset makes the search's own first probe land on this record, so
+    // the window is empty by construction. ZIP64 exists in this profile for
+    // writers that emit the markers unconditionally, not for archives too large
+    // for zip32, so nothing a package needs is lost.
     let advertised_record_offset = read_u64(&locator, 8);
-    if archive_offset
-        .checked_add(advertised_record_offset)
-        .ok_or_else(overflow)?
-        != physical_record_offset
-    {
+    if start != directory_offset || advertised_record_offset != physical_record_offset {
         return Err(pre_parse_malformed());
     }
 
@@ -484,7 +490,7 @@ mod tests {
 
     use super::{
         AssetFault, CENTRAL_DIRECTORY_HEADER_LEN, CENTRAL_DIRECTORY_SIGNATURE, EOCD_SIGNATURE,
-        RawEntry, open, recorded_directory,
+        RawEntry, ZIP64_EOCD_LEN, ZIP64_EOCD_RECORD_SIZE, open, recorded_directory,
     };
     use crate::{AssetFaultKind, AssetLimits, LoadStage};
 
@@ -728,6 +734,29 @@ mod tests {
         assert_zip64_preparse_fault(bytes, AssetFaultKind::ArchiveLimit, 1);
     }
 
+    #[test]
+    fn a_zip64_record_ahead_of_the_validated_one_is_refused_before_the_directory_is_opened() {
+        // The reader searches forward from the offset the locator advertises, so
+        // a stub puts every byte between that offset and the validated record
+        // inside its window, and the first record that parses wins. This decoy
+        // declares eight entries from inside the stub against a four-entry
+        // ceiling the pre-parse enforced against the empty directory behind it,
+        // and the reader reserves for that count before anything compares the
+        // two directories.
+        let bytes = zip64_behind_a_stub(512, Some((400, 8)));
+
+        assert_zip64_preparse_fault(bytes, AssetFaultKind::MalformedArchive, 4);
+    }
+
+    #[test]
+    fn a_zip64_trailer_behind_a_prepended_stub_is_outside_the_phase_one_profile() {
+        // Refusing the archive offset outright is what leaves the forward search
+        // no window, so a stub is refused whether or not one is planted in it.
+        let bytes = zip64_behind_a_stub(512, None);
+
+        assert_zip64_preparse_fault(bytes, AssetFaultKind::MalformedArchive, 4);
+    }
+
     fn assert_zip64_preparse_fault(bytes: Vec<u8>, expected: AssetFaultKind, limit: u32) {
         let source_len = u64::try_from(bytes.len()).expect("archive length fits");
         let limits = AssetLimits::ceiling()
@@ -752,22 +781,60 @@ mod tests {
         record_disk: u32,
         zip32_count: u16,
     ) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&super::ZIP64_EOCD_SIGNATURE);
-        bytes.extend_from_slice(&record_size.to_le_bytes());
-        bytes.extend_from_slice(&45u16.to_le_bytes());
-        bytes.extend_from_slice(&45u16.to_le_bytes());
-        bytes.extend_from_slice(&record_disk.to_le_bytes());
-        bytes.extend_from_slice(&0u32.to_le_bytes());
-        bytes.extend_from_slice(&entries.to_le_bytes());
-        bytes.extend_from_slice(&entries.to_le_bytes());
-        bytes.extend_from_slice(&0u64.to_le_bytes());
-        bytes.extend_from_slice(&0u64.to_le_bytes());
+        let mut bytes = zip64_record(record_size, entries, record_disk);
         bytes.extend_from_slice(&super::ZIP64_LOCATOR_SIGNATURE);
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&advertised_record_offset.to_le_bytes());
         bytes.extend_from_slice(&number_of_disks.to_le_bytes());
         bytes.extend_from_slice(&eocd(zip32_count, zip32_count, u32::MAX, u32::MAX));
+        bytes
+    }
+
+    /// A ZIP64 end-of-central-directory record for an empty directory.
+    fn zip64_record(record_size: u64, entries: u64, record_disk: u32) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(ZIP64_EOCD_LEN);
+        bytes.extend_from_slice(&super::ZIP64_EOCD_SIGNATURE);
+        bytes.extend_from_slice(&record_size.to_le_bytes());
+        bytes.extend_from_slice(&45u16.to_le_bytes()); // version made by
+        bytes.extend_from_slice(&45u16.to_le_bytes()); // version needed
+        bytes.extend_from_slice(&record_disk.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // the directory's disk
+        bytes.extend_from_slice(&entries.to_le_bytes()); // entries on this disk
+        bytes.extend_from_slice(&entries.to_le_bytes()); // entries in total
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // directory size
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // directory offset
+        bytes
+    }
+
+    /// A ZIP64 trailer for an empty directory behind a `stub`-byte prepended
+    /// stub, optionally carrying a decoy record at an offset inside that stub.
+    ///
+    /// The recorded directory is empty, so the validated record sits at `stub`,
+    /// its locator at `stub + 56`, and the zip32 trailer at `stub + 76`. The
+    /// locator advertises offset zero, which is what the pre-parse's own
+    /// `archive_offset + advertised == physical` requirement forces once a stub
+    /// is present — and zero is where `zip` starts searching *forward* for the
+    /// record, so the whole stub lies inside its window.
+    fn zip64_behind_a_stub(stub: usize, decoy: Option<(usize, u64)>) -> Vec<u8> {
+        let physical = u64::try_from(stub).expect("the stub is small");
+        let locator_offset = physical + u64::try_from(ZIP64_EOCD_LEN).expect("the record is small");
+        let mut bytes = vec![0u8; stub];
+
+        if let Some((offset, entries)) = decoy {
+            // `zip` requires a record to end exactly where its locator begins
+            // (`spec.rs:931-932`), which fixes the decoy's record size and makes
+            // everything between the two its extensible data sector.
+            let start = u64::try_from(offset).expect("the offset is small");
+            let record = zip64_record(locator_offset - start - 12, entries, 0);
+            bytes[offset..offset + record.len()].copy_from_slice(&record);
+        }
+
+        bytes.extend_from_slice(&zip64_record(ZIP64_EOCD_RECORD_SIZE, 0, 0));
+        bytes.extend_from_slice(&super::ZIP64_LOCATOR_SIGNATURE);
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // the record's disk
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // advertised record offset
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // total disks
+        bytes.extend_from_slice(&eocd(u16::MAX, u16::MAX, u32::MAX, u32::MAX));
         bytes
     }
 

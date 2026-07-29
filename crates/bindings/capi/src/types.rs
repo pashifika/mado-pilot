@@ -14,14 +14,17 @@
 //! invalid argument, and nothing beyond `struct_size` is read even to check it.
 //!
 //! A size describes a prefix, so it also has to end where a prefix can end. A
-//! `struct_size` that stops inside a field is invalid argument, because that
-//! field would be neither covered nor omitted; an element of a caller-declared
-//! array whose `struct_size` is above the array's element stride is invalid
-//! argument, because the two declarations describe different extents; and a
-//! presence bit set for a field the declared size does not reach is invalid
-//! argument, because the field the bit names would carry the omitted-field
-//! default under the caller's own claim that it was supplied. Every size a
-//! released header declares satisfies all three.
+//! `struct_size` that stops inside a field of the structure this library
+//! declares is invalid argument, because that field would be neither covered
+//! nor omitted — a size at or above this library's own is a newer caller, whose
+//! extra bytes are the trailing bytes above rather than a field this library
+//! could place; an element of a caller-declared array whose `struct_size` is
+//! above the array's element stride is invalid argument, because the two
+//! declarations describe different extents; and a presence bit set for a field
+//! the declared size does not reach is invalid argument, because the field the
+//! bit names would carry the omitted-field default under the caller's own claim
+//! that it was supplied. Every size a released header declares satisfies all
+//! three.
 //!
 //! For an output structure the same size is a promise in the other direction:
 //! the library writes only within it, and a caller that supplied an older prefix

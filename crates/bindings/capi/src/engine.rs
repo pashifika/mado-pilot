@@ -24,7 +24,7 @@ use std::time::Duration;
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription};
 
-use crate::boundary::{self, Input, Out, Versioned, prefixes};
+use crate::boundary::{self, Input, Out, Versioned, inputs, prefixes};
 use crate::error::{self, Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
@@ -71,77 +71,79 @@ pub(crate) fn next_stream() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-impl Input for madopilot_source_t {
-    // Through `frame_stride`: a memory source cannot be read without the stride
-    // of the array it points at, and a directory source is not harmed by
-    // carrying fields it leaves empty.
-    const MANDATORY: usize = 48;
-    const NAME: &'static str = "madopilot_source_t";
-    const PREFIXES: &'static [usize] = prefixes!(
-        madopilot_source_t,
-        struct_size,
-        kind,
-        directory,
-        frames,
-        frame_count,
-        frame_stride,
-        target_name,
-    );
-    const PRESENCE: &'static [(u32, usize)] = &[];
+inputs! {
+    impl Input for madopilot_source_t {
+        // Through `frame_stride`: a memory source cannot be read without the stride
+        // of the array it points at, and a directory source is not harmed by
+        // carrying fields it leaves empty.
+        const MANDATORY: usize = 48;
+        const NAME: &'static str = "madopilot_source_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_source_t,
+            struct_size,
+            kind,
+            directory,
+            frames,
+            frame_count,
+            frame_stride,
+            target_name,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            kind: MADOPILOT_SOURCE_REPLAY_MEMORY,
-            directory: madopilot_str_t::empty(),
-            frames: std::ptr::null(),
-            frame_count: 0,
-            frame_stride: 0,
-            target_name: madopilot_str_t::empty(),
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                kind: MADOPILOT_SOURCE_REPLAY_MEMORY,
+                directory: madopilot_str_t::empty(),
+                frames: std::ptr::null(),
+                frame_count: 0,
+                frame_stride: 0,
+                target_name: madopilot_str_t::empty(),
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            // The second field is `kind`, a discriminant rather than a bit set.
+            0
         }
     }
 
-    fn presence_bits(&self) -> u32 {
-        // The second field is `kind`, a discriminant rather than a bit set.
-        0
-    }
-}
+    impl Input for madopilot_replay_frame_t {
+        // Through `pixels`. Everything before it describes what the pixels are, and
+        // a frame without them is not a frame.
+        const MANDATORY: usize = 40;
+        const NAME: &'static str = "madopilot_replay_frame_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_replay_frame_t,
+            struct_size,
+            flags,
+            width,
+            height,
+            format,
+            continuity,
+            pixels,
+            captured_at_nanos,
+            stride,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[];
 
-impl Input for madopilot_replay_frame_t {
-    // Through `pixels`. Everything before it describes what the pixels are, and
-    // a frame without them is not a frame.
-    const MANDATORY: usize = 40;
-    const NAME: &'static str = "madopilot_replay_frame_t";
-    const PREFIXES: &'static [usize] = prefixes!(
-        madopilot_replay_frame_t,
-        struct_size,
-        flags,
-        width,
-        height,
-        format,
-        continuity,
-        pixels,
-        captured_at_nanos,
-        stride,
-    );
-    const PRESENCE: &'static [(u32, usize)] = &[];
-
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            flags: 0,
-            width: 0,
-            height: 0,
-            format: MADOPILOT_PIXEL_FORMAT_RGBA8,
-            continuity: crate::types::MADOPILOT_CONTINUITY_CONTINUOUS,
-            pixels: madopilot_bytes_t::empty(),
-            captured_at_nanos: 0,
-            stride: 0,
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                width: 0,
+                height: 0,
+                format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+                continuity: crate::types::MADOPILOT_CONTINUITY_CONTINUOUS,
+                pixels: madopilot_bytes_t::empty(),
+                captured_at_nanos: 0,
+                stride: 0,
+            }
         }
-    }
 
-    fn presence_bits(&self) -> u32 {
-        self.flags
+        fn presence_bits(&self) -> u32 {
+            self.flags
+        }
     }
 }
 

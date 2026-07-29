@@ -85,9 +85,12 @@ jobs:
         shell: bash
         run: cargo fmt --all --check
 
-      # This job deliberately compiles nothing. Every step above reads manifests,
-      # metadata, or source text, so it needs no OpenCV installation on a host that
-      # is neither release target. Documentation is built in both native jobs
+      # This job deliberately compiles no product package. The one thing it does
+      # compile is the maintenance checker above, which depends on none of them;
+      # every other step reads manifests, metadata, or source text. So it needs no
+      # OpenCV installation on a host that is neither release target, which any
+      # product package would, because mado-pilot-backend-opencv generates its
+      # bindings at build time. Documentation is built in both native jobs
       # instead, where the compiler that would report a broken link is the one the
       # product is verified with.
       - name: Restore cargo-deny
