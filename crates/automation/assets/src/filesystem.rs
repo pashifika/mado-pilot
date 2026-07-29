@@ -189,6 +189,7 @@ mod platform {
     use std::ffi::{CString, OsString, c_char};
     use std::fs::{self, File, OpenOptions};
     use std::io;
+    use std::mem::offset_of;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -239,6 +240,14 @@ mod platform {
         _private: [u8; 0],
     }
 
+    /// The inline extent of `d_name`.
+    ///
+    /// `NAME_MAX + 1` on Linux, `__DARWIN_MAXPATHLEN` on the Apple platforms.
+    /// Named because `entry_name` bounds the name against it, and a bound that
+    /// restated the number could drift from the declaration it belongs to.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const NAME_CAPACITY: usize = 256;
+
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[repr(C)]
     struct DirectoryEntry {
@@ -246,8 +255,14 @@ mod platform {
         _offset: i64,
         _record_len: u16,
         _file_type: u8,
-        name: [c_char; 256],
+        name: [c_char; NAME_CAPACITY],
     }
+
+    /// The inline extent of `d_name`, which is `__DARWIN_MAXPATHLEN`.
+    ///
+    /// See the Linux definition above for why it is named.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const NAME_CAPACITY: usize = 1_024;
 
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     #[repr(C)]
@@ -257,7 +272,7 @@ mod platform {
         _record_len: u16,
         name_len: u16,
         _file_type: u8,
-        name: [c_char; 1_024],
+        name: [c_char; NAME_CAPACITY],
     }
 
     unsafe extern "C" {
@@ -383,8 +398,9 @@ mod platform {
                     return (errno != 0).then(|| Err(io::Error::from_raw_os_error(errno)));
                 }
                 // SAFETY: `readdir` returned a live entry whose name is valid
-                // until the next call on this same directory stream.
-                let name = unsafe { entry_name(&*entry) };
+                // until the next call on this same directory stream. The
+                // pointer is passed on as a pointer: see `entry_name`.
+                let name = unsafe { entry_name(entry) };
                 if name.as_bytes() == b"." || name.as_bytes() == b".." {
                     continue;
                 }
@@ -429,18 +445,71 @@ mod platform {
         unsafe { __error() }
     }
 
+    /// Reads one directory entry's name.
+    ///
+    /// Takes a pointer rather than a reference, and that is the whole point.
+    /// `readdir` returns a record `d_reclen` bytes long, and `d_reclen` covers
+    /// only as much of `d_name` as the name needs — while `DirectoryEntry`
+    /// declares `d_name` at its platform maximum, so the type is far larger than
+    /// the record. Forming a `&DirectoryEntry` would assert that every byte of
+    /// that larger type is valid and dereferenceable, which is undefined
+    /// behaviour whether or not any byte past the record is read, and nothing
+    /// here needs to read one. Projecting through the pointer with `&raw const`
+    /// touches only the fields named.
+    ///
+    /// # Safety
+    ///
+    /// `entry` must be a non-null record `readdir` returned for a stream no
+    /// later call has advanced, and must remain valid for this call.
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    unsafe fn entry_name(entry: &DirectoryEntry) -> OsString {
-        // SAFETY: POSIX `readdir` guarantees a NUL-terminated `d_name`.
-        let name = unsafe { CStr::from_ptr(entry.name.as_ptr()) };
-        OsString::from_vec(name.to_bytes().to_vec())
+    unsafe fn entry_name(entry: *const DirectoryEntry) -> OsString {
+        // SAFETY: `d_reclen` sits at offset 16, inside every record `readdir`
+        // writes, and the pointer libc returns is aligned for this struct.
+        let record_len = usize::from(unsafe { (&raw const (*entry)._record_len).read() });
+        let inside_record = record_len.saturating_sub(offset_of!(DirectoryEntry, name));
+        let available = inside_record.min(NAME_CAPACITY);
+        // SAFETY: `available` counts only bytes between `d_name` and the end of
+        // the record, so the slice cannot leave what `readdir` wrote.
+        let bytes = unsafe {
+            std::slice::from_raw_parts((&raw const (*entry).name).cast::<u8>(), available)
+        };
+        // Bounded rather than scanned from a bare pointer. `readdir` does
+        // NUL-terminate `d_name`, but relying on that for memory safety would
+        // let a malformed record run the scan past the record; here it decides
+        // only where the name ends inside bytes already proven to be ours.
+        let name = CStr::from_bytes_until_nul(bytes).map_or(bytes, CStr::to_bytes);
+        OsString::from_vec(name.to_vec())
     }
 
+    /// Reads one directory entry's name.
+    ///
+    /// See the other `entry_name` for why this takes a pointer. This platform
+    /// carries `d_namlen`, so the length is read rather than scanned for.
+    ///
+    /// # Safety
+    ///
+    /// As the other `entry_name`.
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    unsafe fn entry_name(entry: &DirectoryEntry) -> OsString {
-        let length = usize::from(entry.name_len).min(entry.name.len());
-        // SAFETY: `length` is bounded by the inline `d_name` storage.
-        let bytes = unsafe { std::slice::from_raw_parts(entry.name.as_ptr().cast(), length) };
+    unsafe fn entry_name(entry: *const DirectoryEntry) -> OsString {
+        // SAFETY: `d_reclen` and `d_namlen` sit at offsets 16 and 18, inside
+        // every record `readdir` writes. A plain read, not `read_unaligned`:
+        // libc dereferences these fields itself, so the pointer it returns is
+        // aligned for the struct. Measured on this host — 34 entries, none
+        // misaligned.
+        let record_len = usize::from(unsafe { (&raw const (*entry)._record_len).read() });
+        // SAFETY: as above.
+        let declared = usize::from(unsafe { (&raw const (*entry).name_len).read() });
+        // Two bounds, and the record one is the load-bearing half. `d_namlen`
+        // and the type's inline extent are both larger than the record: measured
+        // here, `d_reclen` runs 32 to 56 bytes against a 1048-byte type, so a
+        // `d_namlen` that disagreed with its own record would put the slice past
+        // the bytes `readdir` wrote while still looking plausible.
+        let inside_record = record_len.saturating_sub(offset_of!(DirectoryEntry, name));
+        let length = declared.min(inside_record).min(NAME_CAPACITY);
+        // SAFETY: `length` counts only bytes between `d_name` and the end of the
+        // record, so the slice cannot leave what `readdir` wrote.
+        let bytes =
+            unsafe { std::slice::from_raw_parts((&raw const (*entry).name).cast::<u8>(), length) };
         OsString::from_vec(bytes.to_vec())
     }
 
