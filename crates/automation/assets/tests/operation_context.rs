@@ -216,6 +216,74 @@ fn a_deadline_beyond_the_work_commits_normally_and_is_still_consulted() {
     );
 }
 
+/// The chunk size the copy checks the operation between, from the one place that
+/// decides it.
+///
+/// Written here rather than imported because it is internal to the crate; the
+/// assertion below fails if the two ever disagree, which is the point of stating
+/// it.
+const COPY_CHUNK_BYTES: usize = 64 * 1024;
+
+#[test]
+fn copying_a_borrowed_archive_observes_cancellation_between_chunks() {
+    // Four chunks, so the copy has somewhere to be interrupted *during*. A buffer
+    // of one chunk would only ever prove the check before the first one.
+    let borrowed = vec![0x5au8; COPY_CHUNK_BYTES * 4];
+    let clock = Arc::new(TickingClock::new());
+    let context = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+            UNREACHABLE_MILLIS,
+        )));
+
+    let owned = PackageSource::copy_archive_bytes(&borrowed, &context)
+        .expect("an uninterrupted copy produces the archive it was given");
+    assert!(owned.is_archive());
+    let checks = clock.reads();
+    assert!(
+        checks > 4,
+        "the copy consults the context per chunk, not once: {checks} checks for four chunks"
+    );
+
+    // Cancelling at each point the copy can observe: every one of them refuses,
+    // and none of them produces a source. The sweep is what says the checks are
+    // inside the loop rather than only at its head.
+    //
+    // As in the sweeps above, cancelling on read `point` is observed by the next
+    // check, so the last read that can still be observed is `checks - 2`.
+    for point in 0..checks.saturating_sub(1) {
+        let token = CancellationToken::new();
+        let context = OperationContext::new()
+            .with_clock(Arc::new(CancellingClock::new(token.clone(), point)))
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+                UNREACHABLE_MILLIS,
+            )))
+            .with_cancellation(token);
+
+        let fault = PackageSource::copy_archive_bytes(&borrowed, &context)
+            .expect_err("cancellation lands before the copy finishes");
+
+        assert_eq!(fault.kind(), AssetFaultKind::Cancelled, "at {point}");
+        assert_eq!(fault.stage(), LoadStage::Source, "at {point}");
+    }
+}
+
+#[test]
+fn a_borrowed_archive_copied_under_a_healthy_operation_loads_as_that_archive() {
+    let bytes = std::fs::read(tiny_archive()).expect("readable fixture archive");
+    let context = OperationContext::new();
+
+    let copied = PackageSource::copy_archive_bytes(&bytes, &context).expect("copied");
+
+    let from_copy = PackageLoader::new()
+        .load(&copied, &context)
+        .expect("the copy is the archive it was taken from");
+    let from_file = PackageLoader::new()
+        .load(&PackageSource::archive_file(tiny_archive()), &context)
+        .expect("the file loads");
+    assert_eq!(from_copy, from_file);
+}
+
 #[test]
 fn cancellation_after_a_successful_commit_cannot_take_the_package_back() {
     let token = CancellationToken::new();

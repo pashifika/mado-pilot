@@ -20,12 +20,19 @@
 //! admitted the file.
 //!
 //! The `SourceChanged` checks around and after the copy are kept, and what they
-//! guarantee is worth stating exactly. A change the loader observes — before the
-//! copy, during it, or at any later check — refuses the load. A change that lands
-//! after the last of those checks does not: the bytes were already read, so the
-//! load commits the archive it read. What is guaranteed is not that every
-//! external write is reported, which nothing holding a copy could promise, but
-//! that a committed package is assembled from exactly one version of the file.
+//! guarantee is worth stating exactly, because it is less than it sounds. A
+//! change the loader observes — before the copy, during it, or at any later check
+//! — refuses the load. A change that lands after the last of those checks does
+//! not: the bytes were already read, so the load commits what it read. And the
+//! copy is a sequence of reads rather than an atomic filesystem snapshot, so a
+//! writer this comparison never observes could in principle have left the buffer
+//! holding bytes from two versions of the file.
+//!
+//! What is proved is the property the stages need: every consumer — the
+//! pre-parse, the reader, the entry reads — sees one immutable byte sequence, and
+//! a committed package is assembled from that one sequence. Reporting every
+//! external write is not claimed, and mandatory writer exclusion is not something
+//! this module has on Unix to claim it with.
 //!
 //! # The archive-only stages
 //!

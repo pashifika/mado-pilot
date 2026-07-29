@@ -16,8 +16,8 @@
 //! valid; the mistake is the caller's.
 
 use mado_pilot::{
-    AssetFault, AssetFaultKind, AssetLimits, AssetPackage, Engine, LoadStage, PreparedTemplate,
-    Status,
+    AssetFault, AssetFaultKind, AssetLimits, AssetPackage, Engine, LoadStage, OperationContext,
+    PreparedTemplate, Status,
 };
 
 use crate::boundary::{self, Out, Versioned, inputs, prefixes};
@@ -176,10 +176,11 @@ fn run_package_load(
 
     // SAFETY: as above, for the source structure and the views it carries.
     let request = unsafe { boundary::read_input::<madopilot_package_source_t>(source) }?;
-    // The engine's limits go in, because one of the three source kinds is an
-    // owned copy of caller memory and the copy is the boundary's own allocation.
+    // The engine's limits and the operation both go in, because one of the three
+    // source kinds is an owned copy of caller memory: the limits bound that copy,
+    // and the operation is what can interrupt it.
     // SAFETY: as above.
-    let configured = unsafe { package_source(&request, engine.limits()) }?;
+    let configured = unsafe { package_source(&request, engine.limits(), context.inner()) }?;
 
     let package = engine
         .load_package(&configured, context.inner())
@@ -215,6 +216,14 @@ fn run_package_load(
 /// second has to precede the copy, which is the whole point. The third is the
 /// only one that reads the caller's memory.
 ///
+/// The copy itself belongs to the asset layer rather than to this boundary. It is
+/// the one piece of work here whose length a caller sets, so it is performed under
+/// the operation the caller supplied — chunked, with the context checked between
+/// chunks — which is what lets a cancellation or an expiry that lands mid-copy
+/// stop it. See [`PackageSource::copy_archive_bytes`].
+///
+/// [`PackageSource::copy_archive_bytes`]: mado_pilot::PackageSource::copy_archive_bytes
+///
 /// [`AssetLimits::with_max_total_compressed_bytes`]: mado_pilot::AssetLimits::with_max_total_compressed_bytes
 ///
 /// # Safety
@@ -223,6 +232,7 @@ fn run_package_load(
 unsafe fn package_source(
     source: &madopilot_package_source_t,
     limits: AssetLimits,
+    context: &OperationContext,
 ) -> Result<mado_pilot::PackageSource, Fault> {
     match source.kind {
         MADOPILOT_PACKAGE_SOURCE_DIRECTORY => {
@@ -257,10 +267,7 @@ unsafe fn package_source(
             if bytes.is_empty() {
                 return Err(Fault::abi("`archive` is empty"));
             }
-            // The slice, not a `Vec` of it: the package source owns an
-            // `Arc<[u8]>`, and a `Vec` on the way there is a second allocation
-            // and a second copy of an archive that may be at the ceiling.
-            Ok(mado_pilot::PackageSource::archive_bytes(bytes))
+            mado_pilot::PackageSource::copy_archive_bytes(bytes, context).map_err(Fault::from_asset)
         }
         other => Err(Fault::abi(format!(
             "unrecognized package source kind {other}"
@@ -486,13 +493,16 @@ pub(crate) fn template_describe(
 
 #[cfg(test)]
 mod tests {
-    use mado_pilot::AssetLimits;
+    use mado_pilot::{AssetLimits, CancellationToken, OperationContext};
 
     use super::{
         MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES, madopilot_bytes_t, madopilot_package_source_t,
         madopilot_str_t, package_source,
     };
-    use crate::status::{MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_LIMIT_EXCEEDED};
+    use crate::status::{
+        MADOPILOT_STATUS_CANCELLED, MADOPILOT_STATUS_INVALID_ARGUMENT,
+        MADOPILOT_STATUS_LIMIT_EXCEEDED,
+    };
 
     /// An archive-bytes source over `archive`, as a caller would declare it.
     fn source(archive: madopilot_bytes_t) -> madopilot_package_source_t {
@@ -523,15 +533,16 @@ mod tests {
             data: buffer.as_ptr(),
             len: buffer.len(),
         };
+        let context = OperationContext::new();
 
         // SAFETY: the view describes `buffer`, a live local, for the call.
-        let refused = unsafe { package_source(&source(view), limits(4)) }
+        let refused = unsafe { package_source(&source(view), limits(4), &context) }
             .expect_err("eight bytes are above a four byte ceiling");
         assert_eq!(refused.status(), MADOPILOT_STATUS_LIMIT_EXCEEDED);
 
         // SAFETY: as above. Exactly at the ceiling is a caller that fits, which
         // is what says the comparison is not off by one in the safe direction.
-        let accepted = unsafe { package_source(&source(view), limits(8)) }
+        let accepted = unsafe { package_source(&source(view), limits(8), &context) }
             .expect("eight bytes are within an eight byte ceiling");
         assert!(accepted.is_archive());
     }
@@ -549,10 +560,36 @@ mod tests {
             len: usize::try_from(AssetLimits::MAX_TOTAL_COMPRESSED_BYTES + 1)
                 .expect("the ceiling fits an object size on both release targets"),
         };
+        let context = OperationContext::new();
 
         // SAFETY: nothing reads the view: the pointer is refused on its shape.
-        let refused = unsafe { package_source(&source(view), limits(4)) }
+        let refused = unsafe { package_source(&source(view), limits(4), &context) }
             .expect_err("a null pointer with a length is not a view");
         assert_eq!(refused.status(), MADOPILOT_STATUS_INVALID_ARGUMENT);
+    }
+
+    /// The copy answers to the caller's operation, and it is the asset layer's.
+    ///
+    /// A cancelled operation gets no owned archive at all, which is what says the
+    /// conversion is inside the operation rather than beside it. Where the copy
+    /// observes cancellation *during* its work is
+    /// `mado-pilot-assets`' own coverage, over a buffer long enough to have a
+    /// second chunk; this is the boundary's half — that the operation the C caller
+    /// supplied is the one the copy carries.
+    #[test]
+    fn a_cancelled_operation_owns_no_copy_of_the_callers_archive() {
+        let buffer = [0xffu8; 8];
+        let view = madopilot_bytes_t {
+            data: buffer.as_ptr(),
+            len: buffer.len(),
+        };
+        let token = CancellationToken::new();
+        token.cancel();
+        let context = OperationContext::new().with_cancellation(token);
+
+        // SAFETY: as above.
+        let refused = unsafe { package_source(&source(view), limits(8), &context) }
+            .expect_err("a cancelled operation copies nothing");
+        assert_eq!(refused.status(), MADOPILOT_STATUS_CANCELLED);
     }
 }

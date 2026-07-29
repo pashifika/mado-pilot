@@ -814,12 +814,17 @@ therefore copied once, after the source-size gate that bounds the copy and with
 the handle re-proved after it, and the pre-parse, the reader, and every entry then
 read that copy.
 
-What the retained handle then guarantees is stated as what it is. A change the
-loader observes — around the copy, or at any later check — refuses the load as a
-changed source. A change that lands after the last of those checks does not,
-because the bytes it would have affected were already read: the load commits the
-archive it read. The guarantee is that a committed package comes from exactly one
-version of the file, not that every external write during a load is reported.
+What that then guarantees is stated as what it is, which is less than it sounds. A
+change the loader observes — around the copy, or at any later check — refuses the
+load as a changed source. A change that lands after the last of those checks does
+not, because the bytes it would have affected were already read. The copy is also
+a sequence of reads rather than an atomic filesystem snapshot, and this adapter
+holds no mandatory writer exclusion on Unix, so an unobserved writer could in
+principle leave the buffer holding bytes from two versions of the file.
+
+The property that is proved is the one the stages depend on: every consumer reads
+one immutable byte sequence, and a committed package is assembled from that one
+sequence. Only observed source changes are reported.
 
 Recorded metadata may reject but never authorise: an entry is
 cut off at its *declared* size even when a ceiling would have allowed more, so an
