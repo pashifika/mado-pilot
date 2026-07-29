@@ -275,15 +275,28 @@ Every profile was measured on a named host, two hundred samples per workload
 after twenty warm-up iterations, every sample checked against its oracle, zero
 oracle failures anywhere. Each benchmark's two profiles share a fixture hash.
 
-ADR 0011's replay-reservation change has one provisional native result that is
-not yet a profile refresh. On the named Windows host, source revision `237ac3e`
-restored `replay_open` p95 to `0.001000 ms` under the existing `0.003 ms`
-ceiling, reduced its peak live heap from the regressed `119,062 bytes` to
-`94,702 bytes`, and reported zero correctness failures and zero allocated
-growth. The matching C-boundary run also remained within every existing budget.
-The four committed profiles stay synchronized at the ADR 0008 baseline until
-the same implementation is measured on the named Apple Silicon host; Windows
-evidence is not committed alone or used to infer macOS timing.
+ADR 0011's replay-reservation change is measured on the named Apple Silicon host
+and the two `aarch64-apple-darwin` profiles above carry that refresh, taken at
+`8d7973e` as two consecutive runs on an otherwise idle machine with the second
+recorded. Every budget passes, correctness and allocated growth are zero
+everywhere, and `replay_open` peak live heap is back at `95,118 bytes` — the
+shape the profile carried before the copy, against the `+24,368 bytes` the copy
+added on this target.
+
+The two `x86_64-pc-windows-msvc` profiles still carry the ADR 0008 baseline. The
+Windows result recorded for that change — `replay_open` p95 restored to
+`0.001000 ms` under the existing `0.003 ms` ceiling, peak live heap down from the
+regressed `119,062 bytes` to `94,702 bytes`, zero correctness failures, zero
+allocated growth, and a C-boundary run inside every budget — was taken at source
+revision `237ac3e`, which is not an object in this repository, so it cannot be
+the reviewed state ADR 0011 requires all four profiles to share. Refreshing that
+pair needs one native Windows run of each benchmark at the state that ships.
+Windows evidence is not committed alone or used to infer macOS timing, and the
+reverse holds too.
+
+A refreshed profile keeps the ceilings ADR 0008 set. Each rationale therefore
+names the baseline value the ceiling was derived from rather than the current
+measurement, so a refresh cannot quietly relax a budget by re-deriving it.
 
 Across those four files, thirteen workloads are measured, all thirteen are
 covered by the two file-level hard gates, eleven carry a per-measurement

@@ -116,9 +116,32 @@ fixture hashes, 20 discarded warm-ups, and 200 retained samples. Every workload
 reports `result_correctness = 0` and `allocated_growth_bytes = 0`; all latency,
 mapped-byte, peak-allocation, and iteration-span budgets pass.
 
-Native Apple Silicon correctness and both full Apple Silicon benchmark runs are
-still required. Until those results exist and all four profiles are regenerated
-together, this ADR remains Proposed.
+Native Apple Silicon verification now exists. At `8d7973e` the named Apple
+Silicon host passes the same eight-step sequence — architecture check,
+formatting, warning-denied clippy, all-target tests (680 passing, one ignored),
+doctests, warning-denied documentation, dependency policy, and the C and C++ ABI
+consumer suite including the frozen v1 header and both CMake consumers. Both
+benchmarks were then run twice on an otherwise idle machine with the same fixture
+hashes, 20 discarded warm-ups and 200 retained samples; the two runs agreed and
+the second is committed. Every budget passes, correctness and allocated growth
+are zero everywhere, and `replay_open` peak live heap is `95,118 bytes` against
+the `95,070 bytes` the profile carried before the copy — the copy's `+24,368
+bytes` on this target is gone.
+
+Two macOS measurements moved enough to record explicitly. `load_package_archive`
+peak live heap rose to `201,987 bytes`, which is the accepted cost of ADR 0010's
+single in-memory archive copy and not this change. `load_package_directory`
+latency rose from `0.186625 ms` to `0.302500 ms`, reproduced in both runs and
+inside its retained `0.6 ms` ceiling; no reviewed change touches directory
+loading, so the standing background load on that host is the candidate
+explanation. Neither ceiling was re-derived: a refreshed profile keeps the
+ceilings ADR 0008 set.
+
+What remains is the Windows pair. The Windows result above was taken at
+`237ac3e`, which is not an object in this repository, so it cannot be the shared
+reviewed state this ADR requires; one native Windows run of each benchmark at the
+state that ships is still owed. Until all four profiles are regenerated from that
+one state, this ADR remains Proposed.
 
 ## Verification
 
