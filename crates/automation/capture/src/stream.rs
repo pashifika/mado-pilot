@@ -677,6 +677,12 @@ mod tests {
             current.stamp()
         );
         assert_eq!(state.lifecycle(), Lifecycle::Closing);
+        let returned = refused.into_publication();
+        assert_eq!(returned.pixels.as_ptr(), pixels);
+        assert_eq!(returned.captured_at, captured_at);
+        assert_eq!(returned.descriptor, descriptor);
+        assert_eq!(returned.placement, placement);
+        assert_eq!(returned.continuity, continuity);
     }
 
     #[test]
