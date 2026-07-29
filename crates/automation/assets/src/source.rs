@@ -110,7 +110,7 @@ impl PackageSource {
     /// for a caller that owns them and wants a source it can keep. A caller that
     /// only lends its bytes for one call does not need a source at all: it loads
     /// through [`PackageLoader::load_archive_bytes`], which reads the lent
-    /// sequence in place and copies nothing.
+    /// sequence in place without making a whole-archive copy.
     ///
     /// [`PackageLoader::load_archive_bytes`]: crate::PackageLoader::load_archive_bytes
     #[must_use]

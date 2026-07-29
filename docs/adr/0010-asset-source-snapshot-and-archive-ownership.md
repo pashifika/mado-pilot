@@ -67,11 +67,13 @@ affected were already read.
 reads a caller's archive in place for the duration of one call; the committed
 package holds each template's content in its own allocation, so nothing retains
 the archive. `PackageSource::ArchiveBytes` remains for a Rust caller that owns
-its bytes and wants a reusable source. No allocation on the C load path is sized
-by a caller's declaration: what remains is grown as bytes are actually produced.
-That is the whole of the claim — allocation failure while reading package content,
-whether the manifest or an entry, is still an abort, and the Consequences below
-name where.
+its bytes and wants a reusable source. The borrowed C path makes no whole-archive
+allocation proportional to `madopilot_bytes_t.len`; it reads that view where it
+lies. This is the whole of the allocation claim. ZIP metadata parsing and package
+content still allocate under the fixed and configured ceilings, and allocation
+failure at those sites remains an abort. The Consequences below name the bounded
+sites rather than presenting removal of one copy as a general allocation-failure
+guarantee.
 
 ## Alternatives
 
@@ -128,15 +130,17 @@ exclusion, and the Unix comparison's refusal of any recorded write.
   That is every entry, bounded by `max_entry_uncompressed_bytes` each and
   `max_total_uncompressed_bytes` in total, and the manifest, bounded by
   `max_manifest_bytes` and then parsed by `serde_json`, which allocates infallibly
-  too. Neither buffer is reserved from a declared size — `read_capped` grows its
-  buffer as bytes arrive, which is why nothing here is sized by what a caller
-  *said*, only by what a source actually produced under a ceiling. Reserving that
-  buffer fallibly would not change the outcome while the copy beside it cannot be:
-  the copy is `Arc<[u8]>`, unallocatable fallibly on stable Rust for the same
-  reason the archive copy was, and changing what it is means changing
-  `TemplateSourceRequest.content`, a public field — an ADR 0006 breaking change and
-  a separate decision from this one. Any future statement about allocation failure
-  at the C boundary has to name these sites.
+  too. ZIP metadata work also allocates infallibly from bounded metadata: the EOCD
+  search window is at most 65,557 bytes, and the central-directory reader and raw
+  entry table allocate from the validated entry count and bounded ZIP field
+  lengths. `read_capped` does not reserve from an entry's declared size; it grows
+  as content is produced under the applicable ceiling. Reserving that buffer
+  fallibly would not change the outcome while the copy beside it cannot be: the
+  copy is `Arc<[u8]>`, unallocatable fallibly on stable Rust for the same reason
+  the archive copy was, and changing what it is means changing
+  `TemplateSourceRequest.content`, a public field — an ADR 0006 breaking change
+  and a separate decision. Any future statement about allocation failure at the C
+  boundary has to include both bounded metadata and content sites.
 - Peak memory for a C archive load drops by the archive's length. A caller that
   tightened `max_total_compressed_bytes` still tightens the largest view the
   boundary accepts, because the declared length is answered against that ceiling
@@ -165,17 +169,22 @@ exclusion, and the Unix comparison's refusal of any recorded write.
   with `(Expansion, Commit)`, while the pre-existing directory and archive-file
   sweeps stay green. Both entries share one tail, so the guard covers both.
 - The same file asserts a borrowed load, an owned load, and a file load of the
-  same archive produce equal packages, which is what says ownership is not part
-  of what a package is.
+  same archive produce equal packages, including their retained template content,
+  which says ownership is not part of what a package is. The borrowed method
+  returns `AssetPackage` without a source lifetime, so the Rust type boundary does
+  not permit any archive borrow to escape the synchronous load.
 - `crates/bindings/capi/src/assets.rs` unit tests assert the boundary returns the
   caller's own memory — compared by address, not by contents — and that the
   declared length is refused against the ceiling before the view is read.
 - `crates/bindings/capi/tests/abi.rs` loads a package from a lent archive,
   overwrites and drops the lender's buffer, and then still describes the package.
-  A second test asserts that an expired operation is refused at admission and
-  publishes no handle — at admission is all it proves, because the entry admits the
-  operation before it reads the source structure; interruption during a load is
-  the assets crate's sweeps, which can drive a controlled clock.
+  This is the C handle-lifetime smoke test; retained content ownership is proved
+  by the Rust return type and the complete package-equivalence test above rather
+  than by metadata access alone. A second test asserts that an expired operation
+  is refused at admission and publishes no handle — at admission is all it
+  proves, because the entry admits the operation before it reads the source
+  structure; interruption during a load is the assets crate's sweeps, which can
+  drive a controlled clock.
 - The snapshot contract's platform halves are pinned by the filesystem
   conformance tests (`crates/automation/assets/tests/`), including the Windows
   assertion that a retained source denies concurrent writers and path

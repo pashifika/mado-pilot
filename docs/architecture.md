@@ -839,20 +839,24 @@ affected were already read, and a package commits what it read.
 
 An archive a caller supplies in memory needs none of this. Those bytes are the
 caller's, they are read where they are for the length of one call, and keeping them
-readable and unchanged for that call is the caller's half of the contract. Nothing
-here copies them, which is deliberate: a copy would be sized by the caller's own
-declared length, up to the source ceiling, and the reference-counted form a
-retained source needs cannot be allocated fallibly on stable Rust, so a host that
-could not satisfy it would be terminated rather than told.
+readable and unchanged for that call is the caller's half of the contract. No
+whole-archive copy is made, which is deliberate: such a copy would be sized by the
+caller's own declared length, up to the source ceiling, and the reference-counted
+form a retained source needs cannot be allocated fallibly on stable Rust, so a
+host that could not satisfy it would be terminated rather than told.
 
-That removes the largest such allocation from the C load path and does not empty
-it. Reading package content still allocates infallibly — the buffer content is read
-into, and the reference-counted copy the package keeps of it — for every entry
-under `max_entry_uncompressed_bytes` and `max_total_uncompressed_bytes`, and for the
-manifest under `max_manifest_bytes`. Neither is reserved from a declared size; the
-buffer grows as bytes arrive. So the honest statement is the bounded one: no
-allocation on this path is sized by a caller's declaration, and allocation failure
-while reading content is still an abort. See
+That removes the whole-archive allocation from the C load path and does not empty
+the path of infallible allocation. ZIP metadata work allocates under bounded
+metadata: an EOCD search window of at most 65,557 bytes, and central-directory and
+raw-entry storage sized from the validated entry count and bounded ZIP fields.
+Reading package content also allocates — both the buffer content is read into and
+the reference-counted copy the package keeps — for every entry under
+`max_entry_uncompressed_bytes` and `max_total_uncompressed_bytes`, and for the
+manifest under `max_manifest_bytes`. The content buffer grows as bytes arrive
+rather than reserving an entry's declared size. The precise claim is therefore
+that the borrowed C path makes no whole-archive allocation proportional to
+`madopilot_bytes_t.len`; allocation failure at the bounded metadata and content
+sites remains an abort. See
 [ADR 0010](adr/0010-asset-source-snapshot-and-archive-ownership.md).
 
 Recorded metadata may reject but never authorise: an entry is

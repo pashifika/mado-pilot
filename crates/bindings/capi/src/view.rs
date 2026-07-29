@@ -13,10 +13,11 @@
 //!
 //! # Ownership
 //!
-//! A view is always borrowed and never owned. Each one names, in the
-//! declaration that returns it, the handle whose retention keeps it readable.
-//! When that handle reaches its final release the view becomes invalid, and the
-//! caller is responsible for having copied anything it still needs.
+//! A view is always borrowed and never owned. For a library-returned output view,
+//! its declaration names the handle whose retention keeps it readable; the view
+//! becomes invalid at that handle's final release. For a caller-supplied input
+//! view, the caller keeps its bytes readable and unmodified for the call, and the
+//! library retains no reference after the call returns.
 
 use std::ffi::c_char;
 use std::slice;

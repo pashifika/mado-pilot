@@ -238,7 +238,8 @@ enum Prepared<'a> {
 ///
 /// # Safety
 ///
-/// Every view the structure carries must be readable for the call.
+/// Every view the structure carries must be readable and unmodified for the
+/// call.
 unsafe fn package_source<'a>(
     source: &'a madopilot_package_source_t,
     limits: AssetLimits,

@@ -4,8 +4,11 @@
 //! walk therefore retains the root, enumerates and opens Unix children relative
 //! to retained directory handles, and pins Windows paths by denying write/delete
 //! sharing. Regular-file handles remain retained through validation. Later path
-//! replacement cannot redirect a read, while in-place mutation of an opened file
-//! is detected before and after its bytes are consumed.
+//! replacement cannot redirect a read. Windows excludes in-place writers while
+//! the handle is retained; Unix rejects mutations its identity, change stamp,
+//! length, and link-count checks record before or after bytes are consumed. A
+//! Unix filesystem whose change-stamp granularity cannot distinguish a write
+//! from those checks is the documented residual.
 //!
 //! The walk visits names in sorted order. Directory iteration order is the
 //! filesystem's business and differs between the two release targets, so a

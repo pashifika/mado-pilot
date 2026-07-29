@@ -659,8 +659,8 @@ typedef struct madopilot_source_t {
 
 /* Where an asset package is read from. Mandatory prefix: through path.
  *
- * ARCHIVE_BYTES is read where it is: the library copies nothing, and the view
- * has to be readable and unchanged for the duration of the call and no longer.
+ * ARCHIVE_BYTES is read where it is: the library makes no whole-archive copy,
+ * and the view has to be readable and unchanged for the duration of the call.
  * A package the call returns owns everything it kept, so the caller may release
  * or overwrite the archive the moment the call comes back. The declared length
  * answers to the engine's configured source-byte ceiling, so a length above it
