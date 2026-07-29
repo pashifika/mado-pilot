@@ -143,6 +143,29 @@ formatting that step 2 verifies.
 dependency policy that step 7 enforces, including the review required before a
 native library or model file is added.
 
+### When a step contradicts the one before it
+
+A build cache can go stale in a way that makes one step disagree with another,
+and the disagreement is the symptom worth recognising rather than debugging.
+Observed on the Windows verification host: step 6 reported that a trait was
+missing methods its callers use, on a working tree where step 3 and step 4 had
+both just passed over the same source. `cargo doc` had checked the dependents
+against metadata for two crates that was thirteen commits old.
+
+`cargo clippy` runs through `RUSTC_WORKSPACE_WRAPPER` and writes its check
+artifacts under a fingerprint of its own, so a green step 3 does not refresh what
+step 6 consumes. When one step reports an API that the source plainly does not
+have, do not read the error: rebuild what it read.
+
+```sh
+cargo clean -p <the crates the error names>
+```
+
+Then re-run from step 1. A cache that was wrong once about one artifact kind was
+not necessarily right about the others, and a verification is worth only as much
+as the freshness of what it compiled — so if a run needed this, say so alongside
+its result, or `cargo clean` and take the run again.
+
 ## Branch strategy
 
 `main` contains released, production-ready code. Development for each release
