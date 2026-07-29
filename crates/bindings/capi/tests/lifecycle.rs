@@ -901,8 +901,15 @@ fn close_racing_an_in_flight_search_has_exactly_one_terminal_outcome() {
     assert!(result.is_null(), "a refused search produces no result");
 }
 
+/// A second session on the same engine gets its own stream identity.
+///
+/// Named for what it opens. It was called `a_second_engine_...`, which is a
+/// stronger claim about a different thing — two engines never sharing a stream
+/// number — and this test opens one engine. The assertion below is about a
+/// stream identity never being reused while the library is loaded, and two
+/// sessions on one engine is the case that exercises it.
 #[test]
-fn a_second_engine_mints_a_distinct_stream_identity() {
+fn a_second_session_mints_a_distinct_stream_identity() {
     let flow = Flow::open();
     let api = flow.api;
     let operation = operation();

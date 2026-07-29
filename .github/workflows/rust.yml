@@ -264,9 +264,14 @@ jobs:
           cargo build --locked --package mado-pilot-capi || exit /b 1
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" || exit /b 1
 
-      # Not a check: the report names the OpenCV build this run actually used and the
-      # scores it produced, so a provisioning drift is visible in the log rather than
-      # only in a failing tolerance.
+      # This asserts nothing about the scores. It names the OpenCV build the run
+      # actually used and prints what that build matched, so a provisioning drift
+      # is visible in the log rather than only in some later failing tolerance.
+      #
+      # It can still fail the job, and should: the report is produced by searching
+      # the real fixtures with the real backend, so an OpenCV that cannot be
+      # loaded or a fixture that cannot be searched ends the step. What it never
+      # does is compare a score against a threshold and fail on the answer.
       - name: Report what this host's OpenCV matched
         shell: bash
         run: |
@@ -384,9 +389,14 @@ jobs:
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
             --label "CI ${{ runner.os }} ${{ runner.arch }}"
 
-      # Not a check: the report names the OpenCV build this run actually used and the
-      # scores it produced, so a provisioning drift is visible in the log rather than
-      # only in a failing tolerance.
+      # This asserts nothing about the scores. It names the OpenCV build the run
+      # actually used and prints what that build matched, so a provisioning drift
+      # is visible in the log rather than only in some later failing tolerance.
+      #
+      # It can still fail the job, and should: the report is produced by searching
+      # the real fixtures with the real backend, so an OpenCV that cannot be
+      # loaded or a fixture that cannot be searched ends the step. What it never
+      # does is compare a score against a threshold and fail on the answer.
       - name: Report what this host's OpenCV matched
         shell: bash
         run: |

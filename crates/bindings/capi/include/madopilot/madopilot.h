@@ -876,9 +876,14 @@ typedef struct madopilot_api_t {
  *
  * A caller that knows less than this cannot report what it loaded and cannot
  * build a deadline, so negotiation refuses it rather than handing back a table
- * it could not use. */
-#define MADOPILOT_API_SIZE_INFORMATION \
-    (offsetof(madopilot_api_t, status_text) + sizeof(void*))
+ * it could not use.
+ *
+ * Written as the offset of the member *after* the prefix, which is what a
+ * prefix size is: where the next member begins. Adding sizeof(void*) to
+ * status_text's own offset would have assumed a function pointer is the size of
+ * an object pointer, and that no padding separates the two members. This
+ * assumes neither, and it is the same number on both release targets. */
+#define MADOPILOT_API_SIZE_INFORMATION offsetof(madopilot_api_t, cancellation_create)
 
 /* ---------------------------------------------------------------------------
  * The one exported symbol

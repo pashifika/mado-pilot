@@ -307,10 +307,18 @@ pub struct FrameStamp {
 impl FrameStamp {
     /// Assembles a frame stamp.
     ///
-    /// Stamps are normally produced by a [`StreamCursor`], which enforces the
-    /// epoch and sequence rules. This constructor exists for adapters that
-    /// rebuild a stamp from a boundary that cannot carry the type, such as the
-    /// C ABI.
+    /// Stamps are produced by a [`StreamCursor`], which enforces the epoch and
+    /// sequence rules and assembles the stamp here.
+    ///
+    /// Nothing outside this crate can call it. A stamp needs a [`StreamId`], and
+    /// a `StreamId` is issued by an [`IdentityIssuer`] and carries no public
+    /// constructor and no ordinal accessor, so an adapter cannot rebuild one
+    /// from a boundary that dropped the type — the C ABI converts a stamp
+    /// outward and never back. That is deliberate: an identity a caller could
+    /// assemble is an identity that proves nothing about which engine issued it.
+    /// A boundary that has to rebuild one needs a way to reconstruct the stream
+    /// identity first, and that is the decision to take then rather than a use
+    /// this constructor already serves.
     #[must_use]
     pub const fn new(
         stream: StreamId,

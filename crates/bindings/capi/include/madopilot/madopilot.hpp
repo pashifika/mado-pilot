@@ -215,6 +215,19 @@ private:
  * Errors
  * ------------------------------------------------------------------------ */
 
+class Error;
+
+namespace detail {
+
+/// Describes an owned C error, copies everything out of it, and releases it.
+///
+/// Declared before `Error` so that `Error` can befriend it by name. Defined
+/// below, once `Error` is complete.
+inline Error take_error(const ::madopilot_api_t* api, Status status,
+                        ::madopilot_error_t* error);
+
+} // namespace detail
+
 /// Which asset rule was broken, and how far loading had got.
 ///
 /// Package loading is the one Phase 1 operation whose failures a caller may
@@ -259,8 +272,8 @@ public:
     bool ok() const noexcept { return status_ == MADOPILOT_STATUS_OK; }
 
 private:
-    friend Error take_error_(const ::madopilot_api_t* api, Status status,
-                             ::madopilot_error_t* error);
+    friend Error detail::take_error(const ::madopilot_api_t* api, Status status,
+                                    ::madopilot_error_t* error);
 
     Status status_ = MADOPILOT_STATUS_OK;
     ErrorCategory category_ = MADOPILOT_ERROR_CATEGORY_UNSPECIFIED;
@@ -269,14 +282,14 @@ private:
     std::optional<AssetDetail> asset_;
 };
 
-/// Describes an owned C error, copies everything out of it, and releases it.
-///
+namespace detail {
+
 /// Called on every failing path, including the ones whose caller never looks at
 /// the text: the handle is released either way. "Either way" includes the copies
 /// below throwing `std::bad_alloc`, which is why the release is a scope guard
 /// rather than the last statement.
-inline Error take_error_(const ::madopilot_api_t* api, Status status,
-                         ::madopilot_error_t* error) {
+inline Error take_error(const ::madopilot_api_t* api, Status status,
+                        ::madopilot_error_t* error) {
     Error out = Error::from_status(status);
     if (api == nullptr || error == nullptr) {
         return out;
@@ -301,12 +314,21 @@ inline Error take_error_(const ::madopilot_api_t* api, Status status,
     return out;
 }
 
+} // namespace detail
+
 /* ---------------------------------------------------------------------------
  * Result
  *
  * The default interface. No wrapper operation throws to report a MadoPilot
- * failure; only allocating the owned error text can throw, and that is
- * `std::bad_alloc` rather than a translated status.
+ * failure: every failure the library can report arrives as a status in a
+ * `Result`, and no status is ever translated into an exception.
+ *
+ * What the wrapper does throw is what its own allocations throw, `std::bad_alloc`
+ * — from `detail::take_error` copying an error's text, from the vector
+ * `MatchResult::matches` fills, from the copies a typed request keeps of what its
+ * C structure points at, and from an explicit `BorrowedStr::to_string` or
+ * `BorrowedBytes::to_vector`. Every one of those is the wrapper making an owned
+ * copy for the caller. `detail::take_error` releases its C handle on that path too.
  *
  * That is why `value()` and `take()` carry the precondition `ok()`: an
  * exception-free extractor cannot report a failed result, so checking is the
@@ -860,6 +882,16 @@ struct TargetDescriptor {
         return (flags & MADOPILOT_TARGET_SUPPORTS_PLACEMENT) != 0u;
     }
 
+    /// Whether `space` converts for this target.
+    ///
+    /// `coordinate_spaces` is a bit set in a signed 32-bit field, so the shift
+    /// below is defined for `space` in [0, 31): shifting a `1` of type `int` by
+    /// 31 reaches the sign bit and is undefined behaviour, and a negative shift
+    /// count is too. A space outside that range is not a space this bit set can
+    /// describe, so it does not convert. The C ABI allocates space codes from
+    /// zero upward and Phase 1 uses four of them, so the bound is far from
+    /// anything the library can report; it is here because the value arrives
+    /// from a caller.
     bool supports_space(Space space) const noexcept {
         if (space < 0 || space >= 31) {
             return false;
@@ -931,8 +963,7 @@ public:
 
     Result<void> cancel() const {
         if (api_ == nullptr) {
-            return Result<void>::failure(
-                Error::from_status(MADOPILOT_STATUS_INVALID_ARGUMENT));
+            return detail::no_table<void>();
         }
         const Status status = api_->cancellation_cancel(handle_);
         return is_ok(status) ? Result<void>::success()
@@ -1250,7 +1281,7 @@ public:
         const Status status =
             api_->frame_map(handle_, &request_c, &operation_c, &mapping, &error);
         if (!is_ok(status)) {
-            return Result<Mapping>::failure(take_error_(api_, status, error));
+            return Result<Mapping>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Mapping>::success(Mapping(api_, mapping));
@@ -1510,14 +1541,13 @@ public:
     /// A failure here is returned, never swallowed by destruction.
     Result<void> close(const Operation& operation) const {
         if (api_ == nullptr) {
-            return Result<void>::failure(
-                Error::from_status(MADOPILOT_STATUS_INVALID_ARGUMENT));
+            return detail::no_table<void>();
         }
         const auto operation_c = operation.to_c();
         ::madopilot_error_t* error = nullptr;
         const Status status = api_->session_close(handle_, &operation_c, &error);
         if (!is_ok(status)) {
-            return Result<void>::failure(take_error_(api_, status, error));
+            return Result<void>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<void>::success();
@@ -1546,7 +1576,7 @@ public:
         ::madopilot_error_t* error = nullptr;
         const Status status = api_->session_acquire_frame(handle_, &operation_c, &frame, &error);
         if (!is_ok(status)) {
-            return Result<Frame>::failure(take_error_(api_, status, error));
+            return Result<Frame>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Frame>::success(Frame(api_, frame));
@@ -1567,7 +1597,7 @@ public:
         const Status status =
             api_->session_find(handle_, &request_c, &operation_c, &result, &error);
         if (!is_ok(status)) {
-            return Result<MatchResult>::failure(take_error_(api_, status, error));
+            return Result<MatchResult>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<MatchResult>::success(MatchResult(api_, result));
@@ -1606,7 +1636,7 @@ public:
         const Status status =
             api_->engine_discover(handle_, &operation_c, &targets, &error);
         if (!is_ok(status)) {
-            return Result<TargetList>::failure(take_error_(api_, status, error));
+            return Result<TargetList>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<TargetList>::success(TargetList(api_, targets));
@@ -1628,7 +1658,7 @@ public:
         const Status status = api_->session_open(handle_, targets.get(), index, &request_c,
                                                  &operation_c, &session, &error);
         if (!is_ok(status)) {
-            return Result<Session>::failure(take_error_(api_, status, error));
+            return Result<Session>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Session>::success(Session(api_, session));
@@ -1650,7 +1680,7 @@ public:
         const Status status =
             api_->package_load(handle_, &source_c, &operation_c, &package, &error);
         if (!is_ok(status)) {
-            return Result<Package>::failure(take_error_(api_, status, error));
+            return Result<Package>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Package>::success(Package(api_, package));
@@ -1670,7 +1700,7 @@ public:
                                                      detail::as_str(id), &operation_c,
                                                      &prepared, &error);
         if (!is_ok(status)) {
-            return Result<Template>::failure(take_error_(api_, status, error));
+            return Result<Template>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Template>::success(Template(api_, prepared));
@@ -1803,7 +1833,7 @@ public:
         const Status status =
             table_->engine_create(&source_c, &operation_c, &engine, &error);
         if (!is_ok(status)) {
-            return Result<Engine>::failure(take_error_(table_, status, error));
+            return Result<Engine>::failure(detail::take_error(table_, status, error));
         }
 
         return Result<Engine>::success(Engine(table_, engine));

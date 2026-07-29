@@ -18,6 +18,16 @@
  * Everything has internal linkage: this header is included by exactly one
  * translation unit per program, and nothing here crosses a link boundary. It is
  * valid C99 and valid C++17, because both examples include it.
+ *
+ * The names below are unprefixed while the include guard is prefixed, and that
+ * stays as it is. This header is not part of what MadoPilot publishes: it is
+ * neither installed nor exported, no target adds this directory to a consumer's
+ * include path, and the only compilations that see it are the ones `c-abi-check`
+ * runs over this repository's own programs. One of those is the frozen ABI
+ * fixture `tests/abi-compat/v1/old-prefix.c`, which uses these names and may not
+ * be edited, so prefixing them would mean changing a snapshot to improve a name
+ * no consumer can collide with. The guard is prefixed because a guard collides
+ * across headers a program includes together, which is a different question.
  */
 
 #ifndef MADOPILOT_EXAMPLES_DETERMINISTIC_SCENE_H

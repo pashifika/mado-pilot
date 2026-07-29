@@ -564,13 +564,13 @@ madopilot_status_t describing_a_message(const madopilot_error_t*,
     return MADOPILOT_STATUS_OK;
 }
 
-/// `take_error_` releases the C handle even when copying its text throws.
+/// `detail::take_error` releases the C handle even when copying its text throws.
 ///
 /// The wrapper's one documented exception is `std::bad_alloc` from the owned
 /// error text, and that is the path on which the release used to be skipped:
 /// it was the last statement of the function rather than a scope guard. Nothing
 /// the real library can be asked to do makes an allocation fail, so this drives
-/// `take_error_` directly, against a table of two fakes and a starved allocator.
+/// `detail::take_error` directly, against a table of two fakes and a starved allocator.
 void a_throwing_copy_still_releases_the_error(Fixture&)
 {
     madopilot_api_t table{};
@@ -585,7 +585,7 @@ void a_throwing_copy_still_releases_the_error(Fixture&)
     bool threw = false;
     starve_allocations = true;
     try {
-        static_cast<void>(madopilot::take_error_(&table, MADOPILOT_STATUS_INTERNAL, handle));
+        static_cast<void>(madopilot::detail::take_error(&table, MADOPILOT_STATUS_INTERNAL, handle));
     } catch (const std::bad_alloc&) {
         starve_allocations = false;
         threw = true;

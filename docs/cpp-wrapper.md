@@ -128,9 +128,20 @@ Each result is checked before it is extracted, for the reason
 
 ## Results and errors
 
-The default interface is exception-free. No wrapper operation throws to report a
-MadoPilot failure; only allocating an owned error message can throw, and that is
-`std::bad_alloc` rather than a translated status.
+The default interface is exception-free in the sense that matters: no wrapper
+operation throws to report a MadoPilot failure. Every failure the library can
+report arrives as a status in a `Result`, and no status is translated into an
+exception.
+
+The wrapper does throw what its own allocations throw, which is `std::bad_alloc`.
+Four places allocate, and all four are the wrapper making an owned copy for the
+caller: an error's text, when a failing call describes it; the vector
+`MatchResult::matches` fills; the copies a typed request keeps of what its C
+structure points at; and an explicit `BorrowedStr::to_string` or
+`BorrowedBytes::to_vector`. A caller that cannot tolerate `std::bad_alloc` from
+those can read `Error::status()` and the borrowed views without ever making a
+copy. Describing an error releases its C handle whether or not the copy of its
+text succeeds.
 
 ```cpp
 madopilot::Result<madopilot::Package> loaded = engine.load_package(source, operation);

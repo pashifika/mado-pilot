@@ -394,7 +394,23 @@ pub const MADOPILOT_API_SIZE_PHASE1: u32 = {
 /// A caller that knows less than this cannot report what it loaded and cannot
 /// build a deadline, so negotiation refuses it rather than handing back a table
 /// it could not use.
-pub const MADOPILOT_API_SIZE_INFORMATION: u32 = 16 + 3 * 8;
+///
+/// Read from the layout, as the offset of the member after the prefix, which is
+/// what a prefix size is. It was written as `16 + 3 * 8`, which assumed the four
+/// leading `u32`s pack without padding and that a function pointer is eight
+/// bytes; the C header's own definition made the matching assumption. Neither is
+/// assumed now, and the number is unchanged on both release targets.
+// As `MADOPILOT_API_SIZE_PHASE1`: the assertion below is what makes the
+// conversion a fact.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded against the only value that could truncate"
+)]
+pub const MADOPILOT_API_SIZE_INFORMATION: u32 = {
+    let offset = std::mem::offset_of!(madopilot_api_t, cancellation_create);
+    assert!(offset <= u32::MAX as usize, "a prefix size fits a u32");
+    offset as u32
+};
 
 /// Negotiates the ABI and returns the library's immutable function table.
 ///

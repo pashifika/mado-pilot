@@ -91,6 +91,23 @@ if(NOT WIN32)
   # a run path to the development artifact. A released, packaged library would
   # be installed somewhere the loader already searches; this is a property of
   # consuming the build tree, not of the ABI.
+  #
+  # A comma in the artifact directory cannot be expressed and is refused here
+  # rather than at link time. `LINKER:` separates on commas, and so does the
+  # `-Wl,` it expands to on both non-Windows release targets, so the run path
+  # arrives split in two and its tail becomes a stray input file. Measured, not
+  # assumed: an artifact directory ending `art,dir` fails with
+  # `ld: file cannot be open()ed ... path=dir`, which names neither the option
+  # nor the variable that produced it. Writing the option another way does not
+  # help — the driver's own separator is the one that splits it.
+  if(MADOPILOT_ARTIFACT_DIR MATCHES ",")
+    message(
+      FATAL_ERROR
+      "MADOPILOT_ARTIFACT_DIR contains a comma: ${MADOPILOT_ARTIFACT_DIR}\n"
+      "A run path reaches the linker through -Wl, which separates on commas, so \
+such a path cannot be passed. Build into a directory without one."
+    )
+  endif()
   set_target_properties(
     MadoPilot::C
     PROPERTIES INTERFACE_LINK_OPTIONS "LINKER:-rpath,${MADOPILOT_ARTIFACT_DIR}"
@@ -113,20 +130,17 @@ target_compile_features(madopilot_cpp INTERFACE cxx_std_17)
 target_link_libraries(madopilot_cpp INTERFACE MadoPilot::C)
 
 # ---------------------------------------------------------------------------
-# The examples, off by default
+# The examples are not built here
 #
-# A consumer of this project wants the two targets above. `c-abi-check` compiles
-# the examples itself, with the release target's own compiler and flags.
+# This project ends at the two targets above, which is the surface ADR 0005
+# declares. It carried a `MADOPILOT_BUILD_EXAMPLES` option and two executables
+# behind it; nothing in the repository set the option, so the branch was never
+# configured on either release target and would have rotted without anything
+# reporting it. Nothing was lost by removing it: `c-abi-check` compiles, links,
+# and runs both examples itself, with the release target's own compiler and
+# flags, and building them a second time through CMake would have added no
+# answer that check does not already give.
+#
+# A consumer that wants to build them adds its own `add_executable` against
+# `MadoPilot::C` or `MadoPilot::Cpp`, which is what those targets are for.
 # ---------------------------------------------------------------------------
-
-option(MADOPILOT_BUILD_EXAMPLES "Build the MadoPilot C and C++ examples" OFF)
-
-if(MADOPILOT_BUILD_EXAMPLES)
-  add_executable(madopilot-c-deterministic-slice examples/c/deterministic-slice.c)
-  target_include_directories(madopilot-c-deterministic-slice PRIVATE examples)
-  target_link_libraries(madopilot-c-deterministic-slice PRIVATE MadoPilot::C)
-
-  add_executable(madopilot-cpp-deterministic-slice examples/cpp/deterministic-slice.cpp)
-  target_include_directories(madopilot-cpp-deterministic-slice PRIVATE examples)
-  target_link_libraries(madopilot-cpp-deterministic-slice PRIVATE MadoPilot::Cpp)
-endif()
