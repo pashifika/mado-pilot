@@ -44,6 +44,26 @@ Every file declares `format_version`. The current version is `1`. A change that
 alters the meaning of an existing field increments the version and records the
 migration in an architecture decision record; adding an optional field does not.
 
+## Benchmark
+
+A file opens with the `[benchmark]` block, which says what was run and what the
+file is for. The harness prints this block and a committed profile carries the
+same keys with two answers changed, so that a recorded profile is the harness's
+output with budgets added rather than a document assembled beside it.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | The identifier the file is filed under, matching its name. |
+| `workload` | yes | One sentence naming what the set of workloads covers. |
+| `phase` | yes | The phase that introduced them. |
+| `status` | yes | `measured` for a recorded run, `harness-output` for the printer's own output, `format-example` for the format demonstration. |
+| `normative` | yes | Whether anything gates on this file. Harness output and the format example do not. |
+| `measurements_recorded` | yes | Whether the numbers are readings. False only for a file whose numbers are illustrative. |
+
+`crates/support/testkit/tests/benchmark_block_drift.rs` compares the harness's
+keys against every committed profile's, because a key that only one of them
+carries is a file no reader can turn into the other.
+
 ## Profile
 
 A profile records the conditions that make a measurement reproducible. A budget

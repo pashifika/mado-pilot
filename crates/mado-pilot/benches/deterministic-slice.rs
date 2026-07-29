@@ -47,7 +47,10 @@ const PLANTED: [(i32, i32); 2] = [(20, 12), (60, 40)];
 /// How far a score may sit from an exact correlation and still be one.
 const TOLERANCE: f64 = 1e-5;
 
-/// The region of interest the partial-mapping workload maps.
+/// The region of interest the partial-mapping workload maps, as left, top,
+/// right, and bottom: 48 by 32 inside the 96 by 64 frame, which is 6144 bytes
+/// at four bytes per pixel. The committed profiles state that byte count as a
+/// budget, so the extent is written here rather than left to be derived.
 const ROI: (f64, f64, f64, f64) = (16.0, 8.0, 64.0, 40.0);
 
 fn main() {
@@ -382,13 +385,13 @@ fn region_of_interest(frame: &Frame) -> mado_pilot::FrameView {
 }
 
 fn load_directory(fixture: &Fixture) -> Sample {
+    // Built outside the window, as in every other workload here: naming a path
+    // is the caller's arithmetic and reading the package is what is measured.
+    let source = PackageSource::directory(tiny_directory());
     let started = Instant::now();
     let package = fixture
         .engine
-        .load_package(
-            &PackageSource::directory(tiny_directory()),
-            &fixture.operation,
-        )
+        .load_package(&source, &fixture.operation)
         .expect("loaded");
     let elapsed = started.elapsed();
 
@@ -415,13 +418,12 @@ fn load_memory(fixture: &Fixture) -> Sample {
 }
 
 fn load_archive(fixture: &Fixture) -> Sample {
+    // As `load_directory`.
+    let source = PackageSource::archive_file(tiny_archive());
     let started = Instant::now();
     let package = fixture
         .engine
-        .load_package(
-            &PackageSource::archive_file(tiny_archive()),
-            &fixture.operation,
-        )
+        .load_package(&source, &fixture.operation)
         .expect("loaded");
     let elapsed = started.elapsed();
 

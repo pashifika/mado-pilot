@@ -80,9 +80,26 @@ fn search_scene(format: PixelFormat, min_score: f64) -> MatchResult {
     search(format, RegionSelection::FullFrame, min_score)
 }
 
+/// Searches the whole scene for the planted patch, with `padding` trailing
+/// bytes on every row.
+fn search_padded_scene(format: PixelFormat, min_score: f64, padding: usize) -> MatchResult {
+    search_frame(
+        match_fixtures::scene_frame_with_padded_rows(format, padding),
+        RegionSelection::FullFrame,
+        min_score,
+    )
+}
+
 fn search(format: PixelFormat, selection: RegionSelection, min_score: f64) -> MatchResult {
+    search_frame(match_fixtures::scene_frame(format), selection, min_score)
+}
+
+fn search_frame(
+    frame: mado_pilot_capture::Frame,
+    selection: RegionSelection,
+    min_score: f64,
+) -> MatchResult {
     let matcher = matcher();
-    let frame = match_fixtures::scene_frame(format);
     let prepared = matcher
         .prepare(&planted_template("patch"), &OperationContext::new())
         .expect("the patch prepares");
@@ -256,6 +273,38 @@ fn the_two_supported_frame_formats_reach_the_same_answer() {
             "a channel swap in the mapping must not move a score"
         );
     }
+}
+
+#[test]
+fn a_frame_whose_rows_are_padded_reaches_the_same_answer() {
+    // Bgra8 is the layout the backend requires, so the matcher maps the whole
+    // frame without converting it and the frame's own stride reaches
+    // `region_to_bgr`. That is the path a Windows capture frame takes first: a
+    // driver's row pitch is not the caller's to choose, and every other fixture
+    // in this repository is packed. A backend that used `width * 4` where the
+    // stride belongs reads each row shifted a little further into the previous
+    // one's padding, so the answers below stop agreeing.
+    let packed = search_scene(PixelFormat::Bgra8, 0.9);
+    let padded = search_padded_scene(PixelFormat::Bgra8, 0.9, 64);
+
+    assert_eq!(
+        bounds_of(&padded),
+        bounds_of(&packed),
+        "padding the rows must not move a match"
+    );
+    for (packed, padded) in packed.matches().iter().zip(padded.matches()) {
+        assert!(
+            (packed.score() - padded.score()).abs() <= SCORE_TOLERANCE,
+            "padding the rows must not move a score: {} against {}",
+            packed.score(),
+            padded.score()
+        );
+    }
+    assert_eq!(
+        padded.matches().len(),
+        PLANTED.len(),
+        "and both planted copies are still found"
+    );
 }
 
 #[test]

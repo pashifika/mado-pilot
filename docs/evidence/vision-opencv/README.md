@@ -26,10 +26,15 @@ the label, because a program that guesses them records a guess.
 Only the reports are tracked. The full test-run logs from each host are not: they
 are hundreds of lines of unrelated test names that go stale the moment a test is
 added anywhere in the workspace, and what they establish is stated below instead.
-Both hosts ran `cargo test --locked --workspace --all-targets` green, including the
-shared vision contract suite and all twelve algorithm fixtures. Their totals differ
-— 432 on macOS against 427 on Windows — entirely because five asset-loading tests
-are `#[cfg(unix)]`; no vision test is gated on either target.
+Both hosts ran `cargo test --locked --workspace --all-targets` green at `7dfe8c6`,
+including the shared vision contract suite and all twelve algorithm fixtures that
+commit had. Their totals differ — 432 on macOS against 427 on Windows — entirely
+because five asset-loading tests are `#[cfg(unix)]`; no vision test is gated on
+either target.
+
+Every count in that paragraph is a reading from one run, so it is pinned to the
+commit it was taken at rather than written in the present tense. A later commit
+adds tests; it does not change what those hosts ran.
 
 ## Hosts
 

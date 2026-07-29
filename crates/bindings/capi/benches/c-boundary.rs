@@ -63,6 +63,18 @@ const TOLERANCE: f64 = 1e-5;
 const PLANTED_ORACLE: &str =
     "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5";
 
+/// The layout the matcher maps a searched region into.
+///
+/// `mapped_bytes_per_result` is the searched area times this format's size, and
+/// the C half cannot derive the second factor: the C ABI reports the backend's
+/// identity and version but not the layout it requires, and the ABI is frozen.
+/// Naming the format here rather than writing its byte width into the
+/// arithmetic is what makes the assumption visible — and
+/// [`match_warm_rust`], which can ask the engine, checks it, so a backend that
+/// required another layout fails this benchmark instead of having its bytes
+/// reported under the old one.
+const BACKEND_FORMAT: PixelFormat = PixelFormat::Bgra8;
+
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let plan = Plan::from(&arguments);
@@ -524,7 +536,15 @@ fn match_warm_rust(flow: &RustFlow) -> Sample {
     let elapsed = started.elapsed();
 
     let searched = outcome.result().searched();
+    // The half of the pair that can ask. Both halves report a byte count built
+    // from the same format, and the C one has to be told which; this is where
+    // being told the wrong one is caught.
     let format = flow.engine.backend().format();
+    assert_eq!(
+        format, BACKEND_FORMAT,
+        "the C half computes mapped bytes from BACKEND_FORMAT, which the C ABI \
+         gives it no way to read back"
+    );
     let mapped = u64::from(searched.width())
         * u64::from(searched.height())
         * u64::from(format.bytes_per_pixel());
@@ -554,6 +574,14 @@ fn planted(found: &[(i32, i32, f64)]) -> bool {
 }
 
 /// Returns the frame bytes one search mapped, from what the result reports.
+///
+/// Derived rather than observed, from the region the result says was searched
+/// and the format the matcher maps into. The matcher maps that region exactly
+/// once per search, so this is the rule it follows and not a reading of what it
+/// did: a backend that mapped twice would break the rule, and this arithmetic
+/// would go on reporting one mapping. Detecting that needs an observer inside
+/// the library, which is what `mado-pilot`'s own benchmark has and a caller on
+/// the far side of the C boundary cannot.
 fn searched_bytes(info: &madopilot_result_info_t) -> u64 {
     let width = u64::from(
         info.searched
@@ -568,9 +596,7 @@ fn searched_bytes(info: &madopilot_result_info_t) -> u64 {
             .unsigned_abs(),
     );
 
-    // The backend requires RGBA8, and the matcher maps the searched region into
-    // that format exactly once per search.
-    width * height * 4
+    width * height * u64::from(BACKEND_FORMAT.bytes_per_pixel())
 }
 
 fn create_engine(

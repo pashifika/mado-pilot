@@ -379,6 +379,28 @@ impl Profile {
     }
 }
 
+/// The `[benchmark]` block a report opens with, as `key = value` lines.
+///
+/// Returned as a list rather than printed one line at a time so that the key
+/// set is a value something can compare. A committed profile is this block with
+/// `status` and `normative` answered differently and the budgets added, so a key
+/// here that no profile carries — or one every profile carries and this omits —
+/// is the two records drifting apart. `benchmark_block_drift.rs` is that
+/// comparison.
+#[must_use]
+pub fn benchmark_block(benchmark: &Benchmark) -> Vec<(&'static str, String)> {
+    vec![
+        ("id", format!("\"{}\"", escape(benchmark.id))),
+        ("workload", format!("\"{}\"", escape(benchmark.workload))),
+        ("phase", format!("\"{}\"", escape(benchmark.phase))),
+        // What this run is: harness output, which nothing gates on, carrying
+        // measurements that are real readings rather than illustrations.
+        ("status", "\"harness-output\"".to_owned()),
+        ("normative", "false".to_owned()),
+        ("measurements_recorded", "true".to_owned()),
+    ]
+}
+
 /// Prints a profile-shaped report with no budget in it.
 ///
 /// A committed file under `docs/benchmarks/` is this output with budgets added.
@@ -386,12 +408,9 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
     println!("format_version = 1");
     println!();
     println!("[benchmark]");
-    println!("id = \"{}\"", benchmark.id);
-    println!("workload = \"{}\"", benchmark.workload);
-    println!("phase = \"{}\"", benchmark.phase);
-    println!("status = \"harness-output\"");
-    println!("normative = false");
-    println!("budgets_set = false");
+    for (key, value) in benchmark_block(benchmark) {
+        println!("{key} = {value}");
+    }
     println!("# A committed profile under docs/benchmarks/ carries the budgets.");
     println!();
     println!("[profile]");

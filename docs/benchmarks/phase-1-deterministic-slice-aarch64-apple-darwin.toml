@@ -145,7 +145,7 @@ allocated_growth_bytes = 0
   unit = "bytes"
   direction = "at_most"
   limit = 6144
-  rationale = "64x24 at four bytes per pixel; a region mapping that mapped the whole frame would be four times this"
+  rationale = "48x32 at four bytes per pixel, which is the ROI the workload maps; a region mapping that mapped the whole frame would be four times this"
 
 [[measurement]]
 workload = "load_package_directory"
