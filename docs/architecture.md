@@ -334,9 +334,16 @@ The facade's row lists no contract package. That is deliberate — default wirin
 the facade's only job — but it means every core, capture, input, vision, OCR, or
 asset type the public Rust API exposes must reach callers through
 `mado-pilot-runtime`'s re-exports. Phase 1 meets this: every contract type the
-facade exposes is re-exported from runtime, and the facade's own dependency row
-adds only `mado-pilot-adapter-replay` and `mado-pilot-backend-opencv`. Widening
-that row is a normative change and needs an ADR, not a quiet allowlist edit.
+facade exposes is re-exported from runtime, and beyond runtime the facade
+actually depends on only `mado-pilot-adapter-replay` and
+`mado-pilot-backend-opencv`.
+
+Those two are not the whole of the facade's row. The row allows six, the two
+above plus `mado-pilot-platform-windows`, `mado-pilot-platform-macos` and
+`mado-pilot-backend-onnx`, which Phase 1 does not implement and the facade
+therefore does not name in its manifest — the table is an allowlist and an
+omitted future edge is always valid, as the subset rule above says. Widening the
+row itself is a normative change and needs an ADR, not a quiet allowlist edit.
 
 Vision and OCR depend on the capture contract because their public operations
 consume capture-owned frame views. That is a contract-to-contract dependency and
@@ -527,9 +534,11 @@ review, the documented-exception process, and the review a native library or mod
 file requires before it is added or bundled. `deny.toml` is its machine-checked
 form, and `cargo deny --locked check` enforces it.
 
-Phase 0 has no product dependency. The policy and its configuration are committed
-anyway, so the first dependency arrives into an enforced policy rather than
-prompting one.
+The policy and its configuration were committed in Phase 0, before there was a
+product dependency to check, so the first one arrived into an enforced policy
+rather than prompting one. Phase 1 has dependencies —
+[third-party-dependencies.md](third-party-dependencies.md) records the resolved
+closure and the OpenCV build-time set — and they were added under it.
 
 ## Public naming baseline
 
@@ -973,24 +982,28 @@ Phase 0 is complete when all of the following hold:
 A compiling workspace alone does not satisfy this contract: a missing or incomplete
 gate registry or benchmark format fails Phase 0 verification.
 
-### Verification scope in Phase 0
+### Verification scope by class
 
-Several classes of verification that later phases require are **not applicable**
-in Phase 0, because the behavior they would check does not exist. They are recorded
-here so that their absence is a stated scope boundary rather than an untested gap:
+Each class of verification a released MadoPilot needs is recorded here with where
+it stands, so that an absence is a stated scope boundary rather than an untested
+gap. The column that matters is the middle one; the Phase 0 column is kept
+because "not applicable then" is why several of these have no history to compare
+against.
 
-| Verification class | Phase 0 status | Becomes applicable |
+| Verification class | Status | Phase 0 |
 |---|---|---|
-| Numeric runtime performance budgets | Not applicable; no measurable workload exists | With the first performance-sensitive workload, under [`G-013`](validation-gates.md#g-013) |
-| Native permission behavior and permission probes | Not applicable; no permission is requested or probed | With the platform adapters in Phase 2 |
-| Native dependency packaging and clean-system loading | Not applicable; no native dependency is declared | With the backend adapters, under [`G-007`](validation-gates.md#g-007) |
-| ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field on both release targets, the structure-prefix tests cover inputs and outputs in both directions, and `crates/bindings/capi/tests/abi-compat/v1/` is the frozen ABI-1.0 header, compiled against every later library by `c-abi-check` | Resolved under [`G-010`](validation-gates.md#g-010) by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
-| Capture, mapping, matching, OCR, watcher, and input contract suites | Not applicable; no contract is implemented | With each implementing change |
+| Numeric runtime performance budgets | Implemented in Phase 1. [ADR 0008](adr/0008-phase-1-performance-budgets.md) sets them, four committed profiles under [`benchmarks/`](benchmarks/) carry the measurements, and the two `kind = "hard"` predicates are enforced in-process on both the `cargo bench` and `cargo test` paths | Not applicable; no measurable workload existed |
+| ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field on both release targets, the measured layout is compared against the committed evidence, the structure-prefix tests cover inputs and outputs in both directions, and `crates/bindings/capi/tests/abi-compat/v1/` is the frozen ABI-1.0 header, compiled against every later library by `c-abi-check`. Resolved under [`G-010`](validation-gates.md#g-010) by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) | Not applicable; no ABI existed |
+| Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
+| OCR, watcher, and input contract suites | Not applicable; those contracts are not implemented | Not applicable |
+| Native permission behavior and permission probes | Not applicable; no permission is requested or probed | Not applicable |
+| Native dependency packaging and clean-system loading | Partly applicable. Phase 1 declares one native dependency, OpenCV, and records its licence and deployment requirements; clean-system loading and packaging remain open under [`G-007`](validation-gates.md#g-007) | Not applicable; no native dependency was declared |
 
-What Phase 0 does verify is the repository itself: the package inventory and
-dependency directions, formatting, lints with warnings denied, the workspace test
-run, documentation with rustdoc warnings denied, dependency policy against the
-committed lockfile, and a native build and test on each release target.
+Underneath all of it, what Phase 0 established and every phase still verifies is
+the repository itself: the package inventory and dependency directions,
+formatting, lints with warnings denied, the workspace test run, documentation
+with rustdoc warnings denied, dependency policy against the committed lockfile,
+and a native build and test on each release target.
 
 ## Documentation governance
 

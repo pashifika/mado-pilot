@@ -95,12 +95,14 @@ borrowed views, structure-prefix negotiation, and how to build against each.
 ```text
 crates/mado-pilot          public Rust facade
 crates/automation/*        platform-neutral contracts and orchestration
+crates/adapter/replay      deterministic replay capture from files and memory
 crates/platform/*          Windows and macOS capture and input adapters
 crates/backend/*           OpenCV and ONNX Runtime adapters
 crates/bindings/capi       C ABI boundary, C++ wrapper, and CMake targets
 crates/support/testkit     deterministic test support
 tools/dependency-check     workspace inventory and dependency-direction checker
 docs/                      architecture, gates, performance format, ADRs, policy
+fixtures/                  tracked replay sequences and asset packages
 ```
 
 ## Building and verifying
@@ -142,6 +144,15 @@ It prints the resolved workspace inventory and fails when a package is missing,
 unexpected, misplaced, deferred, or connected against the documented dependency
 directions.
 
+The C and C++ boundaries are checked by a step of their own, because `cargo test`
+cannot compile them. It needs a C and C++ toolchain and CMake, and it compares the
+measured ABI layout against the committed evidence, compiles the frozen v1 header
+against the current library, and builds and runs both consumer programs:
+
+```sh
+cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+```
+
 ## Documentation
 
 | Document | Contents |
@@ -165,9 +176,10 @@ and diagnostics that exclude captured images, recognized text, and credentials b
 default. On macOS, permission state will be probed and reported without presenting
 permission UI.
 
-These are contract commitments for the implementing changes. Phase 0 requests no
-permission, probes none, and logs nothing, because it performs no capture or
-input.
+These are contract commitments for the implementing changes. Phase 1 still
+requests no permission and probes none: it captures from tracked replay
+sequences and files on disk, not from the screen, and injects no input. The
+commitments above become testable with the platform adapters.
 
 ## Contributing
 

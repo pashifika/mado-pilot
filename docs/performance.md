@@ -90,6 +90,30 @@ A budget names one measure. The version-one vocabulary is:
 A phase that needs a measure outside this list adds it here in the same change,
 with its unit and its meaning.
 
+### Why some names carry their unit and others do not
+
+The suffix is not decoration and it is not applied evenly, so the rule is worth
+stating rather than inferring. A name carries its unit when the quantity would be
+ambiguous without it — `iteration_span_ms` is a duration and `_ms` says which
+one, `peak_allocated_bytes` counts bytes and `_bytes` separates it from a byte
+*rate* — and omits it when the `Unit` column above is the only answer the measure
+can have. `latency_p95` is milliseconds because every latency here is.
+
+Three vocabulary names differ from the key a profile records the value under,
+which is the one place a reader can be caught out:
+
+| Vocabulary name | Recorded as |
+|---|---|
+| `latency_p50` | `latency_p50_ms` |
+| `latency_p95` | `latency_p95_ms` |
+| `memory_growth` | `allocated_growth_bytes`, when the measure is live heap rather than resident memory |
+
+A budget's `measure` may name either form; the four committed profiles use the
+recorded key everywhere except `latency_p50` and `latency_p95`, where they use
+the vocabulary name. Renaming to one convention would move every committed
+profile, the harness that prints them, and the drift test that compares the two,
+so the mapping is documented instead.
+
 ### Live heap bytes and resident memory are different measures
 
 `peak_memory`, `steady_memory`, and `memory_growth` are resident memory.

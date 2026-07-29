@@ -41,8 +41,8 @@ Two benchmarks, each measured on both release targets:
 
 | Benchmark | Profiles | Covers |
 |---|---|---|
-| `deterministic-slice` | [aarch64](benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml), [x86_64](benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml) | The eight-operation Rust workflow |
-| `c-boundary` | [aarch64](benchmarks/phase-1-c-boundary-aarch64-apple-darwin.toml), [x86_64](benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml) | What the C ABI costs, against the same work through the facade |
+| `deterministic-slice` | [aarch64](../benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml), [x86_64](../benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml) | The eight-operation Rust workflow |
+| `c-boundary` | [aarch64](../benchmarks/phase-1-c-boundary-aarch64-apple-darwin.toml), [x86_64](../benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml) | What the C ABI costs, against the same work through the facade |
 
 Each file holds one profile, its measurements, three budgets that apply to the
 whole file, and the workload-specific budgets.

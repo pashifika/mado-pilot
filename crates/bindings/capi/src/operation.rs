@@ -80,8 +80,12 @@ inputs! {
 ///
 /// # Errors
 ///
-/// Rejects a null or malformed structure and a deadline that is not
-/// representable in the monotonic domain.
+/// Rejects a null or malformed structure, and a `cancellation` that is not a
+/// live cancellation handle.
+///
+/// A deadline is never rejected. Every `uint64_t` nanosecond value the field can
+/// hold is representable in the monotonic domain, so there is no unrepresentable
+/// case to report — this said there was, and nothing implemented it.
 ///
 /// # Safety
 ///
@@ -98,9 +102,13 @@ pub(crate) unsafe fn context(operation: *const madopilot_operation_t) -> Result<
         madopilot_operation_t,
         MADOPILOT_OPERATION_HAS_DEADLINE
     ) {
-        // `Duration::from_nanos` takes the whole `u64` range, so the only way
-        // this fails is a domain that cannot hold it, which is reported rather
-        // than clamped: a silently nearer deadline expires early.
+        // Infallible, and worth saying because the comment here used to claim a
+        // report that does not exist. `Duration::from_nanos` accepts the whole
+        // `u64` range and `MonotonicInstant::from_origin` accepts every duration,
+        // so no deadline the field can carry is out of domain and none is
+        // clamped. If either ever gains a bound, this is where the refusal goes:
+        // a silently nearer deadline expires early, which a caller cannot tell
+        // from its own work being slow.
         context = context.with_deadline(MonotonicInstant::from_origin(Duration::from_nanos(
             request.deadline_nanos,
         )));
@@ -111,7 +119,15 @@ pub(crate) unsafe fn context(operation: *const madopilot_operation_t) -> Result<
         // the call, and null was excluded above.
         let Some(cancellation) = (unsafe { handle::borrow::<Cancellation>(request.cancellation) })
         else {
-            return Err(Fault::abi("`cancellation` is not a cancellation handle"));
+            // Unreachable, and it has to be written anyway because `borrow`
+            // returns an `Option`. `borrow` refuses exactly one thing — a null
+            // pointer — which the branch above already excluded; it cannot tell
+            // one handle type from another, because a handle is an opaque
+            // pointer with no tag to check. The message here used to claim it
+            // could. A caller that passes some other live handle is undefined
+            // behaviour by this function's own safety contract, not an error
+            // this boundary detects.
+            return Err(Fault::abi("`cancellation` is null"));
         };
         context = context.with_cancellation(cancellation.0.clone());
     }

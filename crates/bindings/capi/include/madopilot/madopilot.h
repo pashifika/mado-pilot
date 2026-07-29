@@ -306,10 +306,11 @@ typedef struct madopilot_bytes_t {
  * Opaque handles
  *
  * Every handle is reference counted. `*_retain` adds one owned reference and
- * `*_release` drops one; both accept null as a no-op, so a cleanup path can
- * release whatever it has without knowing how far construction got. Every other
- * operation rejects null, because "do nothing" is not an answer to a question
- * that has one.
+ * `*_release` drops one; both accept null as a no-op and return
+ * MADOPILOT_STATUS_OK for it, so a cleanup path can release whatever it has
+ * without knowing how far construction got, and without special-casing the
+ * status. Every other operation rejects null, because "do nothing" is not an
+ * answer to a question that has one.
  *
  * A handle passed to a call must stay retained for the whole call. Releasing
  * the last reference concurrently with a call that has not retained one of its
@@ -317,6 +318,12 @@ typedef struct madopilot_bytes_t {
  *
  * Const access is safe from several threads at once while each keeps a live
  * reference.
+ *
+ * The four entries that take no handle — madopilot_get_api, describe_build,
+ * clock_now, and status_text — are safe to call from any thread at any time,
+ * concurrently with each other and with any other entry, and are safe to call
+ * again from inside a call to any of them. They read immutable state or the
+ * platform clock and own nothing that another call could be using.
  * ------------------------------------------------------------------------ */
 
 typedef struct madopilot_cancellation_t madopilot_cancellation_t;
@@ -471,6 +478,9 @@ typedef struct madopilot_session_info_t {
     uint32_t width;
     uint32_t height;
     madopilot_pixel_format_t format;
+    /* A bit set: bit (1 << space) is set when that space converts. Read as a
+     * madopilot_space_t it gives a plausible wrong answer — the value 1 is both
+     * "capture pixels converts" and SPACE_FRAME_NORMALIZED. */
     int32_t coordinate_spaces;
 } madopilot_session_info_t;
 
@@ -520,6 +530,12 @@ typedef struct madopilot_match_options_t {
 } madopilot_match_options_t;
 
 /* One template search. Mandatory prefix: through tmpl.
+ *
+ * Omitting clip_policy rejects a region that leaves the frame, the same default
+ * madopilot_map_request_t states for its own field. Only a struct_size of 52
+ * through 55 omits it, which no released header declares, but the two fields
+ * are identical and stating the default for one and not the other invites the
+ * reader to think they differ.
  *
  * The field is `tmpl` rather than `template` because the C++ wrapper includes
  * this header and that word is a keyword there. */
