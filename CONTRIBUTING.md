@@ -84,6 +84,21 @@ On Windows, run step 8 from a Developer Command Prompt. `cl` is not on `PATH`
 otherwise, and the same environment sets `VSINSTALLDIR`, through which the check
 finds the CMake that Visual Studio ships when none is on `PATH`.
 
+Step 6 sets an environment variable, which each Windows shell spells its own way.
+The Developer Command Prompt the paragraph above asks for is `cmd`, so that form
+comes first:
+
+```bat
+set "RUSTDOCFLAGS=-D warnings"
+cargo doc --locked --workspace --no-deps
+set "RUSTDOCFLAGS="
+```
+
+Quote the whole assignment. `set RUSTDOCFLAGS="-D warnings"` puts the quotation
+marks *inside* the value, and rustdoc is then passed an argument it does not
+recognize. The third line clears it again: `set` outlives the command, and a
+`RUSTDOCFLAGS` left behind applies to every later `cargo doc` in that window.
+
 On Windows PowerShell, step 6 is:
 
 ```powershell
