@@ -759,12 +759,7 @@ mod tests {
         fs::create_dir(&source).expect("source directory");
         fs::create_dir(&outside).expect("outside directory");
         fs::write(outside.join("secret.bin"), [0xAA; PIXEL_BYTES]).expect("outside pixels");
-        if link_directory(&outside, &source.join("frames")).is_err() {
-            // The host will not create a symbolic link, so there is nothing here
-            // to refuse. Windows needs Developer Mode or the create-link right.
-            fs::remove_dir_all(&root).expect("cleanup");
-            return;
-        }
+        link_directory(&outside, &source.join("frames")).expect(LINK_REQUIRED);
         // `2x2 rgba8` is exactly the length of the file outside the source, so
         // the descriptor check cannot be what refuses this: a manifest author
         // picks the extent and the stride as freely as the path.
@@ -794,10 +789,7 @@ mod tests {
         let outside = root.join("outside.bin");
         fs::create_dir(&source).expect("source directory");
         fs::write(&outside, [0xAA; PIXEL_BYTES]).expect("outside pixels");
-        if link_file(&outside, &source.join("pixels.bin")).is_err() {
-            fs::remove_dir_all(&root).expect("cleanup");
-            return;
-        }
+        link_file(&outside, &source.join("pixels.bin")).expect(LINK_REQUIRED);
         write_manifest(&source, "pixels.bin");
 
         assert_eq!(
@@ -885,6 +877,15 @@ mod tests {
         fs::create_dir(&root).expect("scratch directory");
         root
     }
+
+    // The two link tests are the only coverage that a linked component is refused,
+    // so a host that cannot create the link has proven nothing. They fail rather
+    // than return early: both names are release targets, a skip and a pass are
+    // indistinguishable in the default test output because libtest discards a
+    // passing test's writes, and a green suite has to mean the case ran.
+    const LINK_REQUIRED: &str = "this host cannot create a symbolic link, so the containment this \
+                                 test exists to prove would go unverified; Windows needs Developer \
+                                 Mode or SeCreateSymbolicLinkPrivilege";
 
     #[cfg(unix)]
     fn link_directory(target: &Path, link: &Path) -> std::io::Result<()> {
