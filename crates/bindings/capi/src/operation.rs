@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use mado_pilot::{CancellationToken, Clock, MonotonicInstant, OperationContext, SystemClock};
 
-use crate::boundary::Input;
+use crate::boundary::{Input, covers, declared, prefixes};
 use crate::error::Fault;
 use crate::handle::opaque;
 use crate::status::MADOPILOT_STATUS_OK;
@@ -46,6 +46,19 @@ impl Input for madopilot_operation_t {
     // and one that declares neither are different requests.
     const MANDATORY: usize = 8;
     const NAME: &'static str = "madopilot_operation_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_operation_t,
+        struct_size,
+        flags,
+        deadline_nanos,
+        cancellation,
+    );
+    // `cancellation` carries no presence bit: null is its documented absent
+    // value, so a prefix that omits it says the same thing the field would.
+    const PRESENCE: &'static [(u32, usize)] = &[(
+        MADOPILOT_OPERATION_HAS_DEADLINE,
+        covers!(madopilot_operation_t, deadline_nanos: u64),
+    )];
 
     fn defaults() -> Self {
         Self {
@@ -54,6 +67,10 @@ impl Input for madopilot_operation_t {
             deadline_nanos: 0,
             cancellation: std::ptr::null(),
         }
+    }
+
+    fn presence_bits(&self) -> u32 {
+        self.flags
     }
 }
 
@@ -74,7 +91,11 @@ pub(crate) unsafe fn context(operation: *const madopilot_operation_t) -> Result<
 
     let mut context = OperationContext::new();
 
-    if request.flags & MADOPILOT_OPERATION_HAS_DEADLINE != 0 {
+    if declared!(
+        request,
+        madopilot_operation_t,
+        MADOPILOT_OPERATION_HAS_DEADLINE
+    ) {
         // `Duration::from_nanos` takes the whole `u64` range, so the only way
         // this fails is a domain that cannot hold it, which is reported rather
         // than clamped: a silently nearer deadline expires early.

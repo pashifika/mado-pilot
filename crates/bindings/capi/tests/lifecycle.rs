@@ -16,10 +16,9 @@
 
 mod support;
 
-use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::{mem, ptr, thread};
 
 use madopilot::layout::struct_size;
 use madopilot::*;
@@ -335,7 +334,7 @@ fn a_session_outlives_the_target_list_it_was_opened_from() {
 
 #[test]
 fn a_mapping_outlives_the_frame_and_the_closed_session() {
-    let flow = Flow::open();
+    let mut flow = Flow::open();
     let api = flow.api;
     let operation = operation();
 
@@ -369,15 +368,28 @@ fn a_mapping_outlives_the_frame_and_the_closed_session() {
     // SAFETY: the byte view borrows storage the mapping keeps alive.
     let snapshot =
         unsafe { std::slice::from_raw_parts(before.bytes.data, before.bytes.len) }.to_vec();
+    assert_ne!(
+        before.flags & MADOPILOT_IMAGE_SHARED,
+        0,
+        "this mapping shares the frame's storage rather than copying it, which is what makes \
+         releasing the frame below a real question"
+    );
 
-    // Release the producer's whole chain out from under the mapping.
-    // SAFETY: the flow still owns its own references; these are extra releases
-    // of handles the flow will release again, so take a retained copy first.
+    // Release the producer's whole chain out from under the mapping. The frame
+    // handle is moved out of the flow first, so the release below is its last
+    // one and the frame's count really does reach zero; a retain-then-release
+    // pair here would be a no-op and would leave the property in this test's
+    // name unexercised. Dropping the flow afterwards releases the closed
+    // session, the target list, the package, both templates, and the engine.
+    let frame = mem::replace(&mut flow.frame, ptr::null_mut());
+    // SAFETY: the flow no longer holds this handle, so this is the reference it
+    // would otherwise have released at drop, and the release entries accept the
+    // null the flow now carries in its place.
     unsafe {
-        (api.frame_retain)(flow.frame);
-        (api.frame_release)(flow.frame);
+        (api.frame_release)(frame);
         (api.session_close)(flow.session, &raw const operation, ptr::null_mut());
     }
+    drop(flow);
 
     let mut after = image();
     // SAFETY: as above.
@@ -462,6 +474,234 @@ fn a_retained_reference_survives_its_sibling_being_released() {
 
     // SAFETY: the final release destroys the result exactly once.
     unsafe { (api.result_release)(result) };
+}
+
+// --- The retain half of every handle's lifecycle ----------------------------
+//
+// `result_retain` is covered above. The five below, and `mapping_stamp`, were
+// reachable from the header and from nowhere else: no test, example, C program,
+// or C++ probe called them. Each is a hand-written one-line wrapper generic over
+// its payload type, so a `handle::release` written into a `_retain`, or a
+// sibling payload type named in one, compiles and ships. Each test takes the
+// extra reference, gives another one back, and only then reads the payload —
+// a wrapper that did not increment leaves that read looking at a dropped value.
+
+#[test]
+fn a_cancellation_survives_the_reference_it_was_created_with() {
+    let api = table();
+
+    let mut cancellation = ptr::null_mut();
+    // SAFETY: `cancellation` is a live local.
+    assert_eq!(
+        unsafe { (api.cancellation_create)(&raw mut cancellation) },
+        MADOPILOT_STATUS_OK
+    );
+
+    // SAFETY: the handle is retained by this frame; this takes a second
+    // reference and gives the first back.
+    unsafe {
+        assert_eq!((api.cancellation_retain)(cancellation), MADOPILOT_STATUS_OK);
+        assert_eq!(
+            (api.cancellation_release)(cancellation),
+            MADOPILOT_STATUS_OK
+        );
+    }
+
+    let mut cancelled = 1_i32;
+    // SAFETY: the reference `cancellation_retain` took is still live.
+    unsafe {
+        assert_eq!(
+            (api.cancellation_is_cancelled)(cancellation, &raw mut cancelled),
+            MADOPILOT_STATUS_OK
+        );
+    }
+    assert_eq!(cancelled, 0, "the token is the one that was created");
+
+    // The payload is not just readable but still the same shared state.
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!((api.cancellation_cancel)(cancellation), MADOPILOT_STATUS_OK);
+        assert_eq!(
+            (api.cancellation_is_cancelled)(cancellation, &raw mut cancelled),
+            MADOPILOT_STATUS_OK
+        );
+    }
+    assert_eq!(cancelled, 1);
+
+    // SAFETY: the last reference this frame holds.
+    unsafe {
+        assert_eq!(
+            (api.cancellation_release)(cancellation),
+            MADOPILOT_STATUS_OK
+        );
+    }
+}
+
+#[test]
+fn an_error_survives_the_reference_the_refusal_returned() {
+    let api = table();
+    let error = support::refused_error(api);
+
+    // SAFETY: the handle is owned by this frame; this takes a second reference
+    // and gives the first back.
+    unsafe {
+        assert_eq!((api.error_retain)(error), MADOPILOT_STATUS_OK);
+        assert_eq!((api.error_release)(error), MADOPILOT_STATUS_OK);
+    }
+
+    // Reads through the retained reference, and releases it.
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
+}
+
+#[test]
+fn a_target_list_survives_the_reference_discovery_returned() {
+    let mut flow = Flow::open();
+    let api = flow.api;
+
+    let mut before = 0_usize;
+    // SAFETY: the list is retained by the flow and `before` is a live local.
+    assert_eq!(
+        unsafe { (api.target_list_count)(flow.targets, &raw mut before) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_ne!(before, 0, "the replay source declares a target");
+
+    // SAFETY: the list is retained by the flow; this takes this frame's own
+    // reference.
+    unsafe { assert_eq!((api.target_list_retain)(flow.targets), MADOPILOT_STATUS_OK) };
+
+    // The flow's reference is moved out and given back, so the only one left is
+    // the reference `target_list_retain` took.
+    let targets = mem::replace(&mut flow.targets, ptr::null_mut());
+    // SAFETY: the flow no longer holds this handle.
+    unsafe { assert_eq!((api.target_list_release)(targets), MADOPILOT_STATUS_OK) };
+
+    let mut after = 0_usize;
+    // SAFETY: this frame's reference is still live.
+    assert_eq!(
+        unsafe { (api.target_list_count)(targets, &raw mut after) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(after, before, "the list is the one discovery produced");
+
+    // SAFETY: the last reference.
+    unsafe { assert_eq!((api.target_list_release)(targets), MADOPILOT_STATUS_OK) };
+}
+
+#[test]
+fn a_session_survives_the_reference_open_returned() {
+    let mut flow = Flow::open();
+    let api = flow.api;
+    let operation = operation();
+
+    let mut before = session_info();
+    // SAFETY: the session is retained by the flow and `before` is a live local.
+    assert_eq!(
+        unsafe { (api.session_describe)(flow.session, &raw mut before) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_ne!(before.stream, 0);
+
+    // SAFETY: the session is retained by the flow; this takes this frame's own
+    // reference.
+    unsafe { assert_eq!((api.session_retain)(flow.session), MADOPILOT_STATUS_OK) };
+
+    let session = mem::replace(&mut flow.session, ptr::null_mut());
+    // SAFETY: the flow no longer holds this handle.
+    unsafe { assert_eq!((api.session_release)(session), MADOPILOT_STATUS_OK) };
+
+    let mut after = session_info();
+    // SAFETY: this frame's reference is still live.
+    assert_eq!(
+        unsafe { (api.session_describe)(session, &raw mut after) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(
+        after.stream, before.stream,
+        "the session is the one that was opened"
+    );
+
+    // SAFETY: the last reference; releasing a session does not close it, so the
+    // close comes first.
+    unsafe {
+        (api.session_close)(session, &raw const operation, ptr::null_mut());
+        assert_eq!((api.session_release)(session), MADOPILOT_STATUS_OK);
+    }
+}
+
+#[test]
+fn a_mapping_survives_the_reference_frame_map_returned() {
+    let flow = Flow::open();
+    let api = flow.api;
+    let mapping = flow.map();
+
+    let mut before = image();
+    // SAFETY: the mapping is owned by this frame and `before` is a live local.
+    assert_eq!(
+        unsafe { (api.mapping_describe)(mapping, &raw mut before) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_ne!(before.bytes.len, 0);
+
+    // SAFETY: the handle is owned by this frame; this takes a second reference
+    // and gives the first back.
+    unsafe {
+        assert_eq!((api.mapping_retain)(mapping), MADOPILOT_STATUS_OK);
+        assert_eq!((api.mapping_release)(mapping), MADOPILOT_STATUS_OK);
+    }
+
+    let mut after = image();
+    // SAFETY: the reference `mapping_retain` took is still live.
+    assert_eq!(
+        unsafe { (api.mapping_describe)(mapping, &raw mut after) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!((after.width, after.height), (before.width, before.height));
+    assert_eq!(after.bytes.len, before.bytes.len);
+    assert_eq!(
+        after.bytes.data, before.bytes.data,
+        "the mapping is the one that was mapped, not a rebuilt one"
+    );
+
+    // SAFETY: the last reference.
+    unsafe { assert_eq!((api.mapping_release)(mapping), MADOPILOT_STATUS_OK) };
+}
+
+#[test]
+fn a_mapping_reports_the_identity_of_the_frame_it_came_from() {
+    let flow = Flow::open();
+    let api = flow.api;
+
+    let mut expected = stamp();
+    // SAFETY: the frame is retained by the flow and `expected` is a live local.
+    assert_eq!(
+        unsafe { (api.frame_stamp)(flow.frame, &raw mut expected) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_ne!(expected.stream, 0, "a frame carries a real stream identity");
+
+    let mapping = flow.map();
+    let mut measured = stamp();
+    // SAFETY: the mapping is owned by this frame and `measured` is a live local.
+    assert_eq!(
+        unsafe { (api.mapping_stamp)(mapping, &raw mut measured) },
+        MADOPILOT_STATUS_OK
+    );
+
+    // The whole correlation, not just the parts that happen to be non-zero: a
+    // mapping whose stamp came from somewhere else would still report a
+    // plausible-looking one.
+    assert_eq!(measured.struct_size, expected.struct_size);
+    assert_eq!(measured.flags, expected.flags);
+    assert_eq!(measured.stream, expected.stream);
+    assert_eq!(measured.epoch, expected.epoch);
+    assert_eq!(measured.sequence, expected.sequence);
+    assert_eq!(measured.geometry, expected.geometry);
+
+    // SAFETY: owned here.
+    unsafe { (api.mapping_release)(mapping) };
 }
 
 #[test]
@@ -722,20 +962,22 @@ fn a_template_reports_what_it_was_compiled_into() {
 #[test]
 fn a_template_outlives_the_package_it_came_from() {
     let api = table();
-    let flow = Flow::open();
+    let mut flow = Flow::open();
 
     // SAFETY: both handles are retained by the flow; this takes an extra
     // reference to the template so it can outlive the package release below.
     unsafe { (api.template_retain)(flow.present) };
     let template = flow.present;
 
-    // SAFETY: this releases the flow's package reference early; the flow's
-    // drop releases it again, and null-safe double release is not what this
-    // tests, so the reference is put back first.
-    unsafe {
-        (api.package_retain)(flow.package);
-        (api.package_release)(flow.package);
-    }
+    // The package handle is moved out of the flow, so the release below is its
+    // last one and the package's count reaches zero. A template that borrowed
+    // the package's decoded bytes rather than owning what it compiled reads
+    // freed memory from here on; a retain-then-release pair would leave the
+    // package alive and prove nothing.
+    let package = mem::replace(&mut flow.package, ptr::null_mut());
+    // SAFETY: the flow no longer holds this handle, so this is the reference it
+    // would otherwise have released at drop.
+    unsafe { (api.package_release)(package) };
 
     let mut info = template_info();
     // SAFETY: the extra template reference taken above is still live.

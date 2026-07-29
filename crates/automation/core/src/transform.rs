@@ -7,8 +7,18 @@
 //! Every conversion is explicit about both spaces, and a conversion the snapshot
 //! cannot represent fails. In particular a snapshot that knows nothing about the
 //! target does not fall back to treating logical units as pixels, and never
-//! consults host DPI: target-normalized conversion requires a declared target
-//! content extent, while logical conversion requires authoritative placement.
+//! consults host DPI: target-normalized conversion requires a frame that covers
+//! its target, while logical conversion requires authoritative placement.
+//!
+//! A frame covers exactly its target in this phase, so a target-normalized
+//! coordinate and a frame-normalized one address the same point and are
+//! numerically identical. The two spaces stay distinct anyway, because a later
+//! phase that captures a sub-region of a target makes them differ, and because
+//! asking in target-normalized terms asserts that the frame covers the target —
+//! an assertion a snapshot either carries or refuses. A snapshot stores no
+//! second extent to express it: a magnitude no conversion consumes can only be
+//! redundant or false, and a false one would return frame-normalized numbers
+//! under a target-normalized label.
 
 use crate::geometry::{
     ClipPolicy, CoordinateSpace, GeometryFault, PixelExtent, PixelRect, Point, Rect, ceil_to_pixel,
@@ -120,20 +130,40 @@ impl TargetPlacement {
     pub const fn scale(self) -> Scale {
         self.scale
     }
+
+    /// Reports whether this placement's logical rectangle scales to `extent`.
+    ///
+    /// Half a pixel of slack on each axis, because an integral capture extent is
+    /// the rounding of a logical size a host is free to report fractionally.
+    /// Requiring exact equality would refuse placements that are as consistent
+    /// as the source can make them.
+    fn covers(self, extent: PixelExtent) -> bool {
+        covers_axis(self.logical_width * self.scale.x, extent.width())
+            && covers_axis(self.logical_height * self.scale.y, extent.height())
+    }
+}
+
+/// How far a scaled logical size may sit from the pixel extent it produced.
+const COVERAGE_TOLERANCE_PIXELS: f64 = 0.5;
+
+fn covers_axis(scaled_logical: f64, pixels: u32) -> bool {
+    // A non-finite product — an overflow to infinity from an enormous logical
+    // size — fails this comparison, which is the answer it should get.
+    (scaled_logical - f64::from(pixels)).abs() <= COVERAGE_TOLERANCE_PIXELS
 }
 
 /// The geometry that was authoritative when one frame was captured.
 ///
 /// A snapshot always knows the frame's own extent, so conversions between capture
 /// pixels and frame-normalized coordinates are always available. Target-normalized
-/// conversion additionally requires a declared target content extent. Target-logical
+/// conversion additionally requires the frame to cover its target. Target-logical
 /// and desktop-logical conversion require a [`TargetPlacement`], which a provider
 /// supplies only when it has authoritative logical geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TransformSnapshot {
     geometry: GeometryRevision,
     frame_extent: PixelExtent,
-    target_extent: Option<PixelExtent>,
+    covers_target: bool,
     target: Option<TargetPlacement>,
 }
 
@@ -147,42 +177,53 @@ impl TransformSnapshot {
         Self {
             geometry,
             frame_extent,
-            target_extent: None,
+            covers_target: false,
             target: None,
         }
     }
 
-    /// Builds a snapshot for a frame that covers a target with a declared extent.
+    /// Builds a snapshot for a frame that covers its target.
     ///
     /// This supports target-normalized conversion without asserting any logical
-    /// scale or desktop placement.
+    /// scale or desktop placement. It takes no target extent: the frame covers
+    /// the target, so the frame's own extent is the target's, and a separately
+    /// stored magnitude could only repeat it or contradict it after a resize.
     #[must_use]
-    pub const fn with_target_extent(
-        geometry: GeometryRevision,
-        frame_extent: PixelExtent,
-        target_extent: PixelExtent,
-    ) -> Self {
+    pub const fn with_target_extent(geometry: GeometryRevision, frame_extent: PixelExtent) -> Self {
         Self {
             geometry,
             frame_extent,
-            target_extent: Some(target_extent),
+            covers_target: true,
             target: None,
         }
     }
 
     /// Builds a snapshot that also knows where its target is.
-    #[must_use]
-    pub const fn with_target(
+    ///
+    /// A placement asserts that the frame's capture pixels cover exactly the
+    /// target's logical rectangle, so that assertion is checked here rather than
+    /// trusted. A provider reading placement from a source it did not author
+    /// would otherwise displace every logical coordinate by the ratio between
+    /// the two, with nothing to observe.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GeometryFault::SpaceMismatch`] when the placement's logical
+    /// size, scaled by its own factor, is not the frame extent on either axis.
+    pub fn with_target(
         geometry: GeometryRevision,
         frame_extent: PixelExtent,
         placement: TargetPlacement,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, GeometryFault> {
+        if !placement.covers(frame_extent) {
+            return Err(GeometryFault::SpaceMismatch);
+        }
+        Ok(Self {
             geometry,
             frame_extent,
-            target_extent: Some(frame_extent),
+            covers_target: true,
             target: Some(placement),
-        }
+        })
     }
 
     /// Returns the geometry revision this snapshot belongs to.
@@ -200,10 +241,15 @@ impl TransformSnapshot {
         self.frame_extent
     }
 
-    /// Returns the declared target content extent, when the provider supplied one.
+    /// Reports whether this frame covers its target.
+    ///
+    /// True when the provider declared that the frame's pixels are the target's
+    /// content, which is what makes a target-normalized coordinate meaningful.
+    /// The target's extent is then the frame's own extent, so there is nothing
+    /// further to report.
     #[must_use]
-    pub const fn target_extent(&self) -> Option<PixelExtent> {
-        self.target_extent
+    pub const fn covers_target(&self) -> bool {
+        self.covers_target
     }
 
     /// Returns the target placement, when the provider supplied one.
@@ -220,8 +266,7 @@ impl TransformSnapshot {
                 !self.frame_extent.is_empty()
             }
             CoordinateSpace::TargetNormalized => {
-                self.target_extent.is_some_and(|extent| !extent.is_empty())
-                    && !self.frame_extent.is_empty()
+                self.covers_target && !self.frame_extent.is_empty()
             }
             CoordinateSpace::TargetLogical | CoordinateSpace::DesktopLogical => {
                 self.target.is_some() && !self.frame_extent.is_empty()
@@ -311,9 +356,9 @@ impl TransformSnapshot {
         match from {
             CoordinateSpace::CapturePixels => Ok((x, y)),
             // A target-normalized coordinate maps onto the frame the same way a
-            // frame-normalized one does because the declared content extent
-            // asserts that the frame covers the target. Logical target spaces
-            // still require authoritative placement metadata.
+            // frame-normalized one does, because a snapshot that supports the
+            // space is one whose frame covers exactly the target. Logical target
+            // spaces still require authoritative placement metadata.
             CoordinateSpace::FrameNormalized | CoordinateSpace::TargetNormalized => {
                 Ok((x * frame_width, y * frame_height))
             }
@@ -398,6 +443,16 @@ mod tests {
             PixelExtent::new(1920, 1080),
             placement,
         )
+        .expect("the placement covers the frame")
+    }
+
+    fn placement(logical_size: (f64, f64), scale: (f64, f64)) -> TargetPlacement {
+        TargetPlacement::new(
+            (0.0, 0.0),
+            logical_size,
+            Scale::new(scale.0, scale.1).expect("valid"),
+        )
+        .expect("valid")
     }
 
     #[test]
@@ -480,9 +535,10 @@ mod tests {
     }
 
     #[test]
-    fn target_normalized_requires_content_extent_but_not_placement() {
+    fn target_normalized_requires_target_coverage_but_not_placement() {
         let point = Point::new(TARGET_NORMALIZED, 0.5, 0.5).expect("valid");
 
+        assert!(!frame_only().covers_target());
         assert_eq!(
             frame_only().convert_point(point, PIXELS),
             Err(GeometryFault::ConversionUnsupported)
@@ -491,16 +547,92 @@ mod tests {
         let snapshot = TransformSnapshot::with_target_extent(
             GeometryRevision::FIRST,
             PixelExtent::new(1920, 1080),
-            PixelExtent::new(1920, 1080),
         );
         let converted = snapshot
             .convert_point(point, PIXELS)
-            .expect("content extent is sufficient");
+            .expect("covering the target is sufficient");
 
         assert_eq!((converted.x(), converted.y()), (960.0, 540.0));
+        assert!(snapshot.covers_target());
         assert!(snapshot.supports(TARGET_NORMALIZED));
         assert!(!snapshot.supports(TARGET_LOGICAL));
         assert!(!snapshot.supports(DESKTOP));
+    }
+
+    #[test]
+    fn target_normalized_and_frame_normalized_address_the_same_point() {
+        let snapshot = TransformSnapshot::with_target_extent(
+            GeometryRevision::FIRST,
+            PixelExtent::new(1920, 1080),
+        );
+        let target = Point::new(TARGET_NORMALIZED, 0.25, 0.75).expect("valid");
+        let frame = Point::new(FRAME, 0.25, 0.75).expect("valid");
+
+        let from_target = snapshot.convert_point(target, PIXELS).expect("supported");
+        let from_frame = snapshot.convert_point(frame, PIXELS).expect("supported");
+
+        assert_eq!(
+            (from_target.x(), from_target.y()),
+            (from_frame.x(), from_frame.y())
+        );
+        assert_eq!((from_target.x(), from_target.y()), (480.0, 810.0));
+    }
+
+    #[test]
+    fn a_placement_that_does_not_scale_to_the_frame_extent_is_refused() {
+        let extent = PixelExtent::new(1920, 1080);
+
+        assert_eq!(
+            TransformSnapshot::with_target(
+                GeometryRevision::FIRST,
+                extent,
+                placement((900.0, 540.0), (2.0, 2.0)),
+            ),
+            Err(GeometryFault::SpaceMismatch),
+            "a width that does not scale to the frame displaces every conversion"
+        );
+        assert_eq!(
+            TransformSnapshot::with_target(
+                GeometryRevision::FIRST,
+                extent,
+                placement((960.0, 500.0), (2.0, 2.0)),
+            ),
+            Err(GeometryFault::SpaceMismatch),
+            "each axis is checked on its own"
+        );
+        assert_eq!(
+            TransformSnapshot::with_target(
+                GeometryRevision::FIRST,
+                extent,
+                placement((1280.0, 720.0), (1.25, 1.25)),
+            ),
+            Err(GeometryFault::SpaceMismatch),
+            "a non-integral scale is checked like any other"
+        );
+    }
+
+    #[test]
+    fn a_placement_a_host_can_only_report_fractionally_is_accepted() {
+        let extent = PixelExtent::new(1920, 1080);
+
+        assert!(
+            TransformSnapshot::with_target(
+                GeometryRevision::FIRST,
+                extent,
+                placement((1280.0, 720.0), (1.5, 1.5)),
+            )
+            .is_ok(),
+            "a non-integral scale that closes exactly is consistent"
+        );
+        assert!(
+            TransformSnapshot::with_target(
+                GeometryRevision::FIRST,
+                extent,
+                placement((1706.5, 960.2), (1.125, 1.125)),
+            )
+            .is_ok(),
+            "an integral extent is the rounding of a fractional logical size"
+        );
     }
 
     #[test]

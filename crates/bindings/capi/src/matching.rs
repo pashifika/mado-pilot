@@ -23,7 +23,7 @@ use mado_pilot::{
     FindOutcome, FindRequest, MatchOptions, PixelRect, PreparedTemplate, RegionSelection,
 };
 
-use crate::boundary::{self, Input, Out, Versioned};
+use crate::boundary::{self, Input, Out, Versioned, covers, declared, prefixes};
 use crate::capture::{FrameHandle, SessionHandle, madopilot_session_t, rect, stamp};
 use crate::engine::report;
 use crate::error::{Fault, madopilot_error_t};
@@ -37,7 +37,8 @@ use crate::types::{
     MADOPILOT_FIND_HAS_REGION, MADOPILOT_MATCH_HAS_MAX_RESULTS, MADOPILOT_MATCH_HAS_MIN_SCORE,
     MADOPILOT_MATCH_HAS_SUPPRESSION, clip_policy, madopilot_find_request_t,
     madopilot_frame_stamp_t, madopilot_match_options_t, madopilot_match_t, madopilot_operation_t,
-    madopilot_pixel_rect_t, madopilot_result_info_t, suppression, suppression_code,
+    madopilot_pixel_rect_t, madopilot_result_info_t, madopilot_suppression_t, suppression,
+    suppression_code,
 };
 use crate::view::madopilot_str_t;
 use crate::{handle, hooks};
@@ -58,6 +59,20 @@ impl Input for madopilot_find_request_t {
     // Through `tmpl`: which frame and which template is the whole question.
     const MANDATORY: usize = 24;
     const NAME: &'static str = "madopilot_find_request_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_find_request_t,
+        struct_size,
+        flags,
+        frame,
+        tmpl,
+        options,
+        region,
+        clip_policy,
+    );
+    const PRESENCE: &'static [(u32, usize)] = &[(
+        MADOPILOT_FIND_HAS_REGION,
+        covers!(madopilot_find_request_t, region: madopilot_pixel_rect_t),
+    )];
 
     fn defaults() -> Self {
         Self {
@@ -70,6 +85,10 @@ impl Input for madopilot_find_request_t {
             clip_policy: crate::types::MADOPILOT_CLIP_POLICY_REJECT,
         }
     }
+
+    fn presence_bits(&self) -> u32 {
+        self.flags
+    }
 }
 
 impl Input for madopilot_match_options_t {
@@ -77,9 +96,39 @@ impl Input for madopilot_match_options_t {
     // way of saying "the template's own defaults".
     const MANDATORY: usize = 8;
     const NAME: &'static str = "madopilot_match_options_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_match_options_t,
+        struct_size,
+        flags,
+        min_score,
+        max_results,
+        suppression,
+    );
+    // The mandatory prefix stops at `flags`, so every one of these bits can name
+    // a field the caller's own size leaves out. Honoring one there would put
+    // `cleared`'s zero where the template's default belongs, and a `min_score`
+    // of zero is the threshold that qualifies everything.
+    const PRESENCE: &'static [(u32, usize)] = &[
+        (
+            MADOPILOT_MATCH_HAS_MIN_SCORE,
+            covers!(madopilot_match_options_t, min_score: f64),
+        ),
+        (
+            MADOPILOT_MATCH_HAS_MAX_RESULTS,
+            covers!(madopilot_match_options_t, max_results: u32),
+        ),
+        (
+            MADOPILOT_MATCH_HAS_SUPPRESSION,
+            covers!(madopilot_match_options_t, suppression: madopilot_suppression_t),
+        ),
+    ];
 
     fn defaults() -> Self {
         Self::cleared(0)
+    }
+
+    fn presence_bits(&self) -> u32 {
+        self.flags
     }
 }
 
@@ -192,7 +241,7 @@ fn run_session_find(
         None => FindRequest::latest(template, options),
     };
 
-    if request.flags & MADOPILOT_FIND_HAS_REGION != 0 {
+    if declared!(request, madopilot_find_request_t, MADOPILOT_FIND_HAS_REGION) {
         find = find.in_region(region_selection(&request)?);
     }
 
@@ -233,17 +282,29 @@ fn resolve_options(
     // `read_input` validates its alignment and declared size before reading.
     let supplied = unsafe { boundary::read_input::<madopilot_match_options_t>(request.options) }?;
 
-    if supplied.flags & MADOPILOT_MATCH_HAS_MIN_SCORE != 0 {
+    if declared!(
+        supplied,
+        madopilot_match_options_t,
+        MADOPILOT_MATCH_HAS_MIN_SCORE
+    ) {
         options = options
             .with_min_score(supplied.min_score)
             .map_err(|fault| Fault::from_error(&fault.into(), MADOPILOT_ERROR_CATEGORY_VISION))?;
     }
-    if supplied.flags & MADOPILOT_MATCH_HAS_MAX_RESULTS != 0 {
+    if declared!(
+        supplied,
+        madopilot_match_options_t,
+        MADOPILOT_MATCH_HAS_MAX_RESULTS
+    ) {
         options = options
             .with_max_results(supplied.max_results)
             .map_err(|fault| Fault::from_error(&fault.into(), MADOPILOT_ERROR_CATEGORY_VISION))?;
     }
-    if supplied.flags & MADOPILOT_MATCH_HAS_SUPPRESSION != 0 {
+    if declared!(
+        supplied,
+        madopilot_match_options_t,
+        MADOPILOT_MATCH_HAS_SUPPRESSION
+    ) {
         options = options.with_suppression(suppression(supplied.suppression)?);
     }
 

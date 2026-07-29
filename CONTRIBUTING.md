@@ -168,9 +168,18 @@ The stable check names are:
 | Check | Workflow | What it verifies |
 |---|---|---|
 | `Validate branch flow` | `branch-policy.yml` | The source and target branches follow the pull request flow. |
-| `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, documentation, and dependency policy. |
-| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, and documentation checks against the committed lockfile. |
-| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-15` Apple Silicon inventory, lint, test, and documentation checks against the committed lockfile. |
+| `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, and dependency policy. |
+| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
+| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-15` Apple Silicon inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
+
+The `Repository policy` job builds no product package, which is why
+documentation, lints, tests, and the C and C++ boundary are verified only in the
+two native jobs. Building any product package needs OpenCV and a loadable
+libclang, because `mado-pilot-backend-opencv` generates its bindings at build
+time, and that installation exists on the two release targets rather than on a
+host that is neither. Of the verification sequence above, steps 3 through 6 and
+step 8 therefore run only in the two native jobs, steps 2 and 7 run only in the
+repository-policy job, and step 1 runs in all three.
 
 A check is activated as a live required status only after that check has produced
 its first successful run on the branch it will guard, and only with separate

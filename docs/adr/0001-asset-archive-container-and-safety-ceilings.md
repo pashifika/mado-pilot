@@ -56,8 +56,21 @@ is materialized; a bounded, allocation-free scan proving that the selected
 central-directory header sequence agrees with that trailer; the declared total
 uncompressed bytes; per-entry declared sizes, entry types, and normalized names;
 the aggregate declared ratio; the manifest; then streamed expansion. Ambiguous
-trailers, disagreeing single-disk count fields, and fallback EOCD candidates are
-malformed archives rather than alternate interpretations.
+trailers and disagreeing single-disk count fields are malformed archives rather
+than alternate interpretations.
+
+An archive presents one trailer, and enforcing a count before the open is worth
+something only if the reader opens the trailer that was counted. The pre-parse
+selects the single end-of-central-directory record whose comment accounts for
+the exact file suffix and refuses any further record beginning after it, because
+the ZIP reader searches backwards from the end of the file and would otherwise
+open a record whose entry count was never enforced. After the archive is opened,
+the central directory the reader reports is compared against the one the
+pre-parse validated, and a disagreement is a malformed archive rather than an
+alternate interpretation. The second guard runs after the reader has already
+paid for the substitute directory, so it makes the assertion true unconditionally
+rather than before the cost; the first guard is what keeps the cost bounded for
+the candidates the reader reaches first.
 
 **Recorded metadata may reject, never authorise.** A size or count recorded in
 an archive is attacker-controlled. It may be used to stop early, and it must be
@@ -137,6 +150,18 @@ exception is needed. The exact versions are pinned by the change that adds them,
 not by this ADR; disabling the `zip` crate's default features is not optional,
 because they pull in bzip2, LZMA, PPMd, XZ, Zstd, and AES for methods this
 decision does not support.
+
+**A `zip` version bump is a review step, not a routine update.** The trailer
+rules above are written against how `zip` 8.6.0 finds and accepts a trailer, so
+a bump must re-verify three sites in the new version: `spec.rs:806`, the
+whole-file backward search for the end-of-central-directory signature;
+`spec.rs:823-828`, the relaxed comment check that accepts a record with trailing
+bytes after it; and `read/zip_archive.rs:167-205`, the fallback to an earlier
+candidate and the reservation it makes before the entry count can be compared.
+Widen or narrow any of the three and the pre-parse is guarding a different set
+of candidates than the reader will reach. The same sentence is carried as a
+comment in `crates/automation/assets/src/archive.rs` beside the cross-check it
+protects.
 
 **Performance.** The guards are not a measurable tax on legitimate packages: the
 representative 512-template package validates end to end in 6,694 µs on Apple

@@ -5,9 +5,78 @@
 //! rely on it. Each check panics with a message naming the rule it enforces,
 //! because a contract failure is a defect in the adapter and not a value to be
 //! handled.
+//!
+//! Every wait here carries a deadline. This is the one suite that genuinely
+//! waits — a frame request blocks until something is published — so an adapter
+//! that opens a session and never publishes must fail the check that waited
+//! rather than hang the run with no output naming it.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use mado_pilot_capture::{CaptureProvider, FrameRequest, OpenRequest, PixelFormat};
-use mado_pilot_core::{CancellationToken, FrameOrder, IdentityIssuer, OperationContext, Status};
+use mado_pilot_core::{
+    CancellationToken, Clock, FrameOrder, IdentityIssuer, MonotonicInstant, OperationContext,
+    Status,
+};
+
+/// How long any single check waits before it reports a hang as a failure.
+///
+/// Generous, because the bound exists to turn "never" into a diagnosis rather
+/// than to time anything: no adapter that satisfies the contract comes near it,
+/// and one that does not is not made to pass by a larger number.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A deadline no sweep can reach: the clock would have to be read 3.6 million
+/// times.
+const UNREACHABLE_MILLIS: u64 = 3_600_000;
+
+/// Returns the context every check that can block uses.
+fn bounded() -> OperationContext {
+    OperationContext::new()
+        .with_timeout(CHECK_TIMEOUT)
+        .expect("a ten-second timeout is representable")
+}
+
+/// A clock that advances one millisecond per read and counts its reads.
+///
+/// A deadline against it is a count of context checks rather than a wall-clock
+/// wait, which is what lets a check sweep every interruption point instead of
+/// racing a timer. [`crate::ManualClock`] is the other shape — a clock a test
+/// moves by hand — and neither substitutes for the other.
+#[derive(Debug, Default)]
+struct TickingClock {
+    reads: AtomicU64,
+}
+
+impl TickingClock {
+    /// Returns a clock at the domain origin.
+    const fn new() -> Self {
+        Self {
+            reads: AtomicU64::new(0),
+        }
+    }
+
+    /// Returns how many times the clock has been read.
+    fn reads(&self) -> u64 {
+        self.reads.load(Ordering::Relaxed)
+    }
+}
+
+impl Clock for TickingClock {
+    fn now(&self) -> MonotonicInstant {
+        let tick = self.reads.fetch_add(1, Ordering::Relaxed);
+        MonotonicInstant::from_origin(Duration::from_millis(tick))
+    }
+}
+
+/// Returns a context whose deadline expires on its `read`-th context check.
+fn expiring_at(read: u64) -> OperationContext {
+    OperationContext::new()
+        .with_clock(Arc::new(TickingClock::new()))
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(read)))
+}
 
 /// Checks that a tracked capture fixture directory still matches its
 /// `SHA256SUMS`, in both directions.
@@ -38,6 +107,8 @@ pub fn run(provider: &dyn CaptureProvider) {
     repeated_latest_requests_return_one_identity(provider);
     derived_outputs_report_the_exact_source_frame(provider);
     an_already_cancelled_request_is_refused(provider);
+    an_already_expired_request_is_refused(provider);
+    no_deadline_inside_a_frame_request_produces_a_frame(provider);
     close_is_idempotent_and_retained_outputs_survive_it(provider);
 }
 
@@ -47,7 +118,7 @@ pub fn run(provider: &dyn CaptureProvider) {
 ///
 /// Panics when a description names another provider.
 pub fn discovery_is_provider_qualified(provider: &dyn CaptureProvider) {
-    let operation = OperationContext::new();
+    let operation = bounded();
     let targets = provider.discover(&operation).expect("discovery succeeds");
     assert!(
         !targets.is_empty(),
@@ -69,7 +140,7 @@ pub fn discovery_is_provider_qualified(provider: &dyn CaptureProvider) {
 ///
 /// Panics when the adapter opens a session for a foreign identity.
 pub fn a_foreign_target_is_refused(provider: &dyn CaptureProvider) {
-    let operation = OperationContext::new();
+    let operation = bounded();
     let other = IdentityIssuer::new();
     let foreign = other
         .issue_target(provider.provider())
@@ -93,7 +164,7 @@ pub fn a_foreign_target_is_refused(provider: &dyn CaptureProvider) {
 /// Panics when the first frame is numbered differently or its descriptor and
 /// pixels disagree.
 pub fn the_first_frame_is_the_start_of_the_stream(provider: &dyn CaptureProvider) {
-    let operation = OperationContext::new();
+    let operation = bounded();
     let session = open_first(provider);
     let frame = session
         .frame(&FrameRequest::latest(), &operation)
@@ -125,7 +196,7 @@ pub fn the_first_frame_is_the_start_of_the_stream(provider: &dyn CaptureProvider
 ///
 /// Panics when the adapter renames a frame it has already published.
 pub fn repeated_latest_requests_return_one_identity(provider: &dyn CaptureProvider) {
-    let operation = OperationContext::new();
+    let operation = bounded();
     let session = open_first(provider);
 
     let first = session
@@ -150,7 +221,7 @@ pub fn repeated_latest_requests_return_one_identity(provider: &dyn CaptureProvid
 ///
 /// Panics when a derived output loses or changes its source identity.
 pub fn derived_outputs_report_the_exact_source_frame(provider: &dyn CaptureProvider) {
-    let operation = OperationContext::new();
+    let operation = bounded();
     let session = open_first(provider);
     let frame = session
         .frame(&FrameRequest::latest(), &operation)
@@ -178,16 +249,88 @@ pub fn an_already_cancelled_request_is_refused(provider: &dyn CaptureProvider) {
     let session = open_first(provider);
     let token = CancellationToken::new();
     token.cancel();
-    let cancelled = OperationContext::new().with_cancellation(token);
+    let cancelled = bounded().with_cancellation(token);
 
     let error = session
         .frame(&FrameRequest::latest(), &cancelled)
         .expect_err("an already cancelled request must not return a frame");
 
     assert_eq!(error.status(), Status::Cancelled);
+    session.close(&bounded()).expect("close succeeds");
+}
+
+/// A request whose deadline has already passed never produces a frame.
+///
+/// The other half of the pair the cancellation check above starts. An adapter
+/// that consults its cancellation token but never its deadline satisfies every
+/// other check in this suite, and a wait that outlives its deadline is the
+/// realistic defect in an adapter that implements its own waiting rather than
+/// delegating it.
+///
+/// # Panics
+///
+/// Panics when the adapter admits work whose deadline has passed, or reports
+/// the refusal as something other than an expired deadline.
+pub fn an_already_expired_request_is_refused(provider: &dyn CaptureProvider) {
+    let session = open_first(provider);
+
+    let error = session
+        .frame(&FrameRequest::latest(), &expiring_at(0))
+        .expect_err("an already expired request must not return a frame");
+
+    assert_eq!(error.status(), Status::DeadlineExceeded);
+    session.close(&bounded()).expect("close succeeds");
+}
+
+/// No deadline anywhere inside a frame request produces a frame.
+///
+/// A sweep over every context read rather than one hand-picked point, which is
+/// the shape `crates/automation/assets/tests/operation_context.rs` established
+/// for the loader. The property worth pinning is not that a deadline expiring
+/// at the second check is refused; it is that no deadline anywhere is answered
+/// with a frame, and that the request reaches the context more than once, so
+/// both admission and commit are covered rather than only the entry check.
+///
+/// # Panics
+///
+/// Panics when a request whose deadline expires part-way through still returns
+/// a frame, when the refusal is reported as something else, or when the adapter
+/// consults the context fewer than twice.
+pub fn no_deadline_inside_a_frame_request_produces_a_frame(provider: &dyn CaptureProvider) {
+    let session = open_first(provider);
+
+    // One uninterrupted request, to learn how many times it reads the context.
+    let clock = Arc::new(TickingClock::new());
+    let unreachable = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+            UNREACHABLE_MILLIS,
+        )));
     session
-        .close(&OperationContext::new())
-        .expect("close succeeds");
+        .frame(&FrameRequest::latest(), &unreachable)
+        .expect("a frame is available when nothing interrupts the request");
+    let reads = clock.reads();
+
+    assert!(
+        reads >= 2,
+        "a frame request must consult its operation context before it is \
+         admitted and again before its frame is committed, but this adapter \
+         consulted it {reads} time(s)"
+    );
+
+    for read in 0..reads {
+        let error = session
+            .frame(&FrameRequest::latest(), &expiring_at(read))
+            .expect_err("a deadline that expires during a request produces no frame");
+
+        assert_eq!(
+            error.status(),
+            Status::DeadlineExceeded,
+            "a deadline expiring at context read {read} must be reported as one"
+        );
+    }
+
+    session.close(&bounded()).expect("close succeeds");
 }
 
 /// Close can be repeated, and what the caller already holds survives it.
@@ -197,7 +340,7 @@ pub fn an_already_cancelled_request_is_refused(provider: &dyn CaptureProvider) {
 /// Panics when a second close fails, when a closed session still serves frames,
 /// or when a retained frame or mapping is disturbed by close.
 pub fn close_is_idempotent_and_retained_outputs_survive_it(provider: &dyn CaptureProvider) {
-    let operation = OperationContext::new();
+    let operation = bounded();
     let session = open_first(provider);
     let frame = session
         .frame(&FrameRequest::latest(), &operation)
@@ -234,10 +377,8 @@ pub fn close_is_idempotent_and_retained_outputs_survive_it(provider: &dyn Captur
     );
 }
 
-fn open_first(
-    provider: &dyn CaptureProvider,
-) -> std::sync::Arc<dyn mado_pilot_capture::CaptureSession> {
-    let operation = OperationContext::new();
+fn open_first(provider: &dyn CaptureProvider) -> Arc<dyn mado_pilot_capture::CaptureSession> {
+    let operation = bounded();
     let targets = provider.discover(&operation).expect("discovery succeeds");
     let target = targets.first().expect("at least one target");
     provider

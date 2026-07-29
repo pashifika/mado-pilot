@@ -108,8 +108,29 @@ declares it**.
 
 - refuses a size below the documented mandatory prefix with
   `MADOPILOT_STATUS_INVALID_ARGUMENT`, without reading past `struct_size`;
+- refuses a size that ends inside a field, which would leave that field neither
+  supplied nor omitted;
+- refuses an array element whose `struct_size` is above the array's declared
+  element stride, which would read past the extent the array declared;
+- refuses a size that does not reach a field whose presence bit is set, rather
+  than applying the omitted-field default to a field the caller claimed;
 - applies the documented default to every field the size omits;
 - ignores trailing bytes it does not recognize.
+
+A size describes a prefix, so it has to end where a prefix can end. That is what
+the three middle bullets say, and each of them is a refusal rather than an
+adjustment: the library does not round a size down to the nearest field
+boundary, does not clamp an element to its stride, and does not drop a presence
+bit it cannot honor. Rounding down would run the request with a field the caller
+supplied silently discarded — a cancellation token, or a minimum score the
+caller believes is in effect. All three report
+`MADOPILOT_STATUS_INVALID_ARGUMENT` with `MADOPILOT_ERROR_CATEGORY_ABI`, like
+the mandatory-prefix refusal above them.
+
+A caller that sets `struct_size` to `sizeof` the structure as its own header
+declares it satisfies all three, because a released header's own size is a field
+boundary, its `frame_stride` is its own element size, and a full-size prefix
+covers every field a presence bit can name.
 
 **Writing an output**, the library:
 
@@ -131,6 +152,17 @@ accessor indexes, and the caller-known table extent passed to
 release targets. A later phase that needs a different representation introduces
 a different type or ABI major.
 
+**One structure has two mandatory prefixes.** `madopilot_match_options_t` is the
+only one the table uses in both directions. As an *input* its mandatory prefix
+is eight bytes, through `flags`, because a structure that sets no presence bit
+is how a caller asks for the prepared template's own defaults. As the *output*
+of `result_options` the mandatory prefix is the whole structure: that report
+says which thresholds the search really ran under, every field was in effect,
+and a shorter one would drop an option without saying so. A caller that passes
+the input prefix to `result_options` gets `MADOPILOT_STATUS_INVALID_ARGUMENT`;
+pass `sizeof(madopilot_match_options_t)`. Every other structure has one prefix
+that means the same thing whichever way it travels.
+
 An array of versioned structures needs its element stride passed explicitly:
 `madopilot_source_t.frame_stride` is `sizeof(madopilot_replay_frame_t)` as the
 caller's header declares it. A caller built against an older header has smaller
@@ -151,6 +183,23 @@ every element stride, and every allocation-size calculation. A null pointer with
 a nonzero length is rejected before the pointer is read; a null pointer with a
 zero length is accepted only where the declaration documents an empty view as
 meaningful.
+
+**Every pointer parameter is required unless its declaration says otherwise**,
+and a null one is `MADOPILOT_STATUS_INVALID_ARGUMENT`. The rule covers the
+request, source, and operation structures as well as the handles, so a null
+`const madopilot_operation_t*` is refused rather than read as "no deadline" —
+the way to say that is an operation whose `flags` set no bit. The two are
+different requests: an absent structure declares nothing at all, while an empty
+one declares which header the caller was built against and how much of the
+structure it filled in. Nine entries take a required structure this way:
+`engine_create`, `package_load`, `template_prepare_from_package`,
+`engine_discover`, `session_open`, `session_close`, `session_acquire_frame`,
+`frame_map`, and `session_find`.
+
+Beyond `*_retain` and `*_release`, which accept null as a no-op, and the
+empty-view rule above, null is accepted in four places: `out_error` on every
+entry that takes one, `madopilot_operation_t.cancellation`,
+`madopilot_find_request_t.frame`, and `madopilot_find_request_t.options`.
 
 The library does not probe arbitrary addresses. The caller remains responsible
 for the validity of the addresses it passes, for the declared duration of the
@@ -236,6 +285,15 @@ the narrower of them.
 `madopilot_pixel_rect_t.space` is still read in the other direction: on a
 rectangle the library writes, it names whichever space that rectangle was
 measured in.
+
+`MADOPILOT_SPACE_TARGET_NORMALIZED` and `MADOPILOT_SPACE_FRAME_NORMALIZED` are
+two bits over one set of numbers in Phase 1. A frame covers exactly its target
+here, so a target-normalized coordinate and a frame-normalized one address the
+same point; a session advertises the target-normalized bit when its source
+declares that its frames cover the target, and never as a claim that some other
+extent applies. The first phase that captures a sub-region of a target makes the
+two differ, and that is when the distinction begins to carry information. See
+[ADR 0009](adr/0009-phase-1-normalized-coordinate-spaces.md).
 
 There is no global, thread-local, or engine-wide last-error slot. A failure
 belongs to the call that produced it, and a slot would make two threads' failures
@@ -359,6 +417,16 @@ size, alignment, and field offset as the C compiler produced them; compares the
 report line by line against the same values measured from the Rust definitions;
 and then compiles, links, and runs the C example and checks its outcome. Two
 compilers, one comparison — a divergence names the structure and the field.
+
+It then runs that same probe once per frozen header under
+`tests/abi-compat/`, compiled against that header rather than the working one,
+and requires every structure, field, and table entry the released header
+declares to still be where it said. That is the check the freeze actually needs:
+swapping two same-width fields in the working header and in Rust together moves
+no offset, so the first comparison stays green while a caller built against the
+released header reads the wrong one. The library may report *more* than a frozen
+header declares, because a later minor appends — never less, and never
+differently.
 
 The same command continues into the C++ surface: the ownership probe, the C++
 example, and the CMake consumer project. See

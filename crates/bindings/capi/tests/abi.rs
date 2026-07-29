@@ -246,6 +246,227 @@ fn an_input_smaller_than_its_mandatory_prefix_is_refused() {
     assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
 }
 
+/// The mandatory prefix of every size-versioned structure, in both directions.
+///
+/// These are the numbers `src/` declares as `Versioned::MANDATORY` and
+/// `Input::MANDATORY`, and ADR 0007 froze. They are written out here rather than
+/// read from the crate because `Versioned` and `Input` are internal: what a
+/// caller can observe is the refusal, so that is what is asserted, from both
+/// sides. One byte below the prefix must be refused, and the prefix itself must
+/// be accepted — without the second half, raising a prefix would go unnoticed;
+/// without the first, lowering one would.
+#[test]
+fn every_versioned_output_refuses_a_size_below_its_mandatory_prefix() {
+    let api = table();
+    let flow = support::Flow::open();
+    let request = flow.find_request();
+    let result = flow.find(&request);
+    let mapping = flow.map();
+    let error = support::refused_error(api);
+
+    assert_output_prefix("describe_build", 20, |out| unsafe {
+        (api.describe_build)(out)
+    });
+    assert_output_prefix("error_describe", 16, |out| unsafe {
+        (api.error_describe)(error, out)
+    });
+    assert_output_prefix("target_list_get", 24, |out| unsafe {
+        (api.target_list_get)(flow.targets, 0, out)
+    });
+    assert_output_prefix("session_describe", 32, |out| unsafe {
+        (api.session_describe)(flow.session, out)
+    });
+    assert_output_prefix("frame_stamp", 40, |out| unsafe {
+        (api.frame_stamp)(flow.frame, out)
+    });
+    assert_output_prefix("frame_describe", 24, |out| unsafe {
+        (api.frame_describe)(flow.frame, out)
+    });
+    assert_output_prefix("mapping_describe", 48, |out| unsafe {
+        (api.mapping_describe)(mapping, out)
+    });
+    assert_output_prefix("mapping_stamp", 40, |out| unsafe {
+        (api.mapping_stamp)(mapping, out)
+    });
+    assert_output_prefix("package_describe", 64, |out| unsafe {
+        (api.package_describe)(flow.package, out)
+    });
+    assert_output_prefix("template_describe", 64, |out| unsafe {
+        (api.template_describe)(flow.present, out)
+    });
+    assert_output_prefix("result_describe", 72, |out| unsafe {
+        (api.result_describe)(result, out)
+    });
+    assert_output_prefix("result_stamp", 40, |out| unsafe {
+        (api.result_stamp)(result, out)
+    });
+    // The one structure with two prefixes: 8 bytes as the options a caller
+    // supplies, 24 as the report of what the search ran under. Only ADR 0007
+    // records the asymmetry, so only a test keeps it.
+    assert_output_prefix("result_options", 24, |out| unsafe {
+        (api.result_options)(result, out)
+    });
+    assert_output_prefix("result_match", 56, |out| unsafe {
+        (api.result_match)(result, 0, out)
+    });
+
+    // SAFETY: each handle is owned by this frame.
+    unsafe {
+        (api.mapping_release)(mapping);
+        (api.result_release)(result);
+    }
+}
+
+#[test]
+fn every_versioned_input_refuses_a_size_below_its_mandatory_prefix() {
+    let api = table();
+    let flow = support::Flow::open();
+    let scene = Scene::new();
+
+    assert_input_prefix(
+        "madopilot_operation_t",
+        8,
+        operation(),
+        |operation| unsafe {
+            let mut targets = ptr::null_mut();
+            let status =
+                (api.engine_discover)(flow.engine, operation, &raw mut targets, ptr::null_mut());
+            (api.target_list_release)(targets);
+            status
+        },
+    );
+
+    assert_input_prefix(
+        "madopilot_source_t",
+        48,
+        scene.source_input(),
+        |source| unsafe {
+            let operation = operation();
+            let mut engine = ptr::null_mut();
+            let status = (api.engine_create)(
+                source,
+                &raw const operation,
+                &raw mut engine,
+                ptr::null_mut(),
+            );
+            (api.engine_release)(engine);
+            status
+        },
+    );
+
+    // The array element the library reads one at a time, whose declared size is
+    // checked per element rather than once for the array.
+    assert_input_prefix(
+        "madopilot_replay_frame_t",
+        40,
+        scene.frame_input(),
+        |frame| create_with_frame(api, frame, 1, size_of::<madopilot_replay_frame_t>()),
+    );
+
+    assert_input_prefix(
+        "madopilot_package_source_t",
+        24,
+        package_source(flow.root()),
+        |source| unsafe {
+            let operation = operation();
+            let mut package = ptr::null_mut();
+            let status = (api.package_load)(
+                flow.engine,
+                source,
+                &raw const operation,
+                &raw mut package,
+                ptr::null_mut(),
+            );
+            (api.package_release)(package);
+            status
+        },
+    );
+
+    assert_input_prefix(
+        "madopilot_open_request_t",
+        8,
+        open_request(),
+        |request| unsafe {
+            let operation = operation();
+            let mut session = ptr::null_mut();
+            let status = (api.session_open)(
+                flow.engine,
+                flow.targets,
+                0,
+                request,
+                &raw const operation,
+                &raw mut session,
+                ptr::null_mut(),
+            );
+            (api.session_close)(session, &raw const operation, ptr::null_mut());
+            (api.session_release)(session);
+            status
+        },
+    );
+
+    assert_input_prefix(
+        "madopilot_map_request_t",
+        12,
+        map_request(),
+        |request| unsafe {
+            let operation = operation();
+            let mut mapping = ptr::null_mut();
+            let status = (api.frame_map)(
+                flow.frame,
+                request,
+                &raw const operation,
+                &raw mut mapping,
+                ptr::null_mut(),
+            );
+            (api.mapping_release)(mapping);
+            status
+        },
+    );
+
+    assert_input_prefix(
+        "madopilot_find_request_t",
+        24,
+        flow.find_request(),
+        |request| unsafe {
+            let operation = operation();
+            let mut result = ptr::null_mut();
+            let status = (api.session_find)(
+                flow.session,
+                request,
+                &raw const operation,
+                &raw mut result,
+                ptr::null_mut(),
+            );
+            (api.result_release)(result);
+            status
+        },
+    );
+
+    // The in-direction prefix of the structure that also has an out-direction
+    // one. No presence bit is set, which is the documented way of saying "the
+    // template's own defaults" and is what an 8-byte options structure means.
+    assert_input_prefix(
+        "madopilot_match_options_t",
+        8,
+        madopilot_match_options_t::cleared(struct_size::<madopilot_match_options_t>()),
+        |options| unsafe {
+            let operation = operation();
+            let mut request = flow.find_request();
+            request.options = options;
+            let mut result = ptr::null_mut();
+            let status = (api.session_find)(
+                flow.session,
+                &raw const request,
+                &raw const operation,
+                &raw mut result,
+                ptr::null_mut(),
+            );
+            (api.result_release)(result);
+            status
+        },
+    );
+}
+
 // --- Pointer, length, and arithmetic validation ----------------------------
 
 #[test]
@@ -258,7 +479,12 @@ fn a_null_pointer_with_a_nonzero_length_is_refused() {
         len: 4096,
     };
 
-    let status = create_with_frame(api, &frame, 1, size_of::<madopilot_replay_frame_t>());
+    let status = create_with_frame(
+        api,
+        &raw const frame,
+        1,
+        size_of::<madopilot_replay_frame_t>(),
+    );
     assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
 }
 
@@ -303,7 +529,7 @@ fn a_count_and_stride_that_overflow_are_refused_before_any_address_is_formed() {
     let scene = Scene::new();
     let frame = scene.frame_input();
 
-    let status = create_with_frame(api, &frame, usize::MAX, 64);
+    let status = create_with_frame(api, &raw const frame, usize::MAX, 64);
     assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
 }
 
@@ -315,7 +541,7 @@ fn an_element_stride_below_the_mandatory_prefix_is_refused() {
 
     // The library cannot walk an array whose elements are smaller than the
     // prefix it has to read from each one.
-    let status = create_with_frame(api, &frame, 1, 8);
+    let status = create_with_frame(api, &raw const frame, 1, 8);
     assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
 }
 
@@ -1002,6 +1228,163 @@ fn a_capture_pixel_region_is_the_one_a_caller_may_supply() {
 
 // --- Helpers ----------------------------------------------------------------
 
+/// A byte no failure state and no successful value contains.
+const POISON: u8 = 0xAA;
+
+/// A structure whose every byte, padding included, is [`POISON`].
+///
+/// # Safety
+///
+/// `S` must have no invalid bit pattern. Every public structure qualifies:
+/// their fields are fixed-width integers, `f32`, raw pointers, and aggregates
+/// of those, none of which has a niche. Filling the padding as well is the
+/// point — it makes "the library wrote nothing" a statement about every byte
+/// rather than about the fields a test remembered to check.
+unsafe fn poisoned<S: Copy>() -> S {
+    let mut value = std::mem::MaybeUninit::<S>::uninit();
+
+    // SAFETY: the write covers the whole structure, so no byte is left
+    // uninitialized, and the caller's contract makes the result a valid `S`.
+    unsafe {
+        ptr::write_bytes(value.as_mut_ptr().cast::<u8>(), POISON, size_of::<S>());
+        value.assume_init()
+    }
+}
+
+/// Writes the first field of a size-versioned structure.
+///
+/// Every one of them begins with a `uint32_t struct_size` at offset zero, which
+/// is how the library reads it before it knows anything else about the
+/// structure. Reading and writing it the same way keeps these helpers free of a
+/// per-structure accessor.
+fn set_struct_size<S>(value: &mut S, size: u32) {
+    // SAFETY: `S` is a `#[repr(C)]` structure whose first field is a `u32`, so
+    // the cast addresses that field and nothing else.
+    unsafe { (&raw mut *value).cast::<u32>().write(size) };
+}
+
+fn struct_size_of<S>(value: &S) -> u32 {
+    // SAFETY: as `set_struct_size`.
+    unsafe { (&raw const *value).cast::<u32>().read() }
+}
+
+/// Asserts where one output structure's mandatory prefix actually is.
+///
+/// One byte below it is refused with nothing written, and the prefix itself is
+/// accepted and reported back. Both halves are needed: lowering a prefix makes
+/// the first fail, raising one makes the second fail.
+fn assert_output_prefix<S: Copy>(
+    entry: &str,
+    mandatory: u32,
+    invoke: impl Fn(*mut S) -> madopilot_status_t,
+) {
+    assert!(
+        mandatory as usize <= size_of::<S>(),
+        "{entry} declares a {mandatory} byte prefix of a smaller structure"
+    );
+
+    // SAFETY: the output structures satisfy `poisoned`'s contract.
+    let mut refused: S = unsafe { poisoned() };
+    set_struct_size(&mut refused, mandatory - 1);
+
+    let status = invoke(&raw mut refused);
+    assert_eq!(
+        status,
+        MADOPILOT_STATUS_INVALID_ARGUMENT,
+        "{entry} accepted an output declaring {} bytes, one below its {mandatory} byte mandatory \
+         prefix",
+        mandatory - 1
+    );
+    // SAFETY: every byte of `refused` was written, by `poisoned` and then by
+    // `set_struct_size`, so none of them is uninitialized.
+    let bytes =
+        unsafe { std::slice::from_raw_parts((&raw const refused).cast::<u8>(), size_of::<S>()) };
+    assert!(
+        bytes[size_of::<u32>()..].iter().all(|byte| *byte == POISON),
+        "{entry} wrote through an output it refused"
+    );
+
+    // SAFETY: as above.
+    let mut accepted: S = unsafe { poisoned() };
+    set_struct_size(&mut accepted, mandatory);
+
+    let status = invoke(&raw mut accepted);
+    assert_eq!(
+        status, MADOPILOT_STATUS_OK,
+        "{entry} refused an output declaring its own {mandatory} byte mandatory prefix"
+    );
+    assert_eq!(
+        struct_size_of(&accepted),
+        mandatory,
+        "{entry} reports the prefix it filled, not the one it knows"
+    );
+}
+
+/// Asserts where one input structure's mandatory prefix actually is.
+///
+/// The value passed in is a request the library accepts at its full size, so
+/// the only variable is the declared size. A prefix-length request omits the
+/// fields after it, which the library defaults.
+fn assert_input_prefix<S: Copy>(
+    argument: &str,
+    mandatory: u32,
+    valid: S,
+    invoke: impl Fn(*const S) -> madopilot_status_t,
+) {
+    assert!(
+        mandatory as usize <= size_of::<S>(),
+        "{argument} declares a {mandatory} byte prefix of a smaller structure"
+    );
+
+    let mut refused = valid;
+    set_struct_size(&mut refused, mandatory - 1);
+    assert_eq!(
+        invoke(&raw const refused),
+        MADOPILOT_STATUS_INVALID_ARGUMENT,
+        "{argument} was accepted at {} bytes, one below its {mandatory} byte mandatory prefix",
+        mandatory - 1
+    );
+
+    let mut accepted = valid;
+    set_struct_size(&mut accepted, mandatory);
+    assert_eq!(
+        invoke(&raw const accepted),
+        MADOPILOT_STATUS_OK,
+        "{argument} was refused at its own {mandatory} byte mandatory prefix"
+    );
+}
+
+fn open_request() -> madopilot_open_request_t {
+    madopilot_open_request_t {
+        struct_size: struct_size::<madopilot_open_request_t>(),
+        flags: 0,
+        required_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+        preferred_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+    }
+}
+
+fn map_request() -> madopilot_map_request_t {
+    madopilot_map_request_t {
+        struct_size: struct_size::<madopilot_map_request_t>(),
+        flags: 0,
+        format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+        clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+        region: madopilot_pixel_rect_t::empty(),
+    }
+}
+
+/// A directory package source over the tracked fixture.
+///
+/// The view borrows `path`, which every caller below keeps alive for the call.
+fn package_source(path: &str) -> madopilot_package_source_t {
+    madopilot_package_source_t {
+        struct_size: struct_size::<madopilot_package_source_t>(),
+        kind: MADOPILOT_PACKAGE_SOURCE_DIRECTORY,
+        path: str_view(path),
+        archive: madopilot_bytes_t::empty(),
+    }
+}
+
 fn build_info() -> madopilot_build_info_t {
     madopilot_build_info_t {
         struct_size: struct_size::<madopilot_build_info_t>(),
@@ -1100,7 +1483,7 @@ fn with_misaligned_handle_output<T>(invoke: impl FnOnce(*mut *mut T)) {
 
 fn create_with_frame(
     api: &madopilot_api_t,
-    frame: &madopilot_replay_frame_t,
+    frame: *const madopilot_replay_frame_t,
     count: usize,
     stride: usize,
 ) -> madopilot_status_t {
@@ -1109,7 +1492,7 @@ fn create_with_frame(
         struct_size: struct_size::<madopilot_source_t>(),
         kind: MADOPILOT_SOURCE_REPLAY_MEMORY,
         directory: madopilot_str_t::empty(),
-        frames: &raw const *frame,
+        frames: frame,
         frame_count: count,
         frame_stride: stride,
         target_name: madopilot_str_t::empty(),

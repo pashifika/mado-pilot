@@ -8,8 +8,18 @@
 //! format document.
 //!
 //! What is here is everything that is not a workload: the sampling loop, the
-//! allocation accounting, the host arguments, and the report. What each
-//! benchmark keeps for itself is its fixtures, its workloads, and its oracles.
+//! allocation accounting, the host arguments, the report, and the hard budgets.
+//! What each benchmark keeps for itself is its fixtures, its workloads, and its
+//! oracles.
+//!
+//! # Which budgets are enforced here
+//!
+//! A `hard` budget is a structural property that holds on any host, so the
+//! harness enforces it: [`enforce_hard_budgets`] is called by both benchmark
+//! targets on both of the paths they run. An `absolute` or `relative` budget is
+//! a per-target regression ceiling measured on named hardware, so only a run on
+//! that hardware can evaluate it, and those stay with the operator and the
+//! committed profile for the matching release target.
 //!
 //! # Why the counters live in a library
 //!
@@ -240,6 +250,22 @@ impl Workload {
     pub fn iteration_span_ms(&self) -> f64 {
         self.iteration_span.as_secs_f64() * 1_000.0
     }
+
+    /// Live heap bytes this workload's samples did not give back.
+    ///
+    /// Signed, because a workload that ends below its post-warmup baseline has
+    /// released more than it took and satisfies the requirement just as a
+    /// workload that ended level does.
+    #[must_use]
+    pub const fn growth_bytes(&self) -> i64 {
+        self.growth_bytes
+    }
+
+    /// The workload's name, as the report files it under.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
 }
 
 /// Runs `workload` through its warmup and its samples.
@@ -279,7 +305,10 @@ pub fn measure<F>(
         if !sample.correct {
             incorrect += 1;
         }
-        mapped = sample.mapped;
+        // The largest of the retained samples, not the last one: a change that
+        // maps twice on every sampled iteration except the final one would
+        // otherwise report the low number and satisfy its budget.
+        mapped = mapped.max(sample.mapped);
         elapsed.push(sample.elapsed);
     }
     let span = span.elapsed();
@@ -405,6 +434,70 @@ pub fn summarize(name: &str, plan: Plan, workloads: &[Workload]) {
         workloads.len(),
         plan.samples
     );
+}
+
+// --- Hard budgets --------------------------------------------------------------
+
+/// The `kind = "hard"` predicates every committed profile states, enforced by
+/// [`enforce_hard_budgets`].
+///
+/// Copied rather than parsed. Reading them out of the profiles would need a
+/// TOML reader and an evaluator for the predicate expression, which is a
+/// dependency and a small language for a set of two strings. What keeps the
+/// copies honest is `tests/hard_budget_drift.rs`, which reads all four
+/// committed profiles and fails when the hard predicates they state are not
+/// exactly these.
+pub const HARD_BUDGET_PREDICATES: [&str; 2] =
+    ["result_correctness == 0", "allocated_growth_bytes <= 4096"];
+
+/// The bound in the second predicate above, as the number it is compared with.
+pub const GROWTH_LIMIT_BYTES: i64 = 4096;
+
+/// Fails the run when a workload violates a hard budget.
+///
+/// Both benchmark targets call this unconditionally, so the two predicates are
+/// enforced on the `cargo bench` path and on the `cargo test --all-targets`
+/// path that CI runs on both release targets. Call it after the report, so a
+/// run that fails still emits the numbers that explain the failure.
+///
+/// Sensitivity differs between the two paths even though the gate does not. A
+/// smoke run retains three samples ([`Plan::smoke`]), so a per-iteration leak
+/// has three iterations to exceed one page rather than the two hundred a
+/// `--bench` run gives it. A leak is still a leak on both paths; what belongs
+/// to the `--bench` run alone is the claim that a leak of a few dozen bytes per
+/// iteration is caught.
+///
+/// # Panics
+///
+/// Panics naming the workload, the predicate it violated, and the measurement
+/// that violated it.
+pub fn enforce_hard_budgets(workloads: &[Workload]) {
+    let [correctness, growth] = HARD_BUDGET_PREDICATES;
+
+    // Correctness first: the memory a workload used to produce a wrong answer
+    // is not the interesting fact about that run.
+    for workload in workloads {
+        assert!(
+            workload.incorrect == 0,
+            "{}: {correctness} — {} of {} retained samples produced an output \
+             its oracle rejected ({})",
+            workload.name,
+            workload.incorrect,
+            workload.elapsed.len(),
+            workload.oracle,
+        );
+    }
+
+    for workload in workloads {
+        assert!(
+            workload.growth_bytes <= GROWTH_LIMIT_BYTES,
+            "{}: {growth} — live heap grew {} bytes over {} retained samples, \
+             so a repeated operation did not give back what it took",
+            workload.name,
+            workload.growth_bytes,
+            workload.elapsed.len(),
+        );
+    }
 }
 
 /// Returns the value of a `--name value` or `--name=value` argument.

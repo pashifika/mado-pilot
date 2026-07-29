@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use mado_pilot_capture::{
     CaptureFault, CaptureProvider, CaptureSession, CoordinateSupport, Frame, FrameRequest,
-    FrameSelection, OpenRequest, Publication, SessionDescription, StreamState, TargetDescription,
+    FrameSelection, Lifecycle, OpenRequest, Publication, SessionDescription, StreamState,
+    TargetDescription,
 };
 use mado_pilot_core::{
     FrameOrder, IdentityIssuer, Operation, OperationContext, ProviderId, Result, TargetId,
@@ -131,7 +132,7 @@ impl CaptureProvider for ReplayProvider {
         );
         let session = ReplaySession {
             description,
-            state: StreamState::with_target_extent(stream, source.extent()),
+            state: StreamState::with_target_extent(stream),
             remaining: Mutex::new(source.clone().into_frames().into()),
         };
         session.advance(operation)?;
@@ -232,7 +233,7 @@ impl CaptureSession for ReplaySession {
         let FrameSelection::NewerThan(stamp) = request.selection() else {
             return self.state.frame(request, operation);
         };
-        if self.state.lifecycle() != mado_pilot_capture::Lifecycle::Open {
+        if self.state.lifecycle() != Lifecycle::Open {
             return Err(CaptureFault::SessionClosed.into());
         }
         let current = self.state.current().ok_or(CaptureFault::SessionClosed)?;
@@ -257,8 +258,8 @@ impl CaptureSession for ReplaySession {
         self.state.drain(operation)
     }
 
-    fn is_closed(&self) -> bool {
-        self.state.lifecycle() == mado_pilot_capture::Lifecycle::Closed
+    fn lifecycle(&self) -> Lifecycle {
+        self.state.lifecycle()
     }
 }
 
@@ -269,7 +270,8 @@ mod tests {
 
     use mado_pilot_capture::{Continuity, FrameDescriptor, PixelFormat};
     use mado_pilot_core::{
-        Clock, GeometryRevision, MonotonicInstant, PixelExtent, Status, StreamCursor,
+        Clock, GeometryRevision, MonotonicInstant, PixelExtent, Scale, Status, StreamCursor,
+        TargetPlacement,
     };
 
     use super::*;
@@ -379,13 +381,75 @@ mod tests {
                 PixelFormat::Rgba8,
                 CoordinateSupport::with_target_extent(),
             ),
-            state: StreamState::with_target_extent(stream, extent),
+            state: StreamState::with_target_extent(stream),
             remaining: Mutex::new(frames),
         });
         session
             .advance(&OperationContext::new())
             .expect("first frame publishes");
         session
+    }
+
+    /// Builds a one-frame source whose declared placement is `placement`.
+    fn placed_source(extent: PixelExtent, placement: TargetPlacement) -> ReplaySource {
+        let descriptor = FrameDescriptor::packed(extent, PixelFormat::Rgba8).expect("valid");
+        let frame = ReplayFrame::new(
+            descriptor,
+            MonotonicInstant::ORIGIN,
+            Continuity::Continuous,
+            Some(placement),
+            vec![0; descriptor.byte_len()].into_boxed_slice(),
+        )
+        .expect("valid replay frame");
+        ReplaySource::from_targets(vec![
+            ReplayTarget::new("placed", vec![frame]).expect("valid target"),
+        ])
+        .expect("valid source")
+    }
+
+    fn open_first_target(source: ReplaySource) -> Result<Arc<dyn CaptureSession>> {
+        let issuer = Arc::new(IdentityIssuer::new());
+        let provider = ReplayProvider::new(issuer, source).expect("provider");
+        let operation = OperationContext::new();
+        let targets = provider.discover(&operation).expect("discovered");
+        provider.open(targets[0].id(), &OpenRequest::new(), &operation)
+    }
+
+    #[test]
+    fn a_source_whose_placement_does_not_cover_its_frame_fails_to_open() {
+        let extent = PixelExtent::new(8, 6);
+        // A source states its own placement, and a manifest is not something the
+        // adapter authored: 8x6 pixels cannot be 4x3 logical units at scale 1.
+        let inconsistent =
+            TargetPlacement::new((0.0, 0.0), (4.0, 3.0), Scale::new(1.0, 1.0).expect("valid"))
+                .expect("valid");
+
+        let error = open_first_target(placed_source(extent, inconsistent))
+            .expect_err("an inconsistent placement is refused");
+
+        assert_eq!(
+            error.status(),
+            Status::InvalidArgument,
+            "a displaced transform must not be published instead"
+        );
+    }
+
+    #[test]
+    fn a_source_whose_placement_covers_its_frame_opens() {
+        let extent = PixelExtent::new(8, 6);
+        let consistent = TargetPlacement::new(
+            (100.0, 50.0),
+            (4.0, 3.0),
+            Scale::new(2.0, 2.0).expect("valid"),
+        )
+        .expect("valid");
+
+        let session = open_first_target(placed_source(extent, consistent)).expect("opened");
+        let frame = session
+            .frame(&FrameRequest::latest(), &OperationContext::new())
+            .expect("first frame");
+
+        assert_eq!(frame.transform().target(), Some(consistent));
     }
 
     #[test]

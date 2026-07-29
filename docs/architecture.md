@@ -474,16 +474,30 @@ enabled wholesale.
 
 [../CONTRIBUTING.md](../CONTRIBUTING.md) records the local verification sequence:
 architecture check, formatting, lints with warnings denied, locked tests,
-documentation with rustdoc warnings denied, and dependency policy.
+documentation examples, documentation with rustdoc warnings denied, dependency
+policy, and the C and C++ surfaces.
 
 Continuous integration separates fast repository policy from native target
 verification, and reports three stable check names:
 
 | Check | Host | Scope |
 |---|---|---|
-| `Repository policy` | `ubuntu-latest` | Package inventory, dependency directions, formatting, documentation, dependency policy |
-| `Windows x86_64-pc-windows-msvc` | `windows-2025` | Native inventory, lint, test, and documentation checks |
-| `macOS aarch64-apple-darwin` | `macos-15` | Native inventory, lint, test, and documentation checks |
+| `Repository policy` | `ubuntu-latest` | Package inventory, dependency directions, formatting, dependency policy |
+| `Windows x86_64-pc-windows-msvc` | `windows-2025` | Native inventory, lint, test, doctest, and documentation checks, and the C ABI and C++ wrapper check |
+| `macOS aarch64-apple-darwin` | `macos-15` | Native inventory, lint, test, doctest, and documentation checks, and the C ABI and C++ wrapper check |
+
+That split is not incidental, so the rule behind it is recorded here rather than
+inferred from the table. The `Repository policy` job builds no product package,
+which is what places every check that needs a compiled product in the two native
+jobs. `mado-pilot-backend-opencv` generates its bindings at build time, so
+building any product package needs an OpenCV 4 installation and a loadable
+libclang, and that installation is provisioned on the two release targets rather
+than on a host that is neither. The repository-policy steps read manifests,
+metadata, and source text; the one thing that job compiles is the maintenance
+checker, which depends on no product package. Documentation, lints, tests, and
+the C and C++ boundary are verified in both native jobs, where the compiler that
+reports a broken link or a layout mismatch is the one the product is verified
+with.
 
 Each job prints `rustc -vV` and the resolved package inventory, so the tested
 environment and any accidental workspace member are observable in the log. Each
@@ -520,25 +534,26 @@ prompting one.
 ## Public naming baseline
 
 These names are reserved so that the Rust, C, C++, Windows, macOS, CMake, and
-pkg-config surfaces stay consistent. **They are reservations. Phase 0 produces
-none of these headers, libraries, targets, or wrappers.**
+pkg-config surfaces stay consistent. A name is reserved whether or not the
+artifact behind it exists yet, so each row states which it is: an artifact the
+tree produces today, or a reservation a later phase fills.
 
-| Artifact | Name |
-|---|---|
-| GitHub repository | `mado-pilot` |
-| Rust facade package | `mado-pilot` |
-| Rust import | `mado_pilot` |
-| C header | `include/madopilot/madopilot.h` |
-| C++ header | `include/madopilot/madopilot.hpp` |
-| C symbol prefix | `madopilot_` |
-| C++ namespace | `madopilot` |
-| Windows ABI-major DLL | `madopilot-1.dll` |
-| Windows import library | `madopilot-1.lib` |
-| macOS ABI-major install name | `libmadopilot.1.dylib` |
-| CMake package | `MadoPilot` |
-| CMake C target | `MadoPilot::C` |
-| CMake C++ wrapper target | `MadoPilot::Cpp` |
-| pkg-config package | `madopilot-1` |
+| Artifact | Name | State |
+|---|---|---|
+| GitHub repository | `mado-pilot` | Exists |
+| Rust facade package | `mado-pilot` | Exists |
+| Rust import | `mado_pilot` | Exists |
+| C header | `include/madopilot/madopilot.h` | Exists, tracked and hand-written |
+| C++ header | `include/madopilot/madopilot.hpp` | Exists, header-only |
+| C symbol prefix | `madopilot_` | Exists — `madopilot_get_api` is the one exported symbol |
+| C++ namespace | `madopilot` | Exists |
+| Windows ABI-major DLL | `madopilot-1.dll` | Reserved; the development build produces the undecorated artifact |
+| Windows import library | `madopilot-1.lib` | Reserved, on the same terms |
+| macOS ABI-major install name | `libmadopilot.1.dylib` | Reserved, on the same terms |
+| CMake package | `MadoPilot` | Exists, for development-tree consumption |
+| CMake C target | `MadoPilot::C` | Exists |
+| CMake C++ wrapper target | `MadoPilot::Cpp` | Exists as an `INTERFACE` target |
+| pkg-config package | `madopilot-1` | Reserved; not generated |
 
 The loader names carry the ABI major version so that an incompatible ABI is a
 different library rather than a silent breakage.
@@ -564,9 +579,9 @@ header-only, so `MadoPilot::Cpp` is an `INTERFACE` target and produces no
 artifact; see [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) and
 [cpp-wrapper.md](cpp-wrapper.md).
 
-Three reservations above are still not produced. The `staticlib` kind is withheld
-because [`G-008`](validation-gates.md#g-008) has not recorded which static
-dependency combinations are supported; the ABI-major decorated loader names are
+What the table marks reserved is withheld for three reasons. The `staticlib`
+kind is withheld because [`G-008`](validation-gates.md#g-008) has not recorded
+which static dependency combinations are supported; the decorated loader names are
 applied by release packaging, which Phase 1 does not implement, so what is built
 today is the undecorated development artifact; and no pkg-config file is
 generated, for the same packaging reason. The CMake project likewise has no
@@ -610,7 +625,14 @@ records `G-001` through `G-014` with the decision, the required evidence, the du
 phase, the blocking scope, the status, and the resolution rule for each. No gate
 blocked Phase 0.
 
-Thirteen remain open. `G-014` is resolved by
+Ten remain open, one is deferred, and three are resolved. The deferred one is
+[`G-011`](validation-gates.md#g-011), native-frame extension discovery, which
+sits on the future roadmap and does not block version one. `G-009` is resolved by
+[ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) and `G-010` by
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md); both are recorded under
+[Public naming baseline](#public-naming-baseline).
+
+`G-014` is resolved by
 [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md), which fixes
 the asset archive container, the manifest serialization, and six implementation
 ceilings that bound what loading an untrusted archive may allocate and expand. A
@@ -661,7 +683,7 @@ responsibilities a later phase takes on.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented for the Phase 1 prefix as a header-only adapter; decided in [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Set for the thirteen Phase 1 workloads on both release targets, across the Rust workflow and the C boundary; decided in [ADR 0008](adr/0008-phase-1-performance-budgets.md). Every later phase's are open under [`G-013`](validation-gates.md#g-013) |
+| Numeric performance budgets | Set for the Phase 1 workloads on both release targets, across the Rust workflow and the C boundary: thirteen workloads are measured, all thirteen are covered by the two file-level hard gates, eleven carry a per-measurement ceiling, and two are deliberate unbudgeted controls; decided in [ADR 0008](adr/0008-phase-1-performance-budgets.md). Every later phase's are open under [`G-013`](validation-gates.md#g-013) |
 | Native permission behavior | Not implemented |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for the frozen ABI-1.0 header; a release artifact to test against is not |
@@ -694,6 +716,16 @@ package that follows:
   fails.** There is no fallback to an identity transform and no consultation of
   host DPI, because a plausible guess about coordinates places input somewhere
   the caller did not ask for.
+
+One Phase 1 consequence of the coordinate rule is worth stating, because a later
+phase changes it. A frame covers exactly its target here — nothing captures part
+of one — so a target-normalized coordinate and a frame-normalized coordinate
+address the same point and convert to the same pixels. The first phase that
+captures a sub-region of a target makes the two differ, and that is when the
+distinction between them begins to carry information. The record is
+[ADR 0009](adr/0009-phase-1-normalized-coordinate-spaces.md), which also states
+why a snapshot stores no second extent and why a declared placement is now
+validated against the frame it describes.
 
 The package has no external dependency and adds none: it is `std` only. Later
 packages do declare product dependencies, so the external-crate half of the

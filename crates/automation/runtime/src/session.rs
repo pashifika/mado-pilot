@@ -94,12 +94,15 @@ impl Session {
     /// instead of a sequence that is correct only because each of its steps
     /// happened to check.
     ///
-    /// A closed session starts no search, whichever frame the request names.
-    /// Searching an exact frame the caller already holds needs nothing from the
-    /// capture side and would otherwise succeed after close, but "this session
-    /// is finished" is the session's answer to give, and a caller that has to
-    /// know which frame it asked for to predict whether close is observed has
-    /// been handed two contracts instead of one.
+    /// A session that has begun closing starts no search, whichever frame the
+    /// request names. Searching an exact frame the caller already holds needs
+    /// nothing from the capture side and would otherwise succeed after close,
+    /// but "this session is finished" is the session's answer to give, and a
+    /// caller that has to know which frame it asked for to predict whether close
+    /// is observed has been handed two contracts instead of one. The gate is
+    /// "close has begun" rather than "close has finished", because a close whose
+    /// operation is cancelled or already expired leaves the session closing, and
+    /// a latest-frame search is already refused in that state.
     ///
     /// # Errors
     ///
@@ -115,7 +118,7 @@ impl Session {
     ) -> Result<FindOutcome> {
         let mut attempt = Operation::admit(operation)?;
 
-        if self.capture.is_closed() {
+        if !self.capture.is_open() {
             return Err(CaptureFault::SessionClosed.into());
         }
 
@@ -162,8 +165,140 @@ impl Session {
     }
 
     /// Reports whether the session has finished closing.
+    ///
+    /// A session that has begun closing but not finished draining reports
+    /// `false` here and still refuses work: this answers "is the lifecycle over",
+    /// which is what the C boundary's `session_is_closed` reports, and not "will
+    /// this session accept a request".
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.capture.is_closed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use mado_pilot_capture::{CaptureProvider, Continuity, FrameRequest, OpenRequest, PixelFormat};
+    use mado_pilot_core::{
+        IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, Status,
+    };
+    use mado_pilot_testkit::{ControlledCapture, ControlledMatcher, ManualClock, match_fixtures};
+    use mado_pilot_vision::{MatchBackend, MatchOptions, Matcher, PreparedTemplate};
+
+    use crate::find::FindRequest;
+
+    use super::Session;
+
+    const EXTENT: PixelExtent = PixelExtent::new(32, 24);
+
+    /// One session over controlled doubles, with the backend still reachable.
+    struct Fixture {
+        backend: Arc<ControlledMatcher>,
+        matcher: Matcher,
+        session: Session,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let issuer = Arc::new(IdentityIssuer::new());
+            let capture = ControlledCapture::new(issuer, EXTENT, PixelFormat::Rgba8)
+                .expect("a valid controlled provider");
+            let backend = Arc::new(ControlledMatcher::new(PixelFormat::Rgba8));
+            let matcher = Matcher::new(Arc::clone(&backend) as Arc<dyn MatchBackend>);
+            let operation = OperationContext::new();
+            let target = capture.discover(&operation).expect("discovered").remove(0);
+            let opened = capture
+                .open(target.id(), &OpenRequest::new(), &operation)
+                .expect("opened");
+            capture
+                .publish(0x11, Continuity::Continuous)
+                .expect("published");
+
+            Self {
+                backend,
+                matcher: matcher.clone(),
+                session: Session::new(opened, matcher),
+            }
+        }
+
+        fn template(&self) -> PreparedTemplate {
+            self.matcher
+                .prepare(
+                    &match_fixtures::planted_template("patch"),
+                    &OperationContext::new(),
+                )
+                .expect("prepared")
+        }
+    }
+
+    /// An operation whose deadline has already passed on its own clock.
+    fn expired() -> OperationContext {
+        OperationContext::new()
+            .with_clock(Arc::new(ManualClock::new()))
+            .with_deadline(MonotonicInstant::ORIGIN)
+    }
+
+    #[test]
+    fn a_session_that_has_begun_closing_starts_no_search() {
+        let fixture = Fixture::new();
+        let operation = OperationContext::new();
+        let template = fixture.template();
+        let options = MatchOptions::from_defaults(template.defaults());
+        let frame = fixture
+            .session
+            .acquire_frame(&FrameRequest::latest(), &operation)
+            .expect("a published frame");
+
+        // Close begins before its operation is admitted, so a close that loses
+        // its own race leaves the session closing rather than closed.
+        let close = fixture
+            .session
+            .close(&expired())
+            .expect_err("the deadline wins the close");
+
+        assert_eq!(close.status(), Status::DeadlineExceeded);
+        assert!(
+            !fixture.session.is_closed(),
+            "the drain never finished, so the lifecycle is not over"
+        );
+
+        let exact = fixture
+            .session
+            .find_template(&FindRequest::exact(&frame, &template, options), &operation)
+            .expect_err("a closing session starts no search");
+        let latest = fixture
+            .session
+            .find_template(&FindRequest::latest(&template, options), &operation)
+            .expect_err("a closing session starts no search");
+
+        assert_eq!(exact.status(), Status::Closed);
+        assert_eq!(
+            latest.status(),
+            Status::Closed,
+            "a caller must not have to know which frame it asked for"
+        );
+        assert_eq!(fixture.backend.find_count(), 0);
+    }
+
+    #[test]
+    fn an_open_session_searches_an_exact_frame_the_caller_holds() {
+        let fixture = Fixture::new();
+        let operation = OperationContext::new();
+        let template = fixture.template();
+        let options = MatchOptions::from_defaults(template.defaults());
+        let frame = fixture
+            .session
+            .acquire_frame(&FrameRequest::latest(), &operation)
+            .expect("a published frame");
+
+        let outcome = fixture
+            .session
+            .find_template(&FindRequest::exact(&frame, &template, options), &operation)
+            .expect("an open session searches");
+
+        assert_eq!(outcome.frame().stamp(), frame.stamp());
+        assert_eq!(fixture.backend.find_count(), 1);
     }
 }

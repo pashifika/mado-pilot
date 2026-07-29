@@ -14,11 +14,33 @@
 //! limit. The matcher still reapplies thresholding, ordering, suppression, and
 //! truncation as the public authority.
 //!
+//! That budget bounds the work but does not make it short: the public result
+//! limit is a caller's `u32`, so extraction reads the operation context between
+//! scans and stops on the caller's cancellation or deadline rather than running
+//! to a budget the caller no longer wants paid.
+//!
 //! The arithmetic here is independent of OpenCV's native types, which makes the
 //! bounded extraction rules directly testable and identical on both release
 //! targets.
 
+use mado_pilot_core::{Interruption, OperationContext};
 use mado_pilot_vision::Suppression;
+
+/// How many offsets extraction may compare between two reads of the operation
+/// context.
+///
+/// Extraction has two costs and only one of them is open-ended. A single scan is
+/// bounded by the score map, which is bounded by the searched region and so by
+/// the frame; the *number* of scans is bounded only by the caller's result
+/// limit, which the public API accepts up to `u32::MAX`. The checkpoint
+/// therefore sits between scans, where the unbounded axis is.
+///
+/// Counting compared offsets rather than emitted candidates is what keeps the
+/// check off a small search's critical path. Reading the context costs a clock
+/// read; comparing this many offsets costs microseconds, two orders of magnitude
+/// more, so the check cannot dominate. A map smaller than this is scanned
+/// several times per check, and a map larger than it is checked once per scan.
+const CHECKPOINT_OFFSETS: usize = 4_096;
 
 /// One extracted peak: an offset from the searched region's origin, and the
 /// public score at that offset.
@@ -89,7 +111,18 @@ pub(crate) struct PeakSearch {
 ///
 /// The work is bounded by `search.candidate_budget` scans of the map, and each
 /// scan removes at least the selected offset.
-pub(crate) fn peaks(scores: &[f32], search: PeakSearch) -> Vec<Peak> {
+///
+/// # Errors
+///
+/// Returns the [`Interruption`] `operation` reports when cancellation or the
+/// deadline lands between two scans. Extraction is pure arithmetic, so it stops
+/// where it stands and reports nothing rather than finishing a prefix no caller
+/// is waiting for. See [`CHECKPOINT_OFFSETS`] for how often the context is read.
+pub(crate) fn peaks(
+    scores: &[f32],
+    search: PeakSearch,
+    operation: &OperationContext,
+) -> Result<Vec<Peak>, Interruption> {
     let offsets = search.width.saturating_mul(search.height);
     if offsets == 0
         || scores.len() < offsets
@@ -97,15 +130,27 @@ pub(crate) fn peaks(scores: &[f32], search: PeakSearch) -> Vec<Peak> {
         || search.template_width == 0
         || search.template_height == 0
     {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     // Suppression writes into a copy so the caller's map stays intact, and it
     // writes `NAN` because the scan already skips non-finite offsets.
     let mut remaining = scores[..offsets].to_vec();
     let mut found = Vec::new();
+    // Offsets compared since the context was last read. The caller checks the
+    // context immediately before calling, so the first scan starts owing
+    // nothing.
+    let mut compared: usize = 0;
 
     while found.len() < search.candidate_budget {
+        if compared >= CHECKPOINT_OFFSETS {
+            if let Some(interruption) = operation.interruption() {
+                return Err(interruption);
+            }
+            compared = 0;
+        }
+        compared = compared.saturating_add(offsets);
+
         let Some((left, top, score)) = greatest(&remaining, search.width) else {
             break;
         };
@@ -124,7 +169,7 @@ pub(crate) fn peaks(scores: &[f32], search: PeakSearch) -> Vec<Peak> {
         }
     }
 
-    found
+    Ok(found)
 }
 
 /// Returns the greatest finite public score in `remaining`, scanning row-major
@@ -170,9 +215,127 @@ fn suppress(remaining: &mut [f32], search: PeakSearch, left: usize, top: usize) 
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
+
+    use mado_pilot_core::{
+        CancellationToken, Clock, Interruption, MonotonicInstant, OperationContext,
+    };
     use mado_pilot_vision::Suppression;
 
-    use super::{Peak, PeakSearch, peaks, public_score};
+    use super::{CHECKPOINT_OFFSETS, Peak, PeakSearch, peaks, public_score};
+
+    /// A deadline no sweep below can reach.
+    const UNREACHABLE_MILLIS: u64 = 3_600_000;
+
+    /// A clock that advances one millisecond every time it is read.
+    ///
+    /// A deadline is then a count of context reads rather than a wall-clock
+    /// wait, so "the deadline expired while the map was being rescanned" is an
+    /// exact statement about which check observed it rather than a race against
+    /// a busy machine.
+    #[derive(Debug)]
+    struct TickingClock {
+        reads: AtomicU64,
+    }
+
+    impl TickingClock {
+        const fn new() -> Self {
+            Self {
+                reads: AtomicU64::new(0),
+            }
+        }
+
+        fn reads(&self) -> u64 {
+            self.reads.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Clock for TickingClock {
+        fn now(&self) -> MonotonicInstant {
+            let tick = self.reads.fetch_add(1, Ordering::Relaxed);
+            MonotonicInstant::from_origin(Duration::from_millis(tick))
+        }
+    }
+
+    /// A ticking clock that cancels `token` once it has been read `after` times.
+    #[derive(Debug)]
+    struct CancellingClock {
+        reads: AtomicU64,
+        after: u64,
+        token: CancellationToken,
+    }
+
+    impl CancellingClock {
+        const fn new(token: CancellationToken, after: u64) -> Self {
+            Self {
+                reads: AtomicU64::new(0),
+                after,
+                token,
+            }
+        }
+
+        fn reads(&self) -> u64 {
+            self.reads.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Clock for CancellingClock {
+        fn now(&self) -> MonotonicInstant {
+            let tick = self.reads.fetch_add(1, Ordering::Relaxed);
+            if tick >= self.after {
+                self.token.cancel();
+            }
+            MonotonicInstant::from_origin(Duration::from_millis(tick))
+        }
+    }
+
+    /// Extracts under a context that never interrupts.
+    fn extract(scores: &[f32], search: PeakSearch) -> Vec<Peak> {
+        peaks(scores, search, &OperationContext::new()).expect("nothing interrupts extraction")
+    }
+
+    /// A search that keeps rescanning: one checkpoint interval of offsets, a one
+    /// pixel template, no threshold, and no suppression, so every offset stays a
+    /// candidate and the budget alone decides how many scans happen.
+    fn permissive_search() -> (Vec<f32>, PeakSearch) {
+        let width = 64;
+        let height = CHECKPOINT_OFFSETS / width;
+        let scores = (0..width * height)
+            .map(|offset| {
+                let index = u16::try_from(offset).expect("the map is smaller than u16::MAX");
+                1.0 - f32::from(index) / f32::from(u16::MAX)
+            })
+            .collect();
+
+        (
+            scores,
+            PeakSearch {
+                width,
+                height,
+                template_width: 1,
+                template_height: 1,
+                min_score: 0.0,
+                candidate_budget: 12,
+                suppression: Suppression::KeepAll,
+            },
+        )
+    }
+
+    /// Counts the context reads of an extraction that nothing interrupts.
+    fn reads_for(scores: &[f32], search: PeakSearch) -> u64 {
+        let clock = Arc::new(TickingClock::new());
+        let context = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+                UNREACHABLE_MILLIS,
+            )));
+
+        peaks(scores, search, &context).expect("the search finishes when nothing interrupts it");
+
+        clock.reads()
+    }
 
     /// A search over a `width` by `height` map for a 2 by 2 template.
     fn search(width: usize, height: usize) -> PeakSearch {
@@ -212,7 +375,7 @@ mod tests {
         search.template_width = 1;
         search.template_height = 1;
 
-        let found = peaks(&scores, search);
+        let found = extract(&scores, search);
 
         assert_eq!(
             found[0],
@@ -241,7 +404,7 @@ mod tests {
             0.10, 0.10, 0.10, 0.98,
         ];
 
-        let found = peaks(&scores, search(4, 4));
+        let found = extract(&scores, search(4, 4));
 
         assert_eq!(
             found
@@ -260,7 +423,7 @@ mod tests {
         search.template_height = 1;
         search.suppression = Suppression::KeepAll;
 
-        let found = peaks(&scores, search);
+        let found = extract(&scores, search);
 
         assert_eq!(
             found.iter().map(|peak| peak.left).collect::<Vec<_>>(),
@@ -279,7 +442,7 @@ mod tests {
         let mut search = search(3, 3);
         search.min_score = 0.8;
 
-        let found = peaks(&scores, search);
+        let found = extract(&scores, search);
 
         assert_eq!(
             found
@@ -298,7 +461,7 @@ mod tests {
         search.template_width = 1;
         search.template_height = 1;
 
-        assert!(peaks(&scores, search).is_empty());
+        assert!(extract(&scores, search).is_empty());
     }
 
     #[test]
@@ -309,7 +472,7 @@ mod tests {
         search.template_height = 1;
         search.candidate_budget = 2;
 
-        let found = peaks(&scores, search);
+        let found = extract(&scores, search);
 
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].left, 3);
@@ -326,7 +489,7 @@ mod tests {
         search.candidate_budget = 1;
         search.suppression = Suppression::KeepAll;
 
-        let found = peaks(&scores, search);
+        let found = extract(&scores, search);
 
         assert_eq!(
             found,
@@ -346,7 +509,7 @@ mod tests {
         search.template_width = 1;
         search.template_height = 1;
 
-        let found = peaks(&scores, search);
+        let found = extract(&scores, search);
 
         assert_eq!(
             found.iter().map(|peak| peak.left).collect::<Vec<_>>(),
@@ -362,7 +525,7 @@ mod tests {
         search.template_height = 1;
         search.min_score = 0.0;
 
-        let found = peaks(&scores, search);
+        let found = extract(&scores, search);
 
         assert_eq!(
             found,
@@ -382,17 +545,124 @@ mod tests {
         );
 
         search.min_score = 0.000_001;
-        assert!(peaks(&scores, search).is_empty());
+        assert!(extract(&scores, search).is_empty());
     }
 
     #[test]
     fn an_empty_map_reports_nothing() {
-        assert!(peaks(&[], search(0, 0)).is_empty());
-        assert!(peaks(&[0.9], search(0, 4)).is_empty());
+        assert!(extract(&[], search(0, 0)).is_empty());
+        assert!(extract(&[0.9], search(0, 4)).is_empty());
     }
 
     #[test]
     fn a_map_shorter_than_its_declared_extent_reports_nothing() {
-        assert!(peaks(&[0.9, 0.9], search(4, 4)).is_empty());
+        assert!(extract(&[0.9, 0.9], search(4, 4)).is_empty());
+    }
+
+    #[test]
+    fn the_context_is_read_while_the_map_is_being_scanned_rather_than_once() {
+        let (scores, search) = permissive_search();
+
+        assert!(
+            reads_for(&scores, search) > 1,
+            "a search whose budget outlives one checkpoint interval must read \
+             the context more than once, or nothing inside the loop can stop it"
+        );
+    }
+
+    #[test]
+    fn no_deadline_anywhere_inside_extraction_reports_candidates() {
+        let (scores, search) = permissive_search();
+        let total = reads_for(&scores, search);
+
+        for deadline in 0..total {
+            let clock = Arc::new(TickingClock::new());
+            let context = OperationContext::new().with_clock(clock).with_deadline(
+                MonotonicInstant::from_origin(Duration::from_millis(deadline)),
+            );
+
+            assert_eq!(
+                peaks(&scores, search, &context).err(),
+                Some(Interruption::DeadlineExceeded),
+                "a deadline expiring on context read {deadline} must stop extraction"
+            );
+        }
+    }
+
+    #[test]
+    fn no_cancellation_anywhere_inside_extraction_reports_candidates() {
+        let (scores, search) = permissive_search();
+        let total = reads_for(&scores, search);
+
+        // Cancelling on read `point` is observed by the next read, so the last
+        // read that can still observe it is `total - 2`.
+        for point in 0..total.saturating_sub(1) {
+            let token = CancellationToken::new();
+            let clock = Arc::new(CancellingClock::new(token.clone(), point));
+            let context = OperationContext::new()
+                .with_clock(clock)
+                .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+                    UNREACHABLE_MILLIS,
+                )))
+                .with_cancellation(token);
+
+            assert_eq!(
+                peaks(&scores, search, &context).err(),
+                Some(Interruption::Cancelled),
+                "cancellation landing on context read {point} must stop extraction"
+            );
+        }
+    }
+
+    #[test]
+    fn a_budget_the_map_cannot_fill_is_interrupted_rather_than_run_out() {
+        // The public result limit is a caller's `u32`, and `KeepAll` with a zero
+        // threshold qualifies every offset, so this is the shape that made
+        // extraction run for hours: the budget, not the map, sets the length.
+        let (scores, mut search) = permissive_search();
+        search.candidate_budget = usize::try_from(u32::MAX).expect("a u32 fits a usize");
+        let token = CancellationToken::new();
+        let clock = Arc::new(CancellingClock::new(token.clone(), 0));
+        let context = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+                UNREACHABLE_MILLIS,
+            )))
+            .with_cancellation(token);
+
+        assert_eq!(
+            peaks(&scores, search, &context).err(),
+            Some(Interruption::Cancelled)
+        );
+        assert_eq!(
+            clock.reads(),
+            1,
+            "extraction stopped at the checkpoint after cancellation, not after \
+             four billion scans"
+        );
+    }
+
+    #[test]
+    fn an_extraction_shorter_than_one_checkpoint_interval_never_reads_the_context() {
+        let clock = Arc::new(TickingClock::new());
+        let context = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+                UNREACHABLE_MILLIS,
+            )));
+        let mut search = search(2, 1);
+        search.template_width = 1;
+        search.template_height = 1;
+        search.min_score = 0.0;
+        search.suppression = Suppression::KeepAll;
+
+        peaks(&[0.9, 0.8], search, &context).expect("nothing interrupts extraction");
+
+        assert_eq!(
+            clock.reads(),
+            0,
+            "checking per candidate would cost a clock read per handful of \
+             comparisons on a map this small"
+        );
     }
 }

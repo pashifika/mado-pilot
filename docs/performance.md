@@ -7,8 +7,12 @@ an agreed cost before the phase exits.
 
 This document defines the format that evidence takes. Setting a numeric budget
 for a workload is gate [`G-013`](validation-gates.md#g-013), which is resolved
-per phase rather than once: Phase 1's eight workloads have budgets and every
-later phase's are still open.
+per phase rather than once: Phase 1's workloads are resolved and every later
+phase's are still open. Phase 1 measures thirteen workloads, all thirteen are
+covered by the two file-level hard gates, eleven carry a per-measurement ceiling,
+and two are deliberate unbudgeted controls; the split is recorded in
+[ADR 0008](adr/0008-phase-1-performance-budgets.md) and reproduced under
+[Phase 1 status](#phase-1-status) below.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -158,6 +162,22 @@ ten percent worse than the recorded baseline on the same target.
 A relative budget requires that the baseline it names exists in a tracked
 benchmark file for the same release target and fixture hash.
 
+### Which side evaluates a budget
+
+The kind decides that, and the two answers are different because the two kinds
+claim different things. A hard budget is a structural property that holds on any
+host, so the benchmark harness evaluates its predicate in process on every run —
+both the run that produces timings and the reduced run the ordinary test
+sequence performs — and a violation fails that run. An absolute or relative
+budget is a per-target regression ceiling measured on named hardware, so only a
+run on that hardware can evaluate it: whoever performs the run compares it
+against the committed profile for the matching release target.
+
+Continuous integration therefore reports correctness and bounded memory on both
+release targets and evaluates no timing ceiling. That is deliberate: a hosted
+runner's timings vary by more than a regression ceiling is worth, so a ceiling
+evaluated there would teach a reader to re-run rather than to investigate.
+
 ## Where a budget attaches
 
 A `[[budget]]` at the top level of a file applies to every measurement in it.
@@ -210,6 +230,14 @@ There are two benchmarks, each committed for both release targets:
 Every profile was measured on a named host, two hundred samples per workload
 after twenty warm-up iterations, every sample checked against its oracle, zero
 oracle failures anywhere. Each benchmark's two profiles share a fixture hash.
+
+Across those four files, thirteen workloads are measured, all thirteen are
+covered by the two file-level hard gates, eleven carry a per-measurement
+ceiling, and two are deliberate unbudgeted controls. The two controls are
+`engine_create_rust` and `match_warm_rust`: each exists so its C counterpart can
+be compared against it in one process, and the Rust workflow's own ceilings are
+in the `deterministic-slice` profile for the same target, so a second set here
+would be the same claim measured twice and free to disagree with itself.
 
 The scaffolding both share — the sampling loop, the allocation accounting, and
 the report — is `mado_pilot_testkit::bench_harness`, so the format described

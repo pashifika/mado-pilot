@@ -13,6 +13,16 @@
 //! bytes it does not recognize. A size below the documented mandatory prefix is
 //! invalid argument, and nothing beyond `struct_size` is read even to check it.
 //!
+//! A size describes a prefix, so it also has to end where a prefix can end. A
+//! `struct_size` that stops inside a field is invalid argument, because that
+//! field would be neither covered nor omitted; an element of a caller-declared
+//! array whose `struct_size` is above the array's element stride is invalid
+//! argument, because the two declarations describe different extents; and a
+//! presence bit set for a field the declared size does not reach is invalid
+//! argument, because the field the bit names would carry the omitted-field
+//! default under the caller's own claim that it was supplied. Every size a
+//! released header declares satisfies all three.
+//!
 //! For an output structure the same size is a promise in the other direction:
 //! the library writes only within it, and a caller that supplied an older prefix
 //! gets the fields that prefix covers and no others.

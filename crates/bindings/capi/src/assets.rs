@@ -17,7 +17,7 @@
 
 use mado_pilot::{AssetPackage, Engine, PreparedTemplate, Status};
 
-use crate::boundary::{self, Input, Out, Versioned};
+use crate::boundary::{self, Input, Out, Versioned, prefixes};
 use crate::engine::{madopilot_engine_t, report};
 use crate::error::{Fault, madopilot_error_t};
 use crate::handle::opaque;
@@ -56,6 +56,9 @@ impl Input for madopilot_package_source_t {
     // after it, and a caller that uses that kind says so with a larger size.
     const MANDATORY: usize = 24;
     const NAME: &'static str = "madopilot_package_source_t";
+    const PREFIXES: &'static [usize] =
+        prefixes!(madopilot_package_source_t, struct_size, kind, path, archive);
+    const PRESENCE: &'static [(u32, usize)] = &[];
 
     fn defaults() -> Self {
         Self {
@@ -64,6 +67,11 @@ impl Input for madopilot_package_source_t {
             path: madopilot_str_t::empty(),
             archive: madopilot_bytes_t::empty(),
         }
+    }
+
+    fn presence_bits(&self) -> u32 {
+        // The second field is `kind`, a discriminant rather than a bit set.
+        0
     }
 }
 

@@ -96,16 +96,35 @@ child, and the wrapper preserves it. A `Mapping` stays readable after its
 its `Package`. A `MatchResult` outlives all of them, because it owns the exact
 frame it searched.
 
+In a function returning `madopilot::Error`:
+
 ```cpp
 madopilot::Mapping mapping;
 {
     madopilot::Session session = /* ... */;
-    const madopilot::Frame frame = session.acquire_frame(operation).take();
-    mapping = frame.map(request, operation).take();
-    session.close(operation);
+
+    madopilot::Result<madopilot::Frame> acquired = session.acquire_frame(operation);
+    if (!acquired) {
+        return acquired.error();
+    }
+    const madopilot::Frame frame = acquired.take();
+
+    madopilot::Result<madopilot::Mapping> mapped = frame.map(request, operation);
+    if (!mapped) {
+        return mapped.error();
+    }
+    mapping = mapped.take();
+
+    const madopilot::Result<void> closed = session.close(operation);
+    if (!closed) {
+        return closed.error();
+    }
 }   // session and frame are gone
 const auto image = mapping.describe();  // still valid
 ```
+
+Each result is checked before it is extracted, for the reason
+[below](#results-and-errors): `take()` has the precondition `ok()`.
 
 ## Results and errors
 
@@ -124,6 +143,14 @@ if (!loaded) {
     error.asset_detail();
 }
 ```
+
+**Check a `Result` before reading it.** `value()` and `take()` have the
+precondition `ok()`. They extract from a `std::optional` that a failure leaves
+disengaged, so calling one on a failed result is undefined behaviour rather than
+a thrown exception — the wrapper cannot throw to tell you, which is the price of
+the exception-free surface. A build without `NDEBUG` fails an `assert` there; a
+release build does not. Every snippet in this document, the in-repo example, and
+the ownership probe test the result first.
 
 `Error` is a value. Constructing one describes the C error handle, copies
 everything out of it, and releases the handle immediately — on every failing
@@ -186,8 +213,12 @@ A view is valid only while its owner is retained. Copy anything that must
 outlive it:
 
 ```cpp
-const std::string kept = info.value().package_id.to_string();
-const std::vector<std::uint8_t> pixels = image.value().bytes.to_vector();
+if (info) {
+    const std::string kept = info.value().package_id.to_string();
+}
+if (image) {
+    const std::vector<std::uint8_t> pixels = image.value().bytes.to_vector();
+}
 ```
 
 `Error::message()` already returns owned `std::string`, because error text is
@@ -202,8 +233,13 @@ each owns whatever its C structure points at for as long as the request object
 is alive.
 
 ```cpp
+const madopilot::Result<std::uint64_t> now = api.clock_now();
+if (!now) {
+    return now.error();
+}
+
 madopilot::Operation operation;
-operation.deadline(api.clock_now().value() + 30ull * 1000 * 1000 * 1000)
+operation.deadline(now.value() + 30ull * 1000 * 1000 * 1000)
     .cancellation(token);
 ```
 

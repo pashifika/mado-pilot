@@ -7,7 +7,7 @@ use mado_pilot_core::{OperationContext, ProviderId, Result, TargetId};
 
 use crate::descriptor::{PixelFormat, SessionDescription, TargetDescription};
 use crate::frame::Frame;
-use crate::stream::FrameRequest;
+use crate::stream::{FrameRequest, Lifecycle};
 
 /// What a caller asks for when opening a session.
 ///
@@ -123,6 +123,23 @@ pub trait CaptureSession: Debug + Send + Sync {
     /// and a later close continues.
     fn close(&self, operation: &OperationContext) -> Result<()>;
 
+    /// Returns where the session is in its lifecycle.
+    ///
+    /// This is the one lifecycle answer an implementation gives, and the two
+    /// questions below are derived from it. [`Lifecycle::Closing`] is an
+    /// ordinary reachable state — a close whose operation is cancelled or
+    /// already past its deadline leaves the session there — so a caller that
+    /// asked only whether close had *finished* would keep handing work to a
+    /// session that has stopped accepting it.
+    fn lifecycle(&self) -> Lifecycle;
+
+    /// Reports whether the session still accepts new work.
+    fn is_open(&self) -> bool {
+        self.lifecycle() == Lifecycle::Open
+    }
+
     /// Reports whether the session has finished closing.
-    fn is_closed(&self) -> bool;
+    fn is_closed(&self) -> bool {
+        self.lifecycle() == Lifecycle::Closed
+    }
 }

@@ -185,7 +185,11 @@ impl MatchBackend for OpenCvBackend {
             suppression: request.options.suppression(),
         };
 
-        peaks(values, search)
+        // Extraction scans the score map once per candidate and the budget above
+        // is the caller's own `u32` result limit, so this is the one stage of a
+        // search whose length the caller sets. It reads the context as it goes
+        // rather than at its end.
+        peaks(values, search, operation)?
             .into_iter()
             .map(|peak| {
                 let left = i32::try_from(peak.left).map_err(|_| unrepresentable())?;
@@ -216,6 +220,10 @@ fn accept_version(major: i32, version: &str) -> Result<Arc<str>> {
 /// before decoding, before converting, before correlating, and before extracting
 /// candidates. A call that finishes after an outcome has been decided still
 /// returns here, and the check that follows it discards its output.
+///
+/// Candidate extraction is the exception that checks *within* itself, because it
+/// is MadoPilot's own arithmetic rather than a library call and its length is set
+/// by the caller's result limit. See `candidates::peaks`.
 fn checkpoint(operation: &OperationContext) -> Result<()> {
     match operation.interruption() {
         Some(interruption) => Err(interruption.into()),

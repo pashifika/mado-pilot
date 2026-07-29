@@ -344,6 +344,17 @@ typedef struct madopilot_result_t madopilot_result_t;
  * MADOPILOT_STATUS_INVALID_ARGUMENT, and nothing past struct_size is read even
  * to check it.
  *
+ * A size describes a prefix, so it also has to end where a prefix can end.
+ * Three further sizes are MADOPILOT_STATUS_INVALID_ARGUMENT for that reason,
+ * each refused rather than adjusted to something nearby: a struct_size that
+ * stops inside a field, because the field would be neither supplied nor
+ * omitted; an element of a caller-declared array whose struct_size is above
+ * that array's element stride, because the two declarations describe different
+ * extents; and a struct_size that does not reach a field whose presence bit is
+ * set, because the field the bit names would carry the omitted-field default
+ * under the caller's own claim that it was supplied. Every size this header
+ * declares satisfies all three.
+ *
  * For an output structure the same size is a promise in the other direction:
  * the library writes only within it, and writes back the number of bytes it
  * actually populated. A caller built against a newer header therefore learns
@@ -485,11 +496,19 @@ typedef struct madopilot_map_request_t {
     madopilot_pixel_rect_t region;
 } madopilot_map_request_t;
 
-/* The thresholds one search runs under. Mandatory prefix: through flags.
+/* The thresholds one search runs under.
  *
- * Every omitted field defaults to the prepared template's own declared default.
- * Also used as an output, where the library sets every presence bit because
- * every field was in effect. */
+ * Mandatory prefix as an INPUT: through flags. Every omitted field defaults to
+ * the prepared template's own declared default, so a structure that sets no
+ * presence bit is the documented way to ask for exactly those defaults.
+ *
+ * Mandatory prefix as an OUTPUT: the whole structure. This is the only
+ * structure the table uses in both directions, and the only one whose two
+ * prefixes differ. result_options reports the thresholds the search really ran
+ * under, where every field was in effect and the library sets every presence
+ * bit; a shorter report would drop one of them silently. So pass
+ * sizeof(madopilot_match_options_t) there — eight bytes is a valid input size
+ * and is MADOPILOT_STATUS_INVALID_ARGUMENT as an output size. */
 typedef struct madopilot_match_options_t {
     uint32_t struct_size;
     uint32_t flags; /* MADOPILOT_MATCH_HAS_* */
@@ -641,6 +660,19 @@ typedef struct madopilot_package_source_t {
  * through their failure prefix, scalars to zero. On failure they stay that way.
  *
  * Every member catches a panic before it can cross into C.
+ *
+ * Every pointer parameter is required unless its declaration says otherwise,
+ * and a null one is MADOPILOT_STATUS_INVALID_ARGUMENT. That covers the request,
+ * source, and operation structures as well as the handles: passing a null
+ * `operation` to mean "no deadline" is refused, and the way to say that is a
+ * madopilot_operation_t whose `flags` set no bit. An absent operation structure
+ * and one that declares nothing are different requests, and only the second
+ * says which header the caller was built against.
+ *
+ * Beyond the retain and release entries and the empty-view rule above, null is
+ * accepted in four places, each documented where it is declared: `out_error`
+ * below, madopilot_operation_t.cancellation, madopilot_find_request_t.frame,
+ * and madopilot_find_request_t.options.
  *
  * An entry that takes `out_error` may be passed null there, and then reports
  * the status only. A returned error is owned by the caller and is released with
@@ -801,7 +833,10 @@ typedef struct madopilot_api_t {
      * owns the frame it searched. */
     madopilot_status_t (*result_stamp)(const madopilot_result_t* result,
                                        madopilot_frame_stamp_t* out_stamp);
-    /* The options the search actually ran under, not the ones requested. */
+    /* The options the search actually ran under, not the ones requested.
+     *
+     * madopilot_match_options_t's mandatory prefix HERE is the whole structure,
+     * not the eight bytes it accepts as an input. */
     madopilot_status_t (*result_options)(
         const madopilot_result_t* result,
         madopilot_match_options_t* out_options);

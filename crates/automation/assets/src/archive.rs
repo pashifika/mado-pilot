@@ -5,10 +5,18 @@
 //! an entry-count ceiling checked after the open is checked too late: the
 //! measurements in `docs/evidence/g-014` read 60,000 recorded entries for 144
 //! bytes through the trailer and 32,679,704 bytes through the central
-//! directory. After enforcing the count, a bounded no-allocation header scan
-//! proves that the unambiguous trailer selects the directory the ZIP reader will
-//! open. The declared total is then checked while the central directory is still
-//! the largest thing that has been allocated, before entry content is read.
+//! directory.
+//!
+//! Enforcing the count before the open is worth something only if the reader
+//! opens the trailer that was counted, and the reader selects its own. So the
+//! pre-parse takes the one record whose comment accounts for the exact suffix,
+//! refuses any further record beginning after it — every candidate the reader
+//! would reach before that one — and proves with a bounded no-allocation header
+//! scan that the recorded directory tiles the space it claims. The count is
+//! enforced against that directory, the opened archive is then re-proved to be
+//! reading the same directory, and the declared total is checked while the
+//! central directory is still the largest thing that has been allocated, before
+//! entry content is read.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::Arc;
@@ -102,6 +110,19 @@ pub(crate) fn open<R: Read + Seek + 'static>(
     checkpoint(operation, LoadStage::DirectoryOpen)?;
     let mut archive = ZipArchive::new(reader).map_err(|_| malformed())?;
     ensure_unchanged(source.as_ref(), LoadStage::DirectoryOpen)?;
+    // Re-proving the pre-parse against what the reader actually opened, rather
+    // than assuming the two agree. `zip` 8.6.0 searches the whole file backwards
+    // for a trailer (`spec.rs:806`), accepts one whose comment merely fits inside
+    // the file rather than ending it (`spec.rs:823-828`), and falls back to an
+    // earlier record when it rejects the first (`read/zip_archive.rs:167-173`).
+    // The pre-parse refuses every record the fallback would reach first, so a
+    // disagreement here means the reader rejected the validated trailer and
+    // substituted another; that substitute was never counted, and an archive is
+    // not two archives. A `zip` version bump must re-verify those three sites and
+    // the reservation at `read/zip_archive.rs:183-205`.
+    if archive.central_directory_start() != directory.start {
+        return Err(malformed());
+    }
     let present = u64::try_from(archive.len()).map_err(|_| overflow())?;
     if present != directory.entry_count {
         return Err(malformed());
@@ -231,10 +252,15 @@ fn locate_eocd<R: Read + Seek>(
 
     let fixed = usize::try_from(EOCD_LEN).map_err(|_| overflow())?;
     let mut selected = None;
+    let mut last_candidate = None;
     for index in 0..=window.len() - fixed {
         if window[index..index + 4] != EOCD_SIGNATURE {
             continue;
         }
+        // Recorded whether or not this record is selectable: a record the reader
+        // could parse is a trailer it could choose, and the loop runs forward, so
+        // this ends up holding the last one in the file.
+        last_candidate = Some(index);
         let comment_len = usize::from(read_u16(&window[index..index + fixed], 20));
         if index
             .checked_add(fixed)
@@ -249,6 +275,14 @@ fn locate_eocd<R: Read + Seek>(
         selected = Some(index);
     }
     let found = selected.ok_or_else(pre_parse_malformed)?;
+    // The selected record accounts for the exact suffix, so everything after it
+    // is its own comment — and the reader searches backwards from the end of the
+    // file, so a record hidden in that comment is the trailer it would try first.
+    // Refusing here is what makes the entry count enforced below the count of the
+    // directory the reader opens, rather than of a directory it will not read.
+    if last_candidate.is_some_and(|last| last > found) {
+        return Err(pre_parse_malformed());
+    }
 
     let mut eocd = [0u8; 22];
     eocd.copy_from_slice(&window[found..found + fixed]);
@@ -448,8 +482,136 @@ mod tests {
     use mado_pilot_core::{Operation, OperationContext};
     use zip::{ZipWriter, write::SimpleFileOptions};
 
-    use super::{EOCD_SIGNATURE, open, recorded_directory};
+    use super::{
+        AssetFault, CENTRAL_DIRECTORY_HEADER_LEN, CENTRAL_DIRECTORY_SIGNATURE, EOCD_SIGNATURE,
+        RawEntry, open, recorded_directory,
+    };
     use crate::{AssetFaultKind, AssetLimits, LoadStage};
+
+    /// Opens `bytes` under an `max_entries` ceiling and returns its entry table.
+    fn accept(bytes: Vec<u8>, max_entries: u32) -> Vec<RawEntry> {
+        let (_, entries) = attempt(bytes, max_entries).expect("the archive loads");
+        entries
+    }
+
+    /// Opens `bytes` under an `max_entries` ceiling and returns why it was
+    /// refused.
+    fn refuse(bytes: Vec<u8>, max_entries: u32) -> AssetFault {
+        attempt(bytes, max_entries)
+            .err()
+            .expect("the archive is refused")
+    }
+
+    fn attempt(
+        bytes: Vec<u8>,
+        max_entries: u32,
+    ) -> Result<(Box<dyn crate::reader::EntryReader>, Vec<RawEntry>), AssetFault> {
+        let source_len = u64::try_from(bytes.len()).expect("archive length fits");
+        let limits = AssetLimits::ceiling()
+            .with_max_entry_count(max_entries)
+            .expect("below the ceiling");
+        let context = OperationContext::new();
+        let mut operation = Operation::admit(&context).expect("admitted");
+
+        open(Cursor::new(bytes), source_len, limits, &mut operation, None)
+    }
+
+    /// The archive the trailer tests start from: two entries, and a comment-less
+    /// trailer as the final twenty-two bytes.
+    fn two_entry_archive() -> Vec<u8> {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for name in ["first", "second"] {
+            writer
+                .start_file(name, SimpleFileOptions::default())
+                .expect("entry starts");
+            writer.write_all(b"x").expect("entry bytes");
+        }
+        let bytes = writer.finish().expect("archive finishes").into_inner();
+
+        assert_eq!(
+            bytes[bytes.len() - 22..bytes.len() - 18],
+            EOCD_SIGNATURE,
+            "the tests below rewrite the comment length of this trailer"
+        );
+        bytes
+    }
+
+    /// [`two_entry_archive`] with `comment` declared as its trailer comment.
+    fn commented_archive(comment: &[u8]) -> Vec<u8> {
+        let mut bytes = two_entry_archive();
+        let declared = u16::try_from(comment.len()).expect("the comment fits its field");
+        let field = bytes.len() - 2;
+        bytes[field..].copy_from_slice(&declared.to_le_bytes());
+        bytes.extend_from_slice(comment);
+        bytes
+    }
+
+    /// An archive whose recorded directory is not the one the reader opens.
+    ///
+    /// The trailer records one entry, a directory size of one header, and a
+    /// directory offset pointing at the *first* of two adjacent headers. The
+    /// pre-parse derives the directory from the size and so validates the second
+    /// header; `zip` derives it from the offset and so opens the first. Both see
+    /// exactly one entry, which is why the recorded-count comparison cannot tell
+    /// the two directories apart, and both entries have a readable local header,
+    /// so nothing downstream refuses the substitution either.
+    fn divergent_directory_archive() -> Vec<u8> {
+        let mut bytes = local_header(b"a");
+        let second_entry = u32::try_from(bytes.len()).expect("one local header is small");
+        bytes.extend_from_slice(&local_header(b"b"));
+        let first_recorded = u32::try_from(bytes.len()).expect("two local headers are small");
+        bytes.extend_from_slice(&central_header(b"a", 0));
+        bytes.extend_from_slice(&central_header(b"b", second_entry));
+        let one_header =
+            u32::try_from(CENTRAL_DIRECTORY_HEADER_LEN + 1).expect("one header is small");
+        bytes.extend_from_slice(&eocd(1, 1, one_header, first_recorded));
+        bytes
+    }
+
+    /// A local file header for a stored, empty entry named `name`.
+    fn local_header(name: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&[0x50, 0x4b, 0x03, 0x04]);
+        bytes.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // general purpose flags
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // stored
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // modification time
+        bytes.extend_from_slice(&0x21u16.to_le_bytes()); // modification date
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // crc32
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // compressed size
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // uncompressed size
+        let name_len = u16::try_from(name.len()).expect("the name fits its field");
+        bytes.extend_from_slice(&name_len.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // extra field length
+        bytes.extend_from_slice(name);
+        bytes
+    }
+
+    /// A central directory header for a stored, empty entry named `name` whose
+    /// local header begins at `local_offset`.
+    fn central_header(name: &[u8], local_offset: u32) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(CENTRAL_DIRECTORY_HEADER_LEN + name.len());
+        bytes.extend_from_slice(&CENTRAL_DIRECTORY_SIGNATURE);
+        bytes.extend_from_slice(&20u16.to_le_bytes()); // version made by
+        bytes.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // general purpose flags
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // stored
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // modification time
+        bytes.extend_from_slice(&0x21u16.to_le_bytes()); // modification date
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // crc32
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // compressed size
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // uncompressed size
+        let name_len = u16::try_from(name.len()).expect("the name fits its field");
+        bytes.extend_from_slice(&name_len.to_le_bytes());
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // extra field length
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // entry comment length
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // first disk
+        bytes.extend_from_slice(&0u16.to_le_bytes()); // internal attributes
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // external attributes
+        bytes.extend_from_slice(&local_offset.to_le_bytes());
+        bytes.extend_from_slice(name);
+        bytes
+    }
 
     #[test]
     fn disagreeing_single_disk_count_fields_are_rejected_before_directory_open() {
@@ -470,28 +632,54 @@ mod tests {
 
     #[test]
     fn a_trailing_low_count_eocd_cannot_redirect_preparse_from_an_earlier_archive() {
-        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
-        for name in ["first", "second"] {
-            writer
-                .start_file(name, SimpleFileOptions::default())
-                .expect("entry starts");
-            writer.write_all(b"x").expect("entry bytes");
-        }
-        let mut bytes = writer.finish().expect("archive finishes").into_inner();
+        let mut bytes = two_entry_archive();
         bytes.extend_from_slice(&eocd(1, 1, 46, 0));
-        let source_len = u64::try_from(bytes.len()).expect("archive length fits");
-        let limits = AssetLimits::ceiling()
-            .with_max_entry_count(1)
-            .expect("below the ceiling");
-        let context = OperationContext::new();
-        let mut operation = Operation::admit(&context).expect("admitted");
 
-        let fault = open(Cursor::new(bytes), source_len, limits, &mut operation, None)
-            .err()
-            .expect("the fake trailer is refused without opening the earlier directory");
+        let fault = refuse(bytes, 1);
 
         assert_eq!(fault.kind(), AssetFaultKind::MalformedArchive);
         assert_eq!(fault.stage(), LoadStage::DirectoryPreParse);
+    }
+
+    #[test]
+    fn a_second_trailer_hidden_in_the_comment_is_refused_before_the_directory_is_opened() {
+        // The reader searches backwards from the end of the file, so a record
+        // inside the selected trailer's comment is the trailer it would open
+        // first. This decoy declares 65,534 entries against a four-entry
+        // ceiling, and nothing would ever enforce that count against it.
+        let mut comment = eocd(65_534, 65_534, 46, 0);
+        // One byte of trailing garbage is what keeps the decoy from accounting
+        // for the exact suffix, so selecting a single trailer does not see it.
+        comment.push(0xff);
+        let bytes = commented_archive(&comment);
+
+        let fault = refuse(bytes, 4);
+
+        assert_eq!(fault.kind(), AssetFaultKind::MalformedArchive);
+        assert_eq!(fault.stage(), LoadStage::DirectoryPreParse);
+    }
+
+    #[test]
+    fn an_archive_comment_carrying_no_second_trailer_is_still_accepted() {
+        let bytes = commented_archive(b"packaged by a tool that writes a comment");
+
+        assert_eq!(accept(bytes, 4).len(), 2);
+    }
+
+    #[test]
+    fn a_directory_the_reader_opens_elsewhere_is_refused_even_when_the_count_agrees() {
+        let fault = refuse(divergent_directory_archive(), 4);
+
+        assert_eq!(fault.kind(), AssetFaultKind::MalformedArchive);
+        assert_eq!(fault.stage(), LoadStage::DirectoryOpen);
+    }
+
+    #[test]
+    fn a_prepended_stub_leaves_the_pre_parse_and_the_reader_on_one_directory() {
+        let mut bytes = vec![0u8; 64];
+        bytes.extend_from_slice(&two_entry_archive());
+
+        assert_eq!(accept(bytes, 4).len(), 2);
     }
 
     #[test]

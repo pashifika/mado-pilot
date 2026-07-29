@@ -113,10 +113,6 @@ fn main() {
         ),
     ];
 
-    let failures: usize = workloads
-        .iter()
-        .map(bench_harness::Workload::incorrect)
-        .sum();
     if arguments.iter().any(|argument| argument == "--bench") {
         bench_harness::report(
             &Benchmark {
@@ -144,9 +140,49 @@ fn main() {
         bench_harness::summarize("deterministic-slice", plan, &workloads);
     }
 
-    assert_eq!(
-        failures, 0,
-        "a workload produced an output its oracle rejected"
+    // After the report, so a run that fails a gate still emits the numbers that
+    // explain the failure.
+    bench_harness::enforce_hard_budgets(&workloads);
+    mappings_take_the_paths_their_recorded_bytes_assume();
+}
+
+/// Asserts the share-versus-copy decision the two mapping workloads' recorded
+/// bytes assume.
+///
+/// `mapped_bytes_per_result` is `mapping.bytes().len()` for both of them, and
+/// that number is the same whether the mapping shared the frame's storage or
+/// copied it — so no budget on it can see a mapping that stopped sharing.
+/// What can see it is the decision itself: a full-frame mapping in the source
+/// format shares, and a region mapping owns its packed copy.
+///
+/// Once per run rather than once per sample, because it is a property of the
+/// path rather than of an iteration, and here rather than in a workload's
+/// oracle so that the profiles' recorded `correctness_oracle` strings keep
+/// describing exactly what each retained sample was checked against. It fails
+/// the benchmark on both the `cargo bench` and the `cargo test` path, which is
+/// the enforcement a hard budget gets.
+fn mappings_take_the_paths_their_recorded_bytes_assume() {
+    let fixture = Fixture::new();
+    let frame = fixture.frame();
+
+    let whole = frame
+        .map(SOURCE_FORMAT, &fixture.operation)
+        .expect("mapped");
+    assert!(
+        whole.is_shared(),
+        "map_full_frame maps a whole frame in its own format, which shares the \
+         frame's storage rather than copying it; a copy costs the frame's bytes \
+         per result and reports the same mapped_bytes_per_result as sharing"
+    );
+
+    let mapped = region_of_interest(&frame)
+        .map(SOURCE_FORMAT, &fixture.operation)
+        .expect("mapped");
+    assert!(
+        !mapped.is_shared(),
+        "map_region_of_interest maps a sub-rectangle, which owns a packed copy; \
+         a shared mapping would be the whole frame's storage reported under a \
+         region's byte count"
     );
 }
 
@@ -242,13 +278,7 @@ fn map_full_frame(fixture: &Fixture) -> Sample {
 
 fn map_region(fixture: &Fixture) -> Sample {
     let frame = fixture.frame();
-    let region = frame
-        .view(
-            Rect::new(CoordinateSpace::CapturePixels, ROI.0, ROI.1, ROI.2, ROI.3)
-                .expect("a valid region"),
-            ClipPolicy::Reject,
-        )
-        .expect("inside the frame");
+    let region = region_of_interest(&frame);
     let started = Instant::now();
     let mapping = region
         .map(SOURCE_FORMAT, &fixture.operation)
@@ -264,6 +294,20 @@ fn map_region(fixture: &Fixture) -> Sample {
             && u64::try_from(mapping.bytes().len()).is_ok_and(|mapped| mapped == expected),
         mapping.bytes().len() as u64,
     )
+}
+
+/// Returns the view the region-mapping workload maps.
+///
+/// Built outside every measured window: what the workload times is the mapping,
+/// not the arithmetic that describes the rectangle.
+fn region_of_interest(frame: &Frame) -> mado_pilot::FrameView {
+    frame
+        .view(
+            Rect::new(CoordinateSpace::CapturePixels, ROI.0, ROI.1, ROI.2, ROI.3)
+                .expect("a valid region"),
+            ClipPolicy::Reject,
+        )
+        .expect("inside the frame")
 }
 
 fn load_directory(fixture: &Fixture) -> Sample {

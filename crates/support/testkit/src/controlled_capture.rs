@@ -185,7 +185,7 @@ impl CaptureSession for ControlledSession {
         self.state.drain(operation)
     }
 
-    fn is_closed(&self) -> bool {
-        self.state.lifecycle() == Lifecycle::Closed
+    fn lifecycle(&self) -> Lifecycle {
+        self.state.lifecycle()
     }
 }

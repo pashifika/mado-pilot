@@ -35,7 +35,7 @@ workload, and the cost of crossing the C ABI.
 
 ## Decision
 
-### Thirteen workloads have budgets, in four committed profiles
+### Thirteen workloads are measured, in four committed profiles
 
 Two benchmarks, each measured on both release targets:
 
@@ -46,6 +46,15 @@ Two benchmarks, each measured on both release targets:
 
 Each file holds one profile, its measurements, three budgets that apply to the
 whole file, and the workload-specific budgets.
+
+"Has a budget" can mean either "is covered by a file-level gate" or "carries a
+ceiling of its own", and those two readings do not produce the same count. This
+record uses one phrasing for both, and every document that cites the number uses
+it too: **thirteen workloads are measured, all thirteen are covered by the two
+file-level hard gates, eleven carry a per-measurement ceiling, and two are
+deliberate unbudgeted controls.** The two controls are `engine_create_rust` and
+`match_warm_rust`; the reason they carry none is below, and is recorded in the
+profiles beside the measurements themselves.
 
 ### The budgets are regression ceilings, and say so
 
@@ -69,7 +78,35 @@ loosening one does.
   [performance.md](../performance.md) requires, and one page is the bound
   because a leak of even twenty-four bytes per iteration exceeds it over two
   hundred samples while a single rounded-up allocation does not. Both targets
-  measured **zero** on all eight workloads.
+  measured **zero** on all thirteen workloads.
+
+Both are enforced by `mado_pilot_testkit::bench_harness::enforce_hard_budgets`,
+which every benchmark target calls unconditionally, so they hold on the run that
+produces timings and on the reduced run
+`cargo test --locked --workspace --all-targets` performs. A violation therefore
+fails a test on both release targets and in CI, rather than becoming a number in
+a report nobody compared, and the failure names the workload, the predicate, and
+the measurement that crossed it. `crates/support/testkit/tests/hard_budget_drift.rs`
+pins the predicate strings the harness enforces against the ones the four
+committed profiles state, in both directions, so neither side can drift from the
+other without failing a test.
+
+The absolute ceilings in this record are evaluated the other way: each is valid
+only for the release target in its profile, so whoever performs a timing run on
+that hardware is the one who compares it against the committed file. The rule
+behind the split is that a hard budget is a structural property that holds on any
+host, while an absolute or relative budget is a per-target regression ceiling
+measured on named hardware. [performance.md](../performance.md) states the same
+rule for every phase.
+
+How small a leak the growth gate catches depends on which run enforces it. The
+twenty-four-bytes-per-iteration figure above is the `--bench` run's, over two
+hundred retained samples, and that run is what this decision is set against. The
+reduced run retains three, so on that path the same one-page bound is crossed by
+a leak of roughly 1,365 bytes an iteration rather than twenty-four: a leak of a
+few dozen bytes an iteration survives CI and is caught by the full run before a
+profile is recorded. The gate is real on both paths — a leak is a leak — and the
+difference is sensitivity rather than reach.
 
 ### A faster measurement is not by itself an improvement
 
@@ -79,13 +116,25 @@ memory, or produces incorrect results. The numeric ceilings below are the least
 interesting part of these profiles, because a change can pass every one of them
 and still be a regression.
 
-What enforces the rule for these eight workloads is the two hard gates and
-`mapped_bytes_per_result`. A change that made a mapping faster by copying
-rather than sharing would leave every latency ceiling satisfied and would show
-up as mapped bytes it did not previously spend; a change that made matching
-faster by retaining state between searches would show up as allocation growth.
-Neither is caught by a latency number, which is why removing either budget as
-redundant would be removing the part that does the work.
+What enforces the rule for these workloads is the two hard gates, plus an
+assertion in the deterministic-slice benchmark that the mapping workloads take
+the paths their recorded byte counts assume: a full-frame mapping in the source
+format shares the frame's storage, and a region mapping owns a packed copy. A
+change that made a mapping faster by copying rather than sharing fails that
+assertion; a change that made matching faster by retaining state between
+searches shows up as allocation growth. Neither is caught by a latency number,
+which is why removing either gate as redundant would be removing the part that
+does the work.
+
+The assertion carries that case because `mapped_bytes_per_result` cannot.
+`mapping.bytes().len()` is the same number whether the mapping shared the
+frame's storage or copied it, so the measure records what was mapped rather than
+how. For the two matching workloads it is derived from the reported searched
+region and the backend's bytes per pixel, and is invariant to how many times the
+backend mapped. It still bounds a workload that started mapping more than once
+per result, which is why the ceilings stay; making it an observed count needs the
+vision backend to report mapped bytes where the mapping happens, and that is
+deferred to the phase that adds one.
 
 Phase 1 has no queue, so `stale_work_ratio` has nothing to measure and no
 profile carries it. The first phase with a watcher or a bounded work queue adds
@@ -111,11 +160,17 @@ it. A ceiling on that reading would be a budget on the clock's granularity.
 It is bounded two other ways instead, both of which say something true:
 
 - `mapped_bytes_per_result` at most 24,576 — 96×64 at four bytes per pixel,
-  exactly once. This is the measure that would catch a change from sharing to
-  copying, which no latency ceiling on a quantised zero ever could.
-- `iteration_span_ms` at most 0.00025 (macOS) and 0.0004 (Windows) — one clock
+  exactly once. It bounds a change that started mapping the frame more than once
+  per result, which no latency ceiling on a quantised zero could. What it does
+  not do is separate a shared mapping from a copied one; the benchmark assertion
+  described above is what covers that.
+- `iteration_span_ms` at most 0.0006 (macOS) and 0.0004 (Windows) — one clock
   reading across two hundred iterations rather than two hundred readings, which
   is how a batched timing recovers a number granularity would otherwise swallow.
+  Both follow the same rule as every other ceiling here, three times the value
+  that target measured, rounded up: 0.000192 on `aarch64-apple-darwin` and
+  0.000103 on `x86_64-pc-windows-msvc`. The committed profiles are where those
+  measurements and their derivations are recorded.
 
 The same two budgets are written into both files even though only one target has
 the problem, so that the two profiles agree about what the workload is allowed
@@ -251,10 +306,15 @@ about what the workload is.
 
 ## Consequences
 
-- **These numbers are now the reference.** A change that crosses one fails the
-  phase's performance gate and is investigated rather than accommodated;
-  changing a ceiling in either direction requires a re-measurement in the same
-  change and an ADR.
+- **These numbers are now the reference, and what a crossing costs depends on
+  the budget's kind.** Crossing a hard gate fails the benchmark binary, so it
+  fails `cargo test --locked --workspace --all-targets` on both release targets
+  and in CI. Crossing an absolute ceiling fails the comparison the operator
+  performs against the committed profile after a timing run on that target's
+  hardware; nothing in CI reports it, because nothing in CI runs a timing. Either
+  way the crossing is investigated rather than accommodated, and changing a
+  ceiling in either direction requires a re-measurement in the same change and
+  an ADR.
 - **The four files must be regenerated together.** Each benchmark's pair shares
   a `fixture_sha256`, and a change to any tracked fixture invalidates them. The fixture is pinned by
   `SHA256SUMS` in two directories, each enforced by a test that checks both

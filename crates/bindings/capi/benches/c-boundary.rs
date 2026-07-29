@@ -106,10 +106,6 @@ fn main() {
         ),
     ];
 
-    let failures: usize = workloads
-        .iter()
-        .map(bench_harness::Workload::incorrect)
-        .sum();
     if arguments.iter().any(|argument| argument == "--bench") {
         bench_harness::report(
             &Benchmark {
@@ -136,10 +132,9 @@ fn main() {
         bench_harness::summarize("c-boundary", plan, &workloads);
     }
 
-    assert_eq!(
-        failures, 0,
-        "a workload produced an output its oracle rejected"
-    );
+    // After the report, so a run that fails a gate still emits the numbers that
+    // explain the failure.
+    bench_harness::enforce_hard_budgets(&workloads);
 }
 
 // --- Negotiation -------------------------------------------------------------

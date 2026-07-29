@@ -148,6 +148,14 @@ impl Scene {
     pub const fn frame_input(&self) -> madopilot_replay_frame_t {
         self.frame
     }
+
+    /// The source structure, for a test that wants to vary one field.
+    ///
+    /// The copy keeps pointing at this scene's frame, so it is usable only
+    /// while the scene is alive — the same rule the pointer version follows.
+    pub const fn source_input(&self) -> madopilot_source_t {
+        self.source
+    }
 }
 
 /// The whole Phase 1 chain, opened once and released in reverse on drop.
@@ -299,6 +307,34 @@ impl Flow {
         result
     }
 
+    /// Maps the whole held frame and returns the owned mapping.
+    pub fn map(&self) -> *mut madopilot_mapping_t {
+        let operation = operation();
+        let request = madopilot_map_request_t {
+            struct_size: struct_size::<madopilot_map_request_t>(),
+            flags: 0,
+            format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+            clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+            region: madopilot_pixel_rect_t::empty(),
+        };
+        let mut mapping = ptr::null_mut();
+        // SAFETY: the frame is retained by this value, and every pointer is a
+        // live local.
+        let status = unsafe {
+            (self.api.frame_map)(
+                self.frame,
+                &raw const request,
+                &raw const operation,
+                &raw mut mapping,
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, MADOPILOT_STATUS_OK, "frame_map");
+        assert!(!mapping.is_null());
+
+        mapping
+    }
+
     /// Keeps the scene and the package path alive for as long as the flow.
     pub fn scene(&self) -> &Scene {
         &self.scene
@@ -351,6 +387,38 @@ fn prepare(
     );
 
     prepared
+}
+
+/// Produces an owned error handle from a genuine refusal.
+///
+/// A test that needs an error to exercise the error entries themselves gets one
+/// the library actually built, rather than a handle conjured some other way.
+pub fn refused_error(api: &'static madopilot_api_t) -> *mut madopilot_error_t {
+    let scene = Scene::new();
+    let mut undersized = operation();
+    undersized.struct_size = 0;
+
+    let mut engine = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: every pointer is a live local, and the undersized operation is
+    // refused after the outputs are initialized, which is what publishes the
+    // owned error handle.
+    let status = unsafe {
+        (api.engine_create)(
+            scene.source(),
+            &raw const undersized,
+            &raw mut engine,
+            &raw mut error,
+        )
+    };
+    assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+    assert!(engine.is_null());
+    assert!(
+        !error.is_null(),
+        "a refusal with an accepted out_error reports one"
+    );
+
+    error
 }
 
 /// Reads an error's structured detail, then releases it.

@@ -28,6 +28,7 @@
 
 #include "madopilot/madopilot.h"
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -272,6 +273,10 @@ inline Error take_error_(const ::madopilot_api_t* api, Status status,
  * The default interface. No wrapper operation throws to report a MadoPilot
  * failure; only allocating the owned error text can throw, and that is
  * `std::bad_alloc` rather than a translated status.
+ *
+ * That is why `value()` and `take()` carry the precondition `ok()`: an
+ * exception-free extractor cannot report a failed result, so checking is the
+ * caller's step. `assert` catches the mistake in a build without `NDEBUG`.
  * ------------------------------------------------------------------------ */
 
 /// A value or a failure. Move-only when `T` is.
@@ -299,11 +304,32 @@ public:
     /// The failure. On success this is a default error whose status is OK.
     const Error& error() const noexcept { return error_; }
 
-    T& value() noexcept { return *value_; }
-    const T& value() const noexcept { return *value_; }
+    /// The value. **Precondition: `ok()`.**
+    ///
+    /// Reading it on a failed result is undefined behaviour: the value lives in
+    /// a `std::optional` that a failure leaves disengaged, and this dereferences
+    /// it rather than checking. A build without `NDEBUG` fails the `assert`
+    /// instead.
+    ///
+    /// It stays `noexcept` on purpose. Throwing here would be a second failure
+    /// channel in a surface whose whole premise is that a MadoPilot failure
+    /// arrives as a status, so the check belongs at the call site — `if (!r)`
+    /// before `r.value()`.
+    T& value() noexcept {
+        assert(value_.has_value() && "madopilot::Result::value() on a failed result");
+        return *value_;
+    }
+    const T& value() const noexcept {
+        assert(value_.has_value() && "madopilot::Result::value() on a failed result");
+        return *value_;
+    }
 
-    /// Moves the value out. Valid only when `ok()`.
-    T take() { return std::move(*value_); }
+    /// Moves the value out. **Precondition: `ok()`**, on the same terms as
+    /// `value()`.
+    T take() {
+        assert(value_.has_value() && "madopilot::Result::take() on a failed result");
+        return std::move(*value_);
+    }
 
 private:
     Result() = default;
