@@ -1334,6 +1334,41 @@ fn an_expired_operation_refuses_a_lent_archive_at_admission() {
 
     let detail = support::describe_and_release(api, error);
     assert_eq!(detail.status, MADOPILOT_STATUS_DEADLINE_EXCEEDED);
+
+    // The same request with a view that cannot exist. A null pointer carrying a
+    // length is the refusal ADR 0007 freezes as an invalid argument, so answering
+    // the deadline here is what says admission ran *before* the source structure
+    // was read rather than after it — which is what this test's name claims and
+    // what the assertions above cannot tell apart on their own.
+    let malformed = madopilot_package_source_t {
+        archive: madopilot_bytes_t {
+            data: ptr::null(),
+            len: archive.len(),
+        },
+        ..source
+    };
+    let mut package = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: as above; the archive view is never read, on either path through
+    // this call, so its null pointer is never turned into a slice.
+    let status = unsafe {
+        (api.package_load)(
+            flow.engine,
+            &raw const malformed,
+            &raw const expired,
+            &raw mut package,
+            &raw mut error,
+        )
+    };
+    assert_eq!(
+        status, MADOPILOT_STATUS_DEADLINE_EXCEEDED,
+        "the operation is admitted before the request is read, so a malformed view \
+         under a terminal operation reports the operation"
+    );
+    assert!(package.is_null());
+
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.status, MADOPILOT_STATUS_DEADLINE_EXCEEDED);
 }
 
 #[test]

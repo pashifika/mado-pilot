@@ -95,8 +95,9 @@ handle, `madopilot_match_t.template_id` borrows from the result, a target's
 the mapping. Copy anything you still need before the final release.
 
 **A view the caller supplies is borrowed the other way, for exactly the call.**
-Every input structure and every view it carries must be readable for the duration
-of the call and must not be modified during it — whether the library reads it once
+Every input structure, every view it carries, and every view passed directly as an
+argument — a template identity, a target name — must be readable for the duration
+of the call and must not be modified during it, whether the library reads it once
 or reads it from start to finish, which it does for
 `madopilot_package_source_t.archive`. The library retains no caller memory past
 the call that received it: whatever it must keep, it copies or converts into

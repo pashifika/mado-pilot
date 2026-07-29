@@ -68,8 +68,10 @@ reads a caller's archive in place for the duration of one call; the committed
 package holds each template's content in its own allocation, so nothing retains
 the archive. `PackageSource::ArchiveBytes` remains for a Rust caller that owns
 its bytes and wants a reusable source. No allocation on the C load path is sized
-by a caller's declaration. That is the whole of the claim: allocation failure
-during entry expansion is still an abort, and the Consequences below name where.
+by a caller's declaration: what remains is grown as bytes are actually produced.
+That is the whole of the claim — allocation failure while reading package content,
+whether the manifest or an entry, is still an abort, and the Consequences below
+name where.
 
 ## Alternatives
 
@@ -121,16 +123,20 @@ exclusion, and the Unix comparison's refusal of any recorded write.
   with what the library owes in return — that it retains no caller memory past the
   call, so a caller may release the archive the moment the call returns. No
   function-table entry, structure, or field moved, so the ABI layout is untouched.
-- What this does **not** fix: entry expansion allocates infallibly, in
-  `read_capped`'s unreserved buffer and in the reference-counted copy the package
-  keeps of it, bounded by `max_entry_uncompressed_bytes` per entry and
-  `max_total_uncompressed_bytes` in total. A fallible reservation for the first
-  would not change the outcome while the second cannot be allocated fallibly on
-  stable Rust for the same reason the archive copy could not, and making the
-  second fallible means changing what a template's content is retained as — an
-  ADR 0006 breaking change, and a separate decision from this one. Any future
-  statement about allocation failure at the C boundary has to name those two
-  sites.
+- What this does **not** fix: reading package content allocates infallibly, in
+  `read_capped`'s buffer and in the reference-counted copy the package keeps of it.
+  That is every entry, bounded by `max_entry_uncompressed_bytes` each and
+  `max_total_uncompressed_bytes` in total, and the manifest, bounded by
+  `max_manifest_bytes` and then parsed by `serde_json`, which allocates infallibly
+  too. Neither buffer is reserved from a declared size — `read_capped` grows its
+  buffer as bytes arrive, which is why nothing here is sized by what a caller
+  *said*, only by what a source actually produced under a ceiling. Reserving that
+  buffer fallibly would not change the outcome while the copy beside it cannot be:
+  the copy is `Arc<[u8]>`, unallocatable fallibly on stable Rust for the same
+  reason the archive copy was, and changing what it is means changing
+  `TemplateSourceRequest.content`, a public field — an ADR 0006 breaking change and
+  a separate decision from this one. Any future statement about allocation failure
+  at the C boundary has to name these sites.
 - Peak memory for a C archive load drops by the archive's length. A caller that
   tightened `max_total_compressed_bytes` still tightens the largest view the
   boundary accepts, because the declared length is answered against that ceiling

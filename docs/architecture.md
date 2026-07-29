@@ -846,13 +846,13 @@ retained source needs cannot be allocated fallibly on stable Rust, so a host tha
 could not satisfy it would be terminated rather than told.
 
 That removes the largest such allocation from the C load path and does not empty
-it. Entry expansion still allocates infallibly — the buffer an entry is read into
-and the reference-counted copy the package keeps of it — bounded by
-`max_entry_uncompressed_bytes` per entry and `max_total_uncompressed_bytes` in
-total. Reserving that buffer fallibly would not change the outcome while the copy
-beside it cannot be, so the honest statement is the bounded one: no allocation on
-this path is sized by a caller's declaration, and allocation failure during
-expansion is still an abort. See
+it. Reading package content still allocates infallibly — the buffer content is read
+into, and the reference-counted copy the package keeps of it — for every entry
+under `max_entry_uncompressed_bytes` and `max_total_uncompressed_bytes`, and for the
+manifest under `max_manifest_bytes`. Neither is reserved from a declared size; the
+buffer grows as bytes arrive. So the honest statement is the bounded one: no
+allocation on this path is sized by a caller's declaration, and allocation failure
+while reading content is still an abort. See
 [ADR 0010](adr/0010-asset-source-snapshot-and-archive-ownership.md).
 
 Recorded metadata may reject but never authorise: an entry is

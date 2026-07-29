@@ -705,8 +705,9 @@ typedef struct madopilot_package_source_t {
  * below, madopilot_operation_t.cancellation, madopilot_find_request_t.frame,
  * and madopilot_find_request_t.options.
  *
- * Every structure a caller passes in, and every view one of those structures
- * carries, must be readable for the duration of the call and must not be
+ * Every structure a caller passes in, every view one of those structures
+ * carries, and every view passed directly as an argument — a template identity,
+ * a target name — must be readable for the duration of the call and must not be
  * modified during it, whether the library reads it once or reads it throughout.
  * The library never retains a caller's memory past the call that received it:
  * anything it must keep, it copies or converts into storage of its own. This is
