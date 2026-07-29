@@ -106,6 +106,19 @@ normalized to relative package paths; absolute paths, drive and UNC roots,
 parent traversal, backslashes, embedded NULs, non-UTF-8 names, directory
 entries, non-regular entry types, and duplicate normalized names are rejected.
 
+**A package path is its bytes.** Normalization collapses `.` and empty segments
+and nothing else: there is no case folding and no unicode normalization, so
+`Button.png` and `button.png` are two entries, and a name in NFC and the same
+name in NFD are two entries. This is a decision and not an omission. An archive
+entry is read by index and never opened by name, so an archive answers
+identically on both release targets whatever its entries are called; a directory
+source is the only place a filesystem's own folding can intervene, and it
+intervenes by making the manifest's path find nothing — `MissingReferencedEntry`
+at load, on every host — rather than by resolving to a different entry than the
+manifest named. Folding here would buy the opposite: two names a filesystem keeps
+apart would collapse into one entry, and a package would load differently
+according to a rule that is not in the package.
+
 ## Alternatives
 
 **TAR, with or without an outer compressor.** Rejected on metadata access. TAR

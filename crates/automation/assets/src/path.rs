@@ -37,6 +37,27 @@ impl PackagePath {
     /// A backslash is rejected rather than treated as a separator so that one
     /// archive produces one outcome on both release targets. Windows would
     /// otherwise read `a\b` as two components and macOS as one filename.
+    ///
+    /// # What is not folded
+    ///
+    /// A segment is kept as the bytes it was recorded as. There is no case
+    /// folding and no unicode normalization, so `Button.png` and `button.png`
+    /// are two entries and an NFC name and its NFD spelling are two entries.
+    ///
+    /// That is the rule rather than an omission, and it follows from where these
+    /// paths are used. A package path is an identifier inside a package: an
+    /// archive entry is read by index and never opened by name, so an archive
+    /// answers identically on both release targets whatever its entries are
+    /// called. A directory source is the only place a filesystem's own folding
+    /// can intervene, and it intervenes by making the manifest's path find
+    /// nothing — a typed `MissingReferencedEntry` at load, on every host,
+    /// rather than a different template than the one the manifest named.
+    ///
+    /// Folding here would buy the reverse: two names that a filesystem keeps
+    /// apart would become one entry, and a package would load differently
+    /// depending on a rule the package cannot see. See
+    /// `docs/adr/0001-asset-archive-container-and-safety-ceilings.md`,
+    /// "A package path is its bytes".
     #[must_use]
     pub fn normalize(raw: &[u8]) -> Option<Self> {
         let name = std::str::from_utf8(raw).ok()?;
@@ -166,5 +187,33 @@ mod tests {
             normalized("templates/sub/button.png"),
             Some("templates/sub/button.png".to_owned())
         );
+    }
+
+    #[test]
+    fn case_is_carried_rather_than_folded() {
+        // Two entries, not one spelled twice. Both release targets default to a
+        // case-insensitive filesystem, so this is the rule most likely to be
+        // assumed the other way round; it is asserted rather than left to be
+        // inferred from the absence of a `to_lowercase`.
+        assert_eq!(
+            normalized("templates/Button.png"),
+            Some("templates/Button.png".to_owned())
+        );
+        assert_ne!(
+            normalized("templates/Button.png"),
+            normalized("templates/button.png")
+        );
+    }
+
+    #[test]
+    fn unicode_is_carried_rather_than_normalized() {
+        // U+00E9, and the same character as `e` plus U+0301. A filesystem that
+        // normalizes on write makes these one name; a package path does not.
+        let composed = "templates/caf\u{e9}.png";
+        let decomposed = "templates/cafe\u{301}.png";
+
+        assert_eq!(normalized(composed), Some(composed.to_owned()));
+        assert_eq!(normalized(decomposed), Some(decomposed.to_owned()));
+        assert_ne!(normalized(composed), normalized(decomposed));
     }
 }

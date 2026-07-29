@@ -315,8 +315,19 @@ every valid output in its failure state, releases whatever the unwinding call ha
 allocated, and poisons nothing: handles unrelated to the failed call remain
 usable, and repeating the call is expected to work.
 
-Containment requires an unwinding panic profile. An advertised C ABI build must
-not be compiled with `panic = "abort"`.
+Containment requires an unwinding panic profile, and the crate refuses to build
+without one. `catch_unwind` catches nothing under an aborting profile: a panic
+ends the host process instead of the entry returning
+`MADOPILOT_STATUS_INTERNAL_PANIC`, so the library's documented behaviour would be
+false while the build succeeded. `mado-pilot-capi` therefore carries a
+`#[cfg(panic = "abort")] compile_error!`, and `-C panic=abort` or a profile
+`panic = "abort"` fails the build rather than producing that library.
+
+One case is outside what a crate can check: `panic_immediate_abort` is a `std`
+feature selected through `-Z build-std`, and a dependent crate's `cfg` cannot see
+it. A build that enables it produces a library whose panic containment does not
+work, and nothing here will say so. Do not enable it for a build that advertises
+this ABI.
 
 ## What Phase 1 does not contain
 

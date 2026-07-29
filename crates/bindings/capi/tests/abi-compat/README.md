@@ -58,3 +58,19 @@ turns a record of what one release promised into a moving target. If a frozen
 fixture fails, either the library broke a promise or the promise is being
 retired with a new ABI major — and both of those are decisions for an ADR
 rather than an edit here.
+
+## A fixture is not exemplary code
+
+That rule is worth stating in the direction it is usually met from. A fixture is
+held to compiling, linking, negotiating, and answering correctly; it is not held
+to the standards a reviewer would apply to an example, and reading it as one
+produces findings that are true and not worth its frozenness.
+
+`v1/old-prefix.c` is the standing case. It passes `&error` to eight entries and
+releases the handle on one failure path, so a run in which an entry fails leaks
+whatever error handles the later ones produced. That path exists only when the
+fixture is already reporting a failure and `c-abi-check` is about to fail the
+run; on a passing run every `out_error` stays null and `error_release(NULL)` is
+the documented no-op, so nothing leaks. Raising it again is a false positive.
+Editing the fixture to fix it would spend the snapshot on a leak that only
+occurs in a process about to exit as failed.
