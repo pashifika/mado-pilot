@@ -16,8 +16,8 @@
 //! valid; the mistake is the caller's.
 
 use mado_pilot::{
-    AssetFault, AssetFaultKind, AssetLimits, AssetPackage, Engine, LoadStage, OperationContext,
-    PreparedTemplate, Status,
+    AssetFault, AssetFaultKind, AssetLimits, AssetPackage, Engine, LoadStage, PreparedTemplate,
+    Status,
 };
 
 use crate::boundary::{self, Out, Versioned, inputs, prefixes};
@@ -176,15 +176,20 @@ fn run_package_load(
 
     // SAFETY: as above, for the source structure and the views it carries.
     let request = unsafe { boundary::read_input::<madopilot_package_source_t>(source) }?;
-    // The engine's limits and the operation both go in, because one of the three
-    // source kinds is an owned copy of caller memory: the limits bound that copy,
-    // and the operation is what can interrupt it.
+    // The engine's limits go in because one of the three source kinds is a length
+    // the caller declares: the ceiling answers that length before this boundary
+    // reads the memory behind it.
     // SAFETY: as above.
-    let configured = unsafe { package_source(&request, engine.limits(), context.inner()) }?;
+    let prepared = unsafe { package_source(&request, engine.limits()) }?;
 
-    let package = engine
-        .load_package(&configured, context.inner())
-        .map_err(Fault::from_asset)?;
+    let package = match prepared {
+        Prepared::Owned(source) => engine.load_package(&source, context.inner()),
+        // Lent, not owned: the load reads the caller's view in place and returns
+        // a package that owns its own content, so the view has to outlive this
+        // call and nothing else.
+        Prepared::Borrowed(bytes) => engine.load_archive_bytes(bytes, context.inner()),
+    }
+    .map_err(Fault::from_asset)?;
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
 
@@ -194,56 +199,62 @@ fn run_package_load(
     Ok(())
 }
 
-/// Builds the package source a caller's tagged structure describes, under
-/// `limits`.
+/// What one load reads, for the tagged structure a caller supplied.
+#[derive(Debug)]
+enum Prepared<'a> {
+    /// A source the loader opens for itself, and could be asked to open again.
+    Owned(mado_pilot::PackageSource),
+    /// An archive the caller lends for the duration of one call.
+    Borrowed(&'a [u8]),
+}
+
+/// Prepares what a caller's tagged structure describes, under `limits`.
 ///
-/// The archive-bytes kind is the one source this boundary owns storage for: the
-/// loader reads a directory and an archive file from the filesystem, and both of
-/// those are measured before anything is read, but a byte view has to become an
-/// owned archive for a package that outlives the call. That copy is an
-/// allocation the caller's own declared length sizes, so the length answers to
-/// the same configured source ceiling the loader would apply — before the copy
-/// rather than after it. A caller that tightened
-/// [`AssetLimits::with_max_total_compressed_bytes`] tightened this too, and gets
-/// the typed bounded-resource refusal instead of the allocation it asked to
-/// avoid.
+/// Two of the three kinds name something the loader opens itself, and both are
+/// measured before anything is read. The archive-bytes kind is caller memory, and
+/// it stays caller memory: the loader reads the view in place for the length of
+/// one call, and the package it commits owns each template's content in its own
+/// allocation, so nothing here needs an owned copy of the archive. That is the
+/// point rather than an optimisation. Such a copy would be sized by the caller's
+/// own declared length, up to whatever the configured source ceiling admits, and
+/// the reference-counted representation a retained source needs cannot be
+/// allocated fallibly on stable Rust — so the one failure mode a C boundary must
+/// never have, a host terminated instead of given a status, would be the only
+/// answer available when that allocation could not be satisfied. A view that is
+/// only read does not raise the question.
 ///
 /// Which leaves three questions about one view, in this order: is the view a
-/// shape a view may have, is the length one this engine will own, and what do the
-/// bytes say. The first is a malformed request and the released ABI fixes its
+/// shape a view may have, is the length one this engine will read, and what do
+/// the bytes say. The first is a malformed request and the released ABI fixes its
 /// status and category, so it cannot be answered second — a null pointer carrying
 /// a length is that refusal whether the length is one byte or a gigabyte. The
-/// second has to precede the copy, which is the whole point. The third is the
-/// only one that reads the caller's memory.
-///
-/// The copy itself belongs to the asset layer rather than to this boundary. It is
-/// the one piece of work here whose length a caller sets, so it is performed under
-/// the operation the caller supplied — chunked, with the context checked between
-/// chunks — which is what lets a cancellation or an expiry that lands mid-copy
-/// stop it. See [`PackageSource::copy_archive_bytes`].
-///
-/// [`PackageSource::copy_archive_bytes`]: mado_pilot::PackageSource::copy_archive_bytes
+/// second is the configured source ceiling, answered on the declared length while
+/// the caller's memory is still untouched; the loader applies the same ceiling to
+/// what it reads, so this one is early rather than sufficient, and a caller that
+/// tightened [`AssetLimits::with_max_total_compressed_bytes`] tightened both. The
+/// third is the only one that reads the caller's memory.
 ///
 /// [`AssetLimits::with_max_total_compressed_bytes`]: mado_pilot::AssetLimits::with_max_total_compressed_bytes
 ///
 /// # Safety
 ///
 /// Every view the structure carries must be readable for the call.
-unsafe fn package_source(
-    source: &madopilot_package_source_t,
+unsafe fn package_source<'a>(
+    source: &'a madopilot_package_source_t,
     limits: AssetLimits,
-    context: &OperationContext,
-) -> Result<mado_pilot::PackageSource, Fault> {
+) -> Result<Prepared<'a>, Fault> {
     match source.kind {
         MADOPILOT_PACKAGE_SOURCE_DIRECTORY => {
             // SAFETY: forwarded unchanged from this function's own contract.
             let path = unsafe { view::non_empty_string(source.path, "path") }?;
-            Ok(mado_pilot::PackageSource::directory(path))
+            Ok(Prepared::Owned(mado_pilot::PackageSource::directory(path)))
         }
         MADOPILOT_PACKAGE_SOURCE_ARCHIVE_FILE => {
             // SAFETY: as above.
             let path = unsafe { view::non_empty_string(source.path, "path") }?;
-            Ok(mado_pilot::PackageSource::archive_file(path))
+            Ok(Prepared::Owned(mado_pilot::PackageSource::archive_file(
+                path,
+            )))
         }
         MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES => {
             // The view's shape first, because a null pointer carrying a length is
@@ -267,7 +278,7 @@ unsafe fn package_source(
             if bytes.is_empty() {
                 return Err(Fault::abi("`archive` is empty"));
             }
-            mado_pilot::PackageSource::copy_archive_bytes(bytes, context).map_err(Fault::from_asset)
+            Ok(Prepared::Borrowed(bytes))
         }
         other => Err(Fault::abi(format!(
             "unrecognized package source kind {other}"
@@ -493,16 +504,13 @@ pub(crate) fn template_describe(
 
 #[cfg(test)]
 mod tests {
-    use mado_pilot::{AssetLimits, CancellationToken, OperationContext};
+    use mado_pilot::AssetLimits;
 
     use super::{
-        MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES, madopilot_bytes_t, madopilot_package_source_t,
-        madopilot_str_t, package_source,
+        MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES, Prepared, madopilot_bytes_t,
+        madopilot_package_source_t, madopilot_str_t, package_source,
     };
-    use crate::status::{
-        MADOPILOT_STATUS_CANCELLED, MADOPILOT_STATUS_INVALID_ARGUMENT,
-        MADOPILOT_STATUS_LIMIT_EXCEEDED,
-    };
+    use crate::status::{MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_LIMIT_EXCEEDED};
 
     /// An archive-bytes source over `archive`, as a caller would declare it.
     fn source(archive: madopilot_bytes_t) -> madopilot_package_source_t {
@@ -523,28 +531,41 @@ mod tests {
     /// The ceiling, against a buffer that is entirely readable.
     ///
     /// Configured small rather than exercised at 256 MiB, because what is being
-    /// checked is the *order* — the refusal arrives while the archive is still the
-    /// caller's — and a test that had to allocate the ceiling to see it would be
-    /// paying the cost this refusal exists to avoid.
+    /// checked is the *order* — the refusal arrives on the declared length, before
+    /// the view behind it is read at all.
     #[test]
-    fn a_declared_length_above_the_configured_ceiling_is_refused_before_the_copy() {
+    fn a_declared_length_above_the_configured_ceiling_is_refused_before_the_view_is_read() {
         let buffer = [0xffu8; 8];
         let view = madopilot_bytes_t {
             data: buffer.as_ptr(),
             len: buffer.len(),
         };
-        let context = OperationContext::new();
+
+        // Bound to a local rather than passed as a temporary: what the boundary
+        // returns borrows the structure it read, which is the compiler's half of
+        // the rule that a lent archive may not outlive the call.
+        let declared = source(view);
 
         // SAFETY: the view describes `buffer`, a live local, for the call.
-        let refused = unsafe { package_source(&source(view), limits(4), &context) }
+        let refused = unsafe { package_source(&declared, limits(4)) }
             .expect_err("eight bytes are above a four byte ceiling");
         assert_eq!(refused.status(), MADOPILOT_STATUS_LIMIT_EXCEEDED);
 
         // SAFETY: as above. Exactly at the ceiling is a caller that fits, which
         // is what says the comparison is not off by one in the safe direction.
-        let accepted = unsafe { package_source(&source(view), limits(8), &context) }
+        let accepted = unsafe { package_source(&declared, limits(8)) }
             .expect("eight bytes are within an eight byte ceiling");
-        assert!(accepted.is_archive());
+        match accepted {
+            // The caller's own memory, not a copy of it. Asserting the address
+            // rather than the contents is the point: an equal copy would pass a
+            // comparison of bytes and would be the allocation this boundary does
+            // not make.
+            Prepared::Borrowed(bytes) => {
+                assert!(std::ptr::eq(bytes.as_ptr(), buffer.as_ptr()));
+                assert_eq!(bytes.len(), buffer.len());
+            }
+            Prepared::Owned(_) => panic!("an archive view is read in place, never owned"),
+        }
     }
 
     /// A malformed view is malformed whatever it declares.
@@ -560,36 +581,32 @@ mod tests {
             len: usize::try_from(AssetLimits::MAX_TOTAL_COMPRESSED_BYTES + 1)
                 .expect("the ceiling fits an object size on both release targets"),
         };
-        let context = OperationContext::new();
+
+        let declared = source(view);
 
         // SAFETY: nothing reads the view: the pointer is refused on its shape.
-        let refused = unsafe { package_source(&source(view), limits(4), &context) }
+        let refused = unsafe { package_source(&declared, limits(4)) }
             .expect_err("a null pointer with a length is not a view");
         assert_eq!(refused.status(), MADOPILOT_STATUS_INVALID_ARGUMENT);
     }
 
-    /// The copy answers to the caller's operation, and it is the asset layer's.
+    /// An empty view is a caller with nothing to load.
     ///
-    /// A cancelled operation gets no owned archive at all, which is what says the
-    /// conversion is inside the operation rather than beside it. Where the copy
-    /// observes cancellation *during* its work is
-    /// `mado-pilot-assets`' own coverage, over a buffer long enough to have a
-    /// second chunk; this is the boundary's half — that the operation the C caller
-    /// supplied is the one the copy carries.
+    /// Refused here rather than by the archive stages, because a zero-length
+    /// archive is a request this boundary can answer without reading anything.
     #[test]
-    fn a_cancelled_operation_owns_no_copy_of_the_callers_archive() {
-        let buffer = [0xffu8; 8];
+    fn an_empty_archive_view_is_refused_as_malformed() {
         let view = madopilot_bytes_t {
-            data: buffer.as_ptr(),
-            len: buffer.len(),
+            data: std::ptr::null(),
+            len: 0,
         };
-        let token = CancellationToken::new();
-        token.cancel();
-        let context = OperationContext::new().with_cancellation(token);
 
-        // SAFETY: as above.
-        let refused = unsafe { package_source(&source(view), limits(8), &context) }
-            .expect_err("a cancelled operation copies nothing");
-        assert_eq!(refused.status(), MADOPILOT_STATUS_CANCELLED);
+        let declared = source(view);
+
+        // SAFETY: the one view a null pointer may describe is the empty one, and
+        // no slice is formed over it.
+        let refused = unsafe { package_source(&declared, limits(8)) }
+            .expect_err("an empty view carries no archive");
+        assert_eq!(refused.status(), MADOPILOT_STATUS_INVALID_ARGUMENT);
     }
 }

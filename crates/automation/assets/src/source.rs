@@ -8,11 +8,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use mado_pilot_core::{Operation, OperationContext};
-
-use crate::fault::{AssetFault, LoadStage};
-use crate::reader::CHUNK_BYTES;
-
 /// One entry a caller supplies from memory.
 #[derive(Debug, Clone)]
 pub struct MemoryEntry {
@@ -110,60 +105,17 @@ impl PackageSource {
     }
 
     /// Names an archive source already in memory.
+    ///
+    /// The bytes are reference-counted rather than borrowed, so this is the entry
+    /// for a caller that owns them and wants a source it can keep. A caller that
+    /// only lends its bytes for one call does not need a source at all: it loads
+    /// through [`PackageLoader::load_archive_bytes`], which reads the lent
+    /// sequence in place and copies nothing.
+    ///
+    /// [`PackageLoader::load_archive_bytes`]: crate::PackageLoader::load_archive_bytes
     #[must_use]
     pub fn archive_bytes(bytes: impl Into<Arc<[u8]>>) -> Self {
         PackageSource::ArchiveBytes(bytes.into())
-    }
-
-    /// Copies a borrowed archive into an owned source, under `context`.
-    ///
-    /// [`PackageSource::archive_bytes`] is for a caller that already owns its
-    /// bytes, and it copies nothing when handed an `Arc<[u8]>`. This is for a
-    /// caller that does not own them: a boundary holding a borrowed view for the
-    /// duration of one call has to take a copy, that copy is as large as the
-    /// archive its limits admit, and work that large is work the operation should
-    /// be able to interrupt. The context is checked before the first chunk and
-    /// between chunks, so cancellation or an expiry that lands during the copy
-    /// stops it instead of being noticed once the loader already holds the result.
-    ///
-    /// One allocation and one copy. The owned representation is filled in place
-    /// rather than assembled in a `Vec` and converted, because a conversion holds
-    /// both buffers at once and an archive at the source ceiling would double the
-    /// peak this copy is supposed to bound. What that costs is stated rather than
-    /// hidden: `Arc`'s allocation is infallible on stable Rust, so a host that
-    /// cannot satisfy it aborts instead of receiving a fault. The alternative —
-    /// a fallible `Vec` reservation and then a second copy into the `Arc` — trades
-    /// a reportable failure for a doubled peak, which makes the failure more
-    /// likely; and the surrounding loader allocates its own entry buffers
-    /// infallibly too, so a fallible reservation here would be a local exception
-    /// rather than a property a caller could rely on.
-    ///
-    /// # Errors
-    ///
-    /// Returns the operation's terminal outcome at [`LoadStage::Source`] when
-    /// cancellation or the deadline wins before or during the copy.
-    pub fn copy_archive_bytes(
-        bytes: &[u8],
-        context: &OperationContext,
-    ) -> Result<Self, AssetFault> {
-        let mut operation = Operation::admit(context)
-            .map_err(|interruption| AssetFault::interrupted(interruption, LoadStage::Source))?;
-
-        let mut buffer = Arc::new_uninit_slice(bytes.len());
-        let slots =
-            Arc::get_mut(&mut buffer).expect("a buffer allocated here is shared with nothing");
-        for (uninitialized, chunk) in slots.chunks_mut(CHUNK_BYTES).zip(bytes.chunks(CHUNK_BYTES)) {
-            operation
-                .checkpoint()
-                .map_err(|interruption| AssetFault::interrupted(interruption, LoadStage::Source))?;
-            uninitialized.write_copy_of_slice(chunk);
-        }
-
-        // SAFETY: the two chunk iterators walk one length in the same steps, so
-        // the loop wrote every slot the buffer holds. An interruption returns
-        // above instead, dropping the partially written buffer without reading
-        // it — `MaybeUninit` is what makes that drop sound.
-        Ok(PackageSource::ArchiveBytes(unsafe { buffer.assume_init() }))
     }
 
     /// Names a memory source.

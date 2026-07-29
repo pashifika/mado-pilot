@@ -20,19 +20,25 @@
 //! admitted the file.
 //!
 //! The `SourceChanged` checks around and after the copy are kept, and what they
-//! guarantee is worth stating exactly, because it is less than it sounds. A
-//! change the loader observes — before the copy, during it, or at any later check
-//! — refuses the load. A change that lands after the last of those checks does
-//! not: the bytes were already read, so the load commits what it read. And the
-//! copy is a sequence of reads rather than an atomic filesystem snapshot, so a
-//! writer this comparison never observes could in principle have left the buffer
-//! holding bytes from two versions of the file.
+//! guarantee is worth stating exactly. Every consumer — the pre-parse, the reader,
+//! the entry reads — sees one immutable byte sequence, and a committed package is
+//! assembled from that one sequence. That the sequence is also one temporal
+//! version of the file is what the retained handle is compared for, before the
+//! copy and again after it: identity, change stamp, length and link count.
 //!
-//! What is proved is the property the stages need: every consumer — the
-//! pre-parse, the reader, the entry reads — sees one immutable byte sequence, and
-//! a committed package is assembled from that one sequence. Reporting every
-//! external write is not claimed, and mandatory writer exclusion is not something
-//! this module has on Unix to claim it with.
+//! What that comparison is worth differs by platform, which is why it is stated
+//! per platform. On Windows it is a backstop — [`crate::filesystem`] opens a
+//! retained source denying write and delete sharing, so a concurrent writer never
+//! reaches the file. On Unix there is no mandatory exclusion to hold, so detection
+//! stands in for it: an in-place write cannot leave the change stamp where it
+//! found it, so any write the filesystem records refuses the load. The residual is
+//! a filesystem whose change-stamp granularity cannot separate a write from the
+//! checks around it. A change that lands after the last check is not that case —
+//! the bytes were already read, so the load commits what it read.
+//!
+//! An archive that is already in memory needs none of it: caller-owned bytes are
+//! read where they are, and their stability for the length of one load is the
+//! caller's own.
 //!
 //! # The archive-only stages
 //!
@@ -200,8 +206,11 @@ fn snapshot(
 /// Runs the archive's own stages and returns its recorded entry table.
 ///
 /// The reader is a sequence of bytes that cannot change while it is being read:
-/// [`Cursor`] over caller-owned memory, or over the copy [`open_file`] takes of a
-/// filesystem source.
+/// [`Cursor`] over memory the caller owns, over memory the caller lends for the
+/// duration of one load, or over the copy [`open_file`] takes of a filesystem
+/// source. The returned reader borrows for `'r` so a lent sequence needs no copy
+/// to be read under this pipeline; the load that owns `'r` ends before the lender
+/// does.
 ///
 /// # Errors
 ///
@@ -210,13 +219,13 @@ fn snapshot(
 /// above its limit at [`LoadStage::DirectoryPreParse`], and a malformed
 /// structure or a declared total above its limit at
 /// [`LoadStage::DirectoryOpen`].
-pub(crate) fn open<R: Read + Seek + 'static>(
+pub(crate) fn open<'r, R: Read + Seek + 'r>(
     mut reader: R,
     source_len: u64,
     limits: AssetLimits,
     operation: &mut Operation<'_>,
     source: Option<OpenedFile>,
-) -> Result<(Box<dyn EntryReader>, Vec<RawEntry>), AssetFault> {
+) -> Result<(Box<dyn EntryReader + 'r>, Vec<RawEntry>), AssetFault> {
     within_source_ceiling(source_len, limits)?;
 
     ensure_unchanged(source.as_ref(), LoadStage::DirectoryPreParse)?;

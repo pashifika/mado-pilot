@@ -659,13 +659,16 @@ typedef struct madopilot_source_t {
 
 /* Where an asset package is read from. Mandatory prefix: through path.
  *
- * ARCHIVE_BYTES is the one kind the library takes a copy of: the view is
- * borrowed for the call and a loaded package outlives it. That copy answers to
- * the engine's configured source-byte ceiling, so a declared length above it
+ * ARCHIVE_BYTES is read where it is: the library copies nothing, and the view
+ * has to be readable and unchanged for the duration of the call and no longer.
+ * A package the call returns owns everything it kept, so the caller may release
+ * or overwrite the archive the moment the call comes back. The declared length
+ * answers to the engine's configured source-byte ceiling, so a length above it
  * reports MADOPILOT_STATUS_LIMIT_EXCEEDED with the archive-limit asset fault at
- * the source stage, before the bytes are read; and it answers to the operation,
- * so a cancellation or a deadline that lands during it reports that outcome
- * instead. A malformed view — a null pointer carrying a length — is
+ * the source stage, before the view behind it is read at all. The load answers
+ * to the operation, so a cancellation or a deadline that lands before the
+ * package is published reports that outcome and publishes nothing. A malformed
+ * view — a null pointer carrying a length — is
  * MADOPILOT_STATUS_INVALID_ARGUMENT with MADOPILOT_ERROR_CATEGORY_ABI, whatever
  * the length says. */
 typedef struct madopilot_package_source_t {

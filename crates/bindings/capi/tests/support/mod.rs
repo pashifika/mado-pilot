@@ -96,6 +96,21 @@ pub fn package_root() -> String {
         .into_owned()
 }
 
+/// The tracked six-template archive, as the bytes a C caller would lend.
+///
+/// Read into the test's own buffer rather than handed over as a path, because
+/// what the archive-bytes kind is for is memory the caller already holds.
+pub fn lent_archive() -> Vec<u8> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../fixtures/assets/g-014/valid/valid-tiny.zip");
+    std::fs::read(&path).unwrap_or_else(|error| {
+        panic!(
+            "the tracked archive fixture at {} must be readable: {error}",
+            path.display()
+        )
+    })
+}
+
 /// The deterministic scene, and the structures that describe it.
 ///
 /// Held together in one value because the source points at the frame and the

@@ -751,7 +751,9 @@ verified retained handles: hard links and reparse/link entries are rejected,
 Unix directory children are enumerated and opened relative to retained directory
 handles, and Windows retained sources deny write and delete sharing. Archive and
 entry handles are revalidated around metadata and byte reads, so path replacement
-or in-place mutation cannot redirect or silently change the committed bytes. The
+cannot redirect what is read, and an in-place write is refused as a changed source
+whenever the filesystem records it — a guarantee whose one residual is stated with
+the mechanism, under [ordered enforcement](#ordered-enforcement). The
 three sources are strategies behind one pipeline
 rather than three loaders: they differ in what they can record and in what can go
 wrong while reading them, and not in what makes a package valid. That is what
@@ -791,7 +793,7 @@ earlier guard is missing, even though the package was refused.
 
 | Stage | What it checks |
 |---|---|
-| `source` | Total source bytes, before anything is parsed. An archive file is then copied once, under that ceiling, into the immutable bytes every later stage reads, with the retained handle re-proved after the copy. Directory traversal is handle-bound, operation-aware, and node-bounded here |
+| `source` | Total source bytes, before anything is parsed. An archive file is then copied once, under that ceiling, into the immutable bytes every later stage reads, with the retained handle re-proved after the copy; an archive supplied in memory is read where it already is. Directory traversal is handle-bound, operation-aware, and node-bounded here |
 | `directory_pre_parse` | One unambiguous single-disk EOCD/ZIP64 trailer, its entry count, and a bounded no-allocation scan of the selected central-directory headers before the central directory is materialized |
 | `directory_open` | The central directory, and the declared total expansion |
 | `entry_metadata` | Compression method, encryption, name normalization, entry type, duplicate normalized names, declared sizes, and then the aggregate declared ratio |
@@ -814,17 +816,36 @@ therefore copied once, after the source-size gate that bounds the copy and with
 the handle re-proved after it, and the pre-parse, the reader, and every entry then
 read that copy.
 
-What that then guarantees is stated as what it is, which is less than it sounds. A
-change the loader observes — around the copy, or at any later check — refuses the
-load as a changed source. A change that lands after the last of those checks does
-not, because the bytes it would have affected were already read. The copy is also
-a sequence of reads rather than an atomic filesystem snapshot, and this adapter
-holds no mandatory writer exclusion on Unix, so an unobserved writer could in
-principle leave the buffer holding bytes from two versions of the file.
+What that guarantees is worth stating exactly, and the exact statement has two
+halves. One load reads one sequence of bytes: the pre-parse, the reader and every
+entry all read the copy, and a committed package is assembled from that one
+sequence. That the sequence is also one temporal version of the file is what the
+retained handle is compared for — identity, change stamp, length and link count,
+before the copy and again after it.
 
-The property that is proved is the one the stages depend on: every consumer reads
-one immutable byte sequence, and a committed package is assembled from that one
-sequence. Only observed source changes are reported.
+How much that second half proves depends on the platform, so it is documented per
+platform rather than as one average. On Windows the comparison is a backstop and
+not the mechanism: a retained source denies write and delete sharing, so a
+concurrent writer is refused by the operating system and never reaches the file.
+On Unix there is no mandatory exclusion to hold, and detection stands in for it —
+an in-place write cannot leave the change stamp where it found it, so any write the
+filesystem records refuses the load as a changed source.
+
+The residual is therefore narrow, and it is named rather than implied: a
+filesystem whose change-stamp granularity cannot separate a write from the checks
+around it could leave the copy holding bytes from two versions of the file. A
+change that lands after the last check is not that case — the bytes it would have
+affected were already read, and a package commits what it read.
+
+An archive a caller supplies in memory needs none of this. Those bytes are the
+caller's, they are read where they are for the length of one call, and keeping them
+readable and unchanged for that call is the caller's half of the contract. Nothing
+here copies them, which is deliberate: a copy would be sized by the caller's own
+declared length, up to the source ceiling, and the reference-counted form a
+retained source needs cannot be allocated fallibly on stable Rust — so the only
+answer available when such an allocation could not be satisfied would be
+terminating the host, which is the one answer a C boundary must never give. See
+[ADR 0010](adr/0010-asset-source-snapshot-and-archive-ownership.md).
 
 Recorded metadata may reject but never authorise: an entry is
 cut off at its *declared* size even when a ceiling would have allowed more, so an
@@ -850,9 +871,10 @@ argument rather than clamped.
 
 Two of the six describe archive structure, and an archive is the only source that
 has them: a directory has no compressed representation to expand from.
-`max_total_compressed_bytes` is also what bounds the resident copy an archive is
-read through, whether the caller supplied the bytes or named a file, so tightening
-it tightens the largest allocation loading an archive makes. The other
+`max_total_compressed_bytes` is also what bounds the resident copy an archive file
+is read through, and the length a caller-supplied archive may declare before the C
+boundary reads the view behind it, so tightening it tightens both the largest
+allocation loading an archive makes and the largest view that boundary accepts. The other
 four bound work or allocation the loader performs whatever the source is, so
 directory and memory sources are held to them as well. Directory enumeration
 consumes the entry budget before retaining each name, preventing wide or empty

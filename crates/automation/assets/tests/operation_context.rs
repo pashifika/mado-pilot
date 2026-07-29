@@ -216,42 +216,66 @@ fn a_deadline_beyond_the_work_commits_normally_and_is_still_consulted() {
     );
 }
 
-/// The chunk size the copy checks the operation between, from the one place that
-/// decides it.
-///
-/// Written here rather than imported because it is internal to the crate; the
-/// assertion below fails if the two ever disagree, which is the point of stating
-/// it.
-const COPY_CHUNK_BYTES: usize = 64 * 1024;
-
-#[test]
-fn copying_a_borrowed_archive_observes_cancellation_between_chunks() {
-    // Four chunks, so the copy has somewhere to be interrupted *during*. A buffer
-    // of one chunk would only ever prove the check before the first one.
-    let borrowed = vec![0x5au8; COPY_CHUNK_BYTES * 4];
+/// Counts the context checks one successful borrowed-archive load performs.
+fn checks_for_borrowed(bytes: &[u8]) -> u64 {
     let clock = Arc::new(TickingClock::new());
     let context = OperationContext::new()
         .with_clock(clock.clone())
         .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
             UNREACHABLE_MILLIS,
         )));
+    PackageLoader::new()
+        .load_archive_bytes(bytes, &context)
+        .expect("the borrowed archive loads when nothing interrupts it");
+    clock.reads()
+}
 
-    let owned = PackageSource::copy_archive_bytes(&borrowed, &context)
-        .expect("an uninterrupted copy produces the archive it was given");
-    assert!(owned.is_archive());
-    let checks = clock.reads();
+#[test]
+fn no_deadline_anywhere_inside_a_borrowed_archive_load_produces_a_package() {
+    let bytes = std::fs::read(tiny_archive()).expect("readable fixture archive");
+    let total = checks_for_borrowed(&bytes);
+    let mut stages = Vec::new();
+
+    for deadline in 0..total {
+        let context = OperationContext::new()
+            .with_clock(Arc::new(TickingClock::new()))
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(
+                deadline,
+            )));
+        let fault = PackageLoader::new()
+            .load_archive_bytes(&bytes, &context)
+            .expect_err("the deadline expires before the load finishes");
+
+        assert_eq!(
+            fault.kind(),
+            AssetFaultKind::DeadlineExceeded,
+            "at {deadline}"
+        );
+        stages.push(fault.stage());
+    }
+
     assert!(
-        checks > 4,
-        "the copy consults the context per chunk, not once: {checks} checks for four chunks"
+        stages.contains(&LoadStage::Expansion),
+        "some deadline must expire while entries are being read and hashed"
     );
+    assert!(
+        stages.contains(&LoadStage::Commit),
+        "a borrowed archive is published through the same final commit check as every other source"
+    );
+}
 
-    // Cancelling at each point the copy can observe: every one of them refuses,
-    // and none of them produces a source. The sweep is what says the checks are
-    // inside the loop rather than only at its head.
-    //
-    // As in the sweeps above, cancelling on read `point` is observed by the next
-    // check, so the last read that can still be observed is `checks - 2`.
-    for point in 0..checks.saturating_sub(1) {
+#[test]
+fn no_cancellation_anywhere_inside_a_borrowed_archive_load_produces_a_package() {
+    let bytes = std::fs::read(tiny_archive()).expect("readable fixture archive");
+    let total = checks_for_borrowed(&bytes);
+    let mut stages = Vec::new();
+
+    // Cancelling on read `point` is observed by the next context check, so the
+    // last read that can still be observed is `total - 2`. What that last read
+    // *is* matters here: the borrowed archive is published by `Operation::commit`,
+    // so the sweep's final point is the publication point rather than a boundary
+    // with nothing after it.
+    for point in 0..total.saturating_sub(1) {
         let token = CancellationToken::new();
         let context = OperationContext::new()
             .with_clock(Arc::new(CancellingClock::new(token.clone(), point)))
@@ -260,28 +284,44 @@ fn copying_a_borrowed_archive_observes_cancellation_between_chunks() {
             )))
             .with_cancellation(token);
 
-        let fault = PackageSource::copy_archive_bytes(&borrowed, &context)
-            .expect_err("cancellation lands before the copy finishes");
+        let fault = PackageLoader::new()
+            .load_archive_bytes(&bytes, &context)
+            .expect_err("cancellation lands before the load finishes");
 
         assert_eq!(fault.kind(), AssetFaultKind::Cancelled, "at {point}");
-        assert_eq!(fault.stage(), LoadStage::Source, "at {point}");
+        stages.push(fault.stage());
     }
+
+    assert!(
+        stages.contains(&LoadStage::Expansion),
+        "some cancellation must land while archive entries are being expanded"
+    );
+    assert!(
+        stages.contains(&LoadStage::Commit),
+        "cancellation at the last observable check must refuse the commit, not publish"
+    );
 }
 
 #[test]
-fn a_borrowed_archive_copied_under_a_healthy_operation_loads_as_that_archive() {
+fn a_borrowed_archive_loads_as_the_file_it_was_read_from() {
     let bytes = std::fs::read(tiny_archive()).expect("readable fixture archive");
     let context = OperationContext::new();
 
-    let copied = PackageSource::copy_archive_bytes(&bytes, &context).expect("copied");
-
-    let from_copy = PackageLoader::new()
-        .load(&copied, &context)
-        .expect("the copy is the archive it was taken from");
+    let borrowed = PackageLoader::new()
+        .load_archive_bytes(&bytes, &context)
+        .expect("the borrowed archive loads");
+    let owned = PackageLoader::new()
+        .load(&PackageSource::archive_bytes(bytes), &context)
+        .expect("the owned archive loads");
     let from_file = PackageLoader::new()
         .load(&PackageSource::archive_file(tiny_archive()), &context)
         .expect("the file loads");
-    assert_eq!(from_copy, from_file);
+
+    assert_eq!(borrowed, from_file);
+    assert_eq!(
+        borrowed, owned,
+        "ownership is not part of what a package is"
+    );
 }
 
 #[test]

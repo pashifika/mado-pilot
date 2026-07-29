@@ -1231,6 +1231,104 @@ fn a_null_archive_view_carrying_a_length_is_a_malformed_request_whatever_the_len
 }
 
 #[test]
+fn a_package_loaded_from_a_lent_archive_outlives_the_lender() {
+    let api = table();
+    let flow = support::Flow::open();
+    let operation = operation();
+    let mut archive = support::lent_archive();
+
+    let source = madopilot_package_source_t {
+        struct_size: struct_size::<madopilot_package_source_t>(),
+        kind: MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES,
+        path: madopilot_str_t::empty(),
+        archive: bytes_view(&archive),
+    };
+    let mut package = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: every pointer is a live local, the engine is retained by the flow,
+    // and the archive view describes `archive` for the duration of the call —
+    // which is exactly as long as this boundary reads it.
+    let status = unsafe {
+        (api.package_load)(
+            flow.engine,
+            &raw const source,
+            &raw const operation,
+            &raw mut package,
+            &raw mut error,
+        )
+    };
+    assert_eq!(status, MADOPILOT_STATUS_OK);
+    assert!(error.is_null());
+    assert!(!package.is_null());
+
+    // The lender takes its memory back the moment the call returns, and does it
+    // destructively. A package that had kept a reference to the archive rather
+    // than its own copy of what it read would be reading this.
+    archive.fill(0xa5);
+    drop(archive);
+
+    let mut info = madopilot_package_info_t {
+        struct_size: struct_size::<madopilot_package_info_t>(),
+        flags: 0,
+        template_count: 0,
+        package_id: madopilot_str_t::empty(),
+        package_version: madopilot_str_t::empty(),
+        license: madopilot_str_t::empty(),
+    };
+    // SAFETY: the package is retained here and `info` is a live local whose
+    // `struct_size` is set.
+    assert_eq!(
+        unsafe { (api.package_describe)(package, &raw mut info) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(
+        info.template_count, 6,
+        "the committed package still describes the archive it read"
+    );
+
+    // SAFETY: the handle came from this table and is released once.
+    assert_eq!(
+        unsafe { (api.package_release)(package) },
+        MADOPILOT_STATUS_OK
+    );
+}
+
+#[test]
+fn loading_a_lent_archive_under_an_expired_deadline_publishes_no_handle() {
+    let api = table();
+    let flow = support::Flow::open();
+    let expired = expired_operation();
+    let archive = support::lent_archive();
+
+    let source = madopilot_package_source_t {
+        struct_size: struct_size::<madopilot_package_source_t>(),
+        kind: MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES,
+        path: madopilot_str_t::empty(),
+        archive: bytes_view(&archive),
+    };
+    let mut package = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: as above.
+    let status = unsafe {
+        (api.package_load)(
+            flow.engine,
+            &raw const source,
+            &raw const expired,
+            &raw mut package,
+            &raw mut error,
+        )
+    };
+    assert_eq!(status, MADOPILOT_STATUS_DEADLINE_EXCEEDED);
+    assert!(
+        package.is_null(),
+        "a terminal operation publishes no package, whoever owns the archive"
+    );
+
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.status, MADOPILOT_STATUS_DEADLINE_EXCEEDED);
+}
+
+#[test]
 fn preparing_a_template_under_an_expired_deadline_publishes_no_handle() {
     let api = table();
     let flow = support::Flow::open();

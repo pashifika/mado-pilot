@@ -169,6 +169,26 @@ impl Engine {
         self.loader.load(source, operation)
     }
 
+    /// Loads and validates an asset package from an archive this call borrows.
+    ///
+    /// The same stages and the same typed faults as [`Engine::load_package`];
+    /// what differs is that nothing has to own the archive. A caller — or a
+    /// boundary holding a caller's view for one call — hands the bytes over for
+    /// the duration of the load rather than buying a copy of them, and the
+    /// committed package owns each template's content independently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AssetFault`] carrying the rule that was broken and the
+    /// stage that caught it, including the loader's configured source ceiling.
+    pub fn load_archive_bytes(
+        &self,
+        bytes: &[u8],
+        operation: &OperationContext,
+    ) -> Result<AssetPackage, AssetFault> {
+        self.loader.load_archive_bytes(bytes, operation)
+    }
+
     /// Compiles a template source for this engine's backend.
     ///
     /// A template source does not have to come from an asset package: the
