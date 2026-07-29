@@ -7,6 +7,7 @@
 //! observe or change it.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use mado_pilot_assets::{AssetFault, AssetLimits, AssetPackage, PackageLoader, PackageSource};
 use mado_pilot_capture::{CaptureProvider, OpenRequest, TargetDescription};
@@ -14,6 +15,16 @@ use mado_pilot_core::{EngineId, Error, Operation, OperationContext, TargetId};
 use mado_pilot_vision::{BackendDescriptor, Matcher, PreparedTemplate, TemplateSource};
 
 use crate::session::Session;
+
+/// How long the release of an already-opened session may take when this engine's
+/// own arbitration refuses the open.
+///
+/// The caller's operation is already over by then, so this bound exists only so
+/// that an adapter which will not close cannot hold the caller in a close that
+/// the caller did not ask for and cannot cancel. Generous, because it is a
+/// backstop rather than a target: a replay session closes in microseconds and a
+/// native one should not need a second.
+const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The contract dependencies one engine orchestrates.
 ///
@@ -87,12 +98,19 @@ impl Engine {
 
     /// Opens a session for `target` that can search its own frames.
     ///
+    /// The adapter arbitrates the open and so does this method, which means the
+    /// adapter can commit a session that this arbitration then refuses. A session
+    /// that exists is closed rather than dropped in that case: dropping one does
+    /// not close it, so the platform's side would outlive every reference to it.
+    ///
     /// # Errors
     ///
     /// Returns an invalid-argument outcome for a target this engine did not
     /// issue, an unsupported outcome for a required option the adapter cannot
     /// honor, and the operation's terminal outcome when cancellation or the
-    /// deadline wins.
+    /// deadline wins. When that outcome arrives after the adapter committed and
+    /// the session could not then be closed, the status is still the operation's
+    /// but the detail names the release that failed.
     pub fn open(
         &self,
         target: TargetId,
@@ -101,7 +119,35 @@ impl Engine {
     ) -> Result<Session, Error> {
         let attempt = Operation::admit(operation)?;
         let capture = self.capture.open(target, request, operation)?;
-        Ok(attempt.commit(Session::new(capture, self.matcher.clone()))?)
+
+        // Committed on the unit, with the session built afterwards. Building one
+        // is a pointer and a clone, so nothing is lost by doing it second, and
+        // this way the value the commit consumes is not the thing that needs
+        // closing if the commit refuses.
+        let interruption = match attempt.commit(()) {
+            Ok(()) => return Ok(Session::new(capture, self.matcher.clone())),
+            Err(interruption) => interruption,
+        };
+
+        // The release gets its own context because the caller's is over. Passing
+        // the expired one would leave the session in `Lifecycle::Closing` — a
+        // leak with an extra step, since a close under a finished operation
+        // begins draining and stops. Bounded, so a wedged adapter turns a
+        // cancellation into a slow refusal rather than a hang.
+        let release = OperationContext::new()
+            .with_timeout(RELEASE_TIMEOUT)
+            .unwrap_or_else(|_| OperationContext::new());
+        match capture.close(&release) {
+            Ok(()) => Err(interruption.into()),
+            Err(error) => Err(Error::new(
+                interruption.status(),
+                format!(
+                    "{}, and the session opened for it could not be closed: {}",
+                    Error::from(interruption).detail(),
+                    error.detail()
+                ),
+            )),
+        }
     }
 
     /// Loads and validates an asset package from `source`.

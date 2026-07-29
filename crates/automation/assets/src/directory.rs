@@ -107,8 +107,35 @@ struct Walk<'operation, 'context> {
     traversed_nodes: u64,
 }
 
+/// How deep a directory source may nest.
+///
+/// `visit` recurses once per level, and the depth was already bounded before this
+/// ceiling existed — but only incidentally. Every level costs a traversed node,
+/// so [`AssetLimits::max_entry_count`], whose own ceiling is 4,096, caps the
+/// recursion at about 4,095 levels. Measured on `aarch64-apple-darwin` with this
+/// check disabled: a 4,090-level tree walks to completion and returns `Ok`. The
+/// stack exhaustion that would make an unbounded walk a process abort rather than
+/// a fault is therefore not reachable through the shipped limits.
+///
+/// The ceiling is here to make the bound its own rather than a consequence of an
+/// unrelated one. Raising the entry-count ceiling later would silently remove the
+/// depth bound, and the connection between the two is not something a reader of
+/// either would notice. A package path is `templates/panel.png`, two levels;
+/// sixty-four is far more than any real package needs.
+///
+/// It is a constant rather than an [`AssetLimits`] field because a caller has no
+/// reason to raise it: a source that needs sixty-five levels is not a package
+/// whose limits want tuning.
+const MAX_DIRECTORY_DEPTH: usize = 64;
+
 impl Walk<'_, '_> {
     fn visit(&mut self, opened: OpenedNode, prefix: &mut Vec<String>) -> Result<(), AssetFault> {
+        // `prefix` holds one name per level above this node, so its length is the
+        // depth. Checked on entry, so the refusal happens before the frame that
+        // would exceed the ceiling does any work.
+        if prefix.len() > MAX_DIRECTORY_DEPTH {
+            return Err(fault(AssetFaultKind::ArchiveLimit));
+        }
         let children = self.read_sorted(&opened)?;
         if opened.changed() {
             return Err(fault(AssetFaultKind::SourceChanged));
@@ -223,6 +250,7 @@ mod tests {
     use super::{DirectoryReader, Snapshot};
     use crate::fault::{AssetFaultKind, LoadStage};
     use crate::filesystem;
+    use crate::limits::AssetLimits;
     use crate::reader::EntryReader;
 
     fn scratch(label: &str, content: &[u8]) -> std::path::PathBuf {
@@ -326,4 +354,41 @@ mod tests {
 
         assert_eq!(fault.kind(), AssetFaultKind::MissingEntry);
     }
+
+    /// A tree deeper than the ceiling is refused, and refused as a typed fault.
+    ///
+    /// This asserts the ceiling holds, not that it averts an abort: with the
+    /// check disabled a 4,090-level tree walks to completion on this host, so the
+    /// node budget already bounds the recursion. What the ceiling buys is that the
+    /// bound is its own, so raising the entry-count ceiling cannot remove it by
+    /// accident — see [`super::MAX_DIRECTORY_DEPTH`].
+    #[test]
+    fn a_directory_nested_past_the_depth_ceiling_is_refused() {
+        let root = std::env::temp_dir().join(format!(
+            "mado-pilot-assets-deep-{}-{}",
+            std::process::id(),
+            DEPTH_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut path = root.clone();
+        for level in 0..=super::MAX_DIRECTORY_DEPTH + 1 {
+            path.push(format!("l{level}"));
+        }
+        fs::create_dir_all(&path).expect("a writable temporary tree");
+
+        let context = OperationContext::new();
+        let mut operation = Operation::admit(&context).expect("admitted");
+        // Matched rather than `expect_err`, which would need the success type to
+        // be `Debug`; the reader trait object is not.
+        let Err(fault) = super::open(&root, AssetLimits::ceiling(), &mut operation) else {
+            let _ = fs::remove_dir_all(&root);
+            panic!("a source deeper than the ceiling is refused");
+        };
+
+        assert_eq!(fault.kind(), AssetFaultKind::ArchiveLimit);
+        assert_eq!(fault.stage(), LoadStage::Source);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    static DEPTH_COUNTER: AtomicU64 = AtomicU64::new(0);
 }

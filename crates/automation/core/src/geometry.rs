@@ -536,18 +536,35 @@ impl PixelRect {
 
     /// Applies `policy` against `extent`.
     ///
+    /// An empty region is refused under either policy, because no policy makes it
+    /// answerable: clipping cannot add pixels to it and accepting it hands back a
+    /// region with nothing in it. This is the one rule here that does not depend
+    /// on `policy`, and it lives here so that every consumer inherits it rather
+    /// than each deciding for itself.
+    ///
     /// # Errors
     ///
-    /// With [`ClipPolicy::Reject`], returns [`GeometryFault::OutsideExtent`] when
-    /// any part of `self` falls outside `extent`. With [`ClipPolicy::Clip`],
-    /// returns the same fault only when nothing overlaps, because a request that
-    /// clips to nothing has no region left to answer about.
+    /// Returns [`GeometryFault::EmptyRegion`] when `self` encloses no pixels.
+    ///
+    /// Otherwise, with [`ClipPolicy::Reject`], returns
+    /// [`GeometryFault::OutsideExtent`] when any part of `self` falls outside
+    /// `extent`. With [`ClipPolicy::Clip`], returns the same fault only when
+    /// nothing overlaps, because a request that clips to nothing has no region
+    /// left to answer about.
     pub fn resolve_against(
         self,
         extent: PixelExtent,
         policy: ClipPolicy,
     ) -> Result<Self, GeometryFault> {
         let bounds = extent.to_rect()?;
+        // Before the policy, not inside it. An empty region inside the extent
+        // used to pass `Reject` as an `Ok` a caller could do nothing with, and
+        // fail `Clip` with `OutsideExtent` — whose message says the region is
+        // outside the extent and that clipping was not permitted, and neither
+        // was true of it.
+        if self.is_empty() {
+            return Err(GeometryFault::EmptyRegion);
+        }
         match policy {
             ClipPolicy::Reject => {
                 if bounds.contains_rect(self) {

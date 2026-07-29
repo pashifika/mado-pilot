@@ -40,12 +40,24 @@ impl PixelFormat {
     }
 
     /// Reports whether converting from `self` to `other` needs a channel swap.
+    ///
+    /// Every pair is matched, rather than listing the identity pairs and negating.
+    /// The negation defaulted an unlisted pair to `true`, and on a
+    /// `#[non_exhaustive]` enum the pairs a third variant `X` introduces are all
+    /// unlisted — including `(X, X)`, which would have swapped bytes 0 and 2 of
+    /// every pixel of an `X`-into-`X` mapping and reported success. Matching
+    /// exhaustively makes that variant a compile error here instead, which is
+    /// where the decision belongs.
     #[must_use]
     pub const fn needs_swap(self, other: Self) -> bool {
-        !matches!(
-            (self, other),
-            (PixelFormat::Rgba8, PixelFormat::Rgba8) | (PixelFormat::Bgra8, PixelFormat::Bgra8)
-        )
+        match (self, other) {
+            (PixelFormat::Rgba8, PixelFormat::Rgba8) | (PixelFormat::Bgra8, PixelFormat::Bgra8) => {
+                false
+            }
+            (PixelFormat::Rgba8, PixelFormat::Bgra8) | (PixelFormat::Bgra8, PixelFormat::Rgba8) => {
+                true
+            }
+        }
     }
 }
 
