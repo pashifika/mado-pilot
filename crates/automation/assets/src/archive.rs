@@ -1,6 +1,30 @@
 //! Reading a ZIP package without ever trusting what it says about itself.
 //!
-//! The two archive-only stages are here. The trailer pre-parse exists because
+//! # One archive is one sequence of bytes
+//!
+//! Every stage below reads from a [`Cursor`] over memory, including the
+//! filesystem source. A retained handle stops the *path* from being redirected,
+//! and on Unix it stops nothing else: a writer holding the same inode can rewrite
+//! the file in place while the loader is between two of its own checks, and the
+//! metadata comparison that notices only runs afterwards. That matters because
+//! the reservation the trailer pre-parse exists to bound happens inside the
+//! dependency, from a directory the pre-parser proved and a later reader
+//! re-reads: two reads of a mutable file are two archives, and the second one is
+//! not the one that passed.
+//!
+//! So the source-size gate is followed by one bounded copy, and the handle is
+//! re-proved after it. What every later stage sees is that copy — the pre-parse,
+//! the reader's own trailer search, the central directory, and every entry — so
+//! there is one sequence of bytes for the whole load and no window between two
+//! reads of it. The copy is bounded by the same configured source ceiling that
+//! admitted the file, and a rewrite during the copy is reported as a changed
+//! source rather than absorbed. The `SourceChanged` checks after it are kept:
+//! nothing can redirect what the loader reads any more, but a source that changed
+//! mid-load is still a load a caller should not be handed a package from.
+//!
+//! # The archive-only stages
+//!
+//! The trailer pre-parse exists because
 //! opening a central directory allocates in proportion to the entry count, so
 //! an entry-count ceiling checked after the open is checked too late: the
 //! measurements in `docs/evidence/g-014` read 60,000 recorded entries for 144
@@ -18,7 +42,7 @@
 //! central directory is still the largest thing that has been allocated, before
 //! entry content is read.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
 use mado_pilot_core::Operation;
@@ -27,7 +51,7 @@ use zip::{CompressionMethod, ZipArchive, read::ZipFile};
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
 use crate::filesystem::OpenedFile;
 use crate::limits::AssetLimits;
-use crate::reader::{EntryKind, EntryReader, EntryStorage, RawEntry, read_capped};
+use crate::reader::{CHUNK_BYTES, EntryKind, EntryReader, EntryStorage, RawEntry, read_capped};
 
 const EOCD_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
 const ZIP64_LOCATOR_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x06, 0x07];
@@ -72,7 +96,93 @@ impl<R: Read + Seek> EntryReader for ArchiveReader<R> {
     }
 }
 
+/// Runs the archive's own stages over one immutable copy of a filesystem
+/// source.
+///
+/// The copy is what makes the pre-parse worth performing on an externally
+/// mutable file; see this module's own documentation. It happens after the
+/// source-size gate, so the memory it takes is the memory that gate admitted,
+/// and the retained handle is re-proved after it.
+///
+/// # Errors
+///
+/// As [`open`], and returns [`AssetFaultKind::SourceChanged`] at
+/// [`LoadStage::Source`] when the handle or its length does not survive the copy.
+pub(crate) fn open_file(
+    mut source: OpenedFile,
+    source_len: u64,
+    limits: AssetLimits,
+    operation: &mut Operation<'_>,
+) -> Result<(Box<dyn EntryReader>, Vec<RawEntry>), AssetFault> {
+    within_source_ceiling(source_len, limits)?;
+
+    ensure_unchanged(Some(&source), LoadStage::Source)?;
+    let snapshot = snapshot(&mut source, source_len, operation)?;
+    // After the copy, not only before it: a rewrite that landed while the bytes
+    // were being read would otherwise be a mixture of two archives that each
+    // check on its own could believe.
+    ensure_unchanged(Some(&source), LoadStage::Source)?;
+
+    open(
+        Cursor::new(snapshot),
+        source_len,
+        limits,
+        operation,
+        Some(source),
+    )
+}
+
+/// Copies the retained source into one immutable sequence of bytes.
+///
+/// `source_len` is the length the handle itself reported, so it is authoritative
+/// rather than declared: content that runs past it or stops short of it is a file
+/// that changed since it was measured, which is what that fault says. The read is
+/// chunked so the operation context is consulted while a large source is copied.
+///
+/// The handle's own file offset is left at the end. Nothing reads through it
+/// again — every later stage reads the returned bytes, and the change detection
+/// asks the handle for metadata rather than for content.
+fn snapshot(
+    source: &mut OpenedFile,
+    source_len: u64,
+    operation: &mut Operation<'_>,
+) -> Result<Vec<u8>, AssetFault> {
+    let length = usize::try_from(source_len).map_err(|_| overflow_at(LoadStage::Source))?;
+    let mut bytes = Vec::new();
+    // The one allocation the source ceiling bounds, and it is requested rather
+    // than assumed: a host that cannot satisfy a length inside that ceiling
+    // reports an unreadable source instead of aborting the process.
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| AssetFault::new(AssetFaultKind::SourceUnreadable, LoadStage::Source))?;
+
+    let mut chunk = vec![0u8; CHUNK_BYTES];
+    loop {
+        checkpoint(operation, LoadStage::Source)?;
+        let read = source
+            .file_mut()
+            .read(&mut chunk)
+            .map_err(|_| AssetFault::new(AssetFaultKind::SourceUnreadable, LoadStage::Source))?;
+        if read == 0 {
+            break;
+        }
+        if read > length - bytes.len() {
+            return Err(source_changed());
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    if bytes.len() != length {
+        return Err(source_changed());
+    }
+
+    Ok(bytes)
+}
+
 /// Runs the archive's own stages and returns its recorded entry table.
+///
+/// The reader is a sequence of bytes that cannot change while it is being read:
+/// [`Cursor`] over caller-owned memory, or over the copy [`open_file`] takes of a
+/// filesystem source.
 ///
 /// # Errors
 ///
@@ -88,12 +198,7 @@ pub(crate) fn open<R: Read + Seek + 'static>(
     operation: &mut Operation<'_>,
     source: Option<OpenedFile>,
 ) -> Result<(Box<dyn EntryReader>, Vec<RawEntry>), AssetFault> {
-    if source_len > limits.max_total_compressed_bytes() {
-        return Err(AssetFault::new(
-            AssetFaultKind::ArchiveLimit,
-            LoadStage::Source,
-        ));
-    }
+    within_source_ceiling(source_len, limits)?;
 
     ensure_unchanged(source.as_ref(), LoadStage::DirectoryPreParse)?;
     checkpoint(operation, LoadStage::DirectoryPreParse)?;
@@ -452,6 +557,20 @@ fn seek_read_exact<R: Read + Seek>(
         .map_err(|_| pre_parse_unreadable())
 }
 
+/// Refuses a source whose own length is above the configured ceiling.
+///
+/// The first thing either entry point does, because every later cost — the copy,
+/// the trailer window, the header scan — is bounded by this length.
+const fn within_source_ceiling(source_len: u64, limits: AssetLimits) -> Result<(), AssetFault> {
+    if source_len > limits.max_total_compressed_bytes() {
+        return Err(AssetFault::new(
+            AssetFaultKind::ArchiveLimit,
+            LoadStage::Source,
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_unchanged(source: Option<&OpenedFile>, stage: LoadStage) -> Result<(), AssetFault> {
     if source.is_some_and(OpenedFile::changed) {
         return Err(AssetFault::new(AssetFaultKind::SourceChanged, stage));
@@ -470,10 +589,15 @@ const fn malformed() -> AssetFault {
 }
 
 const fn overflow() -> AssetFault {
-    AssetFault::new(
-        AssetFaultKind::ArithmeticOverflow,
-        LoadStage::DirectoryPreParse,
-    )
+    overflow_at(LoadStage::DirectoryPreParse)
+}
+
+const fn overflow_at(stage: LoadStage) -> AssetFault {
+    AssetFault::new(AssetFaultKind::ArithmeticOverflow, stage)
+}
+
+const fn source_changed() -> AssetFault {
+    AssetFault::new(AssetFaultKind::SourceChanged, LoadStage::Source)
 }
 
 const fn pre_parse_malformed() -> AssetFault {

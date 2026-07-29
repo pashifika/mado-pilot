@@ -86,10 +86,6 @@ impl OpenedFile {
             Err(_) => true,
         }
     }
-
-    pub(crate) fn try_clone_reader(&self) -> io::Result<File> {
-        self.file.try_clone()
-    }
 }
 
 pub(crate) fn open_stable(

@@ -791,11 +791,11 @@ earlier guard is missing, even though the package was refused.
 
 | Stage | What it checks |
 |---|---|
-| `source` | Total source bytes, before anything is parsed. Directory traversal is handle-bound, operation-aware, and node-bounded here |
+| `source` | Total source bytes, before anything is parsed. An archive file is then copied once, under that ceiling, into the immutable bytes every later stage reads, with the retained handle re-proved after the copy. Directory traversal is handle-bound, operation-aware, and node-bounded here |
 | `directory_pre_parse` | One unambiguous single-disk EOCD/ZIP64 trailer, its entry count, and a bounded no-allocation scan of the selected central-directory headers before the central directory is materialized |
 | `directory_open` | The central directory, and the declared total expansion |
 | `entry_metadata` | Compression method, encryption, name normalization, entry type, duplicate normalized names, declared sizes, and then the aggregate declared ratio |
-| `manifest` | The manifest read under its byte cap, and parsed |
+| `manifest` | The manifest read under its byte cap and parsed, including every declared template extent against the vision contract's pixel ceiling |
 | `expansion` | Referenced entries streamed in 64 KiB chunks, size-checked on every chunk, hashed, and identified |
 | `commit` | The final operation-context check before one immutable package becomes observable |
 
@@ -803,8 +803,19 @@ The trailer pre-parse exists because opening a central directory allocates in
 proportion to the entry count, so an entry-count ceiling checked after the open is
 checked too late. Count fields for a single disk must agree; ambiguous or fallback
 trailers are rejected, and the bounded header scan proves that the trailer selected
-under the ceiling is the directory the ZIP reader will open. Recorded metadata may
-reject but never authorise: an entry is
+under the ceiling is the directory the ZIP reader will open.
+
+That proof is about a sequence of bytes, so the loader reads one. A retained
+handle keeps a path from being redirected and does not stop a writer holding the
+same inode from rewriting the file in place, which would leave the pre-parse
+describing a directory the reader no longer opens — and the reader's own
+reservation is made before any later check could refuse it. An archive file is
+therefore copied once, after the source-size gate that bounds the copy and with
+the handle re-proved after it, and the pre-parse, the reader, and every entry then
+read that copy. A source that changes mid-load is still refused as a changed
+source; what the copy removes is the window in which a change could be believed.
+
+Recorded metadata may reject but never authorise: an entry is
 cut off at its *declared* size even when a ceiling would have allowed more, so an
 understated declaration is refused after one chunk rather than after a ceiling's
 worth of expansion.
@@ -827,7 +838,10 @@ argument rather than clamped.
 | `max_compression_ratio` | 64 | Archives |
 
 Two of the six describe archive structure, and an archive is the only source that
-has them: a directory has no compressed representation to expand from. The other
+has them: a directory has no compressed representation to expand from.
+`max_total_compressed_bytes` is also what bounds the resident copy an archive is
+read through, whether the caller supplied the bytes or named a file, so tightening
+it tightens the largest allocation loading an archive makes. The other
 four bound work or allocation the loader performs whatever the source is, so
 directory and memory sources are held to them as well. Directory enumeration
 consumes the entry budget before retaining each name, preventing wide or empty
@@ -864,6 +878,19 @@ applied once, in the vision package, for every backend:
 | Canonical ordering, overlap suppression, result limit | `mado-pilot-vision`; a bounded backend extractor may emit only the same observable prefix, which vision revalidates |
 | Result envelope with complete source correlation | `mado-pilot-vision` |
 | Template compilation and bounded candidate extraction | the backend |
+
+A template's declared extent is metadata rather than a measurement, and a
+backend allocates its decoded image from it, so `mado-pilot-vision` bounds the
+declaration: at most 67,108,864 pixels, which is 8,192 by 8,192. That covers a
+full-frame template on any display through 8K UHD and admits at most 192 MiB of
+three-channel pixels — inside the total expansion one package may already ask
+for — while refusing the class of declaration that asks for gigabytes out of a
+compact file. The ceiling is applied where the extent is declared:
+`TemplateSource::new` refuses it, and an asset manifest refuses it while parsing,
+before the entry it names is expanded or hashed. The OpenCV adapter checks the
+same ceiling again in its own decoded bytes before `imdecode`, because that
+allocation is the adapter's and a bound that lives only in its caller is a bound
+the next caller does not have.
 
 Two backends are what make this a seam rather than a description of one adapter.
 `mado-pilot-testkit` supplies a controlled matcher whose candidates, latency,

@@ -17,6 +17,19 @@
 //! caller bytes with [`Input::defaults`] inside one field — for a pointer field,
 //! into an address the caller never passed.
 //!
+//! # And for an output
+//!
+//! The first of those three rules is the caller's declaration rather than the
+//! request's, so it holds whichever way the structure travels: an output size
+//! that ends inside a field asks for half a field to be populated, and the
+//! answer would be `MADOPILOT_STATUS_OK` over a field the caller cannot read —
+//! for a pointer-length view, half a pointer beside a length that describes the
+//! whole of it. `docs/c-abi.md` states the refusal for both directions, so
+//! [`Versioned`] carries the same prefix list [`Input`] does. The other two do
+//! not apply: nothing the library writes is read out of a caller's array, and a
+//! presence bit on an output reports what the library populated rather than
+//! claiming what the caller supplied.
+//!
 //! The third of those is only as complete as [`Input::PRESENCE`], so the bit a
 //! caller sets is read through [`declared!`] rather than out of the flags field
 //! directly. That macro will not compile for a bit the table omits, which puts
@@ -63,6 +76,14 @@ pub(crate) trait Versioned: Copy {
     const MANDATORY: usize;
     /// The structure's C name, for diagnostics.
     const NAME: &'static str;
+    /// Every size a caller's declaration may end at: each field's offset, in
+    /// declaration order, and then the whole structure.
+    ///
+    /// Built with [`prefixes!`], exactly as [`Input::PREFIXES`] is, and held to
+    /// the same rule for the same reason: a `struct_size` between two of these
+    /// ends inside a field, and a field that is half populated is neither
+    /// written nor omitted.
+    const PREFIXES: &'static [usize];
 
     /// The documented failure state, written before anything is validated.
     fn failure(struct_size: u32) -> Self;
@@ -249,15 +270,22 @@ impl<S: Versioned> Out<S> {
     ///
     /// # Errors
     ///
-    /// Rejects null, a misaligned address, and a `struct_size` below the
-    /// structure's mandatory prefix. Nothing beyond `struct_size` is read, and
-    /// nothing at all is read when the address is rejected.
+    /// Rejects null, a misaligned address, a `struct_size` below the
+    /// structure's mandatory prefix, and a `struct_size` inside this build's own
+    /// structure that ends inside a field. Nothing beyond `struct_size` is read,
+    /// and nothing at all is written through a rejected output.
     ///
     /// # Safety
     ///
     /// `ptr` must be null or point at `struct_size` writable bytes, with its
     /// first four bytes already set to that size, for the duration of the call.
     pub(crate) unsafe fn begin(ptr: *mut S) -> Result<Self, Fault> {
+        // Nothing at run time. Every output structure is written through this
+        // function, so instantiating it for one is what holds that structure's
+        // prefix list to the layout report — no test has to enumerate the
+        // implementations of a trait Rust cannot enumerate.
+        const { check_output_tables::<S>() };
+
         if ptr.is_null() {
             return Err(Fault::abi(format!("the {} output is null", S::NAME)));
         }
@@ -281,6 +309,18 @@ impl<S: Versioned> Out<S> {
                 "the {} output declares {declared} bytes, below its {} byte mandatory prefix",
                 S::NAME,
                 S::MANDATORY
+            )));
+        }
+        // As for an input: a size at or above this build's own is a newer caller
+        // whose extra fields are trailing bytes this build leaves alone, and only
+        // a size inside the structure this build knows has to land on one of its
+        // boundaries. Refused rather than rounded down, because a caller that
+        // asked for part of a field is not a caller that asked for the field
+        // before it.
+        if declared < size_of::<S>() && !S::PREFIXES.contains(&declared) {
+            return Err(Fault::abi(format!(
+                "the {} output declares {declared} bytes, which ends inside a field rather than at a field boundary",
+                S::NAME
             )));
         }
 
@@ -704,7 +744,7 @@ const fn same(left: &str, right: &str) -> bool {
 /// What the compiler measured `name` as.
 ///
 /// Panics when the layout report does not measure the structure at all, which
-/// would leave [`check_input_tables`] comparing a prefix list against nothing.
+/// would leave the prefix-list checks comparing a list against nothing.
 const fn measured(name: &str) -> &'static TypeLayout {
     let mut index = 0;
     while index < LAYOUT.len() {
@@ -715,6 +755,55 @@ const fn measured(name: &str) -> &'static TypeLayout {
     }
 
     panic!("the layout report does not measure this structure, so its prefix list is unverifiable");
+}
+
+/// Holds one structure's prefix list to what the compiler laid the structure
+/// out as, and its mandatory prefix to that list.
+///
+/// The caller's declared size is held to the same rule the library's own
+/// mandatory prefixes are held to by
+/// `tests/layout.rs::every_mandatory_prefix_is_a_real_field_boundary`. That rule
+/// is only as good as the boundary list it is checked against, so the list is
+/// compared field for field with the layout report the C probe is diffed
+/// against. Written against three values rather than a type parameter because
+/// one structure can be both an input and an output, and both of its
+/// declarations answer to this.
+const fn check_prefix_table(name: &str, prefixes: &[usize], mandatory: usize) {
+    let layout = measured(name);
+    assert!(
+        prefixes.len() == layout.fields.len() + 1,
+        "the prefix list does not name every one of the structure's fields"
+    );
+
+    let mut index = 0;
+    while index < layout.fields.len() {
+        assert!(
+            prefixes[index] == layout.fields[index].offset,
+            "the prefix list does not match the layout report field for field"
+        );
+        index += 1;
+    }
+    assert!(
+        prefixes[layout.fields.len()] == layout.size,
+        "the prefix list does not end at the size the layout report measured"
+    );
+
+    assert!(
+        lists(prefixes, mandatory),
+        "the mandatory prefix ends inside a field"
+    );
+}
+
+/// Runs every check one output structure's tables have to pass, while that
+/// structure is being compiled.
+///
+/// [`Out::begin`] runs this for every structure it is instantiated for, and
+/// every output structure is written through [`Out`], so an output whose prefix
+/// list disagreed with its layout could not be written at all. There is no
+/// second registration macro for outputs: an implementation nothing writes
+/// through has no size to get wrong.
+pub(crate) const fn check_output_tables<S: Versioned>() {
+    check_prefix_table(S::NAME, S::PREFIXES, S::MANDATORY);
 }
 
 /// Runs every check one input structure's tables have to pass, while that
@@ -734,35 +823,7 @@ const fn measured(name: &str) -> &'static TypeLayout {
 /// structure is named by the diagnostic itself, which reports the failure as
 /// `check_input_tables::<the structure>`.
 pub(crate) const fn check_input_tables<S: Input>() {
-    // The caller's declared size is held to the same rule the library's own
-    // mandatory prefixes are held to by
-    // `tests/layout.rs::every_mandatory_prefix_is_a_real_field_boundary`. That
-    // rule is only as good as the boundary list it is checked against, so the
-    // list is compared field for field with the layout report the C probe is
-    // diffed against.
-    let layout = measured(S::NAME);
-    assert!(
-        S::PREFIXES.len() == layout.fields.len() + 1,
-        "the prefix list does not name every one of the structure's fields"
-    );
-
-    let mut index = 0;
-    while index < layout.fields.len() {
-        assert!(
-            S::PREFIXES[index] == layout.fields[index].offset,
-            "the prefix list does not match the layout report field for field"
-        );
-        index += 1;
-    }
-    assert!(
-        S::PREFIXES[layout.fields.len()] == layout.size,
-        "the prefix list does not end at the size the layout report measured"
-    );
-
-    assert!(
-        lists(S::PREFIXES, S::MANDATORY),
-        "the mandatory prefix ends inside a field"
-    );
+    check_prefix_table(S::NAME, S::PREFIXES, S::MANDATORY);
 
     assert!(
         S::PRESENCE.is_empty() || owns_a_family(S::NAME),

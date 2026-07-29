@@ -30,7 +30,7 @@
 //! null, alignment, declared size, tags, and arithmetic are all rejected before
 //! any address is formed.
 
-use crate::boundary::{Out, Versioned, boundary};
+use crate::boundary::{Out, Versioned, boundary, prefixes};
 use crate::status::{
     MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK, MADOPILOT_STATUS_UNSUPPORTED,
     madopilot_status_t,
@@ -479,6 +479,17 @@ impl Versioned for madopilot_build_info_t {
     // Through `table_size`: what a caller checks before it trusts anything else.
     const MANDATORY: usize = 20;
     const NAME: &'static str = "madopilot_build_info_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_build_info_t,
+        struct_size,
+        flags,
+        abi_major,
+        abi_minor,
+        table_size,
+        reserved,
+        library_version,
+        required_backend,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {

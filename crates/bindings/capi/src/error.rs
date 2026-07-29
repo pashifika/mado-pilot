@@ -20,7 +20,7 @@
 
 use mado_pilot::{AssetFault, Error, Status};
 
-use crate::boundary::{Out, Versioned};
+use crate::boundary::{Out, Versioned, prefixes};
 use crate::handle::opaque;
 use crate::status::{
     MADOPILOT_ERROR_CATEGORY_ABI, MADOPILOT_ERROR_CATEGORY_ASSET,
@@ -167,6 +167,17 @@ impl Versioned for madopilot_error_detail_t {
     // subsystem is not describing an error, it is discarding one.
     const MANDATORY: usize = 16;
     const NAME: &'static str = "madopilot_error_detail_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_error_detail_t,
+        struct_size,
+        flags,
+        status,
+        category,
+        asset_fault,
+        asset_stage,
+        message,
+        backend,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {

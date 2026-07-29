@@ -24,7 +24,7 @@ use mado_pilot::{
     Status,
 };
 
-use crate::boundary::{self, Out, Versioned, covers, declared, inputs, prefixes};
+use crate::boundary::{self, Input, Out, Versioned, covers, declared, inputs, prefixes};
 use crate::capture::{FrameHandle, SessionHandle, madopilot_session_t, rect, stamp};
 use crate::engine::report;
 use crate::error::{Fault, madopilot_error_t};
@@ -138,6 +138,9 @@ inputs! {
 impl Versioned for madopilot_match_options_t {
     const MANDATORY: usize = 24;
     const NAME: &'static str = "madopilot_match_options_t";
+    // The same boundaries the input side declares: one structure has one layout,
+    // whichever direction it travels in. Only the mandatory prefix differs.
+    const PREFIXES: &'static [usize] = <Self as Input>::PREFIXES;
 
     fn failure(struct_size: u32) -> Self {
         Self::cleared(struct_size)
@@ -149,6 +152,14 @@ impl Versioned for madopilot_match_t {
     // `bounds` is its last field.
     const MANDATORY: usize = 56;
     const NAME: &'static str = "madopilot_match_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_match_t,
+        struct_size,
+        flags,
+        score,
+        template_id,
+        bounds,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -165,6 +176,15 @@ impl Versioned for madopilot_result_info_t {
     // The whole structure; `searched` is its last field.
     const MANDATORY: usize = 72;
     const NAME: &'static str = "madopilot_result_info_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_result_info_t,
+        struct_size,
+        flags,
+        match_count,
+        backend_id,
+        backend_version,
+        searched,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {

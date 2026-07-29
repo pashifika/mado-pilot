@@ -19,7 +19,7 @@ mod support;
 
 use std::ptr;
 
-use madopilot::layout::struct_size;
+use madopilot::layout::{LAYOUT, struct_size};
 use madopilot::*;
 use support::{
     Scene, bytes_view, expired_operation, negotiate, operation, package_root, str_view, table,
@@ -305,8 +305,11 @@ fn a_refusal_reports_a_message_a_reader_can_use() {
 /// sides. One byte below the prefix must be refused, and the prefix itself must
 /// be accepted — without the second half, raising a prefix would go unnoticed;
 /// without the first, lowering one would.
+///
+/// Every output entry additionally answers for every byte count between its
+/// prefix and its whole structure; see [`assert_output_prefixes`].
 #[test]
-fn every_versioned_output_refuses_a_size_below_its_mandatory_prefix() {
+fn every_versioned_output_holds_a_declared_size_to_its_own_field_boundaries() {
     let api = table();
     let flow = support::Flow::open();
     let request = flow.find_request();
@@ -314,49 +317,79 @@ fn every_versioned_output_refuses_a_size_below_its_mandatory_prefix() {
     let mapping = flow.map();
     let error = support::refused_error(api);
 
-    assert_output_prefix("describe_build", 20, |out| unsafe {
-        (api.describe_build)(out)
-    });
-    assert_output_prefix("error_describe", 16, |out| unsafe {
-        (api.error_describe)(error, out)
-    });
-    assert_output_prefix("target_list_get", 24, |out| unsafe {
+    assert_output_prefixes(
+        "describe_build",
+        "madopilot_build_info_t",
+        20,
+        |out| unsafe { (api.describe_build)(out) },
+    );
+    assert_output_prefixes(
+        "error_describe",
+        "madopilot_error_detail_t",
+        16,
+        |out| unsafe { (api.error_describe)(error, out) },
+    );
+    assert_output_prefixes("target_list_get", "madopilot_target_t", 24, |out| unsafe {
         (api.target_list_get)(flow.targets, 0, out)
     });
-    assert_output_prefix("session_describe", 32, |out| unsafe {
-        (api.session_describe)(flow.session, out)
-    });
-    assert_output_prefix("frame_stamp", 40, |out| unsafe {
+    assert_output_prefixes(
+        "session_describe",
+        "madopilot_session_info_t",
+        32,
+        |out| unsafe { (api.session_describe)(flow.session, out) },
+    );
+    assert_output_prefixes("frame_stamp", "madopilot_frame_stamp_t", 40, |out| unsafe {
         (api.frame_stamp)(flow.frame, out)
     });
-    assert_output_prefix("frame_describe", 24, |out| unsafe {
-        (api.frame_describe)(flow.frame, out)
-    });
-    assert_output_prefix("mapping_describe", 48, |out| unsafe {
+    assert_output_prefixes(
+        "frame_describe",
+        "madopilot_frame_info_t",
+        24,
+        |out| unsafe { (api.frame_describe)(flow.frame, out) },
+    );
+    assert_output_prefixes("mapping_describe", "madopilot_image_t", 48, |out| unsafe {
         (api.mapping_describe)(mapping, out)
     });
-    assert_output_prefix("mapping_stamp", 40, |out| unsafe {
-        (api.mapping_stamp)(mapping, out)
-    });
-    assert_output_prefix("package_describe", 64, |out| unsafe {
-        (api.package_describe)(flow.package, out)
-    });
-    assert_output_prefix("template_describe", 64, |out| unsafe {
-        (api.template_describe)(flow.present, out)
-    });
-    assert_output_prefix("result_describe", 72, |out| unsafe {
-        (api.result_describe)(result, out)
-    });
-    assert_output_prefix("result_stamp", 40, |out| unsafe {
-        (api.result_stamp)(result, out)
-    });
+    assert_output_prefixes(
+        "mapping_stamp",
+        "madopilot_frame_stamp_t",
+        40,
+        |out| unsafe { (api.mapping_stamp)(mapping, out) },
+    );
+    assert_output_prefixes(
+        "package_describe",
+        "madopilot_package_info_t",
+        64,
+        |out| unsafe { (api.package_describe)(flow.package, out) },
+    );
+    assert_output_prefixes(
+        "template_describe",
+        "madopilot_template_info_t",
+        64,
+        |out| unsafe { (api.template_describe)(flow.present, out) },
+    );
+    assert_output_prefixes(
+        "result_describe",
+        "madopilot_result_info_t",
+        72,
+        |out| unsafe { (api.result_describe)(result, out) },
+    );
+    assert_output_prefixes(
+        "result_stamp",
+        "madopilot_frame_stamp_t",
+        40,
+        |out| unsafe { (api.result_stamp)(result, out) },
+    );
     // The one structure with two prefixes: 8 bytes as the options a caller
     // supplies, 24 as the report of what the search ran under. Only ADR 0007
     // records the asymmetry, so only a test keeps it.
-    assert_output_prefix("result_options", 24, |out| unsafe {
-        (api.result_options)(result, out)
-    });
-    assert_output_prefix("result_match", 56, |out| unsafe {
+    assert_output_prefixes(
+        "result_options",
+        "madopilot_match_options_t",
+        24,
+        |out| unsafe { (api.result_options)(result, out) },
+    );
+    assert_output_prefixes("result_match", "madopilot_match_t", 56, |out| unsafe {
         (api.result_match)(result, 0, out)
     });
 
@@ -1149,6 +1182,64 @@ fn a_directory_that_is_not_a_package_reports_the_rule_and_the_stage() {
 }
 
 #[test]
+fn an_archive_view_above_the_engines_source_ceiling_is_refused_before_it_is_read() {
+    let api = table();
+    let flow = support::Flow::open();
+    let operation = operation();
+
+    // One byte past the source ceiling every engine this ABI builds is held to,
+    // declared against a null pointer. Both halves matter. The length is what
+    // has to be refused: believing it would make the boundary copy the caller's
+    // buffer into an owned archive before the loader could apply the same
+    // ceiling, so the tightened limit would cost exactly the allocation it
+    // exists to prevent. And the null pointer is what proves the order — the
+    // declaration alone is enough to refuse, so nothing was read, no slice was
+    // formed over the caller's memory, and no copy was made. A boundary that
+    // resolved the view first would report the null pointer under
+    // `MADOPILOT_ERROR_CATEGORY_ABI` instead.
+    //
+    // The ceiling comes from the facade rather than as a number, because a C
+    // caller cannot configure limits through this ABI: the engine every entry
+    // here builds applies the implementation ceilings, so that is the limit this
+    // test has to be written against.
+    let above_ceiling = usize::try_from(mado_pilot::AssetLimits::MAX_TOTAL_COMPRESSED_BYTES + 1)
+        .expect("the source ceiling fits an object size on both release targets");
+    let source = madopilot_package_source_t {
+        struct_size: struct_size::<madopilot_package_source_t>(),
+        kind: MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES,
+        path: madopilot_str_t::empty(),
+        archive: madopilot_bytes_t {
+            data: ptr::null(),
+            len: above_ceiling,
+        },
+    };
+    let mut package = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: every pointer is a live local, the engine is retained by the flow,
+    // and the archive view is refused on its declared length before the pointer
+    // it carries is used for anything.
+    let status = unsafe {
+        (api.package_load)(
+            flow.engine,
+            &raw const source,
+            &raw const operation,
+            &raw mut package,
+            &raw mut error,
+        )
+    };
+    assert_eq!(status, MADOPILOT_STATUS_LIMIT_EXCEEDED);
+    assert!(package.is_null(), "the owned output stays null");
+
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ASSET);
+    assert_eq!(detail.asset_fault, MADOPILOT_ASSET_FAULT_ARCHIVE_LIMIT);
+    assert_eq!(
+        detail.asset_stage, MADOPILOT_ASSET_STAGE_SOURCE,
+        "the ceiling is the loader's own source-byte ceiling, applied where the copy would be"
+    );
+}
+
+#[test]
 fn preparing_a_template_under_an_expired_deadline_publishes_no_handle() {
     let api = table();
     let flow = support::Flow::open();
@@ -1405,32 +1496,70 @@ fn struct_size_of<S>(value: &S) -> u32 {
     unsafe { (&raw const *value).cast::<u32>().read() }
 }
 
-/// Asserts where one output structure's mandatory prefix actually is.
+/// Asserts what one output entry does with every size a caller could declare.
 ///
-/// One byte below it is refused with nothing written, and the prefix itself is
-/// accepted and reported back. Both halves are needed: lowering a prefix makes
-/// the first fail, raising one makes the second fail.
-fn assert_output_prefix<S: Copy>(
+/// Three claims, over one structure:
+///
+/// - one byte below the mandatory prefix is refused with nothing written, and
+///   the prefix itself is accepted and reported back. Both halves are needed:
+///   lowering a prefix makes the first fail, raising one makes the second fail;
+/// - every byte count from there to the whole structure is accepted exactly when
+///   it lands on a field boundary. A size between two boundaries would leave a
+///   field half populated and reported as populated — for a pointer-length view,
+///   half a pointer beside a length describing the whole of it — and
+///   `docs/c-abi.md` promises the same refusal an input gets;
+/// - an accepted size is written strictly inside itself.
+///
+/// The boundaries come from the layout report rather than from a written table,
+/// because they are the same numbers `tests/layout.rs` pins against the frozen
+/// per-target evidence. What this adds is the behaviour at each one.
+fn assert_output_prefixes<S: Copy>(
     entry: &str,
+    structure: &str,
     mandatory: u32,
     invoke: impl Fn(*mut S) -> madopilot_status_t,
 ) {
+    let whole = struct_size::<S>();
     assert!(
-        mandatory as usize <= size_of::<S>(),
+        mandatory <= whole,
         "{entry} declares a {mandatory} byte prefix of a smaller structure"
     );
 
+    let boundaries = field_boundaries(structure);
+    assert!(
+        boundaries.contains(&mandatory),
+        "{entry} declares a {mandatory} byte prefix that ends inside a field of {structure}"
+    );
+
+    assert_output_refuses(entry, mandatory - 1, &invoke);
+    for declared in mandatory..=whole {
+        if boundaries.contains(&declared) {
+            assert_output_accepts(entry, declared, declared, &invoke);
+        } else {
+            assert_output_refuses(entry, declared, &invoke);
+        }
+    }
+
+    // A caller built against a newer header declares more than this library
+    // knows, which stays supported: the extra bytes are the ones it fills in
+    // itself, and the reported size says how far this library got.
+    assert_output_accepts(entry, whole + 64, whole, &invoke);
+}
+
+/// Asserts that `declared` is refused with no byte of the output written.
+fn assert_output_refuses<S: Copy>(
+    entry: &str,
+    declared: u32,
+    invoke: &impl Fn(*mut S) -> madopilot_status_t,
+) {
     // SAFETY: the output structures satisfy `poisoned`'s contract.
     let mut refused: S = unsafe { poisoned() };
-    set_struct_size(&mut refused, mandatory - 1);
+    set_struct_size(&mut refused, declared);
 
     let status = invoke(&raw mut refused);
     assert_eq!(
-        status,
-        MADOPILOT_STATUS_INVALID_ARGUMENT,
-        "{entry} accepted an output declaring {} bytes, one below its {mandatory} byte mandatory \
-         prefix",
-        mandatory - 1
+        status, MADOPILOT_STATUS_INVALID_ARGUMENT,
+        "{entry} accepted an output declaring {declared} bytes, which is not a prefix it may write"
     );
     // SAFETY: every byte of `refused` was written, by `poisoned` and then by
     // `set_struct_size`, so none of them is uninitialized.
@@ -1438,23 +1567,55 @@ fn assert_output_prefix<S: Copy>(
         unsafe { std::slice::from_raw_parts((&raw const refused).cast::<u8>(), size_of::<S>()) };
     assert!(
         bytes[size_of::<u32>()..].iter().all(|byte| *byte == POISON),
-        "{entry} wrote through an output it refused"
+        "{entry} wrote through an output it refused at {declared} bytes"
     );
+}
 
-    // SAFETY: as above.
+/// Asserts that `declared` is accepted, reports `filled`, and writes no further.
+fn assert_output_accepts<S: Copy>(
+    entry: &str,
+    declared: u32,
+    filled: u32,
+    invoke: &impl Fn(*mut S) -> madopilot_status_t,
+) {
+    // SAFETY: as `assert_output_refuses`.
     let mut accepted: S = unsafe { poisoned() };
-    set_struct_size(&mut accepted, mandatory);
+    set_struct_size(&mut accepted, declared);
 
     let status = invoke(&raw mut accepted);
     assert_eq!(
         status, MADOPILOT_STATUS_OK,
-        "{entry} refused an output declaring its own {mandatory} byte mandatory prefix"
+        "{entry} refused an output declaring {declared} bytes, which is one of its own prefixes"
     );
     assert_eq!(
         struct_size_of(&accepted),
-        mandatory,
-        "{entry} reports the prefix it filled, not the one it knows"
+        filled,
+        "{entry} reports the prefix it filled, not the one it was handed"
     );
+    // SAFETY: as above.
+    let bytes =
+        unsafe { std::slice::from_raw_parts((&raw const accepted).cast::<u8>(), size_of::<S>()) };
+    assert!(
+        bytes[filled as usize..].iter().all(|byte| *byte == POISON),
+        "{entry} wrote past the {filled} bytes it reported"
+    );
+}
+
+/// Every size a prefix of `structure` may end at: each field's offset, and the
+/// whole structure.
+fn field_boundaries(structure: &str) -> Vec<u32> {
+    let layout = LAYOUT
+        .iter()
+        .find(|layout| layout.name == structure)
+        .unwrap_or_else(|| panic!("`{structure}` is measured by the layout report"));
+
+    layout
+        .fields
+        .iter()
+        .map(|field| field.offset)
+        .chain(std::iter::once(layout.size))
+        .map(|size| u32::try_from(size).expect("a public structure is smaller than 4 GiB"))
+        .collect()
 }
 
 /// Asserts where one input structure's mandatory prefix actually is.

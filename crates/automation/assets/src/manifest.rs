@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use mado_pilot_core::{CoordinateSpace, PixelExtent};
-use mado_pilot_vision::{MatchDefaults, TemplateId, VisionFault};
+use mado_pilot_vision::{MatchDefaults, TemplateId, TemplateSource, VisionFault};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -338,8 +338,13 @@ impl RawTemplate {
         }
         let path = PackagePath::normalize(self.path.as_bytes()).ok_or_else(unsafe_manifest_path)?;
 
+        // Both halves of the extent rule the vision contract states, applied here
+        // rather than left to the [`TemplateSource`] built during expansion. A
+        // declaration no backend could decode is metadata this manifest can refuse
+        // for the price of a multiplication, and refusing it here is what keeps
+        // the loader from reading and hashing the entry it names first.
         let extent = PixelExtent::new(self.width, self.height);
-        if extent.is_empty() {
+        if extent.is_empty() || !TemplateSource::extent_within_ceiling(extent) {
             return Err(fault(AssetFaultKind::InvalidTemplateMetadata));
         }
 
@@ -401,6 +406,12 @@ pub(crate) fn from_vision(fault_from_vision: VisionFault) -> AssetFault {
     let kind = match fault_from_vision {
         VisionFault::UnsupportedTemplateSpace => AssetFaultKind::UnsupportedTemplateSpace,
         VisionFault::EmptyTemplateContent => AssetFaultKind::UnsupportedContentEncoding,
+        // A declared extent above the contract's ceiling is the same answer a zero
+        // extent gets, and for the same reason: the manifest carried a value the
+        // vision contract does not accept. Mapped deliberately rather than through
+        // the arm below, because the manifest refuses this while parsing and the
+        // two paths have to agree on what a caller is told.
+        VisionFault::TemplateExtentAboveCeiling => AssetFaultKind::InvalidTemplateMetadata,
         // A vision rule added later is metadata this manifest could not satisfy
         // until it is mapped deliberately, which is the safe default.
         _ => AssetFaultKind::InvalidTemplateMetadata,
@@ -559,6 +570,20 @@ mod tests {
             manifest_json(&template_fields().replace(r#""width": 24"#, r#""width": 0"#));
         assert_eq!(
             parse_kind(&zero_extent),
+            AssetFaultKind::InvalidTemplateMetadata
+        );
+
+        // 30,000 by 30,000 is 2.7 GB of decoded pixels declared in metadata. The
+        // stage is what this asserts as much as the kind: `parse_kind` requires
+        // `manifest`, so a package carrying this is refused before the entry it
+        // names is expanded, hashed, or handed to a decoder.
+        let huge_extent = manifest_json(
+            &template_fields()
+                .replace(r#""width": 24"#, r#""width": 30000"#)
+                .replace(r#""height": 24"#, r#""height": 30000"#),
+        );
+        assert_eq!(
+            parse_kind(&huge_extent),
             AssetFaultKind::InvalidTemplateMetadata
         );
 

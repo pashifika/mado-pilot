@@ -151,6 +151,17 @@ impl Versioned for madopilot_target_t {
     // Through `coordinate_spaces`: what a target is, before what it is called.
     const MANDATORY: usize = 24;
     const NAME: &'static str = "madopilot_target_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_target_t,
+        struct_size,
+        flags,
+        width,
+        height,
+        format,
+        coordinate_spaces,
+        name,
+        provider,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {

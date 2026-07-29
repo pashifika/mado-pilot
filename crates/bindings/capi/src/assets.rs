@@ -15,7 +15,10 @@
 //! argument, not `MADOPILOT_STATUS_ASSET_INVALID`. A package that loaded is
 //! valid; the mistake is the caller's.
 
-use mado_pilot::{AssetPackage, Engine, PreparedTemplate, Status};
+use mado_pilot::{
+    AssetFault, AssetFaultKind, AssetLimits, AssetPackage, Engine, LoadStage, PreparedTemplate,
+    Status,
+};
 
 use crate::boundary::{self, Out, Versioned, inputs, prefixes};
 use crate::engine::{madopilot_engine_t, report};
@@ -80,6 +83,15 @@ inputs! {
 impl Versioned for madopilot_package_info_t {
     const MANDATORY: usize = 64;
     const NAME: &'static str = "madopilot_package_info_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_package_info_t,
+        struct_size,
+        flags,
+        template_count,
+        package_id,
+        package_version,
+        license,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -96,6 +108,18 @@ impl Versioned for madopilot_package_info_t {
 impl Versioned for madopilot_template_info_t {
     const MANDATORY: usize = 64;
     const NAME: &'static str = "madopilot_template_info_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_template_info_t,
+        struct_size,
+        flags,
+        width,
+        height,
+        min_score,
+        id,
+        backend,
+        max_results,
+        space,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -152,8 +176,10 @@ fn run_package_load(
 
     // SAFETY: as above, for the source structure and the views it carries.
     let request = unsafe { boundary::read_input::<madopilot_package_source_t>(source) }?;
+    // The engine's limits go in, because one of the three source kinds is an
+    // owned copy of caller memory and the copy is the boundary's own allocation.
     // SAFETY: as above.
-    let configured = unsafe { package_source(&request) }?;
+    let configured = unsafe { package_source(&request, engine.limits()) }?;
 
     let package = engine
         .load_package(&configured, context.inner())
@@ -167,11 +193,28 @@ fn run_package_load(
     Ok(())
 }
 
+/// Builds the package source a caller's tagged structure describes, under
+/// `limits`.
+///
+/// The archive-bytes kind is the one source this boundary owns storage for: the
+/// loader reads a directory and an archive file from the filesystem, and both of
+/// those are measured before anything is read, but a byte view has to become an
+/// owned archive for a package that outlives the call. That copy is an
+/// allocation the caller's own declared length sizes, so the length answers to
+/// the same configured source ceiling the loader would apply — before the copy
+/// rather than after it. A caller that tightened
+/// [`AssetLimits::with_max_total_compressed_bytes`] tightened this too, and gets
+/// the typed bounded-resource refusal instead of the allocation it asked to
+/// avoid.
+///
+/// [`AssetLimits::with_max_total_compressed_bytes`]: mado_pilot::AssetLimits::with_max_total_compressed_bytes
+///
 /// # Safety
 ///
 /// Every view the structure carries must be readable for the call.
 unsafe fn package_source(
     source: &madopilot_package_source_t,
+    limits: AssetLimits,
 ) -> Result<mado_pilot::PackageSource, Fault> {
     match source.kind {
         MADOPILOT_PACKAGE_SOURCE_DIRECTORY => {
@@ -185,6 +228,22 @@ unsafe fn package_source(
             Ok(mado_pilot::PackageSource::archive_file(path))
         }
         MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES => {
+            // The declared length, before the view is resolved: this is the
+            // check that has to happen without touching the caller's bytes, and
+            // resolving the view is what would touch them.
+            let declared = u64::try_from(source.archive.len).map_err(|_| {
+                Fault::abi(format!(
+                    "`archive` declares {} bytes, which is not a representable length",
+                    source.archive.len
+                ))
+            })?;
+            if declared > limits.max_total_compressed_bytes() {
+                return Err(Fault::from_asset(AssetFault::new(
+                    AssetFaultKind::ArchiveLimit,
+                    LoadStage::Source,
+                )));
+            }
+
             // SAFETY: as above.
             let bytes = unsafe { view::bytes(source.archive, "archive") }?;
             if bytes.is_empty() {

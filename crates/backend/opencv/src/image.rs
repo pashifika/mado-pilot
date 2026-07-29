@@ -15,6 +15,7 @@ use std::ffi::c_void;
 
 use mado_pilot_capture::{CpuMapping, PixelFormat};
 use mado_pilot_core::PixelExtent;
+use mado_pilot_vision::TemplateSource;
 use opencv::core::{CV_8UC4, Mat, MatTraitConst};
 use opencv::imgcodecs::{IMREAD_COLOR, imdecode};
 use opencv::imgproc::{COLOR_BGRA2BGR, cvt_color_def};
@@ -25,6 +26,22 @@ use opencv::imgproc::{COLOR_BGRA2BGR, cvt_color_def};
 /// matcher performs any channel swap once, while it is already copying, and the
 /// adapter then only has to drop the alpha channel.
 pub(crate) const REQUIRED_FORMAT: PixelFormat = PixelFormat::Bgra8;
+
+/// The bytes this profile's decoded matrix stores per pixel.
+///
+/// Named because the decode budget below is the pixel ceiling expressed in this
+/// adapter's own storage, and a profile that stored four channels would have a
+/// different budget for the same ceiling.
+const BGR_CHANNELS: u64 = 3;
+
+/// The most bytes one decoded template may occupy.
+///
+/// The vision contract's pixel ceiling, in the bytes this adapter actually
+/// allocates: 192 MiB. It is the same number
+/// [`TemplateSource::MAX_PIXELS`](mado_pilot_vision::TemplateSource::MAX_PIXELS)
+/// states, so a template the contract accepts is a template this adapter can
+/// decode, and there is one ceiling rather than two that could drift apart.
+const MAX_DECODED_BYTES: u64 = TemplateSource::MAX_PIXELS * BGR_CHANNELS;
 
 /// Why a matrix could not be built.
 ///
@@ -41,6 +58,8 @@ pub(crate) enum ImageFault {
     Truncated,
     /// Encoded content declares an extent other than the one it was loaded as.
     DeclaredExtentMismatch,
+    /// A declared extent would decode to more than [`MAX_DECODED_BYTES`].
+    AboveDecodeCeiling,
     /// OpenCV rejected the operation.
     Rejected,
 }
@@ -115,24 +134,49 @@ pub(crate) fn region_to_bgr(pixels: &CpuMapping) -> Result<Mat, ImageFault> {
 /// alpha is dropped rather than honoured; masked matching is not part of the
 /// Phase 1 profile.
 ///
-/// `declared` is the extent the package metadata gives the template, and it
-/// bounds the decode rather than only checking it afterwards. `imdecode`
+/// `declared` is the extent the template metadata gives the content, and two
+/// things about it are settled before OpenCV is handed anything. `imdecode`
 /// allocates from the dimensions in the file's own header, and a highly
-/// compressible image is small in a package and large in memory, so content
-/// whose header disagrees with the metadata is refused before OpenCV sees it.
+/// compressible image is small in a package and large in memory, so the decode
+/// has to be bounded by something other than the file's size.
+///
+/// First the size: `declared` must decode to at most [`MAX_DECODED_BYTES`],
+/// computed here rather than trusted, so an extent no capture could produce is
+/// refused instead of allocated. Then the agreement: the header must declare
+/// exactly `declared`, so content cannot bring its own larger dimensions to an
+/// extent that passed the ceiling. Equality alone would bound nothing — it makes
+/// two attacker-chosen numbers agree — which is why the ceiling comes first.
+///
 /// The caller compares the decoded extent as well: this says what the file
 /// claims to be, and that says what it turned out to be.
 ///
 /// The content is PNG — the only encoding this adapter accepts, checked by the
 /// caller — so the declaration is the IHDR chunk, at a fixed offset.
 ///
+/// A template source cannot carry an extent above the ceiling, so the first
+/// refusal is not reachable through
+/// [`TemplateSource`](mado_pilot_vision::TemplateSource) today. It is enforced
+/// here anyway: the allocation is this adapter's, and a bound that lives only in
+/// the caller is a bound the next caller does not have.
+///
 /// # Errors
 ///
-/// Returns [`ImageFault`] when the content does not begin with a PNG header,
-/// when that header declares an extent other than `declared`, when the content
-/// is longer than OpenCV's signed extents allow, when it does not decode, or
-/// when it decodes to something other than a non-empty three-channel image.
+/// Returns [`ImageFault`] when `declared` would decode above the ceiling, when
+/// the content does not begin with a PNG header, when that header declares an
+/// extent other than `declared`, when the content is longer than OpenCV's signed
+/// extents allow, when it does not decode, or when it decodes to something other
+/// than a non-empty three-channel image.
 pub(crate) fn decode_to_bgr(content: &[u8], declared: PixelExtent) -> Result<Mat, ImageFault> {
+    // The product of two `u32` dimensions is exact in `u64`; multiplying by the
+    // channel count is the step that can leave the type, so it is checked.
+    let pixels = u64::from(declared.width()) * u64::from(declared.height());
+    if pixels
+        .checked_mul(BGR_CHANNELS)
+        .is_none_or(|bytes| bytes > MAX_DECODED_BYTES)
+    {
+        return Err(ImageFault::AboveDecodeCeiling);
+    }
+
     match png_extent(content) {
         None => return Err(ImageFault::Rejected),
         Some(extent) if extent != declared => return Err(ImageFault::DeclaredExtentMismatch),
@@ -262,6 +306,42 @@ mod tests {
         assert_eq!(
             decode_to_bgr(&bomb, extent()).err(),
             Some(ImageFault::DeclaredExtentMismatch)
+        );
+    }
+
+    #[test]
+    fn a_declaration_that_agrees_with_a_huge_header_is_still_refused_before_the_decode() {
+        // The same 2.7 GB header, declared honestly. Agreement is all the
+        // previous test proves, and agreement between two numbers an attacker
+        // chose bounds nothing: this is the case where the metadata and the file
+        // tell the same enormous story, and the ceiling is the only thing left
+        // between it and an OpenCV allocation.
+        let bomb = mado_pilot_testkit::png::declared_without_body(30_000, 30_000);
+
+        assert_eq!(
+            decode_to_bgr(&bomb, PixelExtent::new(30_000, 30_000)).err(),
+            Some(ImageFault::AboveDecodeCeiling),
+            "the fault has to be the ceiling: `Rejected` would mean imdecode was reached"
+        );
+    }
+
+    #[test]
+    fn the_decode_ceiling_is_the_contracts_pixel_ceiling_in_this_profiles_bytes() {
+        // The ceiling is checked against the declared extent alone, so content
+        // never enters it. An extent one pixel over is refused with no image at
+        // all, and the multiplication that gets there cannot leave `u64` — the
+        // largest extent a `PixelExtent` can hold is refused rather than wrapped
+        // into a passing value.
+        let over = super::MAX_DECODED_BYTES / super::BGR_CHANNELS + 1;
+        let width = u32::try_from(over).expect("the ceiling is far below u32::MAX");
+
+        assert_eq!(
+            decode_to_bgr(&[], PixelExtent::new(width, 1)).err(),
+            Some(ImageFault::AboveDecodeCeiling)
+        );
+        assert_eq!(
+            decode_to_bgr(&[], PixelExtent::new(u32::MAX, u32::MAX)).err(),
+            Some(ImageFault::AboveDecodeCeiling)
         );
     }
 }

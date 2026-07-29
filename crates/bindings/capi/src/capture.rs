@@ -182,6 +182,15 @@ inputs! {
 impl Versioned for madopilot_frame_stamp_t {
     const MANDATORY: usize = 40;
     const NAME: &'static str = "madopilot_frame_stamp_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_frame_stamp_t,
+        struct_size,
+        flags,
+        stream,
+        epoch,
+        sequence,
+        geometry,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self::cleared(struct_size)
@@ -191,6 +200,17 @@ impl Versioned for madopilot_frame_stamp_t {
 impl Versioned for madopilot_frame_info_t {
     const MANDATORY: usize = 24;
     const NAME: &'static str = "madopilot_frame_info_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_frame_info_t,
+        struct_size,
+        flags,
+        width,
+        height,
+        format,
+        space,
+        stride,
+        bounds,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -211,6 +231,18 @@ impl Versioned for madopilot_image_t {
     // mapping.
     const MANDATORY: usize = 48;
     const NAME: &'static str = "madopilot_image_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_image_t,
+        struct_size,
+        flags,
+        width,
+        height,
+        format,
+        space,
+        stride,
+        bytes,
+        region,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -230,6 +262,16 @@ impl Versioned for madopilot_image_t {
 impl Versioned for madopilot_session_info_t {
     const MANDATORY: usize = 32;
     const NAME: &'static str = "madopilot_session_info_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_session_info_t,
+        struct_size,
+        flags,
+        stream,
+        width,
+        height,
+        format,
+        coordinate_spaces,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {

@@ -26,7 +26,7 @@ use support::{
     tiny_manifest_bytes, tiny_memory_package, write_archive,
 };
 #[cfg(unix)]
-use support::{ReplacingClock, WritingClock};
+use support::{ReplacingClock, TickingClock, WritingClock};
 
 #[test]
 fn the_tracked_tiny_package_loads_from_a_directory() {
@@ -101,7 +101,11 @@ fn a_late_archive_path_replacement_invalidates_the_retained_snapshot() {
 
     assert!(clock.replaced(), "the controlled replacement must have run");
     assert_eq!(fault.kind(), AssetFaultKind::SourceChanged);
-    assert_eq!(fault.stage(), LoadStage::DirectoryPreParse);
+    // The source stage, because that is where an archive file is now copied into
+    // the one sequence of bytes every later stage reads: the handle is re-proved
+    // around that copy, so a replacement staged this late is caught before the
+    // trailer is looked at rather than between the pre-parse and the reader.
+    assert_eq!(fault.stage(), LoadStage::Source);
 }
 
 #[cfg(unix)]
@@ -123,7 +127,87 @@ fn same_length_archive_mutation_invalidates_the_retained_snapshot() {
 
     assert!(clock.written(), "the controlled rewrite must have run");
     assert_eq!(fault.kind(), AssetFaultKind::SourceChanged);
-    assert_eq!(fault.stage(), LoadStage::DirectoryPreParse);
+    // As above: the rewrite lands before the copy, and the check around the copy
+    // is what sees it.
+    assert_eq!(fault.stage(), LoadStage::Source);
+}
+
+/// Counts the context checks one successful archive-file load performs.
+#[cfg(unix)]
+fn archive_checks(bytes: &[u8]) -> u64 {
+    let package = TempDir::new("archive-rewrite-checks");
+    let target = package.write("package.zip", bytes);
+    let clock = Arc::new(TickingClock::new());
+    let context = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(3_600)));
+
+    PackageLoader::new()
+        .load(&PackageSource::archive_file(&target), &context)
+        .expect("the fixture archive loads when nothing interferes");
+
+    clock.reads()
+}
+
+#[cfg(unix)]
+#[test]
+fn an_archive_rewritten_in_place_at_any_checkpoint_is_never_read_as_two_archives() {
+    let bytes = std::fs::read(tiny_archive()).expect("readable fixture archive");
+    let baseline = load(&PackageSource::archive_file(tiny_archive())).expect("valid");
+
+    // The same length, and a destroyed trailer. Length is what makes this the
+    // case a retained handle cannot see coming: on Unix the inode stays the
+    // inode, so nothing about the file's identity or size changes. The trailer is
+    // what makes the sweep discriminating — the ZIP reader selects its own
+    // trailer and reserves memory in proportion to the entry count it finds, so a
+    // rewrite landing in the window between the bounded pre-parse and that
+    // reservation is the hazard. A loader reading the file twice sees a malformed
+    // archive there; a loader reading one copy of it cannot.
+    let trailer = bytes
+        .windows(4)
+        .rposition(|window| window == [0x50, 0x4b, 0x05, 0x06])
+        .expect("the fixture archive ends with a trailer");
+    let mut rewritten = bytes.clone().into_boxed_slice();
+    rewritten[trailer] ^= 0xff;
+
+    // Every checkpoint, rather than the one that happens to be the window today:
+    // the property is about all of them, and which read the window falls on is an
+    // implementation detail a later change may move.
+    for point in 0..archive_checks(&bytes) {
+        let package = TempDir::new("archive-rewrite-sweep");
+        let target = package.write("package.zip", &bytes);
+        let clock = Arc::new(WritingClock::new(point, &target, rewritten.clone()));
+        let context = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(60)));
+
+        let outcome = PackageLoader::new().load(&PackageSource::archive_file(&target), &context);
+        assert!(
+            clock.written(),
+            "the controlled rewrite must have run at {point}"
+        );
+        match outcome {
+            // The bytes that were read were the ones the copy took, so the
+            // package is the package this archive commits — never a mixture.
+            Ok(loaded) => assert_eq!(loaded, baseline, "at {point}"),
+            // Or the rewrite was noticed and the load was abandoned.
+            Err(fault) if fault.kind() == AssetFaultKind::SourceChanged => {}
+            Err(fault) => {
+                // A rewrite that lands before the loader opens the file is not a
+                // mutation of anything it holds — it is simply a different file,
+                // and the pre-parse is where a file with no usable trailer is
+                // refused. A structural fault at any *later* stage is the failure
+                // this copy exists to prevent: it would mean that stage read
+                // bytes no earlier stage had validated, and the reservation the
+                // ZIP reader makes from them is not one MadoPilot bounded.
+                assert_eq!(fault.kind(), AssetFaultKind::MalformedArchive, "at {point}");
+                assert!(
+                    fault.stage() <= LoadStage::DirectoryPreParse,
+                    "at {point}: {fault}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

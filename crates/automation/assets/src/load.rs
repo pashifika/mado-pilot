@@ -133,10 +133,10 @@ fn open(
             let source = opened
                 .into_file()
                 .ok_or_else(|| AssetFault::new(AssetFaultKind::SourceChanged, LoadStage::Source))?;
-            let reader = source.try_clone_reader().map_err(|_| {
-                AssetFault::new(AssetFaultKind::SourceUnreadable, LoadStage::Source)
-            })?;
-            archive::open(reader, length, limits, operation, Some(source))
+            // The handle itself goes in rather than a reader over it: an
+            // externally mutable file is copied once, under the source ceiling,
+            // so every archive stage reads one unchanging sequence of bytes.
+            archive::open_file(source, length, limits, operation)
         }
         PackageSource::ArchiveBytes(bytes) => {
             let length = u64::try_from(bytes.len()).map_err(|_| {
