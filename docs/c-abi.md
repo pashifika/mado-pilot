@@ -94,6 +94,16 @@ handle, `madopilot_match_t.template_id` borrows from the result, a target's
 `name` borrows from the target list, and `madopilot_image_t.bytes` borrows from
 the mapping. Copy anything you still need before the final release.
 
+**A view the caller supplies is borrowed the other way, for exactly the call.**
+Every input structure and every view it carries must be readable for the duration
+of the call and must not be modified during it — whether the library reads it once
+or reads it from start to finish, which it does for
+`madopilot_package_source_t.archive`. The library retains no caller memory past
+the call that received it: whatever it must keep, it copies or converts into
+storage of its own, so a package loaded from a caller's archive stays valid after
+that archive is freed. The rule is the caller's half of the same contract the
+paragraph above states for the library's half.
+
 ## Size-versioned structures
 
 Every extensible structure begins with `uint32_t struct_size`, immediately

@@ -842,9 +842,17 @@ caller's, they are read where they are for the length of one call, and keeping t
 readable and unchanged for that call is the caller's half of the contract. Nothing
 here copies them, which is deliberate: a copy would be sized by the caller's own
 declared length, up to the source ceiling, and the reference-counted form a
-retained source needs cannot be allocated fallibly on stable Rust — so the only
-answer available when such an allocation could not be satisfied would be
-terminating the host, which is the one answer a C boundary must never give. See
+retained source needs cannot be allocated fallibly on stable Rust, so a host that
+could not satisfy it would be terminated rather than told.
+
+That removes the largest such allocation from the C load path and does not empty
+it. Entry expansion still allocates infallibly — the buffer an entry is read into
+and the reference-counted copy the package keeps of it — bounded by
+`max_entry_uncompressed_bytes` per entry and `max_total_uncompressed_bytes` in
+total. Reserving that buffer fallibly would not change the outcome while the copy
+beside it cannot be, so the honest statement is the bounded one: no allocation on
+this path is sized by a caller's declaration, and allocation failure during
+expansion is still an abort. See
 [ADR 0010](adr/0010-asset-source-snapshot-and-archive-ownership.md).
 
 Recorded metadata may reject but never authorise: an entry is
@@ -873,8 +881,9 @@ Two of the six describe archive structure, and an archive is the only source tha
 has them: a directory has no compressed representation to expand from.
 `max_total_compressed_bytes` is also what bounds the resident copy an archive file
 is read through, and the length a caller-supplied archive may declare before the C
-boundary reads the view behind it, so tightening it tightens both the largest
-allocation loading an archive makes and the largest view that boundary accepts. The other
+boundary reads the view behind it, so tightening it tightens both that copy and the
+largest view that boundary accepts. It does not bound entry expansion, whose
+allocations answer to the two uncompressed ceilings instead. The other
 four bound work or allocation the loader performs whatever the source is, so
 directory and memory sources are held to them as well. Directory enumeration
 consumes the entry budget before retaining each name, preventing wide or empty

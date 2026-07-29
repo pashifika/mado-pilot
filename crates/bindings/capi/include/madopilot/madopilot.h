@@ -705,6 +705,14 @@ typedef struct madopilot_package_source_t {
  * below, madopilot_operation_t.cancellation, madopilot_find_request_t.frame,
  * and madopilot_find_request_t.options.
  *
+ * Every structure a caller passes in, and every view one of those structures
+ * carries, must be readable for the duration of the call and must not be
+ * modified during it, whether the library reads it once or reads it throughout.
+ * The library never retains a caller's memory past the call that received it:
+ * anything it must keep, it copies or converts into storage of its own. This is
+ * the input counterpart of the output rule above, where a view the library owns
+ * stays valid while its handle is retained.
+ *
  * An entry that takes `out_error` may be passed null there, and then reports
  * the status only. A returned error is owned by the caller and is released with
  * error_release.

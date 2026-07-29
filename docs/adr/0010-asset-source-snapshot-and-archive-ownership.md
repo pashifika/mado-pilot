@@ -67,9 +67,9 @@ affected were already read.
 reads a caller's archive in place for the duration of one call; the committed
 package holds each template's content in its own allocation, so nothing retains
 the archive. `PackageSource::ArchiveBytes` remains for a Rust caller that owns
-its bytes and wants a reusable source. No boundary allocates a caller-sized
-archive buffer, so no boundary can terminate a host in place of returning a
-status.
+its bytes and wants a reusable source. No allocation on the C load path is sized
+by a caller's declaration. That is the whole of the claim: allocation failure
+during entry expansion is still an abort, and the Consequences below name where.
 
 ## Alternatives
 
@@ -80,7 +80,9 @@ than cosmetic — a valid C caller could ask for up to the configured source
 ceiling (256 MiB at the implementation maximum) and be answered with process
 termination — and because the neighbouring filesystem path already reserves
 fallibly and maps failure to `SourceUnreadable`, so accepting the abort would
-freeze an asymmetry inside one module.
+freeze an asymmetry inside one module. Removing the copy narrows that asymmetry to
+the sizes the loader chooses for itself; it does not remove it, and this ADR does
+not claim otherwise.
 
 **Change the retained representation to a fallible one.** `Arc<Vec<u8>>` would
 give a fallible caller-sized allocation with one payload copy, unlike
@@ -109,11 +111,26 @@ exclusion, and the Unix comparison's refusal of any recorded write.
   memory and do not want to hand over. `PackageSource::copy_archive_bytes`, added
   earlier on this branch and never released, is gone; nothing released named it.
 - The C contract for `MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES` is unchanged in
-  shape and stricter in nothing: the view must be readable for the call, exactly
-  as [ADR 0007](0007-phase-1-c-abi-freeze.md) requires of every pointer view. The
-  header now says the library copies nothing, so a caller may release the archive
-  the moment the call returns. No function-table entry, structure, or field
-  moved, so the ABI layout is untouched.
+  shape: the view must be readable, and unmodified, for the call. That rule was
+  not written down anywhere general — [ADR 0007](0007-phase-1-c-abi-freeze.md) and
+  `docs/c-abi.md` state the *output* half, that a library-owned view is valid
+  while its owner is retained, and said nothing about caller-supplied input. This
+  change widens the window in which the rule matters, from a copy at the start of
+  the call to the whole load, so it is now stated generally: in the header's
+  function-table preamble and in `docs/c-abi.md` beside the output rule, together
+  with what the library owes in return — that it retains no caller memory past the
+  call, so a caller may release the archive the moment the call returns. No
+  function-table entry, structure, or field moved, so the ABI layout is untouched.
+- What this does **not** fix: entry expansion allocates infallibly, in
+  `read_capped`'s unreserved buffer and in the reference-counted copy the package
+  keeps of it, bounded by `max_entry_uncompressed_bytes` per entry and
+  `max_total_uncompressed_bytes` in total. A fallible reservation for the first
+  would not change the outcome while the second cannot be allocated fallibly on
+  stable Rust for the same reason the archive copy could not, and making the
+  second fallible means changing what a template's content is retained as — an
+  ADR 0006 breaking change, and a separate decision from this one. Any future
+  statement about allocation failure at the C boundary has to name those two
+  sites.
 - Peak memory for a C archive load drops by the archive's length. A caller that
   tightened `max_total_compressed_bytes` still tightens the largest view the
   boundary accepts, because the declared length is answered against that ceiling
@@ -124,17 +141,23 @@ exclusion, and the Unix comparison's refusal of any recorded write.
   migration path is the owned `PackageSource::ArchiveBytes` kind, which still
   exists.
 - Documentation changed with the code: `docs/architecture.md` (the asset summary,
-  the `source` stage row, the snapshot statement, the ceiling paragraph), the
-  `mado-pilot-assets` archive module documentation, and the released C header's
-  package-source paragraph. The normative *Stable source snapshot* requirement
-  and its scenarios are updated in the change's own specification.
+  the `source` stage row, the snapshot statement, the allocation statement, the
+  ceiling paragraph), the `mado-pilot-assets` archive module documentation,
+  `docs/c-abi.md`, and the released C header's function-table preamble and
+  package-source paragraph. The normative *Stable source snapshot* requirement and
+  its scenarios are updated in the change's own specification.
 
 ## Verification
 
 - `crates/automation/assets/tests/operation_context.rs` sweeps a borrowed archive
   load over every deadline and every observable cancellation point, and asserts
-  that some point is reported at `LoadStage::Commit`. A borrowed load that
-  published without its final commit check would fail that assertion.
+  that the **last two** points are both reported at `LoadStage::Commit`. Asserting
+  that *some* point reaches commit would not discriminate: the stage has two
+  consecutive observation points, the checkpoint and `Operation::commit` itself, so
+  a load that checkpointed and then published would still report it once. Proved by
+  removing the final `operation.commit` and re-running: both borrowed sweeps fail
+  with `(Expansion, Commit)`, while the pre-existing directory and archive-file
+  sweeps stay green. Both entries share one tail, so the guard covers both.
 - The same file asserts a borrowed load, an owned load, and a file load of the
   same archive produce equal packages, which is what says ownership is not part
   of what a package is.
@@ -142,8 +165,11 @@ exclusion, and the Unix comparison's refusal of any recorded write.
   caller's own memory — compared by address, not by contents — and that the
   declared length is refused against the ceiling before the view is read.
 - `crates/bindings/capi/tests/abi.rs` loads a package from a lent archive,
-  overwrites and drops the lender's buffer, and then still describes the package;
-  and asserts that the same load under an expired deadline publishes no handle.
+  overwrites and drops the lender's buffer, and then still describes the package.
+  A second test asserts that an expired operation is refused at admission and
+  publishes no handle — at admission is all it proves, because the entry admits the
+  operation before it reads the source structure; interruption during a load is
+  the assets crate's sweeps, which can drive a controlled clock.
 - The snapshot contract's platform halves are pinned by the filesystem
   conformance tests (`crates/automation/assets/tests/`), including the Windows
   assertion that a retained source denies concurrent writers and path

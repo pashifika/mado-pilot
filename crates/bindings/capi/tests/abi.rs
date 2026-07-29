@@ -1293,8 +1293,16 @@ fn a_package_loaded_from_a_lent_archive_outlives_the_lender() {
     );
 }
 
+/// An archive-bytes request under a terminal operation is refused at admission.
+///
+/// Named for where the refusal happens, because that is all this proves: the
+/// entry admits the operation before it reads the source structure, so the view
+/// is never looked at. Interruption *during* a borrowed load — including at the
+/// commit that publishes it — is swept in `mado-pilot-assets`, which can drive a
+/// controlled clock; this is the boundary's half, that the admission gate covers
+/// this source kind and publishes nothing when it refuses.
 #[test]
-fn loading_a_lent_archive_under_an_expired_deadline_publishes_no_handle() {
+fn an_expired_operation_refuses_a_lent_archive_at_admission() {
     let api = table();
     let flow = support::Flow::open();
     let expired = expired_operation();

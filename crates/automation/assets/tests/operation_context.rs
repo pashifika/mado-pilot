@@ -258,10 +258,7 @@ fn no_deadline_anywhere_inside_a_borrowed_archive_load_produces_a_package() {
         stages.contains(&LoadStage::Expansion),
         "some deadline must expire while entries are being read and hashed"
     );
-    assert!(
-        stages.contains(&LoadStage::Commit),
-        "a borrowed archive is published through the same final commit check as every other source"
-    );
+    assert_commits_through_the_operation(&stages);
 }
 
 #[test]
@@ -296,9 +293,27 @@ fn no_cancellation_anywhere_inside_a_borrowed_archive_load_produces_a_package() 
         stages.contains(&LoadStage::Expansion),
         "some cancellation must land while archive entries are being expanded"
     );
-    assert!(
-        stages.contains(&LoadStage::Commit),
-        "cancellation at the last observable check must refuse the commit, not publish"
+    assert_commits_through_the_operation(&stages);
+}
+
+/// Asserts that the last two interruption points of a sweep are the commit's own.
+///
+/// That a sweep reaches `LoadStage::Commit` says less than it appears to. The
+/// stage is reported by *two* consecutive observation points — the checkpoint the
+/// pipeline takes at that stage, and `Operation::commit` itself — so a load that
+/// checkpointed and then published without committing through the operation would
+/// still put one `Commit` in the list, and a membership test would pass. The
+/// discriminating property is that the last two are both `Commit`: delete the
+/// final commit and the second-to-last point falls back to expansion.
+fn assert_commits_through_the_operation(stages: &[LoadStage]) {
+    let count = stages.len();
+    assert!(count >= 2, "a sweep this short proves nothing: {count}");
+    assert_eq!(
+        (stages[count - 2], stages[count - 1]),
+        (LoadStage::Commit, LoadStage::Commit),
+        "the last two interruption points must be the commit checkpoint and the \
+         commit itself, so that publishing without the operation's final check \
+         cannot pass this sweep"
     );
 }
 
