@@ -254,8 +254,13 @@ int main(int argc, char** argv)
                    (int)target.format);
         }
 
-        /* Out of range is invalid argument, and leaves the output alone. */
-        memset(&target, 0, sizeof(target));
+        /* Out of range is invalid argument, and puts the output in its failure
+         * state. Poisoned with 0xAA rather than zeroed, because zeroing first
+         * and then checking for zero holds whether or not the library wrote
+         * anything: a regression to validate-before-initialize would have passed.
+         * `struct_size` is restored after the poison because the accessor reads
+         * it. */
+        memset(&target, 0xAA, sizeof(target));
         target.struct_size = (uint32_t)sizeof(target);
         expect(api->target_list_get(targets, count, &target) ==
                    MADOPILOT_STATUS_INVALID_ARGUMENT,
@@ -497,7 +502,9 @@ int main(int argc, char** argv)
 
         {
             madopilot_match_t match;
-            memset(&match, 0, sizeof(match));
+            /* Poisoned rather than zeroed, for the reason the target accessor
+             * above states. */
+            memset(&match, 0xAA, sizeof(match));
             match.struct_size = (uint32_t)sizeof(match);
             expect(api->result_match(found, info.match_count, &match) ==
                        MADOPILOT_STATUS_INVALID_ARGUMENT,

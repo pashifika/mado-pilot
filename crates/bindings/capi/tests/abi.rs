@@ -33,6 +33,13 @@ fn a_caller_negotiates_the_complete_phase_1_prefix() {
 
     assert_eq!(api.abi_major, MADOPILOT_ABI_MAJOR);
     assert_eq!(api.abi_minor, MADOPILOT_ABI_MINOR);
+    // These two say only that the table advertises the constant the header
+    // declares, which catches a wrong constant at the one place the table is
+    // built and nothing more: `MADOPILOT_API_SIZE_PHASE1` is defined as
+    // `size_of::<madopilot_api_t>()`, so neither can fail if a member's width
+    // changes. The frozen size and layout are pinned in `layout.rs`, against
+    // the committed `docs/evidence/c-abi/layout-*.txt`. Read this as a
+    // self-consistency check, not as that guard.
     assert_eq!(
         api.struct_size, MADOPILOT_API_SIZE_PHASE1,
         "the table reports its own size, so a newer caller can clamp to it"
@@ -244,6 +251,49 @@ fn an_input_smaller_than_its_mandatory_prefix_is_refused() {
     let detail = support::describe_and_release(api, error);
     assert_eq!(detail.status, MADOPILOT_STATUS_INVALID_ARGUMENT);
     assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
+}
+
+/// A reported failure carries readable text, not just numbers.
+///
+/// Every other test here reads an error through `describe_and_release`, which
+/// blanks the borrowed views on the way out. That is right for a caller keeping
+/// the detail, but it meant the message surface was asserted only by the C++
+/// probe: a regression that reported an empty message passed `cargo test`. The
+/// text is not a compatibility promise and is deliberately not matched against
+/// a fixed string — what is asserted is that there is one, and that it is the
+/// diagnostic surface rather than a restatement of the status slug.
+#[test]
+fn a_refusal_reports_a_message_a_reader_can_use() {
+    let api = table();
+    let scene = Scene::new();
+    let operation = operation();
+
+    let mut engine = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: a null source is the refusal being provoked; the other outputs are
+    // live locals.
+    let status = unsafe {
+        (api.engine_create)(
+            ptr::null(),
+            &raw const operation,
+            &raw mut engine,
+            &raw mut error,
+        )
+    };
+    assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+    assert!(engine.is_null(), "the owned output stays null");
+    drop(scene);
+
+    let (detail, message) = support::describe_message_and_release(api, error);
+    assert_eq!(detail.status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+    assert!(
+        !message.is_empty(),
+        "a refusal that accepted an out_error explains itself"
+    );
+    assert_ne!(
+        message, "invalid_argument",
+        "the message is diagnostic detail, not the status slug again"
+    );
 }
 
 /// The mandatory prefix of every size-versioned structure, in both directions.
@@ -963,8 +1013,23 @@ fn every_status_has_a_slug_and_an_unallocated_one_does_not_claim_a_name() {
 
     let mut text = madopilot_str_t::empty();
     // SAFETY: as above.
-    unsafe { (api.status_text)(MADOPILOT_STATUS_INTERNAL_PANIC + 1, &raw mut text) };
-    // SAFETY: the view borrows static storage that lives as long as the library.
+    let status = unsafe { (api.status_text)(MADOPILOT_STATUS_INTERNAL_PANIC + 1, &raw mut text) };
+    // The status was discarded here, and the view was then dereferenced without
+    // being checked. That is the wrong way round for this test in particular:
+    // the regression it exists to catch is the library leaving the view in its
+    // null failure state, and `from_raw_parts` requires a non-null pointer even
+    // at length zero, so the test would have been undefined behaviour on
+    // exactly the failure it was watching for.
+    assert_eq!(
+        status, MADOPILOT_STATUS_OK,
+        "an unrecognized status is still a well-formed question"
+    );
+    assert!(
+        !text.data.is_null(),
+        "a succeeding status_text leaves a readable view"
+    );
+    // SAFETY: the status is OK and the pointer is non-null, so the view borrows
+    // static storage that lives as long as the library.
     let unrecognized = unsafe { std::slice::from_raw_parts(text.data.cast::<u8>(), text.len) };
     assert_eq!(unrecognized, b"unrecognized");
 }

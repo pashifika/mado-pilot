@@ -830,16 +830,40 @@ mod tests {
 
     #[test]
     fn faults_map_to_public_statuses() {
-        assert_eq!(GeometryFault::NotFinite.status(), Status::InvalidArgument);
-        assert_eq!(GeometryFault::EmptyRegion.status(), Status::InvalidArgument);
-        assert_eq!(
-            GeometryFault::OutsideExtent.status(),
-            Status::InvalidArgument
-        );
-        assert_eq!(
-            GeometryFault::ConversionUnsupported.status(),
-            Status::Unsupported
-        );
+        // Every variant is paired with the status it reports. This asserted
+        // four of the eight before, so half the mapping was released with
+        // nothing checking it.
+        //
+        // `status()` is itself an exhaustive match, so a new fault already
+        // fails to compile there. What the match at the end of the loop adds
+        // is that it fails to compile *here* as well, which is what brings
+        // whoever adds the fault into this test to extend the list. Nothing
+        // forces the pair itself to be added; that residual is why the list is
+        // stated in full rather than sampled.
+        let expectations = [
+            (GeometryFault::NotFinite, Status::InvalidArgument),
+            (GeometryFault::NegativeSize, Status::InvalidArgument),
+            (GeometryFault::OutOfNormalizedRange, Status::InvalidArgument),
+            (GeometryFault::EmptyRegion, Status::InvalidArgument),
+            (GeometryFault::SpaceMismatch, Status::InvalidArgument),
+            (GeometryFault::ConversionUnsupported, Status::Unsupported),
+            (GeometryFault::OutsideExtent, Status::InvalidArgument),
+            (GeometryFault::ExtentOverflow, Status::InvalidArgument),
+        ];
+
+        for (fault, status) in expectations {
+            assert_eq!(fault.status(), status, "{fault:?}");
+            match fault {
+                GeometryFault::NotFinite
+                | GeometryFault::NegativeSize
+                | GeometryFault::OutOfNormalizedRange
+                | GeometryFault::EmptyRegion
+                | GeometryFault::SpaceMismatch
+                | GeometryFault::ConversionUnsupported
+                | GeometryFault::OutsideExtent
+                | GeometryFault::ExtentOverflow => {}
+            }
+        }
     }
 
     #[test]

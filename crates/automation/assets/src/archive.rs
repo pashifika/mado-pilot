@@ -123,6 +123,15 @@ pub(crate) fn open<R: Read + Seek + 'static>(
     if archive.central_directory_start() != directory.start {
         return Err(malformed());
     }
+    // Unreachable with `zip` 8.6.0, and deliberately kept. `validate_central_directory`
+    // walks exactly `entry_count` headers from `start` and requires the walk to
+    // land on `end`, so the pre-parse has already proved the recorded count is
+    // the number of headers physically in the recorded region; the comparison
+    // above has already proved the reader opened that same region. For this to
+    // fire, `zip` would have to count something else out of bytes both sides
+    // agree on. No fixture can reach it without faking the reader, which is why
+    // there is no test for it — it is the third of the three things a `zip`
+    // version bump has to re-verify, not a gap in coverage.
     let present = u64::try_from(archive.len()).map_err(|_| overflow())?;
     if present != directory.entry_count {
         return Err(malformed());

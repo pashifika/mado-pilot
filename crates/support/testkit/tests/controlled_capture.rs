@@ -6,7 +6,9 @@ use std::thread;
 use std::time::Duration;
 
 use mado_pilot_capture::{CaptureProvider, Continuity, FrameRequest, OpenRequest, PixelFormat};
-use mado_pilot_core::{CancellationToken, IdentityIssuer, OperationContext, PixelExtent, Status};
+use mado_pilot_core::{
+    CancellationToken, GeometryRevision, IdentityIssuer, OperationContext, PixelExtent, Status,
+};
 use mado_pilot_testkit::{ControlledCapture, capture_contract};
 
 /// Every wait in this file carries a deadline, so a contract regression fails
@@ -205,9 +207,23 @@ fn a_reshaped_publication_starts_a_later_epoch() {
     assert_eq!(reshaped.stamp().sequence().value(), 0);
     assert_eq!(reshaped.descriptor().extent(), PixelExtent::new(16, 12));
 
+    // The extent changed, so the transform metadata changed, so the geometry
+    // revision has to move: a caller correlating a result against a frame
+    // relies on the revision to tell it the geometry it was computed against is
+    // still the current one. This was asserted nowhere — epoch, sequence and
+    // extent were all checked here and the revision was not, so a stream that
+    // reshaped under one revision passed.
+    assert!(
+        reshaped.stamp().geometry().value() > first.stamp().geometry().value(),
+        "a reshape advances the geometry revision: {} did not follow {}",
+        reshaped.stamp().geometry(),
+        first.stamp().geometry()
+    );
+
     // The frame taken before the reshape is untouched by it.
     assert_eq!(first.descriptor().extent(), PixelExtent::new(8, 6));
     assert_eq!(first.stamp().epoch().value(), 0);
+    assert_eq!(first.stamp().geometry(), GeometryRevision::FIRST);
 
     session.close(&operation).expect("close succeeds");
     assert_eq!(session.description().stream(), first.stamp().stream());

@@ -822,9 +822,16 @@ fn close_racing_an_in_flight_search_has_exactly_one_terminal_outcome() {
         })
     };
 
-    let mut succeeded = 0;
-    let mut closed = 0;
-    for _ in 0..64 {
+    // The outcomes are recorded in order rather than only counted. A count is
+    // decided by the loop: with one arm per outcome and a `panic!` for anything
+    // else, `succeeded + closed == 64` holds after 64 iterations whatever the
+    // library did, so it could not fail. What the loop does not decide is the
+    // ORDER, and close is terminal, so every success must precede every
+    // refusal. A session that accepted work again after being closed would
+    // break that and nothing here would have noticed before.
+    let mut refused_at = None;
+    let mut succeeded = 0usize;
+    for attempt in 0..64 {
         let operation = operation();
         let mut result = ptr::null_mut();
         // SAFETY: every handle the request names is retained by the flow.
@@ -841,12 +848,17 @@ fn close_racing_an_in_flight_search_has_exactly_one_terminal_outcome() {
             MADOPILOT_STATUS_OK => {
                 succeeded += 1;
                 assert!(!result.is_null());
+                assert_eq!(
+                    refused_at, None,
+                    "attempt {attempt} succeeded after attempt {refused_at:?} was refused; \
+                     close is terminal"
+                );
                 // SAFETY: owned here.
                 unsafe { (api.result_release)(result) };
             }
             MADOPILOT_STATUS_CLOSED | MADOPILOT_STATUS_CANCELLED => {
-                closed += 1;
                 assert!(result.is_null(), "a refused search produces no result");
+                refused_at = refused_at.or(Some(attempt));
             }
             other => panic!("unexpected terminal outcome {other}"),
         }
@@ -854,10 +866,39 @@ fn close_racing_an_in_flight_search_has_exactly_one_terminal_outcome() {
     searching.store(false, Ordering::Release);
     closer.join().expect("close is safe to call repeatedly");
 
-    assert!(
-        succeeded + closed == 64,
-        "every attempt had exactly one terminal outcome"
+    // Whether the closer won a race is deliberately not asserted. It cannot be
+    // forced: the thread might not be scheduled before the loop sets the flag,
+    // and requiring a win would make this test fail for a reason that is not a
+    // defect. `refused_at` and `succeeded` are therefore evidence for the
+    // ordering check above rather than a claim of their own — but the terminal
+    // behaviour below IS deterministic, because it closes the session itself.
+    let _ = (refused_at, succeeded);
+
+    let after = operation();
+    // SAFETY: the session is retained by the flow.
+    let closed = unsafe { (api.session_close)(flow.session, &raw const after, ptr::null_mut()) };
+    assert_eq!(
+        closed, MADOPILOT_STATUS_OK,
+        "close is idempotent, however many times the racing thread already ran"
     );
+
+    // Close is terminal, so this state is permanent.
+    let mut result = ptr::null_mut();
+    // SAFETY: as in the loop.
+    let status = unsafe {
+        (api.session_find)(
+            flow.session,
+            &raw const request,
+            &raw const after,
+            &raw mut result,
+            ptr::null_mut(),
+        )
+    };
+    assert!(
+        status == MADOPILOT_STATUS_CLOSED || status == MADOPILOT_STATUS_CANCELLED,
+        "a closed session stays closed, got {status}"
+    );
+    assert!(result.is_null(), "a refused search produces no result");
 }
 
 #[test]

@@ -263,6 +263,39 @@ void move_assignment_releases_the_destination(Fixture& fixture)
     check_ok(fixture.frame.stamp(), "the original is untouched");
 }
 
+/// Assigning an owner to itself leaves it owning what it owned.
+///
+/// `Owner::operator=` guards `this != &other` and resets the destination first.
+/// Without the guard, self-assignment releases the handle and then moves the
+/// now-dangling value back into place — a use-after-free that no test reached:
+/// deleting the guard left the whole suite green.
+void self_move_assignment_keeps_the_owner_intact(Fixture& fixture)
+{
+    madopilot::Frame owner = fixture.frame.clone();
+
+    // The cast is what makes this a self-move rather than a self-copy, and the
+    // pragmas are here because warning about exactly this is the compiler doing
+    // its job — the point of the test is that the guarded path is correct when a
+    // caller does it anyway, through an alias the compiler cannot see through.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wself-move"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wself-move"
+#endif
+    owner = std::move(owner);
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+    check(!owner.empty(), "self-assignment does not release the owner");
+    check_ok(owner.stamp(), "and it still answers afterwards");
+    check_ok(fixture.frame.stamp(), "the original is untouched");
+}
+
 /// A clone is an independent owner that outlives the one it came from.
 void a_clone_outlives_its_origin(Fixture& fixture)
 {
@@ -630,6 +663,8 @@ int main(int argc, char** argv)
     run("moving an owner transfers it", moving_an_owner_transfers_it, fixture);
     run("move assignment releases the destination",
         move_assignment_releases_the_destination, fixture);
+    run("self move assignment keeps the owner intact",
+        self_move_assignment_keeps_the_owner_intact, fixture);
     run("a clone outlives its origin", a_clone_outlives_its_origin, fixture);
     run("cloning an empty owner is empty", cloning_an_empty_owner_is_empty, fixture);
     run("a child outlives its parents", a_child_outlives_its_parents, fixture);

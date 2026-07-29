@@ -174,6 +174,32 @@ mod tests {
             Status::VisionFailed,
             Status::Internal,
         ];
+        // The list above is a snapshot: it covers every status that existed
+        // when it was written, and a twelfth whose slug collided with one of
+        // these would not be compared against anything.
+        //
+        // `as_str()` is itself an exhaustive match, so a new status already
+        // fails to compile there. What the match below adds is that it fails to
+        // compile in this test too, which is what brings whoever adds the
+        // status here to extend the list. Nothing forces the list entry itself;
+        // that residual is why this is a match over the list rather than a
+        // count.
+        for status in statuses {
+            match status {
+                Status::InvalidArgument
+                | Status::Unsupported
+                | Status::Cancelled
+                | Status::DeadlineExceeded
+                | Status::Closed
+                | Status::TargetLost
+                | Status::LimitExceeded
+                | Status::CaptureFailed
+                | Status::AssetInvalid
+                | Status::VisionFailed
+                | Status::Internal => {}
+            }
+        }
+
         let mut slugs: Vec<&str> = statuses.iter().map(|status| status.as_str()).collect();
         slugs.sort_unstable();
         let total = slugs.len();

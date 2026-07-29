@@ -162,6 +162,82 @@ fn the_header_declares_no_later_phase_surface() {
     }
 }
 
+/// Returns the header with its comments removed.
+///
+/// The scan below looks for words rather than declarations, so a word that only
+/// appears in prose would be a false failure. Stripping the comments first is
+/// what makes the scan exact instead of approximate.
+fn without_comments(header: &str) -> String {
+    let mut out = String::with_capacity(header.len());
+    let bytes = header.as_bytes();
+    let mut index = 0;
+    let mut in_line = false;
+    let mut in_block = false;
+
+    while index < bytes.len() {
+        let rest = &bytes[index..];
+        if in_line {
+            if rest[0] == b'\n' {
+                in_line = false;
+                out.push('\n');
+            }
+            index += 1;
+        } else if in_block {
+            if rest.starts_with(b"*/") {
+                in_block = false;
+                index += 2;
+            } else {
+                if rest[0] == b'\n' {
+                    out.push('\n');
+                }
+                index += 1;
+            }
+        } else if rest.starts_with(b"//") {
+            in_line = true;
+            index += 2;
+        } else if rest.starts_with(b"/*") {
+            in_block = true;
+            index += 2;
+        } else {
+            out.push(char::from(rest[0]));
+            index += 1;
+        }
+    }
+
+    out
+}
+
+/// No later-phase concept appears anywhere in the code the header declares.
+///
+/// [`the_header_declares_no_later_phase_surface`] checks the same words against
+/// declared TYPE names only, so a later-phase *method* on an existing type —
+/// `Session::register_frame_callback`, say — passed it, though the spec forbids
+/// types or methods alike. None of these words occurs anywhere in the header
+/// today, comments included, which is what lets this be a scan of the whole
+/// declared surface rather than a parse of part of it: it catches a method, a
+/// member, an alias, or a type equally.
+///
+/// The comparison folds case, and that is load-bearing rather than defensive.
+/// [`EXCLUDED`] spells the words for type names, so they are `PascalCase`, while
+/// a method is `snake_case`: a case-sensitive scan let `register_frame_callback`
+/// through, which is the very example this exists to catch. Folding case
+/// introduces no false positive — none of these words occurs in the header's
+/// code under any spelling.
+#[test]
+fn no_later_phase_concept_appears_anywhere_in_the_header() {
+    let header = without_comments(&header()).to_lowercase();
+
+    for excluded in EXCLUDED {
+        assert!(
+            !header.contains(&excluded.to_lowercase()),
+            "the header names `{excluded}`, which the Phase 1 C prefix does not \
+             contain. Input, OCR, watchers, queries, callbacks, and native-frame \
+             extensions are appended by a later phase, in C first — as a type or \
+             as a method, either way."
+        );
+    }
+}
+
 #[test]
 fn every_owner_is_reachable_and_none_is_orphaned() {
     let header = header();

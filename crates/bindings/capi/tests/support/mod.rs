@@ -421,6 +421,66 @@ pub fn refused_error(api: &'static madopilot_api_t) -> *mut madopilot_error_t {
     error
 }
 
+/// Copies a C view's bytes as a Rust string.
+///
+/// The view borrows from whatever produced it, so anything a test keeps past
+/// that owner's release has to be copied out first.
+///
+/// # Panics
+///
+/// Panics when a non-empty view is null, or when its bytes are not UTF-8.
+pub fn view_to_string(view: madopilot_str_t) -> String {
+    if view.len == 0 {
+        return String::new();
+    }
+    assert!(!view.data.is_null(), "a non-empty view has a pointer");
+
+    // SAFETY: the view is non-null with a length its producer set, and the
+    // caller keeps its owner retained across this call.
+    let bytes = unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.len) };
+    String::from_utf8(bytes.to_vec()).expect("a message view is UTF-8")
+}
+
+/// Reads an error's structured detail and its message text, then releases it.
+///
+/// [`describe_and_release`] blanks the borrowed views, which is correct for a
+/// caller keeping the detail but meant no Rust test ever read a message: an
+/// error that reported an empty one passed `cargo test` and was caught only by
+/// the C++ probe. This copies the text out first, so the message surface is
+/// asserted in the same suite that asserts everything else.
+pub fn describe_message_and_release(
+    api: &'static madopilot_api_t,
+    error: *mut madopilot_error_t,
+) -> (madopilot_error_detail_t, String) {
+    assert!(!error.is_null(), "a reported failure produced an error");
+
+    let mut detail = madopilot_error_detail_t {
+        struct_size: struct_size::<madopilot_error_detail_t>(),
+        flags: 0,
+        status: MADOPILOT_STATUS_OK,
+        category: MADOPILOT_ERROR_CATEGORY_UNSPECIFIED,
+        asset_fault: MADOPILOT_ASSET_FAULT_UNKNOWN,
+        asset_stage: MADOPILOT_ASSET_STAGE_UNKNOWN,
+        message: madopilot_str_t::empty(),
+        backend: madopilot_str_t::empty(),
+    };
+    // SAFETY: `detail` is a live local with its `struct_size` set, and the
+    // error is retained until the release below.
+    let status = unsafe { (api.error_describe)(error, &raw mut detail) };
+    assert_eq!(status, MADOPILOT_STATUS_OK, "error_describe");
+
+    let message = view_to_string(detail.message);
+    let copied = madopilot_error_detail_t {
+        message: madopilot_str_t::empty(),
+        backend: madopilot_str_t::empty(),
+        ..detail
+    };
+    // SAFETY: the caller owns this reference and is giving it up.
+    unsafe { (api.error_release)(error) };
+
+    (copied, message)
+}
+
 /// Reads an error's structured detail, then releases it.
 pub fn describe_and_release(
     api: &'static madopilot_api_t,
