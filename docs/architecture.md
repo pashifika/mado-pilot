@@ -742,6 +742,33 @@ dependency rules is a review rule enforced through
 [third-party-dependencies.md](third-party-dependencies.md) and `cargo deny`
 rather than through the architecture checker.
 
+### Capture publication and replay ownership
+
+`mado-pilot-capture` owns authoritative stream identity and geometry. An Adapter
+submits an owned `Publication`; `StreamState` validates lifecycle, continuity,
+candidate identity, transform, descriptor, and pixel length before committing
+the cursor, geometry revision, and current immutable `Frame` together. The
+ordinary `publish` operation consumes refused input as it always has.
+`publish_recoverable` is the additive ownership-aware form: on refusal it
+returns the same `Publication` allocation with the same public `Error`, after
+committing none of that candidate state. `RefusedPublication` diagnostics expose
+status and shape metadata but never captured pixel content.
+
+The replay Adapter uses that seam as a finite-source transaction. It removes the
+exact head `ReplayFrame` into one exclusive reservation, releases the queue
+mutex, performs final operation arbitration, and publishes without copying the
+frame-sized pixel allocation. Success consumes the reservation once.
+Cancellation, deadline expiry, or stream refusal moves the exact frame back to
+the queue head before releasing the reservation. Queue removal/restoration and
+stream publication are separate critical sections: the queue and stream mutexes
+are never nested, and caller-supplied clock or cancellation code runs outside
+both.
+
+This is an additive Rust-only contract. It changes no facade behavior, C
+function table, C layout, header, or C++ wrapper. The decision and its native
+performance acceptance conditions are recorded in
+[ADR 0011](adr/0011-recoverable-stream-publication.md).
+
 ### Asset packages
 
 `mado-pilot-assets` loads a package from a local directory, from caller-owned

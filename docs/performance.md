@@ -275,6 +275,16 @@ Every profile was measured on a named host, two hundred samples per workload
 after twenty warm-up iterations, every sample checked against its oracle, zero
 oracle failures anywhere. Each benchmark's two profiles share a fixture hash.
 
+ADR 0011's replay-reservation change has one provisional native result that is
+not yet a profile refresh. On the named Windows host, source revision `237ac3e`
+restored `replay_open` p95 to `0.001000 ms` under the existing `0.003 ms`
+ceiling, reduced its peak live heap from the regressed `119,062 bytes` to
+`94,702 bytes`, and reported zero correctness failures and zero allocated
+growth. The matching C-boundary run also remained within every existing budget.
+The four committed profiles stay synchronized at the ADR 0008 baseline until
+the same implementation is measured on the named Apple Silicon host; Windows
+evidence is not committed alone or used to infer macOS timing.
+
 Across those four files, thirteen workloads are measured, all thirteen are
 covered by the two file-level hard gates, eleven carry a per-measurement
 ceiling, and two are deliberate unbudgeted controls. The two controls are
