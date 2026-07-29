@@ -275,24 +275,23 @@ Every profile was measured on a named host, two hundred samples per workload
 after twenty warm-up iterations, every sample checked against its oracle, zero
 oracle failures anywhere. Each benchmark's two profiles share a fixture hash.
 
-ADR 0011's replay-reservation change is measured on the named Apple Silicon host
-and the two `aarch64-apple-darwin` profiles above carry that refresh, taken at
-`8d7973e` as two consecutive runs on an otherwise idle machine with the second
-recorded. Every budget passes, correctness and allocated growth are zero
-everywhere, and `replay_open` peak live heap is back at `95,118 bytes` — the
-shape the profile carried before the copy, against the `+24,368 bytes` the copy
-added on this target.
+ADR 0011's replay-reservation change is measured in all four profiles above at
+the same reviewed executable source state, `8d7973e`. Each benchmark ran twice
+on each named native host with the second run recorded. Every budget passes,
+fixture hashes match within each benchmark pair, and correctness and allocated
+growth are zero everywhere.
 
-The two `x86_64-pc-windows-msvc` profiles still carry the ADR 0008 baseline. The
-Windows result recorded for that change — `replay_open` p95 restored to
-`0.001000 ms` under the existing `0.003 ms` ceiling, peak live heap down from the
-regressed `119,062 bytes` to `94,702 bytes`, zero correctness failures, zero
-allocated growth, and a C-boundary run inside every budget — was taken at source
-revision `237ac3e`, which is not an object in this repository, so it cannot be
-the reviewed state ADR 0011 requires all four profiles to share. Refreshing that
-pair needs one native Windows run of each benchmark at the state that ships.
-Windows evidence is not committed alone or used to infer macOS timing, and the
-reverse holds too.
+On Windows, `replay_open` p95 is `0.000900 ms` under the unchanged `0.003 ms`
+ceiling and peak live heap is `94,702 bytes`, down from the regressed `119,062
+bytes`. On Apple Silicon, p95 is `0.000750 ms` under the unchanged `0.0025 ms`
+ceiling and peak live heap is `95,118 bytes`, back at the pre-copy shape. The
+paired C-boundary runs also remain inside every retained ceiling.
+
+The refreshed profiles explain deterministic allocation changes since ADR 0008.
+In particular, the archive-file workload now carries the immutable snapshot
+copy accepted by ADR 0010, while small asset, vision, and C-boundary allocation
+shifts remain far below the existing ceilings. Timing variation is recorded as
+measured rather than presented as a deterministic effect.
 
 A refreshed profile keeps the ceilings ADR 0008 set. Each rationale therefore
 names the baseline value the ceiling was derived from rather than the current

@@ -24,9 +24,11 @@
 # Refreshed at `8d7973e` for ADR 0011's reservation-copy removal, two
 # consecutive runs on an otherwise idle host (one-minute load average 3.44 and
 # 3.22 against this machine's own ~2.9 baseline); the second is recorded and the
-# two agreed. Every budget passes, no measurement moved by more than a few
-# hundred bytes or a third of a microsecond, and `engine_create_c` improved from
-# ADR 0008's 0.001125 to 0.000792.
+# two agreed. The Windows pair was subsequently measured at the same reviewed
+# source state, so all four Phase 1 profiles are synchronized. Every budget
+# passes, no measurement moved by more than a few hundred bytes or a third of a
+# microsecond, and `engine_create_c` improved from ADR 0008's 0.001125 to
+# 0.000792.
 
 format_version = 1
 

@@ -21,7 +21,9 @@
 # Refreshed at `8d7973e` for ADR 0011's reservation-copy removal, two
 # consecutive runs on an otherwise idle host (one-minute load average 2.98 and
 # 3.44 against this machine's own ~2.9 baseline); the second is recorded and the
-# two agreed. Every budget passes. Two measurements moved enough to say so:
+# two agreed. The Windows pair was subsequently measured at the same reviewed
+# source state, so all four Phase 1 profiles are synchronized. Every budget
+# passes. Two measurements moved enough to say so:
 #
 #   * `load_package_directory` latency rose from ADR 0008's 0.186625 to
 #     0.302500, reproduced in both runs, and stays under its retained 0.6

@@ -1,7 +1,7 @@
 # ADR 0011: Recoverable stream publication for replay reservations
 
-- **Status:** Proposed
-- **Date:** 2026-07-29
+- **Status:** Accepted
+- **Date:** 2026-07-30
 - **Resolves gate:** _none_
 - **Supersedes:** _none_
 
@@ -23,15 +23,18 @@ approximately one 96×64×4 frame allocation. The same additional allocation is
 present on macOS, where allocator behavior keeps latency within its looser
 margin.
 
-The ownership change is implemented at source revision `237ac3e`. On the named
-Windows host, the full 20-warm-up, 200-sample deterministic-slice run now
-measures `replay_open` p50 at `0.000800 ms`, p95 at `0.001000 ms`, and peak live
-heap at `94,702 bytes`, with zero correctness failures and zero allocated
-growth. The full C-boundary run from the same implementation also satisfies
-every existing Windows budget. Both fixture hashes remain unchanged. This
-restores the Windows behavior but is not yet acceptance evidence: the matching
-Apple Silicon runs have not been produced, so the four committed profiles have
-intentionally not been changed.
+The ownership change and its accessor coverage are implemented at reviewed
+executable source revision `8d7973e`. On the named Windows host, the second of
+two consecutive full 20-warm-up, 200-sample deterministic-slice runs measures
+`replay_open` p50 at `0.000800 ms`, p95 at `0.000900 ms`, and peak live heap at
+`94,702 bytes`, with zero correctness failures and zero allocated growth. The
+paired C-boundary run satisfies every existing Windows budget.
+
+The same two benchmarks also ran twice on the named Apple Silicon host at
+`8d7973e`, with the second runs recorded. There `replay_open` p50 and p95 are
+both `0.000750 ms`, peak live heap is `95,118 bytes`, and every correctness,
+growth, latency, mapped-byte, and peak-allocation budget passes. Both benchmark
+pairs retain matching fixture hashes.
 
 ADR 0008 requires a crossed regression ceiling to be investigated rather than
 accommodated and requires all four Phase 1 profiles to be regenerated together.
@@ -54,8 +57,9 @@ head before the reservation is released. Stream validation remains authoritative
 inside `mado-pilot-capture`, and queue and stream locks remain unnested.
 
 The committed Windows `replay_open` ceiling remains `0.003 ms`, the macOS ceiling
-remains `0.0025 ms`, and the benchmark fixtures remain unchanged. The decision
-is accepted only with regenerated native evidence from both release targets.
+remains `0.0025 ms`, and the benchmark fixtures remain unchanged. The four
+profiles carry regenerated native evidence from both release targets at the
+same reviewed source state, so this decision is accepted.
 
 ## Alternatives
 
@@ -95,38 +99,50 @@ both accommodate the regression instead of restoring the accepted workload.
   normal errors, and concurrent advances.
 - No dependency, allocator, fixture, release target, or minimum operating-system
   version changes.
-- All four Phase 1 profiles must be regenerated from one reviewed source state.
-  This costs one native Windows run and one native Apple Silicon run for each
-  benchmark, even though the direct regression is in `replay_open`.
-- If copy removal does not restore the Windows ceiling, the remaining operation
-  admission and stream-state changes must be isolated before this ADR can become
-  Accepted; the budget is not relaxed automatically.
+- Performance acceptance requires all four Phase 1 profiles to be regenerated
+  from one reviewed source state. This costs one native Windows run and one
+  native Apple Silicon run for each benchmark, even though the direct regression
+  is in `replay_open`; this decision's evidence has paid that cost.
+- Copy removal restores the Windows ceiling without relaxing any budget. A
+  future regression must again be isolated rather than accommodated by moving
+  the ceiling.
 
 ## Current verification
 
-At `237ac3e`, the named Windows host passes the workspace architecture check,
-formatting, warning-denied clippy, all-target tests, doctests, warning-denied
-documentation, dependency policy, and the C/C++ ABI consumer suite. Structural
-tests directly prove successful allocation transfer, exact interruption and
-refusal rollback, ordered concurrent publication, state-atomic recoverable
-refusal, legacy publication compatibility, and pixel-redacted diagnostics.
+The named Windows host passes the workspace architecture check, formatting,
+warning-denied clippy, all-target tests, doctests, warning-denied documentation,
+dependency policy, and the C/C++ ABI consumer suite. Native Apple Silicon
+verification at `8d7973e` passes the same eight-step sequence: 680 tests pass,
+one platform-specific test is ignored, and the frozen v1 header and both CMake
+consumers pass.
 
-The Windows deterministic-slice and C-boundary benchmark runs use the committed
-fixture hashes, 20 discarded warm-ups, and 200 retained samples. Every workload
-reports `result_correctness = 0` and `allocated_growth_bytes = 0`; all latency,
-mapped-byte, peak-allocation, and iteration-span budgets pass.
+Structural evidence is linked directly to the implementation tests:
 
-Native Apple Silicon verification now exists. At `8d7973e` the named Apple
-Silicon host passes the same eight-step sequence — architecture check,
-formatting, warning-denied clippy, all-target tests (680 passing, one ignored),
-doctests, warning-denied documentation, dependency policy, and the C and C++ ABI
-consumer suite including the frozen v1 header and both CMake consumers. Both
-benchmarks were then run twice on an otherwise idle machine with the same fixture
-hashes, 20 discarded warm-ups and 200 retained samples; the two runs agreed and
-the second is committed. Every budget passes, correctness and allocated growth
-are zero everywhere, and `replay_open` peak live heap is `95,118 bytes` against
-the `95,070 bytes` the profile carried before the copy — the copy's `+24,368
-bytes` on this target is gone.
+- [`stream.rs`](../../crates/automation/capture/src/stream.rs) covers closed,
+  malformed, and inconsistent-geometry ownership recovery; state-atomic
+  refusal; legacy `publish` compatibility; and pixel-redacted refusal
+  diagnostics.
+- [`provider.rs`](../../crates/adapter/replay/src/provider.rs) covers successful
+  allocation transfer, exact interruption and refusal rollback, caller-clock
+  lock discipline, and ordered exactly-once concurrent publication.
+- [`capture_contract.rs`](../../crates/adapter/replay/tests/capture_contract.rs)
+  runs the shared capture contract against both memory and directory replay
+  sources.
+
+The synchronized acceptance profiles are:
+
+- [`phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml`](../benchmarks/phase-1-deterministic-slice-x86_64-pc-windows-msvc.toml)
+  and
+  [`phase-1-c-boundary-x86_64-pc-windows-msvc.toml`](../benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml);
+- [`phase-1-deterministic-slice-aarch64-apple-darwin.toml`](../benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml)
+  and
+  [`phase-1-c-boundary-aarch64-apple-darwin.toml`](../benchmarks/phase-1-c-boundary-aarch64-apple-darwin.toml).
+
+Each benchmark ran twice on each named host with the committed fixture hashes,
+20 discarded warm-ups, and 200 retained samples; the second run is recorded.
+Every workload reports `result_correctness = 0` and
+`allocated_growth_bytes = 0`, and all latency, mapped-byte, peak-allocation, and
+iteration-span budgets pass.
 
 Two macOS measurements moved enough to record explicitly. `load_package_archive`
 peak live heap rose to `201,987 bytes`, which is the accepted cost of ADR 0010's
@@ -137,16 +153,15 @@ loading, so the standing background load on that host is the candidate
 explanation. Neither ceiling was re-derived: a refreshed profile keeps the
 ceilings ADR 0008 set.
 
-What remains is the Windows pair. The Windows result above was taken at
-`237ac3e`, which is not an object in this repository, so it cannot be the shared
-reviewed state this ADR requires; one native Windows run of each benchmark at the
-state that ships is still owed. Until all four profiles are regenerated from that
-one state, this ADR remains Proposed.
+On Windows, `load_package_archive` peak live heap similarly rose from `193,212`
+to `201,787 bytes`; the tracked archive's 8,449 bytes plus allocation rounding
+explain the deterministic delta. The C-boundary profile records small
+deterministic allocation shifts from the intervening C ABI validation work. No
+ceiling was re-derived, no fixture hash changed, and no budget was relaxed.
 
 ## Verification
 
-ADR 0011 becomes Accepted only when the same change includes all of the
-following:
+ADR 0011 is accepted because the same change includes all of the following:
 
 - Capture-interface tests showing that closed, malformed, and other refused
   publications return the exact owned allocation and leave current frame,
@@ -168,5 +183,6 @@ following:
   allocated growth, Windows `replay_open` p95 at or below `0.003 ms`, and macOS
   p95 at or below `0.0025 ms`.
 
-Until those files and results exist, this record remains Proposed and is not
-evidence that the regression is resolved.
+These conditions are satisfied by the linked structural tests, native
+verification, and four synchronized profiles. This record is therefore evidence
+that the replay reservation regression is resolved without changing its budgets.

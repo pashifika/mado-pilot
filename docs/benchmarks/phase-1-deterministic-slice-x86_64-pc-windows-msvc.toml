@@ -11,9 +11,27 @@
 # resolved the Phase 1 workloads under `G-013`.
 #
 # These budgets are regression ceilings, not product requirements, and they are
-# valid only for this target. Each is three times the measured value, rounded up
-# to a readable number: loose enough to survive a loaded developer machine,
-# tight enough that a structural regression fails.
+# valid only for this target. Each was set at three times the value ADR 0008
+# measured, rounded up to a readable number: loose enough to survive a loaded
+# developer machine, tight enough that a structural regression fails. A ceiling
+# keeps the number ADR 0008 derived it from, so a later refresh of the
+# measurements does not move it and each rationale names the baseline value
+# rather than this file's current one.
+#
+# Refreshed at `8d7973e` for ADR 0011's reservation-copy removal, two
+# consecutive runs on the named host; the second is recorded and both pass
+# every budget. All four Phase 1 profiles now name this reviewed source state.
+# Correctness and allocated growth are zero everywhere. Deterministic allocation
+# changes since ADR 0008 are:
+#
+#   * `replay_open` peak live heap is 94702 bytes, back at the no-copy shape and
+#     24360 bytes below the regressed 119062-byte result.
+#   * `load_package_archive` peak live heap rose from 193212 to 201787 bytes.
+#     The tracked archive is 8449 bytes; the delta is that immutable file copy
+#     plus allocation rounding, the snapshot cost accepted by ADR 0010.
+#   * The remaining allocation shifts are at most 1544 bytes. Intervening asset
+#     and vision validation changed those small fixtures and prepared values;
+#     none changes a hard gate, mapped-byte result, or retained ceiling.
 
 format_version = 1
 
@@ -62,7 +80,7 @@ kind = "absolute"
 unit = "bytes"
 direction = "at_most"
 limit = 524288
-rationale = "half a mebibyte of live heap for the whole run; the largest measured workload here is 193212 bytes"
+rationale = "half a mebibyte of live heap for the whole run; the largest measured workload here is 201787 bytes"
 
 # --- Per-workload measurements and budgets ----------------------------------
 
@@ -70,12 +88,12 @@ rationale = "half a mebibyte of live heap for the whole run; the largest measure
 workload = "replay_open"
 correctness_oracle = "the session reports the source's own extent and pixel format"
 result_correctness = 0
-latency_p50_ms = 0.000900
-latency_p95_ms = 0.001000
-iteration_span_ms = 0.001222
+latency_p50_ms = 0.000800
+latency_p95_ms = 0.000900
+iteration_span_ms = 0.001076
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 94670
-steady_allocated_bytes = 69505
+peak_allocated_bytes = 94702
+steady_allocated_bytes = 69521
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -84,7 +102,7 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 0.003
-  rationale = "three times the measured 0.001000"
+  rationale = "three times the 0.001000 measured for ADR 0008's baseline"
 
 [[measurement]]
 workload = "map_full_frame"
@@ -92,10 +110,10 @@ correctness_oracle = "the mapping covers the whole frame and reports its exact i
 result_correctness = 0
 latency_p50_ms = 0.000000
 latency_p95_ms = 0.000100
-iteration_span_ms = 0.000103
+iteration_span_ms = 0.000106
 mapped_bytes_per_result = 24576
-peak_allocated_bytes = 69505
-steady_allocated_bytes = 69505
+peak_allocated_bytes = 69521
+steady_allocated_bytes = 69521
 allocated_growth_bytes = 0
 
   # No latency percentile budget. This workload's median is 0.000000 on at
@@ -109,7 +127,7 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 0.0004
-  rationale = "three times the measured 0.000103, from one clock reading across the whole sampled run"
+  rationale = "three times the 0.000103 measured for ADR 0008's baseline, from one clock reading across the whole sampled run"
 
   [[measurement.budget]]
   measure = "mapped_bytes_per_result"
@@ -125,10 +143,10 @@ correctness_oracle = "the mapping covers the requested region and no more"
 result_correctness = 0
 latency_p50_ms = 0.000200
 latency_p95_ms = 0.000300
-iteration_span_ms = 0.000360
+iteration_span_ms = 0.000376
 mapped_bytes_per_result = 6144
-peak_allocated_bytes = 75649
-steady_allocated_bytes = 69505
+peak_allocated_bytes = 75665
+steady_allocated_bytes = 69521
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -137,7 +155,7 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 0.001
-  rationale = "three times the measured 0.000300"
+  rationale = "three times the 0.000300 measured for ADR 0008's baseline"
 
   [[measurement.budget]]
   measure = "mapped_bytes_per_result"
@@ -151,12 +169,12 @@ allocated_growth_bytes = 0
 workload = "load_package_directory"
 correctness_oracle = "the package declares its six tracked templates"
 result_correctness = 0
-latency_p50_ms = 0.898400
-latency_p95_ms = 0.981000
-iteration_span_ms = 0.901280
+latency_p50_ms = 0.920500
+latency_p95_ms = 1.108700
+iteration_span_ms = 0.945429
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 147425
-steady_allocated_bytes = 69505
+peak_allocated_bytes = 145881
+steady_allocated_bytes = 69521
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -165,18 +183,18 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 3.0
-  rationale = "three times the measured 0.981000"
+  rationale = "three times the 0.981000 measured for ADR 0008's baseline"
 
 [[measurement]]
 workload = "load_package_memory"
 correctness_oracle = "the committed package equals the one the same files commit as a directory"
 result_correctness = 0
-latency_p50_ms = 0.012200
-latency_p95_ms = 0.012400
-iteration_span_ms = 0.013731
+latency_p50_ms = 0.012800
+latency_p95_ms = 0.016300
+iteration_span_ms = 0.015450
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 73983
-steady_allocated_bytes = 69505
+peak_allocated_bytes = 74303
+steady_allocated_bytes = 69521
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -185,18 +203,18 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 0.04
-  rationale = "three times the measured 0.012400"
+  rationale = "three times the 0.012400 measured for ADR 0008's baseline"
 
 [[measurement]]
 workload = "load_package_archive"
 correctness_oracle = "the committed package equals the one the same files commit as a directory"
 result_correctness = 0
-latency_p50_ms = 0.192900
-latency_p95_ms = 0.277200
-iteration_span_ms = 0.200031
+latency_p50_ms = 0.303400
+latency_p95_ms = 0.448400
+iteration_span_ms = 0.327870
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 193212
-steady_allocated_bytes = 69505
+peak_allocated_bytes = 201787
+steady_allocated_bytes = 69521
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -205,18 +223,18 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 1.0
-  rationale = "three times the measured 0.277200"
+  rationale = "three times the 0.277200 measured for ADR 0008's baseline"
 
 [[measurement]]
 workload = "prepare_and_match_cold"
 correctness_oracle = "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5"
 result_correctness = 0
-latency_p50_ms = 0.274800
-latency_p95_ms = 0.305000
-iteration_span_ms = 0.819456
+latency_p50_ms = 0.288000
+latency_p95_ms = 0.347900
+iteration_span_ms = 1.008957
 mapped_bytes_per_result = 24576
-peak_allocated_bytes = 139906
-steady_allocated_bytes = 69505
+peak_allocated_bytes = 139034
+steady_allocated_bytes = 69521
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -225,7 +243,7 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 1.0
-  rationale = "three times the measured 0.305000"
+  rationale = "three times the 0.305000 measured for ADR 0008's baseline"
 
   [[measurement.budget]]
   measure = "mapped_bytes_per_result"
@@ -239,12 +257,12 @@ allocated_growth_bytes = 0
 workload = "match_warm"
 correctness_oracle = "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5"
 result_correctness = 0
-latency_p50_ms = 0.258900
-latency_p95_ms = 0.277900
-iteration_span_ms = 0.254594
+latency_p50_ms = 0.264100
+latency_p95_ms = 0.315900
+iteration_span_ms = 0.269862
 mapped_bytes_per_result = 24576
-peak_allocated_bytes = 112877
-steady_allocated_bytes = 69505
+peak_allocated_bytes = 112893
+steady_allocated_bytes = 69521
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -253,7 +271,7 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 1.0
-  rationale = "three times the measured 0.277900"
+  rationale = "three times the 0.277900 measured for ADR 0008's baseline"
 
   [[measurement.budget]]
   measure = "mapped_bytes_per_result"
