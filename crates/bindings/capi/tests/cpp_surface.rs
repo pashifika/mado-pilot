@@ -88,7 +88,8 @@ fn header() -> String {
         .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()))
 }
 
-/// Returns every `class` or `struct` name declared at namespace scope.
+/// Returns every `class` or `struct` name declared at namespace scope,
+/// attributed or not.
 ///
 /// Nesting is by indentation: a declaration inside a class body is indented,
 /// and one at namespace scope is not. That is enough because the header is
@@ -113,6 +114,17 @@ fn declared_types(header: &str) -> Vec<String> {
             .or_else(|| line.strip_prefix("struct "))
         else {
             continue;
+        };
+        // An attribute may sit between the keyword and the name, as in
+        // `class [[nodiscard]] Result`. Skipping it keeps the type in the
+        // inventory; stopping at it would drop the type silently, which is the
+        // one outcome an inventory must not produce.
+        let rest = match rest.trim_start().strip_prefix("[[") {
+            Some(after) => after
+                .split_once("]]")
+                .map_or(after, |(_, name)| name)
+                .trim_start(),
+            None => rest,
         };
         let name: String = rest
             .chars()

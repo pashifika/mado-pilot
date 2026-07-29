@@ -185,11 +185,11 @@ pub(crate) fn session_find(
     out_result: *mut *mut madopilot_result_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    if let Err(fault) =
+    if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
-        unsafe { boundary::begin_handle_and_error_out(out_result, "out_result", out_error) }
+        unsafe { boundary::begin_outputs(out_result, "out_result", out_error) }
     {
-        return fault.status();
+        return status;
     }
     hooks::reach(hooks::Site::Entry);
 

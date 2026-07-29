@@ -77,6 +77,35 @@ pub fn solid_rgb(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
     encode_rgb(width, height, &rgb.repeat(pixels))
 }
 
+/// Encodes a PNG that declares `width` by `height` and carries no pixels.
+///
+/// The result is a few dozen bytes whatever it declares, which is what a
+/// decoder that sizes an allocation from the declaration before checking it
+/// against what the caller expects would turn into gigabytes. A test that wants
+/// to prove the check happens first needs content whose header is the only part
+/// worth reading, and this is it.
+///
+/// # Panics
+///
+/// Panics for a zero dimension, as [`encode_rgb`] does.
+#[must_use]
+pub fn declared_without_body(width: u32, height: u32) -> Vec<u8> {
+    assert!(width > 0 && height > 0, "a PNG has a non-zero extent");
+
+    let mut png = Vec::new();
+    png.extend_from_slice(&SIGNATURE);
+
+    let mut header = Vec::with_capacity(13);
+    header.extend_from_slice(&width.to_be_bytes());
+    header.extend_from_slice(&height.to_be_bytes());
+    header.extend_from_slice(&[8, 2, 0, 0, 0]);
+    write_chunk(&mut png, b"IHDR", &header);
+    write_chunk(&mut png, b"IDAT", &zlib_stored(&[]));
+    write_chunk(&mut png, b"IEND", &[]);
+
+    png
+}
+
 /// Wraps `data` in a zlib stream whose DEFLATE blocks are all stored.
 fn zlib_stored(data: &[u8]) -> Vec<u8> {
     // 0x78 0x01 is a 32 KiB-window deflate stream at the fastest setting, and the

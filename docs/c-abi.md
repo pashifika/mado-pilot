@@ -300,6 +300,13 @@ belongs to the call that produced it, and a slot would make two threads' failure
 each other's business. `out_error` may be null, and then only the status is
 reported.
 
+A rejected output argument is described like any other invalid argument. An entry
+initializes every valid output before it validates anything, so a caller's stale
+error handle never survives a call; when `out_error` itself passed validation, the
+entry then reports through it which output was null or misaligned. Only a call
+whose `out_error` is the rejected output gets the status alone, because there is
+then nowhere to put the message.
+
 ## Panic containment
 
 Every exported symbol and every table entry contains a Rust panic before it can

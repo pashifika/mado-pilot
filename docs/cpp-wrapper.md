@@ -144,6 +144,10 @@ if (!loaded) {
 }
 ```
 
+**A `Result` cannot be dropped silently.** Both templates are `[[nodiscard]]`,
+so discarding one is a compiler diagnostic. In a surface that reports failures
+no other way, a dropped result is a dropped failure.
+
 **Check a `Result` before reading it.** `value()` and `take()` have the
 precondition `ok()`. They extract from a `std::optional` that a failure leaves
 disengaged, so calling one on a failed result is undefined behaviour rather than
@@ -154,8 +158,10 @@ the ownership probe test the result first.
 
 `Error` is a value. Constructing one describes the C error handle, copies
 everything out of it, and releases the handle immediately — on every failing
-path, including the one whose caller reads only the status. Nothing in an
-`Error` borrows, and there is no last-error slot to consult.
+path, including the one whose caller reads only the status, and including the
+one where a copy throws `std::bad_alloc`. The release is a scope guard rather
+than a final statement for exactly that reason. Nothing in an `Error` borrows,
+and there is no last-error slot to consult.
 
 **The asset detail survives.** Package loading is the one Phase 1 operation
 whose failures a caller may reasonably tell apart by more than a status, so
@@ -204,6 +210,7 @@ documents the owner that keeps them valid.
 | `TargetDescriptor::name`, `provider` | the `TargetList` |
 | `PackageInfo::package_id`, `package_version`, `license` | the `Package` |
 | `TemplateInfo::id`, `backend` | the `Template` |
+| `Package::template_id` | the `Package` |
 | `Image::bytes` | the `Mapping` |
 | `ResultInfo::backend_id`, `backend_version` | the `MatchResult` |
 | `Match::template_id` | the `MatchResult` |
@@ -220,6 +227,24 @@ if (image) {
     const std::vector<std::uint8_t> pixels = image.value().bytes.to_vector();
 }
 ```
+
+**Name the owner, then ask it.** Every accessor above that borrows from a handle
+is declared `const&` with its rvalue overload deleted, so it cannot be called on
+a temporary owner:
+
+```cpp
+const auto id = engine.load_package(source, operation).take().template_id(0);
+//                                                     ^ deleted: the package
+//                                                       dies at the semicolon
+madopilot::Package package = loaded.take();
+const auto id = package.template_id(0);   // and this is fine
+```
+
+The first form reads correctly and leaves every view pointing into released
+memory. Deleting the rvalue overload turns it into a compile error instead. The
+two accessors whose views live in the library's own static storage —
+`Api::describe_build` and `Api::status_text` — are unqualified, because nothing
+they hand out can outlive the library.
 
 `Error::message()` already returns owned `std::string`, because error text is
 the text most likely to outlive the handle it came from.
@@ -369,8 +394,9 @@ That one command covers the C surface and the C++ surface together. For the C++
 half it:
 
 1. compiles and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
-   `static_assert`s prove the move-only shape at compile time and whose checks
-   prove clone independence, parent and child lifetime, borrowed-view stability,
+   `static_assert`s prove the move-only shape and the lvalue-only view accessors
+   at compile time, and whose checks prove clone independence, parent and child
+   lifetime, borrowed-view stability, error release under a throwing copy,
    zero-match success, close reporting, and concurrent const access at run time;
 2. compiles and runs `examples/cpp/deterministic-slice.cpp` and requires it to
    print the same match rectangles and scores as the C example, so a wrapper

@@ -182,6 +182,61 @@ fn closing_under_a_waiter_ends_the_wait_and_the_session() {
 }
 
 #[test]
+fn a_closed_session_does_not_keep_the_frame_from_the_ones_opened_after_it() {
+    let capture = provider();
+    let operation = bounded();
+    let targets = capture.discover(&operation).expect("discovered");
+    // Opened in this order, so the closed one comes first in the double's own
+    // list and a loop that stops at the first refusal never reaches `second`.
+    let first = capture
+        .open(targets[0].id(), &OpenRequest::new(), &operation)
+        .expect("opened");
+    let second = capture
+        .open(targets[0].id(), &OpenRequest::new(), &operation)
+        .expect("opened");
+    first.close(&operation).expect("closed");
+
+    assert_eq!(
+        capture
+            .publish(0x77, Continuity::Continuous)
+            .expect_err("the closed session still refuses")
+            .status(),
+        Status::Closed,
+        "a closed session reports its refusal"
+    );
+
+    let frame = second
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("the session after the closed one still received the frame");
+    assert!(
+        frame
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("mapped")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0x77)
+    );
+
+    // The refusal is reported once. A session that has closed cannot accept
+    // another frame, so keeping it would fail every later publication and make
+    // one close the end of the double's usefulness.
+    capture
+        .publish(0x88, Continuity::Continuous)
+        .expect("the closed session is gone, so nothing refuses");
+    let later = second
+        .frame(&FrameRequest::newer_than(frame.stamp()), &operation)
+        .expect("frame");
+    assert!(
+        later
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("mapped")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0x88)
+    );
+}
+
+#[test]
 fn a_reshaped_publication_starts_a_later_epoch() {
     let capture = provider();
     let operation = bounded();

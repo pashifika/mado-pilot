@@ -695,6 +695,13 @@ typedef struct madopilot_package_source_t {
  * An entry that takes `out_error` may be passed null there, and then reports
  * the status only. A returned error is owned by the caller and is released with
  * error_release.
+ *
+ * That includes a fault about an output argument. A null or misaligned output is
+ * an invalid argument like any other, and MADOPILOT_STATUS_INVALID_ARGUMENT does
+ * not say which of an entry's pointers was wrong, so an entry whose `out_error`
+ * passed validation reports through it — after clearing it — which output it
+ * refused. A call whose `out_error` is itself the refused output gets the status
+ * alone.
  * ------------------------------------------------------------------------ */
 
 typedef struct madopilot_api_t {

@@ -27,6 +27,7 @@ use std::panic::{self, AssertUnwindSafe};
 
 use crate::error::Fault;
 use crate::layout::{LAYOUT, TypeLayout};
+use crate::madopilot_error_t;
 use crate::status::{MADOPILOT_STATUS_INTERNAL_PANIC, madopilot_status_t};
 use crate::types::{
     madopilot_find_request_t, madopilot_map_request_t, madopilot_match_options_t,
@@ -487,25 +488,34 @@ pub(crate) unsafe fn begin_error_out<T>(ptr: *mut *mut T) -> Result<(), Fault> {
     unsafe { begin_handle_out(ptr, "out_error") }
 }
 
-/// Initializes a required owned-handle output and an optional error output.
+/// Initializes a required owned-handle output and an optional error output, and
+/// reports a fault through the error output when that output can carry one.
 ///
 /// The outputs are independent: every valid output is set to null even when the
 /// other output is invalid. When both are invalid, the primary output's fault
 /// takes precedence.
 ///
+/// A rejected output argument is an invalid argument like any other, so it is
+/// described the same way. Saying which output was null or misaligned is the
+/// whole diagnostic — `MADOPILOT_STATUS_INVALID_ARGUMENT` alone does not name it
+/// — and a caller that passed a usable `out_error` asked for exactly that. Only
+/// a caller whose error output is itself unusable gets the status alone, because
+/// there is then nowhere to put the message.
+///
 /// # Errors
 ///
-/// Rejects a null or misaligned primary output and a misaligned error output.
+/// Returns the status to report for a null or misaligned primary output and for
+/// a misaligned error output, having already emitted the detail where it could.
 ///
 /// # Safety
 ///
 /// Each output must independently satisfy the contract of
 /// [`begin_handle_out`] or [`begin_error_out`].
-pub(crate) unsafe fn begin_handle_and_error_out<T, E>(
+pub(crate) unsafe fn begin_outputs<T>(
     out_handle: *mut *mut T,
     handle_name: &'static str,
-    out_error: *mut *mut E,
-) -> Result<(), Fault> {
+    out_error: *mut *mut madopilot_error_t,
+) -> Result<(), madopilot_status_t> {
     // Evaluate both initializers before combining their results so a fault in
     // one output cannot short-circuit initialization of the other.
     // SAFETY: forwarded unchanged from this function's own contract.
@@ -513,7 +523,19 @@ pub(crate) unsafe fn begin_handle_and_error_out<T, E>(
     // SAFETY: as above.
     let error = unsafe { begin_error_out(out_error) };
 
-    handle.and(error)
+    match (handle, error) {
+        (Ok(()), Ok(())) => Ok(()),
+        // The error output survived validation and was just cleared, so the
+        // fault about the primary output goes through it. A null `out_error`
+        // takes this arm too, and `emit` then reports the status only.
+        // SAFETY: this arm is reached only when `begin_error_out` accepted
+        // `out_error`, which is exactly `emit`'s requirement: null, or an
+        // address it has itself just written through.
+        (Err(fault), Ok(())) => Err(unsafe { crate::error::emit(out_error, fault) }),
+        // Nothing here can carry a message: either the error output is the one
+        // that was rejected, or both were.
+        (Err(fault), Err(_)) | (Ok(()), Err(fault)) => Err(fault.status()),
+    }
 }
 
 /// Validates a scalar output and sets it to `failure`.

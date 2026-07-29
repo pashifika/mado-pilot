@@ -19,6 +19,8 @@
  */
 
 #include <cstdio>
+#include <cstdlib>
+#include <new>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -27,6 +29,37 @@
 
 #include "deterministic-scene.h"
 #include "madopilot/madopilot.hpp"
+
+/* ---------------------------------------------------------------------------
+ * A starvable allocator
+ *
+ * One check needs an allocation to fail, because the wrapper's one documented
+ * exception comes from copying owned error text and the release on that path
+ * cannot be observed any other way. The replacement forwards to malloc unless a
+ * check has armed it, so every other allocation in the program behaves as it
+ * did. It is armed around a single call and disarmed before anything reports.
+ * ------------------------------------------------------------------------ */
+
+namespace {
+bool starve_allocations = false;
+}
+
+void* operator new(std::size_t size)
+{
+    if (starve_allocations) {
+        throw std::bad_alloc();
+    }
+    // Zero bytes still has to yield a distinct address, which malloc is allowed
+    // to refuse to provide.
+    void* memory = std::malloc(size == 0 ? 1 : size);
+    if (memory == nullptr) {
+        throw std::bad_alloc();
+    }
+    return memory;
+}
+
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 
 /* ---------------------------------------------------------------------------
  * Compile-time: the ownership shape
@@ -77,6 +110,41 @@ static_assert(std::is_trivially_copyable_v<madopilot::BorrowedStr>,
               "a borrowed string view is a pointer and a length");
 static_assert(std::is_trivially_copyable_v<madopilot::BorrowedBytes>,
               "a borrowed byte view is a pointer and a length");
+
+/* An accessor that hands out a borrowed view is callable on a named owner and
+ * not on a temporary one. `load(...).take().describe()` reads correctly and
+ * leaves every view in the result pointing into a package released at the end of
+ * the full expression, so the rvalue overloads are deleted and the mistake is a
+ * compile error. These detect that: `declval<T>()` is an rvalue and
+ * `declval<T&>()` an lvalue, and a deleted overload makes the expression
+ * ill-formed in the immediate context rather than failing the build here. */
+namespace {
+
+template <class T, class = void>
+struct describes : std::false_type {};
+
+template <class T>
+struct describes<T, std::void_t<decltype(std::declval<T>().describe())>> : std::true_type {};
+
+template <class T, class = void>
+struct indexes : std::false_type {};
+
+template <class T>
+struct indexes<T, std::void_t<decltype(std::declval<T>().at(0))>> : std::true_type {};
+
+} // namespace
+
+static_assert(describes<madopilot::Package&>::value, "a named package describes itself");
+static_assert(!describes<madopilot::Package>::value,
+              "a temporary package does not, because its strings would dangle");
+static_assert(describes<madopilot::Template&>::value, "a named template describes itself");
+static_assert(!describes<madopilot::Template>::value, "a temporary template does not");
+static_assert(describes<madopilot::Mapping&>::value, "a named mapping describes itself");
+static_assert(!describes<madopilot::Mapping>::value, "a temporary mapping does not");
+static_assert(describes<madopilot::MatchResult&>::value, "a named result describes itself");
+static_assert(!describes<madopilot::MatchResult>::value, "a temporary result does not");
+static_assert(indexes<madopilot::TargetList&>::value, "a named target list is indexable");
+static_assert(!indexes<madopilot::TargetList>::value, "a temporary target list is not");
 
 /* Requests are values a caller composes and reuses. */
 static_assert(std::is_copy_constructible_v<madopilot::Operation>, "Operation is a value");
@@ -468,6 +536,66 @@ void a_failure_leaves_no_residue(Fixture& fixture)
     }
 }
 
+/* --- The error handle outlives nothing, including a throw ------------------ */
+
+int fake_releases = 0;
+
+madopilot_status_t counting_error_release(madopilot_error_t*)
+{
+    fake_releases += 1;
+    return MADOPILOT_STATUS_OK;
+}
+
+/// Describes an error whose message the wrapper will try to copy.
+///
+/// The text is borrowed from static storage, so nothing here depends on the
+/// handle being real: the handle this fake table is called with is a valid
+/// address that neither entry dereferences.
+madopilot_status_t describing_a_message(const madopilot_error_t*,
+                                        madopilot_error_detail_t* out_detail)
+{
+    static const char text[] = "a message the caller is about to copy";
+
+    out_detail->flags = 0;
+    out_detail->status = MADOPILOT_STATUS_INTERNAL;
+    out_detail->category = MADOPILOT_ERROR_CATEGORY_UNSPECIFIED;
+    out_detail->message = madopilot_str_t{text, sizeof(text) - 1};
+
+    return MADOPILOT_STATUS_OK;
+}
+
+/// `take_error_` releases the C handle even when copying its text throws.
+///
+/// The wrapper's one documented exception is `std::bad_alloc` from the owned
+/// error text, and that is the path on which the release used to be skipped:
+/// it was the last statement of the function rather than a scope guard. Nothing
+/// the real library can be asked to do makes an allocation fail, so this drives
+/// `take_error_` directly, against a table of two fakes and a starved allocator.
+void a_throwing_copy_still_releases_the_error(Fixture&)
+{
+    madopilot_api_t table{};
+    table.error_describe = describing_a_message;
+    table.error_release = counting_error_release;
+
+    // Never dereferenced: the two entries above ignore it and the wrapper only
+    // passes it along. It has to be non-null, because null means "no handle".
+    madopilot_error_t* const handle = reinterpret_cast<madopilot_error_t*>(&table);
+
+    fake_releases = 0;
+    bool threw = false;
+    starve_allocations = true;
+    try {
+        static_cast<void>(madopilot::take_error_(&table, MADOPILOT_STATUS_INTERNAL, handle));
+    } catch (const std::bad_alloc&) {
+        starve_allocations = false;
+        threw = true;
+    }
+    starve_allocations = false;
+
+    check(threw, "copying the message throws when the allocator refuses");
+    check(fake_releases == 1, "and the error handle is released exactly once anyway");
+}
+
 /// A search that qualifies nothing is a success with an empty optional.
 void zero_matches_is_a_success(Fixture& fixture)
 {
@@ -671,6 +799,8 @@ int main(int argc, char** argv)
     run("a borrowed view tracks its owner", a_borrowed_view_tracks_its_owner, fixture);
     run("error text outlives the C handle", error_text_outlives_the_c_handle, fixture);
     run("a failure leaves no residue", a_failure_leaves_no_residue, fixture);
+    run("a throwing copy still releases the error",
+        a_throwing_copy_still_releases_the_error, fixture);
     run("zero matches is a success", zero_matches_is_a_success, fixture);
     run("an unsupported coordinate space is refused",
         an_unsupported_coordinate_space_is_refused, fixture);

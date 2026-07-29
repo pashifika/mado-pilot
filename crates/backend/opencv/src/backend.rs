@@ -120,7 +120,9 @@ impl MatchBackend for OpenCvBackend {
             _ => return Err(VisionFault::UnsupportedTemplateEncoding.into()),
         }
 
-        let image = image::decode_to_bgr(source.content())
+        // The declared extent goes in, so content whose own header contradicts
+        // it is refused before `imdecode` allocates from that header.
+        let image = image::decode_to_bgr(source.content(), source.extent())
             .map_err(|_| Error::from(VisionFault::TemplatePreparationFailed))?;
         let extent = image::extent_of(&image)
             .map_err(|_| Error::from(VisionFault::TemplatePreparationFailed))?;
@@ -128,6 +130,8 @@ impl MatchBackend for OpenCvBackend {
         // A template whose bytes decode to other dimensions than its metadata
         // declares would put every match it produced at the wrong extent, so the
         // disagreement is reported instead of resolved in the adapter's favour.
+        // The check above is what the file claims; this is what it turned out to
+        // be, and a decoder is not obliged to make the two agree.
         if extent != source.extent() {
             return Err(VisionFault::TemplatePreparationFailed.into());
         }

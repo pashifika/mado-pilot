@@ -304,13 +304,11 @@ pub(crate) fn session_open(
     out_session: *mut *mut madopilot_session_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    if let Err(fault) =
+    if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
-        unsafe {
-            boundary::begin_handle_and_error_out(out_session, "out_session", out_error)
-        }
+        unsafe { boundary::begin_outputs(out_session, "out_session", out_error) }
     {
-        return fault.status();
+        return status;
     }
     hooks::reach(hooks::Site::Entry);
 
@@ -457,6 +455,9 @@ pub(crate) fn session_close(
     // SAFETY: the caller supplies a writable, correctly aligned output address
     // or null.
     if let Err(fault) = unsafe { boundary::begin_error_out(out_error) } {
+        // The only output this entry has is the error one, and the only way to
+        // arrive here is that it was rejected. Unlike `begin_outputs`, there is
+        // nowhere to describe the fault, so the status is all the caller gets.
         return fault.status();
     }
     hooks::reach(hooks::Site::Entry);
@@ -511,11 +512,11 @@ pub(crate) fn session_acquire_frame(
     out_frame: *mut *mut madopilot_frame_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    if let Err(fault) =
+    if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
-        unsafe { boundary::begin_handle_and_error_out(out_frame, "out_frame", out_error) }
+        unsafe { boundary::begin_outputs(out_frame, "out_frame", out_error) }
     {
-        return fault.status();
+        return status;
     }
     hooks::reach(hooks::Site::Entry);
 
@@ -644,13 +645,11 @@ pub(crate) fn frame_map(
     out_mapping: *mut *mut madopilot_mapping_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    if let Err(fault) =
+    if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
-        unsafe {
-            boundary::begin_handle_and_error_out(out_mapping, "out_mapping", out_error)
-        }
+        unsafe { boundary::begin_outputs(out_mapping, "out_mapping", out_error) }
     {
-        return fault.status();
+        return status;
     }
     hooks::reach(hooks::Site::Entry);
 

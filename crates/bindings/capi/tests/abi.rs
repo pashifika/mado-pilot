@@ -675,24 +675,35 @@ fn a_null_required_output_is_refused() {
 }
 
 #[test]
-fn every_multi_output_entry_clears_a_valid_error_when_the_primary_output_is_null() {
+fn every_multi_output_entry_describes_a_null_primary_output_through_a_valid_error() {
     let api = table();
 
-    assert_primary_rejection_clears_error(api, "engine_create", |out_error| unsafe {
-        (api.engine_create)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
-    });
-    assert_primary_rejection_clears_error(api, "package_load", |out_error| unsafe {
-        (api.package_load)(
-            ptr::null(),
-            ptr::null(),
-            ptr::null(),
-            ptr::null_mut(),
-            out_error,
-        )
-    });
-    assert_primary_rejection_clears_error(
+    assert_primary_rejection_describes_the_output(
+        api,
+        "engine_create",
+        "out_engine",
+        |out_error| unsafe {
+            (api.engine_create)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
+        },
+    );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "package_load",
+        "out_package",
+        |out_error| unsafe {
+            (api.package_load)(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+                out_error,
+            )
+        },
+    );
+    assert_primary_rejection_describes_the_output(
         api,
         "template_prepare_from_package",
+        "out_template",
         |out_error| unsafe {
             (api.template_prepare_from_package)(
                 ptr::null(),
@@ -704,67 +715,103 @@ fn every_multi_output_entry_clears_a_valid_error_when_the_primary_output_is_null
             )
         },
     );
-    assert_primary_rejection_clears_error(api, "engine_discover", |out_error| unsafe {
-        (api.engine_discover)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
-    });
-    assert_primary_rejection_clears_error(api, "session_open", |out_error| unsafe {
-        (api.session_open)(
-            ptr::null(),
-            ptr::null(),
-            0,
-            ptr::null(),
-            ptr::null(),
-            ptr::null_mut(),
-            out_error,
-        )
-    });
-    assert_primary_rejection_clears_error(api, "session_acquire_frame", |out_error| unsafe {
-        (api.session_acquire_frame)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
-    });
-    assert_primary_rejection_clears_error(api, "frame_map", |out_error| unsafe {
-        (api.frame_map)(
-            ptr::null(),
-            ptr::null(),
-            ptr::null(),
-            ptr::null_mut(),
-            out_error,
-        )
-    });
-    assert_primary_rejection_clears_error(api, "session_find", |out_error| unsafe {
-        (api.session_find)(
-            ptr::null(),
-            ptr::null(),
-            ptr::null(),
-            ptr::null_mut(),
-            out_error,
-        )
-    });
+    assert_primary_rejection_describes_the_output(
+        api,
+        "engine_discover",
+        "out_targets",
+        |out_error| unsafe {
+            (api.engine_discover)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
+        },
+    );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "session_open",
+        "out_session",
+        |out_error| unsafe {
+            (api.session_open)(
+                ptr::null(),
+                ptr::null(),
+                0,
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+                out_error,
+            )
+        },
+    );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "session_acquire_frame",
+        "out_frame",
+        |out_error| unsafe {
+            (api.session_acquire_frame)(ptr::null(), ptr::null(), ptr::null_mut(), out_error)
+        },
+    );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "frame_map",
+        "out_mapping",
+        |out_error| unsafe {
+            (api.frame_map)(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+                out_error,
+            )
+        },
+    );
+    assert_primary_rejection_describes_the_output(
+        api,
+        "session_find",
+        "out_result",
+        |out_error| unsafe {
+            (api.session_find)(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null_mut(),
+                out_error,
+            )
+        },
+    );
 }
 
 #[test]
-fn every_multi_output_entry_clears_a_valid_error_when_the_primary_output_is_misaligned() {
+fn every_multi_output_entry_describes_a_misaligned_primary_output_through_a_valid_error() {
     let api = table();
 
     with_misaligned_handle_output(|out_engine| {
-        assert_primary_rejection_clears_error(api, "engine_create", |out_error| unsafe {
-            (api.engine_create)(ptr::null(), ptr::null(), out_engine, out_error)
-        });
+        assert_primary_rejection_describes_the_output(
+            api,
+            "engine_create",
+            "out_engine",
+            |out_error| unsafe {
+                (api.engine_create)(ptr::null(), ptr::null(), out_engine, out_error)
+            },
+        );
     });
     with_misaligned_handle_output(|out_package| {
-        assert_primary_rejection_clears_error(api, "package_load", |out_error| unsafe {
-            (api.package_load)(
-                ptr::null(),
-                ptr::null(),
-                ptr::null(),
-                out_package,
-                out_error,
-            )
-        });
+        assert_primary_rejection_describes_the_output(
+            api,
+            "package_load",
+            "out_package",
+            |out_error| unsafe {
+                (api.package_load)(
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    out_package,
+                    out_error,
+                )
+            },
+        );
     });
     with_misaligned_handle_output(|out_template| {
-        assert_primary_rejection_clears_error(
+        assert_primary_rejection_describes_the_output(
             api,
             "template_prepare_from_package",
+            "out_template",
             |out_error| unsafe {
                 (api.template_prepare_from_package)(
                     ptr::null(),
@@ -778,43 +825,68 @@ fn every_multi_output_entry_clears_a_valid_error_when_the_primary_output_is_misa
         );
     });
     with_misaligned_handle_output(|out_targets| {
-        assert_primary_rejection_clears_error(api, "engine_discover", |out_error| unsafe {
-            (api.engine_discover)(ptr::null(), ptr::null(), out_targets, out_error)
-        });
+        assert_primary_rejection_describes_the_output(
+            api,
+            "engine_discover",
+            "out_targets",
+            |out_error| unsafe {
+                (api.engine_discover)(ptr::null(), ptr::null(), out_targets, out_error)
+            },
+        );
     });
     with_misaligned_handle_output(|out_session| {
-        assert_primary_rejection_clears_error(api, "session_open", |out_error| unsafe {
-            (api.session_open)(
-                ptr::null(),
-                ptr::null(),
-                0,
-                ptr::null(),
-                ptr::null(),
-                out_session,
-                out_error,
-            )
-        });
+        assert_primary_rejection_describes_the_output(
+            api,
+            "session_open",
+            "out_session",
+            |out_error| unsafe {
+                (api.session_open)(
+                    ptr::null(),
+                    ptr::null(),
+                    0,
+                    ptr::null(),
+                    ptr::null(),
+                    out_session,
+                    out_error,
+                )
+            },
+        );
     });
     with_misaligned_handle_output(|out_frame| {
-        assert_primary_rejection_clears_error(api, "session_acquire_frame", |out_error| unsafe {
-            (api.session_acquire_frame)(ptr::null(), ptr::null(), out_frame, out_error)
-        });
+        assert_primary_rejection_describes_the_output(
+            api,
+            "session_acquire_frame",
+            "out_frame",
+            |out_error| unsafe {
+                (api.session_acquire_frame)(ptr::null(), ptr::null(), out_frame, out_error)
+            },
+        );
     });
     with_misaligned_handle_output(|out_mapping| {
-        assert_primary_rejection_clears_error(api, "frame_map", |out_error| unsafe {
-            (api.frame_map)(
-                ptr::null(),
-                ptr::null(),
-                ptr::null(),
-                out_mapping,
-                out_error,
-            )
-        });
+        assert_primary_rejection_describes_the_output(
+            api,
+            "frame_map",
+            "out_mapping",
+            |out_error| unsafe {
+                (api.frame_map)(
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null(),
+                    out_mapping,
+                    out_error,
+                )
+            },
+        );
     });
     with_misaligned_handle_output(|out_result| {
-        assert_primary_rejection_clears_error(api, "session_find", |out_error| unsafe {
-            (api.session_find)(ptr::null(), ptr::null(), ptr::null(), out_result, out_error)
-        });
+        assert_primary_rejection_describes_the_output(
+            api,
+            "session_find",
+            "out_result",
+            |out_error| unsafe {
+                (api.session_find)(ptr::null(), ptr::null(), ptr::null(), out_result, out_error)
+            },
+        );
     });
 }
 
@@ -1463,9 +1535,18 @@ fn build_info() -> madopilot_build_info_t {
     }
 }
 
-fn assert_primary_rejection_clears_error(
+/// A rejected primary output leaves a fresh error that names the output.
+///
+/// Two properties in one call. The slot is initialized before anything is
+/// validated, so the sentinel the caller left in it cannot survive; and the
+/// fault is reported through the error output rather than reduced to a status,
+/// because `MADOPILOT_STATUS_INVALID_ARGUMENT` on an entry with seven pointer
+/// arguments does not say which one was wrong. A rejected output is an invalid
+/// argument like any other and is described like one.
+fn assert_primary_rejection_describes_the_output(
     api: &'static madopilot_api_t,
     entry: &str,
+    output: &str,
     invoke: impl FnOnce(*mut *mut madopilot_error_t) -> madopilot_status_t,
 ) {
     let sentinel = error_sentinel(api);
@@ -1474,18 +1555,27 @@ fn assert_primary_rejection_clears_error(
     let status = invoke(&raw mut error);
     assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT, "{entry}");
     assert!(
-        error.is_null(),
-        "{entry} must clear a valid out_error even when its primary output is invalid"
+        !error.is_null(),
+        "{entry} must report the fault about its primary output through a valid out_error"
+    );
+    assert!(
+        error != sentinel,
+        "{entry} must overwrite the caller's stale error rather than leave it in place"
     );
 
-    // SAFETY: null is the documented no-op cleanup path. `sentinel` is the
-    // original owned handle saved before the output slot was cleared.
+    let (detail, message) = support::describe_message_and_release(api, error);
+    assert_eq!(
+        detail.status, MADOPILOT_STATUS_INVALID_ARGUMENT,
+        "{entry} error status"
+    );
+    assert!(
+        message.contains(output),
+        "{entry} must name the output it rejected, said: {message}"
+    );
+
+    // SAFETY: `sentinel` is the owned handle the output slot held before the
+    // call overwrote it, and nothing else released it.
     unsafe {
-        assert_eq!(
-            (api.error_release)(error),
-            MADOPILOT_STATUS_OK,
-            "{entry} must leave no stale release path"
-        );
         assert_eq!(
             (api.error_release)(sentinel),
             MADOPILOT_STATUS_OK,
