@@ -18,7 +18,7 @@ use mado_pilot::{
     PixelRect, Rect, Session,
 };
 
-use crate::boundary::{self, Input, Out, Versioned};
+use crate::boundary::{self, Out, Versioned, covers, declared, inputs, prefixes};
 use crate::engine::{TargetList, madopilot_engine_t, madopilot_target_list_t, next_stream, report};
 use crate::error::{self, Fault, madopilot_error_t};
 use crate::handle::opaque;
@@ -32,7 +32,8 @@ use crate::types::{
     MADOPILOT_OPEN_HAS_REQUIRED_FORMAT, MADOPILOT_PIXEL_FORMAT_RGBA8,
     MADOPILOT_SPACE_CAPTURE_PIXELS, clip_policy, madopilot_frame_info_t, madopilot_frame_stamp_t,
     madopilot_image_t, madopilot_map_request_t, madopilot_open_request_t, madopilot_operation_t,
-    madopilot_pixel_rect_t, madopilot_session_info_t, pixel_format, pixel_format_code, space_code,
+    madopilot_pixel_format_t, madopilot_pixel_rect_t, madopilot_session_info_t, pixel_format,
+    pixel_format_code, space_code,
 };
 use crate::view::madopilot_bytes_t;
 use crate::{handle, hooks};
@@ -107,34 +108,73 @@ pub(crate) struct MappingHandle {
     stream: u64,
 }
 
-impl Input for madopilot_open_request_t {
-    // Through `flags`. A caller with no format preference still has to supply a
-    // request, because "any layout" is a decision.
-    const MANDATORY: usize = 8;
-    const NAME: &'static str = "madopilot_open_request_t";
+inputs! {
+    impl Input for madopilot_open_request_t {
+        // Through `flags`. A caller with no format preference still has to supply a
+        // request, because "any layout" is a decision.
+        const MANDATORY: usize = 8;
+        const NAME: &'static str = "madopilot_open_request_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_open_request_t,
+            struct_size,
+            flags,
+            required_format,
+            preferred_format,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[
+            (
+                MADOPILOT_OPEN_HAS_REQUIRED_FORMAT,
+                covers!(madopilot_open_request_t, required_format: madopilot_pixel_format_t),
+            ),
+            (
+                MADOPILOT_OPEN_HAS_PREFERRED_FORMAT,
+                covers!(madopilot_open_request_t, preferred_format: madopilot_pixel_format_t),
+            ),
+        ];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            flags: 0,
-            required_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
-            preferred_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                required_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+                preferred_format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            self.flags
         }
     }
-}
 
-impl Input for madopilot_map_request_t {
-    // Through `format`: the layout the bytes must be in is the request.
-    const MANDATORY: usize = 12;
-    const NAME: &'static str = "madopilot_map_request_t";
+    impl Input for madopilot_map_request_t {
+        // Through `format`: the layout the bytes must be in is the request.
+        const MANDATORY: usize = 12;
+        const NAME: &'static str = "madopilot_map_request_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_map_request_t,
+            struct_size,
+            flags,
+            format,
+            clip_policy,
+            region,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[(
+            MADOPILOT_MAP_HAS_REGION,
+            covers!(madopilot_map_request_t, region: madopilot_pixel_rect_t),
+        )];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            flags: 0,
-            format: MADOPILOT_PIXEL_FORMAT_RGBA8,
-            clip_policy: crate::types::MADOPILOT_CLIP_POLICY_REJECT,
-            region: madopilot_pixel_rect_t::empty(),
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+                clip_policy: crate::types::MADOPILOT_CLIP_POLICY_REJECT,
+                region: madopilot_pixel_rect_t::empty(),
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            self.flags
         }
     }
 }
@@ -142,6 +182,15 @@ impl Input for madopilot_map_request_t {
 impl Versioned for madopilot_frame_stamp_t {
     const MANDATORY: usize = 40;
     const NAME: &'static str = "madopilot_frame_stamp_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_frame_stamp_t,
+        struct_size,
+        flags,
+        stream,
+        epoch,
+        sequence,
+        geometry,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self::cleared(struct_size)
@@ -151,6 +200,17 @@ impl Versioned for madopilot_frame_stamp_t {
 impl Versioned for madopilot_frame_info_t {
     const MANDATORY: usize = 24;
     const NAME: &'static str = "madopilot_frame_info_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_frame_info_t,
+        struct_size,
+        flags,
+        width,
+        height,
+        format,
+        space,
+        stride,
+        bounds,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -171,6 +231,18 @@ impl Versioned for madopilot_image_t {
     // mapping.
     const MANDATORY: usize = 48;
     const NAME: &'static str = "madopilot_image_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_image_t,
+        struct_size,
+        flags,
+        width,
+        height,
+        format,
+        space,
+        stride,
+        bytes,
+        region,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -190,6 +262,16 @@ impl Versioned for madopilot_image_t {
 impl Versioned for madopilot_session_info_t {
     const MANDATORY: usize = 32;
     const NAME: &'static str = "madopilot_session_info_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_session_info_t,
+        struct_size,
+        flags,
+        stream,
+        width,
+        height,
+        format,
+        coordinate_spaces,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -264,12 +346,11 @@ pub(crate) fn session_open(
     out_session: *mut *mut madopilot_session_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_session, "out_session")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
-        return fault.status();
+    if let Err(status) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe { boundary::begin_outputs(out_session, "out_session", out_error) }
+    {
+        return status;
     }
     hooks::reach(hooks::Site::Entry);
 
@@ -309,10 +390,18 @@ fn run_session_open(
     let target = list.targets()[index].id();
 
     let mut open = OpenRequest::new();
-    if request.flags & MADOPILOT_OPEN_HAS_REQUIRED_FORMAT != 0 {
+    if declared!(
+        request,
+        madopilot_open_request_t,
+        MADOPILOT_OPEN_HAS_REQUIRED_FORMAT
+    ) {
         open = open.require_format(pixel_format(request.required_format)?);
     }
-    if request.flags & MADOPILOT_OPEN_HAS_PREFERRED_FORMAT != 0 {
+    if declared!(
+        request,
+        madopilot_open_request_t,
+        MADOPILOT_OPEN_HAS_PREFERRED_FORMAT
+    ) {
         open = open.prefer_format(pixel_format(request.preferred_format)?);
     }
 
@@ -408,6 +497,9 @@ pub(crate) fn session_close(
     // SAFETY: the caller supplies a writable, correctly aligned output address
     // or null.
     if let Err(fault) = unsafe { boundary::begin_error_out(out_error) } {
+        // The only output this entry has is the error one, and the only way to
+        // arrive here is that it was rejected. Unlike `begin_outputs`, there is
+        // nowhere to describe the fault, so the status is all the caller gets.
         return fault.status();
     }
     hooks::reach(hooks::Site::Entry);
@@ -462,12 +554,11 @@ pub(crate) fn session_acquire_frame(
     out_frame: *mut *mut madopilot_frame_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_frame, "out_frame")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
-        return fault.status();
+    if let Err(status) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe { boundary::begin_outputs(out_frame, "out_frame", out_error) }
+    {
+        return status;
     }
     hooks::reach(hooks::Site::Entry);
 
@@ -596,12 +687,11 @@ pub(crate) fn frame_map(
     out_mapping: *mut *mut madopilot_mapping_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_mapping, "out_mapping")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
-        return fault.status();
+    if let Err(status) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe { boundary::begin_outputs(out_mapping, "out_mapping", out_error) }
+    {
+        return status;
     }
     hooks::reach(hooks::Site::Entry);
 
@@ -631,9 +721,7 @@ fn run_frame_map(
     context.admit()?;
 
     let format = pixel_format(request.format)?;
-    let mapping = if request.flags & MADOPILOT_MAP_HAS_REGION == 0 {
-        frame.frame.map(format, context.inner())
-    } else {
+    let mapping = if declared!(request, madopilot_map_request_t, MADOPILOT_MAP_HAS_REGION) {
         let region = source_rect(request.region)?;
         let policy: ClipPolicy = clip_policy(request.clip_policy)?;
         let view = frame
@@ -641,6 +729,8 @@ fn run_frame_map(
             .view(region, policy)
             .map_err(|fault| Fault::from_error(&fault.into(), MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
         view.map(format, context.inner())
+    } else {
+        frame.frame.map(format, context.inner())
     }
     .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
     hooks::reach(hooks::Site::AfterTemporary);

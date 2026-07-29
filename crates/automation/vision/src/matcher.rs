@@ -159,6 +159,7 @@ fn resolve_region(
     match selection {
         RegionSelection::FullFrame => Ok(Some(transform.frame_bounds()?)),
         RegionSelection::Region { rect, policy } => {
+            rect.require_non_empty()?;
             match transform.resolve_capture_pixels(rect, policy) {
                 Ok(region) => Ok(Some(region)),
                 Err(GeometryFault::OutsideExtent) if policy == ClipPolicy::Clip => Ok(None),
@@ -245,11 +246,114 @@ fn commit(
 
 #[cfg(test)]
 mod tests {
-    use mado_pilot_core::{ClipPolicy, CoordinateSpace, PixelExtent, PixelRect, Rect};
+    use std::any::Any;
+    use std::sync::Arc;
 
-    use super::{fits, resolve_region};
-    use crate::request::RegionSelection;
-    use mado_pilot_core::{GeometryRevision, TransformSnapshot};
+    use mado_pilot_capture::{Frame, FrameDescriptor, PixelFormat};
+    use mado_pilot_core::{
+        ClipPolicy, CoordinateSpace, Error, GeometryFault, GeometryRevision, IdentityIssuer,
+        MonotonicInstant, OperationContext, PixelExtent, PixelRect, Rect, Result, Status,
+        StreamCursor, TransformSnapshot,
+    };
+
+    use super::{Matcher, fits, resolve_region};
+    use crate::backend::{BackendDescriptor, BackendRequest, MatchBackend, TemplatePayload};
+    use crate::prepared::{BackendId, PreparedTemplate};
+    use crate::request::{MatchOptions, MatchRequest, RegionSelection};
+    use crate::template::{
+        MatchDefaults, TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest,
+    };
+
+    const BACKEND_ID: &str = "matcher-contract";
+
+    #[derive(Debug)]
+    struct Payload;
+
+    impl TemplatePayload for Payload {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoSearchBackend;
+
+    impl MatchBackend for NoSearchBackend {
+        fn descriptor(&self) -> BackendDescriptor {
+            BackendDescriptor::new(BACKEND_ID, "1", PixelFormat::Rgba8)
+        }
+
+        fn prepare(
+            &self,
+            source: &TemplateSource,
+            _operation: &OperationContext,
+        ) -> Result<PreparedTemplate> {
+            Ok(PreparedTemplate::new(
+                BackendId::new(BACKEND_ID),
+                source,
+                Arc::new(Payload),
+            ))
+        }
+
+        fn find(
+            &self,
+            _request: &BackendRequest<'_>,
+            _operation: &OperationContext,
+        ) -> Result<Vec<crate::backend::Candidate>> {
+            panic!("a search with no pixels must not reach the backend")
+        }
+    }
+
+    fn frame() -> Frame {
+        let extent = PixelExtent::new(64, 64);
+        let format = PixelFormat::Rgba8;
+        let descriptor = FrameDescriptor::packed(extent, format).expect("valid descriptor");
+        let issuer = IdentityIssuer::new();
+        let mut cursor =
+            StreamCursor::new(issuer.issue_stream().expect("an engine can issue a stream"));
+        let stamp = cursor
+            .publish(GeometryRevision::FIRST)
+            .expect("the first frame publishes");
+
+        Frame::new(
+            stamp,
+            MonotonicInstant::ORIGIN,
+            descriptor,
+            TransformSnapshot::frame_only(GeometryRevision::FIRST, extent),
+            vec![0; descriptor.byte_len()].into_boxed_slice(),
+        )
+        .expect("a consistent frame")
+    }
+
+    fn template(extent: PixelExtent) -> TemplateSource {
+        TemplateSource::new(TemplateSourceRequest {
+            id: TemplateId::new("t").expect("non-empty"),
+            encoding: TemplateEncoding::Png,
+            extent,
+            space: CoordinateSpace::CapturePixels,
+            defaults: MatchDefaults::new(0.5, 8).expect("valid defaults"),
+            content: Arc::from([0x89].as_slice()),
+        })
+        .expect("a valid template source")
+    }
+
+    fn options() -> MatchOptions {
+        MatchOptions::from_defaults(MatchDefaults::new(0.5, 8).expect("valid defaults"))
+    }
+
+    fn search(
+        selection: RegionSelection,
+        template_extent: PixelExtent,
+    ) -> Result<crate::result::MatchResult> {
+        let matcher = Matcher::new(Arc::new(NoSearchBackend));
+        let prepared = matcher.prepare(&template(template_extent), &OperationContext::new())?;
+        let frame = frame();
+
+        matcher.find(
+            MatchRequest::new(&frame, selection, &prepared, options()),
+            &OperationContext::new(),
+        )
+    }
 
     fn snapshot() -> TransformSnapshot {
         TransformSnapshot::frame_only(GeometryRevision::FIRST, PixelExtent::new(200, 100))
@@ -328,6 +432,45 @@ mod tests {
         };
 
         assert!(resolve_region(&snapshot(), selection).is_err());
+    }
+
+    #[test]
+    fn an_explicit_empty_region_is_invalid_geometry() {
+        let empty = region(CoordinateSpace::CapturePixels, (10.0, 20.0, 10.0, 40.0));
+        let error = search(
+            RegionSelection::Region {
+                rect: empty,
+                policy: ClipPolicy::Clip,
+            },
+            PixelExtent::new(8, 8),
+        )
+        .expect_err("an explicit empty ROI is not a search of nothing");
+
+        assert_eq!(error, Error::from(GeometryFault::EmptyRegion));
+        assert_eq!(error.status(), Status::InvalidArgument);
+    }
+
+    #[test]
+    fn a_clip_permitted_non_intersection_is_a_successful_empty_result() {
+        let outside = region(CoordinateSpace::CapturePixels, (500.0, 500.0, 600.0, 600.0));
+        let result = search(
+            RegionSelection::Region {
+                rect: outside,
+                policy: ClipPolicy::Clip,
+            },
+            PixelExtent::new(8, 8),
+        )
+        .expect("clipping a non-empty ROI to no intersection searches nothing");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn a_template_larger_than_the_region_is_a_successful_empty_result() {
+        let result = search(RegionSelection::FullFrame, PixelExtent::new(65, 64))
+            .expect("a well-formed search can have no valid template placement");
+
+        assert!(result.is_empty());
     }
 
     #[test]

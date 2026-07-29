@@ -24,7 +24,7 @@ use std::time::Duration;
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription};
 
-use crate::boundary::{self, Input, Out, Versioned};
+use crate::boundary::{self, Input, Out, Versioned, inputs, prefixes};
 use crate::error::{self, Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
@@ -71,43 +71,78 @@ pub(crate) fn next_stream() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-impl Input for madopilot_source_t {
-    // Through `frame_stride`: a memory source cannot be read without the stride
-    // of the array it points at, and a directory source is not harmed by
-    // carrying fields it leaves empty.
-    const MANDATORY: usize = 48;
-    const NAME: &'static str = "madopilot_source_t";
+inputs! {
+    impl Input for madopilot_source_t {
+        // Through `frame_stride`: a memory source cannot be read without the stride
+        // of the array it points at, and a directory source is not harmed by
+        // carrying fields it leaves empty.
+        const MANDATORY: usize = 48;
+        const NAME: &'static str = "madopilot_source_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_source_t,
+            struct_size,
+            kind,
+            directory,
+            frames,
+            frame_count,
+            frame_stride,
+            target_name,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            kind: MADOPILOT_SOURCE_REPLAY_MEMORY,
-            directory: madopilot_str_t::empty(),
-            frames: std::ptr::null(),
-            frame_count: 0,
-            frame_stride: 0,
-            target_name: madopilot_str_t::empty(),
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                kind: MADOPILOT_SOURCE_REPLAY_MEMORY,
+                directory: madopilot_str_t::empty(),
+                frames: std::ptr::null(),
+                frame_count: 0,
+                frame_stride: 0,
+                target_name: madopilot_str_t::empty(),
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            // The second field is `kind`, a discriminant rather than a bit set.
+            0
         }
     }
-}
 
-impl Input for madopilot_replay_frame_t {
-    // Through `pixels`. Everything before it describes what the pixels are, and
-    // a frame without them is not a frame.
-    const MANDATORY: usize = 40;
-    const NAME: &'static str = "madopilot_replay_frame_t";
+    impl Input for madopilot_replay_frame_t {
+        // Through `pixels`. Everything before it describes what the pixels are, and
+        // a frame without them is not a frame.
+        const MANDATORY: usize = 40;
+        const NAME: &'static str = "madopilot_replay_frame_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_replay_frame_t,
+            struct_size,
+            flags,
+            width,
+            height,
+            format,
+            continuity,
+            pixels,
+            captured_at_nanos,
+            stride,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            flags: 0,
-            width: 0,
-            height: 0,
-            format: MADOPILOT_PIXEL_FORMAT_RGBA8,
-            continuity: crate::types::MADOPILOT_CONTINUITY_CONTINUOUS,
-            pixels: madopilot_bytes_t::empty(),
-            captured_at_nanos: 0,
-            stride: 0,
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                width: 0,
+                height: 0,
+                format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+                continuity: crate::types::MADOPILOT_CONTINUITY_CONTINUOUS,
+                pixels: madopilot_bytes_t::empty(),
+                captured_at_nanos: 0,
+                stride: 0,
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            self.flags
         }
     }
 }
@@ -116,6 +151,17 @@ impl Versioned for madopilot_target_t {
     // Through `coordinate_spaces`: what a target is, before what it is called.
     const MANDATORY: usize = 24;
     const NAME: &'static str = "madopilot_target_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_target_t,
+        struct_size,
+        flags,
+        width,
+        height,
+        format,
+        coordinate_spaces,
+        name,
+        provider,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -185,15 +231,25 @@ unsafe fn replay_frames(source: &madopilot_source_t) -> Result<Vec<ReplayFrame>,
         )));
     }
 
-    let mut frames = Vec::with_capacity(source.frame_count);
+    // Nothing is reserved from `frame_count`. The count is a caller's claim
+    // about memory this library cannot see, and reserving against it turns an
+    // implausible number into an allocation failure, which aborts the process
+    // instead of returning a status a caller can read. Growing as elements are
+    // validated costs one reallocation per doubling and bounds the library's
+    // memory by the frames it has actually accepted.
+    let mut frames = Vec::new();
     for index in 0..source.frame_count {
         // SAFETY: `span` proved that `index * stride` stays inside one
         // representable object, and the caller contract requires that object to
         // be readable for the call.
         let element = unsafe { source.frames.cast::<u8>().add(index * source.frame_stride) }
             .cast::<madopilot_replay_frame_t>();
-        // SAFETY: as above; `read_input` validates alignment and declared size.
-        let frame = unsafe { boundary::read_input::<madopilot_replay_frame_t>(element) }?;
+        // SAFETY: as above. `read_element` validates alignment and declared
+        // size, and reads no further than the stride the array declared, so it
+        // stays inside the element even when the element claims to be larger.
+        let frame = unsafe {
+            boundary::read_element::<madopilot_replay_frame_t>(element, source.frame_stride)
+        }?;
         // SAFETY: as above, for the frame's own pixel view.
         frames.push(unsafe { replay_frame(&frame, index) }?);
     }
@@ -251,12 +307,11 @@ pub(crate) fn create(
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_engine, "out_engine")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
-        return fault.status();
+    if let Err(status) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe { boundary::begin_outputs(out_engine, "out_engine", out_error) }
+    {
+        return status;
     }
     hooks::reach(hooks::Site::Entry);
 
@@ -315,12 +370,11 @@ pub(crate) fn discover(
     out_targets: *mut *mut madopilot_target_list_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
-    // SAFETY: the caller supplies writable, correctly aligned output addresses.
-    if let Err(fault) = unsafe {
-        boundary::begin_handle_out(out_targets, "out_targets")
-            .and_then(|()| boundary::begin_error_out(out_error))
-    } {
-        return fault.status();
+    if let Err(status) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe { boundary::begin_outputs(out_targets, "out_targets", out_error) }
+    {
+        return status;
     }
     hooks::reach(hooks::Site::Entry);
 

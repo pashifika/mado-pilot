@@ -70,6 +70,30 @@ cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
+Step 4 needs one thing of a Windows host: the privilege to create a symbolic
+link. Two tests in `mado-pilot-adapter-replay` prove that a linked path component
+cannot reach outside a replay source, and they are the only coverage of that
+rule. A host that cannot create the link has proven nothing, so they fail rather
+than return early — a skipped test and a passing one are the same line of output,
+and a green suite has to mean the case ran. The failure names the requirement and
+carries `Os { code: 1314 }`, which is `ERROR_PRIVILEGE_NOT_HELD`.
+
+Turn on **Settings → System → For developers → Developer Mode**. It takes effect
+in a console opened afterwards, with no reboot, and `cmd` confirms it:
+
+```bat
+reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock" /v AllowDevelopmentWithoutDevLicense
+```
+
+`0x1` is on. An elevated prompt also holds the privilege, but do not verify from
+one: `cargo` writes `target/` as whoever ran it, and mixing elevated and ordinary
+runs in one working copy produces permission failures later that look like
+anything but their cause.
+
+Running with `-- --skip a_symlinked_` gets the rest of the suite through on a host
+without the privilege. That run is not a verification: it is exactly the silent
+gap the two tests were changed to expose, so record it as what it is.
+
 Step 8 is the only check in this repository that is not `cargo` alone. It needs a
 C compiler, a C++ compiler, and CMake 3.22 or later. On both release targets the
 compilers are the ones the platform already has — MSVC on Windows, the Xcode
@@ -83,6 +107,21 @@ verified this way rather than generated;
 On Windows, run step 8 from a Developer Command Prompt. `cl` is not on `PATH`
 otherwise, and the same environment sets `VSINSTALLDIR`, through which the check
 finds the CMake that Visual Studio ships when none is on `PATH`.
+
+Step 6 sets an environment variable, which each Windows shell spells its own way.
+The Developer Command Prompt the paragraph above asks for is `cmd`, so that form
+comes first:
+
+```bat
+set "RUSTDOCFLAGS=-D warnings"
+cargo doc --locked --workspace --no-deps
+set "RUSTDOCFLAGS="
+```
+
+Quote the whole assignment. `set RUSTDOCFLAGS="-D warnings"` puts the quotation
+marks *inside* the value, and rustdoc is then passed an argument it does not
+recognize. The third line clears it again: `set` outlives the command, and a
+`RUSTDOCFLAGS` left behind applies to every later `cargo doc` in that window.
 
 On Windows PowerShell, step 6 is:
 
@@ -103,6 +142,29 @@ formatting that step 2 verifies.
 [docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
 dependency policy that step 7 enforces, including the review required before a
 native library or model file is added.
+
+### When a step contradicts the one before it
+
+A build cache can go stale in a way that makes one step disagree with another,
+and the disagreement is the symptom worth recognising rather than debugging.
+Observed on the Windows verification host: step 6 reported that a trait was
+missing methods its callers use, on a working tree where step 3 and step 4 had
+both just passed over the same source. `cargo doc` had checked the dependents
+against metadata for two crates that was thirteen commits old.
+
+`cargo clippy` runs through `RUSTC_WORKSPACE_WRAPPER` and writes its check
+artifacts under a fingerprint of its own, so a green step 3 does not refresh what
+step 6 consumes. When one step reports an API that the source plainly does not
+have, do not read the error: rebuild what it read.
+
+```sh
+cargo clean -p <the crates the error names>
+```
+
+Then re-run from step 1. A cache that was wrong once about one artifact kind was
+not necessarily right about the others, and a verification is worth only as much
+as the freshness of what it compiled — so if a run needed this, say so alongside
+its result, or `cargo clean` and take the run again.
 
 ## Branch strategy
 
@@ -168,9 +230,18 @@ The stable check names are:
 | Check | Workflow | What it verifies |
 |---|---|---|
 | `Validate branch flow` | `branch-policy.yml` | The source and target branches follow the pull request flow. |
-| `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, documentation, and dependency policy. |
-| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, and documentation checks against the committed lockfile. |
-| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-15` Apple Silicon inventory, lint, test, and documentation checks against the committed lockfile. |
+| `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, and dependency policy. |
+| `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
+| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-15` Apple Silicon inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
+
+The `Repository policy` job builds no product package, which is why
+documentation, lints, tests, and the C and C++ boundary are verified only in the
+two native jobs. Building any product package needs OpenCV and a loadable
+libclang, because `mado-pilot-backend-opencv` generates its bindings at build
+time, and that installation exists on the two release targets rather than on a
+host that is neither. Of the verification sequence above, steps 3 through 6 and
+step 8 therefore run only in the two native jobs, steps 2 and 7 run only in the
+repository-policy job, and step 1 runs in all three.
 
 A check is activated as a live required status only after that check has produced
 its first successful run on the branch it will guard, and only with separate

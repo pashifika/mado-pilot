@@ -306,10 +306,11 @@ typedef struct madopilot_bytes_t {
  * Opaque handles
  *
  * Every handle is reference counted. `*_retain` adds one owned reference and
- * `*_release` drops one; both accept null as a no-op, so a cleanup path can
- * release whatever it has without knowing how far construction got. Every other
- * operation rejects null, because "do nothing" is not an answer to a question
- * that has one.
+ * `*_release` drops one; both accept null as a no-op and return
+ * MADOPILOT_STATUS_OK for it, so a cleanup path can release whatever it has
+ * without knowing how far construction got, and without special-casing the
+ * status. Every other operation rejects null, because "do nothing" is not an
+ * answer to a question that has one.
  *
  * A handle passed to a call must stay retained for the whole call. Releasing
  * the last reference concurrently with a call that has not retained one of its
@@ -317,6 +318,12 @@ typedef struct madopilot_bytes_t {
  *
  * Const access is safe from several threads at once while each keeps a live
  * reference.
+ *
+ * The four entries that take no handle — madopilot_get_api, describe_build,
+ * clock_now, and status_text — are safe to call from any thread at any time,
+ * concurrently with each other and with any other entry, and are safe to call
+ * again from inside a call to any of them. They read immutable state or the
+ * platform clock and own nothing that another call could be using.
  * ------------------------------------------------------------------------ */
 
 typedef struct madopilot_cancellation_t madopilot_cancellation_t;
@@ -344,13 +351,34 @@ typedef struct madopilot_result_t madopilot_result_t;
  * MADOPILOT_STATUS_INVALID_ARGUMENT, and nothing past struct_size is read even
  * to check it.
  *
+ * A size describes a prefix, so it also has to end where a prefix can end.
+ * Three further sizes are MADOPILOT_STATUS_INVALID_ARGUMENT for that reason,
+ * each refused rather than adjusted to something nearby: a struct_size that
+ * stops inside a field of the structure the library declares, because the field
+ * would be neither supplied nor omitted — a size at or above the library's own
+ * comes from a newer header, so its extra bytes are the trailing bytes above
+ * rather than a field that library could place; an element of a caller-declared
+ * array whose struct_size is above that array's element stride, because the two
+ * declarations describe different extents; and a struct_size that does not
+ * reach a field whose presence bit is set, because the field the bit names would
+ * carry the omitted-field default under the caller's own claim that it was
+ * supplied. Every size this header declares satisfies all three.
+ *
  * For an output structure the same size is a promise in the other direction:
  * the library writes only within it, and writes back the number of bytes it
  * actually populated. A caller built against a newer header therefore learns
  * how much of what it knows is really there.
  * ------------------------------------------------------------------------ */
 
-/* A half-open rectangle: [left, right) x [top, bottom). Not versioned. */
+/* A half-open rectangle: [left, right) x [top, bottom). Not versioned.
+ *
+ * `space` is read in one direction and written in the other. On a rectangle the
+ * library WRITES it names whichever space the library measured that rectangle
+ * in. On a rectangle a caller SUPPLIES — the region fields of
+ * madopilot_map_request_t and madopilot_find_request_t — Phase 1 accepts
+ * MADOPILOT_SPACE_CAPTURE_PIXELS only, and any other space is
+ * MADOPILOT_STATUS_INVALID_ARGUMENT. The Phase 1 table has no
+ * coordinate-conversion entry, so a caller converts before it asks. */
 typedef struct madopilot_pixel_rect_t {
     madopilot_space_t space;
     int32_t left;
@@ -450,6 +478,9 @@ typedef struct madopilot_session_info_t {
     uint32_t width;
     uint32_t height;
     madopilot_pixel_format_t format;
+    /* A bit set: bit (1 << space) is set when that space converts. Read as a
+     * madopilot_space_t it gives a plausible wrong answer — the value 1 is both
+     * "capture pixels converts" and SPACE_FRAME_NORMALIZED. */
     int32_t coordinate_spaces;
 } madopilot_session_info_t;
 
@@ -472,14 +503,24 @@ typedef struct madopilot_map_request_t {
     uint32_t flags; /* MADOPILOT_MAP_HAS_REGION */
     madopilot_pixel_format_t format;
     madopilot_clip_policy_t clip_policy;
+    /* MADOPILOT_SPACE_CAPTURE_PIXELS only; any other space is
+     * MADOPILOT_STATUS_INVALID_ARGUMENT. */
     madopilot_pixel_rect_t region;
 } madopilot_map_request_t;
 
-/* The thresholds one search runs under. Mandatory prefix: through flags.
+/* The thresholds one search runs under.
  *
- * Every omitted field defaults to the prepared template's own declared default.
- * Also used as an output, where the library sets every presence bit because
- * every field was in effect. */
+ * Mandatory prefix as an INPUT: through flags. Every omitted field defaults to
+ * the prepared template's own declared default, so a structure that sets no
+ * presence bit is the documented way to ask for exactly those defaults.
+ *
+ * Mandatory prefix as an OUTPUT: the whole structure. This is the only
+ * structure the table uses in both directions, and the only one whose two
+ * prefixes differ. result_options reports the thresholds the search really ran
+ * under, where every field was in effect and the library sets every presence
+ * bit; a shorter report would drop one of them silently. So pass
+ * sizeof(madopilot_match_options_t) there — eight bytes is a valid input size
+ * and is MADOPILOT_STATUS_INVALID_ARGUMENT as an output size. */
 typedef struct madopilot_match_options_t {
     uint32_t struct_size;
     uint32_t flags; /* MADOPILOT_MATCH_HAS_* */
@@ -489,6 +530,12 @@ typedef struct madopilot_match_options_t {
 } madopilot_match_options_t;
 
 /* One template search. Mandatory prefix: through tmpl.
+ *
+ * Omitting clip_policy rejects a region that leaves the frame, the same default
+ * madopilot_map_request_t states for its own field. Only a struct_size of 52
+ * through 55 omits it, which no released header declares, but the two fields
+ * are identical and stating the default for one and not the other invites the
+ * reader to think they differ.
  *
  * The field is `tmpl` rather than `template` because the C++ wrapper includes
  * this header and that word is a keyword there. */
@@ -501,6 +548,8 @@ typedef struct madopilot_find_request_t {
     const madopilot_frame_t* frame;
     const madopilot_template_t* tmpl;         /* Required. */
     const madopilot_match_options_t* options; /* Null: template defaults. */
+    /* MADOPILOT_SPACE_CAPTURE_PIXELS only; any other space is
+     * MADOPILOT_STATUS_INVALID_ARGUMENT. */
     madopilot_pixel_rect_t region;
     madopilot_clip_policy_t clip_policy;
 } madopilot_find_request_t;
@@ -608,7 +657,20 @@ typedef struct madopilot_source_t {
     madopilot_str_t target_name; /* Empty for a default. */
 } madopilot_source_t;
 
-/* Where an asset package is read from. Mandatory prefix: through path. */
+/* Where an asset package is read from. Mandatory prefix: through path.
+ *
+ * ARCHIVE_BYTES is read where it is: the library makes no whole-archive copy,
+ * and the view has to be readable and unchanged for the duration of the call.
+ * A package the call returns owns everything it kept, so the caller may release
+ * or overwrite the archive the moment the call comes back. The declared length
+ * answers to the engine's configured source-byte ceiling, so a length above it
+ * reports MADOPILOT_STATUS_LIMIT_EXCEEDED with the archive-limit asset fault at
+ * the source stage, before the view behind it is read at all. The load answers
+ * to the operation, so a cancellation or a deadline that lands before the
+ * package is published reports that outcome and publishes nothing. A malformed
+ * view — a null pointer carrying a length — is
+ * MADOPILOT_STATUS_INVALID_ARGUMENT with MADOPILOT_ERROR_CATEGORY_ABI, whatever
+ * the length says. */
 typedef struct madopilot_package_source_t {
     uint32_t struct_size;
     madopilot_package_source_kind_t kind;
@@ -630,9 +692,38 @@ typedef struct madopilot_package_source_t {
  *
  * Every member catches a panic before it can cross into C.
  *
+ * Every pointer parameter is required unless its declaration says otherwise,
+ * and a null one is MADOPILOT_STATUS_INVALID_ARGUMENT. That covers the request,
+ * source, and operation structures as well as the handles: passing a null
+ * `operation` to mean "no deadline" is refused, and the way to say that is a
+ * madopilot_operation_t whose `flags` set no bit. An absent operation structure
+ * and one that declares nothing are different requests, and only the second
+ * says which header the caller was built against.
+ *
+ * Beyond the retain and release entries and the empty-view rule above, null is
+ * accepted in four places, each documented where it is declared: `out_error`
+ * below, madopilot_operation_t.cancellation, madopilot_find_request_t.frame,
+ * and madopilot_find_request_t.options.
+ *
+ * Every structure a caller passes in, every view one of those structures
+ * carries, and every view passed directly as an argument — a template identity,
+ * a target name — must be readable for the duration of the call and must not be
+ * modified during it, whether the library reads it once or reads it throughout.
+ * The library never retains a caller's memory past the call that received it:
+ * anything it must keep, it copies or converts into storage of its own. This is
+ * the input counterpart of the output rule above, where a view the library owns
+ * stays valid while its handle is retained.
+ *
  * An entry that takes `out_error` may be passed null there, and then reports
  * the status only. A returned error is owned by the caller and is released with
  * error_release.
+ *
+ * That includes a fault about an output argument. A null or misaligned output is
+ * an invalid argument like any other, and MADOPILOT_STATUS_INVALID_ARGUMENT does
+ * not say which of an entry's pointers was wrong, so an entry whose `out_error`
+ * passed validation reports through it — after clearing it — which output it
+ * refused. A call whose `out_error` is itself the refused output gets the status
+ * alone.
  * ------------------------------------------------------------------------ */
 
 typedef struct madopilot_api_t {
@@ -789,7 +880,10 @@ typedef struct madopilot_api_t {
      * owns the frame it searched. */
     madopilot_status_t (*result_stamp)(const madopilot_result_t* result,
                                        madopilot_frame_stamp_t* out_stamp);
-    /* The options the search actually ran under, not the ones requested. */
+    /* The options the search actually ran under, not the ones requested.
+     *
+     * madopilot_match_options_t's mandatory prefix HERE is the whole structure,
+     * not the eight bytes it accepts as an input. */
     madopilot_status_t (*result_options)(
         const madopilot_result_t* result,
         madopilot_match_options_t* out_options);
@@ -804,9 +898,14 @@ typedef struct madopilot_api_t {
  *
  * A caller that knows less than this cannot report what it loaded and cannot
  * build a deadline, so negotiation refuses it rather than handing back a table
- * it could not use. */
-#define MADOPILOT_API_SIZE_INFORMATION \
-    (offsetof(madopilot_api_t, status_text) + sizeof(void*))
+ * it could not use.
+ *
+ * Written as the offset of the member *after* the prefix, which is what a
+ * prefix size is: where the next member begins. Adding sizeof(void*) to
+ * status_text's own offset would have assumed a function pointer is the size of
+ * an object pointer, and that no padding separates the two members. This
+ * assumes neither, and it is the same number on both release targets. */
+#define MADOPILOT_API_SIZE_INFORMATION offsetof(madopilot_api_t, cancellation_create)
 
 /* ---------------------------------------------------------------------------
  * The one exported symbol

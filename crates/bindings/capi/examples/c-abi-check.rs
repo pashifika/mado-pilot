@@ -17,10 +17,13 @@
 //!    whose checks prove its behaviour at run time;
 //! 5. compiles, links, and runs `examples/cpp/deterministic-slice.cpp` and
 //!    checks that it answers exactly what the C example answered;
-//! 6. compiles every frozen header fixture under `tests/abi-compat/` against
+//! 6. compiles and runs the same layout probe a second time against each frozen
+//!    header under `tests/abi-compat/`, and checks that every structure, field,
+//!    and table entry that header declares is still where it said it was;
+//! 7. compiles every frozen header fixture under `tests/abi-compat/` against
 //!    its own header rather than the working one, links it to this library, and
 //!    checks that it still negotiates and still gets the same answers;
-//! 7. configures, builds, and runs the CMake consumer project in
+//! 8. configures, builds, and runs the CMake consumer project in
 //!    `tests/cmake/`, which reaches the library only through `MadoPilot::C` and
 //!    `MadoPilot::Cpp`.
 //!
@@ -38,6 +41,7 @@
 //! from inside a cargo-launched process is a worse failure mode than a missing
 //! artifact with an actionable message.
 
+use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -58,6 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_c_example(&paths, &label)?;
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
+    check_frozen_layout(&paths)?;
     check_frozen_headers(&paths)?;
     check_cmake_consumer(&paths)?;
 
@@ -534,11 +539,19 @@ fn report_output(what: &str, output: &Output) {
     }
 }
 
+/// The C program that reports the layout its compiler produced.
+///
+/// It is compiled twice: once against the working header, and once per frozen
+/// header. Both runs are compared against the same Rust measurements.
+fn layout_probe(paths: &Paths) -> PathBuf {
+    paths
+        .root
+        .join("crates/bindings/capi/tests/c/madopilot-abi-layout.c")
+}
+
 /// Compiles and runs the layout probe, and diffs it against the Rust layout.
 fn check_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
-    let source = paths
-        .root
-        .join("crates/bindings/capi/tests/c/madopilot-abi-layout.c");
+    let source = layout_probe(paths);
     // The probe only includes the header, so it needs no library to link.
     let program = compile(paths, Language::C, "madopilot-abi-layout", &source, false)?;
 
@@ -703,6 +716,79 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
 /// a fixture beside the existing ones rather than editing them, so the list
 /// only ever grows and each entry keeps saying what one released header saw.
 const FROZEN_HEADERS: &[&str] = &["v1"];
+
+/// Runs the layout probe against each frozen header, and checks that what that
+/// header declares is still true of the library built now.
+///
+/// [`check_layout`] proves the *working* header and the Rust definitions agree
+/// with each other, which is weaker than it looks: a same-width field swap made
+/// in both at once — `madopilot_result_info_t.backend_id` and
+/// `backend_version`, or `madopilot_frame_stamp_t.epoch` and `sequence` — moves
+/// no offset and leaves that comparison green while silently breaking every
+/// caller built against the released header. The released header is the side a
+/// v1 caller actually compiled against, so it is the side that has to be
+/// measured against the library, and nothing did that before: the frozen
+/// fixture `old-prefix.c` reads four values, and the probe saw only the working
+/// include directory.
+///
+/// The comparison is containment rather than the positional diff
+/// [`check_layout`] uses, because a later minor appends. The library may report
+/// lines the frozen header never declared; every line the frozen header does
+/// declare must still be reported, with the same name and the same offset. A
+/// field that moved, was renamed, or was removed drops a line and fails here,
+/// and so does a table entry that changed position.
+fn check_frozen_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    let source = layout_probe(paths);
+    let report = madopilot::layout::report();
+    let declared: HashSet<&str> = report.lines().map(str::trim_end).collect();
+
+    for version in FROZEN_HEADERS {
+        let include = paths.frozen_include(version);
+        let name = format!("madopilot-abi-layout-{version}");
+        // The probe only includes the header, so it needs no library to link.
+        let program = compile_with(paths, &include, Language::C, &name, &source, false)?;
+
+        let output = run(paths, &program, &[])?;
+        report_output(&name, &output);
+        if !output.status.success() {
+            return Err(format!("the frozen {version} layout probe did not run").into());
+        }
+
+        let measured = String::from_utf8(output.stdout)?;
+        let lines: Vec<&str> = measured
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+            .collect();
+        let missing: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|line| !declared.contains(line))
+            .collect();
+
+        if !missing.is_empty() {
+            for line in &missing {
+                println!(
+                    "FROZEN LAYOUT MISMATCH: the {version} header declares `{line}`, \
+                     which this library no longer reports"
+                );
+            }
+            return Err(format!(
+                "the frozen {version} header and this library disagree in {} place(s)",
+                missing.len()
+            )
+            .into());
+        }
+
+        println!(
+            "frozen layout: all {} line(s) the {version} header declares still hold against \
+             this library",
+            lines.len()
+        );
+    }
+
+    Ok(())
+}
 
 /// Compiles, links, negotiates, and runs each frozen header's fixture against
 /// the library built now.

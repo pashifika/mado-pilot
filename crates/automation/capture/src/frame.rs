@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use mado_pilot_core::{
-    ClipPolicy, FrameStamp, MonotonicInstant, PixelRect, Rect, TransformSnapshot,
+    ClipPolicy, FrameStamp, GeometryFault, MonotonicInstant, PixelRect, Rect, TransformSnapshot,
 };
 
 use crate::descriptor::FrameDescriptor;
@@ -117,14 +117,19 @@ impl Frame {
     ///
     /// # Errors
     ///
-    /// Returns the geometry fault as a capture fault when the region is invalid,
-    /// unconvertible, or outside the frame under `policy`.
+    /// Returns [`CaptureFault::UnsupportedCoordinate`] when the frame has no
+    /// authoritative mapping for the region's coordinate space, and
+    /// [`CaptureFault::RegionOutsideFrame`] when the geometry is otherwise invalid
+    /// or outside the frame under `policy`.
     pub fn view(&self, region: Rect, policy: ClipPolicy) -> Result<FrameView, CaptureFault> {
         let resolved = self
             .0
             .transform
             .resolve_capture_pixels(region, policy)
-            .map_err(|_| CaptureFault::RegionOutsideFrame)?;
+            .map_err(|fault| match fault {
+                GeometryFault::ConversionUnsupported => CaptureFault::UnsupportedCoordinate,
+                _ => CaptureFault::RegionOutsideFrame,
+            })?;
         FrameView::new(self.clone(), resolved)
     }
 

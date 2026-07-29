@@ -56,12 +56,25 @@
 //! | Session closed | [`Status::Closed`] |
 //! | Capture failed | [`Status::CaptureFailed`] |
 //! | Asset package refused | [`Status::AssetInvalid`] |
+//! | A documented asset ceiling would have been exceeded, or a counter reached its end: geometry revisions, stream epochs, frame sequence numbers, or the identity space | [`Status::LimitExceeded`] |
 //! | Matching backend unavailable or failed | [`Status::VisionFailed`] |
+//! | An invariant this implementation is responsible for did not hold | [`Status::Internal`] |
 //!
 //! Package loading reports [`AssetFault`] instead, which carries the rule that
-//! was broken *and* the stage that caught it. It converts into [`Error`] with
-//! the status above, so a caller that wants one error type throughout keeps
-//! using `?`.
+//! was broken *and* the stage that caught it. It converts into [`Error`], and
+//! [`AssetFault::status`] is the category that conversion carries, so a caller
+//! that wants one error type throughout keeps using `?`. That category is not
+//! always [`Status::AssetInvalid`]: a package that would cross one of the
+//! archive ceilings reports [`Status::LimitExceeded`]; a compression method,
+//! schema version, content source, coordinate space, hash algorithm, or content
+//! encoding this build does not implement, and an encrypted archive entry,
+//! report [`Status::Unsupported`]; a configured limit above the implementation
+//! ceiling, or a template identity the committed package does not declare,
+//! reports [`Status::InvalidArgument`]; a load interrupted before it committed
+//! reports [`Status::Cancelled`] or [`Status::DeadlineExceeded`]; and a size
+//! computation this loader is responsible for preventing reports
+//! [`Status::Internal`]. Branch on [`AssetFault::kind`] when the rule matters
+//! and on the status when only the category does.
 //!
 //! # Implementation status
 //!

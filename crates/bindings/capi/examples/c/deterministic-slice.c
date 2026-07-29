@@ -13,8 +13,10 @@
  * questions with the same numbers. Run the Rust one first if you want to see
  * what the output should say.
  *
- * The program checks every status and every expected outcome and exits non-zero
- * on the first surprise, so it is a test as well as an example. In particular
+ * The program checks every status and every expected outcome, records each
+ * surprise, continues where it is safe, attempts all owned-handle cleanup, and
+ * exits non-zero if anything failed. It is therefore a test as well as an
+ * example. In particular
  * the scene comes from `../deterministic-scene.h`, which is the same integer
  * arithmetic `mado-pilot-testkit` uses: if the two ever drift apart, the
  * template stops being found where it is planted and this program fails. The
@@ -86,11 +88,13 @@ static int expect_ok(madopilot_status_t status, const char* what)
     return 1;
 }
 
-/* Prints an owned error and releases it. The message is borrowed from the
- * handle, so anything needed afterwards is copied before the release. */
-static void report_error(const char* what, madopilot_error_t* error)
+/* Prints an owned error, releases it, and clears the caller's slot. The
+ * message is borrowed from the handle, so it is printed before the release. */
+static void report_error(const char* what, madopilot_error_t** error_slot)
 {
     madopilot_error_detail_t detail;
+    madopilot_error_t* error = *error_slot;
+    madopilot_status_t status;
 
     if (error == NULL) {
         printf("  %s: no error detail was produced\n", what);
@@ -99,7 +103,8 @@ static void report_error(const char* what, madopilot_error_t* error)
 
     memset(&detail, 0, sizeof(detail));
     detail.struct_size = (uint32_t)sizeof(detail);
-    if (api->error_describe(error, &detail) == MADOPILOT_STATUS_OK) {
+    status = api->error_describe(error, &detail);
+    if (expect_ok(status, "error_describe")) {
         printf("  %s: status %s category %d", what, status_name(detail.status),
                (int)detail.category);
         if ((detail.flags & MADOPILOT_ERROR_HAS_ASSET_DETAIL) != 0u) {
@@ -112,7 +117,10 @@ static void report_error(const char* what, madopilot_error_t* error)
         print_str("\n    ", detail.message);
         printf("\n");
     }
-    api->error_release(error);
+
+    status = api->error_release(error);
+    expect_ok(status, "error_release");
+    *error_slot = NULL;
 }
 
 int main(int argc, char** argv)
@@ -170,7 +178,7 @@ int main(int argc, char** argv)
     memset(&build, 0, sizeof(build));
     build.struct_size = (uint32_t)sizeof(build);
     if (!expect_ok(api->describe_build(&build), "describe_build")) {
-        return 1;
+        goto cleanup;
     }
     printf("abi: %u.%u table %u bytes (header declares %zu)\n", build.abi_major,
            build.abi_minor, build.table_size, sizeof(madopilot_api_t));
@@ -181,10 +189,10 @@ int main(int argc, char** argv)
     /* 2. Build an absolute deadline and a cancellation handle. The deadline is
      *    an instant in the library's own monotonic domain, not a duration. */
     if (!expect_ok(api->clock_now(&now), "clock_now")) {
-        return 1;
+        goto cleanup;
     }
     if (!expect_ok(api->cancellation_create(&cancellation), "cancellation_create")) {
-        return 1;
+        goto cleanup;
     }
 
     memset(&operation, 0, sizeof(operation));
@@ -197,7 +205,8 @@ int main(int argc, char** argv)
     scene = (uint8_t*)malloc(SCENE_BYTES);
     if (scene == NULL) {
         fprintf(stderr, "could not allocate the scene\n");
-        return 1;
+        failures += 1;
+        goto cleanup;
     }
     scene_fill_rgba(scene);
 
@@ -220,9 +229,8 @@ int main(int argc, char** argv)
 
     status = api->engine_create(&source, &operation, &engine, &error);
     if (!expect_ok(status, "engine_create")) {
-        report_error("engine_create", error);
-        free(scene);
-        return 1;
+        report_error("engine_create", &error);
+        goto cleanup;
     }
     /* The pixels were copied, so the caller's storage is its own again. */
     free(scene);
@@ -246,8 +254,13 @@ int main(int argc, char** argv)
                    (int)target.format);
         }
 
-        /* Out of range is invalid argument, and leaves the output alone. */
-        memset(&target, 0, sizeof(target));
+        /* Out of range is invalid argument, and puts the output in its failure
+         * state. Poisoned with 0xAA rather than zeroed, because zeroing first
+         * and then checking for zero holds whether or not the library wrote
+         * anything: a regression to validate-before-initialize would have passed.
+         * `struct_size` is restored after the poison because the accessor reads
+         * it. */
+        memset(&target, 0xAA, sizeof(target));
         target.struct_size = (uint32_t)sizeof(target);
         expect(api->target_list_get(targets, count, &target) ==
                    MADOPILOT_STATUS_INVALID_ARGUMENT,
@@ -255,7 +268,8 @@ int main(int argc, char** argv)
         expect(target.width == 0 && target.name.len == 0,
                "a rejected accessor leaves its output in the failure state");
     } else {
-        report_error("engine_discover", error);
+        report_error("engine_discover", &error);
+        goto cleanup;
     }
 
     {
@@ -270,13 +284,14 @@ int main(int argc, char** argv)
         status = api->session_open(engine, targets, 0, &open_request, &operation,
                                    &session, &error);
         if (!expect_ok(status, "session_open")) {
-            report_error("session_open", error);
+            report_error("session_open", &error);
             goto cleanup;
         }
 
         /* Opening copied the identity, so the list is no longer needed. Every
          * borrowed target string dies with it; nothing below uses one. */
-        api->target_list_release(targets);
+        status = api->target_list_release(targets);
+        expect_ok(status, "target_list_release");
         targets = NULL;
 
         memset(&session_info, 0, sizeof(session_info));
@@ -297,7 +312,7 @@ int main(int argc, char** argv)
 
         status = api->session_acquire_frame(session, &operation, &frame, &error);
         if (!expect_ok(status, "session_acquire_frame")) {
-            report_error("session_acquire_frame", error);
+            report_error("session_acquire_frame", &error);
             goto cleanup;
         }
 
@@ -333,7 +348,7 @@ int main(int argc, char** argv)
 
         status = api->frame_map(frame, &map_request, &operation, &mapping, &error);
         if (!expect_ok(status, "frame_map")) {
-            report_error("frame_map", error);
+            report_error("frame_map", &error);
             goto cleanup;
         }
 
@@ -362,7 +377,7 @@ int main(int argc, char** argv)
         status = api->package_load(engine, &package_source, &operation, &package,
                                    &error);
         if (!expect_ok(status, "package_load")) {
-            report_error("package_load", error);
+            report_error("package_load", &error);
             goto cleanup;
         }
 
@@ -390,13 +405,13 @@ int main(int argc, char** argv)
         status = api->template_prepare_from_package(engine, package, borrow("panel.patch"),
                                        &operation, &present, &error);
         if (!expect_ok(status, "template_prepare_from_package(panel.patch)")) {
-            report_error("template_prepare_from_package", error);
+            report_error("template_prepare_from_package", &error);
             goto cleanup;
         }
         status = api->template_prepare_from_package(engine, package, borrow("panel.absent"),
                                        &operation, &absent, &error);
         if (!expect_ok(status, "template_prepare_from_package(panel.absent)")) {
-            report_error("template_prepare_from_package", error);
+            report_error("template_prepare_from_package", &error);
             goto cleanup;
         }
 
@@ -426,7 +441,9 @@ int main(int argc, char** argv)
                    "an undeclared template identity is invalid argument");
             expect(nothing == NULL, "a refused preparation leaves its output null");
             printf("undeclared template:\n");
-            report_error("template_prepare_from_package", refusal);
+            report_error("template_prepare_from_package", &refusal);
+            expect_ok(api->template_release(nothing),
+                      "template_release(undeclared)");
         }
     }
 
@@ -445,7 +462,7 @@ int main(int argc, char** argv)
 
         status = api->session_find(session, &find, &operation, &found, &error);
         if (!expect_ok(status, "session_find(panel.patch)")) {
-            report_error("session_find", error);
+            report_error("session_find", &error);
             goto cleanup;
         }
 
@@ -485,7 +502,9 @@ int main(int argc, char** argv)
 
         {
             madopilot_match_t match;
-            memset(&match, 0, sizeof(match));
+            /* Poisoned rather than zeroed, for the reason the target accessor
+             * above states. */
+            memset(&match, 0xAA, sizeof(match));
             match.struct_size = (uint32_t)sizeof(match);
             expect(api->result_match(found, info.match_count, &match) ==
                        MADOPILOT_STATUS_INVALID_ARGUMENT,
@@ -502,7 +521,7 @@ int main(int argc, char** argv)
         find.tmpl = absent;
         status = api->session_find(session, &find, &operation, &missing, &error);
         if (!expect_ok(status, "session_find(panel.absent)")) {
-            report_error("session_find", error);
+            report_error("session_find", &error);
             goto cleanup;
         }
         memset(&info, 0, sizeof(info));
@@ -514,8 +533,14 @@ int main(int argc, char** argv)
     }
 
     /* 9. Close. Twice, because close is idempotent. */
-    expect_ok(api->session_close(session, &operation, &error), "session_close");
-    expect_ok(api->session_close(session, &operation, &error), "session_close again");
+    status = api->session_close(session, &operation, &error);
+    if (!expect_ok(status, "session_close")) {
+        report_error("session_close", &error);
+    }
+    status = api->session_close(session, &operation, &error);
+    if (!expect_ok(status, "session_close again")) {
+        report_error("session_close again", &error);
+    }
     {
         int32_t closed = 0;
         expect_ok(api->session_is_closed(session, &closed), "session_is_closed");
@@ -528,7 +553,8 @@ int main(int argc, char** argv)
         expect(status == MADOPILOT_STATUS_CLOSED,
                "a closed session publishes nothing further");
         expect(after == NULL, "a refused frame request leaves its output null");
-        api->error_release(refusal);
+        report_error("session_acquire_frame after close", &refusal);
+        expect_ok(api->frame_release(after), "frame_release(after close)");
     }
 
     /* 10. What the caller owns survives the close, and survives the producer. */
@@ -550,18 +576,23 @@ int main(int argc, char** argv)
 
 cleanup:
     /* Reverse ownership order. Every release accepts null, so this path is the
-     * same whether the flow completed or stopped early. */
-    api->result_release(missing);
-    api->result_release(found);
-    api->template_release(absent);
-    api->template_release(present);
-    api->package_release(package);
-    api->mapping_release(mapping);
-    api->frame_release(frame);
-    api->session_release(session);
-    api->target_list_release(targets);
-    api->engine_release(engine);
-    api->cancellation_release(cancellation);
+     * same whether the flow completed or stopped early. Every release is
+     * attempted even after one fails, and each failure contributes to the final
+     * non-zero exit. */
+    if (error != NULL) {
+        report_error("unhandled operation error", &error);
+    }
+    expect_ok(api->result_release(missing), "result_release(missing)");
+    expect_ok(api->result_release(found), "result_release(found)");
+    expect_ok(api->template_release(absent), "template_release(absent)");
+    expect_ok(api->template_release(present), "template_release(present)");
+    expect_ok(api->package_release(package), "package_release");
+    expect_ok(api->mapping_release(mapping), "mapping_release");
+    expect_ok(api->frame_release(frame), "frame_release");
+    expect_ok(api->session_release(session), "session_release");
+    expect_ok(api->target_list_release(targets), "target_list_release");
+    expect_ok(api->engine_release(engine), "engine_release");
+    expect_ok(api->cancellation_release(cancellation), "cancellation_release");
     free(scene);
 
     if (failures != 0) {

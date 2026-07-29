@@ -60,17 +60,14 @@ impl ControlledCapture {
     /// Returns whatever the stream state returns, so a test can assert that
     /// publishing to a closing session is refused.
     pub fn publish(&self, fill: u8, continuity: Continuity) -> Result<()> {
-        let sessions: Vec<Arc<ControlledSession>> = self.sessions().clone();
-        for session in sessions {
-            session.state.publish(Publication {
-                captured_at: MonotonicInstant::ORIGIN,
-                descriptor: self.descriptor,
-                placement: None,
-                continuity,
-                pixels: vec![fill; self.descriptor.byte_len()].into_boxed_slice(),
-            })?;
-        }
-        Ok(())
+        let descriptor = self.descriptor;
+        self.deliver(|| Publication {
+            captured_at: MonotonicInstant::ORIGIN,
+            descriptor,
+            placement: None,
+            continuity,
+            pixels: vec![fill; descriptor.byte_len()].into_boxed_slice(),
+        })
     }
 
     /// Publishes a frame of a different extent, forcing a discontinuity.
@@ -80,17 +77,45 @@ impl ControlledCapture {
     /// As [`ControlledCapture::publish`].
     pub fn publish_reshaped(&self, extent: PixelExtent, fill: u8) -> Result<()> {
         let descriptor = FrameDescriptor::packed(extent, self.descriptor.format())?;
+        self.deliver(|| Publication {
+            captured_at: MonotonicInstant::ORIGIN,
+            descriptor,
+            placement: None,
+            continuity: Continuity::Discontinuous,
+            pixels: vec![fill; descriptor.byte_len()].into_boxed_slice(),
+        })
+    }
+
+    /// Offers one publication to every session, and forgets the closed ones.
+    ///
+    /// Two rules, both of which a test with more than one session depends on. A
+    /// refusal does not end the round: every other session still receives the
+    /// frame, and the first refusal is reported once they all have. And a
+    /// session that has begun closing is dropped from the list afterwards,
+    /// because it will never accept another frame — keeping it would make the
+    /// first close fail every later publication.
+    ///
+    /// `publication` is called once per session because a [`Publication`] owns
+    /// its pixels and cannot be handed to two streams.
+    fn deliver(&self, publication: impl Fn() -> Publication) -> Result<()> {
+        // The list is copied and the guard released before publishing, so no
+        // session's own lock is ever taken while the provider's is held.
         let sessions: Vec<Arc<ControlledSession>> = self.sessions().clone();
+        let mut refusal = None;
         for session in sessions {
-            session.state.publish(Publication {
-                captured_at: MonotonicInstant::ORIGIN,
-                descriptor,
-                placement: None,
-                continuity: Continuity::Discontinuous,
-                pixels: vec![fill; descriptor.byte_len()].into_boxed_slice(),
-            })?;
+            if let Err(error) = session.state.publish(publication())
+                && refusal.is_none()
+            {
+                refusal = Some(error);
+            }
         }
-        Ok(())
+        self.sessions()
+            .retain(|session| session.state.lifecycle() == Lifecycle::Open);
+
+        match refusal {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     fn sessions(&self) -> std::sync::MutexGuard<'_, Vec<Arc<ControlledSession>>> {
@@ -185,7 +210,7 @@ impl CaptureSession for ControlledSession {
         self.state.drain(operation)
     }
 
-    fn is_closed(&self) -> bool {
-        self.state.lifecycle() == Lifecycle::Closed
+    fn lifecycle(&self) -> Lifecycle {
+        self.state.lifecycle()
     }
 }

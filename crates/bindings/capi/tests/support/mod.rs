@@ -96,6 +96,21 @@ pub fn package_root() -> String {
         .into_owned()
 }
 
+/// The tracked six-template archive, as the bytes a C caller would lend.
+///
+/// Read into the test's own buffer rather than handed over as a path, because
+/// what the archive-bytes kind is for is memory the caller already holds.
+pub fn lent_archive() -> Vec<u8> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../fixtures/assets/g-014/valid/valid-tiny.zip");
+    std::fs::read(&path).unwrap_or_else(|error| {
+        panic!(
+            "the tracked archive fixture at {} must be readable: {error}",
+            path.display()
+        )
+    })
+}
+
 /// The deterministic scene, and the structures that describe it.
 ///
 /// Held together in one value because the source points at the frame and the
@@ -147,6 +162,14 @@ impl Scene {
     /// The frame structure, for a test that wants to vary one field.
     pub const fn frame_input(&self) -> madopilot_replay_frame_t {
         self.frame
+    }
+
+    /// The source structure, for a test that wants to vary one field.
+    ///
+    /// The copy keeps pointing at this scene's frame, so it is usable only
+    /// while the scene is alive — the same rule the pointer version follows.
+    pub const fn source_input(&self) -> madopilot_source_t {
+        self.source
     }
 }
 
@@ -299,6 +322,34 @@ impl Flow {
         result
     }
 
+    /// Maps the whole held frame and returns the owned mapping.
+    pub fn map(&self) -> *mut madopilot_mapping_t {
+        let operation = operation();
+        let request = madopilot_map_request_t {
+            struct_size: struct_size::<madopilot_map_request_t>(),
+            flags: 0,
+            format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+            clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+            region: madopilot_pixel_rect_t::empty(),
+        };
+        let mut mapping = ptr::null_mut();
+        // SAFETY: the frame is retained by this value, and every pointer is a
+        // live local.
+        let status = unsafe {
+            (self.api.frame_map)(
+                self.frame,
+                &raw const request,
+                &raw const operation,
+                &raw mut mapping,
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, MADOPILOT_STATUS_OK, "frame_map");
+        assert!(!mapping.is_null());
+
+        mapping
+    }
+
     /// Keeps the scene and the package path alive for as long as the flow.
     pub fn scene(&self) -> &Scene {
         &self.scene
@@ -351,6 +402,98 @@ fn prepare(
     );
 
     prepared
+}
+
+/// Produces an owned error handle from a genuine refusal.
+///
+/// A test that needs an error to exercise the error entries themselves gets one
+/// the library actually built, rather than a handle conjured some other way.
+pub fn refused_error(api: &'static madopilot_api_t) -> *mut madopilot_error_t {
+    let scene = Scene::new();
+    let mut undersized = operation();
+    undersized.struct_size = 0;
+
+    let mut engine = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: every pointer is a live local, and the undersized operation is
+    // refused after the outputs are initialized, which is what publishes the
+    // owned error handle.
+    let status = unsafe {
+        (api.engine_create)(
+            scene.source(),
+            &raw const undersized,
+            &raw mut engine,
+            &raw mut error,
+        )
+    };
+    assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+    assert!(engine.is_null());
+    assert!(
+        !error.is_null(),
+        "a refusal with an accepted out_error reports one"
+    );
+
+    error
+}
+
+/// Copies a C view's bytes as a Rust string.
+///
+/// The view borrows from whatever produced it, so anything a test keeps past
+/// that owner's release has to be copied out first.
+///
+/// # Panics
+///
+/// Panics when a non-empty view is null, or when its bytes are not UTF-8.
+pub fn view_to_string(view: madopilot_str_t) -> String {
+    if view.len == 0 {
+        return String::new();
+    }
+    assert!(!view.data.is_null(), "a non-empty view has a pointer");
+
+    // SAFETY: the view is non-null with a length its producer set, and the
+    // caller keeps its owner retained across this call.
+    let bytes = unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), view.len) };
+    String::from_utf8(bytes.to_vec()).expect("a message view is UTF-8")
+}
+
+/// Reads an error's structured detail and its message text, then releases it.
+///
+/// [`describe_and_release`] blanks the borrowed views, which is correct for a
+/// caller keeping the detail but meant no Rust test ever read a message: an
+/// error that reported an empty one passed `cargo test` and was caught only by
+/// the C++ probe. This copies the text out first, so the message surface is
+/// asserted in the same suite that asserts everything else.
+pub fn describe_message_and_release(
+    api: &'static madopilot_api_t,
+    error: *mut madopilot_error_t,
+) -> (madopilot_error_detail_t, String) {
+    assert!(!error.is_null(), "a reported failure produced an error");
+
+    let mut detail = madopilot_error_detail_t {
+        struct_size: struct_size::<madopilot_error_detail_t>(),
+        flags: 0,
+        status: MADOPILOT_STATUS_OK,
+        category: MADOPILOT_ERROR_CATEGORY_UNSPECIFIED,
+        asset_fault: MADOPILOT_ASSET_FAULT_UNKNOWN,
+        asset_stage: MADOPILOT_ASSET_STAGE_UNKNOWN,
+        message: madopilot_str_t::empty(),
+        backend: madopilot_str_t::empty(),
+    };
+    // SAFETY: `detail` is a live local with its `struct_size` set, and the
+    // error is retained until the release below.
+    let status = unsafe { (api.error_describe)(error, &raw mut detail) };
+    assert_eq!(status, MADOPILOT_STATUS_OK, "error_describe");
+
+    let message = view_to_string(detail.message);
+    let copied = madopilot_error_detail_t {
+        message: madopilot_str_t::empty(),
+        backend: madopilot_str_t::empty(),
+        ..detail
+    };
+    // SAFETY: the caller owns this reference and is giving it up.
+    unsafe { (api.error_release)(error) };
+
+    (copied, message)
 }
 
 /// Reads an error's structured detail, then releases it.

@@ -6,7 +6,9 @@ use std::thread;
 use std::time::Duration;
 
 use mado_pilot_capture::{CaptureProvider, Continuity, FrameRequest, OpenRequest, PixelFormat};
-use mado_pilot_core::{CancellationToken, IdentityIssuer, OperationContext, PixelExtent, Status};
+use mado_pilot_core::{
+    CancellationToken, GeometryRevision, IdentityIssuer, OperationContext, PixelExtent, Status,
+};
 use mado_pilot_testkit::{ControlledCapture, capture_contract};
 
 /// Every wait in this file carries a deadline, so a contract regression fails
@@ -180,6 +182,61 @@ fn closing_under_a_waiter_ends_the_wait_and_the_session() {
 }
 
 #[test]
+fn a_closed_session_does_not_keep_the_frame_from_the_ones_opened_after_it() {
+    let capture = provider();
+    let operation = bounded();
+    let targets = capture.discover(&operation).expect("discovered");
+    // Opened in this order, so the closed one comes first in the double's own
+    // list and a loop that stops at the first refusal never reaches `second`.
+    let first = capture
+        .open(targets[0].id(), &OpenRequest::new(), &operation)
+        .expect("opened");
+    let second = capture
+        .open(targets[0].id(), &OpenRequest::new(), &operation)
+        .expect("opened");
+    first.close(&operation).expect("closed");
+
+    assert_eq!(
+        capture
+            .publish(0x77, Continuity::Continuous)
+            .expect_err("the closed session still refuses")
+            .status(),
+        Status::Closed,
+        "a closed session reports its refusal"
+    );
+
+    let frame = second
+        .frame(&FrameRequest::latest(), &operation)
+        .expect("the session after the closed one still received the frame");
+    assert!(
+        frame
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("mapped")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0x77)
+    );
+
+    // The refusal is reported once. A session that has closed cannot accept
+    // another frame, so keeping it would fail every later publication and make
+    // one close the end of the double's usefulness.
+    capture
+        .publish(0x88, Continuity::Continuous)
+        .expect("the closed session is gone, so nothing refuses");
+    let later = second
+        .frame(&FrameRequest::newer_than(frame.stamp()), &operation)
+        .expect("frame");
+    assert!(
+        later
+            .map(PixelFormat::Rgba8, &operation)
+            .expect("mapped")
+            .bytes()
+            .iter()
+            .all(|byte| *byte == 0x88)
+    );
+}
+
+#[test]
 fn a_reshaped_publication_starts_a_later_epoch() {
     let capture = provider();
     let operation = bounded();
@@ -205,9 +262,23 @@ fn a_reshaped_publication_starts_a_later_epoch() {
     assert_eq!(reshaped.stamp().sequence().value(), 0);
     assert_eq!(reshaped.descriptor().extent(), PixelExtent::new(16, 12));
 
+    // The extent changed, so the transform metadata changed, so the geometry
+    // revision has to move: a caller correlating a result against a frame
+    // relies on the revision to tell it the geometry it was computed against is
+    // still the current one. This was asserted nowhere — epoch, sequence and
+    // extent were all checked here and the revision was not, so a stream that
+    // reshaped under one revision passed.
+    assert!(
+        reshaped.stamp().geometry().value() > first.stamp().geometry().value(),
+        "a reshape advances the geometry revision: {} did not follow {}",
+        reshaped.stamp().geometry(),
+        first.stamp().geometry()
+    );
+
     // The frame taken before the reshape is untouched by it.
     assert_eq!(first.descriptor().extent(), PixelExtent::new(8, 6));
     assert_eq!(first.stamp().epoch().value(), 0);
+    assert_eq!(first.stamp().geometry(), GeometryRevision::FIRST);
 
     session.close(&operation).expect("close succeeds");
     assert_eq!(session.description().stream(), first.stamp().stream());

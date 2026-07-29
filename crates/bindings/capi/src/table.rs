@@ -30,7 +30,7 @@
 //! null, alignment, declared size, tags, and arithmetic are all rejected before
 //! any address is formed.
 
-use crate::boundary::{Out, Versioned, boundary};
+use crate::boundary::{Out, Versioned, boundary, prefixes};
 use crate::status::{
     MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK, MADOPILOT_STATUS_UNSUPPORTED,
     madopilot_status_t,
@@ -394,7 +394,23 @@ pub const MADOPILOT_API_SIZE_PHASE1: u32 = {
 /// A caller that knows less than this cannot report what it loaded and cannot
 /// build a deadline, so negotiation refuses it rather than handing back a table
 /// it could not use.
-pub const MADOPILOT_API_SIZE_INFORMATION: u32 = 16 + 3 * 8;
+///
+/// Read from the layout, as the offset of the member after the prefix, which is
+/// what a prefix size is. It was written as `16 + 3 * 8`, which assumed the four
+/// leading `u32`s pack without padding and that a function pointer is eight
+/// bytes; the C header's own definition made the matching assumption. Neither is
+/// assumed now, and the number is unchanged on both release targets.
+// As `MADOPILOT_API_SIZE_PHASE1`: the assertion below is what makes the
+// conversion a fact.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded against the only value that could truncate"
+)]
+pub const MADOPILOT_API_SIZE_INFORMATION: u32 = {
+    let offset = std::mem::offset_of!(madopilot_api_t, cancellation_create);
+    assert!(offset <= u32::MAX as usize, "a prefix size fits a u32");
+    offset as u32
+};
 
 /// Negotiates the ABI and returns the library's immutable function table.
 ///
@@ -463,6 +479,17 @@ impl Versioned for madopilot_build_info_t {
     // Through `table_size`: what a caller checks before it trusts anything else.
     const MANDATORY: usize = 20;
     const NAME: &'static str = "madopilot_build_info_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_build_info_t,
+        struct_size,
+        flags,
+        abi_major,
+        abi_minor,
+        table_size,
+        reserved,
+        library_version,
+        required_backend,
+    );
 
     fn failure(struct_size: u32) -> Self {
         Self {

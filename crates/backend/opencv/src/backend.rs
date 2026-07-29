@@ -61,10 +61,10 @@ impl fmt::Debug for TemplateMatrix {
 /// # What it decides, and what it does not
 ///
 /// This adapter decodes a template, converts a searched region, correlates the
-/// two, and extracts non-overlapping peaks. Region resolution, score validation,
-/// thresholding, canonical ordering, overlap suppression, the result limit, and
-/// the result envelope belong to `mado-pilot-vision`'s matcher, which applies
-/// them to every backend's output identically.
+/// two, and extracts a bounded canonical candidate prefix. It mirrors the
+/// request's suppression only to avoid materializing a dense correlation map;
+/// the public matcher remains authoritative and reapplies score validation,
+/// thresholding, canonical ordering, suppression, and the result limit.
 ///
 /// # Availability
 ///
@@ -120,7 +120,9 @@ impl MatchBackend for OpenCvBackend {
             _ => return Err(VisionFault::UnsupportedTemplateEncoding.into()),
         }
 
-        let image = image::decode_to_bgr(source.content())
+        // The declared extent goes in, so content whose own header contradicts
+        // it is refused before `imdecode` allocates from that header.
+        let image = image::decode_to_bgr(source.content(), source.extent())
             .map_err(|_| Error::from(VisionFault::TemplatePreparationFailed))?;
         let extent = image::extent_of(&image)
             .map_err(|_| Error::from(VisionFault::TemplatePreparationFailed))?;
@@ -128,6 +130,8 @@ impl MatchBackend for OpenCvBackend {
         // A template whose bytes decode to other dimensions than its metadata
         // declares would put every match it produced at the wrong extent, so the
         // disagreement is reported instead of resolved in the adapter's favour.
+        // The check above is what the file claims; this is what it turned out to
+        // be, and a decoder is not obliged to make the two agree.
         if extent != source.extent() {
             return Err(VisionFault::TemplatePreparationFailed.into());
         }
@@ -181,10 +185,15 @@ impl MatchBackend for OpenCvBackend {
             template_height: usize::try_from(template.extent.height())
                 .map_err(|_| unrepresentable())?,
             min_score: request.options.min_score(),
-            max_results: usize::try_from(request.options.max_results()).unwrap_or(usize::MAX),
+            candidate_budget: usize::try_from(request.options.max_results()).unwrap_or(usize::MAX),
+            suppression: request.options.suppression(),
         };
 
-        peaks(values, search)
+        // Extraction scans the score map once per candidate and the budget above
+        // is the caller's own `u32` result limit, so this is the one stage of a
+        // search whose length the caller sets. It reads the context as it goes
+        // rather than at its end.
+        peaks(values, search, operation)?
             .into_iter()
             .map(|peak| {
                 let left = i32::try_from(peak.left).map_err(|_| unrepresentable())?;
@@ -215,6 +224,10 @@ fn accept_version(major: i32, version: &str) -> Result<Arc<str>> {
 /// before decoding, before converting, before correlating, and before extracting
 /// candidates. A call that finishes after an outcome has been decided still
 /// returns here, and the check that follows it discards its output.
+///
+/// Candidate extraction is the exception that checks *within* itself, because it
+/// is MadoPilot's own arithmetic rather than a library call and its length is set
+/// by the caller's result limit. See `candidates::peaks`.
 fn checkpoint(operation: &OperationContext) -> Result<()> {
     match operation.interruption() {
         Some(interruption) => Err(interruption.into()),

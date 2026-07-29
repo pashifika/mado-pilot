@@ -13,10 +13,22 @@
 //! `entry-character-device.zip`, and those archives run on both release
 //! targets.
 
-use mado_pilot_assets::{AssetFaultKind, LoadStage, MANIFEST_PATH, PackageSource};
+#[cfg(unix)]
+use std::sync::Arc;
+#[cfg(unix)]
+use std::time::Duration;
+
+use mado_pilot_assets::{
+    AssetFaultKind, AssetLimits, LoadStage, MANIFEST_PATH, PackageLoader, PackageSource,
+};
+#[cfg(unix)]
+use mado_pilot_core::MonotonicInstant;
+use mado_pilot_core::OperationContext;
 
 mod support;
 
+#[cfg(unix)]
+use support::ReplacingClock;
 use support::{PNG_SIGNATURE, TempDir, load, single_template_manifest};
 
 #[test]
@@ -58,6 +70,70 @@ fn a_source_that_is_not_a_directory_is_reported_as_unreadable() {
     let fault = load(&PackageSource::directory(&file)).expect_err("refused");
 
     assert_eq!(fault.kind(), AssetFaultKind::SourceUnreadable);
+    assert_eq!(fault.stage(), LoadStage::Source);
+}
+
+#[test]
+fn an_external_hard_link_is_refused_as_a_non_regular_entry() {
+    let package = TempDir::new("external-hard-link-package");
+    let external = TempDir::new("external-hard-link-target");
+    package.write(MANIFEST_PATH, &support::empty_manifest());
+    let target = external.write("outside.bin", b"outside the package");
+    std::fs::hard_link(&target, package.path().join("linked.bin"))
+        .expect("the supported target filesystem can create hard links");
+
+    let fault = load(&PackageSource::directory(package.path())).expect_err("refused");
+
+    assert_eq!(fault.kind(), AssetFaultKind::UnsupportedEntryType);
+    assert_eq!(fault.stage(), LoadStage::EntryMetadata);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_directory_entry_replaced_between_identity_checks_is_refused() {
+    let package = TempDir::new("directory-identity-swap");
+    let staged = TempDir::new("directory-identity-replacement");
+    let content = [PNG_SIGNATURE, b"stable"].concat();
+    let manifest = single_template_manifest("template.png", (4, 4), &content);
+    let target = package.write(MANIFEST_PATH, &manifest);
+    package.write("template.png", &content);
+    let replacement = staged.write("replacement.json", &manifest);
+
+    // For this two-entry tree, read nine is the checkpoint between the first
+    // identity-bearing open of the sorted manifest entry and its retained open.
+    let clock = Arc::new(ReplacingClock::new(9, &target, replacement));
+    let context = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(60)));
+
+    let fault = PackageLoader::new()
+        .load(&PackageSource::directory(package.path()), &context)
+        .expect_err("an identity-changing replacement is refused");
+
+    assert!(clock.replaced(), "the controlled replacement must have run");
+    assert_eq!(fault.kind(), AssetFaultKind::SourceChanged);
+    assert_eq!(fault.stage(), LoadStage::Source);
+}
+
+#[test]
+fn directory_nodes_are_bounded_before_the_listing_is_collected() {
+    let temporary = TempDir::new("directory-node-limit");
+    temporary.write(MANIFEST_PATH, &support::empty_manifest());
+    for name in ["empty-a", "empty-b"] {
+        std::fs::create_dir(temporary.path().join(name)).expect("empty directory");
+    }
+    let limits = AssetLimits::ceiling()
+        .with_max_entry_count(2)
+        .expect("below the ceiling");
+
+    let fault = PackageLoader::with_limits(limits)
+        .load(
+            &PackageSource::directory(temporary.path()),
+            &OperationContext::new(),
+        )
+        .expect_err("structural nodes consume the traversal budget");
+
+    assert_eq!(fault.kind(), AssetFaultKind::ArchiveLimit);
     assert_eq!(fault.stage(), LoadStage::Source);
 }
 

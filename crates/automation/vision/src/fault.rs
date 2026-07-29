@@ -18,6 +18,16 @@ pub enum VisionFault {
     EmptyTemplateContent,
     /// A template declared a zero width or height.
     EmptyTemplateExtent,
+    /// A template declared more pixels than [`TemplateSource::MAX_PIXELS`].
+    ///
+    /// A declared extent is metadata, and a backend allocates a decoded image
+    /// from it, so an extent no capture could produce is refused where it is
+    /// declared rather than where it would be decoded. Reported as an invalid
+    /// argument, like the zero extent above it: both are the same field carrying
+    /// a value this build does not accept.
+    ///
+    /// [`TemplateSource::MAX_PIXELS`]: crate::TemplateSource::MAX_PIXELS
+    TemplateExtentAboveCeiling,
     /// A template declared its geometry in a coordinate space this version does
     /// not accept. A template is a patch of captured pixels, so version one
     /// accepts [`CapturePixels`] only.
@@ -60,6 +70,7 @@ impl VisionFault {
             VisionFault::EmptyTemplateId
             | VisionFault::EmptyTemplateContent
             | VisionFault::EmptyTemplateExtent
+            | VisionFault::TemplateExtentAboveCeiling
             | VisionFault::InvalidMatchScore
             | VisionFault::InvalidMatchResultLimit
             | VisionFault::BackendMismatch => Status::InvalidArgument,
@@ -79,6 +90,9 @@ impl VisionFault {
             VisionFault::EmptyTemplateId => "template identity is empty",
             VisionFault::EmptyTemplateContent => "template carries no content bytes",
             VisionFault::EmptyTemplateExtent => "template extent has a zero dimension",
+            VisionFault::TemplateExtentAboveCeiling => {
+                "template extent is above the implementation pixel ceiling"
+            }
             VisionFault::UnsupportedTemplateSpace => {
                 "template geometry must be expressed in capture pixels"
             }

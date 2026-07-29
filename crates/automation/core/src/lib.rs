@@ -56,8 +56,12 @@
 //! let pixels = snapshot.resolve_capture_pixels(region, ClipPolicy::Reject)?;
 //! assert_eq!(pixels.extent(), PixelExtent::new(400, 300));
 //!
-//! // Blocking work carries a deadline and commits exactly one outcome.
-//! let context = OperationContext::new().with_timeout(Duration::from_millis(500))?;
+//! // Blocking work carries a deadline and commits exactly one outcome. A real
+//! // caller sizes the deadline to the work; this one is far larger than the
+//! // three lines under it need, because the clock here is the host's and a
+//! // documentation example that a scheduling stall can fail reports a defect
+//! // that is not in the library.
+//! let context = OperationContext::new().with_timeout(Duration::from_secs(60))?;
 //! let operation = Operation::admit(&context).expect("not yet expired");
 //! let value = operation.commit(pixels).expect("committed in time");
 //! assert_eq!(value, pixels);

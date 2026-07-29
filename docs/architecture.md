@@ -78,6 +78,13 @@ All three exist and Phase 1 is complete. [c-abi.md](c-abi.md) is the C boundary'
 own contract document: handle lifetimes, structure-prefix rules, the status
 vocabulary, panic containment, the build prerequisites on each release target,
 and how the hand-written header is verified against the Rust definitions.
+Semantic numeric values and frozen version/report fields use fixed-width C
+integer types: structure sizes and reported table sizes are `uint32_t`, while row
+strides and semantic result/package counts are `uint64_t`. `size_t` is limited to
+ABI-native addressability quantities: pointer-view lengths, replay input counts
+and element strides, target-list counts, accessor indexes, and the caller-known
+table extent passed to negotiation. Those choices are frozen for ABI 1.0 on the
+two 64-bit release targets.
 [cpp-wrapper.md](cpp-wrapper.md) is the C++ adapter's: move-only owners,
 explicit `clone` and `close`, the exception-free `Result`, borrowed views and
 their owners, and the CMake targets.
@@ -326,9 +333,17 @@ The rules the table encodes:
 The facade's row lists no contract package. That is deliberate — default wiring is
 the facade's only job — but it means every core, capture, input, vision, OCR, or
 asset type the public Rust API exposes must reach callers through
-`mado-pilot-runtime`'s re-exports. Phase 1 will meet this on its first public
-signature. Widening the facade's row is a normative change and needs an ADR, not a
-quiet allowlist edit.
+`mado-pilot-runtime`'s re-exports. Phase 1 meets this: every contract type the
+facade exposes is re-exported from runtime, and beyond runtime the facade
+actually depends on only `mado-pilot-adapter-replay` and
+`mado-pilot-backend-opencv`.
+
+Those two are not the whole of the facade's row. The row allows six, the two
+above plus `mado-pilot-platform-windows`, `mado-pilot-platform-macos` and
+`mado-pilot-backend-onnx`, which Phase 1 does not implement and the facade
+therefore does not name in its manifest — the table is an allowlist and an
+omitted future edge is always valid, as the subset rule above says. Widening the
+row itself is a normative change and needs an ADR, not a quiet allowlist edit.
 
 Vision and OCR depend on the capture contract because their public operations
 consume capture-owned frame views. That is a contract-to-contract dependency and
@@ -466,16 +481,30 @@ enabled wholesale.
 
 [../CONTRIBUTING.md](../CONTRIBUTING.md) records the local verification sequence:
 architecture check, formatting, lints with warnings denied, locked tests,
-documentation with rustdoc warnings denied, and dependency policy.
+documentation examples, documentation with rustdoc warnings denied, dependency
+policy, and the C and C++ surfaces.
 
 Continuous integration separates fast repository policy from native target
 verification, and reports three stable check names:
 
 | Check | Host | Scope |
 |---|---|---|
-| `Repository policy` | `ubuntu-latest` | Package inventory, dependency directions, formatting, documentation, dependency policy |
-| `Windows x86_64-pc-windows-msvc` | `windows-2025` | Native inventory, lint, test, and documentation checks |
-| `macOS aarch64-apple-darwin` | `macos-15` | Native inventory, lint, test, and documentation checks |
+| `Repository policy` | `ubuntu-latest` | Package inventory, dependency directions, formatting, dependency policy |
+| `Windows x86_64-pc-windows-msvc` | `windows-2025` | Native inventory, lint, test, doctest, and documentation checks, and the C ABI and C++ wrapper check |
+| `macOS aarch64-apple-darwin` | `macos-15` | Native inventory, lint, test, doctest, and documentation checks, and the C ABI and C++ wrapper check |
+
+That split is not incidental, so the rule behind it is recorded here rather than
+inferred from the table. The `Repository policy` job builds no product package,
+which is what places every check that needs a compiled product in the two native
+jobs. `mado-pilot-backend-opencv` generates its bindings at build time, so
+building any product package needs an OpenCV 4 installation and a loadable
+libclang, and that installation is provisioned on the two release targets rather
+than on a host that is neither. The repository-policy steps read manifests,
+metadata, and source text; the one thing that job compiles is the maintenance
+checker, which depends on no product package. Documentation, lints, tests, and
+the C and C++ boundary are verified in both native jobs, where the compiler that
+reports a broken link or a layout mismatch is the one the product is verified
+with.
 
 Each job prints `rustc -vV` and the resolved package inventory, so the tested
 environment and any accidental workspace member are observable in the log. Each
@@ -505,32 +534,35 @@ review, the documented-exception process, and the review a native library or mod
 file requires before it is added or bundled. `deny.toml` is its machine-checked
 form, and `cargo deny --locked check` enforces it.
 
-Phase 0 has no product dependency. The policy and its configuration are committed
-anyway, so the first dependency arrives into an enforced policy rather than
-prompting one.
+The policy and its configuration were committed in Phase 0, before there was a
+product dependency to check, so the first one arrived into an enforced policy
+rather than prompting one. Phase 1 has dependencies —
+[third-party-dependencies.md](third-party-dependencies.md) records the resolved
+closure and the OpenCV build-time set — and they were added under it.
 
 ## Public naming baseline
 
 These names are reserved so that the Rust, C, C++, Windows, macOS, CMake, and
-pkg-config surfaces stay consistent. **They are reservations. Phase 0 produces
-none of these headers, libraries, targets, or wrappers.**
+pkg-config surfaces stay consistent. A name is reserved whether or not the
+artifact behind it exists yet, so each row states which it is: an artifact the
+tree produces today, or a reservation a later phase fills.
 
-| Artifact | Name |
-|---|---|
-| GitHub repository | `mado-pilot` |
-| Rust facade package | `mado-pilot` |
-| Rust import | `mado_pilot` |
-| C header | `include/madopilot/madopilot.h` |
-| C++ header | `include/madopilot/madopilot.hpp` |
-| C symbol prefix | `madopilot_` |
-| C++ namespace | `madopilot` |
-| Windows ABI-major DLL | `madopilot-1.dll` |
-| Windows import library | `madopilot-1.lib` |
-| macOS ABI-major install name | `libmadopilot.1.dylib` |
-| CMake package | `MadoPilot` |
-| CMake C target | `MadoPilot::C` |
-| CMake C++ wrapper target | `MadoPilot::Cpp` |
-| pkg-config package | `madopilot-1` |
+| Artifact | Name | State |
+|---|---|---|
+| GitHub repository | `mado-pilot` | Exists |
+| Rust facade package | `mado-pilot` | Exists |
+| Rust import | `mado_pilot` | Exists |
+| C header | `include/madopilot/madopilot.h` | Exists, tracked and hand-written |
+| C++ header | `include/madopilot/madopilot.hpp` | Exists, header-only |
+| C symbol prefix | `madopilot_` | Exists — `madopilot_get_api` is the one exported symbol |
+| C++ namespace | `madopilot` | Exists |
+| Windows ABI-major DLL | `madopilot-1.dll` | Reserved; the development build produces the undecorated artifact |
+| Windows import library | `madopilot-1.lib` | Reserved, on the same terms |
+| macOS ABI-major install name | `libmadopilot.1.dylib` | Reserved, on the same terms |
+| CMake package | `MadoPilot` | Exists, for development-tree consumption |
+| CMake C target | `MadoPilot::C` | Exists |
+| CMake C++ wrapper target | `MadoPilot::Cpp` | Exists as an `INTERFACE` target |
+| pkg-config package | `madopilot-1` | Reserved; not generated |
 
 The loader names carry the ABI major version so that an incompatible ABI is a
 different library rather than a silent breakage.
@@ -556,9 +588,9 @@ header-only, so `MadoPilot::Cpp` is an `INTERFACE` target and produces no
 artifact; see [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) and
 [cpp-wrapper.md](cpp-wrapper.md).
 
-Three reservations above are still not produced. The `staticlib` kind is withheld
-because [`G-008`](validation-gates.md#g-008) has not recorded which static
-dependency combinations are supported; the ABI-major decorated loader names are
+What the table marks reserved is withheld for three reasons. The `staticlib`
+kind is withheld because [`G-008`](validation-gates.md#g-008) has not recorded
+which static dependency combinations are supported; the decorated loader names are
 applied by release packaging, which Phase 1 does not implement, so what is built
 today is the undecorated development artifact; and no pkg-config file is
 generated, for the same packaging reason. The CMake project likewise has no
@@ -602,7 +634,14 @@ records `G-001` through `G-014` with the decision, the required evidence, the du
 phase, the blocking scope, the status, and the resolution rule for each. No gate
 blocked Phase 0.
 
-Thirteen remain open. `G-014` is resolved by
+Ten remain open, one is deferred, and three are resolved. The deferred one is
+[`G-011`](validation-gates.md#g-011), native-frame extension discovery, which
+sits on the future roadmap and does not block version one. `G-009` is resolved by
+[ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) and `G-010` by
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md); both are recorded under
+[Public naming baseline](#public-naming-baseline).
+
+`G-014` is resolved by
 [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md), which fixes
 the asset archive container, the manifest serialization, and six implementation
 ceilings that bound what loading an untrusted archive may allocate and expand. A
@@ -614,8 +653,9 @@ adversarial fixtures the gate was resolved with; see
 ## Implementation status
 
 Phase 0 established the repository and implemented no product behavior. Phase 1
-is delivering the first vertical slice in stages; only the rows marked
-implemented below describe behavior a caller can use today.
+delivered the first vertical slice and is complete. Only the rows marked
+implemented below describe behavior a caller can use today; the rest name
+responsibilities a later phase takes on.
 
 | Area | Status |
 |---|---|
@@ -652,7 +692,7 @@ implemented below describe behavior a caller can use today.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented for the Phase 1 prefix as a header-only adapter; decided in [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Set for the thirteen Phase 1 workloads on both release targets, across the Rust workflow and the C boundary; decided in [ADR 0008](adr/0008-phase-1-performance-budgets.md). Every later phase's are open under [`G-013`](validation-gates.md#g-013) |
+| Numeric performance budgets | Set for the Phase 1 workloads on both release targets, across the Rust workflow and the C boundary: thirteen workloads are measured, all thirteen are covered by the two file-level hard gates, eleven carry a per-measurement ceiling, and two are deliberate unbudgeted controls; decided in [ADR 0008](adr/0008-phase-1-performance-budgets.md). Every later phase's are open under [`G-013`](validation-gates.md#g-013) |
 | Native permission behavior | Not implemented |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for the frozen ABI-1.0 header; a release artifact to test against is not |
@@ -686,6 +726,16 @@ package that follows:
   host DPI, because a plausible guess about coordinates places input somewhere
   the caller did not ask for.
 
+One Phase 1 consequence of the coordinate rule is worth stating, because a later
+phase changes it. A frame covers exactly its target here — nothing captures part
+of one — so a target-normalized coordinate and a frame-normalized coordinate
+address the same point and convert to the same pixels. The first phase that
+captures a sub-region of a target makes the two differ, and that is when the
+distinction between them begins to carry information. The record is
+[ADR 0009](adr/0009-phase-1-normalized-coordinate-spaces.md), which also states
+why a snapshot stores no second extent and why a declared placement is now
+validated against the frame it describes.
+
 The package has no external dependency and adds none: it is `std` only. Later
 packages do declare product dependencies, so the external-crate half of the
 dependency rules is a review rule enforced through
@@ -696,7 +746,15 @@ rather than through the architecture checker.
 
 `mado-pilot-assets` loads a package from a local directory, from caller-owned
 memory, or from a local ZIP archive, and commits an immutable package only after
-every check has passed. The three sources are strategies behind one pipeline
+every check has passed. Mutable filesystem sources establish identity through
+verified retained handles: hard links and reparse/link entries are rejected,
+Unix directory children are enumerated and opened relative to retained directory
+handles, and Windows retained sources deny write and delete sharing. Archive and
+entry handles are revalidated around metadata and byte reads, so path replacement
+cannot redirect what is read, and an in-place write is refused as a changed source
+whenever the filesystem records it — a guarantee whose one residual is stated with
+the mechanism, under [ordered enforcement](#ordered-enforcement). The
+three sources are strategies behind one pipeline
 rather than three loaders: they differ in what they can record and in what can go
 wrong while reading them, and not in what makes a package valid. That is what
 lets a package be developed as a directory and shipped as an archive without
@@ -735,17 +793,73 @@ earlier guard is missing, even though the package was refused.
 
 | Stage | What it checks |
 |---|---|
-| `source` | Total source bytes, before anything is parsed. Directory and memory sources also enumerate here |
-| `directory_pre_parse` | The entry count recorded in the archive trailer, read before the central directory is materialized |
+| `source` | Total source bytes, before anything is parsed. An archive file is then copied once, under that ceiling, into the immutable bytes every later stage reads, with the retained handle re-proved after the copy; an archive supplied in memory is read where it already is. Directory traversal is handle-bound, operation-aware, and node-bounded here |
+| `directory_pre_parse` | One unambiguous single-disk EOCD/ZIP64 trailer, its entry count, and a bounded no-allocation scan of the selected central-directory headers before the central directory is materialized |
 | `directory_open` | The central directory, and the declared total expansion |
 | `entry_metadata` | Compression method, encryption, name normalization, entry type, duplicate normalized names, declared sizes, and then the aggregate declared ratio |
-| `manifest` | The manifest read under its byte cap, and parsed |
+| `manifest` | The manifest read under its byte cap and parsed, including every declared template extent against the vision contract's pixel ceiling |
 | `expansion` | Referenced entries streamed in 64 KiB chunks, size-checked on every chunk, hashed, and identified |
 | `commit` | The final operation-context check before one immutable package becomes observable |
 
 The trailer pre-parse exists because opening a central directory allocates in
 proportion to the entry count, so an entry-count ceiling checked after the open is
-checked too late. Recorded metadata may reject but never authorise: an entry is
+checked too late. Count fields for a single disk must agree; ambiguous or fallback
+trailers are rejected, and the bounded header scan proves that the trailer selected
+under the ceiling is the directory the ZIP reader will open.
+
+That proof is about a sequence of bytes, so the loader reads one. A retained
+handle keeps a path from being redirected and does not stop a writer holding the
+same inode from rewriting the file in place, which would leave the pre-parse
+describing a directory the reader no longer opens — and the reader's own
+reservation is made before any later check could refuse it. An archive file is
+therefore copied once, after the source-size gate that bounds the copy and with
+the handle re-proved after it, and the pre-parse, the reader, and every entry then
+read that copy.
+
+What that guarantees is worth stating exactly, and the exact statement has two
+halves. One load reads one sequence of bytes: the pre-parse, the reader and every
+entry all read the copy, and a committed package is assembled from that one
+sequence. That the sequence is also one temporal version of the file is what the
+retained handle is compared for — identity, change stamp, length and link count,
+before the copy and again after it.
+
+How much that second half proves depends on the platform, so it is documented per
+platform rather than as one average. On Windows the comparison is a backstop and
+not the mechanism: a retained source denies write and delete sharing, so a
+concurrent writer is refused by the operating system and never reaches the file.
+On Unix there is no mandatory exclusion to hold, and detection stands in for it —
+an in-place write cannot leave the change stamp where it found it, so any write the
+filesystem records refuses the load as a changed source.
+
+The residual is therefore narrow, and it is named rather than implied: a
+filesystem whose change-stamp granularity cannot separate a write from the checks
+around it could leave the copy holding bytes from two versions of the file. A
+change that lands after the last check is not that case — the bytes it would have
+affected were already read, and a package commits what it read.
+
+An archive a caller supplies in memory needs none of this. Those bytes are the
+caller's, they are read where they are for the length of one call, and keeping them
+readable and unchanged for that call is the caller's half of the contract. No
+whole-archive copy is made, which is deliberate: such a copy would be sized by the
+caller's own declared length, up to the source ceiling, and the reference-counted
+form a retained source needs cannot be allocated fallibly on stable Rust, so a
+host that could not satisfy it would be terminated rather than told.
+
+That removes the whole-archive allocation from the C load path and does not empty
+the path of infallible allocation. ZIP metadata work allocates under bounded
+metadata: an EOCD search window of at most 65,557 bytes, and central-directory and
+raw-entry storage sized from the validated entry count and bounded ZIP fields.
+Reading package content also allocates — both the buffer content is read into and
+the reference-counted copy the package keeps — for every entry under
+`max_entry_uncompressed_bytes` and `max_total_uncompressed_bytes`, and for the
+manifest under `max_manifest_bytes`. The content buffer grows as bytes arrive
+rather than reserving an entry's declared size. The precise claim is therefore
+that the borrowed C path makes no whole-archive allocation proportional to
+`madopilot_bytes_t.len`; allocation failure at the bounded metadata and content
+sites remains an abort. See
+[ADR 0010](adr/0010-asset-source-snapshot-and-archive-ownership.md).
+
+Recorded metadata may reject but never authorise: an entry is
 cut off at its *declared* size even when a ceiling would have allowed more, so an
 understated declaration is refused after one chunk rather than after a ceiling's
 worth of expansion.
@@ -761,16 +875,23 @@ argument rather than clamped.
 | Ceiling | Value | Applies to |
 |---|---|---|
 | `max_manifest_bytes` | 4 MiB | Every source |
-| `max_entry_count` | 4,096 | Every source |
+| `max_entry_count` | 4,096 | Every source; files and structural directories consume the directory traversal budget |
 | `max_entry_uncompressed_bytes` | 64 MiB | Every source |
 | `max_total_uncompressed_bytes` | 512 MiB | Every source |
 | `max_total_compressed_bytes` | 256 MiB | Archives |
 | `max_compression_ratio` | 64 | Archives |
 
 Two of the six describe archive structure, and an archive is the only source that
-has them: a directory has no compressed representation to expand from. The other
-four bound allocation the loader performs whatever the source is, so directory and
-memory sources are held to them as well. That is an implementation decision, not a
+has them: a directory has no compressed representation to expand from.
+`max_total_compressed_bytes` is also what bounds the resident copy an archive file
+is read through, and the length a caller-supplied archive may declare before the C
+boundary reads the view behind it, so tightening it tightens both that copy and the
+largest view that boundary accepts. It does not bound entry expansion, whose
+allocations answer to the two uncompressed ceilings instead. The other
+four bound work or allocation the loader performs whatever the source is, so
+directory and memory sources are held to them as well. Directory enumeration
+consumes the entry budget before retaining each name, preventing wide or empty
+subtrees from bypassing it. That is an implementation decision, not a
 widening of ADR 0001, which fixes the ceilings for archives and leaves directory
 and memory containment to their own rules.
 
@@ -800,9 +921,22 @@ applied once, in the vision package, for every backend:
 |---|---|
 | Region resolution from the exact frame's transform snapshot, under an explicit clipping policy | `mado-pilot-vision` |
 | Public score validation, thresholding | `mado-pilot-vision` |
-| Canonical ordering, overlap suppression, result limit | `mado-pilot-vision` |
+| Canonical ordering, overlap suppression, result limit | `mado-pilot-vision`; a bounded backend extractor may emit only the same observable prefix, which vision revalidates |
 | Result envelope with complete source correlation | `mado-pilot-vision` |
-| Template compilation and candidate extraction | the backend |
+| Template compilation and bounded candidate extraction | the backend |
+
+A template's declared extent is metadata rather than a measurement, and a
+backend allocates its decoded image from it, so `mado-pilot-vision` bounds the
+declaration: at most 67,108,864 pixels, which is 8,192 by 8,192. That covers a
+full-frame template on any display through 8K UHD and admits at most 192 MiB of
+three-channel pixels — inside the total expansion one package may already ask
+for — while refusing the class of declaration that asks for gigabytes out of a
+compact file. The ceiling is applied where the extent is declared:
+`TemplateSource::new` refuses it, and an asset manifest refuses it while parsing,
+before the entry it names is expanded or hashed. The OpenCV adapter checks the
+same ceiling again in its own decoded bytes before `imdecode`, because that
+allocation is the adapter's and a bound that lives only in its caller is a bound
+the next caller does not have.
 
 Two backends are what make this a seam rather than a description of one adapter.
 `mado-pilot-testkit` supplies a controlled matcher whose candidates, latency,
@@ -812,7 +946,10 @@ the production backend would be a description of the double.
 
 Candidates are reported to the vision package in coordinates relative to the
 searched region's origin, and published in full-frame capture pixels. The
-translation happens in one place, so no adapter can get the offset wrong.
+translation happens in one place, so no adapter can get the offset wrong. A
+backend may bound dense-map work by emitting the request's canonical public
+prefix only when it applies the same public-score ordering and suppression
+policy; vision validates and reapplies those rules before publication.
 
 Matches are ordered by descending score, then ascending top, left, bottom, and
 right edges, then template identity. Every tie is broken by a value both release
@@ -822,7 +959,9 @@ after ordering and suppression.
 
 Three outcomes that look like failures are successes with no matches: nothing
 reached the threshold, the template is larger than the searched region, and a
-clip-permitted region that misses the frame entirely. A caller asked a
+clip-permitted region that misses the frame entirely. An explicitly empty ROI is
+invalid instead; it is not the same request as a valid ROI clipped to no
+intersection. A caller asked a
 well-formed question, and the answer is that it is not there.
 
 Compiled template state is backend-private. A prepared template carries an
@@ -836,7 +975,8 @@ documented one rather than an implementation detail, because it determines what 
 score means to a caller. The OpenCV CPU adapter's profile is recorded in
 [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md): three-channel
 BGR, `TM_CCOEFF_NORMED`, the negative half of the correlation range clamped to no
-match, and non-overlapping peaks as candidates.
+match, and suppression-aware bounded candidate extraction in canonical public
+score order.
 
 Public scores are compared against a tolerance rather than exactly, on one host as
 well as across the two. OpenCV normalizes through integral images and correlates a
@@ -915,24 +1055,28 @@ Phase 0 is complete when all of the following hold:
 A compiling workspace alone does not satisfy this contract: a missing or incomplete
 gate registry or benchmark format fails Phase 0 verification.
 
-### Verification scope in Phase 0
+### Verification scope by class
 
-Several classes of verification that later phases require are **not applicable**
-in Phase 0, because the behavior they would check does not exist. They are recorded
-here so that their absence is a stated scope boundary rather than an untested gap:
+Each class of verification a released MadoPilot needs is recorded here with where
+it stands, so that an absence is a stated scope boundary rather than an untested
+gap. The column that matters is the middle one; the Phase 0 column is kept
+because "not applicable then" is why several of these have no history to compare
+against.
 
-| Verification class | Phase 0 status | Becomes applicable |
+| Verification class | Status | Phase 0 |
 |---|---|---|
-| Numeric runtime performance budgets | Not applicable; no measurable workload exists | With the first performance-sensitive workload, under [`G-013`](validation-gates.md#g-013) |
-| Native permission behavior and permission probes | Not applicable; no permission is requested or probed | With the platform adapters in Phase 2 |
-| Native dependency packaging and clean-system loading | Not applicable; no native dependency is declared | With the backend adapters, under [`G-007`](validation-gates.md#g-007) |
-| ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field on both release targets, the structure-prefix tests cover inputs and outputs in both directions, and `crates/bindings/capi/tests/abi-compat/v1/` is the frozen ABI-1.0 header, compiled against every later library by `c-abi-check` | Resolved under [`G-010`](validation-gates.md#g-010) by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
-| Capture, mapping, matching, OCR, watcher, and input contract suites | Not applicable; no contract is implemented | With each implementing change |
+| Numeric runtime performance budgets | Implemented in Phase 1. [ADR 0008](adr/0008-phase-1-performance-budgets.md) sets them, four committed profiles under [`benchmarks/`](benchmarks/) carry the measurements, and the two `kind = "hard"` predicates are enforced in-process on both the `cargo bench` and `cargo test` paths | Not applicable; no measurable workload existed |
+| ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field on both release targets, the measured layout is compared against the committed evidence, the structure-prefix tests cover inputs and outputs in both directions, and `crates/bindings/capi/tests/abi-compat/v1/` is the frozen ABI-1.0 header, compiled against every later library by `c-abi-check`. Resolved under [`G-010`](validation-gates.md#g-010) by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) | Not applicable; no ABI existed |
+| Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
+| OCR, watcher, and input contract suites | Not applicable; those contracts are not implemented | Not applicable |
+| Native permission behavior and permission probes | Not applicable; no permission is requested or probed | Not applicable |
+| Native dependency packaging and clean-system loading | Partly applicable. Phase 1 declares one native dependency, OpenCV, and records its licence and deployment requirements; clean-system loading and packaging remain open under [`G-007`](validation-gates.md#g-007) | Not applicable; no native dependency was declared |
 
-What Phase 0 does verify is the repository itself: the package inventory and
-dependency directions, formatting, lints with warnings denied, the workspace test
-run, documentation with rustdoc warnings denied, dependency policy against the
-committed lockfile, and a native build and test on each release target.
+Underneath all of it, what Phase 0 established and every phase still verifies is
+the repository itself: the package inventory and dependency directions,
+formatting, lints with warnings denied, the workspace test run, documentation
+with rustdoc warnings denied, dependency policy against the committed lockfile,
+and a native build and test on each release target.
 
 ## Documentation governance
 

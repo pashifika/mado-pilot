@@ -18,11 +18,11 @@ use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
 /// The defaults are the implementation ceilings, so a caller that configures
 /// nothing gets the strongest guards this build supports.
 ///
-/// Three of the six describe archive structure and apply to archive sources
-/// only: a directory has no trailer to record an entry count in and no
-/// compressed representation to expand from. The other three bound allocation
-/// the loader performs whatever the source is, so directory and memory sources
-/// are held to them as well.
+/// Two of the six describe an archive's compressed representation and apply to
+/// archive sources only. The other four bound work or allocation for every
+/// source. For a directory, `max_entry_count` is also the traversal-node budget:
+/// files and structural directories consume it before their names are retained,
+/// so a tree of empty directories cannot evade the package entry ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssetLimits {
     max_manifest_bytes: u64,
@@ -36,7 +36,7 @@ pub struct AssetLimits {
 impl AssetLimits {
     /// The largest manifest this build will read: 4 MiB.
     pub const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
-    /// The largest number of entries a package may contain: 4,096.
+    /// The largest number of package entries or directory traversal nodes: 4,096.
     pub const MAX_ENTRY_COUNT: u32 = 4_096;
     /// The largest single entry this build will expand: 64 MiB.
     pub const MAX_ENTRY_UNCOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
@@ -74,7 +74,7 @@ impl AssetLimits {
         Ok(self)
     }
 
-    /// Lowers the entry-count limit.
+    /// Lowers the package-entry and directory traversal-node limit.
     ///
     /// # Errors
     ///
@@ -156,7 +156,7 @@ impl AssetLimits {
         self.max_manifest_bytes
     }
 
-    /// Returns the entry-count limit.
+    /// Returns the package-entry and directory traversal-node limit.
     #[must_use]
     pub const fn max_entry_count(self) -> u32 {
         self.max_entry_count

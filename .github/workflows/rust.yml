@@ -85,9 +85,12 @@ jobs:
         shell: bash
         run: cargo fmt --all --check
 
-      # This job deliberately compiles nothing. Every step above reads manifests,
-      # metadata, or source text, so it needs no OpenCV installation on a host that
-      # is neither release target. Documentation is built in both native jobs
+      # This job deliberately compiles no product package. The one thing it does
+      # compile is the maintenance checker above, which depends on none of them;
+      # every other step reads manifests, metadata, or source text. So it needs no
+      # OpenCV installation on a host that is neither release target, which any
+      # product package would, because mado-pilot-backend-opencv generates its
+      # bindings at build time. Documentation is built in both native jobs
       # instead, where the compiler that would report a broken link is the one the
       # product is verified with.
       - name: Restore cargo-deny
@@ -261,9 +264,14 @@ jobs:
           cargo build --locked --package mado-pilot-capi || exit /b 1
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" || exit /b 1
 
-      # Not a check: the report names the OpenCV build this run actually used and the
-      # scores it produced, so a provisioning drift is visible in the log rather than
-      # only in a failing tolerance.
+      # This asserts nothing about the scores. It names the OpenCV build the run
+      # actually used and prints what that build matched, so a provisioning drift
+      # is visible in the log rather than only in some later failing tolerance.
+      #
+      # It can still fail the job, and should: the report is produced by searching
+      # the real fixtures with the real backend, so an OpenCV that cannot be
+      # loaded or a fixture that cannot be searched ends the step. What it never
+      # does is compare a score against a threshold and fail on the answer.
       - name: Report what this host's OpenCV matched
         shell: bash
         run: |
@@ -381,9 +389,14 @@ jobs:
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
             --label "CI ${{ runner.os }} ${{ runner.arch }}"
 
-      # Not a check: the report names the OpenCV build this run actually used and the
-      # scores it produced, so a provisioning drift is visible in the log rather than
-      # only in a failing tolerance.
+      # This asserts nothing about the scores. It names the OpenCV build the run
+      # actually used and prints what that build matched, so a provisioning drift
+      # is visible in the log rather than only in some later failing tolerance.
+      #
+      # It can still fail the job, and should: the report is produced by searching
+      # the real fixtures with the real backend, so an OpenCV that cannot be
+      # loaded or a fixture that cannot be searched ends the step. What it never
+      # does is compare a score against a threshold and fail on the answer.
       - name: Report what this host's OpenCV matched
         shell: bash
         run: |

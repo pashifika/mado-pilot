@@ -65,15 +65,25 @@ pub fn frame(extent: PixelExtent, format: PixelFormat, fill: u8) -> Frame {
 /// handle.
 #[must_use]
 pub fn frame_with_pixels(extent: PixelExtent, format: PixelFormat, pixels: Vec<u8>) -> Frame {
+    let stride = usize::try_from(extent.width() * format.bytes_per_pixel())
+        .expect("a test frame stays small");
+    let descriptor = FrameDescriptor::new(extent, format, stride).expect("a valid descriptor");
+
+    frame_from_parts(descriptor, pixels)
+}
+
+/// Publishes `pixels` as a frame of `descriptor`, on a fresh stream.
+///
+/// # Panics
+///
+/// Panics when `pixels` is not the length `descriptor` describes.
+fn frame_from_parts(descriptor: FrameDescriptor, pixels: Vec<u8>) -> Frame {
     let issuer = IdentityIssuer::new();
     let mut cursor =
         StreamCursor::new(issuer.issue_stream().expect("an engine can issue a stream"));
     let stamp = cursor
         .publish(GeometryRevision::FIRST)
         .expect("the first frame publishes");
-    let stride = usize::try_from(extent.width() * format.bytes_per_pixel())
-        .expect("a test frame stays small");
-    let descriptor = FrameDescriptor::new(extent, format, stride).expect("a valid descriptor");
     assert_eq!(
         pixels.len(),
         descriptor.byte_len(),
@@ -84,10 +94,59 @@ pub fn frame_with_pixels(extent: PixelExtent, format: PixelFormat, pixels: Vec<u
         stamp,
         MonotonicInstant::ORIGIN,
         descriptor,
-        TransformSnapshot::frame_only(GeometryRevision::FIRST, extent),
+        TransformSnapshot::frame_only(GeometryRevision::FIRST, descriptor.extent()),
         pixels.into_boxed_slice(),
     )
     .expect("a consistent frame")
+}
+
+/// Builds a frame of `extent` whose rows carry `padding` trailing bytes.
+///
+/// A capture adapter does not choose its stride. Windows Graphics Capture hands
+/// back the row pitch the driver decided, so a frame whose rows are longer than
+/// their pixels is the ordinary case and not the exceptional one. Every other
+/// frame builder here is packed, which is how a backend that read
+/// `width * bytes_per_pixel` where the stride belongs could pass all of them.
+///
+/// `pixels` is the packed image. The padding is filled with a value chosen to be
+/// visible if it is ever read as image data rather than skipped.
+///
+/// # Panics
+///
+/// Panics when `pixels` is not exactly the packed length `extent` and `format`
+/// require, which is a mistake in the calling test rather than a condition to
+/// handle.
+#[must_use]
+pub fn frame_with_padded_rows(
+    extent: PixelExtent,
+    format: PixelFormat,
+    padding: usize,
+    pixels: &[u8],
+) -> Frame {
+    /// Not a colour any fixture contains, and not zero: padding read as pixels
+    /// has to change an answer rather than blend into one.
+    const FILLER: u8 = 0x5a;
+
+    let count = |value: u32| usize::try_from(value).expect("a test frame stays small");
+    let row_bytes = count(extent.width()) * count(format.bytes_per_pixel());
+    let rows = count(extent.height());
+    assert_eq!(
+        pixels.len(),
+        row_bytes * rows,
+        "the packed pixels must match the extent this pads"
+    );
+
+    let stride = row_bytes + padding;
+    let mut padded = vec![FILLER; stride * rows];
+    for row in 0..rows {
+        let source = &pixels[row * row_bytes..(row + 1) * row_bytes];
+        padded[row * stride..row * stride + row_bytes].copy_from_slice(source);
+    }
+
+    frame_from_parts(
+        FrameDescriptor::new(extent, format, stride).expect("a valid padded descriptor"),
+        padded,
+    )
 }
 
 /// Builds a template source of `extent` under `id`.

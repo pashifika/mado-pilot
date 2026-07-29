@@ -137,18 +137,31 @@ C library on both release targets and adds no build-time toolchain requirement.
 
 The resolved closure adds `adler2`, `block-buffer`, `cfg-if`, `const-oid`,
 `cpufeatures`, `crc32fast`, `crypto-common`, `digest`, `equivalent`,
-`hashbrown`, `hybrid-array`, `indexmap`, `libc`, `miniz_oxide`, `simd-adler32`,
-`typed-path`, and `typenum`. Every one offers MIT, Apache-2.0, Zlib, or 0BSD
-terms, so no exception is needed and `cargo deny check licenses` passes without
-one.
+`getrandom`, `hashbrown`, `hybrid-array`, `indexmap`, `itoa`, `libc`,
+`miniz_oxide`, `r-efi`, `serde_core`, `simd-adler32`, `typed-path`, `typenum`,
+`winsplit`, and `zmij`, and the `serde` derive brings `proc-macro2`, `quote`,
+`serde_derive`, `syn`, and `unicode-ident` with it.
+
+Every one is accepted under `MIT`, `Apache-2.0`, `Zlib`, or `Unicode-3.0`, so no
+exception is needed and `cargo deny check licenses` passes without one. Two are
+worth naming because their expressions offer a term this project does not
+approve: `adler2` offers `0BSD OR MIT OR Apache-2.0` and `r-efi` offers
+`MIT OR Apache-2.0 OR LGPL-2.1-or-later`. Neither `0BSD` nor `LGPL-2.1-or-later`
+is on the approved list; both crates are accepted under `MIT`, which is what
+makes the check pass. An offered term is not an approved one, and this paragraph
+previously cited `0BSD` as though it were.
 
 The `opencv` crate adds a build-time closure of its own: `autocfg`, `cc`,
 `clang`, `clang-sys`, `dunce`, `find-msvc-tools`, `glob`, `jobserver`,
 `libloading`, `num-traits`, `opencv-binding-generator`, `percent-encoding`,
 `regex` with `aho-corasick`, `memchr`, `regex-automata`, and `regex-syntax`,
 `semver`, `shlex`, `vcpkg`, `pkg-config`, and on Windows targets the `windows`
-family through `windows-core`. All are MIT or Apache-2.0. Most of them are the
-binding generator's, which runs at build time and ships in nothing.
+family through `windows-core` — `windows-collections`, `windows-future`,
+`windows-implement`, `windows-interface`, `windows-link`, `windows-numerics`,
+`windows-result`, `windows-strings`, and `windows-threading`, named rather than
+gestured at so the recorded closure can be checked against `Cargo.lock` entry by
+entry. All are MIT or Apache-2.0. Most of them are the binding generator's, which
+runs at build time and ships in nothing.
 
 The `opencv` feature selection is a review decision. Default features bind
 thirteen OpenCV modules the matching profile never calls, and every one of them

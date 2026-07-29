@@ -17,8 +17,9 @@ to freeze one well did not exist yet.
 It exists now. Six environments — two macOS hosts, two Windows hosts, and both CI
 runners, spanning two MSVC majors, two OpenCV minors, and a CMake 3 against a
 CMake 4 — produce a **byte-identical 222-line layout report**, measured twice per
-host, once by `rustc` and once by that host's C compiler. Sixty-six tests in six
-suites cover owned-handle lifecycles, structure-size negotiation in both
+host, once by `rustc` and once by that host's C compiler. Sixty-nine tests in six
+suites cover owned-handle lifecycles, independent failure-output initialization,
+structure-size negotiation in both
 directions, pointer and output-state validation, error ownership, and panic
 containment. Both examples run the same flow and are required to print the same
 match rectangles and the same scores.
@@ -84,6 +85,29 @@ subsystem produced it, which is what lets `MADOPILOT_STATUS_INVALID_ARGUMENT`
 distinguish a boundary refusal (`_ABI`) from a template identity a package does
 not declare (`_ASSET`).
 
+A boundary refusal does not go through the mapping above at all, because it
+originates here rather than in the facade. The two the Phase 1 prefix produces
+are a malformed request — a null pointer with a length, a size below a mandatory
+prefix, an unrecognized tag, an overflowing span — and a **caller-supplied region
+whose coordinate space is not `MADOPILOT_SPACE_CAPTURE_PIXELS`**. Both are
+`MADOPILOT_STATUS_INVALID_ARGUMENT` with `MADOPILOT_ERROR_CATEGORY_ABI`.
+
+The second one is worth naming because the Rust facade answers the equivalent
+question differently: it has a coordinate transform, so it returns its own
+unsupported-coordinate outcome, which maps to `MADOPILOT_STATUS_UNSUPPORTED`.
+This prefix has no conversion entry, so a region in a space it does not read is
+a request it cannot interpret rather than one it read and cannot satisfy — the
+same answer an unrecognized space tag gets, and the distinction that keeps
+`MADOPILOT_STATUS_UNSUPPORTED` meaning "read and unsatisfiable". The consequence
+is that the C prefix is deliberately narrower than the Rust surface here, and a
+C caller converts before it asks. `docs/c-abi.md` states the rule where a caller
+reads it, `crates/bindings/capi/include/madopilot/madopilot.h` states it at both
+region fields, and `crates/bindings/capi/tests/abi.rs` asserts the status and the
+category for all four unaccepted spaces on both entries so the two cannot drift.
+A later phase that appends a conversion entry may revisit which status a
+convertible-but-unsupported space gets; appending one does not change this rule
+for the regions frozen here.
+
 ### The mandatory table prefix
 
 ```c
@@ -99,6 +123,15 @@ use. `madopilot_get_api` refuses a different ABI major with
 `MADOPILOT_STATUS_INVALID_ARGUMENT`, and nulls its output in both cases.
 
 ### Structure layouts
+
+Semantic numeric values and frozen version/report fields use fixed-width C
+integer types: structure sizes and reported table sizes are `uint32_t`, while row
+strides and semantic result/package counts are `uint64_t`. `size_t` is limited to
+ABI-native addressability quantities: pointer-view lengths, replay input counts
+and element strides, target-list counts, accessor indexes, and the caller-known
+table extent passed to negotiation. Both release targets are 64-bit, and those
+deliberate choices are part of the frozen ABI-1.0 layout rather than implicit
+Rust-size leaks.
 
 Frozen as measured. The complete per-field report is the tracked evidence in
 [../evidence/c-abi/](../evidence/c-abi/), one file per release target, and the
@@ -147,11 +180,12 @@ exists from the smaller of its own `sizeof` and the returned table's
 ### Output states
 
 Every function-table entry returns a status and reports values only through
-outputs, and every output is initialized to its documented failure state
-*before* the request is validated: owned handle outputs to null, structures
-through their failure prefix, scalars to zero. On failure they stay that way. An
-entry taking `out_error` may be passed null there and then reports the status
-only.
+outputs, and every independently valid output is initialized to its documented
+failure state *before* the request is validated: owned handle outputs to null,
+structures through their failure prefix, scalars to zero. An invalid sibling
+output does not short-circuit that initialization. On failure valid outputs stay
+in their failure state. An entry taking `out_error` may be passed null there and
+then reports the status only.
 
 ### Ownership
 
@@ -211,12 +245,15 @@ before it can cross into C.
 
 ### The compatibility fixture
 
-`crates/bindings/capi/tests/abi-compat/v1/` holds this header exactly as frozen,
-plus a C program written against it. `c-abi-check` compiles that program with the
-frozen directory **in place of** the working include path, links it to the
-library built now, and runs it. Today the two headers are identical and the check
-passes trivially; the fixture is created while it is trivial so that it exists on
-the day it is not.
+`crates/bindings/capi/tests/abi-compat/v1/` holds this header's declarations as
+frozen — every structure, field, enumerator and function-table entry — plus a C
+program written against it. `c-abi-check` compiles that program with the frozen
+directory **in place of** the working include path, links it to the library
+built now, and runs it. On the day of the freeze the two files were identical
+and the check passed trivially; the fixture is created while it is trivial so
+that it exists on the day it is not. The working header has gained comments
+since, which costs the fixture nothing: no check compares the two files, and
+what the frozen declarations are checked against is the library.
 
 It is not entirely trivial even now: the program negotiates twice, once at the
 frozen header's full 424 bytes and once at the 40-byte mandatory prefix, and

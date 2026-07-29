@@ -14,7 +14,6 @@
 //! [ADR 0001]: https://github.com/pashifika/mado-pilot/blob/main/docs/adr/0001-asset-archive-container-and-safety-ceilings.md
 
 use std::collections::BTreeMap;
-use std::fs::{self, File};
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -22,6 +21,7 @@ use mado_pilot_core::{Operation, OperationContext};
 use mado_pilot_vision::{TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest};
 
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
+use crate::filesystem::{self, NodeKind};
 use crate::limits::AssetLimits;
 use crate::manifest::{ContentDigest, MANIFEST_PATH, Manifest, from_vision};
 use crate::package::AssetPackage;
@@ -86,6 +86,38 @@ impl PackageLoader {
     ) -> Result<AssetPackage, AssetFault> {
         load(source, self.limits, context)
     }
+
+    /// Loads and validates a package from an archive this call borrows.
+    ///
+    /// `context` is checked exactly as [`PackageLoader::load`] checks it, and the
+    /// stages are the same stages: a borrowed archive is the archive-bytes source
+    /// without the ownership, not a second loader.
+    ///
+    /// Nothing retains `bytes`. The pipeline reads it while this call runs, and a
+    /// committed package holds each template's content in its own allocation, so
+    /// the archive is not part of what a package owns. That is what lets a
+    /// boundary holding a caller's view for the duration of one call load from it
+    /// directly: the alternative is an owned copy as large as the source ceiling
+    /// admits, and an allocation that large is one a host under memory pressure
+    /// can fail to satisfy.
+    ///
+    /// [`PackageSource::archive_bytes`] remains the entry for a caller that owns
+    /// its bytes and wants a source it can keep and load more than once.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AssetFault`] carrying the rule that was broken and the stage
+    /// that caught it, including the configured source ceiling at
+    /// [`LoadStage::Source`].
+    ///
+    /// [`PackageSource::archive_bytes`]: crate::PackageSource::archive_bytes
+    pub fn load_archive_bytes(
+        &self,
+        bytes: &[u8],
+        context: &OperationContext,
+    ) -> Result<AssetPackage, AssetFault> {
+        load_archive_bytes(bytes, self.limits, context)
+    }
 }
 
 fn load(
@@ -96,16 +128,55 @@ fn load(
     let mut operation = Operation::admit(context)
         .map_err(|interruption| AssetFault::interrupted(interruption, LoadStage::Source))?;
 
-    let (mut reader, raw) = open(source, limits)?;
+    let (mut reader, raw) = open(source, limits, &mut operation)?;
+    commit_package(
+        reader.as_mut(),
+        &raw,
+        source.is_archive(),
+        limits,
+        operation,
+    )
+}
+
+fn load_archive_bytes(
+    bytes: &[u8],
+    limits: AssetLimits,
+    context: &OperationContext,
+) -> Result<AssetPackage, AssetFault> {
+    let mut operation = Operation::admit(context)
+        .map_err(|interruption| AssetFault::interrupted(interruption, LoadStage::Source))?;
+
+    let length = u64::try_from(bytes.len())
+        .map_err(|_| AssetFault::new(AssetFaultKind::ArithmeticOverflow, LoadStage::Source))?;
+    // The same archive stages the owned kind runs, over a `Cursor` that borrows
+    // rather than one that owns. The source ceiling is applied there, so a
+    // borrowed archive is admitted by the same length rule as every other.
+    let (mut reader, raw) =
+        archive::open(Cursor::new(bytes), length, limits, &mut operation, None)?;
+    commit_package(reader.as_mut(), &raw, true, limits, operation)
+}
+
+/// Runs every stage after the source is open, and commits.
+///
+/// One tail for both entries: what a source is changes how its bytes are reached
+/// and nothing about what makes the package valid, so the ordered rules and the
+/// final commit check live here rather than once per entry.
+fn commit_package(
+    reader: &mut dyn EntryReader,
+    raw: &[RawEntry],
+    is_archive: bool,
+    limits: AssetLimits,
+    mut operation: Operation<'_>,
+) -> Result<AssetPackage, AssetFault> {
     checkpoint(&mut operation, LoadStage::Source)?;
 
-    let table = validate_entries(&raw, limits, source.is_archive())?;
+    let table = validate_entries(raw, limits, is_archive)?;
     checkpoint(&mut operation, LoadStage::EntryMetadata)?;
 
-    let manifest = read_manifest(reader.as_mut(), &table, &mut operation)?;
+    let manifest = read_manifest(reader, &table, &mut operation)?;
     checkpoint(&mut operation, LoadStage::Manifest)?;
 
-    let templates = expand(reader.as_mut(), &table, &manifest, &mut operation)?;
+    let templates = expand(reader, &table, &manifest, &mut operation)?;
 
     checkpoint(&mut operation, LoadStage::Commit)?;
     operation
@@ -116,24 +187,39 @@ fn load(
 fn open(
     source: &PackageSource,
     limits: AssetLimits,
+    operation: &mut Operation<'_>,
 ) -> Result<(Box<dyn EntryReader>, Vec<RawEntry>), AssetFault> {
     match source {
-        PackageSource::Directory(root) => directory::open(root, limits),
+        PackageSource::Directory(root) => directory::open(root, limits, operation),
         PackageSource::Memory(package) => memory::open(package, limits),
         PackageSource::ArchiveFile(path) => {
-            let length = fs::metadata(path)
-                .map_err(|_| AssetFault::new(AssetFaultKind::SourceUnreadable, LoadStage::Source))?
-                .len();
-            let file = File::open(path).map_err(|_| {
-                AssetFault::new(AssetFaultKind::SourceUnreadable, LoadStage::Source)
-            })?;
-            archive::open(file, length, limits)
+            let opened = filesystem::open_stable(path, LoadStage::Source, operation)?;
+            if opened.kind() != NodeKind::Regular || !opened.has_single_link() {
+                return Err(AssetFault::new(
+                    AssetFaultKind::SourceUnreadable,
+                    LoadStage::Source,
+                ));
+            }
+            let length = opened.len();
+            let source = opened
+                .into_file()
+                .ok_or_else(|| AssetFault::new(AssetFaultKind::SourceChanged, LoadStage::Source))?;
+            // The handle itself goes in rather than a reader over it: an
+            // externally mutable file is copied once, under the source ceiling,
+            // so every archive stage reads one unchanging sequence of bytes.
+            archive::open_file(source, length, limits, operation)
         }
         PackageSource::ArchiveBytes(bytes) => {
             let length = u64::try_from(bytes.len()).map_err(|_| {
                 AssetFault::new(AssetFaultKind::ArithmeticOverflow, LoadStage::Source)
             })?;
-            archive::open(Cursor::new(Arc::clone(bytes)), length, limits)
+            archive::open(
+                Cursor::new(Arc::clone(bytes)),
+                length,
+                limits,
+                operation,
+                None,
+            )
         }
     }
 }

@@ -433,3 +433,53 @@ fn a_backend_that_cannot_prepare_reports_a_vision_failure() {
 
     assert_eq!(error.status(), Status::VisionFailed);
 }
+
+/// A session the engine refuses after the adapter committed it is closed.
+///
+/// `Engine::open` arbitrates the open a second time, so the adapter can commit a
+/// session that the engine then declines. `Session` documents that dropping one
+/// does not close it, so the platform's side of a dropped session outlives every
+/// reference to it — bounded on replay, and a real leak for a native adapter on
+/// the same path.
+///
+/// The window is only reachable from inside the adapter: a context that is
+/// already over is refused before the adapter opens anything, so the provider
+/// here expires the deadline itself, between its own commit and the engine's.
+#[test]
+fn an_open_the_engine_refuses_after_the_adapter_committed_is_closed_not_dropped() {
+    let clock = Arc::new(ManualClock::new());
+    let (issuer, inner) = support::controlled_capture();
+    let provider = Arc::new(support::OpenThenExpire::new(
+        Arc::clone(&inner),
+        Arc::clone(&clock),
+        Duration::from_secs(30),
+    ));
+    let closes = provider.closes();
+    let harness = Harness::over(
+        &issuer,
+        inner,
+        provider as Arc<dyn mado_pilot_runtime::CaptureProvider>,
+    );
+
+    let operation = OperationContext::new()
+        .with_clock(Arc::clone(&clock) as Arc<dyn mado_pilot_runtime::Clock>)
+        .with_timeout(Duration::from_secs(1))
+        .expect("a representable timeout");
+    let targets = harness.engine.discover(&operation).expect("discovered");
+
+    let error = harness
+        .engine
+        .open(targets[0].id(), &OpenRequest::new(), &operation)
+        .expect_err("the engine's own arbitration refuses the expired open");
+
+    assert_eq!(
+        error.status(),
+        Status::DeadlineExceeded,
+        "the caller is told what happened to its request"
+    );
+    assert_eq!(
+        closes.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the committed session was closed rather than dropped"
+    );
+}

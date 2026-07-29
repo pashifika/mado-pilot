@@ -47,6 +47,10 @@ placement. A stride may be declared for a padded source; these frames are packed
 so they omit it.
 
 Pixel paths are relative and validated: an absolute path, a drive or UNC prefix,
-a parent traversal, a backslash, or a symbolic link is refused. A replay manifest
-is caller-supplied data, and one that could name any path would be a file-read
-primitive wearing a capture adapter's clothes.
+a parent traversal, a backslash, or a symbolic link is refused. The link rule
+covers every component of the path rather than only the file it ends at, because
+`frames/0000-8x6.bin` names any file on the host the moment `frames` is a link,
+and the pixels are then read through the handle that check opened instead of by
+resolving the path a second time. A replay manifest is caller-supplied data, and
+one that could name any path would be a file-read primitive wearing a capture
+adapter's clothes.

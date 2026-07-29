@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's eight resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md) |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md) — all thirteen under both hard gates, eleven with per-measurement ceilings, two C-boundary controls deliberately without |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -381,6 +381,15 @@ reference-count increment and the host clock is coarser than that. It is bounded
 by `mapped_bytes_per_result` and by a batched `iteration_span_ms` instead, on
 both targets, so the two profiles agree about what the workload may do.
 `negotiate_table` is bounded the same way, for the same reason.
+
+`engine_create_rust` and `match_warm_rust` carry no per-measurement ceiling at
+all. Each is the control for the C workload above it in the same profile,
+measured so the pair can be compared in one process, one build, one run; the
+Rust workflow's own ceilings live in the deterministic-slice profile, and a
+second set beside the control would be the same claim measured twice and free to
+disagree with itself. Eleven of the thirteen workloads therefore carry a
+per-measurement ceiling, and all thirteen sit under the two hard gates above,
+which apply to every measurement in their file.
 
 Task 9.2's "any material C ABI startup overhead" is answered rather than
 assumed. The boundary costs a fixed amount per table entry: negotiation does not

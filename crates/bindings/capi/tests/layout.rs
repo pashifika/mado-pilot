@@ -2,9 +2,9 @@
 //!
 //! The numeric agreement between the header and the Rust definitions is proved
 //! by `examples/c-abi-check.rs`, which needs a C toolchain. These are the
-//! properties that do not: `struct_size` first, mandatory prefixes that are
-//! real prefixes, thin handle pointers, and a function-table order that a
-//! refactor cannot quietly rearrange.
+//! properties that do not: the frozen numbers themselves, `struct_size` first,
+//! mandatory prefixes that are real prefixes, thin handle pointers, and a
+//! function-table order that a refactor cannot quietly rearrange.
 //!
 //! **These values are frozen** for ABI major 1 by
 //! `docs/adr/0007-phase-1-c-abi-freeze.md`. What this file protects is that a
@@ -13,11 +13,36 @@
 use madopilot::layout::{HANDLE_POINTERS, LAYOUT, TypeLayout, report};
 use madopilot::*;
 
+/// The layout ADR 0007 froze, on each release target.
+///
+/// These are the tracked evidence files, compiled in rather than read at run
+/// time so the comparison needs no working directory and no C toolchain. They
+/// are the *only* place the frozen sizes, alignments, and field offsets are
+/// written down as numbers; every other test in this file checks a structural
+/// property that a coordinated edit to the header and to `src/types.rs` would
+/// keep true.
+const FROZEN_LAYOUT: [(&str, &str); 2] = [
+    (
+        "aarch64-apple-darwin",
+        include_str!("../../../../docs/evidence/c-abi/layout-aarch64-apple-darwin.txt"),
+    ),
+    (
+        "x86_64-pc-windows-msvc",
+        include_str!("../../../../docs/evidence/c-abi/layout-x86_64-pc-windows-msvc.txt"),
+    ),
+];
+
 /// Every versioned structure, and the mandatory prefix it documents.
 ///
 /// A prefix that is not a field boundary would mean the library reads or writes
 /// half a field, so each one is checked against the offsets as well as against
 /// the size.
+///
+/// `madopilot_match_options_t` appears twice because it is the one structure
+/// used in both directions and the only one with two prefixes: 8 bytes as the
+/// request a caller supplies, 24 as the report `result_options` writes back.
+/// Both have to be real boundaries, and ADR 0007 is the only other place the
+/// asymmetry is recorded.
 const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_build_info_t", 20),
     ("madopilot_operation_t", 8),
@@ -29,6 +54,7 @@ const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_open_request_t", 8),
     ("madopilot_map_request_t", 12),
     ("madopilot_match_options_t", 8),
+    ("madopilot_match_options_t", 24),
     ("madopilot_find_request_t", 24),
     ("madopilot_match_t", 56),
     ("madopilot_result_info_t", 72),
@@ -108,6 +134,69 @@ fn find(name: &str) -> &'static TypeLayout {
         .iter()
         .find(|layout| layout.name == name)
         .unwrap_or_else(|| panic!("`{name}` is measured by the layout report"))
+}
+
+/// Compares one target's tracked evidence against what this build measured.
+///
+/// Reports the first line that differs rather than the whole report, because a
+/// single field moving shifts nothing else and a whole-report dump would bury
+/// it.
+fn assert_frozen(target: &str, frozen: &str, measured: &str) {
+    if measured == frozen {
+        return;
+    }
+
+    let difference = frozen
+        .lines()
+        .zip(measured.lines())
+        .enumerate()
+        .find(|(_, (frozen, measured))| frozen != measured)
+        .map_or_else(
+            || {
+                format!(
+                    "the reports agree line for line and then one of them ends: the frozen \
+                     record has {} lines, this build measured {}",
+                    frozen.lines().count(),
+                    measured.lines().count(),
+                )
+            },
+            |(index, (frozen, measured))| {
+                format!(
+                    "line {}: the frozen record says `{frozen}`, this build measured `{measured}`",
+                    index + 1
+                )
+            },
+        );
+
+    panic!(
+        "the measured layout is not the one frozen for {target} in \
+         `docs/evidence/c-abi/layout-{target}.txt`.\n  {difference}\nWithin ABI major 1 that \
+         report only gains structures and fields appended after every existing one; anything \
+         else is a compatibility break. A deliberate additive minor regenerates the evidence on \
+         both release targets with `cargo run --package mado-pilot-capi --example c-abi-check` \
+         and records the new numbers in `docs/adr/0007-phase-1-c-abi-freeze.md`."
+    );
+}
+
+#[test]
+fn the_measured_layout_is_the_one_that_was_frozen() {
+    let measured = report();
+
+    for (target, frozen) in FROZEN_LAYOUT {
+        assert_frozen(target, frozen, &measured);
+    }
+}
+
+#[test]
+fn both_release_targets_froze_the_same_layout() {
+    let [(first, one), (second, two)] = FROZEN_LAYOUT;
+
+    assert_eq!(
+        one, two,
+        "`docs/evidence/c-abi/` records the {first} and {second} reports as byte-identical, and \
+         the test above pins this build against both. Regenerating one without the other leaves \
+         one release target unpinned."
+    );
 }
 
 #[test]

@@ -185,19 +185,60 @@ pub struct TemplateSource {
 }
 
 impl TemplateSource {
+    /// The largest number of pixels a template may declare: 67,108,864, which is
+    /// 8,192 by 8,192.
+    ///
+    /// A declared extent is not a measurement, and this is the one thing about it
+    /// this package can bound without decoding anything. A backend allocates its
+    /// decoded image from the extent — three bytes a pixel for the Phase 1
+    /// matching profile — so a compact image that declares 30,000 by 30,000 asks
+    /// for 2.7 GB out of sixty-odd bytes of metadata, and asks for it before any
+    /// content has been shown to support the claim.
+    ///
+    /// The number bounds that without refusing anything a template can be. A
+    /// template is a patch of captured pixels, so its extent cannot usefully
+    /// exceed the frame it is searched in, and 8,192 by 8,192 covers a full-frame
+    /// template on any display through 8K UHD (7,680 by 4,320) with room over.
+    /// What it admits at the top end is 192 MiB of three-channel pixels or 256
+    /// MiB of four-channel ones — inside the 512 MiB of total expansion the asset
+    /// ceilings already admit for one package, and orders of magnitude below the
+    /// process-scale allocation an unbounded declaration reaches.
+    ///
+    /// Expressed in pixels rather than in bytes because bytes a pixel is a
+    /// backend's decision: the product of two `u32` dimensions is exact in `u64`,
+    /// and each backend multiplies it by the channel count it actually stores.
+    /// Raising this ceiling is a decision for the phase that has a capture source
+    /// or a matching profile needing it, with the measurements that phase takes.
+    pub const MAX_PIXELS: u64 = 8_192 * 8_192;
+
+    /// Returns whether `extent` declares at most [`TemplateSource::MAX_PIXELS`].
+    ///
+    /// Public so a producer of template metadata can apply the contract's own
+    /// ceiling before it builds a source — an asset manifest refuses an oversized
+    /// declaration while parsing, rather than after expanding the entry it names.
+    #[must_use]
+    pub const fn extent_within_ceiling(extent: PixelExtent) -> bool {
+        // Two `u32` dimensions multiply exactly in `u64`, so there is nothing to
+        // overflow and no saturation to reason about.
+        extent.width() as u64 * extent.height() as u64 <= Self::MAX_PIXELS
+    }
+
     /// Builds an immutable template source.
     ///
     /// The declared extent is not checked against the encoded image, because
     /// decoding is a backend's responsibility and doing it here would put an
     /// image parser in a contract package. A backend that decodes different
-    /// dimensions reports that as its own failure.
+    /// dimensions reports that as its own failure. What is checked is the extent
+    /// itself, against [`TemplateSource::MAX_PIXELS`]: that needs no decoder, and
+    /// it is what keeps a backend from allocating from a declaration alone.
     ///
     /// # Errors
     ///
     /// Returns [`VisionFault::EmptyTemplateExtent`] for a zero dimension,
-    /// [`VisionFault::EmptyTemplateContent`] for empty content, and
-    /// [`VisionFault::UnsupportedTemplateSpace`] for any coordinate space other
-    /// than [`CoordinateSpace::CapturePixels`].
+    /// [`VisionFault::TemplateExtentAboveCeiling`] for an extent above
+    /// [`TemplateSource::MAX_PIXELS`], [`VisionFault::EmptyTemplateContent`] for
+    /// empty content, and [`VisionFault::UnsupportedTemplateSpace`] for any
+    /// coordinate space other than [`CoordinateSpace::CapturePixels`].
     pub fn new(request: TemplateSourceRequest) -> Result<Self, VisionFault> {
         let TemplateSourceRequest {
             id,
@@ -210,6 +251,9 @@ impl TemplateSource {
 
         if extent.is_empty() {
             return Err(VisionFault::EmptyTemplateExtent);
+        }
+        if !Self::extent_within_ceiling(extent) {
+            return Err(VisionFault::TemplateExtentAboveCeiling);
         }
         if content.is_empty() {
             return Err(VisionFault::EmptyTemplateContent);
@@ -353,6 +397,43 @@ mod tests {
             TemplateSource::new(invalid),
             Err(VisionFault::EmptyTemplateExtent)
         );
+    }
+
+    #[test]
+    fn an_extent_above_the_pixel_ceiling_is_rejected_without_decoding_anything() {
+        // 30,000 by 30,000 is the shape of the declaration this ceiling exists
+        // for: 2.7 GB of three-channel pixels, out of content a package can carry
+        // in sixty bytes. Nothing here reads `content`, which is the point — the
+        // refusal costs one multiplication.
+        let mut invalid = request();
+        invalid.extent = PixelExtent::new(30_000, 30_000);
+
+        assert_eq!(
+            TemplateSource::new(invalid),
+            Err(VisionFault::TemplateExtentAboveCeiling)
+        );
+    }
+
+    #[test]
+    fn the_pixel_ceiling_admits_a_full_frame_template_and_refuses_one_pixel_more() {
+        // The ceiling is a square, so a row of one pixel is the extent that
+        // crosses it by exactly one pixel without changing its area class.
+        assert!(TemplateSource::extent_within_ceiling(PixelExtent::new(
+            8_192, 8_192
+        )));
+        assert!(!TemplateSource::extent_within_ceiling(PixelExtent::new(
+            8_192, 8_193
+        )));
+        // An 8K UHD frame, which a template may cover entirely.
+        assert!(TemplateSource::extent_within_ceiling(PixelExtent::new(
+            7_680, 4_320
+        )));
+        // A single dimension at the top of its type is refused on area alone, so
+        // no dimension can be large enough to matter to a backend's own extents.
+        assert!(!TemplateSource::extent_within_ceiling(PixelExtent::new(
+            u32::MAX,
+            2
+        )));
     }
 
     #[test]

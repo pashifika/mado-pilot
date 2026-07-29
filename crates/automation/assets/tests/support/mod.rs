@@ -11,6 +11,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use mado_pilot_assets::{AssetPackage, ContentDigest, MemoryPackage, PackageLoader, PackageSource};
@@ -214,6 +216,102 @@ impl TickingClock {
 impl mado_pilot_core::Clock for TickingClock {
     fn now(&self) -> mado_pilot_core::MonotonicInstant {
         let tick = self.reads.fetch_add(1, Ordering::Relaxed);
+        mado_pilot_core::MonotonicInstant::from_origin(std::time::Duration::from_millis(tick))
+    }
+}
+
+/// A deterministic filesystem replacement staged through operation checkpoints.
+#[cfg(unix)]
+#[derive(Debug)]
+pub(crate) struct ReplacingClock {
+    reads: AtomicU64,
+    replace_at: u64,
+    target: PathBuf,
+    replacement: PathBuf,
+    replaced: AtomicBool,
+}
+
+#[cfg(unix)]
+impl ReplacingClock {
+    pub(crate) fn new(
+        replace_at: u64,
+        target: impl Into<PathBuf>,
+        replacement: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            reads: AtomicU64::new(0),
+            replace_at,
+            target: target.into(),
+            replacement: replacement.into(),
+            replaced: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn replaced(&self) -> bool {
+        self.replaced.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(unix)]
+impl mado_pilot_core::Clock for ReplacingClock {
+    fn now(&self) -> mado_pilot_core::MonotonicInstant {
+        let tick = self.reads.fetch_add(1, Ordering::Relaxed);
+        if tick == self.replace_at {
+            let displaced = self.target.with_file_name(format!(
+                ".madopilot-displaced-{}",
+                self.target
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("source")
+            ));
+            if fs::rename(&self.target, &displaced).is_ok() {
+                if fs::rename(&self.replacement, &self.target).is_ok() {
+                    self.replaced.store(true, Ordering::Relaxed);
+                } else {
+                    let _ = fs::rename(&displaced, &self.target);
+                }
+            }
+        }
+        mado_pilot_core::MonotonicInstant::from_origin(std::time::Duration::from_millis(tick))
+    }
+}
+
+/// A deterministic same-path rewrite staged through operation checkpoints.
+#[cfg(unix)]
+#[derive(Debug)]
+pub(crate) struct WritingClock {
+    reads: AtomicU64,
+    write_at: u64,
+    target: PathBuf,
+    bytes: Box<[u8]>,
+    written: AtomicBool,
+}
+
+#[cfg(unix)]
+impl WritingClock {
+    pub(crate) fn new(write_at: u64, target: impl Into<PathBuf>, bytes: Box<[u8]>) -> Self {
+        Self {
+            reads: AtomicU64::new(0),
+            write_at,
+            target: target.into(),
+            bytes,
+            written: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn written(&self) -> bool {
+        self.written.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(unix)]
+impl mado_pilot_core::Clock for WritingClock {
+    fn now(&self) -> mado_pilot_core::MonotonicInstant {
+        let tick = self.reads.fetch_add(1, Ordering::Relaxed);
+        if tick == self.write_at {
+            fs::write(&self.target, &self.bytes).expect("the source remains writable on Unix");
+            self.written.store(true, Ordering::Relaxed);
+        }
         mado_pilot_core::MonotonicInstant::from_origin(std::time::Duration::from_millis(tick))
     }
 }

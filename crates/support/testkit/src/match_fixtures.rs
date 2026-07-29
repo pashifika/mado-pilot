@@ -122,6 +122,20 @@ pub fn scene_frame(format: PixelFormat) -> Frame {
     crate::vision_contract::frame_with_pixels(SCENE, format, scene_pixels(format))
 }
 
+/// Builds the same scene with `padding` trailing bytes on every row.
+///
+/// The same image as [`scene_frame`], so a search over it must produce the same
+/// answer; what differs is the stride, which is the one thing a capture adapter
+/// does not choose and every packed fixture hides.
+///
+/// # Panics
+///
+/// As [`scene_frame`].
+#[must_use]
+pub fn scene_frame_with_padded_rows(format: PixelFormat, padding: usize) -> Frame {
+    crate::vision_contract::frame_with_padded_rows(SCENE, format, padding, &scene_pixels(format))
+}
+
 /// Builds a template source for the patch the scene contains.
 ///
 /// # Panics

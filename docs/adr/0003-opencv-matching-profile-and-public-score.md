@@ -6,6 +6,7 @@
   `G-013`'s vision workloads and gate `G-007`'s packaging decision will later
   measure and ship.
 - **Supersedes:** _none_
+- **Amended:** 2026-07-28, after the Phase 1 verification pass aligned backend extraction with the public suppression policy and canonical public-score ordering.
 
 ## Context
 
@@ -52,14 +53,18 @@ The Phase 1 OpenCV CPU profile is:
    divides by the variance of the template and of the window, so a uniform window
    has no correlation to express. No correlation is not evidence of a match, and
    it is not a backend failure either.
-5. **Candidates are non-overlapping peaks.** The adapter repeatedly takes the
-   greatest remaining offset and suppresses every offset that would overlap it, up
-   to the request's result limit. Ties are broken row-major, in the adapter's own
-   scan, which is also the matcher's canonical order.
+5. **Candidate extraction follows the request's suppression policy.** The adapter
+   repeatedly takes the greatest remaining public score, breaking equal public
+   scores row-major. `DropOverlapping` suppresses every offset that would overlap
+   the selected placement; `KeepAll` removes only the selected offset. Extraction
+   stops at the request's result limit, so it emits the exact canonical prefix the
+   public matcher can expose without materializing the complete dense map.
 
-Everything else stays where Stage 4a put it: the matcher validates the score,
-applies the threshold, translates region-local candidates, orders canonically,
-suppresses overlaps, applies the limit, and builds the result envelope.
+The matcher remains authoritative: it validates scores, applies the threshold,
+translates region-local candidates, orders canonically, applies the requested
+suppression and result limit again, and builds the result envelope. OpenCV's bounded
+extraction may reduce work only by applying those same observable prefix rules; it
+cannot invent a backend-specific suppression outcome.
 
 ## Alternatives
 
@@ -121,15 +126,14 @@ exchange:
   A caller that needs to detect an inverted pattern cannot express it, and adding
   it later means a new option rather than a changed score, because changing the
   mapping would move every existing threshold.
-- **`Suppression::KeepAll` and `Suppression::DropOverlapping` produce the same
-  result for this backend**, because its candidate set is already
-  non-overlapping. That is a documented property of this adapter, not of the
-  contract; a backend whose candidates are discrete detections rather than a
-  correlation map would differ.
-- **A caller's result limit bounds the adapter's work.** Peak extraction performs
-  at most one scan of the score map per requested result. A caller asking for
-  `u32::MAX` results is asking for a scan per offset; the loop still terminates,
-  because each scan suppresses at least the offset it selected.
+- **`Suppression::KeepAll` preserves overlapping placements.**
+  `Suppression::DropOverlapping` keeps the canonical peak and suppresses its
+  overlap window. The two policies therefore remain observably distinct for this
+  backend, as the public contract requires.
+- **A caller's result limit bounds the adapter's work.** Candidate extraction
+  performs at most one scan of the score map per requested result. A caller asking
+  for `u32::MAX` results is asking for at most one scan per offset; the loop still
+  terminates because every scan removes at least the selected offset.
 - **Colour-blind matching is not available.** A template that should match
   regardless of hue cannot be expressed in Phase 1.
 - **Scores are not bit-reproducible across offsets.** OpenCV normalizes through
@@ -161,11 +165,11 @@ scope is static-link feasibility.
 
 ## Verification
 
-- `crates/backend/opencv/src/candidates.rs` unit-tests the score mapping and the
-  peak extraction directly, including the negative half, the rounding guard, the
-  non-finite offset, the overlap window, the row-major tie-break, and the result
-  limit. These need no OpenCV installation, so the decisions in them are checkable
-  without one.
+- `crates/backend/opencv/src/candidates.rs` unit-tests the score mapping and bounded
+  extraction directly, including the negative half, the rounding guard, the
+  non-finite offset, equal-public-score row-major ties, `KeepAll`, the overlap
+  window, and the result limit. These need no OpenCV installation, so the decisions
+  in them are checkable without one.
 - `crates/backend/opencv/tests/vision_contract.rs` runs
   `mado-pilot-testkit`'s backend-independent suite against this adapter unchanged.
   A profile that broke score validation, candidate bounds, or the three

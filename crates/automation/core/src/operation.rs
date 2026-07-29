@@ -267,15 +267,16 @@ impl<'context> Operation<'context> {
     /// is discarded here rather than prevented earlier. That is the deliberate
     /// shape of the contract: work that cannot be interrupted is allowed to
     /// finish, and what it may not do is become observable.
-    pub fn commit<T>(mut self, value: T) -> Result<T, Interruption> {
+    /// The latch is read and not written: this consumes the operation, and
+    /// `Operation` has no `Drop`, so an interruption stored here would be
+    /// dropped in the same expression that stored it. `checkpoint` latches
+    /// because there are later calls to answer; there are none after this.
+    pub fn commit<T>(self, value: T) -> Result<T, Interruption> {
         if let Some(terminal) = self.terminal {
             return Err(terminal);
         }
         match self.context.interruption() {
-            Some(interruption) => {
-                self.terminal = Some(interruption);
-                Err(interruption)
-            }
+            Some(interruption) => Err(interruption),
             None => Ok(value),
         }
     }

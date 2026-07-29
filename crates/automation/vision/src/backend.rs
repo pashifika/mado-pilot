@@ -1,11 +1,13 @@
 //! What a matching backend provides, and what it is not allowed to decide.
 //!
 //! A backend compiles a template and finds candidates. It does not resolve
-//! coordinates, threshold scores, order results, suppress overlaps, apply a
-//! result limit, or build the result envelope: those are the rules that must be
-//! identical whichever backend ran, so they live in [`crate::matcher`] once
-//! rather than in every adapter. This is the same division the capture package
-//! makes, where an adapter supplies pixels and the stream assigns identity.
+//! coordinates or decide the public threshold, ordering, suppression, result
+//! limit, or result envelope: those rules must be identical whichever backend
+//! ran, so they live in [`crate::matcher`] once rather than in every adapter. A
+//! backend may bound extraction from a dense internal representation only when
+//! the emitted candidates preserve the exact canonical public result through the
+//! requested limit. This is the same division the capture package makes, where
+//! an adapter supplies pixels and the stream assigns identity.
 //!
 //! Candidates come back in coordinates relative to the searched region's own
 //! origin, because that is what a backend handed a mapping of that region
@@ -83,8 +85,9 @@ pub struct BackendRequest<'a> {
     pub pixels: &'a CpuMapping,
     /// The searched region, in full-frame capture pixels, for diagnostics.
     pub region: PixelRect,
-    /// The validated options. A backend may use the threshold to stop early; it
-    /// is applied publicly regardless.
+    /// The validated options. A backend may use these to bound extraction only
+    /// when doing so cannot change the canonical public result through
+    /// `max_results`; the matcher applies every option publicly regardless.
     pub options: MatchOptions,
 }
 
@@ -163,8 +166,10 @@ pub trait MatchBackend: fmt::Debug + Send + Sync {
     /// Searches `request.pixels` for `request.template`.
     ///
     /// Candidates may be returned in any order and with any scores; the public
-    /// rules are applied afterwards. A search that finds nothing returns an
-    /// empty vector rather than an error.
+    /// rules are applied afterwards. An adapter that truncates dense internal
+    /// candidates must preserve the same result canonical ordering, requested
+    /// suppression, and public limit would have produced. A search that finds
+    /// nothing returns an empty vector rather than an error.
     ///
     /// # Errors
     ///

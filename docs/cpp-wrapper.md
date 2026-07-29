@@ -96,22 +96,52 @@ child, and the wrapper preserves it. A `Mapping` stays readable after its
 its `Package`. A `MatchResult` outlives all of them, because it owns the exact
 frame it searched.
 
+In a function returning `madopilot::Error`:
+
 ```cpp
 madopilot::Mapping mapping;
 {
     madopilot::Session session = /* ... */;
-    const madopilot::Frame frame = session.acquire_frame(operation).take();
-    mapping = frame.map(request, operation).take();
-    session.close(operation);
+
+    madopilot::Result<madopilot::Frame> acquired = session.acquire_frame(operation);
+    if (!acquired) {
+        return acquired.error();
+    }
+    const madopilot::Frame frame = acquired.take();
+
+    madopilot::Result<madopilot::Mapping> mapped = frame.map(request, operation);
+    if (!mapped) {
+        return mapped.error();
+    }
+    mapping = mapped.take();
+
+    const madopilot::Result<void> closed = session.close(operation);
+    if (!closed) {
+        return closed.error();
+    }
 }   // session and frame are gone
 const auto image = mapping.describe();  // still valid
 ```
 
+Each result is checked before it is extracted, for the reason
+[below](#results-and-errors): `take()` has the precondition `ok()`.
+
 ## Results and errors
 
-The default interface is exception-free. No wrapper operation throws to report a
-MadoPilot failure; only allocating an owned error message can throw, and that is
-`std::bad_alloc` rather than a translated status.
+The default interface is exception-free in the sense that matters: no wrapper
+operation throws to report a MadoPilot failure. Every failure the library can
+report arrives as a status in a `Result`, and no status is translated into an
+exception.
+
+The wrapper does throw what its own allocations throw, which is `std::bad_alloc`.
+Four places allocate, and all four are the wrapper making an owned copy for the
+caller: an error's text, when a failing call describes it; the vector
+`MatchResult::matches` fills; the copies a typed request keeps of what its C
+structure points at; and an explicit `BorrowedStr::to_string` or
+`BorrowedBytes::to_vector`. A caller that cannot tolerate `std::bad_alloc` from
+those can read `Error::status()` and the borrowed views without ever making a
+copy. Describing an error releases its C handle whether or not the copy of its
+text succeeds.
 
 ```cpp
 madopilot::Result<madopilot::Package> loaded = engine.load_package(source, operation);
@@ -125,10 +155,24 @@ if (!loaded) {
 }
 ```
 
+**A `Result` cannot be dropped silently.** Both templates are `[[nodiscard]]`,
+so discarding one is a compiler diagnostic. In a surface that reports failures
+no other way, a dropped result is a dropped failure.
+
+**Check a `Result` before reading it.** `value()` and `take()` have the
+precondition `ok()`. They extract from a `std::optional` that a failure leaves
+disengaged, so calling one on a failed result is undefined behaviour rather than
+a thrown exception — the wrapper cannot throw to tell you, which is the price of
+the exception-free surface. A build without `NDEBUG` fails an `assert` there; a
+release build does not. Every snippet in this document, the in-repo example, and
+the ownership probe test the result first.
+
 `Error` is a value. Constructing one describes the C error handle, copies
 everything out of it, and releases the handle immediately — on every failing
-path, including the one whose caller reads only the status. Nothing in an
-`Error` borrows, and there is no last-error slot to consult.
+path, including the one whose caller reads only the status, and including the
+one where a copy throws `std::bad_alloc`. The release is a scope guard rather
+than a final statement for exactly that reason. Nothing in an `Error` borrows,
+and there is no last-error slot to consult.
 
 **The asset detail survives.** Package loading is the one Phase 1 operation
 whose failures a caller may reasonably tell apart by more than a status, so
@@ -177,6 +221,7 @@ documents the owner that keeps them valid.
 | `TargetDescriptor::name`, `provider` | the `TargetList` |
 | `PackageInfo::package_id`, `package_version`, `license` | the `Package` |
 | `TemplateInfo::id`, `backend` | the `Template` |
+| `Package::template_id` | the `Package` |
 | `Image::bytes` | the `Mapping` |
 | `ResultInfo::backend_id`, `backend_version` | the `MatchResult` |
 | `Match::template_id` | the `MatchResult` |
@@ -186,9 +231,31 @@ A view is valid only while its owner is retained. Copy anything that must
 outlive it:
 
 ```cpp
-const std::string kept = info.value().package_id.to_string();
-const std::vector<std::uint8_t> pixels = image.value().bytes.to_vector();
+if (info) {
+    const std::string kept = info.value().package_id.to_string();
+}
+if (image) {
+    const std::vector<std::uint8_t> pixels = image.value().bytes.to_vector();
+}
 ```
+
+**Name the owner, then ask it.** Every accessor above that borrows from a handle
+is declared `const&` with its rvalue overload deleted, so it cannot be called on
+a temporary owner:
+
+```cpp
+const auto id = engine.load_package(source, operation).take().template_id(0);
+//                                                     ^ deleted: the package
+//                                                       dies at the semicolon
+madopilot::Package package = loaded.take();
+const auto id = package.template_id(0);   // and this is fine
+```
+
+The first form reads correctly and leaves every view pointing into released
+memory. Deleting the rvalue overload turns it into a compile error instead. The
+two accessors whose views live in the library's own static storage —
+`Api::describe_build` and `Api::status_text` — are unqualified, because nothing
+they hand out can outlive the library.
 
 `Error::message()` already returns owned `std::string`, because error text is
 the text most likely to outlive the handle it came from.
@@ -202,8 +269,13 @@ each owns whatever its C structure points at for as long as the request object
 is alive.
 
 ```cpp
+const madopilot::Result<std::uint64_t> now = api.clock_now();
+if (!now) {
+    return now.error();
+}
+
 madopilot::Operation operation;
-operation.deadline(api.clock_now().value() + 30ull * 1000 * 1000 * 1000)
+operation.deadline(now.value() + 30ull * 1000 * 1000 * 1000)
     .cancellation(token);
 ```
 
@@ -224,6 +296,15 @@ the same reason.
 Rectangles stay coordinate-qualified. `Match::bounds` and `ResultInfo::searched`
 are `madopilot_pixel_rect_t` under the alias `Rect`, and each names the space it
 is measured in rather than reducing to an integer pair.
+
+A `Rect` the caller *supplies* is the other direction, and is narrower:
+`MapRequest::region` and `FindRequest::region` accept
+`MADOPILOT_SPACE_CAPTURE_PIXELS` only, because the Phase 1 C prefix has no
+coordinate-conversion entry for the wrapper to delegate one to. Any other space
+comes back as a failed `Result` carrying
+`MADOPILOT_STATUS_INVALID_ARGUMENT` — the C entry's own answer, unchanged and
+not thrown. Converting before asking is the caller's step; see
+[c-abi.md](c-abi.md).
 
 ## Threads
 
@@ -324,8 +405,9 @@ That one command covers the C surface and the C++ surface together. For the C++
 half it:
 
 1. compiles and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
-   `static_assert`s prove the move-only shape at compile time and whose checks
-   prove clone independence, parent and child lifetime, borrowed-view stability,
+   `static_assert`s prove the move-only shape and the lvalue-only view accessors
+   at compile time, and whose checks prove clone independence, parent and child
+   lifetime, borrowed-view stability, error release under a throwing copy,
    zero-match success, close reporting, and concurrent const access at run time;
 2. compiles and runs `examples/cpp/deterministic-slice.cpp` and requires it to
    print the same match rectangles and scores as the C example, so a wrapper

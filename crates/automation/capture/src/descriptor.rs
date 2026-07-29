@@ -40,12 +40,24 @@ impl PixelFormat {
     }
 
     /// Reports whether converting from `self` to `other` needs a channel swap.
+    ///
+    /// Every pair is matched, rather than listing the identity pairs and negating.
+    /// The negation defaulted an unlisted pair to `true`, and on a
+    /// `#[non_exhaustive]` enum the pairs a third variant `X` introduces are all
+    /// unlisted — including `(X, X)`, which would have swapped bytes 0 and 2 of
+    /// every pixel of an `X`-into-`X` mapping and reported success. Matching
+    /// exhaustively makes that variant a compile error here instead, which is
+    /// where the decision belongs.
     #[must_use]
     pub const fn needs_swap(self, other: Self) -> bool {
-        !matches!(
-            (self, other),
-            (PixelFormat::Rgba8, PixelFormat::Rgba8) | (PixelFormat::Bgra8, PixelFormat::Bgra8)
-        )
+        match (self, other) {
+            (PixelFormat::Rgba8, PixelFormat::Rgba8) | (PixelFormat::Bgra8, PixelFormat::Bgra8) => {
+                false
+            }
+            (PixelFormat::Rgba8, PixelFormat::Bgra8) | (PixelFormat::Bgra8, PixelFormat::Rgba8) => {
+                true
+            }
+        }
     }
 }
 
@@ -178,6 +190,17 @@ impl CoordinateSupport {
     pub const fn frame_only() -> Self {
         Self {
             target_normalized: false,
+            target_logical: false,
+            desktop_logical: false,
+        }
+    }
+
+    /// Frame-local and target-normalized conversions, for a source that declares
+    /// the target's content extent without logical or desktop placement.
+    #[must_use]
+    pub const fn with_target_extent() -> Self {
+        Self {
+            target_normalized: true,
             target_logical: false,
             desktop_logical: false,
         }
@@ -411,6 +434,17 @@ mod tests {
         assert!(support.supports(CoordinateSpace::CapturePixels));
         assert!(support.supports(CoordinateSpace::FrameNormalized));
         assert!(!support.supports(CoordinateSpace::TargetNormalized));
+        assert!(!support.supports(CoordinateSpace::TargetLogical));
+        assert!(!support.supports(CoordinateSpace::DesktopLogical));
+    }
+
+    #[test]
+    fn a_declared_target_extent_supports_only_target_normalized_conversion() {
+        let support = CoordinateSupport::with_target_extent();
+
+        assert!(support.supports(CoordinateSpace::CapturePixels));
+        assert!(support.supports(CoordinateSpace::FrameNormalized));
+        assert!(support.supports(CoordinateSpace::TargetNormalized));
         assert!(!support.supports(CoordinateSpace::TargetLogical));
         assert!(!support.supports(CoordinateSpace::DesktopLogical));
     }

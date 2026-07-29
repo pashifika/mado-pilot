@@ -44,11 +44,23 @@ cross-language layout probe rather than asserted.** `mado-pilot-capi` carries a
    function table, as the C compiler laid them out;
 3. compares that report field by field against the same values computed from the
    Rust `#[repr(C)]` definitions with `size_of`, `align_of`, and `offset_of!`;
-4. compiles, links, and runs the C example against the library and checks its
+4. runs the same probe once per frozen header under `tests/abi-compat/`,
+   compiled against that header instead of the working one, and requires every
+   line it reports to still appear in the Rust measurements;
+5. compiles, links, and runs the C example against the library and checks its
    observable outcome.
 
 The two reports come from two different compilers, so a divergence between the
 header and the Rust definitions fails the check on the host where it matters.
+
+Step 4 exists because step 3 cannot see a coordinated edit. Swapping two
+same-width fields in the working header and in the Rust definition together
+moves no offset, so the working comparison stays green while every caller built
+against the released header reads the wrong field. Measuring the frozen
+declarations against the library is what makes the freeze a checked property
+rather than a reviewed one. It is containment rather than an exact diff, because
+a later minor appends: the library may report more than a frozen header
+declares, never less and never differently.
 
 **CI runs that check in the two native jobs only.** The Ubuntu
 `repository-policy` job continues to compile nothing.
@@ -112,8 +124,8 @@ workspace.
 
 - `cargo run --locked --package mado-pilot-capi --example c-abi-check --
   --label "<host>"` compiles the probe and the example, compares the two layout
-  reports, and fails on the first divergence. It is a required step in the
-  Windows and macOS CI jobs.
+  reports, repeats the probe against every frozen header, and fails on the first
+  divergence. It is a required step in the Windows and macOS CI jobs.
 - `crates/bindings/capi/tests/layout.rs` asserts the invariants that hold
   independently of the C compiler — `struct_size` at offset zero, the documented
   mandatory prefix sizes, and the function table's Phase 1 size — so a Rust-only

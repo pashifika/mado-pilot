@@ -81,6 +81,7 @@
 
 mod archive;
 mod directory;
+mod filesystem;
 mod memory;
 mod reader;
 

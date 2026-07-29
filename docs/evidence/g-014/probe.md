@@ -42,6 +42,8 @@ expansion it bounds.
 | D | entry metadata | Per entry, with no expansion: compression method, encryption, name normalization, entry type, duplicate normalized name, declared size against the per-entry or manifest ceiling, running declared total. Then the aggregate declared expansion ratio against `max_compression_ratio`. |
 | E | manifest | Manifest entry present, read with a hard byte cap, parsed strictly, schema version supported. |
 | F | expansion | Referenced entries streamed in 64 KiB chunks, observed bytes checked against the declared size on every chunk, SHA-256 compared against the declared hash, observed ratio re-checked. |
+
+The product loader enforces exact equality between each produced entry length and its declared uncompressed length before content can commit. Consequently, re-evaluating the ratio with observed lengths and the same recorded compressed lengths is mathematically identical to the stage-D aggregate declared-ratio result; it is a verification cross-check, not an additional authorization path. The independent source, per-entry, and total-uncompressed ceilings bound actual work even when archive metadata lies.
 | G | commit | One immutable package. |
 
 Two ordering choices in that table are deliberate.

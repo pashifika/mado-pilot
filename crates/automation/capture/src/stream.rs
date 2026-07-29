@@ -119,6 +119,7 @@ pub enum Lifecycle {
 pub struct StreamState {
     inner: Mutex<Inner>,
     published: Condvar,
+    covers_target: bool,
 }
 
 #[derive(Debug)]
@@ -134,6 +135,21 @@ impl StreamState {
     /// Starts a stream at epoch zero with nothing published.
     #[must_use]
     pub fn new(stream: StreamId) -> Self {
+        Self::build(stream, false)
+    }
+
+    /// Starts a stream whose frames cover their target.
+    ///
+    /// No extent is taken, for the reason
+    /// [`TransformSnapshot::with_target_extent`] takes none: a frame that covers
+    /// its target has the target's extent, and a magnitude pinned at open would
+    /// contradict every frame published after a resize.
+    #[must_use]
+    pub fn with_target_extent(stream: StreamId) -> Self {
+        Self::build(stream, true)
+    }
+
+    fn build(stream: StreamId, covers_target: bool) -> Self {
         Self {
             inner: Mutex::new(Inner {
                 cursor: StreamCursor::new(stream),
@@ -143,6 +159,7 @@ impl StreamState {
                 waiters: 0,
             }),
             published: Condvar::new(),
+            covers_target,
         }
     }
 
@@ -169,45 +186,64 @@ impl StreamState {
     /// The stream, not the adapter, decides the resulting identity. An extent or
     /// format change is treated as discontinuous whatever the adapter claimed,
     /// because an epoch that spanned one would invite a consumer to compare
-    /// pixels that describe different rectangles.
+    /// pixels that describe different rectangles. A change to the frame's
+    /// transform metadata is treated as a geometry change on the same terms: the
+    /// revision is what tells a caller which transform an answer was computed
+    /// against, so two frames carrying different transforms may not share one.
     ///
     /// # Errors
     ///
-    /// Returns [`CaptureFault::SessionClosed`] once close has begun, and an
-    /// identity fault when an epoch or sequence counter is exhausted.
+    /// Returns [`CaptureFault::SessionClosed`] once close has begun,
+    /// [`CaptureFault::InconsistentDescriptor`] for a placement that does not
+    /// scale to the published extent, and an identity fault when an epoch or
+    /// sequence counter is exhausted.
     pub fn publish(&self, publication: Publication) -> Result<Frame> {
         let mut inner = self.lock();
         if inner.lifecycle != Lifecycle::Open {
             return Err(CaptureFault::SessionClosed.into());
         }
 
-        let reshaped = inner.latest.as_ref().is_some_and(|current| {
-            let existing = current.descriptor();
+        let current = inner.latest.as_ref();
+        let reshaped = current.is_some_and(|frame| {
+            let existing = frame.descriptor();
             existing.extent() != publication.descriptor.extent()
                 || existing.format() != publication.descriptor.format()
         });
+        // The other half of the same rule. A snapshot is its revision, its frame
+        // extent, whether the frame covers its target, and its placement; the
+        // revision is being decided here, the extent is what `reshaped` covers,
+        // and target coverage follows placement presence because the stream's
+        // own coverage is fixed for the session. So a placement that differs
+        // from the current frame's is the remaining way the snapshot can change,
+        // and an adapter claiming continuity across it is overruled.
+        let replaced_transform =
+            current.is_some_and(|frame| frame.transform().target() != publication.placement);
         let continuity = if reshaped {
             Continuity::Discontinuous
+        } else if replaced_transform && publication.continuity == Continuity::Continuous {
+            Continuity::GeometryChanged
         } else {
             publication.continuity
         };
 
+        let mut geometry = inner.geometry;
+        let mut cursor = inner.cursor.clone();
         if continuity != Continuity::Continuous {
-            inner.geometry = inner
-                .geometry
+            geometry = geometry
                 .next()
                 .ok_or_else(|| Error::new(Status::LimitExceeded, "geometry revisions exhausted"))?;
         }
         if continuity == Continuity::Discontinuous && inner.latest.is_some() {
-            inner.cursor.begin_epoch()?;
+            cursor.begin_epoch()?;
         }
 
-        let geometry = inner.geometry;
         let extent = publication.descriptor.extent();
-        let stamp = inner.cursor.publish(geometry)?;
-        let transform = match publication.placement {
-            Some(placement) => TransformSnapshot::with_target(geometry, extent, placement),
-            None => TransformSnapshot::frame_only(geometry, extent),
+        let stamp = cursor.publish(geometry)?;
+        let transform = match (publication.placement, self.covers_target) {
+            (Some(placement), _) => TransformSnapshot::with_target(geometry, extent, placement)
+                .map_err(|_| CaptureFault::InconsistentDescriptor)?,
+            (None, true) => TransformSnapshot::with_target_extent(geometry, extent),
+            (None, false) => TransformSnapshot::frame_only(geometry, extent),
         };
         let frame = Frame::new(
             stamp,
@@ -217,6 +253,8 @@ impl StreamState {
             publication.pixels,
         )?;
 
+        inner.cursor = cursor;
+        inner.geometry = geometry;
         inner.latest = Some(frame.clone());
         drop(inner);
         self.published.notify_all();
@@ -235,12 +273,12 @@ impl StreamState {
         loop {
             {
                 let mut inner = self.lock();
+                if inner.lifecycle != Lifecycle::Open {
+                    return Err(CaptureFault::SessionClosed.into());
+                }
                 if let Some(frame) = qualifying(&inner, request)? {
                     drop(inner);
                     return Ok(attempt.commit(frame)?);
-                }
-                if inner.lifecycle != Lifecycle::Open {
-                    return Err(CaptureFault::SessionClosed.into());
                 }
                 inner.waiters += 1;
                 let (mut inner, _) = self
@@ -292,11 +330,19 @@ impl StreamState {
                     return Ok(attempt.commit(())?);
                 }
                 if inner.waiters == 0 {
-                    let mut inner = inner;
-                    inner.lifecycle = Lifecycle::Closed;
-                    inner.latest = None;
                     drop(inner);
-                    return Ok(attempt.commit(())?);
+                    // The caller clock is invoked by commit, so final arbitration
+                    // happens without the stream mutex held and before the
+                    // irreversible Closed transition.
+                    attempt.commit(())?;
+                    let mut inner = self.lock();
+                    if inner.lifecycle != Lifecycle::Closed {
+                        debug_assert_eq!(inner.lifecycle, Lifecycle::Closing);
+                        debug_assert_eq!(inner.waiters, 0);
+                        inner.lifecycle = Lifecycle::Closed;
+                        inner.latest = None;
+                    }
+                    return Ok(());
                 }
                 let _unused = self
                     .published
@@ -336,13 +382,41 @@ fn qualifying(inner: &Inner, request: &FrameRequest) -> Result<Option<Frame>> {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::Duration;
 
     use mado_pilot_core::{
-        CancellationToken, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, Scale,
-        Status, TargetPlacement,
+        CancellationToken, Clock, CoordinateSpace, IdentityIssuer, MonotonicInstant,
+        OperationContext, PixelExtent, Point, Scale, Status, TargetPlacement,
     };
+
+    #[derive(Debug)]
+    struct OriginClock;
+
+    impl Clock for OriginClock {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ExpireAtCommitClock {
+        reads: AtomicUsize,
+    }
+
+    impl Clock for ExpireAtCommitClock {
+        fn now(&self) -> MonotonicInstant {
+            let elapsed = if self.reads.fetch_add(1, Ordering::Relaxed) == 0 {
+                Duration::ZERO
+            } else {
+                Duration::from_millis(2)
+            };
+            MonotonicInstant::ORIGIN
+                .checked_add(elapsed)
+                .expect("test instant is representable")
+        }
+    }
 
     use super::{Continuity, FrameRequest, Lifecycle, Publication, StreamState};
     use crate::descriptor::{FrameDescriptor, PixelFormat};
@@ -362,6 +436,20 @@ mod tests {
     fn state() -> StreamState {
         let issuer = IdentityIssuer::new();
         StreamState::new(issuer.issue_stream().expect("issued"))
+    }
+
+    fn covering_state() -> StreamState {
+        let issuer = IdentityIssuer::new();
+        StreamState::with_target_extent(issuer.issue_stream().expect("issued"))
+    }
+
+    fn placement(desktop_origin: (f64, f64), logical_size: (f64, f64)) -> TargetPlacement {
+        TargetPlacement::new(
+            desktop_origin,
+            logical_size,
+            Scale::new(1.0, 1.0).expect("valid"),
+        )
+        .expect("valid")
     }
 
     #[test]
@@ -426,6 +514,34 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_publication_preserves_identity_and_geometry() {
+        let state = state();
+        let first = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let descriptor =
+            FrameDescriptor::packed(PixelExtent::new(8, 8), PixelFormat::Rgba8).expect("valid");
+
+        let error = state
+            .publish(Publication {
+                captured_at: MonotonicInstant::ORIGIN,
+                descriptor,
+                placement: None,
+                pixels: vec![2; descriptor.byte_len() - 1].into_boxed_slice(),
+                continuity: Continuity::Discontinuous,
+            })
+            .expect_err("malformed pixels are rejected");
+        let next = state
+            .publish(publication(4, 4, 3, Continuity::Continuous))
+            .expect("the next valid frame publishes");
+
+        assert_eq!(error.status(), Status::InvalidArgument);
+        assert_eq!(next.stamp().epoch(), first.stamp().epoch());
+        assert_eq!(next.stamp().sequence().value(), 1);
+        assert_eq!(next.stamp().geometry(), first.stamp().geometry());
+    }
+
+    #[test]
     fn a_format_change_also_starts_a_later_epoch() {
         let state = state();
         state
@@ -449,15 +565,137 @@ mod tests {
     #[test]
     fn a_placement_makes_target_conversions_available_on_the_frame() {
         let state = state();
-        let placement =
-            TargetPlacement::new((0.0, 0.0), (4.0, 4.0), Scale::new(1.0, 1.0).expect("valid"))
-                .expect("valid");
+        let placement = placement((0.0, 0.0), (4.0, 4.0));
         let mut request = publication(4, 4, 1, Continuity::Continuous);
         request.placement = Some(placement);
 
         let frame = state.publish(request).expect("published");
 
         assert_eq!(frame.transform().target(), Some(placement));
+        assert!(frame.transform().covers_target());
+    }
+
+    #[test]
+    fn a_placement_change_advances_the_revision_even_when_the_adapter_says_otherwise() {
+        let state = state();
+        let mut first_request = publication(4, 4, 1, Continuity::Continuous);
+        first_request.placement = Some(placement((0.0, 0.0), (4.0, 4.0)));
+        let first = state.publish(first_request).expect("published");
+        let mut moved_request = publication(4, 4, 1, Continuity::Continuous);
+        moved_request.placement = Some(placement((500.0, 300.0), (4.0, 4.0)));
+
+        // The pixels are comparable and the adapter says so, but the transform a
+        // caller would correlate against is a different one.
+        let moved = state.publish(moved_request).expect("published");
+
+        assert_eq!(moved.stamp().epoch(), first.stamp().epoch());
+        assert_eq!(moved.stamp().sequence().value(), 1);
+        assert_eq!(moved.stamp().geometry().value(), 1);
+        assert_ne!(moved.transform(), first.transform());
+    }
+
+    #[test]
+    fn a_placement_appearing_mid_stream_advances_the_revision() {
+        let state = state();
+        let unplaced = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let mut placed_request = publication(4, 4, 1, Continuity::Continuous);
+        placed_request.placement = Some(placement((0.0, 0.0), (4.0, 4.0)));
+
+        let placed = state.publish(placed_request).expect("published");
+
+        assert!(
+            !unplaced
+                .transform()
+                .supports(CoordinateSpace::TargetLogical)
+        );
+        assert!(placed.transform().supports(CoordinateSpace::TargetLogical));
+        assert_eq!(
+            placed.stamp().geometry().value(),
+            1,
+            "what a frame can convert may not change inside one revision"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_placement_keeps_the_revision() {
+        let state = state();
+        let mut request = publication(4, 4, 1, Continuity::Continuous);
+        request.placement = Some(placement((0.0, 0.0), (4.0, 4.0)));
+        let first = state.publish(request).expect("published");
+        let mut repeat = publication(4, 4, 2, Continuity::Continuous);
+        repeat.placement = Some(placement((0.0, 0.0), (4.0, 4.0)));
+
+        let second = state.publish(repeat).expect("published");
+
+        assert_eq!(second.stamp().geometry(), first.stamp().geometry());
+        assert_eq!(second.stamp().sequence().value(), 1);
+    }
+
+    #[test]
+    fn a_placement_that_does_not_scale_to_the_published_extent_is_refused() {
+        let state = state();
+        let mut request = publication(4, 4, 1, Continuity::Continuous);
+        // Half the frame, at a scale that does not make up the difference: a
+        // manifest a replay source did not author can say this.
+        request.placement = Some(placement((0.0, 0.0), (2.0, 4.0)));
+
+        let error = state.publish(request).expect_err("refused");
+
+        assert_eq!(error.status(), Status::InvalidArgument);
+        assert!(
+            state.current().is_none(),
+            "a refused publication publishes nothing"
+        );
+    }
+
+    #[test]
+    fn target_normalized_tracks_the_frame_across_a_mid_stream_resize() {
+        let state = covering_state();
+        let middle = Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5).expect("valid");
+        let same_middle = Point::new(CoordinateSpace::FrameNormalized, 0.5, 0.5).expect("valid");
+
+        let first = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let before = first
+            .transform()
+            .convert_point(middle, CoordinateSpace::CapturePixels)
+            .expect("the frame covers its target");
+
+        let resized = state
+            .publish(publication(8, 8, 1, Continuity::Continuous))
+            .expect("published");
+        let after = resized
+            .transform()
+            .convert_point(middle, CoordinateSpace::CapturePixels)
+            .expect("the frame still covers its target");
+
+        assert_eq!((before.x(), before.y()), (2.0, 2.0));
+        assert_eq!(
+            (after.x(), after.y()),
+            (4.0, 4.0),
+            "the target's extent is the frame's, so a resize moves it"
+        );
+        for frame in [&first, &resized] {
+            assert_eq!(
+                frame
+                    .transform()
+                    .convert_point(middle, CoordinateSpace::CapturePixels)
+                    .expect("supported"),
+                frame
+                    .transform()
+                    .convert_point(same_middle, CoordinateSpace::CapturePixels)
+                    .expect("supported"),
+                "a frame covers exactly its target, so the two spaces coincide"
+            );
+        }
+        assert_ne!(
+            resized.stamp().geometry(),
+            first.stamp().geometry(),
+            "the resize is a transform change and advances the revision"
+        );
     }
 
     #[test]
@@ -646,37 +884,55 @@ mod tests {
     }
 
     #[test]
-    fn a_close_that_expires_leaves_the_stream_closing_for_a_later_attempt() {
-        let state = Arc::new(state());
-        let current = state
+    fn expiry_at_final_close_commit_does_not_publish_the_closed_transition() {
+        let state = state();
+        state
             .publish(publication(4, 4, 1, Continuity::Continuous))
             .expect("published");
+        let deadline = MonotonicInstant::ORIGIN
+            .checked_add(Duration::from_millis(1))
+            .expect("representable deadline");
+        let expiring = OperationContext::new()
+            .with_clock(Arc::new(ExpireAtCommitClock::default()))
+            .with_deadline(deadline);
 
-        // A waiter that never gives up keeps the drain from completing.
-        let waiter_state = Arc::clone(&state);
-        let waiter = thread::spawn(move || {
-            let context = OperationContext::new()
-                .with_timeout(Duration::from_millis(200))
-                .expect("representable");
-            waiter_state
-                .frame(&FrameRequest::newer_than(current.stamp()), &context)
-                .expect_err("the stream closes under it")
-        });
-        thread::sleep(Duration::from_millis(5));
+        let error = state
+            .drain(&expiring)
+            .expect_err("deadline wins final commit");
 
-        let closing = OperationContext::new()
-            .with_timeout(Duration::from_millis(1))
-            .expect("representable");
-        let first = state.drain(&closing);
+        assert_eq!(error.status(), Status::DeadlineExceeded);
+        assert_eq!(state.lifecycle(), Lifecycle::Closing);
+        state
+            .drain(&OperationContext::new())
+            .expect("a later close finishes");
+        assert_eq!(state.lifecycle(), Lifecycle::Closed);
+    }
 
-        waiter.join().expect("waiter finished");
-        let second = OperationContext::new();
-        state.drain(&second).expect("a later close finishes");
+    #[test]
+    fn a_close_that_expires_leaves_the_stream_closing_for_a_later_attempt() {
+        let state = state();
+        state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let expired = OperationContext::new()
+            .with_clock(Arc::new(OriginClock))
+            .with_deadline(MonotonicInstant::ORIGIN);
 
-        assert!(
-            first.is_err() || state.lifecycle() == Lifecycle::Closed,
-            "an expired drain must not report success while waiters remain"
+        let error = state.drain(&expired).expect_err("deadline wins admission");
+
+        assert_eq!(error.status(), Status::DeadlineExceeded);
+        assert_eq!(state.lifecycle(), Lifecycle::Closing);
+        assert_eq!(
+            state
+                .frame(&FrameRequest::latest(), &OperationContext::new())
+                .expect_err("closing refuses new work")
+                .status(),
+            Status::Closed
         );
+
+        state
+            .drain(&OperationContext::new())
+            .expect("a later close finishes");
         assert_eq!(state.lifecycle(), Lifecycle::Closed);
     }
 }

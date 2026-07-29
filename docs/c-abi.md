@@ -94,6 +94,17 @@ handle, `madopilot_match_t.template_id` borrows from the result, a target's
 `name` borrows from the target list, and `madopilot_image_t.bytes` borrows from
 the mapping. Copy anything you still need before the final release.
 
+**A view the caller supplies is borrowed the other way, for exactly the call.**
+Every input structure, every view it carries, and every view passed directly as an
+argument — a template identity, a target name — must be readable for the duration
+of the call and must not be modified during it, whether the library reads it once
+or reads it from start to finish, which it does for
+`madopilot_package_source_t.archive`. The library retains no caller memory past
+the call that received it: whatever it must keep, it copies or converts into
+storage of its own, so a package loaded from a caller's archive stays valid after
+that archive is freed. The rule is the caller's half of the same contract the
+paragraph above states for the library's half.
+
 ## Size-versioned structures
 
 Every extensible structure begins with `uint32_t struct_size`, immediately
@@ -108,8 +119,29 @@ declares it**.
 
 - refuses a size below the documented mandatory prefix with
   `MADOPILOT_STATUS_INVALID_ARGUMENT`, without reading past `struct_size`;
+- refuses a size that ends inside a field, which would leave that field neither
+  supplied nor omitted;
+- refuses an array element whose `struct_size` is above the array's declared
+  element stride, which would read past the extent the array declared;
+- refuses a size that does not reach a field whose presence bit is set, rather
+  than applying the omitted-field default to a field the caller claimed;
 - applies the documented default to every field the size omits;
 - ignores trailing bytes it does not recognize.
+
+A size describes a prefix, so it has to end where a prefix can end. That is what
+the three middle bullets say, and each of them is a refusal rather than an
+adjustment: the library does not round a size down to the nearest field
+boundary, does not clamp an element to its stride, and does not drop a presence
+bit it cannot honor. Rounding down would run the request with a field the caller
+supplied silently discarded — a cancellation token, or a minimum score the
+caller believes is in effect. All three report
+`MADOPILOT_STATUS_INVALID_ARGUMENT` with `MADOPILOT_ERROR_CATEGORY_ABI`, like
+the mandatory-prefix refusal above them.
+
+A caller that sets `struct_size` to `sizeof` the structure as its own header
+declares it satisfies all three, because a released header's own size is a field
+boundary, its `frame_stride` is its own element size, and a full-size prefix
+covers every field a presence bit can name.
 
 **Writing an output**, the library:
 
@@ -121,8 +153,26 @@ declares it**.
 Two structures carry no `struct_size`: `madopilot_str_t` and
 `madopilot_bytes_t`. They are the boundary's primitives rather than extensible
 records — they appear inside other structures, so growing one would move every
-field after it. A later phase that needs more than a pointer and a length
-introduces a different type.
+field after it. Semantic numeric fields and frozen version/report fields use
+fixed-width integer types: every structure size and reported table size is
+`uint32_t`, while row strides and semantic result/package counts are `uint64_t`.
+`size_t` is limited to ABI-native addressability quantities: pointer-view
+lengths, replay input frame counts and element strides, target-list counts,
+accessor indexes, and the caller-known table extent passed to
+`madopilot_get_api`. These choices are frozen by ADR 0007 on the two 64-bit
+release targets. A later phase that needs a different representation introduces
+a different type or ABI major.
+
+**One structure has two mandatory prefixes.** `madopilot_match_options_t` is the
+only one the table uses in both directions. As an *input* its mandatory prefix
+is eight bytes, through `flags`, because a structure that sets no presence bit
+is how a caller asks for the prepared template's own defaults. As the *output*
+of `result_options` the mandatory prefix is the whole structure: that report
+says which thresholds the search really ran under, every field was in effect,
+and a shorter one would drop an option without saying so. A caller that passes
+the input prefix to `result_options` gets `MADOPILOT_STATUS_INVALID_ARGUMENT`;
+pass `sizeof(madopilot_match_options_t)`. Every other structure has one prefix
+that means the same thing whichever way it travels.
 
 An array of versioned structures needs its element stride passed explicitly:
 `madopilot_source_t.frame_stride` is `sizeof(madopilot_replay_frame_t)` as the
@@ -132,10 +182,11 @@ declare.
 
 ## Validation, and what an output looks like on failure
 
-Before a request is validated, every valid output is set to its documented
-failure state: an owned handle output to null, a structure through its failure
-prefix, a scalar to zero. On failure they stay that way, so a caller never sees a
-partially initialized value.
+Before a request is validated, every independently valid output is set to its
+documented failure state: an owned handle output to null, a structure through its
+failure prefix, a scalar to zero. An invalid sibling output does not prevent that
+initialization. On failure valid outputs stay that way, so a caller never sees a
+partially initialized or stale value.
 
 Validated before use: every pointer-length pair, every active tagged-source
 field, every integer conversion, every alignment requirement, every offset,
@@ -143,6 +194,23 @@ every element stride, and every allocation-size calculation. A null pointer with
 a nonzero length is rejected before the pointer is read; a null pointer with a
 zero length is accepted only where the declaration documents an empty view as
 meaningful.
+
+**Every pointer parameter is required unless its declaration says otherwise**,
+and a null one is `MADOPILOT_STATUS_INVALID_ARGUMENT`. The rule covers the
+request, source, and operation structures as well as the handles, so a null
+`const madopilot_operation_t*` is refused rather than read as "no deadline" —
+the way to say that is an operation whose `flags` set no bit. The two are
+different requests: an absent structure declares nothing at all, while an empty
+one declares which header the caller was built against and how much of the
+structure it filled in. Nine entries take a required structure this way:
+`engine_create`, `package_load`, `template_prepare_from_package`,
+`engine_discover`, `session_open`, `session_close`, `session_acquire_frame`,
+`frame_map`, and `session_find`.
+
+Beyond `*_retain` and `*_release`, which accept null as a no-op, and the
+empty-view rule above, null is accepted in four places: `out_error` on every
+entry that takes one, `madopilot_operation_t.cancellation`,
+`madopilot_find_request_t.frame`, and `madopilot_find_request_t.options`.
 
 The library does not probe arbitrary addresses. The caller remains responsible
 for the validity of the addresses it passes, for the declared duration of the
@@ -210,10 +278,45 @@ anything. It names no backend, because none ran. The status says whose mistake
 it was and the fault pair says which one; see
 [ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
 
+**A caller-supplied region must be in capture pixels**, and any other coordinate
+space is `MADOPILOT_STATUS_INVALID_ARGUMENT` with
+`MADOPILOT_ERROR_CATEGORY_ABI`. That applies to `madopilot_map_request_t.region`
+and `madopilot_find_request_t.region`, and it is a property of this table rather
+than of the runtime underneath: the Phase 1 prefix has no coordinate-conversion
+entry, so a rectangle it accepts is one it can use without converting, and a
+caller converts before it asks. It is `MADOPILOT_STATUS_INVALID_ARGUMENT` rather
+than `MADOPILOT_STATUS_UNSUPPORTED` because the request names a space this table
+does not read at all, which is the same answer an unrecognized space tag gets;
+reserving `MADOPILOT_STATUS_UNSUPPORTED` for a request the table does read and
+cannot satisfy keeps the two distinguishable. The Rust facade, which does have a
+conversion, answers the equivalent question with its own unsupported-coordinate
+outcome instead: the two surfaces differ here, and the C prefix is deliberately
+the narrower of them.
+
+`madopilot_pixel_rect_t.space` is still read in the other direction: on a
+rectangle the library writes, it names whichever space that rectangle was
+measured in.
+
+`MADOPILOT_SPACE_TARGET_NORMALIZED` and `MADOPILOT_SPACE_FRAME_NORMALIZED` are
+two bits over one set of numbers in Phase 1. A frame covers exactly its target
+here, so a target-normalized coordinate and a frame-normalized one address the
+same point; a session advertises the target-normalized bit when its source
+declares that its frames cover the target, and never as a claim that some other
+extent applies. The first phase that captures a sub-region of a target makes the
+two differ, and that is when the distinction begins to carry information. See
+[ADR 0009](adr/0009-phase-1-normalized-coordinate-spaces.md).
+
 There is no global, thread-local, or engine-wide last-error slot. A failure
 belongs to the call that produced it, and a slot would make two threads' failures
 each other's business. `out_error` may be null, and then only the status is
 reported.
+
+A rejected output argument is described like any other invalid argument. An entry
+initializes every valid output before it validates anything, so a caller's stale
+error handle never survives a call; when `out_error` itself passed validation, the
+entry then reports through it which output was null or misaligned. Only a call
+whose `out_error` is the rejected output gets the status alone, because there is
+then nowhere to put the message.
 
 ## Panic containment
 
@@ -223,8 +326,19 @@ every valid output in its failure state, releases whatever the unwinding call ha
 allocated, and poisons nothing: handles unrelated to the failed call remain
 usable, and repeating the call is expected to work.
 
-Containment requires an unwinding panic profile. An advertised C ABI build must
-not be compiled with `panic = "abort"`.
+Containment requires an unwinding panic profile, and the crate refuses to build
+without one. `catch_unwind` catches nothing under an aborting profile: a panic
+ends the host process instead of the entry returning
+`MADOPILOT_STATUS_INTERNAL_PANIC`, so the library's documented behaviour would be
+false while the build succeeded. `mado-pilot-capi` therefore carries a
+`#[cfg(panic = "abort")] compile_error!`, and `-C panic=abort` or a profile
+`panic = "abort"` fails the build rather than producing that library.
+
+One case is outside what a crate can check: `panic_immediate_abort` is a `std`
+feature selected through `-Z build-std`, and a dependent crate's `cfg` cannot see
+it. A build that enables it produces a library whose panic containment does not
+work, and nothing here will say so. Do not enable it for a build that advertises
+this ABI.
 
 ## What Phase 1 does not contain
 
@@ -232,6 +346,11 @@ The Phase 1 table ends at match-result access. There is no entry for input
 delivery, OCR model loading or recognition, watchers, query handles, callbacks,
 callback unregistration, or platform-native frame extensions, and none of them is
 reserved as a null slot. A later phase appends them.
+
+There is also no coordinate-conversion entry, which is why a caller-supplied
+region must already be in capture pixels. The Rust facade does convert, so this
+is one place the C prefix is narrower than the surface beneath it rather than a
+thinner spelling of the same thing.
 
 ## Building against the library
 
@@ -327,6 +446,16 @@ size, alignment, and field offset as the C compiler produced them; compares the
 report line by line against the same values measured from the Rust definitions;
 and then compiles, links, and runs the C example and checks its outcome. Two
 compilers, one comparison — a divergence names the structure and the field.
+
+It then runs that same probe once per frozen header under
+`tests/abi-compat/`, compiled against that header rather than the working one,
+and requires every structure, field, and table entry the released header
+declares to still be where it said. That is the check the freeze actually needs:
+swapping two same-width fields in the working header and in Rust together moves
+no offset, so the first comparison stays green while a caller built against the
+released header reads the wrong one. The library may report *more* than a frozen
+header declares, because a later minor appends — never less, and never
+differently.
 
 The same command continues into the C++ surface: the ownership probe, the C++
 example, and the CMake consumer project. See

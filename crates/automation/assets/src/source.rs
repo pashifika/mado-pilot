@@ -105,6 +105,14 @@ impl PackageSource {
     }
 
     /// Names an archive source already in memory.
+    ///
+    /// The bytes are reference-counted rather than borrowed, so this is the entry
+    /// for a caller that owns them and wants a source it can keep. A caller that
+    /// only lends its bytes for one call does not need a source at all: it loads
+    /// through [`PackageLoader::load_archive_bytes`], which reads the lent
+    /// sequence in place without making a whole-archive copy.
+    ///
+    /// [`PackageLoader::load_archive_bytes`]: crate::PackageLoader::load_archive_bytes
     #[must_use]
     pub fn archive_bytes(bytes: impl Into<Arc<[u8]>>) -> Self {
         PackageSource::ArchiveBytes(bytes.into())

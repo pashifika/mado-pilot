@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use mado_pilot::{CancellationToken, Clock, MonotonicInstant, OperationContext, SystemClock};
 
-use crate::boundary::Input;
+use crate::boundary::{covers, declared, inputs, prefixes};
 use crate::error::Fault;
 use crate::handle::opaque;
 use crate::status::MADOPILOT_STATUS_OK;
@@ -40,19 +40,38 @@ impl Cancellation {
     }
 }
 
-impl Input for madopilot_operation_t {
-    // Through `flags`. A caller with nothing to say about deadlines or
-    // cancellation still has to say that, because an absent operation structure
-    // and one that declares neither are different requests.
-    const MANDATORY: usize = 8;
-    const NAME: &'static str = "madopilot_operation_t";
+inputs! {
+    impl Input for madopilot_operation_t {
+        // Through `flags`. A caller with nothing to say about deadlines or
+        // cancellation still has to say that, because an absent operation structure
+        // and one that declares neither are different requests.
+        const MANDATORY: usize = 8;
+        const NAME: &'static str = "madopilot_operation_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_operation_t,
+            struct_size,
+            flags,
+            deadline_nanos,
+            cancellation,
+        );
+        // `cancellation` carries no presence bit: null is its documented absent
+        // value, so a prefix that omits it says the same thing the field would.
+        const PRESENCE: &'static [(u32, usize)] = &[(
+            MADOPILOT_OPERATION_HAS_DEADLINE,
+            covers!(madopilot_operation_t, deadline_nanos: u64),
+        )];
 
-    fn defaults() -> Self {
-        Self {
-            struct_size: 0,
-            flags: 0,
-            deadline_nanos: 0,
-            cancellation: std::ptr::null(),
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                deadline_nanos: 0,
+                cancellation: std::ptr::null(),
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            self.flags
         }
     }
 }
@@ -61,8 +80,12 @@ impl Input for madopilot_operation_t {
 ///
 /// # Errors
 ///
-/// Rejects a null or malformed structure and a deadline that is not
-/// representable in the monotonic domain.
+/// Rejects a null or malformed structure, and a `cancellation` that is not a
+/// live cancellation handle.
+///
+/// A deadline is never rejected. Every `uint64_t` nanosecond value the field can
+/// hold is representable in the monotonic domain, so there is no unrepresentable
+/// case to report — this said there was, and nothing implemented it.
 ///
 /// # Safety
 ///
@@ -74,10 +97,18 @@ pub(crate) unsafe fn context(operation: *const madopilot_operation_t) -> Result<
 
     let mut context = OperationContext::new();
 
-    if request.flags & MADOPILOT_OPERATION_HAS_DEADLINE != 0 {
-        // `Duration::from_nanos` takes the whole `u64` range, so the only way
-        // this fails is a domain that cannot hold it, which is reported rather
-        // than clamped: a silently nearer deadline expires early.
+    if declared!(
+        request,
+        madopilot_operation_t,
+        MADOPILOT_OPERATION_HAS_DEADLINE
+    ) {
+        // Infallible, and worth saying because the comment here used to claim a
+        // report that does not exist. `Duration::from_nanos` accepts the whole
+        // `u64` range and `MonotonicInstant::from_origin` accepts every duration,
+        // so no deadline the field can carry is out of domain and none is
+        // clamped. If either ever gains a bound, this is where the refusal goes:
+        // a silently nearer deadline expires early, which a caller cannot tell
+        // from its own work being slow.
         context = context.with_deadline(MonotonicInstant::from_origin(Duration::from_nanos(
             request.deadline_nanos,
         )));
@@ -88,7 +119,15 @@ pub(crate) unsafe fn context(operation: *const madopilot_operation_t) -> Result<
         // the call, and null was excluded above.
         let Some(cancellation) = (unsafe { handle::borrow::<Cancellation>(request.cancellation) })
         else {
-            return Err(Fault::abi("`cancellation` is not a cancellation handle"));
+            // Unreachable, and it has to be written anyway because `borrow`
+            // returns an `Option`. `borrow` refuses exactly one thing — a null
+            // pointer — which the branch above already excluded; it cannot tell
+            // one handle type from another, because a handle is an opaque
+            // pointer with no tag to check. The message here used to claim it
+            // could. A caller that passes some other live handle is undefined
+            // behaviour by this function's own safety contract, not an error
+            // this boundary detects.
+            return Err(Fault::abi("`cancellation` is null"));
         };
         context = context.with_cancellation(cancellation.0.clone());
     }

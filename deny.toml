@@ -38,9 +38,10 @@ allow = [
     "Zlib",
 ]
 confidence-threshold = 0.93
-# The allowlist is a forward-looking policy statement. Phase 0 has almost no
-# dependencies, so most entries are legitimately unused and must not be reported
-# as findings.
+# The allowlist is a forward-looking policy statement: it names the licences this
+# project accepts, not the ones it currently resolves. An entry no dependency
+# uses yet is the policy being stated ahead of need, so an unused one must not be
+# reported as a finding.
 unused-allowed-license = "allow"
 # Per-crate license exceptions. Each entry requires a documented reason.
 exceptions = []

@@ -28,6 +28,7 @@
 
 #include "madopilot/madopilot.h"
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -85,6 +86,14 @@ inline bool is_ok(Status status) noexcept { return status == MADOPILOT_STATUS_OK
  *
  * The C ABI hands back pointer-length views into memory a handle owns. These
  * two types say so in their name and offer the copy that outlives the owner.
+ *
+ * Every accessor that produces one is declared `const&` with its `const&&`
+ * overload deleted, so it cannot be called on a temporary owner. A view taken
+ * from a temporary dangles at the end of the full expression that made it, which
+ * is a use-after-free that reads correct — `load(...).take().describe()` — and
+ * this is what turns it into a compile error instead. Name the owner, then ask
+ * it. Accessors that copy, and the ones whose views live in the library's own
+ * static storage, are unqualified.
  * ------------------------------------------------------------------------ */
 
 /// UTF-8 text borrowed from a retained owner.
@@ -176,11 +185,48 @@ inline ::madopilot_bytes_t as_bytes(const std::uint8_t* data, std::size_t len) n
     return view;
 }
 
+/// Releases one owned C error handle when the scope ends, however it ends.
+///
+/// Copying an error's text out of the C handle allocates, and an allocation can
+/// throw. The release has to happen on that path too — the C header and
+/// ADR 0005 both say a described error is released unconditionally — and a
+/// `try`/`catch` would state the rule twice and leave a third path, a later
+/// `return` before the catch, to state it a third time.
+class ErrorGuard {
+public:
+    ErrorGuard(const ::madopilot_api_t* api, ::madopilot_error_t* error) noexcept
+        : api_(api), error_(error) {}
+
+    ErrorGuard(const ErrorGuard&) = delete;
+    ErrorGuard& operator=(const ErrorGuard&) = delete;
+    ErrorGuard(ErrorGuard&&) = delete;
+    ErrorGuard& operator=(ErrorGuard&&) = delete;
+
+    ~ErrorGuard() { api_->error_release(error_); }
+
+private:
+    const ::madopilot_api_t* api_;
+    ::madopilot_error_t* error_;
+};
+
 } // namespace detail
 
 /* ---------------------------------------------------------------------------
  * Errors
  * ------------------------------------------------------------------------ */
+
+class Error;
+
+namespace detail {
+
+/// Describes an owned C error, copies everything out of it, and releases it.
+///
+/// Declared before `Error` so that `Error` can befriend it by name. Defined
+/// below, once `Error` is complete.
+inline Error take_error(const ::madopilot_api_t* api, Status status,
+                        ::madopilot_error_t* error);
+
+} // namespace detail
 
 /// Which asset rule was broken, and how far loading had got.
 ///
@@ -226,8 +272,8 @@ public:
     bool ok() const noexcept { return status_ == MADOPILOT_STATUS_OK; }
 
 private:
-    friend Error take_error_(const ::madopilot_api_t* api, Status status,
-                             ::madopilot_error_t* error);
+    friend Error detail::take_error(const ::madopilot_api_t* api, Status status,
+                                    ::madopilot_error_t* error);
 
     Status status_ = MADOPILOT_STATUS_OK;
     ErrorCategory category_ = MADOPILOT_ERROR_CATEGORY_UNSPECIFIED;
@@ -236,16 +282,19 @@ private:
     std::optional<AssetDetail> asset_;
 };
 
-/// Describes an owned C error, copies everything out of it, and releases it.
-///
+namespace detail {
+
 /// Called on every failing path, including the ones whose caller never looks at
-/// the text: the handle is released either way.
-inline Error take_error_(const ::madopilot_api_t* api, Status status,
-                         ::madopilot_error_t* error) {
+/// the text: the handle is released either way. "Either way" includes the copies
+/// below throwing `std::bad_alloc`, which is why the release is a scope guard
+/// rather than the last statement.
+inline Error take_error(const ::madopilot_api_t* api, Status status,
+                        ::madopilot_error_t* error) {
     Error out = Error::from_status(status);
     if (api == nullptr || error == nullptr) {
         return out;
     }
+    const detail::ErrorGuard release(api, error);
 
     ::madopilot_error_detail_t detail = detail::sized<::madopilot_error_detail_t>();
     if (api->error_describe(error, &detail) == MADOPILOT_STATUS_OK) {
@@ -261,22 +310,37 @@ inline Error take_error_(const ::madopilot_api_t* api, Status status,
             out.asset_ = AssetDetail{detail.asset_fault, detail.asset_stage};
         }
     }
-    api->error_release(error);
 
     return out;
 }
+
+} // namespace detail
 
 /* ---------------------------------------------------------------------------
  * Result
  *
  * The default interface. No wrapper operation throws to report a MadoPilot
- * failure; only allocating the owned error text can throw, and that is
- * `std::bad_alloc` rather than a translated status.
+ * failure: every failure the library can report arrives as a status in a
+ * `Result`, and no status is ever translated into an exception.
+ *
+ * What the wrapper does throw is what its own allocations throw, `std::bad_alloc`
+ * — from `detail::take_error` copying an error's text, from the vector
+ * `MatchResult::matches` fills, from the copies a typed request keeps of what its
+ * C structure points at, and from an explicit `BorrowedStr::to_string` or
+ * `BorrowedBytes::to_vector`. Every one of those is the wrapper making an owned
+ * copy for the caller. `detail::take_error` releases its C handle on that path too.
+ *
+ * That is why `value()` and `take()` carry the precondition `ok()`: an
+ * exception-free extractor cannot report a failed result, so checking is the
+ * caller's step. `assert` catches the mistake in a build without `NDEBUG`.
+ *
+ * Both templates are `[[nodiscard]]`. A dropped `Result` is a dropped failure in
+ * a surface that reports failures no other way, so the compiler says so.
  * ------------------------------------------------------------------------ */
 
 /// A value or a failure. Move-only when `T` is.
 template <class T>
-class Result {
+class [[nodiscard]] Result {
 public:
     static Result success(T value) {
         Result result;
@@ -299,11 +363,32 @@ public:
     /// The failure. On success this is a default error whose status is OK.
     const Error& error() const noexcept { return error_; }
 
-    T& value() noexcept { return *value_; }
-    const T& value() const noexcept { return *value_; }
+    /// The value. **Precondition: `ok()`.**
+    ///
+    /// Reading it on a failed result is undefined behaviour: the value lives in
+    /// a `std::optional` that a failure leaves disengaged, and this dereferences
+    /// it rather than checking. A build without `NDEBUG` fails the `assert`
+    /// instead.
+    ///
+    /// It stays `noexcept` on purpose. Throwing here would be a second failure
+    /// channel in a surface whose whole premise is that a MadoPilot failure
+    /// arrives as a status, so the check belongs at the call site — `if (!r)`
+    /// before `r.value()`.
+    T& value() noexcept {
+        assert(value_.has_value() && "madopilot::Result::value() on a failed result");
+        return *value_;
+    }
+    const T& value() const noexcept {
+        assert(value_.has_value() && "madopilot::Result::value() on a failed result");
+        return *value_;
+    }
 
-    /// Moves the value out. Valid only when `ok()`.
-    T take() { return std::move(*value_); }
+    /// Moves the value out. **Precondition: `ok()`**, on the same terms as
+    /// `value()`.
+    T take() {
+        assert(value_.has_value() && "madopilot::Result::take() on a failed result");
+        return std::move(*value_);
+    }
 
 private:
     Result() = default;
@@ -315,7 +400,7 @@ private:
 
 /// A completed-or-failed operation with no value, such as `Session::close`.
 template <>
-class Result<void> {
+class [[nodiscard]] Result<void> {
 public:
     static Result success() { return Result(); }
 
@@ -415,14 +500,27 @@ public:
     ///
     /// Both owners remain valid and independent; the referenced state lives
     /// until the last one is destroyed. Cloning an empty owner yields an empty
-    /// owner.
+    /// owner, and so does a retain that did not happen.
     Derived clone() const noexcept {
         if (handle_ == nullptr) {
             Derived copy;
             copy.api_ = api_;
             return copy;
         }
-        Derived::retain_handle(api_, handle_);
+
+        const Status status = Derived::retain_handle(api_, handle_);
+        // No Phase 1 retain reports anything but OK for a non-null handle, so
+        // this cannot fire against the current ABI. It is here because the one
+        // thing that must not happen if a later one can fail is the second
+        // owner being built anyway: it would hold a reference nobody took, and
+        // release it when the shorter of the two lifetimes ends.
+        assert(is_ok(status) && "madopilot: retain refused a live handle");
+        if (!is_ok(status)) {
+            Derived copy;
+            copy.api_ = api_;
+            return copy;
+        }
+
         return Derived(api_, handle_);
     }
 
@@ -784,6 +882,16 @@ struct TargetDescriptor {
         return (flags & MADOPILOT_TARGET_SUPPORTS_PLACEMENT) != 0u;
     }
 
+    /// Whether `space` converts for this target.
+    ///
+    /// `coordinate_spaces` is a bit set in a signed 32-bit field, so the shift
+    /// below is defined for `space` in [0, 31): shifting a `1` of type `int` by
+    /// 31 reaches the sign bit and is undefined behaviour, and a negative shift
+    /// count is too. A space outside that range is not a space this bit set can
+    /// describe, so it does not convert. The C ABI allocates space codes from
+    /// zero upward and Phase 1 uses four of them, so the bound is far from
+    /// anything the library can report; it is here because the value arrives
+    /// from a caller.
     bool supports_space(Space space) const noexcept {
         if (space < 0 || space >= 31) {
             return false;
@@ -855,8 +963,7 @@ public:
 
     Result<void> cancel() const {
         if (api_ == nullptr) {
-            return Result<void>::failure(
-                Error::from_status(MADOPILOT_STATUS_INVALID_ARGUMENT));
+            return detail::no_table<void>();
         }
         const Status status = api_->cancellation_cancel(handle_);
         return is_ok(status) ? Result<void>::success()
@@ -880,9 +987,9 @@ private:
     Cancellation(const ::madopilot_api_t* api, ::madopilot_cancellation_t* handle) noexcept
         : Owner(api, handle) {}
 
-    static void retain_handle(const ::madopilot_api_t* api,
-                              ::madopilot_cancellation_t* handle) noexcept {
-        api->cancellation_retain(handle);
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_cancellation_t* handle) noexcept {
+        return api->cancellation_retain(handle);
     }
 
     static void release_handle(const ::madopilot_api_t* api,
@@ -918,7 +1025,13 @@ public:
     ///
     /// Named `at` rather than `get` because `get()` is already the owner's own
     /// accessor for the handle it holds.
-    Result<TargetDescriptor> at(std::size_t index) const {
+    ///
+    /// Lvalue-only, like every accessor here that hands out a borrowed view.
+    /// `engine.discover(op).take().at(0)` would release the list at the end of
+    /// the full expression and leave `name` and `provider` pointing into freed
+    /// memory; the deleted overload turns that into a compile error rather than
+    /// a use-after-free. Name the owner, then ask it.
+    Result<TargetDescriptor> at(std::size_t index) const& {
         if (api_ == nullptr) {
             return detail::no_table<TargetDescriptor>();
         }
@@ -940,6 +1053,8 @@ public:
         return Result<TargetDescriptor>::success(out);
     }
 
+    Result<TargetDescriptor> at(std::size_t index) const&& = delete;
+
 private:
     friend class Engine;
     friend class detail::Owner<TargetList, ::madopilot_target_list_t>;
@@ -947,9 +1062,9 @@ private:
     TargetList(const ::madopilot_api_t* api, ::madopilot_target_list_t* handle) noexcept
         : Owner(api, handle) {}
 
-    static void retain_handle(const ::madopilot_api_t* api,
-                              ::madopilot_target_list_t* handle) noexcept {
-        api->target_list_retain(handle);
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_target_list_t* handle) noexcept {
+        return api->target_list_retain(handle);
     }
 
     static void release_handle(const ::madopilot_api_t* api,
@@ -963,7 +1078,7 @@ class Package : public detail::Owner<Package, ::madopilot_package_t> {
 public:
     Package() noexcept = default;
 
-    Result<PackageInfo> describe() const {
+    Result<PackageInfo> describe() const& {
         if (api_ == nullptr) {
             return detail::no_table<PackageInfo>();
         }
@@ -982,8 +1097,11 @@ public:
         return Result<PackageInfo>::success(out);
     }
 
+    /// Deleted for a temporary owner: the views it hands out would dangle.
+    Result<PackageInfo> describe() const&& = delete;
+
     /// One declared template identity, borrowed from this package.
-    Result<BorrowedStr> template_id(std::size_t index) const {
+    Result<BorrowedStr> template_id(std::size_t index) const& {
         if (api_ == nullptr) {
             return detail::no_table<BorrowedStr>();
         }
@@ -993,6 +1111,9 @@ public:
                              : Result<BorrowedStr>::failure(Error::from_status(status));
     }
 
+    /// Deleted for a temporary owner: the views it hands out would dangle.
+    Result<BorrowedStr> template_id(std::size_t index) const&& = delete;
+
 private:
     friend class Engine;
     friend class detail::Owner<Package, ::madopilot_package_t>;
@@ -1000,9 +1121,9 @@ private:
     Package(const ::madopilot_api_t* api, ::madopilot_package_t* handle) noexcept
         : Owner(api, handle) {}
 
-    static void retain_handle(const ::madopilot_api_t* api,
-                              ::madopilot_package_t* handle) noexcept {
-        api->package_retain(handle);
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_package_t* handle) noexcept {
+        return api->package_retain(handle);
     }
 
     static void release_handle(const ::madopilot_api_t* api,
@@ -1016,7 +1137,7 @@ class Template : public detail::Owner<Template, ::madopilot_template_t> {
 public:
     Template() noexcept = default;
 
-    Result<TemplateInfo> describe() const {
+    Result<TemplateInfo> describe() const& {
         if (api_ == nullptr) {
             return detail::no_table<TemplateInfo>();
         }
@@ -1038,6 +1159,9 @@ public:
         return Result<TemplateInfo>::success(out);
     }
 
+    /// Deleted for a temporary owner: the views it hands out would dangle.
+    Result<TemplateInfo> describe() const&& = delete;
+
 private:
     friend class Engine;
     friend class detail::Owner<Template, ::madopilot_template_t>;
@@ -1045,9 +1169,9 @@ private:
     Template(const ::madopilot_api_t* api, ::madopilot_template_t* handle) noexcept
         : Owner(api, handle) {}
 
-    static void retain_handle(const ::madopilot_api_t* api,
-                              ::madopilot_template_t* handle) noexcept {
-        api->template_retain(handle);
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_template_t* handle) noexcept {
+        return api->template_retain(handle);
     }
 
     static void release_handle(const ::madopilot_api_t* api,
@@ -1064,7 +1188,7 @@ public:
 
     /// The descriptor and the borrowed bytes. The bytes are valid while this
     /// mapping is retained and become invalid at its final release.
-    Result<Image> describe() const {
+    Result<Image> describe() const& {
         if (api_ == nullptr) {
             return detail::no_table<Image>();
         }
@@ -1087,6 +1211,9 @@ public:
         return Result<Image>::success(out);
     }
 
+    /// Deleted for a temporary owner: the views it hands out would dangle.
+    Result<Image> describe() const&& = delete;
+
     /// The complete identity of the frame this mapping came from.
     Result<FrameStamp> stamp() const {
         if (api_ == nullptr) {
@@ -1105,9 +1232,9 @@ private:
     Mapping(const ::madopilot_api_t* api, ::madopilot_mapping_t* handle) noexcept
         : Owner(api, handle) {}
 
-    static void retain_handle(const ::madopilot_api_t* api,
-                              ::madopilot_mapping_t* handle) noexcept {
-        api->mapping_retain(handle);
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_mapping_t* handle) noexcept {
+        return api->mapping_retain(handle);
     }
 
     static void release_handle(const ::madopilot_api_t* api,
@@ -1154,7 +1281,7 @@ public:
         const Status status =
             api_->frame_map(handle_, &request_c, &operation_c, &mapping, &error);
         if (!is_ok(status)) {
-            return Result<Mapping>::failure(take_error_(api_, status, error));
+            return Result<Mapping>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Mapping>::success(Mapping(api_, mapping));
@@ -1167,9 +1294,9 @@ private:
     Frame(const ::madopilot_api_t* api, ::madopilot_frame_t* handle) noexcept
         : Owner(api, handle) {}
 
-    static void retain_handle(const ::madopilot_api_t* api,
-                              ::madopilot_frame_t* handle) noexcept {
-        api->frame_retain(handle);
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_frame_t* handle) noexcept {
+        return api->frame_retain(handle);
     }
 
     static void release_handle(const ::madopilot_api_t* api,
@@ -1253,7 +1380,7 @@ public:
 
     /// Match count, backend identity, and the searched rectangle. The two
     /// backend views borrow from this result.
-    Result<ResultInfo> describe() const {
+    Result<ResultInfo> describe() const& {
         if (api_ == nullptr) {
             return detail::no_table<ResultInfo>();
         }
@@ -1271,6 +1398,9 @@ public:
 
         return Result<ResultInfo>::success(out);
     }
+
+    /// Deleted for a temporary owner: the views it hands out would dangle.
+    Result<ResultInfo> describe() const&& = delete;
 
     /// The complete identity of the frame that was searched.
     Result<FrameStamp> stamp() const {
@@ -1298,7 +1428,7 @@ public:
     /// One match. An index at or beyond the count is refused by the C boundary.
     ///
     /// The returned `template_id` stays valid while this result is retained.
-    Result<Match> match_at(std::size_t index) const {
+    Result<Match> match_at(std::size_t index) const& {
         if (api_ == nullptr) {
             return detail::no_table<Match>();
         }
@@ -1316,11 +1446,14 @@ public:
         return Result<Match>::success(out);
     }
 
+    /// Deleted for a temporary owner: the views it hands out would dangle.
+    Result<Match> match_at(std::size_t index) const&& = delete;
+
     /// The highest-scoring match, or nothing.
     ///
     /// A search that qualified nothing is a successful answer to a well-formed
     /// question, so this succeeds with an empty optional rather than failing.
-    Result<std::optional<Match>> first_match() const {
+    Result<std::optional<Match>> first_match() const& {
         auto info = describe();
         if (!info) {
             return Result<std::optional<Match>>::failure(info.error());
@@ -1337,10 +1470,13 @@ public:
         return Result<std::optional<Match>>::success(std::optional<Match>(match.take()));
     }
 
+    /// Deleted for a temporary owner: the views it hands out would dangle.
+    Result<std::optional<Match>> first_match() const&& = delete;
+
     /// Every match, in the order the backend's canonical ordering produced.
     ///
     /// Each `template_id` borrows from this result, exactly as `match_at` does.
-    Result<std::vector<Match>> matches() const {
+    Result<std::vector<Match>> matches() const& {
         auto info = describe();
         if (!info) {
             return Result<std::vector<Match>>::failure(info.error());
@@ -1359,6 +1495,9 @@ public:
         return Result<std::vector<Match>>::success(std::move(out));
     }
 
+    /// Deleted for a temporary owner: the views it hands out would dangle.
+    Result<std::vector<Match>> matches() const&& = delete;
+
 private:
     friend class Session;
     friend class detail::Owner<MatchResult, ::madopilot_result_t>;
@@ -1366,9 +1505,9 @@ private:
     MatchResult(const ::madopilot_api_t* api, ::madopilot_result_t* handle) noexcept
         : Owner(api, handle) {}
 
-    static void retain_handle(const ::madopilot_api_t* api,
-                              ::madopilot_result_t* handle) noexcept {
-        api->result_retain(handle);
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_result_t* handle) noexcept {
+        return api->result_retain(handle);
     }
 
     static void release_handle(const ::madopilot_api_t* api,
@@ -1402,14 +1541,13 @@ public:
     /// A failure here is returned, never swallowed by destruction.
     Result<void> close(const Operation& operation) const {
         if (api_ == nullptr) {
-            return Result<void>::failure(
-                Error::from_status(MADOPILOT_STATUS_INVALID_ARGUMENT));
+            return detail::no_table<void>();
         }
         const auto operation_c = operation.to_c();
         ::madopilot_error_t* error = nullptr;
         const Status status = api_->session_close(handle_, &operation_c, &error);
         if (!is_ok(status)) {
-            return Result<void>::failure(take_error_(api_, status, error));
+            return Result<void>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<void>::success();
@@ -1438,7 +1576,7 @@ public:
         ::madopilot_error_t* error = nullptr;
         const Status status = api_->session_acquire_frame(handle_, &operation_c, &frame, &error);
         if (!is_ok(status)) {
-            return Result<Frame>::failure(take_error_(api_, status, error));
+            return Result<Frame>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Frame>::success(Frame(api_, frame));
@@ -1459,7 +1597,7 @@ public:
         const Status status =
             api_->session_find(handle_, &request_c, &operation_c, &result, &error);
         if (!is_ok(status)) {
-            return Result<MatchResult>::failure(take_error_(api_, status, error));
+            return Result<MatchResult>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<MatchResult>::success(MatchResult(api_, result));
@@ -1472,9 +1610,9 @@ private:
     Session(const ::madopilot_api_t* api, ::madopilot_session_t* handle) noexcept
         : Owner(api, handle) {}
 
-    static void retain_handle(const ::madopilot_api_t* api,
-                              ::madopilot_session_t* handle) noexcept {
-        api->session_retain(handle);
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_session_t* handle) noexcept {
+        return api->session_retain(handle);
     }
 
     static void release_handle(const ::madopilot_api_t* api,
@@ -1498,7 +1636,7 @@ public:
         const Status status =
             api_->engine_discover(handle_, &operation_c, &targets, &error);
         if (!is_ok(status)) {
-            return Result<TargetList>::failure(take_error_(api_, status, error));
+            return Result<TargetList>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<TargetList>::success(TargetList(api_, targets));
@@ -1520,7 +1658,7 @@ public:
         const Status status = api_->session_open(handle_, targets.get(), index, &request_c,
                                                  &operation_c, &session, &error);
         if (!is_ok(status)) {
-            return Result<Session>::failure(take_error_(api_, status, error));
+            return Result<Session>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Session>::success(Session(api_, session));
@@ -1542,7 +1680,7 @@ public:
         const Status status =
             api_->package_load(handle_, &source_c, &operation_c, &package, &error);
         if (!is_ok(status)) {
-            return Result<Package>::failure(take_error_(api_, status, error));
+            return Result<Package>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Package>::success(Package(api_, package));
@@ -1562,7 +1700,7 @@ public:
                                                      detail::as_str(id), &operation_c,
                                                      &prepared, &error);
         if (!is_ok(status)) {
-            return Result<Template>::failure(take_error_(api_, status, error));
+            return Result<Template>::failure(detail::take_error(api_, status, error));
         }
 
         return Result<Template>::success(Template(api_, prepared));
@@ -1575,9 +1713,9 @@ private:
     Engine(const ::madopilot_api_t* api, ::madopilot_engine_t* handle) noexcept
         : Owner(api, handle) {}
 
-    static void retain_handle(const ::madopilot_api_t* api,
-                              ::madopilot_engine_t* handle) noexcept {
-        api->engine_retain(handle);
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_engine_t* handle) noexcept {
+        return api->engine_retain(handle);
     }
 
     static void release_handle(const ::madopilot_api_t* api,
@@ -1695,7 +1833,7 @@ public:
         const Status status =
             table_->engine_create(&source_c, &operation_c, &engine, &error);
         if (!is_ok(status)) {
-            return Result<Engine>::failure(take_error_(table_, status, error));
+            return Result<Engine>::failure(detail::take_error(table_, status, error));
         }
 
         return Result<Engine>::success(Engine(table_, engine));

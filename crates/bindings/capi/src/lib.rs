@@ -71,6 +71,24 @@
 // header and the definitions it mirrors two vocabularies for one contract.
 #![allow(non_camel_case_types)]
 
+// Panic containment is the whole of what `boundary::boundary` does, and
+// `catch_unwind` catches nothing under an aborting profile: the process ends
+// instead of the entry returning `MADOPILOT_STATUS_INTERNAL_PANIC`. That build
+// produced a library whose documented behaviour was silently false, and it
+// succeeded. It stops here rather than at whatever crashes first.
+//
+// This covers `-C panic=abort` and the `panic` profile key. It cannot cover
+// `panic_immediate_abort`, which is a `std` feature selected through
+// `-Z build-std` and is not visible to a dependent crate's `cfg`; `docs/c-abi.md`
+// states that limit.
+#[cfg(panic = "abort")]
+compile_error!(
+    "mado-pilot-capi cannot be built with an aborting panic profile. Every table \
+     entry promises to contain a panic and return MADOPILOT_STATUS_INTERNAL_PANIC, \
+     which requires unwinding; under `-C panic=abort` a contained panic ends the \
+     host process instead. See docs/c-abi.md, \"Panic containment\"."
+);
+
 mod assets;
 mod boundary;
 mod capture;
