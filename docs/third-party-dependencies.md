@@ -267,6 +267,8 @@ pin the Rust binding crates it actually adds. G-002 does not preapprove the
 dependency, and SDK 26100 does not decide the minimum supported Windows
 version. Those choices are checked against the then-current lockfile,
 advisories, and [`G-001`](validation-gates.md#g-001).
+[../CONTRIBUTING.md](../CONTRIBUTING.md) carries the development-prerequisite
+reading of the same review, beside the macOS one.
 
 ## Before adding a native dependency
 
