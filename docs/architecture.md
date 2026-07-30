@@ -728,7 +728,8 @@ responsibilities a later phase takes on.
 | Native window and display discovery | Not implemented |
 | Capture contracts, immutable frames, frame views, CPU mapping | Implemented in `mado-pilot-capture` |
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
-| Windows native capture ownership policy | Decided and prototyped by [ADR 0013](adr/0013-windows-capture-frame-detachment.md); production Adapter and contract tests are not implemented |
+| Windows native capture ownership policy | Decided in [ADR 0013](adr/0013-windows-capture-frame-detachment.md) on the retained `G-002` measurements; the production Adapter and its contract tests are not implemented |
+| macOS shim language and containment rules | Decided in [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the retained `G-003` measurements; the shim and its containment tests are not implemented |
 | Native window and display capture | Not implemented |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |

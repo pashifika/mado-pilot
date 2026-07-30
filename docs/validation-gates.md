@@ -76,11 +76,8 @@ synchronized platform support documentation.
 
 ## G-002
 
-**Decision.** Use a two-frame free-threaded Windows Graphics Capture producer
-pool. Copy each publishable frame into an Adapter-owned D3D11 texture in the
-callback, release the WGC frame before publication, and reuse a compatible
-private texture only after every public-frame, mapping, and backend lease
-releases it.
+**Decision.** The Windows Graphics Capture producer-pool sizing, public-frame
+detachment, and texture-reuse strategy.
 
 **Required evidence.** A retained-frame stress prototype showing that published
 frames do not pin producer buffer-pool slots that capture progress requires, and
@@ -92,9 +89,13 @@ that native resources outlive in-flight mapping and backend work.
 itself make native Windows capture an implemented capability.
 
 **Status.** Resolved by
-[ADR 0013](adr/0013-windows-capture-frame-detachment.md).
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md). The producer pool holds
+two frames; the callback copies each publishable frame into an Adapter-owned
+D3D11 texture and releases the WGC frame before publication; a compatible private
+texture is reused only after every public-frame, mapping, and backend lease
+releases it.
 
-**Evidence.** The revision-bound
+**Resolution.** The revision-bound
 [G-002 record](evidence/g-002/README.md) compares four ownership candidates at
 pool sizes two, three, and four; exercises retained mapping, backend lifetime,
 resize, 100 close races, target close, injected reset, and two 4K displays; and
