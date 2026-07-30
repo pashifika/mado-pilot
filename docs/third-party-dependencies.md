@@ -182,10 +182,65 @@ can see the license position was checked when the choice was made.
 
 | Decision | Crates the implementation will need | License position | Recorded in |
 |---|---|---|---|
-| _none_ | — | — | — |
+| The macOS shim boundary, `G-003` | `objc2`, `objc2-foundation`, and the needed `objc2-core-*` crates for the Rust side; `cc` as the shim's build dependency | `objc2` and `objc2-foundation` are MIT; the `objc2-core-*` and `objc2-screen-capture-kit` framework crates are `Zlib OR Apache-2.0 OR MIT`; `cc` is `MIT OR Apache-2.0`. Every one is on the allowlist above, so none needs an exception | [adr/0012-macos-shim-language-and-containment.md](adr/0012-macos-shim-language-and-containment.md) |
 
 The exact versions are pinned by the change that adds them, against the
 lockfile and the advisory database as they stand at that time.
+
+Two findings from that review are worth carrying forward, because they change what
+the implementing change may assume. `cc` is already an indirect build dependency of
+the workspace, so the shim's build script adds an edge rather than a crate. And
+`objc2-screen-capture-kit` 0.3.2 declares
+`#[link(name = "ScreenCaptureKit", kind = "framework")]`, a hard framework link:
+by the linker's documented handling of a non-weak framework, adopting it as
+published makes a binary fail to load below the framework's minimum macOS version
+instead of reporting an actionable status — the eager-link failure the checklist
+below rejects. That consequence follows from the linkage, not from a measurement:
+the prototype verified the weak form produces a weak load command, and did not run
+on a host without the framework. The shim owns weak framework
+linking and availability gating instead, so that crate is adopted only if a
+weak-linking arrangement is demonstrated for it.
+
+The same review recorded what the shim needs of the host, because a native
+boundary's prerequisite belongs beside the one OpenCV declares. On the measured
+Apple Silicon host the **Xcode Command Line Tools alone** were sufficient for every
+step the prototype took: compiling Objective-C and Objective-C++, archiving both
+into static libraries, linking those into a Rust binary, and separately linking each
+as a dynamic library for dependency inspection. Full Xcode is not installed there
+and was therefore not evaluated, so the smaller installation is the one with
+evidence behind it and no parity between the two is claimed; and since the prototype
+built no production shim and pulled in no Cargo dependency, this is the prerequisite
+of the steps that were exercised rather than a measurement of the finished adapter.
+
+The measurements ran against SDK 26.5 with a deployment target of macOS 11.0 —
+deliberately below ScreenCaptureKit's 12.3 — so the weak-linking and `@available`
+arrangement the shim owns was compiled and linked rather than assumed: `otool -L`
+records the framework as a weak load command, the availability check evaluates, and
+the class lookup resolves. All of that was observed on a host where the framework is
+present. The unsupported-host path — framework absent, capability reporting a clear
+status — was not exercised and cannot be from this host. The exact minimum supported
+macOS version remains gate `G-001`. The measurements are in
+[evidence/g-003/](evidence/g-003/README.md), and
+[../CONTRIBUTING.md](../CONTRIBUTING.md) carries the same prerequisite as build
+guidance.
+
+The review covered maintenance, minimum-SDK compatibility, license, advisories, and
+build requirements for a wider candidate set than the list above: `objc2` 0.6.4,
+`objc2-foundation`, `objc2-core-graphics`, `objc2-core-video`, `objc2-core-media`,
+`objc2-screen-capture-kit` and `block2` at 0.3.2/0.6.2, `dispatch2` 0.3.1,
+`core-foundation` 0.10.1, `core-graphics` 0.25.0, `screencapturekit` 8.0.1, `cidre`
+0.16.1, and `cc` 1.4.0. Versions, licences, release dates, and minimum supported Rust
+versions come from the crates.io API, maintenance signals from the GitHub repository
+API, and advisory status from the absence of a `crates/<name>` directory in the
+RustSec advisory database — all queried on 2026-07-30. On that date no candidate had
+an advisory and every minimum supported Rust version was below the pinned toolchain.
+Those are review findings against a moving database, not retained evidence: the
+change that adds a crate re-runs `cargo deny` against the lockfile and the advisory
+database as they stand then. `screencapturekit` and `cidre` were rejected for version one — the first
+because a single-vendor high-level wrapper would own the capture contract this
+project owns, the second because its breadth and its 1.88 minimum both exceed what
+the boundary needs. `core-foundation` and `core-graphics` are used only where the
+`objc2` family lacks a binding, so that one framework does not end up with two.
 
 ## Before adding a native dependency
 

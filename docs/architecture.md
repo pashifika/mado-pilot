@@ -56,12 +56,56 @@ what follows is the boundary each one will own — not a capability statement.
 | Planned input ownership | Explicit system and background delivery implementations | `CGEvent` input |
 | Planned permission handling | Integrity and UIPI constraints reported as observable state or typed failures | Screen Recording and Accessibility probed and reported separately, without presenting permission UI |
 | Native verification host | `windows-2025` | `macos-15` |
-| Open gates | [`G-001`](validation-gates.md#g-001), [`G-002`](validation-gates.md#g-002) | [`G-001`](validation-gates.md#g-001), [`G-003`](validation-gates.md#g-003) |
+| Open gates | [`G-001`](validation-gates.md#g-001), [`G-002`](validation-gates.md#g-002) | [`G-001`](validation-gates.md#g-001) |
 
 The detailed capability set, permission outcome tables, coordinate transforms,
 native resource ownership rules, and unsupported-system behavior for each platform
 are added by the changes that implement and test them. Phase 0 verifies only that
 the workspace builds and tests natively on each host.
+
+#### The macOS native boundary
+
+The language and containment rules of the macOS shim are settled ahead of the
+adapter, because an exception or an unreleased native object crossing that boundary
+is a defect the Rust side cannot see. Gate `G-003` is resolved by
+[ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the measurements in
+[evidence/g-003/](evidence/g-003/README.md).
+
+The shim is **Objective-C with Automatic Reference Counting, compiled with
+`-fobjc-arc-exceptions`**. Objective-C++ is not used and C++ is not admitted into
+the boundary: with that one flag, Objective-C matched Objective-C++ on every
+ownership and containment case measured except containing a C++ `throw`, which a
+boundary with no C++ in it cannot raise, while Objective-C++ requires libc++ in
+every process that loads MadoPilot — a requirement verified with every C++ construct
+removed from the source, so it follows from the language mode rather than from the
+prototype's C++ test. The flag is a correctness requirement: without it, ARC emits
+no release on an exception's unwind edge, so an exception raised where a failing
+stream start would raise one leaves the native object the session had already
+retained alive.
+
+This subsection records a decision that constrains the implementation, which is why
+it appears before one exists: resolving a gate requires this baseline to carry the
+rule. The macOS capability set, permission outcome tables, and coordinate transforms
+still arrive with the change that implements and tests them, as the platform baseline
+above says.
+
+The boundary is one internal C-callable surface with opaque handles,
+size-versioned requests, and a status return on every entry point. No Objective-C
+type appears in any Rust or public API. Its rules: a catch-all handler at every
+entry point and callback trampoline maps native exceptions to typed statuses;
+frames handed to a callback are borrowed for the duration of the call; each frame
+work item wraps its body in `@autoreleasepool`; callback admission is fenced by
+disable-and-drain before a caller may release registered state, and the host
+callback is never invoked under an internal lock; close is idempotent and completes
+its release even when it reports a failure; every Rust callback catches its own
+panics, because an escaping one aborts the process; and the shim's own build owns
+weak framework linking and availability gating for anything newer than the
+deployment minimum, rather than inheriting a binding crate's link attribute.
+
+The minimum supported macOS version remains
+[`G-001`](validation-gates.md#g-001). This decision constrains it in one direction
+only — whatever minimum `G-001` settles on, the shim weak-links and
+availability-gates anything newer.
 
 ## Integration surfaces
 
@@ -634,7 +678,7 @@ records `G-001` through `G-014` with the decision, the required evidence, the du
 phase, the blocking scope, the status, and the resolution rule for each. No gate
 blocked Phase 0.
 
-Ten remain open, one is deferred, and three are resolved. The deferred one is
+Nine remain open, one is deferred, and four are resolved. The deferred one is
 [`G-011`](validation-gates.md#g-011), native-frame extension discovery, which
 sits on the future roadmap and does not block version one. `G-009` is resolved by
 [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) and `G-010` by
@@ -649,6 +693,15 @@ caller may configure a limit below a ceiling and may not raise one above it.
 `mado-pilot-assets` implements those ceilings and is verified against the
 adversarial fixtures the gate was resolved with; see
 [Asset packages](#asset-packages).
+
+`G-003` is resolved by
+[ADR 0012](adr/0012-macos-shim-language-and-containment.md), which selects
+Objective-C with ARC and `-fobjc-arc-exceptions` for the macOS shim and fixes the
+containment, ownership, autorelease, fence, teardown, panic, and linkage rules of
+that boundary. `mado-pilot-platform-macos` exists as a repository seam and implements
+none of it, so the ADR is enforced by review until that package implements the
+boundary; see
+[The macOS native boundary](#the-macos-native-boundary).
 
 ## Implementation status
 
@@ -1097,6 +1150,7 @@ against.
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | OCR, watcher, and input contract suites | Not applicable; those contracts are not implemented | Not applicable |
 | Native permission behavior and permission probes | Not applicable; no permission is requested or probed | Not applicable |
+| macOS shim containment and native ownership | Decided, not yet enforceable. [ADR 0012](adr/0012-macos-shim-language-and-containment.md) fixes the boundary rules on the `G-003` measurements in [evidence/g-003/](evidence/g-003/README.md) and names the containment, ownership-on-failure, autorelease, fence, teardown, panic, and linkage tests the implementing Change carries. `mado-pilot-platform-macos` is a repository seam that implements none of it, so review enforces the rules until it does | Not applicable; no native shim existed |
 | Native dependency packaging and clean-system loading | Partly applicable. Phase 1 declares one native dependency, OpenCV, and records its licence and deployment requirements; clean-system loading and packaging remain open under [`G-007`](validation-gates.md#g-007) | Not applicable; no native dependency was declared |
 
 Underneath all of it, what Phase 0 established and every phase still verifies is

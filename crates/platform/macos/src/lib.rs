@@ -5,8 +5,9 @@
 //! This package will own macOS target and display discovery, ScreenCaptureKit
 //! streams with their native frame lifetime, Retina and multi-display coordinate
 //! transforms, non-prompting Screen Recording and Accessibility permission
-//! probes reported separately, and `CGEvent` input. Any Objective-C or
-//! Objective-C++ shim stays narrow and internal to this package.
+//! probes reported separately, and `CGEvent` input. Its Objective-C shim stays
+//! narrow and internal to this package, and exposes no Objective-C type through
+//! any Rust or public API.
 //!
 //! # Allowed seam
 //!
@@ -22,5 +23,9 @@
 //! release target is verified natively in continuous integration at the build
 //! level only.
 //!
-//! The minimum supported macOS version and the shim language choice remain
-//! unresolved; see gates `G-001` and `G-003` in `docs/validation-gates.md`.
+//! The shim language and its containment rules are settled:
+//! `docs/adr/0012-macos-shim-language-and-containment.md` resolves gate `G-003`
+//! and selects Objective-C with ARC, compiled with `-fobjc-arc-exceptions`. No
+//! package implements that boundary yet, so the ADR is enforced by review until
+//! this one does. The minimum supported macOS version remains unresolved; see
+//! gate `G-001` in `docs/validation-gates.md`.
