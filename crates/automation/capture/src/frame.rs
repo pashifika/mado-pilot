@@ -53,7 +53,24 @@ impl Frame {
         transform: TransformSnapshot,
         pixels: Box<[u8]>,
     ) -> Result<Self, CaptureFault> {
-        if pixels.len() != descriptor.byte_len() {
+        Self::validate(stamp, descriptor, &transform, pixels.len())?;
+        Ok(Self::from_validated(
+            stamp,
+            captured_at,
+            descriptor,
+            transform,
+            pixels,
+        ))
+    }
+
+    /// Checks the invariants shared by direct and stream-owned construction.
+    pub(crate) fn validate(
+        stamp: FrameStamp,
+        descriptor: FrameDescriptor,
+        transform: &TransformSnapshot,
+        pixel_len: usize,
+    ) -> Result<(), CaptureFault> {
+        if pixel_len != descriptor.byte_len() {
             return Err(CaptureFault::ByteLengthMismatch);
         }
         if transform.frame_extent() != descriptor.extent() {
@@ -62,13 +79,24 @@ impl Frame {
         if transform.geometry() != stamp.geometry() {
             return Err(CaptureFault::InconsistentDescriptor);
         }
-        Ok(Self(Arc::new(FrameData {
+        Ok(())
+    }
+
+    /// Builds a frame whose parts have already passed [`Frame::validate`].
+    pub(crate) fn from_validated(
+        stamp: FrameStamp,
+        captured_at: MonotonicInstant,
+        descriptor: FrameDescriptor,
+        transform: TransformSnapshot,
+        pixels: Box<[u8]>,
+    ) -> Self {
+        Self(Arc::new(FrameData {
             stamp,
             captured_at,
             descriptor,
             transform,
             pixels,
-        })))
+        }))
     }
 
     /// Returns the frame's complete identity.

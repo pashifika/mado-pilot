@@ -22,6 +22,12 @@
 //! fixture contains is exactly what a test observes, and no codec sits between
 //! the two.
 //!
+//! Advancing a session moves the exact source frame into a short-lived
+//! reservation. Successful publication consumes it once; interruption or
+//! stream refusal restores the same allocation to the source head. The queue
+//! lock is held only for constant-time removal or restoration and is never
+//! nested with capture stream publication.
+//!
 //! # What a replay source is trusted to be
 //!
 //! A replay source is a caller's own configuration, and this package applies no

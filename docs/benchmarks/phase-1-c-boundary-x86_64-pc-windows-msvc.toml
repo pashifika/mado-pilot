@@ -17,7 +17,18 @@
 # startup is outside every window below and is not claimed to be covered.
 #
 # Budgets are on the C workloads only, and are set by
-# `docs/adr/0008-phase-1-performance-budgets.md`.
+# `docs/adr/0008-phase-1-performance-budgets.md`. A ceiling keeps the number
+# ADR 0008 derived it from, so refreshing the measurements does not move it and
+# each rationale names the baseline value rather than this file's current one.
+#
+# Refreshed at `8d7973e` for ADR 0011's reservation-copy removal, two
+# consecutive runs on the named host; the second is recorded and both pass
+# every budget. All four Phase 1 profiles now name this reviewed source state.
+# Correctness and allocated growth are zero everywhere. Intervening C ABI input
+# validation and diagnostics account for the deterministic C-side allocation
+# shifts: the retained C fixture is 376 bytes larger, `engine_create_c` peak
+# moved by 736 bytes, and the Rust controls moved by 16 bytes. The measured
+# boundary remains far below every retained ceiling.
 
 format_version = 1
 
@@ -66,7 +77,7 @@ kind = "absolute"
 unit = "bytes"
 direction = "at_most"
 limit = 524288
-rationale = "half a mebibyte of live heap for the whole run; the largest measured workload here is 121326 bytes"
+rationale = "half a mebibyte of live heap for the whole run; the largest measured workload here is 121702 bytes"
 
 # --- Per-workload measurements and budgets ----------------------------------
 
@@ -100,11 +111,11 @@ workload = "engine_create_c"
 correctness_oracle = "the engine discovers the source's one target"
 result_correctness = 0
 latency_p50_ms = 0.001200
-latency_p95_ms = 0.001400
-iteration_span_ms = 0.001803
+latency_p95_ms = 0.001300
+iteration_span_ms = 0.001848
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 103358
-steady_allocated_bytes = 77906
+peak_allocated_bytes = 104094
+steady_allocated_bytes = 78282
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -113,18 +124,18 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 0.005
-  rationale = "three times the measured 0.001400"
+  rationale = "three times the 0.001400 measured for ADR 0008's baseline"
 
 [[measurement]]
 workload = "engine_create_rust"
 correctness_oracle = "the engine discovers the source's one target"
 result_correctness = 0
-latency_p50_ms = 0.000900
-latency_p95_ms = 0.000900
-iteration_span_ms = 0.001331
+latency_p50_ms = 0.001000
+latency_p95_ms = 0.001000
+iteration_span_ms = 0.001455
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 100311
-steady_allocated_bytes = 74997
+peak_allocated_bytes = 100327
+steady_allocated_bytes = 75013
 allocated_growth_bytes = 0
 
   # No budget. This is the control for the C workload above it: it exists
@@ -137,12 +148,12 @@ allocated_growth_bytes = 0
 workload = "match_warm_c"
 correctness_oracle = "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5"
 result_correctness = 0
-latency_p50_ms = 0.275900
-latency_p95_ms = 0.302400
-iteration_span_ms = 0.279462
+latency_p50_ms = 0.274300
+latency_p95_ms = 0.315200
+iteration_span_ms = 0.280944
 mapped_bytes_per_result = 24576
-peak_allocated_bytes = 121326
-steady_allocated_bytes = 77906
+peak_allocated_bytes = 121702
+steady_allocated_bytes = 78282
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -151,7 +162,7 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 1.0
-  rationale = "three times the measured 0.302400"
+  rationale = "three times the 0.302400 measured for ADR 0008's baseline"
 
   [[measurement.budget]]
   measure = "mapped_bytes_per_result"
@@ -165,12 +176,12 @@ allocated_growth_bytes = 0
 workload = "match_warm_rust"
 correctness_oracle = "the two planted copies are found at their planted offsets, each scoring 1.0 within 1e-5"
 result_correctness = 0
-latency_p50_ms = 0.266900
-latency_p95_ms = 0.291900
-iteration_span_ms = 0.264560
+latency_p50_ms = 0.266500
+latency_p95_ms = 0.323000
+iteration_span_ms = 0.273123
 mapped_bytes_per_result = 24576
-peak_allocated_bytes = 118401
-steady_allocated_bytes = 74997
+peak_allocated_bytes = 118417
+steady_allocated_bytes = 75013
 allocated_growth_bytes = 0
 
   # No budget. This is the control for the C workload above it: it exists

@@ -15,7 +15,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Component, Path};
 
-use mado_pilot_capture::{Continuity, FrameDescriptor, PixelFormat};
+use mado_pilot_capture::{Continuity, FrameDescriptor, PixelFormat, Publication};
 use mado_pilot_core::{Error, MonotonicInstant, PixelExtent, Scale, TargetPlacement};
 use serde::Deserialize;
 
@@ -93,8 +93,31 @@ impl ReplayFrame {
         &self.pixels
     }
 
-    pub(crate) fn into_pixels(self) -> Box<[u8]> {
-        self.pixels
+    /// Moves this validated replay frame into the capture publication shape.
+    pub(crate) fn into_publication(self) -> Publication {
+        Publication {
+            captured_at: self.captured_at,
+            descriptor: self.descriptor,
+            placement: self.placement,
+            pixels: self.pixels,
+            continuity: self.continuity,
+        }
+    }
+
+    /// Restores a publication created by [`ReplayFrame::into_publication`].
+    pub(crate) fn from_publication(publication: Publication) -> Self {
+        debug_assert_eq!(
+            publication.pixels.len(),
+            publication.descriptor.byte_len(),
+            "replay reservations publish only validated source frames"
+        );
+        Self {
+            descriptor: publication.descriptor,
+            placement: publication.placement,
+            captured_at: publication.captured_at,
+            continuity: publication.continuity,
+            pixels: publication.pixels,
+        }
     }
 }
 
