@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "package": {
+    "id": "madopilot.example.phase1-slice",
+    "version": "1.0.0"
+  },
+  "license": "Apache-2.0",
+  "provenance": {
+    "created_by": "mado-pilot-testkit match_fixtures",
+    "created_for": "crates/mado-pilot/examples/deterministic-slice.rs"
+  },
+  "templates": [
+    {
+      "id": "panel.patch",
+      "path": "templates/patch-12x10.png",
+      "width": 12,
+      "height": 10,
+      "coordinate_space": "capture_pixels",
+      "content": {
+        "algorithm": "sha256",
+        "value": "281bfb72d314152e926a9005578d060fad2426824911e141b1e2d6696df7924b"
+      },
+      "match_defaults": {
+        "min_score": 0.9,
+        "max_results": 8
+      }
+    },
+    {
+      "id": "panel.absent",
+      "path": "templates/absent-12x10.png",
+      "width": 12,
+      "height": 10,
+      "coordinate_space": "capture_pixels",
+      "content": {
+        "algorithm": "sha256",
+        "value": "341c6f05c7233a1d48de1dddf7a049f2076661633c47dc97593a1bc9e58e4851"
+      },
+      "match_defaults": {
+        "min_score": 0.9,
+        "max_results": 8
+      }
+    }
+  ]
+}

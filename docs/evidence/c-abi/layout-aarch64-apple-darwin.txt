@@ -1,0 +1,222 @@
+type madopilot_str_t size=16 align=8
+field madopilot_str_t.data offset=0
+field madopilot_str_t.len offset=8
+type madopilot_bytes_t size=16 align=8
+field madopilot_bytes_t.data offset=0
+field madopilot_bytes_t.len offset=8
+type madopilot_pixel_rect_t size=20 align=4
+field madopilot_pixel_rect_t.space offset=0
+field madopilot_pixel_rect_t.left offset=4
+field madopilot_pixel_rect_t.top offset=8
+field madopilot_pixel_rect_t.right offset=12
+field madopilot_pixel_rect_t.bottom offset=16
+type madopilot_build_info_t size=56 align=8
+field madopilot_build_info_t.struct_size offset=0
+field madopilot_build_info_t.flags offset=4
+field madopilot_build_info_t.abi_major offset=8
+field madopilot_build_info_t.abi_minor offset=12
+field madopilot_build_info_t.table_size offset=16
+field madopilot_build_info_t.reserved offset=20
+field madopilot_build_info_t.library_version offset=24
+field madopilot_build_info_t.required_backend offset=40
+type madopilot_operation_t size=24 align=8
+field madopilot_operation_t.struct_size offset=0
+field madopilot_operation_t.flags offset=4
+field madopilot_operation_t.deadline_nanos offset=8
+field madopilot_operation_t.cancellation offset=16
+type madopilot_frame_stamp_t size=40 align=8
+field madopilot_frame_stamp_t.struct_size offset=0
+field madopilot_frame_stamp_t.flags offset=4
+field madopilot_frame_stamp_t.stream offset=8
+field madopilot_frame_stamp_t.epoch offset=16
+field madopilot_frame_stamp_t.sequence offset=24
+field madopilot_frame_stamp_t.geometry offset=32
+type madopilot_frame_info_t size=56 align=8
+field madopilot_frame_info_t.struct_size offset=0
+field madopilot_frame_info_t.flags offset=4
+field madopilot_frame_info_t.width offset=8
+field madopilot_frame_info_t.height offset=12
+field madopilot_frame_info_t.format offset=16
+field madopilot_frame_info_t.space offset=20
+field madopilot_frame_info_t.stride offset=24
+field madopilot_frame_info_t.bounds offset=32
+type madopilot_image_t size=72 align=8
+field madopilot_image_t.struct_size offset=0
+field madopilot_image_t.flags offset=4
+field madopilot_image_t.width offset=8
+field madopilot_image_t.height offset=12
+field madopilot_image_t.format offset=16
+field madopilot_image_t.space offset=20
+field madopilot_image_t.stride offset=24
+field madopilot_image_t.bytes offset=32
+field madopilot_image_t.region offset=48
+type madopilot_target_t size=56 align=8
+field madopilot_target_t.struct_size offset=0
+field madopilot_target_t.flags offset=4
+field madopilot_target_t.width offset=8
+field madopilot_target_t.height offset=12
+field madopilot_target_t.format offset=16
+field madopilot_target_t.coordinate_spaces offset=20
+field madopilot_target_t.name offset=24
+field madopilot_target_t.provider offset=40
+type madopilot_session_info_t size=32 align=8
+field madopilot_session_info_t.struct_size offset=0
+field madopilot_session_info_t.flags offset=4
+field madopilot_session_info_t.stream offset=8
+field madopilot_session_info_t.width offset=16
+field madopilot_session_info_t.height offset=20
+field madopilot_session_info_t.format offset=24
+field madopilot_session_info_t.coordinate_spaces offset=28
+type madopilot_open_request_t size=16 align=4
+field madopilot_open_request_t.struct_size offset=0
+field madopilot_open_request_t.flags offset=4
+field madopilot_open_request_t.required_format offset=8
+field madopilot_open_request_t.preferred_format offset=12
+type madopilot_map_request_t size=36 align=4
+field madopilot_map_request_t.struct_size offset=0
+field madopilot_map_request_t.flags offset=4
+field madopilot_map_request_t.format offset=8
+field madopilot_map_request_t.clip_policy offset=12
+field madopilot_map_request_t.region offset=16
+type madopilot_match_options_t size=24 align=8
+field madopilot_match_options_t.struct_size offset=0
+field madopilot_match_options_t.flags offset=4
+field madopilot_match_options_t.min_score offset=8
+field madopilot_match_options_t.max_results offset=16
+field madopilot_match_options_t.suppression offset=20
+type madopilot_find_request_t size=56 align=8
+field madopilot_find_request_t.struct_size offset=0
+field madopilot_find_request_t.flags offset=4
+field madopilot_find_request_t.frame offset=8
+field madopilot_find_request_t.tmpl offset=16
+field madopilot_find_request_t.options offset=24
+field madopilot_find_request_t.region offset=32
+field madopilot_find_request_t.clip_policy offset=52
+type madopilot_match_t size=56 align=8
+field madopilot_match_t.struct_size offset=0
+field madopilot_match_t.flags offset=4
+field madopilot_match_t.score offset=8
+field madopilot_match_t.template_id offset=16
+field madopilot_match_t.bounds offset=32
+type madopilot_result_info_t size=72 align=8
+field madopilot_result_info_t.struct_size offset=0
+field madopilot_result_info_t.flags offset=4
+field madopilot_result_info_t.match_count offset=8
+field madopilot_result_info_t.backend_id offset=16
+field madopilot_result_info_t.backend_version offset=32
+field madopilot_result_info_t.searched offset=48
+type madopilot_package_info_t size=64 align=8
+field madopilot_package_info_t.struct_size offset=0
+field madopilot_package_info_t.flags offset=4
+field madopilot_package_info_t.template_count offset=8
+field madopilot_package_info_t.package_id offset=16
+field madopilot_package_info_t.package_version offset=32
+field madopilot_package_info_t.license offset=48
+type madopilot_template_info_t size=64 align=8
+field madopilot_template_info_t.struct_size offset=0
+field madopilot_template_info_t.flags offset=4
+field madopilot_template_info_t.width offset=8
+field madopilot_template_info_t.height offset=12
+field madopilot_template_info_t.min_score offset=16
+field madopilot_template_info_t.id offset=24
+field madopilot_template_info_t.backend offset=40
+field madopilot_template_info_t.max_results offset=56
+field madopilot_template_info_t.space offset=60
+type madopilot_error_detail_t size=56 align=8
+field madopilot_error_detail_t.struct_size offset=0
+field madopilot_error_detail_t.flags offset=4
+field madopilot_error_detail_t.status offset=8
+field madopilot_error_detail_t.category offset=12
+field madopilot_error_detail_t.asset_fault offset=16
+field madopilot_error_detail_t.asset_stage offset=20
+field madopilot_error_detail_t.message offset=24
+field madopilot_error_detail_t.backend offset=40
+type madopilot_replay_frame_t size=56 align=8
+field madopilot_replay_frame_t.struct_size offset=0
+field madopilot_replay_frame_t.flags offset=4
+field madopilot_replay_frame_t.width offset=8
+field madopilot_replay_frame_t.height offset=12
+field madopilot_replay_frame_t.format offset=16
+field madopilot_replay_frame_t.continuity offset=20
+field madopilot_replay_frame_t.pixels offset=24
+field madopilot_replay_frame_t.captured_at_nanos offset=40
+field madopilot_replay_frame_t.stride offset=48
+type madopilot_source_t size=64 align=8
+field madopilot_source_t.struct_size offset=0
+field madopilot_source_t.kind offset=4
+field madopilot_source_t.directory offset=8
+field madopilot_source_t.frames offset=24
+field madopilot_source_t.frame_count offset=32
+field madopilot_source_t.frame_stride offset=40
+field madopilot_source_t.target_name offset=48
+type madopilot_package_source_t size=40 align=8
+field madopilot_package_source_t.struct_size offset=0
+field madopilot_package_source_t.kind offset=4
+field madopilot_package_source_t.path offset=8
+field madopilot_package_source_t.archive offset=24
+type madopilot_api_t size=424 align=8
+field madopilot_api_t.struct_size offset=0
+field madopilot_api_t.abi_major offset=4
+field madopilot_api_t.abi_minor offset=8
+field madopilot_api_t.reserved offset=12
+field madopilot_api_t.describe_build offset=16
+field madopilot_api_t.clock_now offset=24
+field madopilot_api_t.status_text offset=32
+field madopilot_api_t.cancellation_create offset=40
+field madopilot_api_t.cancellation_retain offset=48
+field madopilot_api_t.cancellation_release offset=56
+field madopilot_api_t.cancellation_cancel offset=64
+field madopilot_api_t.cancellation_is_cancelled offset=72
+field madopilot_api_t.error_retain offset=80
+field madopilot_api_t.error_release offset=88
+field madopilot_api_t.error_describe offset=96
+field madopilot_api_t.engine_create offset=104
+field madopilot_api_t.engine_retain offset=112
+field madopilot_api_t.engine_release offset=120
+field madopilot_api_t.package_load offset=128
+field madopilot_api_t.package_retain offset=136
+field madopilot_api_t.package_release offset=144
+field madopilot_api_t.package_describe offset=152
+field madopilot_api_t.package_template_id offset=160
+field madopilot_api_t.template_prepare_from_package offset=168
+field madopilot_api_t.template_retain offset=176
+field madopilot_api_t.template_release offset=184
+field madopilot_api_t.template_describe offset=192
+field madopilot_api_t.engine_discover offset=200
+field madopilot_api_t.target_list_retain offset=208
+field madopilot_api_t.target_list_release offset=216
+field madopilot_api_t.target_list_count offset=224
+field madopilot_api_t.target_list_get offset=232
+field madopilot_api_t.session_open offset=240
+field madopilot_api_t.session_retain offset=248
+field madopilot_api_t.session_release offset=256
+field madopilot_api_t.session_describe offset=264
+field madopilot_api_t.session_close offset=272
+field madopilot_api_t.session_is_closed offset=280
+field madopilot_api_t.session_acquire_frame offset=288
+field madopilot_api_t.frame_retain offset=296
+field madopilot_api_t.frame_release offset=304
+field madopilot_api_t.frame_stamp offset=312
+field madopilot_api_t.frame_describe offset=320
+field madopilot_api_t.frame_map offset=328
+field madopilot_api_t.mapping_retain offset=336
+field madopilot_api_t.mapping_release offset=344
+field madopilot_api_t.mapping_describe offset=352
+field madopilot_api_t.mapping_stamp offset=360
+field madopilot_api_t.session_find offset=368
+field madopilot_api_t.result_retain offset=376
+field madopilot_api_t.result_release offset=384
+field madopilot_api_t.result_describe offset=392
+field madopilot_api_t.result_stamp offset=400
+field madopilot_api_t.result_options offset=408
+field madopilot_api_t.result_match offset=416
+handle madopilot_cancellation_t size=8 align=8
+handle madopilot_error_t size=8 align=8
+handle madopilot_engine_t size=8 align=8
+handle madopilot_target_list_t size=8 align=8
+handle madopilot_package_t size=8 align=8
+handle madopilot_template_t size=8 align=8
+handle madopilot_session_t size=8 align=8
+handle madopilot_frame_t size=8 align=8
+handle madopilot_mapping_t size=8 align=8
+handle madopilot_result_t size=8 align=8

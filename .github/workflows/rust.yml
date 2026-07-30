@@ -1,0 +1,404 @@
+name: Rust
+
+# Every job runs on every pull request and release-branch push rather than behind
+# a path filter, because these checks are intended to be required statuses and a
+# skipped required status blocks a pull request instead of passing it.
+on:
+  pull_request:
+    branches:
+      - main
+      - "dev/**"
+  push:
+    branches:
+      - main
+      - "dev/**"
+
+permissions:
+  contents: read
+
+# A superseded run on the same ref is cancelled so that rapid pushes do not queue
+# redundant native jobs. Runs on a base branch are never cancelled.
+concurrency:
+  group: rust-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: -D warnings
+  # `mado-pilot-backend-opencv` generates its bindings at build time, so OpenCV and
+  # a loadable libclang are build prerequisites for the whole workspace rather than
+  # only for the matching tests, and both native jobs provision them before they can
+  # compile anything. Measured on the first run: 36 s to download and extract on
+  # Windows against a cold cache, 129 s for `brew install opencv@4` on macOS, which
+  # is not cached. See docs/third-party-dependencies.md.
+  #
+  # This pin is the **Windows** version only. It names the official prebuilt release
+  # to download, and the `opencv_world<major><minor><patch>` import library inside
+  # it. macOS takes whatever `opencv@4` Homebrew currently carries, which is not the
+  # same version and deliberately is not pinned; the macOS job explains why.
+  OPENCV_VERSION: 4.14.0
+
+jobs:
+  repository-policy:
+    name: Repository policy
+    runs-on: ubuntu-latest
+    env:
+      CARGO_DENY_VERSION: 0.20.2
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `.gitattributes` pins the working tree to LF. Stripping `\r` here as well
+          # keeps the line-anchored expression correct even if a runner image ever
+          # checks the file out as CRLF.
+          channel="$(tr -d '\r' < rust-toolchain.toml | sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p')"
+          if [[ -z "${channel}" ]]; then
+            echo "::error::could not read the pinned channel from rust-toolchain.toml"
+            exit 1
+          fi
+          echo "pinned channel: ${channel}"
+          rustup toolchain install "${channel}" \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
+          rustup default "${channel}"
+
+      - name: Show the tested compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -vV
+          cargo -V
+
+      # This step also prints the resolved workspace package inventory, so an
+      # accidental workspace member is visible in the log as well as failing.
+      - name: Check the workspace inventory and dependency directions
+        shell: bash
+        run: cargo run --locked --package mado-pilot-dependency-check
+
+      - name: Check formatting
+        shell: bash
+        run: cargo fmt --all --check
+
+      # This job deliberately compiles no product package. The one thing it does
+      # compile is the maintenance checker above, which depends on none of them;
+      # every other step reads manifests, metadata, or source text. So it needs no
+      # OpenCV installation on a host that is neither release target, which any
+      # product package would, because mado-pilot-backend-opencv generates its
+      # bindings at build time. Documentation is built in both native jobs
+      # instead, where the compiler that would report a broken link is the one the
+      # product is verified with.
+      - name: Restore cargo-deny
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ runner.os }}-${{ env.CARGO_DENY_VERSION }}
+
+      - name: Check dependency policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v cargo-deny >/dev/null 2>&1; then
+            cargo install --locked cargo-deny --version "${CARGO_DENY_VERSION}"
+          fi
+          cargo deny --version
+          cargo deny --locked check
+
+  windows:
+    name: Windows x86_64-pc-windows-msvc
+    runs-on: windows-2025
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `.gitattributes` pins the working tree to LF. Stripping `\r` here as well
+          # keeps the line-anchored expression correct even if a runner image ever
+          # checks the file out as CRLF.
+          channel="$(tr -d '\r' < rust-toolchain.toml | sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p')"
+          if [[ -z "${channel}" ]]; then
+            echo "::error::could not read the pinned channel from rust-toolchain.toml"
+            exit 1
+          fi
+          echo "pinned channel: ${channel}"
+          rustup toolchain install "${channel}" \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
+          rustup default "${channel}"
+
+      # A cross-compiled result must never be reported as native verification.
+      - name: Confirm the native release target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -vV
+          cargo -V
+          host="$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')"
+          if [[ "${host}" != "x86_64-pc-windows-msvc" ]]; then
+            echo "::error::expected native host x86_64-pc-windows-msvc but found ${host}"
+            exit 1
+          fi
+
+      # The same official prebuilt archive the Windows verification host uses, so
+      # CI and hands-on verification run one OpenCV build rather than two. The
+      # community Chocolatey package tops out at 4.13.0, which would have made CI
+      # the only host on a different version.
+      - name: Restore OpenCV
+        id: opencv-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: C:\opencv
+          key: opencv-${{ runner.os }}-${{ env.OPENCV_VERSION }}
+
+      - name: Install OpenCV
+        if: steps.opencv-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/opencv/opencv/releases/download/${OPENCV_VERSION}/opencv-${OPENCV_VERSION}-windows.exe"
+          echo "downloading ${url}"
+          curl --fail --location --silent --show-error --output opencv-installer.exe "${url}"
+          # The release artifact is a self-extracting archive, not an installer: it
+          # writes an `opencv/` directory and registers nothing.
+          ./opencv-installer.exe -o"C:\\" -y
+          rm -f opencv-installer.exe
+
+      # Discovery is restricted to the directory above. Without
+      # OPENCV_DISABLE_PROBES the build script would also try pkg-config, CMake, and
+      # vcpkg, any of which could find a different OpenCV than the one named here.
+      - name: Configure the OpenCV and libclang discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="C:/opencv/build"
+          if [[ ! -d "${root}/x64/vc16/lib" ]]; then
+            echo "::error::expected ${root}/x64/vc16/lib; the archive layout changed"
+            exit 1
+          fi
+          # The runner image ships LLVM, but a job that depended on that silently
+          # would fail with a binding-generator error rather than a named cause, so
+          # the location is searched and installed explicitly.
+          libclang=""
+          for candidate in "C:/Program Files/LLVM/bin" "C:/ProgramData/chocolatey/lib/llvm/tools/LLVM/bin"; do
+            if [[ -f "${candidate}/libclang.dll" ]]; then
+              libclang="${candidate}"
+              break
+            fi
+          done
+          if [[ -z "${libclang}" ]]; then
+            echo "no preinstalled libclang found; installing LLVM"
+            choco install llvm --no-progress --yes
+            libclang="C:/Program Files/LLVM/bin"
+          fi
+          if [[ ! -f "${libclang}/libclang.dll" ]]; then
+            echo "::error::expected libclang.dll under ${libclang}"
+            exit 1
+          fi
+          echo "using libclang from ${libclang}"
+          {
+            echo "OPENCV_INCLUDE_PATHS=${root}/include"
+            echo "OPENCV_LINK_PATHS=${root}/x64/vc16/lib"
+            echo "OPENCV_LINK_LIBS=opencv_world${OPENCV_VERSION//./}"
+            echo "OPENCV_DISABLE_PROBES=pkg_config,cmake,vcpkg_cmake,vcpkg"
+            echo "LIBCLANG_PATH=${libclang}"
+          } >> "${GITHUB_ENV}"
+          echo "${root}/x64/vc16/bin" >> "${GITHUB_PATH}"
+
+      - name: Check the workspace inventory and dependency directions
+        shell: bash
+        run: cargo run --locked --package mado-pilot-dependency-check
+
+      - name: Lint the workspace
+        shell: bash
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test the workspace
+        shell: bash
+        run: cargo test --locked --workspace --all-targets
+
+      # `--all-targets` deliberately excludes doctests, so they need their own run.
+      - name: Test the documentation examples
+        shell: bash
+        run: cargo test --locked --workspace --doc
+
+      - name: Check documentation
+        shell: bash
+        run: cargo doc --locked --workspace --no-deps
+
+      # The only check in this repository that is not `cargo` alone. It compiles
+      # the tracked C header with the release target's own C compiler — MSVC here,
+      # the Xcode Command Line Tools on macOS — and compares the layout it produces
+      # field by field against the one `rustc` produced; then builds and runs the C
+      # example, the C++ ownership probe, and the C++ example against the library;
+      # then configures, builds, and runs the CMake consumer project. The Ubuntu
+      # repository-policy job deliberately compiles nothing and does not run this.
+      # See docs/adr/0004-c-header-authorship-and-abi-verification.md and
+      # docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md.
+      # `cl` is installed on this image but is not on `PATH` until the developer
+      # environment is entered, so the step runs under `cmd` and calls
+      # `vcvars64.bat` itself rather than exporting a whole environment to later
+      # steps. The install path is discovered with `vswhere` instead of being
+      # hard-coded, because it carries the Visual Studio edition. That environment
+      # also sets `VSINSTALLDIR`, through which the check finds the CMake Visual
+      # Studio ships if the runner image ever stops carrying one on `PATH`.
+      - name: Check the C ABI and the C++ wrapper
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT (
+            echo ::error::no Visual Studio C++ toolset was found on this runner
+            exit /b 1
+          )
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cl 2>&1 | findstr /i "Microsoft" || exit /b 1
+          cargo build --locked --package mado-pilot-capi || exit /b 1
+          cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" || exit /b 1
+
+      # This asserts nothing about the scores. It names the OpenCV build the run
+      # actually used and prints what that build matched, so a provisioning drift
+      # is visible in the log rather than only in some later failing tolerance.
+      #
+      # It can still fail the job, and should: the report is produced by searching
+      # the real fixtures with the real backend, so an OpenCV that cannot be
+      # loaded or a fixture that cannot be searched ends the step. What it never
+      # does is compare a score against a threshold and fail on the answer.
+      - name: Report what this host's OpenCV matched
+        shell: bash
+        run: |
+          cargo run --locked --release --package mado-pilot-backend-opencv \
+            --example match-report -- --label "CI ${{ runner.os }} ${{ runner.arch }}"
+
+  macos:
+    name: macOS aarch64-apple-darwin
+    runs-on: macos-15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `.gitattributes` pins the working tree to LF. Stripping `\r` here as well
+          # keeps the line-anchored expression correct even if a runner image ever
+          # checks the file out as CRLF.
+          channel="$(tr -d '\r' < rust-toolchain.toml | sed -n 's/^channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*$/\1/p')"
+          if [[ -z "${channel}" ]]; then
+            echo "::error::could not read the pinned channel from rust-toolchain.toml"
+            exit 1
+          fi
+          echo "pinned channel: ${channel}"
+          rustup toolchain install "${channel}" \
+            --profile minimal \
+            --component rustfmt \
+            --component clippy \
+            --no-self-update
+          rustup default "${channel}"
+
+      # A cross-compiled result must never be reported as native verification.
+      - name: Confirm the native release target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -vV
+          cargo -V
+          host="$(rustc -vV | tr -d '\r' | sed -n 's/^host: //p')"
+          if [[ "${host}" != "aarch64-apple-darwin" ]]; then
+            echo "::error::expected native host aarch64-apple-darwin but found ${host}"
+            exit 1
+          fi
+
+      # `opencv@4`, not `opencv`: Homebrew's unversioned formula is OpenCV 5, which
+      # the adapter refuses as an unsupported major version. libclang comes from the
+      # Command Line Tools the image already has, which is what the `clang-runtime`
+      # feature loads.
+      #
+      # The minor version is whatever the runner image's Homebrew carries — 4.13.0
+      # when this was written, against 4.14.0 on both verification hosts. That is
+      # left unpinned on purpose: it costs nothing, because the evidence comes from
+      # the verification hosts rather than from CI, and it buys coverage against a
+      # second OpenCV 4 minor version on every pull request. The check below is
+      # therefore on the major version, which is what the adapter accepts.
+      - name: Install OpenCV
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install opencv@4
+          prefix="$(brew --prefix opencv@4)"
+          # Set explicitly rather than relying on the formula being linked: it is
+          # keg-only, and whether its pkg-config file reaches the default search path
+          # depends on what else the image has installed.
+          echo "PKG_CONFIG_PATH=${prefix}/lib/pkgconfig" >> "${GITHUB_ENV}"
+
+      - name: Confirm the OpenCV the build will find
+        shell: bash
+        run: |
+          set -euo pipefail
+          found="$(pkg-config --modversion opencv4)"
+          echo "pkg-config reports opencv4 ${found}"
+          if [[ "${found%%.*}" != "4" ]]; then
+            echo "::error::expected an OpenCV 4 installation but found ${found}"
+            exit 1
+          fi
+
+      - name: Check the workspace inventory and dependency directions
+        shell: bash
+        run: cargo run --locked --package mado-pilot-dependency-check
+
+      - name: Lint the workspace
+        shell: bash
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Test the workspace
+        shell: bash
+        run: cargo test --locked --workspace --all-targets
+
+      # `--all-targets` deliberately excludes doctests, so they need their own run.
+      - name: Test the documentation examples
+        shell: bash
+        run: cargo test --locked --workspace --doc
+
+      - name: Check documentation
+        shell: bash
+        run: cargo doc --locked --workspace --no-deps
+
+      # The only check in this repository that is not `cargo` alone. It compiles
+      # the tracked C header with the release target's own C compiler — the Xcode
+      # Command Line Tools here, MSVC on Windows — and compares the layout it
+      # produces field by field against the one `rustc` produced; then builds and
+      # runs the C example, the C++ ownership probe, and the C++ example against
+      # the library; then configures, builds, and runs the CMake consumer project.
+      # The Ubuntu repository-policy job deliberately compiles nothing and does
+      # not run this. See
+      # docs/adr/0004-c-header-authorship-and-abi-verification.md and
+      # docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md.
+      - name: Check the C ABI and the C++ wrapper
+        shell: bash
+        run: |
+          cargo build --locked --package mado-pilot-capi
+          cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
+            --label "CI ${{ runner.os }} ${{ runner.arch }}"
+
+      # This asserts nothing about the scores. It names the OpenCV build the run
+      # actually used and prints what that build matched, so a provisioning drift
+      # is visible in the log rather than only in some later failing tolerance.
+      #
+      # It can still fail the job, and should: the report is produced by searching
+      # the real fixtures with the real backend, so an OpenCV that cannot be
+      # loaded or a fixture that cannot be searched ends the step. What it never
+      # does is compare a score against a threshold and fail on the answer.
+      - name: Report what this host's OpenCV matched
+        shell: bash
+        run: |
+          cargo run --locked --release --package mado-pilot-backend-opencv \
+            --example match-report -- --label "CI ${{ runner.os }} ${{ runner.arch }}"

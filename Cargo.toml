@@ -1,0 +1,99 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/mado-pilot",
+    "crates/automation/core",
+    "crates/automation/capture",
+    "crates/automation/input",
+    "crates/automation/vision",
+    "crates/automation/ocr",
+    "crates/automation/runtime",
+    "crates/automation/assets",
+    "crates/adapter/replay",
+    "crates/platform/windows",
+    "crates/platform/macos",
+    "crates/backend/opencv",
+    "crates/backend/onnx",
+    "crates/bindings/capi",
+    "crates/support/testkit",
+    "tools/dependency-check",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://github.com/pashifika/mado-pilot"
+
+# Product dependencies are added only by the change that implements and tests the
+# behavior requiring them. Entries here are maintenance-tool dependencies.
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+# `zip`'s `deflate-flate2` feature declares the flate2 dependency but selects no
+# zlib backend, so the DEFLATE implementation is chosen here instead. flate2's
+# default `rust_backend` is miniz_oxide, which keeps the archive reader free of a
+# native C library on both release targets.
+flate2 = "1.1.9"
+sha2 = "0.11.0"
+# Default features are off by decision, not by preference: they add bzip2, LZMA,
+# PPMd, XZ, Zstd, and AES parsers for compression methods the archive contract
+# does not accept. See docs/adr/0001-asset-archive-container-and-safety-ceilings.md.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+# Default features are off so the generated bindings cover only the two OpenCV
+# modules the matching profile uses: `imgcodecs` decodes a template's encoded
+# bytes and `imgproc` supplies the colour conversion and `matchTemplate`. The
+# defaults additionally bind calib3d, dnn, features2d, flann, highgui, ml,
+# objdetect, photo, stitching, video, and videoio, which lengthens the build and
+# would make the adapter fail against an OpenCV installation that omits any of
+# them. See docs/adr/0003-opencv-matching-profile-and-public-score.md.
+#
+# `clang-runtime` makes the binding generator load libclang with `dlopen` and a
+# documented directory search instead of linking it eagerly. Without it the build
+# script resolves `@rpath/libclang.dylib` at load time and aborts on a host whose
+# libclang comes from the Xcode Command Line Tools, which install no rpath entry.
+opencv = { version = "0.99.1", default-features = false, features = [
+    "clang-runtime",
+    "imgcodecs",
+    "imgproc",
+] }
+
+# Rust lints. Warnings are promoted to failures by the documented verification
+# sequence and by CI rather than by hard-coding `deny` here, so a local build can
+# still surface every diagnostic at once.
+[workspace.lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+# Unsafe code is permitted where a platform or ABI seam requires it, but it must
+# always be written inside an explicit `unsafe` block that can be reviewed and
+# documented. The workspace deliberately does not forbid unsafe code globally.
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+missing_crate_level_docs = "deny"
+private_intra_doc_links = "warn"
+unescaped_backticks = "warn"
+
+# Clippy selection is deliberately narrow. Each entry has a repository-specific
+# reason; the pedantic and restriction groups are not enabled wholesale.
+[workspace.lints.clippy]
+# Phase 0 forbids placeholder product behavior, and later phases must not ship
+# partially implemented contracts behind a panic.
+todo = "warn"
+unimplemented = "warn"
+# Unsafe code must state why it is sound at the seam that requires it.
+undocumented_unsafe_blocks = "warn"
+# The C ABI converts between Rust and fixed-width C integers; narrowing and
+# sign-changing conversions must be explicitly range-validated.
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+# FFI ownership transfers must be explicit rather than leaked by accident.
+mem_forget = "warn"
+ptr_as_ptr = "warn"
+# Diagnostics go through the documented diagnostic surface, not ad-hoc output.
+dbg_macro = "warn"

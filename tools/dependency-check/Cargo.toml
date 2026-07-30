@@ -1,0 +1,16 @@
+[package]
+name = "mado-pilot-dependency-check"
+description = "Repository maintenance tool that checks the MadoPilot workspace package inventory and dependency directions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

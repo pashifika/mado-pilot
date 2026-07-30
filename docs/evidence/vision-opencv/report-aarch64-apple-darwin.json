@@ -1,0 +1,69 @@
+{
+  "label": "Apple M1 Pro, macOS 26.5.2 (25F84), Homebrew opencv@4 4.14.0, Apple clang 21.0.0",
+  "arch": "aarch64",
+  "os": "macos",
+  "backend": "opencv-cpu",
+  "opencvVersion": "4.14.0",
+  "pixelFormat": "bgra8",
+  "fixtures": [
+    {
+      "fixture": "planted-full-frame-rgba",
+      "searched": [0, 0, 96, 64],
+      "matches": [
+        { "template": "patch", "bounds": [20, 12, 32, 22], "score": 1.00000000000000000 },
+        { "template": "patch", "bounds": [60, 40, 72, 50], "score": 1.00000000000000000 }
+      ]
+    },
+    {
+      "fixture": "planted-full-frame-bgra",
+      "searched": [0, 0, 96, 64],
+      "matches": [
+        { "template": "patch", "bounds": [20, 12, 32, 22], "score": 1.00000000000000000 },
+        { "template": "patch", "bounds": [60, 40, 72, 50], "score": 1.00000000000000000 }
+      ]
+    },
+    {
+      "fixture": "planted-with-degraded-copy",
+      "searched": [0, 0, 96, 64],
+      "matches": [
+        { "template": "patch", "bounds": [20, 12, 32, 22], "score": 1.00000000000000000 },
+        { "template": "patch", "bounds": [60, 40, 72, 50], "score": 1.00000000000000000 },
+        { "template": "patch", "bounds": [20, 44, 32, 54], "score": 0.75634115934371948 }
+      ]
+    },
+    {
+      "fixture": "planted-region-of-interest",
+      "searched": [55, 35, 80, 60],
+      "matches": [
+        { "template": "patch", "bounds": [60, 40, 72, 50], "score": 1.00000000000000000 }
+      ]
+    },
+    {
+      "fixture": "planted-clipped-region",
+      "searched": [55, 35, 96, 64],
+      "matches": [
+        { "template": "patch", "bounds": [60, 40, 72, 50], "score": 1.00000000000000000 }
+      ]
+    },
+    {
+      "fixture": "absent-best-offset",
+      "searched": [0, 0, 96, 64],
+      "matches": [
+        { "template": "absent", "bounds": [55, 7, 67, 17], "score": 0.12716969847679138 },
+        { "template": "absent", "bounds": [0, 26, 12, 36], "score": 0.12021262943744659 },
+        { "template": "absent", "bounds": [56, 49, 68, 59], "score": 0.12004327028989792 },
+        { "template": "absent", "bounds": [46, 26, 58, 36], "score": 0.11425475776195526 },
+        { "template": "absent", "bounds": [82, 48, 94, 58], "score": 0.11413392424583435 },
+        { "template": "absent", "bounds": [6, 53, 18, 63], "score": 0.11393748968839645 },
+        { "template": "absent", "bounds": [28, 13, 40, 23], "score": 0.10929984599351883 },
+        { "template": "absent", "bounds": [19, 30, 31, 40], "score": 0.10142333060503006 }
+      ]
+    },
+    {
+      "fixture": "oversized-template",
+      "searched": [0, 0, 96, 64],
+      "matches": [
+      ]
+    }
+  ]
+}

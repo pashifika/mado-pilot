@@ -1,0 +1,15 @@
+[package]
+name = "mado-pilot-capture"
+description = "MadoPilot capture, frame, mapping, and stream-policy contracts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+mado-pilot-core = { path = "../core" }
+
+[lints]
+workspace = true

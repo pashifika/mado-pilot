@@ -1,0 +1,21 @@
+[package]
+name = "mado-pilot-backend-opencv"
+description = "MadoPilot OpenCV CPU template-matching adapter."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+mado-pilot-core = { path = "../../automation/core" }
+mado-pilot-capture = { path = "../../automation/capture" }
+mado-pilot-vision = { path = "../../automation/vision" }
+opencv = { workspace = true }
+
+[dev-dependencies]
+mado-pilot-testkit = { path = "../../support/testkit" }
+
+[lints]
+workspace = true

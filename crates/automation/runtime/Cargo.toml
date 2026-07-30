@@ -1,0 +1,21 @@
+[package]
+name = "mado-pilot-runtime"
+description = "MadoPilot session, scheduling, watcher, cancellation, coalescing, and diagnostic orchestration."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+mado-pilot-assets = { path = "../assets" }
+mado-pilot-capture = { path = "../capture" }
+mado-pilot-core = { path = "../core" }
+mado-pilot-vision = { path = "../vision" }
+
+[dev-dependencies]
+mado-pilot-testkit = { path = "../../support/testkit" }
+
+[lints]
+workspace = true

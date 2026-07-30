@@ -1,0 +1,16 @@
+[package]
+name = "mado-pilot-vision"
+description = "MadoPilot template source, preprocessing, matching request, and result contracts."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+mado-pilot-core = { path = "../core" }
+mado-pilot-capture = { path = "../capture" }
+
+[lints]
+workspace = true
