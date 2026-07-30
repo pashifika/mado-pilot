@@ -41,8 +41,8 @@ registry is itself a Phase 0 deliverable.
 | ID | Unresolved decision | Due | Blocks | Status |
 |---|---|---|---|---|
 | [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Native support claim and release | Open |
-| [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Open |
-| [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Open |
+| [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
+| [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open |
 | [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 implementation | Default watcher policy | Open |
 | [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open |
@@ -76,8 +76,8 @@ synchronized platform support documentation.
 
 ## G-002
 
-**Unresolved decision.** The Windows Graphics Capture producer-pool sizing,
-public-frame detachment, and texture-reuse strategy.
+**Decision.** The Windows Graphics Capture producer-pool sizing, public-frame
+detachment, and texture-reuse strategy.
 
 **Required evidence.** A retained-frame stress prototype showing that published
 frames do not pin producer buffer-pool slots that capture progress requires, and
@@ -85,18 +85,36 @@ that native resources outlive in-flight mapping and backend work.
 
 **Due.** Before Phase 2 implementation.
 
-**Blocks.** Windows capture ownership design.
+**Blocks.** Windows capture ownership design until resolved. It does not by
+itself make native Windows capture an implemented capability.
 
-**Status.** Open.
+**Status.** Resolved by
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md). The producer pool holds
+two frames; the callback copies each publishable frame into an Adapter-owned
+D3D11 texture and releases the WGC frame before publication; a compatible private
+texture is reused only after every public-frame, mapping, and backend lease
+releases it.
 
-**Resolution.** An ADR recording the prototype measurements and the chosen
-ownership rule, followed by the retained-frame and producer-progress contract
-tests that enforce it.
+**Resolution.** The revision-bound
+[G-002 record](evidence/g-002/README.md) compares four ownership candidates at
+pool sizes two, three, and four; exercises retained mapping, backend lifetime,
+resize, 100 close races, target close, injected reset, and two 4K displays; and
+records the final supported MSVC/SDK confirmation without captured pixels. A
+deterministic queued-delegate case proves owner admission is fenced, while
+complete close/reset and sequence freshness are measured explicitly. Direct WGC
+retention stalled every producer pool and blind texture reuse changed retained
+content. Lease-aware detachment at pool size two passed every hard gate.
+
+**Implementation obligation.** The later Windows capture Change must implement
+the [retained-frame contract-test plan](windows-capture-contract-tests.md), keep
+the detached pool finite with observable pressure drops, and establish affected
+Phase 2 `G-013` budgets. It may not treat the ADR or prototype as a support
+claim.
 
 ## G-003
 
-**Unresolved decision.** Whether the macOS capture and input shim is written in
-Objective-C or Objective-C++.
+**Decision.** The language of the macOS capture and input shim, and the
+containment rules of that boundary.
 
 **Required evidence.** A prototype covering exception behavior across the language
 boundary, object ownership, and build integration on Apple Silicon.
@@ -105,10 +123,33 @@ boundary, object ownership, and build integration on Apple Silicon.
 
 **Blocks.** macOS shim implementation.
 
-**Status.** Open.
+**Status.** Resolved by
+[ADR 0012](adr/0012-macos-shim-language-and-containment.md). The shim is
+Objective-C with ARC, compiled with `-fobjc-arc-exceptions`.
 
-**Resolution.** An ADR recording the prototype outcome and the containment rule
-for exceptions crossing the shim boundary.
+**Resolution.** The prototype built one implementation file as Objective-C, as
+Objective-C with `-fobjc-arc-exceptions`, and as Objective-C++, and ran eighteen
+cases on each on the approved Apple Silicon host; the measurements are in
+[evidence/g-003/](evidence/g-003/README.md). All three variants contain every
+injected native exception, so the gate was not decided by exception handling. It
+was decided by what containment costs in ownership: without
+`-fobjc-arc-exceptions`, ARC emits no release on the unwind edge, and an exception
+raised at the position where a stream start or a frame callback would fail leaves the
+object the session retained, or the frame object, alive — the counter observes the
+retained object, and the session's own lifetime is an inference from it. The control
+variant reproduces the Objective-C++ result with that one flag, so Objective-C++'s
+ownership advantage is a default rather than a language property, and it requires
+libc++ in every consuming process for a boundary that contains no C++ — a
+requirement re-measured during review with every C++ construct removed, so that it
+rests on the language mode rather than on the prototype's C++ test.
+
+The ADR also records the containment rules the evidence forces — a catch-all
+boundary handler, the mandatory exception flag, borrowed frames, a per-work-item
+autorelease pool, a disable-and-drain callback fence, teardown that reports
+failure without skipping cleanup, Rust-side panic containment, and shim-owned weak
+linking with availability gating — together with the tests the implementing Change
+must carry. Until `mado-pilot-platform-macos` exists, those rules are enforced by
+review, which the ADR states rather than implies.
 
 ## G-004
 

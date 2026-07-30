@@ -34,6 +34,37 @@ development prerequisite only: the v0.1.0 source release bundles no native
 dependency and makes no installable deployment-profile claim, which remains gate
 `G-007`.
 
+The macOS native shim is not expected to add a prerequisite beyond that. The
+`G-003` prototype compiled Objective-C and Objective-C++, archived both into static
+libraries, linked those into a Rust binary, and separately linked each as a dynamic
+library for dependency inspection — all with the **Xcode Command Line Tools alone**,
+on a host where full Xcode is not installed; the measurements are in
+[docs/evidence/g-003/](docs/evidence/g-003/README.md). Two limits on reading that:
+full Xcode was not evaluated, so it is a positive result about the smaller
+installation rather than a statement that the two are interchangeable; and the
+prototype built no production shim and pulled in no Cargo dependency, so the
+prerequisite is carried by the build steps that were exercised rather than measured
+on the finished adapter. The shim is compiled with
+`-fobjc-arc-exceptions`, which
+[docs/adr/0012-macos-shim-language-and-containment.md](docs/adr/0012-macos-shim-language-and-containment.md)
+records as a correctness requirement rather than a style choice: without it, an
+exception unwinding out of a scope that holds a native object leaks it.
+
+The Windows capture adapter is not expected to add one either. The `G-002`
+prototype built and ran a C++/WinRT probe against Windows Graphics Capture,
+Direct3D 11, and DXGI using only what a host set up for `x86_64-pc-windows-msvc`
+already has — the MSVC toolchain, a Windows SDK, and a CMake, all of which the C
+and C++ boundary check below already requires. It needed no NuGet package, no
+Windows App SDK, no vcpkg, and no vendored sample or redistributable; the review
+is in
+[docs/evidence/g-002/dependency-review.md](docs/evidence/g-002/dependency-review.md).
+The same two limits apply as above: that prototype built no production adapter
+and pulled in no Cargo dependency, so it describes the steps that were
+exercised, and the Rust binding crate the implementing Change selects could
+still change the answer.
+[docs/adr/0013-windows-capture-frame-detachment.md](docs/adr/0013-windows-capture-frame-detachment.md)
+deliberately preapproves none.
+
 ## Verification
 
 Run this sequence from the repository root before opening a pull request. The
