@@ -30,8 +30,9 @@ for running the matching tests.
 [docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
 exact versions, the Windows environment variables, why the discovery is restricted
 rather than ambient, and what fails when the library is absent. This is a
-development prerequisite only: Phase 1 makes no claim about what a release ships,
-which is gate `G-007`.
+development prerequisite only: the v0.1.0 source release bundles no native
+dependency and makes no installable deployment-profile claim, which remains gate
+`G-007`.
 
 ## Verification
 
@@ -200,6 +201,40 @@ Emergency fixes follow the same flow: create the next patch-version
 
 Pull requests directly from topic branches into `main`, or from one version
 development branch into another, are rejected by the branch policy check.
+
+## Release checklist
+
+A version branch is not a release by itself. Use this order so that the permanent
+tag, public notes, and native verification identify one final source revision:
+
+1. On a short-lived topic branch from `dev/x.y.z`, add or update the canonical
+   `docs/releases/vx.y.z.md` notes. Confirm that the workspace version, public
+   behavior, prerequisites, compatibility, artifact list, limitations, security
+   boundaries, and retained evidence all agree.
+2. Run the complete [verification](#verification) sequence. Retained benchmark
+   or ABI evidence from an earlier revision needs a reviewed applicability record
+   covering the complete intervening diff; otherwise rerun it on its named native
+   host.
+3. Merge the release-readiness topic branch to `dev/x.y.z` through its protected
+   pull request and wait for every required check.
+4. Open the release pull request from `dev/x.y.z` to `main`. Verify that its head
+   contains only the intended release history and that its checks pass.
+5. Merge the release pull request, record the full resulting `main` commit id, and
+   wait for the `main` push runs of Repository policy,
+   Windows `x86_64-pc-windows-msvc`, and macOS
+   `aarch64-apple-darwin` to pass on that exact commit.
+6. Create an annotated `vx.y.z` tag at that verified `main` commit and push that
+   tag. Never tag the version-branch head before the release merge.
+7. Publish the release-provider record using the tracked
+   `docs/releases/vx.y.z.md` file verbatim as its body. Verify the tag, body,
+   source archives, and public URL.
+8. Create the next `dev/x.y.z` branch from the released `main` commit before
+   accepting implementation for that version.
+
+A published version tag is immutable: never move, delete, or reuse it to replace
+a release. Correct a source or documentation defect in a later semantic version.
+A release-provider metadata correction may clarify the record only when it does
+not change what the tagged source contains or claims.
 
 ## Protected branches
 
