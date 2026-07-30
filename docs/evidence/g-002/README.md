@@ -37,6 +37,12 @@ repository preserves all accepted and rejected JSON Lines at
 `rasen/changes/phase-2-g002-windows-capture-ownership/work/raw/`, while the
 accepted-run SHA-256 values remain bound into the product report:
 
+Each window below runs from its first row's start to its last row's start. Every
+row is one probe process, so the final row's own duration extends past the stated
+end. The digests are over the bytes the probe wrote, which use CRLF; the Rasen
+repository pins that form through `.gitattributes` so an ordinary SHA-256 of a
+checked-out file reproduces the value on any host.
+
 | Run | UTC window | Rows | Raw SHA-256 |
 |---|---|---:|---|
 | Candidate matrix | 2026-07-30 15:19:13–15:23:19 | 12 | `578C3ED8EB234204651D8B07C8E1406D2FB5D23A4E2BBA9452E0FD707E33A5E9` |
@@ -68,6 +74,12 @@ work-hour exclusion.
 Every positive detached candidate delivered all 600 post-warm-up frames.
 Every negative control failed for its predeclared reason, so the workload
 demonstrated both failure modes it was designed to detect.
+
+The first two numeric columns read different windows. `Frames` counts
+post-warm-up deliveries only, while `Sequence advances` counts the marker
+progressions the oracle observed across every delivered frame, warm-up
+included. That is why `wgc-retained` at pool two reports 6 against 116: 120 of
+its 126 delivered frames arrived before the sample window opened.
 
 | Pool | Candidate | Frames | Max gap (ms) | Sequence advances | Private texture peak | Result |
 |---:|---|---:|---:|---:|---:|---|

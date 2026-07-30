@@ -678,7 +678,7 @@ records `G-001` through `G-014` with the decision, the required evidence, the du
 phase, the blocking scope, the status, and the resolution rule for each. No gate
 blocked Phase 0.
 
-Nine remain open, one is deferred, and four are resolved. The deferred one is
+Eight remain open, one is deferred, and five are resolved. The deferred one is
 [`G-011`](validation-gates.md#g-011), native-frame extension discovery, which
 sits on the future roadmap and does not block version one. `G-009` is resolved by
 [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) and `G-010` by
@@ -1188,6 +1188,7 @@ against.
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | OCR, watcher, and input contract suites | Not applicable; those contracts are not implemented | Not applicable |
 | Native permission behavior and permission probes | Not applicable; no permission is requested or probed | Not applicable |
+| Windows capture ownership and native resource lifetime | Decided, not yet enforceable. [ADR 0013](adr/0013-windows-capture-frame-detachment.md) fixes the producer-pool size, callback detachment, lease-aware reuse, resize, and teardown rules on the `G-002` measurements in [evidence/g-002/](evidence/g-002/README.md) and names the ownership, pressure, lifecycle, and redaction tests the implementing Change carries in [windows-capture-contract-tests.md](windows-capture-contract-tests.md). `mado-pilot-platform-windows` is a repository seam that implements none of it, so review enforces the rules until it does | Not applicable; no native capture existed |
 | macOS shim containment and native ownership | Decided, not yet enforceable. [ADR 0012](adr/0012-macos-shim-language-and-containment.md) fixes the boundary rules on the `G-003` measurements in [evidence/g-003/](evidence/g-003/README.md) and names the containment, ownership-on-failure, autorelease, fence, teardown, panic, and linkage tests the implementing Change carries. `mado-pilot-platform-macos` is a repository seam that implements none of it, so review enforces the rules until it does | Not applicable; no native shim existed |
 | Native dependency packaging and clean-system loading | Partly applicable. Phase 1 declares one native dependency, OpenCV, and records its licence and deployment requirements; clean-system loading and packaging remain open under [`G-007`](validation-gates.md#g-007) | Not applicable; no native dependency was declared |
 

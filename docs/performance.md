@@ -406,9 +406,11 @@ numeric product budgets. Its accepted result is recorded in
 
 The selected two-frame WGC pool with callback detachment and lease-aware private
 textures delivered every 600-frame candidate sample. Across the updated
-MSVC/SDK confirmation, the maximum post-warm-up arrival gap was 63.671 ms,
-private default-texture peak was 33 under a retained-frame bound of 40, and
-every final resource count was zero. Across all accepted workloads, sequence
+MSVC/SDK confirmation, the maximum post-warm-up arrival gap was 63.671 ms. That
+figure belongs to the rejected `copy-blind-2` control at pool three; the selected
+`copy-leased` rows stayed at or below 63.259 ms and the two-4K rows at or below
+62.784 ms. The private default-texture peak was 33 under a retained-frame bound
+of 40, and every final resource count was zero. Across all accepted workloads, sequence
 regressions were zero and maximum sequence stall was 22.613 ms. The lifecycle
 suite's maximum callback drain was 0.037 ms, complete close was 527.302 ms, and
 complete reset through `StartCapture()` return was 650.355 ms. Those values

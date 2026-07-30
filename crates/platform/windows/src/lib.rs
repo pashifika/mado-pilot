@@ -20,6 +20,11 @@
 //! `x86_64-pc-windows-msvc` release target is verified natively in continuous
 //! integration at the build level only.
 //!
-//! The minimum supported Windows version and the capture frame-pool ownership
-//! strategy remain unresolved; see gates `G-001` and `G-002` in
-//! `docs/validation-gates.md`.
+//! The capture frame-pool ownership strategy is settled:
+//! `docs/adr/0013-windows-capture-frame-detachment.md` resolves gate `G-002`
+//! and selects a two-frame free-threaded Windows Graphics Capture pool whose
+//! callback copies each publishable frame into an Adapter-owned Direct3D 11
+//! texture before releasing the `Direct3D11CaptureFrame`. No package implements
+//! that ownership yet, so the ADR is enforced by review until this one does.
+//! The minimum supported Windows version remains unresolved; see gate `G-001`
+//! in `docs/validation-gates.md`.

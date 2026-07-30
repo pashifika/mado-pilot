@@ -20,6 +20,11 @@ The API-specific minimums are documented by
 <https://learn.microsoft.com/windows/win32/api/windows.graphics.capture.interop/nf-windows-graphics-capture-interop-igraphicscaptureiteminterop-createforwindow>
 and
 <https://learn.microsoft.com/uwp/api/windows.graphics.capture.direct3d11captureframepool.createfreethreaded>.
+Those pages were consulted while this review was written, so no later than the
+commit that recorded it: 2026-07-31 00:48 JST, 2026-07-30 15:48 UTC. Microsoft
+revises them in place, and this review names the reading rather than retaining a
+copy. The installed versions in the table above come from the accepted run rows
+themselves and are reproducible from the retained evidence.
 
 ## Source reference
 
