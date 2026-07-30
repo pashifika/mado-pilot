@@ -56,7 +56,7 @@ what follows is the boundary each one will own — not a capability statement.
 | Planned input ownership | Explicit system and background delivery implementations | `CGEvent` input |
 | Planned permission handling | Integrity and UIPI constraints reported as observable state or typed failures | Screen Recording and Accessibility probed and reported separately, without presenting permission UI |
 | Native verification host | `windows-2025` | `macos-15` |
-| Open gates | [`G-001`](validation-gates.md#g-001), [`G-002`](validation-gates.md#g-002) | [`G-001`](validation-gates.md#g-001) |
+| Open gates | [`G-001`](validation-gates.md#g-001) | [`G-001`](validation-gates.md#g-001) |
 
 The detailed capability set, permission outcome tables, coordinate transforms,
 native resource ownership rules, and unsupported-system behavior for each platform
@@ -685,6 +685,10 @@ sits on the future roadmap and does not block version one. `G-009` is resolved b
 [ADR 0007](adr/0007-phase-1-c-abi-freeze.md); both are recorded under
 [Public naming baseline](#public-naming-baseline).
 
+`G-002` is resolved by
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md), whose production
+ownership constraints are recorded under
+[Windows native capture ownership](#windows-native-capture-ownership).
 `G-014` is resolved by
 [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md), which fixes
 the asset archive container, the manifest serialization, and six implementation
@@ -724,6 +728,7 @@ responsibilities a later phase takes on.
 | Native window and display discovery | Not implemented |
 | Capture contracts, immutable frames, frame views, CPU mapping | Implemented in `mado-pilot-capture` |
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
+| Windows native capture ownership policy | Decided and prototyped by [ADR 0013](adr/0013-windows-capture-frame-detachment.md); production Adapter and contract tests are not implemented |
 | Native window and display capture | Not implemented |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
@@ -821,6 +826,39 @@ This is an additive Rust-only contract. It changes no facade behavior, C
 function table, C layout, header, or C++ wrapper. The decision and its native
 performance acceptance conditions are recorded in
 [ADR 0011](adr/0011-recoverable-stream-publication.md).
+
+### Windows native capture ownership
+
+Gate [`G-002`](validation-gates.md#g-002) is resolved for the future
+`mado-pilot-platform-windows` Adapter. Its free-threaded WGC producer pool has
+two frames, and no public frame owns a `Direct3D11CaptureFrame` or WGC producer
+surface. The WGC callback copies publishable content into an Adapter-owned
+D3D11 texture, releases the WGC frame, and only then enqueues detached
+ownership.
+
+Private textures are lease-aware and finite. A texture can be reused only after
+public-frame, mapping, and backend leases all release it. Exhaustion produces an
+observable bounded-queue drop rather than callback blocking, overwrite, or
+unbounded allocation. Mapping, matching, waits, and host callbacks remain
+outside the WGC callback.
+
+Resize discards the size-transition frame, recreates the two-frame producer
+pool, and lets detached old-revision frames complete from old-generation
+resources. Both WinRT handlers capture lifetime-independent shared callback
+state rather than a raw Adapter owner. Close detaches the owner under the
+callback-admission mutex, unregisters both handlers, drains admitted callbacks,
+publishes the fence, closes the WGC session and pool, and keeps detached
+resources and their D3D11 device alive through in-flight work. A delegate
+invoked after detachment is rejected without touching the owner. Reset creates
+a fresh device and stream epoch; leased old-generation storage is never
+repurposed.
+
+The decision is
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md), its retained prototype
+record is [evidence/g-002/](evidence/g-002/), and its production acceptance
+suite is [windows-capture-contract-tests.md](windows-capture-contract-tests.md).
+This paragraph is an ownership constraint, not an implementation claim: native
+window and display capture remain not implemented.
 
 ### Asset packages
 

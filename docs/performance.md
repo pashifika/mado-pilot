@@ -396,3 +396,37 @@ That workload therefore has no latency budget on either target. It is bounded by
 `iteration_span_ms`, which recovers a number by reading the clock once across
 two hundred iterations. `negotiate_table` is bounded the same way for the same
 reason, and so is any later operation whose fast path is a pointer copy.
+
+## Phase 2 Windows ownership prototype
+
+The G-002 prototype resolves a correctness and ownership gate; it does not set
+numeric product budgets. Its accepted result is recorded in
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md) and
+[evidence/g-002/](evidence/g-002/).
+
+The selected two-frame WGC pool with callback detachment and lease-aware private
+textures delivered every 600-frame candidate sample. Across the updated
+MSVC/SDK confirmation, the maximum post-warm-up arrival gap was 63.671 ms,
+private default-texture peak was 33 under a retained-frame bound of 40, and
+every final resource count was zero. Across all accepted workloads, sequence
+regressions were zero and maximum sequence stall was 22.613 ms. The lifecycle
+suite's maximum callback drain was 0.037 ms, complete close was 527.302 ms, and
+complete reset through `StartCapture()` return was 650.355 ms. Those values
+demonstrate margin against the
+prototype's 500 ms progress and 2 second close/reset correctness gates; they
+are measurements, not ceilings for production code.
+
+The required full-frame GPU copy is a consequence of ownership. Each 1280×720
+detached matrix row copied 2,654,208,000 bytes and mapped 3,391,488,000 bytes.
+Each 600-frame 3840×2160 display row copied 23,887,872,000 bytes and mapped
+30,523,392,000 bytes. A later implementation cannot remove that copy by
+publishing a WGC surface or by reusing leased content; it may optimize scheduling
+or representation only while the ADR's detachment and lifetime tests still pass.
+
+The production Windows capture Change resolves its affected part of
+[`G-013`](validation-gates.md#g-013). Its profile must budget capture arrival,
+callback-copy p95, mapped and copied bytes, detached/staging and resident memory,
+drops and stale work under pressure, session startup, resize recreation, close
+drain, and reset recovery at 1280×720 and on the named two-4K topology. The
+complete workload and correctness obligations are in
+[windows-capture-contract-tests.md](windows-capture-contract-tests.md).

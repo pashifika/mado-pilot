@@ -187,6 +187,8 @@ can see the license position was checked when the choice was made.
 The exact versions are pinned by the change that adds them, against the
 lockfile and the advisory database as they stand at that time.
 
+### G-003 macOS shim boundary
+
 Two findings from that review are worth carrying forward, because they change what
 the implementing change may assume. `cc` is already an indirect build dependency of
 the workspace, so the shim's build script adds an edge rather than a crate. And
@@ -241,6 +243,30 @@ because a single-vendor high-level wrapper would own the capture contract this
 project owns, the second because its breadth and its 1.88 minimum both exceed what
 the boundary needs. `core-foundation` and `core-graphics` are used only where the
 `objc2` family lacks a binding, so that one framework does not end up with two.
+
+### G-002 Windows ownership prototype
+
+Resolving `G-002` adds no product dependency and therefore adds nothing to the
+table above or to `Cargo.lock`. The disposable C++ probe used platform
+components already present on the named host: Visual Studio 2022 17.14.37,
+MSVC 19.44.35228, Windows SDK 10.0.26100.0, CMake 3.29.5, C++/WinRT, WGC,
+D3D11, DXGI, and Win32 import libraries. It vendors no sample, header, runtime,
+framework, JSON library, DLL, or redistributable.
+
+The accepted ownership decision is
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md). The exact
+prototype-only component, license, compatibility, and advisory review is in
+[evidence/g-002/dependency-review.md](evidence/g-002/dependency-review.md).
+Microsoft's SDK and Visual Studio terms apply to the development tools; the
+evidence redistributes none of them. CMake is BSD-3-Clause and build-time only.
+The linked Windows libraries are operating-system components.
+
+The later `mado-pilot-platform-windows` Change must independently review and
+pin the Rust binding crates it actually adds. G-002 does not preapprove the
+`windows` crate, Windows App SDK, WIL, DirectXTK, or any other product
+dependency, and SDK 26100 does not decide the minimum supported Windows
+version. Those choices are checked against the then-current lockfile,
+advisories, and [`G-001`](validation-gates.md#g-001).
 
 ## Before adding a native dependency
 
