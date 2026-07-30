@@ -240,11 +240,12 @@ it.
 
 ### Bundled or host-provided
 
-**Host-provided, and Phase 1 claims nothing about a release.** OpenCV is a
-*development prerequisite*: what is documented is how to build and test this
-repository, not what an installer would ship. `G-007` (bundling, deployment
-profiles, notices) and `G-008` (static-link feasibility, controlled loading) are
-both open, and no statement here should be read as settling either.
+**Host-provided for development-tree consumers, not a released deployment
+profile.** OpenCV is a *development prerequisite*: v0.1.0 documents how to build
+and test its source but bundles no OpenCV library and ships no installer.
+`G-007` (bundling, deployment profiles, notices) and `G-008` (static-link
+feasibility, controlled loading) are both open, and no statement here should be
+read as settling either.
 
 ### Development installation
 

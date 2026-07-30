@@ -58,6 +58,15 @@ declares no ABI of its own and inherits the C one.
 [docs/architecture.md](docs/architecture.md) is the tracked baseline and records
 the full status table, the package inventory, and the dependency rules.
 
+## Releases
+
+[`v0.1.0`](docs/releases/v0.1.0.md) is the first developer-facing source, Rust
+API, C ABI 1.0, and C++ API baseline for the deterministic workflow above. It
+does not publish crates to crates.io or provide prebuilt libraries, installers,
+CMake install/export metadata, pkg-config metadata, or bundled OpenCV. The
+release notes are the canonical public scope and are used verbatim as the
+release-provider body.
+
 ## Release targets
 
 Version one targets `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`. Each is
@@ -163,6 +172,7 @@ cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<
 | [docs/validation-gates.md](docs/validation-gates.md) | The `G-001`–`G-014` registry of unresolved version-one decisions |
 | [docs/performance.md](docs/performance.md) | Benchmark profile and budget format, the Phase 1 workloads, and their correctness oracles |
 | [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |
+| [docs/releases/](docs/releases/) | Canonical release notes and exact artifact limitations |
 | [docs/adr/](docs/adr/) | Architecture decision records, and [the template](docs/adr/0000-template.md) with the rule for when one is required |
 | [docs/evidence/](docs/evidence/) | The measurements behind decisions that rest on them |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Branch strategy, pull request flow, verification sequence, required checks |
