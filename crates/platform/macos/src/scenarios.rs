@@ -85,7 +85,7 @@ struct Harness {
 /// stream reports nothing at all — and a skip and a pass are the same line of output.
 /// A green sanitizer run has to mean the capture ran, so there it fails instead.
 /// This is the rule the replay symlink tests already follow: a host that cannot run
-/// the case has proven nothing. `build.rs` records the command and the flag.
+/// the case has proven nothing. `CONTRIBUTING.md` step 10 is the command.
 fn skipped<T>(scenario: &str, reason: &str) -> Option<T> {
     if cfg!(mado_pilot_asan) {
         panic!("the sanitizer run needs {scenario} to capture, and this host cannot: {reason}");
@@ -1063,7 +1063,9 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
 
     assert!(
         settles_to(baseline),
-        "a contained failure at the {name} site left a native object alive"
+        "a contained failure at the {name} site left a native object alive: {} against a \
+         baseline of {baseline}",
+        shim::live_objects()
     );
 }
 

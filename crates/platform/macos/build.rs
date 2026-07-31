@@ -24,25 +24,15 @@
 //! native object *count* returns to its baseline, and a count cannot observe an
 //! access after a free — so a use-after-free in the shim passes them.
 //!
-//! ```sh
-//! env MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
-//!   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
-//! ```
+//! `CONTRIBUTING.md` step 10 is the command, and records why each part of it is
+//! load-bearing. What belongs here is the reason it is opt-in: the sanitizer runtime
+//! is a process-wide dependency that a released artifact must not carry, and it is
+//! linked into this package's own test binaries alone, so a build that consumed the
+//! instrumented shim from elsewhere would fail to resolve its symbols.
 //!
-//! Every part of that command is load-bearing. The runtime is attached with
-//! `cargo::rustc-link-arg`, which Cargo applies to the emitting package's own
-//! binaries and tests and does not propagate to a consumer, so a wider build
-//! instruments the shim and then fails to link everything downstream of it. The
-//! separate target directory keeps the instrumented library out of the one the
-//! ordinary verification steps read from. And the sanitizer halts on its first
-//! violation and aborts the process, which is every test thread at once, so one run
-//! names one defect.
-//!
-//! It is opt-in rather than always on because the sanitizer runtime is a
-//! process-wide dependency that the released library must not carry. Running it
-//! needs the capture scenarios to actually capture, which needs Screen Recording
-//! granted to the test process; `mado_pilot_asan` is published below so that a
-//! scenario which cannot reach a capture fails this build instead of skipping.
+//! Running it needs the capture scenarios to actually capture, which needs Screen
+//! Recording granted to the test process; `mado_pilot_asan` is published below so
+//! that a scenario which cannot reach a capture fails this build instead of skipping.
 
 /// Reads whether this build was asked for an AddressSanitizer-instrumented shim.
 ///

@@ -17,6 +17,7 @@
 
 use std::ffi::c_void;
 use std::fmt;
+use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
 use std::thread;
@@ -159,6 +160,74 @@ impl Reconfigure {
     }
 }
 
+/// Owns the callback registration for the window in which `open` can still fail.
+///
+/// [`Arc::into_raw`] hands the shim a strong reference that only
+/// [`NativeSession::drop`] reclaims, and two exits sit between that hand-off and a
+/// `NativeSession` existing to perform it. Either one leaked the session core with a
+/// live capture inside it, so a caller that gave up on a slow open was told the open
+/// failed while its screen was still being captured by something nothing could reach.
+///
+/// So the window gets an owner, and it performs the same teardown
+/// [`NativeSession::drop`] does — including the same rule about when the reference may
+/// be reclaimed at all.
+///
+/// The core is borrowed rather than held. The guard's whole life is one call, and an
+/// owned clone would have to be released by `into_owned` on the success path — which
+/// `ManuallyDrop` cannot do, because suppressing the drop suppresses the fields with
+/// it. That was measured: a core leaked on every successful open, and through it the
+/// frame the stream still held, so a contained failure at teardown then reported a
+/// native object left alive.
+struct PendingRegistration<'core> {
+    core: &'core Arc<SessionCore>,
+    registered: *const SessionCore,
+}
+
+impl<'core> PendingRegistration<'core> {
+    /// Hands a strong reference to the shim and takes responsibility for it.
+    fn new(core: &'core Arc<SessionCore>) -> Self {
+        Self {
+            core,
+            // The shim keeps this address until a fence proves no callback holds it.
+            registered: Arc::into_raw(Arc::clone(core)),
+        }
+    }
+
+    fn context(&self) -> *mut c_void {
+        self.registered.cast::<c_void>().cast_mut()
+    }
+
+    /// Hands the registration to the session that will own it from here.
+    ///
+    /// `ManuallyDrop` rather than `mem::forget`, because the workspace lints ask for
+    /// an FFI ownership transfer to be an explicit step rather than a leak that
+    /// happens to be intended.
+    fn into_owned(self) -> *const SessionCore {
+        ManuallyDrop::new(self).registered
+    }
+}
+
+impl Drop for PendingRegistration<'_> {
+    fn drop(&mut self) {
+        self.core.reconfigure.shutdown();
+        if let Some(session) = self.core.session.get() {
+            session.disable_callbacks();
+            let fenced = session.fence(DEFAULT_NATIVE_WAIT);
+            let _closed = session.close(DEFAULT_NATIVE_WAIT);
+            if fenced.is_err() {
+                // The rule `NativeSession::drop` follows, for the same reason: a
+                // callback still in flight would read freed state, and one leaked
+                // core is a bounded cost against that.
+                return;
+            }
+        }
+        // SAFETY: this came from `Arc::into_raw` in `new`, no other owner exists on
+        // this path, and either no native session was ever registered against it or a
+        // fence has proved that no callback can reach it.
+        drop(unsafe { Arc::from_raw(self.registered) });
+    }
+}
+
 impl NativeSession {
     /// Opens and starts a session for the target `metadata` describes.
     pub(crate) fn open(
@@ -214,8 +283,7 @@ impl NativeSession {
             clock_anchor: anchor,
         });
 
-        // The shim keeps this address until a fence proves no callback holds it.
-        let registered = Arc::into_raw(Arc::clone(&core));
+        let pending = PendingRegistration::new(&core);
         let request = OpenRequest {
             kind: key.native_kind(),
             native_id: key.native_id(),
@@ -225,25 +293,17 @@ impl NativeSession {
             wait: native_wait(operation),
             testing_raise_sites,
         };
-        let session = match shim::Session::open(
-            &request,
-            registered.cast::<c_void>().cast_mut(),
-            on_frame,
-            on_stopped,
-        ) {
-            Ok(session) => session,
-            Err(status) => {
-                // The shim registered nothing, so the reference is reclaimed here
-                // rather than quarantined.
-                // SAFETY: `registered` came from `Arc::into_raw` above and no
-                // other owner exists on this path.
-                drop(unsafe { Arc::from_raw(registered) });
-                return Err(open_error(status, key.kind()));
-            }
-        };
-        core.session
-            .set(session)
-            .map_err(|_| CaptureFault::SourceInvalid)?;
+        // Every exit from here to the `NativeSession` below drops `pending`, which
+        // closes whatever was opened and reclaims the registration.
+        let session = shim::Session::open(&request, pending.context(), on_frame, on_stopped)
+            .map_err(|status| open_error(status, key.kind()))?;
+        if let Err(unused) = core.session.set(session) {
+            // Unreachable: the `OnceLock` was created a few statements above and
+            // nothing else can have set it. Handled rather than discarded so that the
+            // session which never reached `core` is closed by something visible.
+            drop(unused);
+            return Err(CaptureFault::SourceInvalid.into());
+        }
         operation.checkpoint()?;
 
         spawn_reconfigure_worker(&core, reconfigure);
@@ -259,6 +319,8 @@ impl NativeSession {
             QueuePolicy::new(std::num::NonZeroU32::MIN, OverflowPolicy::Reject)
                 .with_retained_storage(DETACHED_BUFFER_BUDGET),
         );
+        // Consumed before `core` moves, which is also what ends the guard's borrow.
+        let registered = pending.into_owned();
         let session = Arc::new(Self {
             description,
             core,
@@ -807,19 +869,21 @@ fn lock_with_operation<'mutex>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::Duration;
 
-    use mado_pilot_capture::CaptureFault;
+    use mado_pilot_capture::{CaptureFault, StreamState};
     use mado_pilot_core::{
-        CancellationToken, MonotonicInstant, Operation, OperationContext, PixelExtent, Scale,
-        TargetKind, TargetPlacement,
+        CancellationToken, IdentityIssuer, MonotonicInstant, Operation, OperationContext,
+        PixelExtent, Scale, TargetKind, TargetPlacement,
     };
 
+    use crate::discovery::NativeKey;
+
     use super::{
-        MAX_NATIVE_WAIT, Published, Reconfigure, UNSETTLED_BEFORE_RECONFIGURE, continuity_against,
-        frame_time, native_wait, normalize_native_fault, should_reconfigure, surface_request,
-        target_fault,
+        MAX_NATIVE_WAIT, PendingRegistration, Published, Reconfigure, SessionCore, TransitionState,
+        UNSETTLED_BEFORE_RECONFIGURE, continuity_against, frame_time, native_wait,
+        normalize_native_fault, should_reconfigure, surface_request, target_fault,
     };
 
     #[test]
@@ -880,6 +944,76 @@ mod tests {
         let open = OperationContext::new();
         let unbounded = Operation::admit(&open).expect("admitted");
         assert_eq!(native_wait(&unbounded), MAX_NATIVE_WAIT);
+    }
+
+    /// Builds a session core with no native session behind it.
+    ///
+    /// Enough for the registration's own accounting, which is what the case below is
+    /// about, and reachable on any host because it opens nothing.
+    fn unregistered_core() -> Arc<SessionCore> {
+        let issuer = IdentityIssuer::new();
+        let extent = PixelExtent::new(64, 48);
+        let placement = TargetPlacement::new(
+            (0.0, 0.0),
+            (64.0, 48.0),
+            Scale::new(1.0, 1.0).expect("scale"),
+        )
+        .expect("placement");
+        Arc::new(SessionCore {
+            key: NativeKey::Display(1),
+            target_kind: TargetKind::Display,
+            state: StreamState::with_target_extent(issuer.issue_stream().expect("stream identity")),
+            session: OnceLock::new(),
+            transition: Mutex::new(TransitionState {
+                extent,
+                surface: extent,
+                placement,
+                movement_not_before: None,
+                unsettled_streak: 0,
+                published: None,
+            }),
+            reconfigure: Arc::new(Reconfigure::default()),
+            clock_anchor: (0, MonotonicInstant::from_origin(Duration::ZERO)),
+        })
+    }
+
+    #[test]
+    fn an_open_that_never_reached_a_session_reclaims_what_it_registered() {
+        let core = unregistered_core();
+        assert_eq!(Arc::strong_count(&core), 1);
+
+        let pending = PendingRegistration::new(&core);
+        assert_eq!(
+            Arc::strong_count(&core),
+            2,
+            "the core itself, and the reference the shim is handed"
+        );
+
+        // Every exit between the shim taking the context and a NativeSession existing
+        // to reclaim it comes through here. Two of them used to leak the core with a
+        // live capture inside it.
+        drop(pending);
+        assert_eq!(
+            Arc::strong_count(&core),
+            1,
+            "an interrupted open leaves nothing registered against the core"
+        );
+    }
+
+    #[test]
+    fn a_registration_handed_on_outlives_the_guard() {
+        let core = unregistered_core();
+        let registered = PendingRegistration::new(&core).into_owned();
+        assert_eq!(
+            Arc::strong_count(&core),
+            2,
+            "the guard is gone and the reference it handed the shim is not"
+        );
+
+        // What NativeSession::drop does with it once a fence has succeeded.
+        // SAFETY: `registered` came from one `Arc::into_raw` and is consumed once.
+        drop(unsafe { Arc::from_raw(registered) });
+        assert_eq!(Arc::strong_count(&core), 1);
     }
 
     #[test]
@@ -1009,7 +1143,7 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         let context = OperationContext::new().with_cancellation(token);
-        let gate = std::sync::Mutex::new(());
+        let gate = Mutex::new(());
 
         let error = super::lock_with_operation(&gate, &context).expect_err("cancelled");
 

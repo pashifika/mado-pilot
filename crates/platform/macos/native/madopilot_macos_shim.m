@@ -407,6 +407,26 @@ static bool mp_shim_admission_enter(MPShimAdmission *admission) {
     return admitted;
 }
 
+/*
+ * Admits the producer's one terminal report.
+ *
+ * A second door rather than the one above, because the report's own first act is
+ * to stop admitting frames: a gate that `accepting == false` closes would refuse
+ * the very callback that closes it, which is how the stop report came to sit
+ * outside the fence entirely. `fenced` is still honoured, and that is the whole
+ * rule — after a successful fence the caller may have released the state this
+ * report would reach, so a stop arriving then is dropped rather than delivered.
+ */
+static bool mp_shim_admission_enter_final(MPShimAdmission *admission) {
+    pthread_mutex_lock(&admission->mutex);
+    bool admitted = !admission->fenced;
+    if (admitted) {
+        admission->active += 1;
+    }
+    pthread_mutex_unlock(&admission->mutex);
+    return admitted;
+}
+
 static void mp_shim_admission_leave(MPShimAdmission *admission) {
     pthread_mutex_lock(&admission->mutex);
     if (admission->active > 0) {
@@ -470,16 +490,45 @@ struct mp_shim_inventory {
     CFTypeRef entries; /* NSArray<MPShimInventoryEntry *> */
 };
 
+/*
+ * One capture session.
+ *
+ * # Lifetime
+ *
+ * Three parties can dereference this allocation and none of them is its owner in
+ * any order the others can predict: a detached frame returning its lease, the
+ * stream output object delivering a sample or a stop, and the Rust handle that
+ * opened it. So the allocation is counted rather than owned. Every party that can
+ * dereference it holds a reference for as long as it can, and
+ * `mp_shim_session_abandon` runs when the last of them lets go. Releasing the
+ * handle without closing it therefore frees nothing on its own, which is why
+ * `mp_shim_session_release` closes first.
+ *
+ * Close is also what breaks the one ownership cycle here: `output` retains the
+ * stream output object, and that object holds a reference to this session for its
+ * whole lifetime. A path that released a session handle without closing it would
+ * leak both.
+ */
 struct mp_shim_session {
     uint32_t magic;
+    /* One for the Rust handle at open, plus one per party listed above. */
+    atomic_uint refs;
     MPShimAdmission admission;
 
     uint32_t kind;
     uint64_t native_id;
     uint32_t testing_raise_sites;
 
-    /* Native ownership. Each slot is retained exactly once and released by
-     * mp_shim_session_close, which is idempotent. */
+    /*
+     * Native ownership. Each slot is retained exactly once and released by
+     * mp_shim_session_close, which is idempotent.
+     *
+     * `native_mutex` guards the slots themselves rather than the objects in them.
+     * Reading one and retaining it are two instructions, and a close landing
+     * between them retained a freed object; the mutex makes the pair atomic. It is
+     * never held across a release, a framework message, or a callback.
+     */
+    pthread_mutex_t native_mutex;
     CFTypeRef stream;
     CFTypeRef configuration;
     CFTypeRef filter;
@@ -508,6 +557,8 @@ struct mp_shim_frame {
     bool owns_buffer;
     CVPixelBufferRef buffer;
     mp_shim_frame_info info;
+    /* Counted for the frame's whole life. A detached frame outliving its session
+     * still returns its lease through this pointer. */
     struct mp_shim_session *session;
 };
 
@@ -518,6 +569,34 @@ struct mp_shim_frame {
 
 @implementation MPShimInventoryEntry
 @end
+
+#pragma mark - Session reference count
+
+/*
+ * Runs when the last reference goes. Reached only through mp_shim_session_unref,
+ * which is the only place this allocation is freed.
+ *
+ * Every native object the session owned is released by mp_shim_session_close, so
+ * what this destroys is the bookkeeping: the synchronization objects, the magic
+ * that makes a stale handle detectable, and the allocation.
+ */
+static void mp_shim_session_abandon(struct mp_shim_session *session) {
+    mp_shim_admission_destroy(&session->admission);
+    pthread_mutex_destroy(&session->native_mutex);
+    pthread_mutex_destroy(&session->pool_mutex);
+    session->magic = 0;
+    free(session);
+}
+
+static void mp_shim_session_retain(struct mp_shim_session *session) {
+    atomic_fetch_add(&session->refs, 1u);
+}
+
+static void mp_shim_session_unref(struct mp_shim_session *session) {
+    if (atomic_fetch_sub(&session->refs, 1u) == 1u) {
+        mp_shim_session_abandon(session);
+    }
+}
 
 #pragma mark - Geometry helpers
 
@@ -1152,6 +1231,9 @@ mp_shim_status mp_shim_frame_detach(mp_shim_frame *borrowed, mp_shim_frame **out
     frame->info.content_origin_y = 0.0;
     frame->info.surface_width = width;
     frame->info.surface_height = height;
+    /* The lease outlives the caller's session handle if the caller keeps the
+     * frame, and returning it reads the session, so the frame keeps it alive. */
+    mp_shim_session_retain(session);
     frame->session = session;
     *out = frame;
     return MP_SHIM_OK;
@@ -1162,15 +1244,20 @@ void mp_shim_frame_release(mp_shim_frame *frame) {
     if (frame == NULL || frame->magic != MP_SHIM_FRAME_MAGIC || !frame->owns_buffer) {
         return;
     }
+    struct mp_shim_session *session = frame->session;
     @try {
-        mp_shim_pool_return(frame->session, frame->buffer);
+        mp_shim_pool_return(session, frame->buffer);
     } @catch (NSException *exception) {
         (void)exception;
     } @catch (...) {
     }
     frame->buffer = NULL;
+    frame->session = NULL;
     frame->magic = 0;
     free(frame);
+    /* Last, because the line above is the final read of session state and this may
+     * be the reference the session was waiting on. */
+    mp_shim_session_unref(session);
 }
 
 mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *destination,
@@ -1213,11 +1300,38 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 
 #pragma mark - Stream output
 
+/*
+ * The stream's output and its delegate, which are one object here.
+ *
+ * It holds a counted reference to its session from the moment it adopts one until
+ * it is deallocated, and nothing ever clears the pointer. That is deliberate, and
+ * the obvious alternative is what this replaces: close used to null the pointer
+ * after the fence, which protects nothing, because a callback that has already
+ * loaded it into a local still holds the address. Keeping the reference makes the
+ * property structural instead — while this object is alive, its session is — so
+ * the callbacks below dereference it without further synchronization, and what
+ * stops a late callback from doing work is admission, which is what admission is
+ * for.
+ */
 @interface MPShimStreamOutput : NSObject
-@property(nonatomic, assign) struct mp_shim_session *session;
+- (void)adoptSession:(struct mp_shim_session *)session;
 @end
 
-@implementation MPShimStreamOutput
+@implementation MPShimStreamOutput {
+    struct mp_shim_session *_session;
+}
+
+- (void)adoptSession:(struct mp_shim_session *)session {
+    mp_shim_session_retain(session);
+    _session = session;
+}
+
+- (void)dealloc {
+    if (_session != NULL) {
+        mp_shim_session_unref(_session);
+        _session = NULL;
+    }
+}
 
 - (void)stream:(id)stream
     didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
@@ -1226,7 +1340,7 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
     if (type != MPShimStreamOutputTypeScreen) {
         return;
     }
-    struct mp_shim_session *session = self.session;
+    struct mp_shim_session *session = _session;
     if (session == NULL || session->magic != MP_SHIM_SESSION_MAGIC) {
         return;
     }
@@ -1375,24 +1489,38 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 
 - (void)stream:(id)stream didStopWithError:(NSError *)error {
     (void)stream;
-    struct mp_shim_session *session = self.session;
+    struct mp_shim_session *session = _session;
     if (session == NULL || session->magic != MP_SHIM_SESSION_MAGIC) {
         return;
     }
-    /* The producer has ended. Admission stops before the report, so no frame is
-     * admitted after the stop the caller is about to observe. */
-    mp_shim_admission_stop(&session->admission);
-    bool expected = false;
-    if (!atomic_compare_exchange_strong(&session->stop_reported, &expected, true)) {
+    /*
+     * Inside the fence, through the door that exists for a terminal report. Without
+     * it the fence could observe no callback in flight and return while this one was
+     * still reporting, after which the caller reclaims the state `callback_context`
+     * points at — which is the one thing a successful fence promises cannot happen.
+     * A refusal here means the fence already succeeded, so there is no caller state
+     * left to report to and the stop is dropped rather than delivered.
+     */
+    if (!mp_shim_admission_enter_final(&session->admission)) {
         return;
     }
-    if (session->stopped_callback != NULL) {
-        @try {
-            session->stopped_callback(session->callback_context, mp_shim_error_status(error));
-        } @catch (NSException *exception) {
-            (void)exception;
-        } @catch (...) {
+    @try {
+        /* The producer has ended. Admission stops before the report, so no frame is
+         * admitted after the stop the caller is about to observe. */
+        mp_shim_admission_stop(&session->admission);
+        bool expected = false;
+        if (atomic_compare_exchange_strong(&session->stop_reported, &expected, true) &&
+            session->stopped_callback != NULL) {
+            @try {
+                session->stopped_callback(session->callback_context, mp_shim_error_status(error));
+            } @catch (NSException *exception) {
+                (void)exception;
+            } @catch (...) {
+            }
         }
+    } @finally {
+        /* Decremented here so a thrown exception cannot strand the fence. */
+        mp_shim_admission_leave(&session->admission);
     }
 }
 
@@ -1431,11 +1559,34 @@ static id mp_shim_find_native_target(const MPShimFramework *framework, uint32_t 
     return nil;
 }
 
-static void mp_shim_session_abandon(struct mp_shim_session *session) {
-    mp_shim_admission_destroy(&session->admission);
-    pthread_mutex_destroy(&session->pool_mutex);
-    session->magic = 0;
-    free(session);
+/*
+ * Reads one native slot and retains what it holds, as one step.
+ *
+ * The two halves are what needed joining. ARC does retain the strong local, so the
+ * object cannot be deallocated once this returns — but a close landing between the
+ * read and that retain retains an object it has already released. Holding
+ * `native_mutex` across the pair is the whole fix; the lock is released before the
+ * caller sends the object anything.
+ */
+static id mp_shim_session_copy_slot(struct mp_shim_session *session, CFTypeRef *slot) {
+    id native = nil;
+    pthread_mutex_lock(&session->native_mutex);
+    if (*slot != NULL) {
+        /* Assigning a __bridge cast to a strong local is the retain. */
+        native = (__bridge id)*slot;
+    }
+    pthread_mutex_unlock(&session->native_mutex);
+    return native;
+}
+
+static id<MPShimStream> mp_shim_session_copy_stream(struct mp_shim_session *session) {
+    return (id<MPShimStream>)mp_shim_session_copy_slot(session, &session->stream);
+}
+
+static id<MPShimStreamConfiguration> mp_shim_session_copy_configuration(
+    struct mp_shim_session *session) {
+    return (id<MPShimStreamConfiguration>)mp_shim_session_copy_slot(session,
+                                                                    &session->configuration);
 }
 
 mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim_session **out) {
@@ -1526,7 +1677,10 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
         return MP_SHIM_PLATFORM_FAILURE;
     }
     session->magic = MP_SHIM_SESSION_MAGIC;
+    /* The Rust handle's reference. Every other holder adds its own. */
+    atomic_store(&session->refs, 1u);
     mp_shim_admission_init(&session->admission);
+    pthread_mutex_init(&session->native_mutex, NULL);
     pthread_mutex_init(&session->pool_mutex, NULL);
     session->kind = request->kind;
     session->native_id = request->native_id;
@@ -1540,15 +1694,14 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     atomic_store(&session->closed, false);
     atomic_store(&session->stop_reported, false);
 
-    output.session = session;
     NSError *output_error = nil;
     BOOL added = NO;
     /*
      * The session is a raw allocation at this point, so it is not covered by the ARC
      * locals that make every other failure here release what it owns. A raise from
      * `addStreamOutput` would unwind straight to MP_SHIM_END and leak the allocation
-     * with its initialized mutex and admission, so the raise is caught here, the
-     * allocation is abandoned, and the exception continues to the boundary handler.
+     * with its initialized mutexes and admission, so the raise is caught here, the
+     * one reference is dropped, and the exception continues to the boundary handler.
      */
     @try {
         added = [stream addStreamOutput:output
@@ -1556,16 +1709,21 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
                     sampleHandlerQueue:queue
                                  error:&output_error];
     } @catch (...) {
-        output.session = NULL;
-        mp_shim_session_abandon(session);
+        mp_shim_session_unref(session);
         @throw;
     }
     if (!added) {
-        output.session = NULL;
-        mp_shim_session_abandon(session);
+        mp_shim_session_unref(session);
         return mp_shim_error_status(output_error);
     }
     atomic_store(&session->output_added, true);
+    /*
+     * Adopted after the registration rather than before it, so that the two failures
+     * above have exactly one reference to drop. Nothing is delivered in between: the
+     * framework produces no sample until the capture starts, and reports no stop for
+     * a stream that never did.
+     */
+    [output adoptSession:session];
 
     /* The last failure point has passed. Take ownership. */
     session->stream = CFBridgingRetain(stream);
@@ -1591,15 +1749,36 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
         return MP_SHIM_CLOSED;
     }
     MP_SHIM_BEGIN
-    id<MPShimStream> stream = (__bridge id<MPShimStream>)session->stream;
+    id<MPShimStream> stream = mp_shim_session_copy_stream(session);
     if (stream == nil) {
         return MP_SHIM_CLOSED;
     }
     __block NSError *failure = nil;
     dispatch_semaphore_t ready = dispatch_semaphore_create(0);
+    /*
+     * The completion block settles the start rather than reporting it, because a
+     * start can outlive the wait below. When that happened, `started` stayed false
+     * forever, close skipped its stop on that condition, and a late success left
+     * screen capture running with nothing tracking it. So the block records the
+     * outcome, and if it succeeded after teardown had already run, it stops the
+     * producer itself. Both it and close may end up stopping the stream, and the
+     * second stop reports that it was already in that state, which close treats as
+     * the success it is.
+     */
+    mp_shim_session_retain(session);
     [stream startCaptureWithCompletionHandler:^(NSError *error) {
       failure = error;
+      if (error == nil) {
+          atomic_store(&session->started, true);
+          if (atomic_load(&session->closed)) {
+              [stream stopCaptureWithCompletionHandler:^(NSError *stopped) {
+                (void)stopped;
+              }];
+              atomic_store(&session->started, false);
+          }
+      }
       dispatch_semaphore_signal(ready);
+      mp_shim_session_unref(session);
     }];
     mp_shim_status waited = mp_shim_wait(ready, timeout_nanos);
     if (waited != MP_SHIM_OK) {
@@ -1608,7 +1787,8 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
     if (failure != nil) {
         return mp_shim_error_status(failure);
     }
-    atomic_store(&session->started, true);
+    /* `started` is the block's to set, so that one writer owns it whether or not the
+     * wait above was the thing that observed the outcome. */
     if ((session->testing_raise_sites & MP_SHIM_RAISE_AT_START) != 0) {
         [NSException raise:@"MPShimInjectedFailure" format:@"session start"];
     }
@@ -1626,9 +1806,8 @@ mp_shim_status mp_shim_session_reconfigure(mp_shim_session *session, uint32_t pi
         return MP_SHIM_CLOSED;
     }
     MP_SHIM_BEGIN
-    id<MPShimStream> stream = (__bridge id<MPShimStream>)session->stream;
-    id<MPShimStreamConfiguration> configuration =
-        (__bridge id<MPShimStreamConfiguration>)session->configuration;
+    id<MPShimStream> stream = mp_shim_session_copy_stream(session);
+    id<MPShimStreamConfiguration> configuration = mp_shim_session_copy_configuration(session);
     if (stream == nil || configuration == nil) {
         return MP_SHIM_CLOSED;
     }
@@ -1686,8 +1865,8 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
     mp_shim_status reported = MP_SHIM_OK;
     @try {
         mp_shim_admission_stop(&session->admission);
-        id<MPShimStream> stream = (__bridge id<MPShimStream>)session->stream;
-        id output = (__bridge id)session->output;
+        id<MPShimStream> stream = mp_shim_session_copy_stream(session);
+        id output = mp_shim_session_copy_slot(session, &session->output);
 
         if (stream != nil && atomic_load(&session->output_added)) {
             NSError *removed = nil;
@@ -1726,9 +1905,14 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
         if (fenced != MP_SHIM_OK && reported == MP_SHIM_OK) {
             reported = fenced;
         }
-        if (output != nil) {
-            ((MPShimStreamOutput *)output).session = NULL;
-        }
+        /*
+         * The output object's session pointer is deliberately left alone. Clearing it
+         * here is what this used to do, and it protected nothing: a callback that has
+         * already read the pointer holds the address whatever this writes afterwards.
+         * The object holds a counted reference instead, so the fence above is what
+         * makes it safe for the caller to release its own state, and the release
+         * below is what lets the object — and with it that reference — go.
+         */
 
         if ((session->testing_raise_sites & MP_SHIM_RAISE_AT_TEARDOWN) != 0) {
             [NSException raise:@"MPShimInjectedFailure" format:@"teardown"];
@@ -1744,6 +1928,13 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
          * cleanup. The order is the stream, then the objects it was built from,
          * then the queue that delivered to it, then the detached pool.
          *
+         * The slots are emptied under `native_mutex` and released after it, never
+         * under it. Two reasons, and the second is the sharper one: a read-and-retain
+         * elsewhere must not see a slot whose object this has already released, and
+         * releasing the output object here runs its `dealloc`, which drops the
+         * session reference it holds — so holding the mutex across that release would
+         * be holding a mutex that the last reference destroys.
+         *
          * Its own handlers, because an exception raised inside a @finally is not
          * caught by the @catch pair belonging to the same @try — it leaves the
          * function. This entry point opens a bare @try rather than MP_SHIM_BEGIN, so
@@ -1752,31 +1943,27 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
          * close.
          */
         @try {
-            if (session->stream != NULL) {
-                CFRelease(session->stream);
-                session->stream = NULL;
-                mp_shim_note_released();
+            CFTypeRef released[5];
+            pthread_mutex_lock(&session->native_mutex);
+            released[0] = session->stream;
+            released[1] = session->output;
+            released[2] = session->configuration;
+            released[3] = session->filter;
+            released[4] = session->queue;
+            session->stream = NULL;
+            session->output = NULL;
+            session->configuration = NULL;
+            session->filter = NULL;
+            session->queue = NULL;
+            pthread_mutex_unlock(&session->native_mutex);
+
+            for (size_t slot = 0; slot < 5; slot += 1) {
+                if (released[slot] != NULL) {
+                    CFRelease(released[slot]);
+                    mp_shim_note_released();
+                }
             }
-            if (session->output != NULL) {
-                CFRelease(session->output);
-                session->output = NULL;
-                mp_shim_note_released();
-            }
-            if (session->configuration != NULL) {
-                CFRelease(session->configuration);
-                session->configuration = NULL;
-                mp_shim_note_released();
-            }
-            if (session->filter != NULL) {
-                CFRelease(session->filter);
-                session->filter = NULL;
-                mp_shim_note_released();
-            }
-            if (session->queue != NULL) {
-                CFRelease(session->queue);
-                session->queue = NULL;
-                mp_shim_note_released();
-            }
+
             pthread_mutex_lock(&session->pool_mutex);
             /* Unlocked in @finally for the reason mp_shim_pool_acquire is. */
             @try {
@@ -1798,10 +1985,17 @@ void mp_shim_session_release(mp_shim_session *session) {
     if (!mp_shim_session_valid(session)) {
         return;
     }
+    /*
+     * Closing is not a courtesy here. It releases the stream output object, and that
+     * object holds the reference that completes an ownership cycle with this session,
+     * so a release that skipped the close would leak both rather than freeing either.
+     */
     if (!atomic_load(&session->closed)) {
         (void)mp_shim_session_close(session, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
     }
-    mp_shim_session_abandon(session);
+    /* Drops the handle's reference. A frame the caller still holds, or a callback
+     * still in flight, keeps the allocation alive past this point. */
+    mp_shim_session_unref(session);
 }
 
 mp_shim_status mp_shim_session_leased(const mp_shim_session *session, uint64_t *out_leased) {

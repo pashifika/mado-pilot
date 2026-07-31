@@ -775,7 +775,7 @@ responsibilities a later phase takes on.
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
 | Windows native capture ownership policy | Implemented for the production Adapter's two-frame WGC pool, finite 40-texture detached budget, lease-safe reuse, resize retirement, callback fence, and teardown; the revision-bound acceptance matrix and Phase 2 `G-013` budgets remain open |
 | macOS shim language and containment rules | Decided in [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the retained `G-003` measurements, and implemented in `mado-pilot-platform-macos` with the containment, ownership, autorelease, fence, teardown, panic, and linkage tests the record named. The containment and ownership cases need a host that has granted Screen Recording and report a skip elsewhere |
-| macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, and idempotent teardown; the detached budget is a reviewed rather than a measured bound and the Phase 2 `G-013` budgets remain open |
+| macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, reference-counted native session lifetime, and idempotent teardown. The lifetime is verified by running the ownership scenarios with the shim compiled under AddressSanitizer, which is step 10 of the [contributing](../CONTRIBUTING.md) sequence and needs the same granted host those scenarios do; the detached budget is a reviewed rather than a measured bound and the Phase 2 `G-013` budgets remain open |
 | Native window and display capture | Implemented on both targets as directly consumable capture Adapters; native facade wiring remains a later Change |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
@@ -1145,7 +1145,10 @@ hardware, and the extent answers the question being asked.
 A producer surface belongs to a queue of fixed depth, so no public frame owns one.
 The producer callback validates the frame, copies its content into an Adapter-owned
 Core Video buffer from a finite pool, and publishes that detached buffer; a retained
-public frame therefore pins nothing capture needs to make progress. The pool is
+public frame therefore pins nothing capture needs to make progress. What it does keep
+alive is the session's own bookkeeping allocation, because returning its lease reads
+that state — not a producer surface, not the pool, and not the stream, all of which
+close releases whether or not a frame is still held. The pool is
 non-blocking in both directions: exhaustion and lock contention both produce an
 observable sequence gap rather than a wait, an overwrite, or an unbounded
 allocation. Eight buffers is a reviewed bound rather than a measured one — these are
@@ -1211,7 +1214,24 @@ finishes. Release completes even when close reports a failure, and a close failu
 is reported once rather than by every later close. The strong reference the shim
 holds as its callback context is reclaimed only after a fence proves no callback can
 reach it; if a fence never succeeds, that one reference stays quarantined rather
-than being freed under a live callback.
+than being freed under a live callback. That fence covers the producer's terminal
+stop report as well as its frames, which is what makes the reference safe to reclaim
+at all — a stop arriving after a successful fence is dropped rather than delivered,
+because by then the state it would report to may be gone and the caller is being told
+the outcome of its own close instead.
+
+An open that is interrupted before it returns tears down whatever it had reached. The
+registration handed to the shim, and the native session once there is one, are owned
+for the whole window in which an open can still fail, so a caller whose deadline
+expires mid-open is not told the open failed while capture continues behind it.
+
+The session's own native allocation is reference counted rather than owned by the
+handle, because a retained frame, a producer callback, and the handle can each be the
+last to let go of it in orders none of them can predict.
+[ADR 0012](adr/0012-macos-shim-language-and-containment.md) records the rule and its
+two load-bearing consequences: close is what breaks the ownership cycle between a
+session and its stream output, and the output's session pointer is never cleared
+because clearing a pointer another thread has already read protects nothing.
 
 A producer that stops on its own is classified from what the framework names, and
 this is where the macOS Adapter differs from the Windows one. Windows Graphics

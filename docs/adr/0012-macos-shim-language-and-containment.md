@@ -98,7 +98,11 @@ output values written through validated pointers. Its rules are:
    a native object leaks it, which is what the injected failures measured.
 3. **Ownership.** Native objects are owned by the session and released on close.
    Frames handed to a callback are borrowed for the duration of the call; retaining
-   one is an explicit act with an explicit release, never the default.
+   one is an explicit act with an explicit release, never the default. **Extended by
+   the implementation; see [Amendment: the session's own
+   lifetime](#amendment-the-sessions-own-lifetime).** The rule as written covers the
+   objects a session holds and says nothing about the session's own allocation, which
+   turned out to have no owner at all.
 4. **Autorelease.** Each frame work item wraps its body in `@autoreleasepool`.
 5. **Callback fence.** Callback admission is guarded by a disable-and-drain fence
    that returns only when no callback is in flight, after which the caller may
@@ -160,6 +164,62 @@ first version of it passed against a binary that never contained the boundary. T
 second is that the unsupported host itself is still not exercised, for the same
 reason the prototype could not exercise it: the framework is present on every host
 available to this repository's verification.
+
+## Amendment: the session's own lifetime
+
+Recorded on 2026-08-01 by the Change that implemented the boundary, after a review
+pass found three use-after-free defects in one place. It extends rule 3 above and
+nothing else: the language, the exception flag, and the other rules stand as measured.
+Rule 5 in particular is not amended — one of the three defects was a callback that did
+not meet it, and the fix makes the existing wording true rather than changing it.
+
+Rule 3 says native objects are owned by the session. Nothing said who owns the
+session. Three parties reached `struct mp_shim_session` through a raw pointer — a
+detached frame returning its lease, the stream output object delivering a sample or a
+stop, and the Rust handle — and the handle's release destroyed both mutexes and freed
+the allocation without consulting either of the others. All three orderings are
+reachable, and the first was not a race at all: retain a published frame, close the
+session, drop the frame, and the lease is returned through freed memory.
+
+**The session's allocation is therefore reference counted, and the count is the rule.**
+Every party that can dereference the pointer holds a reference for as long as it can,
+and the allocation outlives the last of them. Four parties do: the Rust handle from
+open until release, a detached frame from its detach until its release, the stream
+output object for its whole lifetime, and the capture-start completion block for the
+duration of the block. Releasing the handle no longer frees anything by itself.
+
+Two consequences are part of the decision rather than incidental to it.
+
+**Close breaks an ownership cycle, so releasing a handle without closing it leaks
+both objects.** The session retains the stream output object; that object holds a
+counted reference back. `mp_shim_session_release` closes first when the caller has not,
+which is what makes the cycle unreachable in practice, and that ordering is now load
+bearing rather than a convenience.
+
+**The output object's session pointer is never cleared.** Clearing it after the fence
+is what the implementation used to do, and it protected nothing: a callback that has
+already read the pointer into a local holds the address whatever is written afterwards.
+Holding the reference for the object's whole lifetime makes the property structural
+instead — while the output object is alive, its session is — so the callbacks
+dereference it without further synchronization, and what stops a late callback from
+doing work is admission, which is what rule 5 is for. The residual assumption is that
+the framework does not message a deallocated output object, which is what every
+Objective-C delegate rests on; the shim retains that object itself from open until
+close rather than depending on the framework's own retention to establish it.
+
+What a retained public frame pins is worth stating precisely, because the count could
+be misread as weakening the ownership property the Adapter advertises. A frame keeps
+the session's bookkeeping allocation alive — not a producer surface, not the buffer
+pool, not the stream. Close releases every native object the session held, so a closed
+session still reports no live native object, and a retained frame still pins nothing
+capture needs to make progress.
+
+This amendment also records why it is verifiable at all. The ownership cases rule 3
+is measured by assert that a live native object *count* returns to its baseline, and a
+count cannot observe an access after a free — which is why 72 green cases sat on top of
+the first defect. `CONTRIBUTING.md` step 10 runs the scenarios with the shim compiled
+under AddressSanitizer, and it was confirmed to report the defect before the fix and
+nothing after it. A rule whose violation no check can see is a comment.
 
 ## Alternatives
 

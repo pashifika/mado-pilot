@@ -117,6 +117,11 @@ cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<
 #    macOS adapter compiles under its own target.
 cargo clippy --locked --target x86_64-pc-windows-msvc \
   -p mado-pilot-platform-macos --all-targets -- -D warnings
+
+# 10. macOS host only: the capture scenarios with the native shim instrumented.
+#     Needs Screen Recording granted, and fails rather than skips without it.
+MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
+  -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
 
 Both platform adapters are workspace members on both targets, so step 3 lints each of
@@ -129,6 +134,40 @@ the half a macOS host would otherwise leave to a continuous-integration job:
 - a **Windows** host's step 3 lints the macOS adapter gated away, so it needs no step 9.
   The mirrored command does not exist: targeting `aarch64-apple-darwin` from Windows
   would run the shim's build script, which needs a macOS toolchain.
+
+Step 10 looks for a defect none of the steps above it can see. The macOS ownership
+scenarios assert that a live native object *count* returns to its baseline, and a count
+cannot observe an access after a free — which is how a confirmed use-after-free in the
+native session's lifetime passed 72 green cases. `MADO_PILOT_MACOS_ASAN=1` compiles the
+Objective-C shim under AddressSanitizer and links the sanitizer runtime into that
+package's test binaries; with the variable unset the build is unchanged, and the runtime
+is never part of a released artifact. The Xcode Command Line Tools ship it, so the step
+needs nothing installed that the shim did not already need.
+
+Every part of that command is load-bearing rather than a matter of taste:
+
+- **the single package**, because the runtime is attached with
+  `cargo::rustc-link-arg`, which Cargo applies to the emitting package's own binaries
+  and tests and does not propagate to a consumer. A wider build instruments the shim
+  and then fails to link everything downstream of it;
+- **the separate target directory**, so the instrumented archive never reaches a link
+  that steps 3 through 8 read from — the mixed-cache hazard the section below
+  describes, with a linker error instead of a puzzle;
+- **one test thread**, because the sanitizer halts on its first violation and aborts
+  the process, which is every test thread at once. One run therefore names one defect,
+  and fixing the group it belongs to is an iteration rather than a single report.
+
+Only the shim is instrumented, so the step observes any access the shim makes to freed
+memory and not a freed Rust allocation that Rust dereferences. Covering both sides needs
+`-Zsanitizer=address` on nightly, which the toolchain pin above rules out.
+
+This step is deliberately not a continuous-integration check. A runner has granted no
+Screen Recording, so the capture scenarios cannot run there — and because a sanitizer
+run whose scenarios never captured reports nothing at all, a skip and a pass would be
+the same line of output. The scenarios therefore *fail* under this build rather than
+skipping, which is the same rule the replay symlink tests follow, and which is why the
+step belongs to the macOS verification host alongside step 9 rather than to a job that
+can never satisfy it.
 
 Step 9 names one package rather than the workspace because `--workspace` at another
 target fails in `opencv`'s build script, which looks for an installation for the target
