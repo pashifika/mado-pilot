@@ -18,10 +18,98 @@
 //! system location at runtime, because an eager dependency on a framework that
 //! arrived in 12.3 would make an older host fail to load instead of reporting an
 //! unsupported status.
+//!
+//! `MADO_PILOT_MACOS_ASAN=1` additionally builds the shim under AddressSanitizer.
+//! That mode exists because the session's ownership scenarios assert that a live
+//! native object *count* returns to its baseline, and a count cannot observe an
+//! access after a free — so a use-after-free in the shim passes them.
+//!
+//! ```sh
+//! env MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
+//!   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
+//! ```
+//!
+//! Every part of that command is load-bearing. The runtime is attached with
+//! `cargo::rustc-link-arg`, which Cargo applies to the emitting package's own
+//! binaries and tests and does not propagate to a consumer, so a wider build
+//! instruments the shim and then fails to link everything downstream of it. The
+//! separate target directory keeps the instrumented library out of the one the
+//! ordinary verification steps read from. And the sanitizer halts on its first
+//! violation and aborts the process, which is every test thread at once, so one run
+//! names one defect.
+//!
+//! It is opt-in rather than always on because the sanitizer runtime is a
+//! process-wide dependency that the released library must not carry. Running it
+//! needs the capture scenarios to actually capture, which needs Screen Recording
+//! granted to the test process; `mado_pilot_asan` is published below so that a
+//! scenario which cannot reach a capture fails this build instead of skipping.
+
+/// Reads whether this build was asked for an AddressSanitizer-instrumented shim.
+///
+/// The answer is also published as `mado_pilot_asan`, because a scenario that
+/// cannot reach a live capture has to fail this build rather than skip: the
+/// sanitizer observes a freed access performed *during* a capture, so a run that
+/// captured nothing reports nothing and would otherwise be indistinguishable from
+/// a clean one.
+fn address_sanitizer_requested() -> bool {
+    println!("cargo::rerun-if-env-changed=MADO_PILOT_MACOS_ASAN");
+    println!("cargo::rustc-check-cfg=cfg(mado_pilot_asan)");
+    let requested = std::env::var("MADO_PILOT_MACOS_ASAN").is_ok_and(|value| value == "1");
+    if requested {
+        println!("cargo::rustc-cfg=mado_pilot_asan");
+    }
+    requested
+}
+
+/// Links the sanitizer runtime that the instrumented shim's references need.
+///
+/// Passing `-fsanitize=address` to the link is not enough. `rustc` invokes the
+/// linker driver with `-nodefaultlibs`, under which the driver adds no sanitizer
+/// runtime, and the shim's `__asan_*` references are then reported as undefined
+/// symbols. The runtime is therefore named explicitly, and it is taken from the
+/// resource directory of the compiler that instrumented the shim so that the two
+/// cannot disagree about its version. Its install name is `@rpath`-relative, so
+/// the directory is also added as a run-path.
+fn link_address_sanitizer_runtime(shim: &cc::Build) {
+    let compiler = shim
+        .try_get_compiler()
+        .expect("the shim's compiler is resolvable on macOS");
+    let reported = std::process::Command::new(compiler.path())
+        .arg("-print-resource-dir")
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "MADO_PILOT_MACOS_ASAN needs the resource directory of {}, which \
+                 could not be read: {error}",
+                compiler.path().display()
+            )
+        });
+    assert!(
+        reported.status.success(),
+        "{} reported no resource directory, so the AddressSanitizer runtime cannot \
+         be located",
+        compiler.path().display()
+    );
+    let resource =
+        String::from_utf8(reported.stdout).expect("a compiler resource directory is valid UTF-8");
+    let directory = std::path::Path::new(resource.trim()).join("lib/darwin");
+    let runtime = directory.join("libclang_rt.asan_osx_dynamic.dylib");
+    assert!(
+        runtime.is_file(),
+        "MADO_PILOT_MACOS_ASAN needs {}, which this toolchain does not provide. The \
+         Xcode Command Line Tools ship it; a compiler selected through CC may not.",
+        runtime.display()
+    );
+
+    println!("cargo::rustc-link-arg={}", runtime.display());
+    println!("cargo::rustc-link-arg=-Wl,-rpath,{}", directory.display());
+}
 
 fn main() {
     println!("cargo::rerun-if-changed=native/madopilot_macos_shim.m");
     println!("cargo::rerun-if-changed=native/madopilot_macos_shim.h");
+
+    let sanitize = address_sanitizer_requested();
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         // The package keeps a documented empty seam off macOS and resolves no
@@ -29,15 +117,27 @@ fn main() {
         return;
     }
 
-    cc::Build::new()
-        .file("native/madopilot_macos_shim.m")
+    let mut shim = cc::Build::new();
+    shim.file("native/madopilot_macos_shim.m")
         .include("native")
         .flag("-fobjc-arc")
         .flag("-fobjc-arc-exceptions")
         .define("MP_SHIM_ARC_EXCEPTIONS", "1")
         .warnings(true)
-        .extra_warnings(true)
-        .compile("madopilot_macos_shim");
+        .extra_warnings(true);
+
+    if sanitize {
+        // Instrumenting the shim is what makes the freed access observable, and
+        // linking the runtime into this package's test binaries is what makes the
+        // instrumentation resolvable. The frame pointer is kept so the report
+        // names the shim function that performed the access rather than an
+        // address inside it.
+        shim.flag("-fsanitize=address")
+            .flag("-fno-omit-frame-pointer");
+        link_address_sanitizer_runtime(&shim);
+    }
+
+    shim.compile("madopilot_macos_shim");
 
     for framework in [
         "ApplicationServices",

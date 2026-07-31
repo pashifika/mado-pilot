@@ -77,22 +77,41 @@ struct Harness {
     metadata: TargetMetadata,
 }
 
+/// Names why a scenario cannot run on this host, and returns `None` so it does not.
+///
+/// Every skip is routed through this one place so that a build which cannot tolerate
+/// one is able to refuse it. The sanitizer build is that build: it reports a freed
+/// access performed *during* a live capture, so a run whose scenarios never opened a
+/// stream reports nothing at all — and a skip and a pass are the same line of output.
+/// A green sanitizer run has to mean the capture ran, so there it fails instead.
+/// This is the rule the replay symlink tests already follow: a host that cannot run
+/// the case has proven nothing. `build.rs` records the command and the flag.
+fn skipped<T>(scenario: &str, reason: &str) -> Option<T> {
+    if cfg!(mado_pilot_asan) {
+        panic!("the sanitizer run needs {scenario} to capture, and this host cannot: {reason}");
+    }
+    println!("skipped {scenario}: {reason}");
+    None
+}
+
 /// Returns every currently shareable target, or `None` when this host cannot run
 /// the scenarios.
 fn discovered(scenario: &str) -> Option<Vec<Candidate>> {
     if let Err(error) = ensure_capture_available() {
-        println!("skipped {scenario}: the capture framework is unavailable ({error})");
-        return None;
+        return skipped(
+            scenario,
+            &format!("the capture framework is unavailable ({error})"),
+        );
     }
     match inventory(MAX_NATIVE_WAIT) {
         Ok(candidates) => Some(candidates),
-        Err(error) => {
-            println!(
-                "skipped {scenario}: discovery reported {error}; \
-                 Screen Recording is not granted to the test process"
-            );
-            None
-        }
+        Err(error) => skipped(
+            scenario,
+            &format!(
+                "discovery reported {error}; Screen Recording is not granted to the \
+                 test process"
+            ),
+        ),
     }
 }
 
@@ -112,8 +131,7 @@ impl Harness {
             .into_iter()
             .find(|candidate| candidate.key.kind() == kind)
         else {
-            println!("skipped {scenario}: this host reports no {kind} target");
-            return None;
+            return skipped(scenario, &format!("this host reports no {kind} target"));
         };
         Some(Self::from_candidate(&chosen))
     }
@@ -153,11 +171,11 @@ impl Harness {
                 return Some(harness);
             }
         }
-        println!(
-            "skipped {scenario}: no attached display is currently producing frames, \
-             so nothing would be exercised"
-        );
-        None
+        skipped(
+            scenario,
+            "no attached display is currently producing frames, so nothing would be \
+             exercised",
+        )
     }
 
     fn open(&self, raise_sites: u32) -> mado_pilot_core::Result<Arc<NativeSession>> {
