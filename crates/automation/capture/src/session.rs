@@ -3,9 +3,11 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use mado_pilot_core::{OperationContext, ProviderId, Result, TargetId};
+use mado_pilot_core::{EngineId, OperationContext, ProviderId, Result, TargetId};
 
 use crate::descriptor::{PixelFormat, SessionDescription, TargetDescription};
+use crate::discovery::DiscoveryRequest;
+use crate::fault::CaptureFault;
 use crate::frame::Frame;
 use crate::stream::{FrameRequest, Lifecycle};
 
@@ -75,6 +77,44 @@ pub trait CaptureProvider: Debug + Send + Sync {
     /// Returns the operation's terminal outcome, or a capture failure when the
     /// configured source cannot be read.
     fn discover(&self, operation: &OperationContext) -> Result<Vec<TargetDescription>>;
+
+    /// Lists the targets that satisfy `request`.
+    ///
+    /// The default narrows [`CaptureProvider::discover`], which is what makes a
+    /// filter unable to reach a target the provider did not list and unable to
+    /// change the order it listed them in. An Adapter overrides this only when the
+    /// platform can answer the same question more cheaply, and must then produce
+    /// the same targets in the same order as the default would.
+    ///
+    /// # Errors
+    ///
+    /// As [`CaptureProvider::discover`].
+    fn discover_matching(
+        &self,
+        request: &DiscoveryRequest,
+        operation: &OperationContext,
+    ) -> Result<Vec<TargetDescription>> {
+        let mut targets = self.discover(operation)?;
+        targets.retain(|target| request.accepts(target));
+        Ok(targets)
+    }
+
+    /// Confirms that this provider issued `target`, for `engine`.
+    ///
+    /// Every Adapter performs this check before acting on a caller's target, so
+    /// it is written once here: an identity from another engine or another
+    /// provider names something this provider knows nothing about, and acting on
+    /// its ordinal would operate on an unrelated target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureFault::ForeignTarget`] when either half does not match.
+    fn accepts_target(&self, target: TargetId, engine: EngineId) -> Result<()> {
+        target
+            .check_issued_by(engine, self.provider())
+            .map_err(|_| CaptureFault::ForeignTarget)?;
+        Ok(())
+    }
 
     /// Opens a capture session for `target`.
     ///

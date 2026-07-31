@@ -6,7 +6,7 @@
 //! a replay source and a native one.
 
 use std::fmt;
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use mado_pilot_core::{
@@ -17,6 +17,7 @@ use mado_pilot_core::{
 use crate::descriptor::FrameDescriptor;
 use crate::fault::CaptureFault;
 use crate::frame::Frame;
+use crate::storage::{CpuFrameStorage, FrameStorage};
 
 /// How long a waiter sleeps before re-checking its operation context.
 ///
@@ -123,6 +124,85 @@ impl fmt::Debug for RefusedPublication {
     }
 }
 
+/// One frame an Adapter is asking the stream to publish, as owned storage.
+///
+/// The native counterpart of [`Publication`]. There is no descriptor field: the
+/// storage carries its own, and a second answer to what shape the pixels are
+/// could disagree with it.
+#[derive(Debug)]
+pub struct StoragePublication {
+    /// When the frame was captured, in the engine's monotonic domain.
+    pub captured_at: MonotonicInstant,
+    /// Target placement, when the source declares an authoritative one.
+    pub placement: Option<TargetPlacement>,
+    /// The frame's immutable storage, independent of whatever produced it.
+    pub storage: Arc<dyn FrameStorage>,
+    /// How this frame relates to the previous one.
+    pub continuity: Continuity,
+}
+
+/// A stream refusal that returns the Adapter's unchanged storage.
+///
+/// [`StreamState::publish_storage`] returns this when publication fails before any
+/// authoritative stream state is committed. An Adapter that pools or leases its
+/// storage needs the value back to retire or reuse it, and dropping it inside the
+/// stream would release a lease the Adapter is still accounting for.
+pub struct RefusedStorage {
+    error: Error,
+    publication: StoragePublication,
+}
+
+impl RefusedStorage {
+    fn new(error: Error, publication: StoragePublication) -> Self {
+        Self { error, publication }
+    }
+
+    /// Returns the public error that refused publication.
+    #[must_use]
+    pub const fn error(&self) -> &Error {
+        &self.error
+    }
+
+    /// Returns the unchanged publication.
+    #[must_use]
+    pub const fn publication(&self) -> &StoragePublication {
+        &self.publication
+    }
+
+    /// Consumes the refusal and returns only its public error.
+    #[must_use]
+    pub fn into_error(self) -> Error {
+        self.error
+    }
+
+    /// Consumes the refusal and returns only the unchanged publication.
+    #[must_use]
+    pub fn into_publication(self) -> StoragePublication {
+        self.publication
+    }
+
+    /// Consumes the refusal and returns its error and unchanged publication.
+    #[must_use]
+    pub fn into_parts(self) -> (Error, StoragePublication) {
+        (self.error, self.publication)
+    }
+}
+
+impl fmt::Debug for RefusedStorage {
+    /// Formats the refusal and safe publication metadata, never pixel content.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RefusedStorage")
+            .field("status", &self.error.status())
+            .field("detail", &self.error.detail())
+            .field("captured_at", &self.publication.captured_at)
+            .field("descriptor", &self.publication.storage.descriptor())
+            .field("placement", &self.publication.placement)
+            .field("continuity", &self.publication.continuity)
+            .finish()
+    }
+}
+
 /// Which frame a caller wants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FrameSelection {
@@ -169,15 +249,11 @@ impl Default for FrameRequest {
 }
 
 /// Where a stream is in its lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Lifecycle {
-    /// Publishing and accepting frame requests.
-    Open,
-    /// Close has begun. New work is refused; in-flight waits are unwinding.
-    Closing,
-    /// Closed and drained.
-    Closed,
-}
+///
+/// Re-exported from the core package, where it now lives so that a capture stream
+/// and an input controller answer the question with one type. The name keeps its
+/// place here because it is part of this package's published surface.
+pub use mado_pilot_core::Lifecycle;
 
 /// The published state of one capture stream.
 #[derive(Debug)]
@@ -194,6 +270,7 @@ struct Inner {
     latest: Option<Frame>,
     lifecycle: Lifecycle,
     waiters: usize,
+    terminal: Option<CaptureFault>,
 }
 
 impl StreamState {
@@ -222,6 +299,7 @@ impl StreamState {
                 latest: None,
                 lifecycle: Lifecycle::Open,
                 waiters: 0,
+                terminal: None,
             }),
             published: Condvar::new(),
             covers_target,
@@ -288,66 +366,15 @@ impl StreamState {
         &self,
         publication: Publication,
     ) -> std::result::Result<Frame, RefusedPublication> {
-        let mut inner = self.lock();
-        if inner.lifecycle != Lifecycle::Open {
-            return Err(RefusedPublication::new(
-                CaptureFault::SessionClosed.into(),
-                publication,
-            ));
-        }
-
-        let current = inner.latest.as_ref();
-        let reshaped = current.is_some_and(|frame| {
-            let existing = frame.descriptor();
-            existing.extent() != publication.descriptor.extent()
-                || existing.format() != publication.descriptor.format()
-        });
-        // The other half of the same rule. A snapshot is its revision, its frame
-        // extent, whether the frame covers its target, and its placement; the
-        // revision is being decided here, the extent is what `reshaped` covers,
-        // and target coverage follows placement presence because the stream's
-        // own coverage is fixed for the session. So a placement that differs
-        // from the current frame's is the remaining way the snapshot can change,
-        // and an adapter claiming continuity across it is overruled.
-        let replaced_transform =
-            current.is_some_and(|frame| frame.transform().target() != publication.placement);
-        let continuity = if reshaped {
-            Continuity::Discontinuous
-        } else if replaced_transform && publication.continuity == Continuity::Continuous {
-            Continuity::GeometryChanged
-        } else {
-            publication.continuity
-        };
-
-        let prepared: Result<_> = (|| {
-            let mut geometry = inner.geometry;
-            let mut cursor = inner.cursor.clone();
-            if continuity != Continuity::Continuous {
-                geometry = geometry.next().ok_or_else(|| {
-                    Error::new(Status::LimitExceeded, "geometry revisions exhausted")
-                })?;
-            }
-            if continuity == Continuity::Discontinuous && inner.latest.is_some() {
-                cursor.begin_epoch()?;
-            }
-
-            let extent = publication.descriptor.extent();
-            let stamp = cursor.publish(geometry)?;
-            let transform = match (publication.placement, self.covers_target) {
-                (Some(placement), _) => TransformSnapshot::with_target(geometry, extent, placement)
-                    .map_err(|_| CaptureFault::InconsistentDescriptor)?,
-                (None, true) => TransformSnapshot::with_target_extent(geometry, extent),
-                (None, false) => TransformSnapshot::frame_only(geometry, extent),
-            };
-            Frame::validate(
-                stamp,
-                publication.descriptor,
-                &transform,
-                publication.pixels.len(),
-            )?;
-            Ok((cursor, geometry, stamp, transform))
-        })();
-        let (cursor, geometry, stamp, transform) = match prepared {
+        let inner = self.lock();
+        let prepared = match prepare(
+            &inner,
+            self.covers_target,
+            publication.descriptor,
+            publication.placement,
+            publication.continuity,
+            Some(publication.pixels.len()),
+        ) {
             Ok(prepared) => prepared,
             Err(error) => return Err(RefusedPublication::new(error, publication)),
         };
@@ -358,14 +385,84 @@ impl StreamState {
             pixels,
             ..
         } = publication;
-        let frame = Frame::from_validated(stamp, captured_at, descriptor, transform, pixels);
+        // The bytes become storage only after every rule has passed, so a refusal
+        // above hands the Adapter back exactly what it passed in. The length was
+        // checked while the caller still owned them, which is what lets this build
+        // storage without a second failure path.
+        let storage = Arc::new(CpuFrameStorage::from_validated(descriptor, pixels));
 
-        inner.cursor = cursor;
-        inner.geometry = geometry;
+        Ok(self.commit(inner, prepared, captured_at, descriptor, storage))
+    }
+
+    /// Publishes Adapter-owned immutable storage as the stream's next frame.
+    ///
+    /// This is the entry a native Adapter uses. It has the same identity,
+    /// continuity, geometry, validation, and commit rules as
+    /// [`StreamState::publish`]: the stream decides the resulting identity, and an
+    /// extent, format, or transform change is treated as the discontinuity it is
+    /// whatever the Adapter claimed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefusedStorage`] for every publication error, carrying the
+    /// unchanged storage back to the Adapter. Nothing is committed when a
+    /// publication is refused, so the Adapter may retire or reuse the storage
+    /// under its own ownership rule.
+    #[allow(clippy::result_large_err)]
+    pub fn publish_storage(
+        &self,
+        publication: StoragePublication,
+    ) -> std::result::Result<Frame, RefusedStorage> {
+        // Read the Adapter's own value before taking the stream mutex. The
+        // documented lock order is platform callback state, then detached storage
+        // ownership, then this mutex, and nothing about a fixed descriptor needs to
+        // be read under it. Keeping the order exact leaves no exception for a later
+        // reader to weigh.
+        let descriptor = publication.storage.descriptor();
+        let inner = self.lock();
+        let prepared = match prepare(
+            &inner,
+            self.covers_target,
+            descriptor,
+            publication.placement,
+            publication.continuity,
+            None,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => return Err(RefusedStorage::new(error, publication)),
+        };
+
+        let StoragePublication {
+            captured_at,
+            storage,
+            ..
+        } = publication;
+        Ok(self.commit(inner, prepared, captured_at, descriptor, storage))
+    }
+
+    /// Commits one validated publication and wakes the stream's waiters.
+    fn commit(
+        &self,
+        mut inner: MutexGuard<'_, Inner>,
+        prepared: Prepared,
+        captured_at: MonotonicInstant,
+        descriptor: FrameDescriptor,
+        storage: Arc<dyn FrameStorage>,
+    ) -> Frame {
+        let frame = Frame::from_validated(
+            prepared.stamp,
+            captured_at,
+            descriptor,
+            prepared.transform,
+            storage,
+        );
+
+        inner.cursor = prepared.cursor;
+        inner.geometry = prepared.geometry;
         inner.latest = Some(frame.clone());
         drop(inner);
         self.published.notify_all();
-        Ok(frame)
+        frame
     }
 
     /// Returns the frame `request` asks for, waiting when necessary.
@@ -380,6 +477,12 @@ impl StreamState {
         loop {
             {
                 let mut inner = self.lock();
+                if let Some(terminal) = inner.terminal {
+                    // The terminal fault outranks the closed outcome: a caller
+                    // needs to know that capture ended because the target was lost,
+                    // not that the session it was using is no longer open.
+                    return Err(terminal.into());
+                }
                 if inner.lifecycle != Lifecycle::Open {
                     return Err(CaptureFault::SessionClosed.into());
                 }
@@ -404,6 +507,45 @@ impl StreamState {
             // deadlocks are built.
             attempt.checkpoint()?;
         }
+    }
+
+    /// Ends the stream with a typed terminal fault.
+    ///
+    /// This is how an Adapter reports that capture stopped for a reason of its own
+    /// — the target closed, a display was disconnected, a device was lost,
+    /// authorization was revoked — rather than because a caller closed the
+    /// session. The fault is committed into the same ordered state as publication,
+    /// so every waiter observes it after the last frame that was actually
+    /// published, and no frame can be published after it.
+    ///
+    /// Admission stops immediately, which is what makes the outcome ordered: a
+    /// caller that then asks for a frame is told why capture ended rather than
+    /// that the session is closed. The first fault recorded is the one reported,
+    /// because the first thing that went wrong is the explanation and whatever it
+    /// caused afterwards is not.
+    ///
+    /// Idempotent, and never moves a closed stream backwards.
+    pub fn terminate(&self, fault: CaptureFault) {
+        {
+            let mut inner = self.lock();
+            if inner.terminal.is_none() {
+                inner.terminal = Some(fault);
+            }
+            if inner.lifecycle == Lifecycle::Open {
+                inner.lifecycle = Lifecycle::Closing;
+            }
+        }
+        self.published.notify_all();
+    }
+
+    /// Returns the terminal fault, when capture ended in one.
+    ///
+    /// `None` covers both a running stream and one a caller closed: an ordinary
+    /// close is not a fault, and reporting one would make every clean shutdown
+    /// look like a failure.
+    #[must_use]
+    pub fn terminal(&self) -> Option<CaptureFault> {
+        self.lock().terminal
     }
 
     /// Marks the stream as closing, refusing new work and waking every waiter.
@@ -467,6 +609,94 @@ impl StreamState {
     }
 }
 
+/// The identity and geometry one publication resolved to, before it commits.
+///
+/// Every rule that can refuse a publication is applied while producing this, and
+/// nothing in the stream has changed yet. That is what lets a refusal hand the
+/// Adapter back its untouched bytes or storage: the decision and the commit are
+/// separate steps rather than one pass that mutates as it validates.
+#[derive(Debug)]
+struct Prepared {
+    cursor: StreamCursor,
+    geometry: GeometryRevision,
+    stamp: FrameStamp,
+    transform: TransformSnapshot,
+}
+
+/// Applies every publication rule against `inner` without committing anything.
+///
+/// `pixel_len` is `Some` only when the caller still owns loose bytes whose length
+/// has to be checked here; storage has already agreed with its own descriptor.
+fn prepare(
+    inner: &Inner,
+    covers_target: bool,
+    descriptor: FrameDescriptor,
+    placement: Option<TargetPlacement>,
+    declared: Continuity,
+    pixel_len: Option<usize>,
+) -> Result<Prepared> {
+    if let Some(terminal) = inner.terminal {
+        return Err(terminal.into());
+    }
+    if inner.lifecycle != Lifecycle::Open {
+        return Err(CaptureFault::SessionClosed.into());
+    }
+    if let Some(len) = pixel_len
+        && len != descriptor.byte_len()
+    {
+        return Err(CaptureFault::ByteLengthMismatch.into());
+    }
+
+    let current = inner.latest.as_ref();
+    let reshaped = current.is_some_and(|frame| {
+        let existing = frame.descriptor();
+        existing.extent() != descriptor.extent() || existing.format() != descriptor.format()
+    });
+    // The other half of the same rule. A snapshot is its revision, its frame
+    // extent, whether the frame covers its target, and its placement; the
+    // revision is being decided here, the extent is what `reshaped` covers,
+    // and target coverage follows placement presence because the stream's
+    // own coverage is fixed for the session. So a placement that differs
+    // from the current frame's is the remaining way the snapshot can change,
+    // and an adapter claiming continuity across it is overruled.
+    let replaced_transform = current.is_some_and(|frame| frame.transform().target() != placement);
+    let continuity = if reshaped {
+        Continuity::Discontinuous
+    } else if replaced_transform && declared == Continuity::Continuous {
+        Continuity::GeometryChanged
+    } else {
+        declared
+    };
+
+    let mut geometry = inner.geometry;
+    let mut cursor = inner.cursor.clone();
+    if continuity != Continuity::Continuous {
+        geometry = geometry
+            .next()
+            .ok_or_else(|| Error::new(Status::LimitExceeded, "geometry revisions exhausted"))?;
+    }
+    if continuity == Continuity::Discontinuous && inner.latest.is_some() {
+        cursor.begin_epoch()?;
+    }
+
+    let extent = descriptor.extent();
+    let stamp = cursor.publish(geometry)?;
+    let transform = match (placement, covers_target) {
+        (Some(placement), _) => TransformSnapshot::with_target(geometry, extent, placement)
+            .map_err(|_| CaptureFault::InconsistentDescriptor)?,
+        (None, true) => TransformSnapshot::with_target_extent(geometry, extent),
+        (None, false) => TransformSnapshot::frame_only(geometry, extent),
+    };
+    Frame::validate(stamp, descriptor, &transform)?;
+
+    Ok(Prepared {
+        cursor,
+        geometry,
+        stamp,
+        transform,
+    })
+}
+
 /// Returns the published frame that satisfies `request`, if one already has.
 fn qualifying(inner: &Inner, request: &FrameRequest) -> Result<Option<Frame>> {
     let Some(current) = inner.latest.as_ref() else {
@@ -527,6 +757,7 @@ mod tests {
 
     use super::{Continuity, FrameRequest, Lifecycle, Publication, StreamState};
     use crate::descriptor::{FrameDescriptor, PixelFormat};
+    use crate::fault::CaptureFault;
 
     fn publication(width: u32, height: u32, fill: u8, continuity: Continuity) -> Publication {
         let extent = PixelExtent::new(width, height);
@@ -1138,6 +1369,105 @@ mod tests {
                 .map(|error| error.status()),
             Some(Status::Closed)
         );
+    }
+
+    #[test]
+    fn a_terminated_stream_reports_why_capture_ended() {
+        let state = state();
+        let published = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let context = OperationContext::new();
+
+        state.terminate(CaptureFault::TargetLost);
+
+        assert_eq!(state.terminal(), Some(CaptureFault::TargetLost));
+        assert_eq!(state.lifecycle(), Lifecycle::Closing);
+        assert_eq!(
+            state
+                .frame(&FrameRequest::latest(), &context)
+                .expect_err("capture ended")
+                .status(),
+            Status::TargetLost,
+            "the reason outranks the closed outcome"
+        );
+        assert_eq!(
+            state
+                .publish(publication(4, 4, 2, Continuity::Continuous))
+                .expect_err("nothing publishes after the end")
+                .status(),
+            Status::TargetLost
+        );
+        assert!(
+            published.full_view().is_ok(),
+            "a frame published before the end stays usable"
+        );
+    }
+
+    #[test]
+    fn the_first_terminal_fault_is_the_one_reported() {
+        let state = state();
+
+        state.terminate(CaptureFault::TargetLost);
+        state.terminate(CaptureFault::SourceInvalid);
+
+        assert_eq!(
+            state.terminal(),
+            Some(CaptureFault::TargetLost),
+            "what went wrong first is the explanation"
+        );
+    }
+
+    #[test]
+    fn a_terminated_stream_still_closes_cleanly() {
+        let state = state();
+        state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        state.terminate(CaptureFault::TargetLost);
+
+        state
+            .drain(&OperationContext::new())
+            .expect("close finishes after a terminal fault");
+
+        assert_eq!(state.lifecycle(), Lifecycle::Closed);
+        assert_eq!(
+            state.terminal(),
+            Some(CaptureFault::TargetLost),
+            "closing does not erase why capture ended"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_close_records_no_fault() {
+        let state = state();
+
+        state.drain(&OperationContext::new()).expect("drained");
+
+        assert_eq!(state.terminal(), None);
+    }
+
+    #[test]
+    fn a_waiter_observes_the_terminal_fault_rather_than_a_closed_stream() {
+        let state = Arc::new(state());
+        let current = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let ender = Arc::clone(&state);
+        let handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            ender.terminate(CaptureFault::SourceInvalid);
+        });
+
+        let error = state
+            .frame(
+                &FrameRequest::newer_than(current.stamp()),
+                &OperationContext::new(),
+            )
+            .expect_err("capture ended while waiting");
+        handle.join().expect("ender finished");
+
+        assert_eq!(error.status(), Status::CaptureFailed);
     }
 
     #[test]

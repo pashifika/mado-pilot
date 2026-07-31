@@ -41,6 +41,10 @@ pub enum Status {
     AssetInvalid,
     /// A vision backend failed or was unavailable.
     VisionFailed,
+    /// Input delivery failed for a reason the input responsibility owns:
+    /// authorization, focus, operating-system policy, or the platform's own
+    /// refusal.
+    InputFailed,
     /// An invariant this implementation is responsible for did not hold.
     Internal,
 }
@@ -63,6 +67,7 @@ impl Status {
             Status::CaptureFailed => "capture_failed",
             Status::AssetInvalid => "asset_invalid",
             Status::VisionFailed => "vision_failed",
+            Status::InputFailed => "input_failed",
             Status::Internal => "internal",
         }
     }
@@ -172,11 +177,12 @@ mod tests {
             Status::CaptureFailed,
             Status::AssetInvalid,
             Status::VisionFailed,
+            Status::InputFailed,
             Status::Internal,
         ];
         // The list above is a snapshot: it covers every status that existed
-        // when it was written, and a twelfth whose slug collided with one of
-        // these would not be compared against anything.
+        // when it was written, and one added later whose slug collided with one
+        // of these would not be compared against anything.
         //
         // `as_str()` is itself an exhaustive match, so a new status already
         // fails to compile there. What the match below adds is that it fails to
@@ -196,6 +202,7 @@ mod tests {
                 | Status::CaptureFailed
                 | Status::AssetInvalid
                 | Status::VisionFailed
+                | Status::InputFailed
                 | Status::Internal => {}
             }
         }

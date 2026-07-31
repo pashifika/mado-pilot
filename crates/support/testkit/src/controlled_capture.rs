@@ -17,17 +17,30 @@ use mado_pilot_capture::{
     SessionDescription, StreamState, TargetDescription,
 };
 use mado_pilot_core::{
-    IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, ProviderId, Result, TargetId,
+    IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, ProviderId, Result,
+    TargetCapability, TargetId,
 };
+
+use crate::controlled_storage::ControlledProducer;
 
 /// Provider name qualifying this double's target identities.
 pub const PROVIDER: ProviderId = ProviderId::new("controlled");
+
+/// One target this double offers, and whether it still exists.
+#[derive(Debug, Clone)]
+struct ControlledTarget {
+    id: TargetId,
+    name: String,
+    capability: TargetCapability,
+    present: bool,
+}
 
 /// A capture provider whose publication a test controls directly.
 pub struct ControlledCapture {
     issuer: Arc<IdentityIssuer>,
     target: TargetId,
     descriptor: FrameDescriptor,
+    targets: Mutex<Vec<ControlledTarget>>,
     sessions: Mutex<Vec<Arc<ControlledSession>>>,
 }
 
@@ -49,8 +62,140 @@ impl ControlledCapture {
             issuer,
             target,
             descriptor: FrameDescriptor::packed(extent, format)?,
+            targets: Mutex::new(vec![ControlledTarget {
+                id: target,
+                name: "controlled".to_owned(),
+                capability: TargetCapability::unclassified(),
+                present: true,
+            }]),
             sessions: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Returns the identity of the target this provider was built with.
+    #[must_use]
+    pub const fn target(&self) -> TargetId {
+        self.target
+    }
+
+    /// Declares what this provider can do with its first target.
+    ///
+    /// A test that needs a classified window or a target that accepts input says so
+    /// here; the default is the unclassified, capture-only target a source of
+    /// prepared frames reports.
+    pub fn declare(&self, capability: TargetCapability) {
+        let target = self.target;
+        let mut targets = self.targets();
+        if let Some(entry) = targets.iter_mut().find(|entry| entry.id == target) {
+            entry.capability = capability;
+        }
+    }
+
+    /// Adds another target, so discovery and filtering have something to select
+    /// between.
+    ///
+    /// # Errors
+    ///
+    /// Returns an identity fault when the target identity cannot be issued.
+    pub fn add_target(
+        &self,
+        name: impl Into<String>,
+        capability: TargetCapability,
+    ) -> Result<TargetId> {
+        let id = self.issuer.issue_target(PROVIDER)?;
+        self.targets().push(ControlledTarget {
+            id,
+            name: name.into(),
+            capability,
+            present: true,
+        });
+        Ok(id)
+    }
+
+    /// Loses `target`, as a window that closes does.
+    ///
+    /// The identity stays known and stays refused: a lost target is reported as
+    /// lost rather than as one this provider never issued, and every session open
+    /// on it ends with the same typed reason.
+    pub fn lose(&self, target: TargetId) {
+        {
+            let mut targets = self.targets();
+            if let Some(entry) = targets.iter_mut().find(|entry| entry.id == target) {
+                entry.present = false;
+            }
+        }
+        let sessions: Vec<Arc<ControlledSession>> = self.sessions().clone();
+        for session in sessions {
+            if session.description.target() == target {
+                session.state.terminate(CaptureFault::TargetLost);
+            }
+        }
+        self.sessions()
+            .retain(|session| session.state.lifecycle() == Lifecycle::Open);
+    }
+
+    /// Loses `target` and offers a new one with the same descriptive metadata.
+    ///
+    /// This is the case a provider must not paper over: the title, the process, and
+    /// the native handle can all match while the target is a different one, and the
+    /// only thing that says otherwise is the identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an identity fault when the replacement identity cannot be issued.
+    pub fn replace(&self, target: TargetId) -> Result<TargetId> {
+        let existing = self
+            .targets()
+            .iter()
+            .find(|entry| entry.id == target)
+            .cloned();
+        self.lose(target);
+        let (name, capability) = existing.map_or_else(
+            || ("controlled".to_owned(), TargetCapability::unclassified()),
+            |entry| (entry.name, entry.capability),
+        );
+        self.add_target(name, capability)
+    }
+
+    /// Publishes one frame through opaque storage from `producer`.
+    ///
+    /// The frames every other publication here produces are CPU bytes, which no
+    /// mapping ever has to convert. This one has the ownership and conversion
+    /// behavior a native frame has.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever the producer or the stream returns, so a test can assert
+    /// both an exhausted storage budget and a refused publication.
+    pub fn publish_from(&self, producer: &ControlledProducer, fill: u8) -> Result<()> {
+        let mut refusal = None;
+        let sessions: Vec<Arc<ControlledSession>> = self.sessions().clone();
+        for session in sessions {
+            let publication = producer.publication(fill, Continuity::Continuous)?;
+            if let Err(refused) = session.state.publish_storage(publication)
+                && refusal.is_none()
+            {
+                refusal = Some(refused.into_error());
+            }
+        }
+        self.sessions()
+            .retain(|session| session.state.lifecycle() == Lifecycle::Open);
+
+        match refusal {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Ends every open session with `fault`, as a device reset or a revoked
+    /// authorization does.
+    pub fn terminate(&self, fault: CaptureFault) {
+        let sessions: Vec<Arc<ControlledSession>> = self.sessions().clone();
+        for session in sessions {
+            session.state.terminate(fault);
+        }
+        self.sessions()
+            .retain(|session| session.state.lifecycle() == Lifecycle::Open);
     }
 
     /// Publishes one frame of solid `fill` to every open session.
@@ -123,6 +268,12 @@ impl ControlledCapture {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    fn targets(&self) -> std::sync::MutexGuard<'_, Vec<ControlledTarget>> {
+        self.targets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 impl fmt::Debug for ControlledCapture {
@@ -141,13 +292,23 @@ impl CaptureProvider for ControlledCapture {
     }
 
     fn discover(&self, _operation: &OperationContext) -> Result<Vec<TargetDescription>> {
-        Ok(vec![TargetDescription::new(
-            self.target,
-            "controlled",
-            self.descriptor.extent(),
-            self.descriptor.format(),
-            CoordinateSupport::frame_only(),
-        )])
+        // Deterministically ordered, and lost targets are gone from the list: a
+        // provider lists what it can capture now.
+        Ok(self
+            .targets()
+            .iter()
+            .filter(|entry| entry.present)
+            .map(|entry| {
+                TargetDescription::new(
+                    entry.id,
+                    entry.name.clone(),
+                    self.descriptor.extent(),
+                    self.descriptor.format(),
+                    CoordinateSupport::frame_only(),
+                )
+                .with_capability(entry.capability)
+            })
+            .collect())
     }
 
     fn open(
@@ -156,9 +317,19 @@ impl CaptureProvider for ControlledCapture {
         request: &OpenRequest,
         _operation: &OperationContext,
     ) -> Result<Arc<dyn CaptureSession>> {
-        target.check_engine(self.issuer.engine())?;
-        if target != self.target {
-            return Err(CaptureFault::UnknownTarget.into());
+        self.accepts_target(target, self.issuer.engine())?;
+        match self
+            .targets()
+            .iter()
+            .find(|entry| entry.id == target)
+            .map(|entry| entry.present)
+        {
+            Some(true) => {}
+            // A target this provider issued and can no longer capture is lost, not
+            // unknown. The distinction is what stops a caller from retrying a
+            // window that has closed as though it had mistyped an identity.
+            Some(false) => return Err(CaptureFault::TargetLost.into()),
+            None => return Err(CaptureFault::UnknownTarget.into()),
         }
         if let Some(required) = request.required_format()
             && required != self.descriptor.format()

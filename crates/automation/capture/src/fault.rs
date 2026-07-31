@@ -28,6 +28,14 @@ pub enum CaptureFault {
     ForeignTarget,
     /// No target with that identity is known to this provider.
     UnknownTarget,
+    /// The target this provider issued the identity for no longer exists.
+    ///
+    /// Distinct from [`CaptureFault::UnknownTarget`], which is an identity this
+    /// provider never issued. A target whose window has closed is reported here
+    /// even when another target now carries the same title, process identifier,
+    /// or reused native handle: matching mutable metadata would silently retarget
+    /// the caller onto whatever took the original's place.
+    TargetLost,
     /// The session is closed or closing, so it accepts no new frame work.
     SessionClosed,
     /// A required capture option cannot be honored by this provider.
@@ -38,6 +46,15 @@ pub enum CaptureFault {
     ForeignStream,
     /// The stream produced no further frames and never will.
     StreamEnded,
+    /// Every unit of the session's finite storage budget is leased by frames,
+    /// mappings, or backends a caller still holds.
+    ///
+    /// This is the observable form of the bound that keeps a retaining caller from
+    /// stalling capture: an Adapter refuses the frame rather than blocking its
+    /// producer, overwriting storage a caller is reading, or allocating without a
+    /// limit. Releasing retained frames and mappings makes capacity available
+    /// again.
+    StorageBudgetExhausted,
 }
 
 impl CaptureFault {
@@ -55,6 +72,8 @@ impl CaptureFault {
             | CaptureFault::UnsupportedCoordinate
             | CaptureFault::UnsupportedOption => Status::Unsupported,
             CaptureFault::SessionClosed | CaptureFault::StreamEnded => Status::Closed,
+            CaptureFault::TargetLost => Status::TargetLost,
+            CaptureFault::StorageBudgetExhausted => Status::LimitExceeded,
             CaptureFault::SourceInvalid => Status::CaptureFailed,
         }
     }
@@ -70,11 +89,15 @@ impl CaptureFault {
             CaptureFault::RegionOutsideFrame => "region falls outside its source frame",
             CaptureFault::ForeignTarget => "target identity was not issued by this provider",
             CaptureFault::UnknownTarget => "no such target",
+            CaptureFault::TargetLost => "target no longer exists",
             CaptureFault::SessionClosed => "session is closed",
             CaptureFault::UnsupportedOption => "required capture option is not supported",
             CaptureFault::SourceInvalid => "configured capture source is invalid",
             CaptureFault::ForeignStream => "frame stamp belongs to another stream",
             CaptureFault::StreamEnded => "stream published its final frame",
+            CaptureFault::StorageBudgetExhausted => {
+                "every unit of the session's storage budget is retained by a caller"
+            }
         }
     }
 }
