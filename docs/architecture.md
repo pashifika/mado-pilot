@@ -233,7 +233,7 @@ prefix.
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Planned ONNX Runtime OCR and execution-provider adapter |
 | `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
-| `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture and backend doubles, fake input, synthetic clock, and contract-fixture support |
+| `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, backend, and input doubles, synthetic clock, and contract-fixture support |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
 
 Every package in this table is `publish = false`. Publication is enabled for an
@@ -402,6 +402,24 @@ sources without adopting the asset manifest.
 contract doubles. Any product package may therefore depend on it as a
 **development** dependency, and no package may depend on it as a normal or build
 dependency: test support must never ship.
+
+It holds the doubles for what a real host cannot be asked to do on cue: a capture
+provider whose publication a test drives, a producer with a finite pool and a
+finite detached-storage budget whose conversions can be slow or fail, a permission
+probe that answers from a script and records what it was asked, and an input
+controller that fails at a chosen event and releases as much of what it pressed as
+a test allows. The shared `capture_contract` and `input_contract` suites hold the
+rules an Adapter can be held to unprompted; the rules about failing part-way are
+exercised against the doubles, because nothing can make a working Adapter refuse
+its third event on request, and a rule that is never reached is not verified.
+
+No suite check depends on which of two concurrent operations a scheduler runs
+first. Where a rule genuinely needs contention, it is verified where the contention
+can be made deterministic — one thread holding the resource while the same thread
+observes the refusal — and tests that need to know when a double is mid-operation
+wait on an observation it publishes rather than sleeping for however long it is
+guessed to take. A sleep long enough to be safe on a loaded runner is a slow test,
+and one short enough to be fast fails there while naming a rule it never reached.
 
 No package may depend on `mado-pilot-dependency-check` in any form. Repository
 tooling is invoked, not linked.
@@ -725,8 +743,11 @@ responsibilities a later phase takes on.
 | Coordinate spaces, validated geometry, and frame-time transforms | Implemented in `mado-pilot-core` |
 | Monotonic clock domain, operation deadlines, cancellation, terminal-outcome arbitration | Implemented in `mado-pilot-core` |
 | Public statuses and structured errors | Implemented in `mado-pilot-core` |
-| Native window and display discovery | Not implemented |
+| Target kind, capability, permission, and redacted-diagnostic vocabulary | Implemented in `mado-pilot-core`; no Adapter reports it yet |
+| Non-prompting permission probe contract | Implemented in `mado-pilot-core`; no platform probe exists yet |
+| Native window and display discovery | Not implemented; the typed discovery request and filter contract are implemented in `mado-pilot-capture` |
 | Capture contracts, immutable frames, frame views, CPU mapping | Implemented in `mado-pilot-capture` |
+| Adapter-facing opaque frame storage, storage publication, terminal stream faults | Implemented in `mado-pilot-capture`; only CPU storage exists |
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
 | Windows native capture ownership policy | Decided in [ADR 0013](adr/0013-windows-capture-frame-detachment.md) on the retained `G-002` measurements; the production Adapter and its contract tests are not implemented |
 | macOS shim language and containment rules | Decided in [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the retained `G-003` measurements; the shim and its containment tests are not implemented |
@@ -739,7 +760,8 @@ responsibilities a later phase takes on.
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
 | OCR and model loading | Not implemented |
 | Watchers, scheduling, diagnostics | Not implemented |
-| Input injection | Not implemented |
+| Input request, receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
+| Input injection | Not implemented; no platform Adapter and no facade or C ABI entry reaches the input contracts |
 | Asset manifests and directory, memory, and archive loading | Implemented in `mado-pilot-assets` |
 | Asset archive container, manifest format, and safety ceilings | Implemented and conformance-tested; decided in [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 | Asset resolution into OCR model sources | Not implemented |
@@ -752,7 +774,7 @@ responsibilities a later phase takes on.
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented for the Phase 1 prefix as a header-only adapter; decided in [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
 | Numeric performance budgets | Set for the Phase 1 workloads on both release targets, across the Rust workflow and the C boundary: thirteen workloads are measured, all thirteen are covered by the two file-level hard gates, eleven carry a per-measurement ceiling, and two are deliberate unbudgeted controls; decided in [ADR 0008](adr/0008-phase-1-performance-budgets.md). Every later phase's are open under [`G-013`](validation-gates.md#g-013) |
-| Native permission behavior | Not implemented |
+| Native permission behavior | Not implemented; the platform-neutral outcomes an Adapter will report are implemented in `mado-pilot-core` |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for the frozen ABI-1.0 header; a release artifact to test against is not |
 
@@ -784,6 +806,28 @@ package that follows:
   fails.** There is no fallback to an identity transform and no consultation of
   host DPI, because a plausible guess about coordinates places input somewhere
   the caller did not ask for.
+
+Capability and permission vocabulary lives here for a structural reason rather
+than a conceptual one: a discovered target reports what input it accepts, an input
+request is admitted against the same description, and neither the capture package
+nor the input package may depend on the other. Three rules that vocabulary
+carries:
+
+- **An authorization state is not a prediction.** Only `Granted` is
+  authorization; `Unavailable` says the platform has no such authorization to
+  grant and `Unknown` says a non-prompting probe could not read it, and neither
+  promises that an operation will succeed. A probe never calls a
+  permission-request API, presents a dialog, opens settings, shows a picker, or
+  elevates the process, and the `PermissionProbe` contract offers no operation
+  that could.
+- **A target kind is optional.** A provider that serves prepared frames knows of
+  no window or display behind them, and answering `Window` on its behalf would be
+  an invention a caller could filter on.
+- **A redacted diagnostic cannot carry desktop content.** Its context is a
+  `&'static str`, so it exists in the Adapter's source and can be reviewed once;
+  an owned string would let a window title, a recognized line, or an
+  operating-system message reach a log by accident. A numeric platform code
+  carries its own namespace, because `0x80070005` means nothing without one.
 
 One Phase 1 consequence of the coordinate rule is worth stating, because a later
 phase changes it. A frame covers exactly its target here — nothing captures part
@@ -827,6 +871,86 @@ This is an additive Rust-only contract. It changes no facade behavior, C
 function table, C layout, header, or C++ wrapper. The decision and its native
 performance acceptance conditions are recorded in
 [ADR 0011](adr/0011-recoverable-stream-publication.md).
+
+### The opaque frame-storage seam
+
+A `Frame` retains `FrameStorage` rather than pixel bytes. The interface an Adapter
+implements asks two things — whether the pixels are already CPU-readable, and how
+to obtain them under the caller's operation context — and exposes no downcast, no
+type tag, and no extension table. That is what separates deepening the frame's
+implementation from publishing a native-frame interface: a caller that could ask
+whether a frame is a D3D11 texture would freeze that type into backend-neutral
+code and preempt the deferred [`G-011`](validation-gates.md#g-011) design.
+
+Storage is immutable, answers the CPU-readability question the same way for its
+whole lifetime, and must be independent of whatever produced it. Retaining a
+published frame may not retain a producer-pool slot whose reuse capture needs,
+which is the platform-neutral form of the rule
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md) settled for Windows. A
+`CpuMapping` retains the CPU pixels it read rather than the frame, so mapped bytes
+outlive the frame, the session, and any Adapter lease behind it; a mapping of
+native storage is never shared, because obtaining CPU bytes from it is a copy.
+
+`publish_storage` is the storage-shaped publication, with the same identity,
+continuity, geometry, validation, and atomic-commit rules as `publish`. Its
+refusal returns `RefusedStorage`, carrying the unchanged storage back so an
+Adapter that leases or pools it can retire or reuse it; every rule is applied
+before the storage is taken, so a refusal never consumes what it refused.
+`StreamState::terminate` records a typed terminal fault into the same ordered
+state, so a caller waiting for a frame is told that the target was lost or the
+device failed rather than that the session closed. Session close remains
+idempotent after one, and `CaptureFault::StorageBudgetExhausted` is the observable
+bounded outcome when a retaining caller has consumed a session's finite storage
+budget.
+
+### Input contracts
+
+`mado-pilot-input` defines one `execute` operation over a typed `InputRequest`
+rather than a method per primitive: delivery selection, admission, geometry
+resolution, deadline arbitration, partial receipts, and cleanup are identical for
+a click, a keystroke, and a phrase.
+
+The operation kind and the delivery mechanism are separate axes, and a capability
+advertises *pairs* of them. Advertising `Keyboard` and `BackgroundTarget`
+separately would claim background keystrokes work, which is a different claim from
+being able to deliver keystrokes at all. `InputDescriptor::admit` is the single
+admission rule every Adapter shares: it selects the first mechanism in the
+caller's own order that supports every operation in the sequence, and refuses an
+unadvertised combination, an unaccepted pointer coordinate space, a sequence past
+its bound, and a mechanism that needs focus a `Preserve` policy withholds — all
+before an event is delivered.
+
+Nothing substitutes a mechanism the caller did not permit. A single-mechanism
+`DeliveryPlan` permits no fallback, so a required background request that is
+unavailable fails without activating the target or sending system input. Sequences
+are bounded, and one controller executes one sequence at a time: `Admission`
+implements that serialization with the caller's operation context as the only
+wait bound and no internal queue, so pressure is reported to callers rather than
+accumulating inside an Adapter. Waiting sequences are deliberately unordered among
+themselves; ordering would require the backlog that bound exists to prevent.
+
+Every admitted sequence produces exactly one `InputReceipt`. An operating system
+cannot recall a delivered event, so a failure reports which mechanism was used,
+how many events were delivered, which one was last, why it stopped, and what
+cleanup released out of what it owed. Cleanup releases only what that sequence
+pressed, newest first, and incomplete cleanup is reported with its exact counts
+rather than hidden.
+
+Those releases run under the request's own `CleanupBudget` — an event ceiling and a
+duration — and **not** under the operation context that governed the sequence.
+Cleanup usually runs *because* that context was cancelled or expired, so releasing
+under it would decline to release pressed state at the one moment releasing
+matters. `CleanupBudget::context` therefore derives a fresh context from the
+request's clock domain, with the budget's deadline and no cancellation. The event
+ceiling is the sequence length rather than a chosen number, because a sequence can
+hold at most one release per press and a smaller ceiling would guarantee the stuck
+state cleanup exists to prevent. The receipt keeps the two ways of stopping short
+apart: `CleanupState::Incomplete` is a release the platform refused, and
+`CleanupState::Exhausted` is a release that was never attempted — which a caller
+can retry itself, exactly the wrong conclusion to draw from a refusal.
+
+Nothing here delivers input. Both platform Adapters and every facade and C ABI
+entry that would reach them are later Changes.
 
 ### Windows native capture ownership
 

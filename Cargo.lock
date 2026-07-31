@@ -296,6 +296,9 @@ dependencies = [
 [[package]]
 name = "mado-pilot-input"
 version = "0.1.0"
+dependencies = [
+ "mado-pilot-core",
+]
 
 [[package]]
 name = "mado-pilot-ocr"
@@ -326,6 +329,7 @@ version = "0.1.0"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
+ "mado-pilot-input",
  "mado-pilot-vision",
  "sha2",
 ]

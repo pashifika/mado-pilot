@@ -24,7 +24,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
-use mado_pilot_capture::{CaptureProvider, FrameRequest, OpenRequest, PixelFormat};
+use mado_pilot_capture::{
+    CaptureProvider, DiscoveryRequest, FrameRequest, OpenRequest, PixelFormat,
+};
 use mado_pilot_core::{
     CancellationToken, Clock, FrameOrder, IdentityIssuer, MonotonicInstant, OperationContext,
     Status,
@@ -168,6 +170,7 @@ pub fn verify_fixture_checksums(root: &std::path::Path) {
 /// returns ends the process instead, for the reason the module documents.
 pub fn run(provider: &dyn CaptureProvider) {
     discovery_is_provider_qualified(provider);
+    discovery_filtering_narrows_without_reordering(provider);
     a_foreign_target_is_refused(provider);
     the_first_frame_is_the_start_of_the_stream(provider);
     repeated_latest_requests_return_one_identity(provider);
@@ -199,6 +202,80 @@ pub fn discovery_is_provider_qualified(provider: &dyn CaptureProvider) {
         );
         assert_eq!(target.id().provider(), provider.provider());
     }
+}
+
+/// A filter selects from what discovery listed, in the order it listed it.
+///
+/// The three properties a filter must have and cannot be allowed to lose: an
+/// unfiltered request means what it always meant, a filter is a subset of the
+/// unfiltered list rather than a second query, and it preserves order so a caller
+/// that takes the first match takes the same target twice running.
+///
+/// # Panics
+///
+/// Panics when a filter reaches a target discovery did not list, when it reorders
+/// the list, or when an unfiltered filtered request differs from discovery.
+pub fn discovery_filtering_narrows_without_reordering(provider: &dyn CaptureProvider) {
+    let _watchdog = Watchdog::guarding("discovery_filtering_narrows_without_reordering");
+    let operation = bounded();
+    let listed = provider.discover(&operation).expect("discovery succeeds");
+    assert!(
+        !listed.is_empty(),
+        "a provider under contract test must offer a target"
+    );
+
+    let unfiltered = provider
+        .discover_matching(&DiscoveryRequest::new(), &operation)
+        .expect("an unfiltered request succeeds");
+    assert_eq!(
+        unfiltered, listed,
+        "a request with no filter means every target this provider listed"
+    );
+
+    // Filtering on the first target's own name can only ever select a subset that
+    // includes it, whatever the provider is and however many targets it has.
+    let wanted = listed[0].name().to_owned();
+    let narrowed = provider
+        .discover_matching(
+            &DiscoveryRequest::new().with_name_containing(wanted.clone()),
+            &operation,
+        )
+        .expect("a filtered request succeeds");
+
+    assert!(
+        narrowed.iter().all(|target| listed.contains(target)),
+        "a filter selects from the provider's own result set and reaches nothing else"
+    );
+    assert!(
+        narrowed.iter().any(|target| target.id() == listed[0].id()),
+        "a filter on a target's own descriptive name must select that target"
+    );
+    assert!(
+        narrowed
+            .iter()
+            .all(|target| target.name().contains(&wanted)),
+        "a filtered list contains only targets that match the filter"
+    );
+    let expected_order: Vec<_> = listed
+        .iter()
+        .filter(|target| target.name().contains(&wanted))
+        .cloned()
+        .collect();
+    assert_eq!(
+        narrowed, expected_order,
+        "filtering preserves the order discovery reported"
+    );
+
+    let repeated = provider
+        .discover_matching(
+            &DiscoveryRequest::new().with_name_containing(wanted),
+            &operation,
+        )
+        .expect("a filtered request succeeds");
+    assert_eq!(
+        repeated, narrowed,
+        "the same filter over an unchanged desktop selects the same targets"
+    );
 }
 
 /// A target identity from another engine is refused rather than matched by name.

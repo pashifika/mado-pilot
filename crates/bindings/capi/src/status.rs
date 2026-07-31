@@ -82,6 +82,10 @@ pub const MADOPILOT_ERROR_CATEGORY_GEOMETRY: madopilot_error_category_t = 7;
 /// reports as [`MADOPILOT_STATUS_INTERNAL`] rather than as a number a caller
 /// cannot look up. That is the honest answer: the library returned something
 /// this ABI major has no vocabulary for.
+///
+/// `Status::InputFailed` is currently one of those. The frozen 1.0 table has no
+/// code for it, and no input Adapter exists to produce one, so it is projected by
+/// the fallback until the ABI change that appends its value.
 #[must_use]
 pub(crate) fn code(status: Status) -> madopilot_status_t {
     match status {
@@ -159,5 +163,15 @@ mod tests {
         for (status, expected) in mapped {
             assert_eq!(code(status), expected, "{status} maps to {expected}");
         }
+    }
+
+    #[test]
+    fn a_status_this_abi_minor_has_no_code_for_reports_internal() {
+        assert_eq!(
+            code(Status::InputFailed),
+            MADOPILOT_STATUS_INTERNAL,
+            "the frozen table has no input code yet, and inventing one would \
+             hand a caller a number no header defines"
+        );
     }
 }

@@ -50,20 +50,25 @@
 //! adding is free. The stability promise itself begins at 1.0.
 
 pub mod descriptor;
+pub mod discovery;
 pub mod fault;
 pub mod frame;
 pub mod mapping;
 pub mod session;
+pub mod storage;
 pub mod stream;
 
 pub use descriptor::{
-    CoordinateSupport, FrameDescriptor, PixelFormat, SessionDescription, TargetDescription,
+    CoordinateSupport, FrameDescriptor, OverflowPolicy, PixelFormat, QueuePolicy,
+    SessionDescription, TargetDescription,
 };
+pub use discovery::DiscoveryRequest;
 pub use fault::CaptureFault;
 pub use frame::{Frame, FrameView};
 pub use mapping::CpuMapping;
 pub use session::{CaptureProvider, CaptureSession, OpenRequest};
+pub use storage::{CpuFrameStorage, CpuPixels, FrameStorage};
 pub use stream::{
     Continuity, FrameRequest, FrameSelection, Lifecycle, Publication, RefusedPublication,
-    StreamState,
+    RefusedStorage, StoragePublication, StreamState,
 };

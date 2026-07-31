@@ -116,10 +116,7 @@ impl CaptureProvider for ReplayProvider {
     ) -> Result<Arc<dyn CaptureSession>> {
         let attempt = Operation::admit(operation)?;
 
-        target.check_engine(self.issuer.engine())?;
-        if target.provider() != PROVIDER {
-            return Err(CaptureFault::ForeignTarget.into());
-        }
+        self.accepts_target(target, self.issuer.engine())?;
         let (_, source) = self
             .targets
             .iter()

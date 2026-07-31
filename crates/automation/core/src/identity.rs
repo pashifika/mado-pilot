@@ -18,6 +18,8 @@ use crate::status::{Error, Status};
 pub enum IdentityFault {
     /// The identity was issued by a different engine.
     ForeignEngine,
+    /// The identity was issued by a different provider of the same engine.
+    ForeignProvider,
     /// The identity space is exhausted; issuing another would alias one already
     /// handed out.
     Exhausted,
@@ -34,7 +36,9 @@ impl IdentityFault {
     #[must_use]
     pub const fn status(self) -> Status {
         match self {
-            IdentityFault::ForeignEngine | IdentityFault::StreamMismatch => Status::InvalidArgument,
+            IdentityFault::ForeignEngine
+            | IdentityFault::ForeignProvider
+            | IdentityFault::StreamMismatch => Status::InvalidArgument,
             IdentityFault::Exhausted
             | IdentityFault::SequenceExhausted
             | IdentityFault::EpochExhausted => Status::LimitExceeded,
@@ -44,6 +48,7 @@ impl IdentityFault {
     const fn detail(self) -> &'static str {
         match self {
             IdentityFault::ForeignEngine => "identity was issued by another engine",
+            IdentityFault::ForeignProvider => "identity was issued by another provider",
             IdentityFault::Exhausted => "identity space is exhausted",
             IdentityFault::SequenceExhausted => "stream frame sequence is exhausted",
             IdentityFault::EpochExhausted => "stream epoch counter is exhausted",
@@ -145,6 +150,41 @@ impl TargetId {
         } else {
             Err(IdentityFault::ForeignEngine)
         }
+    }
+
+    /// Confirms that `provider` discovered this target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFault::ForeignProvider`] when it did not. One engine can
+    /// hand out identities from more than one provider, and two providers may
+    /// reach the same ordinal, so the engine check alone does not establish that
+    /// a provider issued the identity it is being asked to act on.
+    pub fn check_provider(self, provider: ProviderId) -> Result<(), IdentityFault> {
+        if self.provider == provider {
+            Ok(())
+        } else {
+            Err(IdentityFault::ForeignProvider)
+        }
+    }
+
+    /// Confirms that `engine` and `provider` together issued this identity.
+    ///
+    /// This is the check an Adapter performs before acting on a caller's target:
+    /// both halves qualify the ordinal, and passing one of them is not enough.
+    ///
+    /// # Errors
+    ///
+    /// As [`TargetId::check_engine`] and [`TargetId::check_provider`]. The engine
+    /// is checked first, because an identity from another engine says nothing
+    /// about what its provider name means.
+    pub fn check_issued_by(
+        self,
+        engine: EngineId,
+        provider: ProviderId,
+    ) -> Result<(), IdentityFault> {
+        self.check_engine(engine)?;
+        self.check_provider(provider)
     }
 }
 
@@ -597,6 +637,37 @@ mod tests {
     }
 
     #[test]
+    fn a_target_identity_is_rejected_by_another_provider_of_the_same_engine() {
+        let issuer = IdentityIssuer::new();
+        let replay = issuer.issue_target(REPLAY).expect("issued");
+
+        assert_eq!(replay.check_provider(REPLAY), Ok(()));
+        assert_eq!(
+            replay.check_provider(WINDOWS),
+            Err(IdentityFault::ForeignProvider),
+            "the engine check alone does not qualify the ordinal"
+        );
+        assert_eq!(replay.check_issued_by(issuer.engine(), REPLAY), Ok(()));
+        assert_eq!(
+            replay.check_issued_by(issuer.engine(), WINDOWS),
+            Err(IdentityFault::ForeignProvider)
+        );
+    }
+
+    #[test]
+    fn a_foreign_engine_is_reported_before_the_provider() {
+        let issuing = IdentityIssuer::new();
+        let other = IdentityIssuer::new();
+        let target = issuing.issue_target(REPLAY).expect("issued");
+
+        assert_eq!(
+            target.check_issued_by(other.engine(), WINDOWS),
+            Err(IdentityFault::ForeignEngine),
+            "a provider name from another engine says nothing"
+        );
+    }
+
+    #[test]
     fn a_stream_identity_is_rejected_by_another_engine() {
         let issuing = IdentityIssuer::new();
         let other = IdentityIssuer::new();
@@ -776,6 +847,10 @@ mod tests {
     fn faults_map_to_public_statuses() {
         assert_eq!(
             IdentityFault::ForeignEngine.status(),
+            Status::InvalidArgument
+        );
+        assert_eq!(
+            IdentityFault::ForeignProvider.status(),
             Status::InvalidArgument
         );
         assert_eq!(
