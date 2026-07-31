@@ -194,7 +194,16 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum PlacementReading {
     /// The live geometry agrees with this frame's own extent and scale.
-    Ready(TargetPlacement),
+    ///
+    /// `wanted` is the producer surface extent the target needs at its own display's
+    /// backing scale. It is not always this frame's extent: the framework scales a
+    /// target down to fit a surface too small to hold it and reports the reduced
+    /// size, so the size to ask a producer for comes from the target rather than
+    /// from the content in hand.
+    Ready {
+        placement: TargetPlacement,
+        wanted: Option<PixelExtent>,
+    },
     /// The live geometry has moved on since this frame was produced. Carries the
     /// producer surface extent that would match the target as it is now, when one
     /// can be computed.
@@ -203,6 +212,18 @@ pub(crate) enum PlacementReading {
     Unusable,
     /// The target is no longer present.
     Lost,
+}
+
+impl PlacementReading {
+    /// Returns the producer surface extent the live target needs, when this reading
+    /// established one.
+    pub(crate) const fn wanted(self) -> Option<PixelExtent> {
+        match self {
+            Self::Ready { wanted, .. } | Self::Unsettled { wanted } => wanted,
+            // Neither reading established a live size to derive one from.
+            Self::Unusable | Self::Lost => None,
+        }
+    }
 }
 
 /// Re-reads placement at frame arrival, so a retained frame never consults live
@@ -214,7 +235,10 @@ pub(crate) fn read_placement(key: NativeKey, extent: PixelExtent, scale: f64) ->
     let origin = (live.frame[0], live.frame[1]);
     let size = (live.frame[2], live.frame[3]);
     match placement_from_points(origin, size, scale, extent) {
-        Ok(placement) => PlacementReading::Ready(placement),
+        Ok(placement) => PlacementReading::Ready {
+            placement,
+            wanted: surface_for(size, live.display_scale),
+        },
         // The frame agreed with nothing because its scale is unusable, which is a
         // descriptor problem rather than anything about the target.
         Err(GeometryFault::NotFinite | GeometryFault::NegativeSize) => PlacementReading::Unusable,

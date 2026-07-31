@@ -1180,8 +1180,14 @@ an AppKit rectangle entering later would be a defect rather than a conversion to
 add.
 
 A content extent that changes is a discontinuity: the transition frame is dropped,
-the next frame carries it, and a new producer surface is requested. That request is
-carried out by a worker rather than by the callback, because the framework's
+the next frame carries it, and a new producer surface is requested. The size asked for
+is the one the target needs at its own display's backing scale, read from the live
+target rather than taken from the frame in hand: the framework scales a target down to
+fit a surface too small to hold it and reports the reduced size, so a request sized
+from that content would adopt the reduction and ask for less again on the next frame.
+A surface that is already the size the target needs is left alone, because content
+short of it is the framework mid-resize rather than a container to replace. That
+request is carried out by a worker rather than by the callback, because the framework's
 reconfiguration is asynchronous and completing it on the sample queue would stall
 delivery; if the worker cannot start, the session keeps publishing the content that
 fits the surface it already has rather than failing. Observed movement drops the

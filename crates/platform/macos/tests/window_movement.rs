@@ -95,13 +95,20 @@ struct Observed {
     frames: u32,
 }
 
-/// Prints where each display sits and at what scale, and names the seam most worth
-/// dragging across.
+/// Prints where each display sits and at what scale, names the seam most worth
+/// dragging across, and returns the backing scales in play.
 ///
 /// A display's placement is read by opening it briefly, because a target
 /// description carries the extent but not the desktop origin — the origin is
-/// frame-time geometry, which is the whole point of the contract.
-fn report_display_arrangement(provider: &MacosCaptureProvider, targets: &[TargetDescription]) {
+/// frame-time geometry, which is the whole point of the contract. The scales come
+/// back because a published frame carrying a scale that belongs to no display is the
+/// signature of the target having been letterboxed into a surface too small for it,
+/// and counting those turns this run into a measurement of that rather than a
+/// transcript to read by eye.
+fn report_display_arrangement(
+    provider: &MacosCaptureProvider,
+    targets: &[TargetDescription],
+) -> Vec<f64> {
     let mut spans: Vec<(String, f64, f64, f64)> = Vec::new();
     for display in targets
         .iter()
@@ -154,6 +161,7 @@ fn report_display_arrangement(provider: &MacosCaptureProvider, targets: &[Target
             );
         }
     }
+    spans.iter().map(|(_, _, _, scale)| *scale).collect()
 }
 
 /// Reports where the named window sits now, by opening it briefly.
@@ -230,7 +238,7 @@ fn a_window_moved_between_displays_republishes_under_a_new_geometry() {
     // Printed first so the run says which way to drag. A pair that is adjacent and
     // disagrees about scale is the one worth crossing, because it exercises the
     // scale half of the scenario as well as the move.
-    report_display_arrangement(&provider, &targets);
+    let display_scales = report_display_arrangement(&provider, &targets);
 
     let windows: Vec<&TargetDescription> = targets
         .iter()
@@ -490,9 +498,23 @@ fn a_window_moved_between_displays_republishes_under_a_new_geometry() {
         }
     }
 
+    // A published scale belonging to no attached display means the target was scaled
+    // down to fit a surface too small to hold it. The first frame of such a run is a
+    // transition frame and is dropped, so a small count is the producer not having
+    // caught up within one frame; a long run of them is a surface request that
+    // adopted the reduction instead of asking for what the target needs.
+    let letterboxed = states
+        .iter()
+        .filter(|state| {
+            !display_scales
+                .iter()
+                .any(|scale| (scale - state.placed.scale).abs() < 1e-9)
+        })
+        .count();
     println!(
         "measured: {moved_at_one_scale} move(s) at one scale as a geometry change, \
-         {crossed_scales} cross-scale move(s) as a new epoch"
+         {crossed_scales} cross-scale move(s) as a new epoch, {letterboxed} state(s) \
+         published at a scale no attached display has"
     );
     if crossed_scales == 0 {
         println!(

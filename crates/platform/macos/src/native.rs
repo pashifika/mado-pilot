@@ -408,24 +408,22 @@ impl SessionCore {
         // it either way. So the new surface is recorded and nothing is concluded
         // from it — the content extent below is what a caller sees.
         transition.surface = surface;
+
+        // Read before any reconfiguration is asked for, because the size to ask for
+        // comes from the live target rather than from this frame.
+        let reading = read_placement(self.key, extent, info.scale_factor);
+        if let Some(wanted) = surface_request(extent, surface, reading.wanted()) {
+            // The worker performs the native call off this queue.
+            self.reconfigure.request(wanted);
+        }
         if extent != transition.extent {
             transition.extent = extent;
-            if extent != surface {
-                // The producer surface no longer matches the content. Ask for a
-                // new one; the worker performs the native call off this queue.
-                self.reconfigure.request(extent);
-            }
             let _drop = self.state.try_record_drop();
             return Ok(());
         }
-        if extent != surface {
-            // Content that fits a surface it does not fill is a resize in
-            // progress. Keep asking until the surface catches up.
-            self.reconfigure.request(extent);
-        }
 
-        let placement = match read_placement(self.key, extent, info.scale_factor) {
-            PlacementReading::Ready(placement) => placement,
+        let placement = match reading {
+            PlacementReading::Ready { placement, .. } => placement,
             // The window server has already resized or moved the target since this
             // frame was produced — which is what a drag between displays looks
             // like, because the target is resized a moment after it lands. The
@@ -678,6 +676,34 @@ const fn should_reconfigure(streak: u32) -> bool {
     streak >= UNSETTLED_BEFORE_RECONFIGURE
 }
 
+/// Returns the producer surface extent to ask for, if any.
+///
+/// Content that does not fill the surface means the producer's container no longer
+/// matches the target, and the size to ask for is the one the target needs at its own
+/// display's backing scale — never the content extent in hand. The framework scales a
+/// target down to fit a surface too small to hold it and reports the reduced size, so
+/// asking for *that* size adopts the reduction: the next frame letterboxes into the
+/// smaller surface and reports less again. Measured on a window moved onto a
+/// higher-scale display, that loop advanced the epoch ten times inside a second and
+/// published frames at 94% of the target's resolution until a competing request sized
+/// from the live target won.
+fn surface_request(
+    extent: PixelExtent,
+    surface: PixelExtent,
+    wanted: Option<PixelExtent>,
+) -> Option<PixelExtent> {
+    // The container already holds exactly what is being delivered.
+    if extent == surface {
+        return None;
+    }
+    // The surface is already the size the target needs, so the mismatch is the
+    // framework mid-resize rather than a container to replace.
+    if wanted == Some(surface) {
+        return None;
+    }
+    wanted
+}
+
 /// Decides what a system-initiated stop means, by reading authorization again.
 ///
 /// The framework says only that the system ended the stream. Revoked Screen
@@ -779,7 +805,8 @@ mod tests {
 
     use super::{
         MAX_NATIVE_WAIT, Published, Reconfigure, UNSETTLED_BEFORE_RECONFIGURE, continuity_against,
-        frame_time, native_wait, normalize_native_fault, should_reconfigure, target_fault,
+        frame_time, native_wait, normalize_native_fault, should_reconfigure, surface_request,
+        target_fault,
     };
 
     #[test]
@@ -889,6 +916,58 @@ mod tests {
         // A single disagreeing frame must never be enough, which is what the first
         // assertion above already pins for the value this build compiled with.
         const { assert!(UNSETTLED_BEFORE_RECONFIGURE > 1) }
+    }
+
+    #[test]
+    fn a_letterboxed_frame_asks_for_the_targets_surface_and_not_its_scaled_content() {
+        // The reading measured on a 1718x1108-point window moved onto a
+        // backing-scale-2 display while the producer still held the surface it had
+        // at scale 1: the framework letterboxed the target into the small surface
+        // and reported 1623x1047 pixels at scale 0.9449.
+        let content = PixelExtent::new(1623, 1047);
+        let surface = PixelExtent::new(1718, 1050);
+        let target = PixelExtent::new(3436, 2216);
+
+        let asked = surface_request(content, surface, Some(target));
+
+        assert_eq!(
+            asked,
+            Some(target),
+            "the size asked for is the one the target needs at its display's scale"
+        );
+        assert_ne!(
+            asked,
+            Some(content),
+            "asking for the scaled content adopts the reduction and asks for less \
+             again on the next frame"
+        );
+    }
+
+    #[test]
+    fn a_surface_the_content_fills_is_not_reconfigured() {
+        let extent = PixelExtent::new(3436, 2216);
+
+        assert_eq!(surface_request(extent, extent, Some(extent)), None);
+    }
+
+    #[test]
+    fn a_surface_already_the_size_the_target_needs_is_not_asked_for_again() {
+        // Content short of a correctly sized surface is the framework mid-resize.
+        // Asking again would spend a native round trip per frame to no effect.
+        let content = PixelExtent::new(1623, 1047);
+        let surface = PixelExtent::new(3436, 2216);
+
+        assert_eq!(surface_request(content, surface, Some(surface)), None);
+    }
+
+    #[test]
+    fn a_surface_request_needs_a_live_reading_to_size_it() {
+        // A target that could not be read gives nothing to size a request from, and
+        // the content extent is exactly the wrong answer, so nothing is asked for.
+        let content = PixelExtent::new(1623, 1047);
+        let surface = PixelExtent::new(1718, 1050);
+
+        assert_eq!(surface_request(content, surface, None), None);
     }
 
     #[test]
