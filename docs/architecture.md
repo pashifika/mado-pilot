@@ -899,9 +899,12 @@ before the storage is taken, so a refusal never consumes what it refused.
 `StreamState::terminate` records a typed terminal fault into the same ordered
 state, so a caller waiting for a frame is told that the target was lost or the
 device failed rather than that the session closed. Session close remains
-idempotent after one, and `CaptureFault::StorageBudgetExhausted` is the observable
-bounded outcome when a retaining caller has consumed a session's finite storage
-budget.
+idempotent after one. A session description's `QueuePolicy` reports its handoff
+capacity and, when the Adapter has selected one, a separate non-zero
+`retained_storage` capacity; an absent value means that the Adapter has not
+declared that platform policy. `CaptureFault::StorageBudgetExhausted` is the
+observable bounded outcome when a retaining caller has consumed the declared
+finite storage budget.
 
 ### Input contracts
 

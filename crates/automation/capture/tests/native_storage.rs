@@ -178,9 +178,15 @@ fn descriptor(width: u32, height: u32) -> FrameDescriptor {
     FrameDescriptor::packed(PixelExtent::new(width, height), PixelFormat::Bgra8).expect("valid")
 }
 
+fn captured_at() -> MonotonicInstant {
+    MonotonicInstant::ORIGIN
+        .checked_add(Duration::from_millis(37))
+        .expect("test timestamp is representable")
+}
+
 fn publication(storage: Arc<dyn FrameStorage>, continuity: Continuity) -> StoragePublication {
     StoragePublication {
-        captured_at: MonotonicInstant::ORIGIN,
+        captured_at: captured_at(),
         placement: None,
         storage,
         continuity,
@@ -474,6 +480,11 @@ fn a_native_frame_correlates_to_the_geometry_it_was_captured_under() {
     let context = OperationContext::new();
     let old_mapping = before.map(PixelFormat::Bgra8, &context).expect("mapped");
 
+    assert_eq!(
+        before.captured_at(),
+        captured_at(),
+        "storage publication preserved the capture timestamp"
+    );
     assert_eq!(after.stamp().epoch().value(), 1, "a resize begins an epoch");
     assert_eq!(after.stamp().sequence().value(), 0);
     assert_ne!(after.stamp().geometry(), before.stamp().geometry());

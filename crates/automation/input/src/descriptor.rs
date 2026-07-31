@@ -117,13 +117,11 @@ impl InputDescriptor {
             }
         }
 
-        if self.capability.requires_focus(selected) && !request.focus().may_activate() {
-            // `RequireFocused` reaches here too: whether the target *is* focused is
-            // a runtime fact, so it is refused later by the controller rather than
-            // guessed at here.
-            if request.focus() == FocusPolicy::Preserve {
-                return Err(InputFault::FocusRequired);
-            }
+        // Whether a `RequireFocused` target is actually focused is a runtime
+        // fact, so it is refused later by the controller rather than guessed at
+        // here.
+        if self.capability.requires_focus(selected) && request.focus() == FocusPolicy::Preserve {
+            return Err(InputFault::FocusRequired);
         }
 
         Ok(selected)

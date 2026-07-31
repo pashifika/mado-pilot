@@ -337,6 +337,7 @@ impl TargetDescription {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct QueuePolicy {
     handoff: NonZeroU32,
+    retained_storage: Option<NonZeroU32>,
     overflow: OverflowPolicy,
 }
 
@@ -347,6 +348,7 @@ impl QueuePolicy {
     pub const fn synchronous() -> Self {
         Self {
             handoff: NonZeroU32::MIN,
+            retained_storage: None,
             overflow: OverflowPolicy::LatestWins,
         }
     }
@@ -354,13 +356,31 @@ impl QueuePolicy {
     /// Declares a handoff capacity and what happens when it is full.
     #[must_use]
     pub const fn new(handoff: NonZeroU32, overflow: OverflowPolicy) -> Self {
-        Self { handoff, overflow }
+        Self {
+            handoff,
+            retained_storage: None,
+            overflow,
+        }
+    }
+
+    /// Declares how many independently retained storage allocations the session
+    /// can keep leased.
+    #[must_use]
+    pub const fn with_retained_storage(mut self, retained_storage: NonZeroU32) -> Self {
+        self.retained_storage = Some(retained_storage);
+        self
     }
 
     /// Returns how many frames may be in flight between producer and consumers.
     #[must_use]
     pub const fn handoff(self) -> NonZeroU32 {
         self.handoff
+    }
+
+    /// Returns the finite retained-storage capacity an Adapter declared.
+    #[must_use]
+    pub const fn retained_storage(self) -> Option<NonZeroU32> {
+        self.retained_storage
     }
 
     /// Returns what the session does with a frame that does not fit.
@@ -670,6 +690,7 @@ mod tests {
         assert!(!description.input().is_available());
         assert_eq!(description.queue(), QueuePolicy::synchronous());
         assert_eq!(description.queue().handoff().get(), 1);
+        assert_eq!(description.queue().retained_storage(), None);
         assert_eq!(description.queue().overflow(), OverflowPolicy::LatestWins);
     }
 
@@ -687,6 +708,9 @@ mod tests {
             NonZeroU32::new(2).expect("non-zero"),
             OverflowPolicy::LatestWins,
         );
+        assert_eq!(queue.retained_storage(), None);
+        let retained_storage = NonZeroU32::new(8).expect("non-zero");
+        let queue = queue.with_retained_storage(retained_storage);
 
         let description = SessionDescription::new(
             target,
@@ -700,6 +724,10 @@ mod tests {
 
         assert_eq!(description.input(), input);
         assert_eq!(description.queue(), queue);
+        assert_eq!(
+            description.queue().retained_storage(),
+            Some(retained_storage)
+        );
         assert_eq!(queue.to_string(), "handoff 2 latest_wins");
     }
 
