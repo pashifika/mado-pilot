@@ -1138,7 +1138,12 @@ process alongside its window number, because macOS reuses window numbers and a
 replacement from another process is a different target. Opening one matches on both,
 not only on the number: an open resolves the target against a snapshot of its own, so
 carrying the owner no further than the caller's own comparison would let a recycled
-number reach capture — and the window captured could belong to another application. A
+number reach capture — and the window captured could belong to another application.
+The framework reports that owner as optional, and a window without one is not listed
+at all, because the owning process is the whole of a window's identity here and two
+windows lacking it would be indistinguishable. Offering such a window would be
+offering an identity this Adapter cannot stand behind; on the verification host every
+on-screen, layer-zero window the framework reported had a named owner. A
 display carries its
 captured extent rather than its placement, so rearranging displays keeps the same
 display's identity and reports the move as a geometry revision on the next frame,
@@ -1212,8 +1217,13 @@ is a frame's *display* time, so a frame handed over before the refresh it was
 scheduled for carries a timestamp shortly ahead of its delivery.
 
 Teardown is retryable and idempotent. Close stops admitting callbacks, shuts down
-the reconfiguration worker, fences until no callback is in flight, removes the
-stream output, stops the producer, and releases native state in a defined order. The
+the reconfiguration worker, joins a capture start still in flight, fences until no
+callback is in flight, removes the stream output, stops the producer, and releases
+native state in a defined order. Joining the start is what keeps its outcome
+reportable: a start can outlive the wait its own caller gave it, and settling after
+teardown had finished would leave that outcome with nowhere to go, since open has
+returned and a successful fence has already released the state a callback would reach.
+Close therefore reads a settled result and reports it as its own. The
 fence and the native stop are each bounded by a slice of the caller's remaining
 budget, and a native wait that expires becomes the caller's own deadline or
 cancellation rather than a fault, so a cancelled close leaves a state a later close
@@ -1230,7 +1240,11 @@ the outcome of its own close instead.
 An open that is interrupted before it returns tears down whatever it had reached. The
 registration handed to the shim, and the native session once there is one, are owned
 for the whole window in which an open can still fail, so a caller whose deadline
-expires mid-open is not told the open failed while capture continues behind it.
+expires mid-open is not told the open failed while capture continues behind it. One
+residue is stated rather than claimed away: when even teardown's own budget expires
+before a start settles, the start stops the producer itself when it finally completes,
+and that stop's failure has no caller left to receive it. Everything short of that
+reports through the close that waited.
 
 The session's own native allocation is reference counted rather than owned by the
 handle, because a retained frame, a producer callback, and the handle can each be the

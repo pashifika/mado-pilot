@@ -80,7 +80,10 @@ impl NativeKey {
 ///
 /// macOS reuses window numbers, so the owning process is carried alongside the
 /// identifier: a window that closes and is replaced by another window of another
-/// process is a different target even if the number matches.
+/// process is a different target even if the number matches. The framework reports
+/// that owner as optional, and a window without one carries no incarnation identity at
+/// all — two of them would compare equal — so the shim does not list such a window
+/// rather than fingerprinting it with a value that distinguishes nothing.
 ///
 /// A display carries its captured extent rather than its placement. Rearranging
 /// displays moves the same physical display, so its identity persists and the
@@ -95,11 +98,14 @@ pub(crate) enum Fingerprint {
 }
 
 impl Fingerprint {
-    /// Returns the owning process an open must match, or zero when there is none.
+    /// Returns the owning process an open must match, or zero for a display.
     ///
-    /// A display has no owner, and a window whose owner the framework did not name
-    /// records zero — which the native lookup treats as a value to match rather than
-    /// as an absent constraint, so that an unnamed owner cannot stand in for any.
+    /// A window always carries a real process here, because the shim lists no window
+    /// whose owner the framework did not name, and an open refuses a non-positive owner
+    /// for a window outright. Zero reaching a window request therefore means an invented
+    /// identity or one recorded before that rule, and it is refused rather than matched —
+    /// two unknown owners compared equal, which is the recycled-number capture this is
+    /// supposed to prevent. Zero for a display is not consulted at all.
     pub(crate) const fn native_owner(self) -> i64 {
         match self {
             Fingerprint::Window { owner_process } => owner_process,

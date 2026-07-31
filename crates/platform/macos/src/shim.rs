@@ -967,7 +967,7 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        ABI_VERSION, DEFAULT_NATIVE_WAIT, FrameInfo, KIND_DISPLAY, MAX_NATIVE_WAIT,
+        ABI_VERSION, DEFAULT_NATIVE_WAIT, FrameInfo, KIND_DISPLAY, KIND_WINDOW, MAX_NATIVE_WAIT,
         MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest, Session, ShimStatus,
         contained_frame_callback, contained_stopped_callback, declared_layout, linked_layout,
         live_objects, monotonic_nanos, nanos,
@@ -1048,6 +1048,59 @@ mod tests {
         // request is refused for whatever this host says about an absent display or
         // its authorization, but never as a malformed one.
         assert_ne!(open(8192, 8192), Some(ShimStatus::InvalidArgument));
+    }
+
+    /// A window opened without a real owning process is refused before anything else.
+    ///
+    /// Deterministic anywhere, for the reason the byte-ceiling case above is: the
+    /// request is validated before the framework is loaded or authorization consulted.
+    #[test]
+    fn a_window_request_without_an_owning_process_is_refused() {
+        extern "C" fn unreached_frame(
+            _context: *mut c_void,
+            _frame: *mut OpaqueFrame,
+            _info: *const FrameInfo,
+        ) -> u32 {
+            unreachable!("the request is refused before a producer exists")
+        }
+        extern "C" fn unreached_stopped(_context: *mut c_void, _status: u32) {
+            unreachable!("the request is refused before a producer exists")
+        }
+
+        let open = |kind: u32, owner_process: i64| {
+            let request = OpenRequest {
+                kind,
+                native_id: u64::from(u32::MAX),
+                owner_process,
+                extent: PixelExtent::new(64, 48),
+                queue_depth: 3,
+                detached_budget: 8,
+                wait: DEFAULT_NATIVE_WAIT,
+                testing_raise_sites: 0,
+            };
+            Session::open(
+                &request,
+                std::ptr::null_mut(),
+                unreached_frame,
+                unreached_stopped,
+            )
+            .err()
+        };
+
+        // Zero is what a window whose owner the framework did not name used to record,
+        // and it matched the next such window rather than distinguishing it. Discovery
+        // no longer lists one, so zero reaching a window request is a fabricated
+        // identity and is refused rather than compared.
+        assert_eq!(
+            open(KIND_WINDOW, 0),
+            Some(ShimStatus::InvalidArgument),
+            "a window with no owning process names no incarnation"
+        );
+        assert_eq!(open(KIND_WINDOW, -1), Some(ShimStatus::InvalidArgument));
+
+        // A display has no owner and the field is not consulted for one, so the same
+        // zero is not an error there.
+        assert_ne!(open(KIND_DISPLAY, 0), Some(ShimStatus::InvalidArgument));
     }
 
     #[test]

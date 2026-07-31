@@ -483,6 +483,93 @@ static mp_shim_status mp_shim_admission_fence(MPShimAdmission *admission, uint64
     return status;
 }
 
+#pragma mark - In-flight capture start
+
+/*
+ * Whether a capture start is still to settle, so that teardown can join it.
+ *
+ * A start can outlive the wait its own caller gave it, and the outcome then arrives
+ * with nobody left to report it to: open has already returned a failure and, once the
+ * fence succeeds, the Adapter state a stopped callback would reach is gone. Teardown
+ * waiting for the start is what puts that outcome back where a caller can see it —
+ * close reads the settled result and reports it through its own status.
+ *
+ * `orphaned` covers the case teardown cannot wait out. When close gives up on its
+ * budget, whoever settles the start owns stopping it, because by then nothing else is
+ * tracking the producer. That stop's own failure is genuinely unreportable, which is
+ * the one hole this gate does not close and is recorded as such.
+ */
+typedef struct MPShimStartGate {
+    pthread_mutex_t mutex;
+    pthread_cond_t settled;
+    bool pending;
+    bool orphaned;
+} MPShimStartGate;
+
+static void mp_shim_start_gate_init(MPShimStartGate *gate) {
+    pthread_mutex_init(&gate->mutex, NULL);
+    pthread_cond_init(&gate->settled, NULL);
+    gate->pending = false;
+    gate->orphaned = false;
+}
+
+static void mp_shim_start_gate_destroy(MPShimStartGate *gate) {
+    pthread_cond_destroy(&gate->settled);
+    pthread_mutex_destroy(&gate->mutex);
+}
+
+static void mp_shim_start_gate_begin(MPShimStartGate *gate) {
+    pthread_mutex_lock(&gate->mutex);
+    gate->pending = true;
+    pthread_mutex_unlock(&gate->mutex);
+}
+
+/* Settles the start and reports whether teardown gave up waiting for it. */
+static bool mp_shim_start_gate_end(MPShimStartGate *gate) {
+    pthread_mutex_lock(&gate->mutex);
+    gate->pending = false;
+    bool orphaned = gate->orphaned;
+    pthread_cond_broadcast(&gate->settled);
+    pthread_mutex_unlock(&gate->mutex);
+    return orphaned;
+}
+
+/*
+ * Waits out `timeout_nanos` for a start to settle. Returns immediately when none is in
+ * flight, which is every close that did not race one.
+ *
+ * The wait is relative and on the monotonic clock, and the remaining time is recomputed
+ * each turn, for the same reasons the admission fence above is written that way.
+ */
+static mp_shim_status mp_shim_start_gate_wait(MPShimStartGate *gate, uint64_t timeout_nanos) {
+    uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t deadline = began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
+
+    pthread_mutex_lock(&gate->mutex);
+    mp_shim_status status = MP_SHIM_OK;
+    while (gate->pending) {
+        uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
+        if (now >= deadline) {
+            status = MP_SHIM_TIMED_OUT;
+            break;
+        }
+        uint64_t left = deadline - now;
+        struct timespec relative;
+        relative.tv_sec = (time_t)(left / 1000000000ull);
+        relative.tv_nsec = (long)(left % 1000000000ull);
+        if (pthread_cond_timedwait_relative_np(&gate->settled, &gate->mutex, &relative) != 0) {
+            status = gate->pending ? MP_SHIM_TIMED_OUT : MP_SHIM_OK;
+            break;
+        }
+    }
+    if (status != MP_SHIM_OK) {
+        /* Hand the start its own teardown, since this one is leaving without it. */
+        gate->orphaned = true;
+    }
+    pthread_mutex_unlock(&gate->mutex);
+    return status;
+}
+
 #pragma mark - Handles
 
 struct mp_shim_inventory {
@@ -514,6 +601,8 @@ struct mp_shim_session {
     /* One for the Rust handle at open, plus one per party listed above. */
     atomic_uint refs;
     MPShimAdmission admission;
+    /* Lets teardown join a capture start that outlived its own caller's wait. */
+    MPShimStartGate start_gate;
 
     uint32_t kind;
     uint64_t native_id;
@@ -582,6 +671,7 @@ struct mp_shim_frame {
  */
 static void mp_shim_session_abandon(struct mp_shim_session *session) {
     mp_shim_admission_destroy(&session->admission);
+    mp_shim_start_gate_destroy(&session->start_gate);
     pthread_mutex_destroy(&session->native_mutex);
     pthread_mutex_destroy(&session->pool_mutex);
     session->magic = 0;
@@ -849,10 +939,31 @@ static MPShimInventoryEntry *mp_shim_window_entry(id<MPShimWindow> window) {
         return nil;
     }
 
+    /*
+     * A window whose owner the framework does not name is not listed at all.
+     *
+     * `owningApplication` is optional, and the owning process is the whole of a
+     * window's fingerprint — macOS recycles window numbers, and nothing else this
+     * framework reports identifies an incarnation, because a title and an extent both
+     * change legitimately. So a window with no owner cannot be told apart from the next
+     * window to inherit its number, and offering one would be offering an identity this
+     * Adapter cannot stand behind. It is refused here rather than at open for the same
+     * reason an over-sized target is: listing it would hand a caller something that
+     * cannot be honoured.
+     *
+     * The cost was measured rather than assumed: on the verification host every
+     * on-screen, layer-zero window the framework reported had a named owner. Those two
+     * filters are why — a window at layer zero and on screen is an ordinary application
+     * window. Zero is therefore a value no listed window carries, which is what lets an
+     * open reject it outright.
+     */
     id owner = window.owningApplication;
+    if (owner == nil) {
+        return nil;
+    }
     NSString *title = window.title;
     NSString *name = title.length > 0 ? title : nil;
-    if (name == nil && owner != nil) {
+    if (name == nil) {
         name = ((id<MPShimRunningApplication>)owner).applicationName;
     }
     NSData *encoded = [(name == nil ? @"" : name) dataUsingEncoding:NSUTF8StringEncoding];
@@ -1622,6 +1733,11 @@ static bool mp_shim_session_valid(const struct mp_shim_session *session) {
  * number crossed processes. The caller records the owner for exactly this reason and
  * cannot enforce it here, because this open queries the shareable content again
  * rather than reusing what the caller validated.
+ *
+ * Both sides of that comparison are known to be a real process: discovery lists no
+ * window whose owner the framework did not name, and the request validation refuses a
+ * non-positive owner. Without both, two windows whose owners were equally unknown
+ * compared equal and the match proved nothing.
  */
 static id mp_shim_find_native_target(const MPShimFramework *framework, uint32_t kind,
                                      uint64_t native_id, int64_t owner_process,
@@ -1703,7 +1819,16 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
         !mp_shim_surface_within_limit(request->pixel_width, request->pixel_height) ||
         request->detached_budget == 0 ||
         request->detached_budget > MP_SHIM_MAX_DETACHED_BUDGET ||
-        (request->kind != MP_SHIM_TARGET_WINDOW && request->kind != MP_SHIM_TARGET_DISPLAY)) {
+        (request->kind != MP_SHIM_TARGET_WINDOW && request->kind != MP_SHIM_TARGET_DISPLAY) ||
+        /*
+         * A window request carries the owning process the caller resolved it against,
+         * and discovery lists no window without one, so a non-positive value is either a
+         * caller that invented an identity or one carrying a fingerprint from before
+         * this rule. Refused rather than matched: zero used to match another window
+         * whose owner was equally unknown, which is the recycled-number capture the
+         * owner check exists to prevent.
+         */
+        (request->kind == MP_SHIM_TARGET_WINDOW && request->owner_process <= 0)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
 
@@ -1784,6 +1909,7 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     /* The Rust handle's reference. Every other holder adds its own. */
     atomic_store(&session->refs, 1u);
     mp_shim_admission_init(&session->admission);
+    mp_shim_start_gate_init(&session->start_gate);
     pthread_mutex_init(&session->native_mutex, NULL);
     pthread_mutex_init(&session->pool_mutex, NULL);
     session->kind = request->kind;
@@ -1860,17 +1986,15 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
     __block NSError *failure = nil;
     dispatch_semaphore_t ready = dispatch_semaphore_create(0);
     /*
-     * The completion block settles the start rather than reporting it, because a
-     * start can outlive the wait below. When that happened, `started` stayed false
-     * forever, close skipped its stop on that condition, and a late success left
-     * screen capture running with nothing tracking it. So the block records the
-     * outcome, and if it succeeded after teardown had already run, it stops the
-     * producer itself. Both it and close may end up stopping the stream, and the
-     * second stop reports that it was already in that state, which close treats as
-     * the success it is.
+     * The completion records the start's outcome rather than reporting it, because a
+     * start can outlive the wait below. When it did, `started` stayed false forever,
+     * close skipped its stop on that condition, and a late success left screen capture
+     * running with nothing tracking it. Close now joins an in-flight start through the
+     * gate, so the outcome recorded here is read by a caller holding a status — and the
+     * completion stops the producer itself only when close could not wait that long.
      */
     MPShimSessionHold *hold = [[MPShimSessionHold alloc] initWithSession:session];
-    [stream startCaptureWithCompletionHandler:^(NSError *error) {
+    void (^completion)(NSError *) = ^(NSError *error) {
       /* Captured so the session outlives this block, however the block ends and
        * whether or not the message below ever accepted it. */
       (void)hold;
@@ -1878,20 +2002,14 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
        * A callback trampoline, so it contains its own exceptions the way every other
        * one in this file does. The stop below is a framework message and can raise,
        * and an exception leaving this block unwinds into the framework with no handler
-       * anywhere above it — which is an abort rather than a status. The signal is owed
-       * whatever happens, so it runs in @finally; a waiter that never received it
-       * would block to its own timeout for no reason.
+       * anywhere above it — which is an abort rather than a status. The signal and the
+       * gate are owed whatever happens, so they are settled in @finally; a waiter that
+       * never received either would block to its own timeout for no reason.
        */
       @try {
           failure = error;
           if (error == nil) {
               atomic_store(&session->started, true);
-              if (atomic_load(&session->closed)) {
-                  [stream stopCaptureWithCompletionHandler:^(NSError *stopped) {
-                    (void)stopped;
-                  }];
-                  atomic_store(&session->started, false);
-              }
           }
           /* Last, so that the raise costs the outcome nothing and what it exercises is
            * the containment alone — the position the real stop message occupies. */
@@ -1902,9 +2020,45 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
           (void)exception;
       } @catch (...) {
       } @finally {
-          dispatch_semaphore_signal(ready);
+          bool orphaned = mp_shim_start_gate_end(&session->start_gate);
+          @try {
+              /*
+               * Ordinarily close is waiting on the gate just settled and owns the stop,
+               * which is what lets it report the outcome. This branch is the case where
+               * close could not wait that long: nothing else is tracking the producer,
+               * so it is stopped here, and this stop's own failure has no caller left to
+               * receive it.
+               */
+              if (orphaned && atomic_load(&session->started)) {
+                  [stream stopCaptureWithCompletionHandler:^(NSError *stopped) {
+                    (void)stopped;
+                  }];
+                  atomic_store(&session->started, false);
+              }
+          } @catch (NSException *exception) {
+              (void)exception;
+          } @catch (...) {
+          } @finally {
+              dispatch_semaphore_signal(ready);
+          }
       }
-    }];
+    };
+    /* Declared in flight before the message, so a close racing this start joins it
+     * rather than deciding the producer's fate without knowing the outcome. */
+    mp_shim_start_gate_begin(&session->start_gate);
+    @try {
+        [stream startCaptureWithCompletionHandler:completion];
+    } @catch (...) {
+        /*
+         * The message never accepted the block, so nothing else will settle the gate —
+         * and every later close would wait out its whole budget for a start that never
+         * began, reporting a timeout against it. Settling here is unconditional because
+         * settling twice is harmless, which is the difference from the session reference
+         * this block also holds: that one is counted, so a second drop would be a free.
+         */
+        (void)mp_shim_start_gate_end(&session->start_gate);
+        @throw;
+    }
     mp_shim_status waited = mp_shim_wait(ready, timeout_nanos);
     if (waited != MP_SHIM_OK) {
         return waited;
@@ -1991,6 +2145,21 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
     mp_shim_status reported = MP_SHIM_OK;
     @try {
         mp_shim_admission_stop(&session->admission);
+        /*
+         * A start still in flight is joined before anything is decided about the
+         * producer. Without this, a start that outlived its own caller's wait settled
+         * after teardown had finished: the outcome arrived with open already returned
+         * and the fence already succeeded, so there was no status and no callback left
+         * to carry it, and the corrective stop it had to perform itself could fail
+         * silently. Waiting here is what puts that outcome inside a close the caller is
+         * holding, so `started` below is read settled rather than raced.
+         *
+         * Returns at once when no start is in flight, which is every ordinary close.
+         */
+        mp_shim_status settled = mp_shim_start_gate_wait(&session->start_gate, timeout_nanos);
+        if (settled != MP_SHIM_OK) {
+            reported = settled;
+        }
         id<MPShimStream> stream = mp_shim_session_copy_stream(session);
         id output = mp_shim_session_copy_slot(session, &session->output);
 
