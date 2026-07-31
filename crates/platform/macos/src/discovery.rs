@@ -292,9 +292,12 @@ fn placement_from_points(
         f64::from(extent.height()) / scale.y(),
     );
     // The reported point size is not discarded silently: it is what the origin
-    // belongs to, and a size that disagrees with the extent by more than one
-    // point means the two observations describe different rectangles.
-    if (logical.0 - size.0).abs() > 1.0 || (logical.1 - size.1).abs() > 1.0 {
+    // belongs to, and a size that disagrees with the extent by a whole point or more
+    // means the two observations describe different rectangles. The slack is for
+    // pixel quantization, which is under a point at every scale — an exact point of
+    // disagreement is two pixels on a Retina display, which is a resize, and
+    // accepting it published a stale frame as covering the target it no longer fits.
+    if (logical.0 - size.0).abs() >= 1.0 || (logical.1 - size.1).abs() >= 1.0 {
         return Err(GeometryFault::SpaceMismatch);
     }
     TargetPlacement::new(origin, logical, scale)
@@ -396,6 +399,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_whole_point_of_disagreement_is_a_resize_rather_than_quantization() {
+        // The slack exists for pixel quantization, which is under a point at every
+        // scale. A full point is two pixels at scale 2 — a resize — and accepting it
+        // published a stale frame as covering a target it no longer fits, leaving the
+        // right and bottom edges wrong by a logical point.
+        let extent = PixelExtent::new(2560, 1600);
+
+        let refused = placement_from_points((0.0, 0.0), (1281.0, 800.0), 2.0, extent)
+            .expect_err("an exact point of disagreement describes another rectangle");
+        assert_eq!(refused, GeometryFault::SpaceMismatch);
+
+        // Under a point still passes, which is what the slack is for.
+        placement_from_points((0.0, 0.0), (1280.4, 800.0), 2.0, extent)
+            .expect("quantization below one point is the same rectangle");
     }
 
     #[test]

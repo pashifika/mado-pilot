@@ -212,8 +212,11 @@ fn next_frame_within(
 /// never got to test, which is how this scenario failed on a verification host whose
 /// left-hand display happened to hold nothing that was redrawing.
 ///
-/// A candidate that fails rather than going quiet still fails the scenario: only a
-/// budget that expires is read as idleness.
+/// Only two outcomes move on to the next candidate: an expired budget, which is what
+/// idleness looks like, and a target lost mid-probe, which is the race the Adapter is
+/// required to report. Every other refusal fails the scenario rather than being
+/// absorbed into a skip — a skip has to name its own reason, and one that blamed an
+/// idle desktop for a revoked authorization would name the wrong one.
 fn producing_window(
     scenario: &str,
     candidates: &[Candidate],
@@ -226,19 +229,22 @@ fn producing_window(
     {
         considered += 1;
         let harness = Harness::from_candidate(candidate);
-        // A window discovered a moment ago may have closed or resized since, and the
-        // Adapter is required to say so rather than capture something else.
-        let Ok(session) = harness.open(0) else {
-            continue;
+        let session = match harness.open(0) {
+            Ok(session) => session,
+            // A window discovered a moment ago may have closed or resized since, and
+            // the Adapter is required to say so rather than capture something else.
+            Err(error) if error.status() == Status::TargetLost => continue,
+            Err(error) => panic!("a discovered window failed to open: {error}"),
         };
         match next_frame_within(&session, FrameRequest::latest(), LIVENESS_WAIT) {
             Ok(frame) => return Some((harness, session, frame)),
-            Err(error) if error.status() == Status::CaptureFailed => {
-                panic!("a window session failed rather than going quiet: {error}")
-            }
-            Err(_) => {
+            Err(error)
+                if error.status() == Status::DeadlineExceeded
+                    || error.status() == Status::TargetLost =>
+            {
                 let _closed = close(&session);
             }
+            Err(error) => panic!("a window session failed rather than going quiet: {error}"),
         }
     }
     if considered == 0 {

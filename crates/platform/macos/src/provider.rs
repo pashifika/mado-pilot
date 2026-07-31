@@ -161,12 +161,13 @@ impl MacosCaptureProvider {
         record: &TargetRecord,
         operation: &mut Operation<'_>,
     ) -> Result<TargetMetadata> {
+        let wait = inventory_wait(operation.context().remaining());
         self.with_snapshot_order(operation, || {
             if record.lost.load(Ordering::Acquire) || !record.key.is_present() {
                 record.lost.store(true, Ordering::Release);
                 return Err(CaptureFault::TargetLost.into());
             }
-            let current = inventory(MAX_NATIVE_WAIT)?
+            let current = inventory(wait)?
                 .into_iter()
                 .find(|candidate| candidate.key == record.key);
             match current {
@@ -210,6 +211,16 @@ impl MacosCaptureProvider {
     }
 }
 
+/// Returns how long a native inventory query may wait, bounded by the caller's budget.
+///
+/// A fixed ceiling is not the caller's deadline. A request whose remaining budget is
+/// shorter would block past it and then report whatever the native query returned — a
+/// capture failure, say — rather than the deadline it actually missed. `None` means no
+/// deadline, which is the one case the ceiling alone answers.
+fn inventory_wait(remaining: Option<Duration>) -> Duration {
+    remaining.map_or(MAX_NATIVE_WAIT, |remaining| remaining.min(MAX_NATIVE_WAIT))
+}
+
 impl fmt::Debug for MacosCaptureProvider {
     /// Formats counts only. A window title is desktop content.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -230,7 +241,8 @@ impl CaptureProvider for MacosCaptureProvider {
 
     fn discover(&self, operation: &OperationContext) -> Result<Vec<TargetDescription>> {
         ensure_capture_available()?;
-        self.discover_with(operation, || inventory(MAX_NATIVE_WAIT))
+        let wait = inventory_wait(operation.remaining());
+        self.discover_with(operation, || inventory(wait))
     }
 
     fn open(
@@ -322,7 +334,29 @@ mod tests {
     use mado_pilot_capture::{CaptureProvider, OpenRequest, PixelFormat};
     use mado_pilot_core::{IdentityIssuer, Operation, OperationContext, Status};
 
-    use super::{Fingerprint, MacosCaptureProvider, same_incarnation};
+    use super::{Fingerprint, MacosCaptureProvider, inventory_wait, same_incarnation};
+
+    #[test]
+    fn a_native_inventory_wait_never_exceeds_the_callers_own_budget() {
+        // The defect this pins: discovery passed the fixed ceiling regardless, so a
+        // request with a shorter deadline blocked past it and then reported whatever
+        // the native query returned rather than the deadline it missed.
+        assert_eq!(
+            inventory_wait(Some(Duration::from_millis(100))),
+            Duration::from_millis(100)
+        );
+        assert_eq!(inventory_wait(Some(Duration::ZERO)), Duration::ZERO);
+        assert_eq!(
+            inventory_wait(Some(Duration::from_secs(30))),
+            super::MAX_NATIVE_WAIT,
+            "a budget longer than the ceiling is still bounded by it"
+        );
+        assert_eq!(
+            inventory_wait(None),
+            super::MAX_NATIVE_WAIT,
+            "no deadline is the one case the ceiling alone answers"
+        );
+    }
 
     /// Statuses a host without Screen Recording authorization or without the
     /// capture framework legitimately reports, which every test below tolerates.

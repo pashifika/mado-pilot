@@ -423,21 +423,34 @@ static void mp_shim_admission_stop(MPShimAdmission *admission) {
     pthread_mutex_unlock(&admission->mutex);
 }
 
+/*
+ * Waits out the caller's budget on the host's monotonic clock.
+ *
+ * The budget arrives from a monotonic domain, so it must not be turned into a
+ * CLOCK_REALTIME deadline: stepping wall time backward would push that deadline
+ * further away and a close documented as bounded would overrun by the adjustment. The
+ * relative wait is Darwin's, which this shim is anyway, and the remaining time is
+ * recomputed each turn so a spurious wakeup cannot restart the whole budget.
+ */
 static mp_shim_status mp_shim_admission_fence(MPShimAdmission *admission, uint64_t timeout_nanos) {
-    struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += (time_t)(timeout_nanos / 1000000000ull);
-    deadline.tv_nsec += (long)(timeout_nanos % 1000000000ull);
-    if (deadline.tv_nsec >= 1000000000L) {
-        deadline.tv_sec += 1;
-        deadline.tv_nsec -= 1000000000L;
-    }
+    uint64_t started = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t deadline = started > UINT64_MAX - timeout_nanos ? UINT64_MAX : started + timeout_nanos;
 
     pthread_mutex_lock(&admission->mutex);
     admission->accepting = false;
     mp_shim_status status = MP_SHIM_OK;
     while (admission->active > 0) {
-        if (pthread_cond_timedwait(&admission->drained, &admission->mutex, &deadline) != 0) {
+        uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
+        if (now >= deadline) {
+            status = MP_SHIM_TIMED_OUT;
+            break;
+        }
+        uint64_t left = deadline - now;
+        struct timespec relative;
+        relative.tv_sec = (time_t)(left / 1000000000ull);
+        relative.tv_nsec = (long)(left % 1000000000ull);
+        if (pthread_cond_timedwait_relative_np(&admission->drained, &admission->mutex,
+                                               &relative) != 0) {
             status = admission->active > 0 ? MP_SHIM_TIMED_OUT : MP_SHIM_OK;
             break;
         }
@@ -1009,31 +1022,40 @@ static mp_shim_status mp_shim_pool_acquire(struct mp_shim_session *session, uint
         return MP_SHIM_BUDGET_EXHAUSTED;
     }
     mp_shim_status status = MP_SHIM_OK;
-    if (session->leased >= session->detached_budget) {
-        status = MP_SHIM_BUDGET_EXHAUSTED;
-    } else if (session->pool == NULL || session->pool_width != width ||
-               session->pool_height != height) {
-        status = mp_shim_pool_create_locked(session, width, height);
-    }
-    if (status == MP_SHIM_OK) {
-        NSDictionary *auxiliary = @{
-            (__bridge NSString *)
-            kCVPixelBufferPoolAllocationThresholdKey : @(session->detached_budget)
-        };
-        CVPixelBufferRef buffer = NULL;
-        CVReturn created = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
-            kCFAllocatorDefault, session->pool, (__bridge CFDictionaryRef)auxiliary, &buffer);
-        if (created == kCVReturnWouldExceedAllocationThreshold) {
+    /*
+     * The unlock is in @finally because the body allocates Objective-C objects, and
+     * Foundation raises under memory pressure. An exception unwinding past a plain
+     * unlock statement leaves this mutex held for the life of the process: the next
+     * mp_shim_pool_return blocks on it forever, and close destroys a locked mutex.
+     */
+    @try {
+        if (session->leased >= session->detached_budget) {
             status = MP_SHIM_BUDGET_EXHAUSTED;
-        } else if (created != kCVReturnSuccess || buffer == NULL) {
-            status = MP_SHIM_PLATFORM_FAILURE;
-        } else {
-            session->leased += 1;
-            mp_shim_note_owned();
-            *out_buffer = buffer;
+        } else if (session->pool == NULL || session->pool_width != width ||
+                   session->pool_height != height) {
+            status = mp_shim_pool_create_locked(session, width, height);
         }
+        if (status == MP_SHIM_OK) {
+            NSDictionary *auxiliary = @{
+                (__bridge NSString *)
+                kCVPixelBufferPoolAllocationThresholdKey : @(session->detached_budget)
+            };
+            CVPixelBufferRef buffer = NULL;
+            CVReturn created = CVPixelBufferPoolCreatePixelBufferWithAuxAttributes(
+                kCFAllocatorDefault, session->pool, (__bridge CFDictionaryRef)auxiliary, &buffer);
+            if (created == kCVReturnWouldExceedAllocationThreshold) {
+                status = MP_SHIM_BUDGET_EXHAUSTED;
+            } else if (created != kCVReturnSuccess || buffer == NULL) {
+                status = MP_SHIM_PLATFORM_FAILURE;
+            } else {
+                session->leased += 1;
+                mp_shim_note_owned();
+                *out_buffer = buffer;
+            }
+        }
+    } @finally {
+        pthread_mutex_unlock(&session->pool_mutex);
     }
-    pthread_mutex_unlock(&session->pool_mutex);
     return status;
 }
 
@@ -1267,16 +1289,27 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
     size_t surface_height = CVPixelBufferGetHeight(image);
     double pixel_width = content.size.width * factor;
     double pixel_height = content.size.height * factor;
+    /*
+     * Every bound is checked as a double, before any conversion. A double outside the
+     * destination's range converts with undefined behaviour, and NaN defeats an
+     * ordering test rather than failing it — `origin_x < 0.0` is false for NaN, so a
+     * malformed origin used to reach `(size_t)origin_x` unchecked. The framework is
+     * the source of these values, which makes them untrusted input like any other.
+     */
     if (!isfinite(pixel_width) || !isfinite(pixel_height) || pixel_width < 1.0 ||
-        pixel_height < 1.0) {
+        pixel_height < 1.0 || pixel_width > (double)MP_SHIM_MAX_PIXEL_EXTENT ||
+        pixel_height > (double)MP_SHIM_MAX_PIXEL_EXTENT) {
+        return;
+    }
+    double origin_x = floor(content.origin.x * factor);
+    double origin_y = floor(content.origin.y * factor);
+    if (!isfinite(origin_x) || !isfinite(origin_y) || origin_x < 0.0 || origin_y < 0.0 ||
+        origin_x > (double)MP_SHIM_MAX_PIXEL_EXTENT || origin_y > (double)MP_SHIM_MAX_PIXEL_EXTENT) {
         return;
     }
     uint32_t content_width = (uint32_t)floor(pixel_width);
     uint32_t content_height = (uint32_t)floor(pixel_height);
-    double origin_x = floor(content.origin.x * factor);
-    double origin_y = floor(content.origin.y * factor);
-    if (origin_x < 0.0 || origin_y < 0.0 ||
-        (size_t)origin_x + content_width > surface_width ||
+    if ((size_t)origin_x + content_width > surface_width ||
         (size_t)origin_y + content_height > surface_height) {
         return;
     }
@@ -1509,10 +1542,25 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
 
     output.session = session;
     NSError *output_error = nil;
-    if (![stream addStreamOutput:output
-                            type:MPShimStreamOutputTypeScreen
-              sampleHandlerQueue:queue
-                           error:&output_error]) {
+    BOOL added = NO;
+    /*
+     * The session is a raw allocation at this point, so it is not covered by the ARC
+     * locals that make every other failure here release what it owns. A raise from
+     * `addStreamOutput` would unwind straight to MP_SHIM_END and leak the allocation
+     * with its initialized mutex and admission, so the raise is caught here, the
+     * allocation is abandoned, and the exception continues to the boundary handler.
+     */
+    @try {
+        added = [stream addStreamOutput:output
+                                  type:MPShimStreamOutputTypeScreen
+                    sampleHandlerQueue:queue
+                                 error:&output_error];
+    } @catch (...) {
+        output.session = NULL;
+        mp_shim_session_abandon(session);
+        @throw;
+    }
+    if (!added) {
         output.session = NULL;
         mp_shim_session_abandon(session);
         return mp_shim_error_status(output_error);
@@ -1695,35 +1743,53 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
          * Release runs here so a cleanup failure is reported without costing the
          * cleanup. The order is the stream, then the objects it was built from,
          * then the queue that delivered to it, then the detached pool.
+         *
+         * Its own handlers, because an exception raised inside a @finally is not
+         * caught by the @catch pair belonging to the same @try — it leaves the
+         * function. This entry point opens a bare @try rather than MP_SHIM_BEGIN, so
+         * nothing outside would catch it either, and a raise while releasing a bridged
+         * framework object would cross the boundary that ADR 0012 rule 1 exists to
+         * close.
          */
-        if (session->stream != NULL) {
-            CFRelease(session->stream);
-            session->stream = NULL;
-            mp_shim_note_released();
+        @try {
+            if (session->stream != NULL) {
+                CFRelease(session->stream);
+                session->stream = NULL;
+                mp_shim_note_released();
+            }
+            if (session->output != NULL) {
+                CFRelease(session->output);
+                session->output = NULL;
+                mp_shim_note_released();
+            }
+            if (session->configuration != NULL) {
+                CFRelease(session->configuration);
+                session->configuration = NULL;
+                mp_shim_note_released();
+            }
+            if (session->filter != NULL) {
+                CFRelease(session->filter);
+                session->filter = NULL;
+                mp_shim_note_released();
+            }
+            if (session->queue != NULL) {
+                CFRelease(session->queue);
+                session->queue = NULL;
+                mp_shim_note_released();
+            }
+            pthread_mutex_lock(&session->pool_mutex);
+            /* Unlocked in @finally for the reason mp_shim_pool_acquire is. */
+            @try {
+                mp_shim_pool_release_locked(session);
+            } @finally {
+                pthread_mutex_unlock(&session->pool_mutex);
+            }
+        } @catch (NSException *exception) {
+            (void)exception;
+            reported = MP_SHIM_NATIVE_EXCEPTION;
+        } @catch (...) {
+            reported = MP_SHIM_NATIVE_EXCEPTION;
         }
-        if (session->output != NULL) {
-            CFRelease(session->output);
-            session->output = NULL;
-            mp_shim_note_released();
-        }
-        if (session->configuration != NULL) {
-            CFRelease(session->configuration);
-            session->configuration = NULL;
-            mp_shim_note_released();
-        }
-        if (session->filter != NULL) {
-            CFRelease(session->filter);
-            session->filter = NULL;
-            mp_shim_note_released();
-        }
-        if (session->queue != NULL) {
-            CFRelease(session->queue);
-            session->queue = NULL;
-            mp_shim_note_released();
-        }
-        pthread_mutex_lock(&session->pool_mutex);
-        mp_shim_pool_release_locked(session);
-        pthread_mutex_unlock(&session->pool_mutex);
     }
     return reported;
 }

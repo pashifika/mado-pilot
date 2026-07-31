@@ -318,6 +318,11 @@ impl CaptureSession for NativeSession {
     }
 
     fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
+        // Admitted before the liveness read, not after. That read is a window-server
+        // query, so performing it first let an already-cancelled or already-expired
+        // request do native work — and, worse, terminate the session on what the query
+        // returned. A request the caller has given up on decides nothing.
+        Operation::admit(operation)?;
         if !self.core.key.is_present() {
             self.core.fail_native(target_fault(self.core.target_kind));
         }
@@ -412,7 +417,7 @@ impl SessionCore {
         // Read before any reconfiguration is asked for, because the size to ask for
         // comes from the live target rather than from this frame.
         let reading = read_placement(self.key, extent, info.scale_factor);
-        if let Some(wanted) = surface_request(extent, surface, reading.wanted()) {
+        if let Some(wanted) = surface_request(surface, reading.wanted()) {
             // The worker performs the native call off this queue.
             self.reconfigure.request(wanted);
         }
@@ -450,10 +455,15 @@ impl SessionCore {
             PlacementReading::Lost => return Err(target_fault(self.target_kind)),
         };
         transition.unsettled_streak = 0;
-        if transition.published.is_some() && placement != transition.placement {
+        if placement != transition.placement {
             // A move was just observed. This frame's pixels predate it, so it is
             // dropped and frames older than the move are refused below until the
             // producer catches up.
+            //
+            // Not gated on having published before. A target that moves while capture
+            // is starting is the same move, and skipping the fence for it published a
+            // queued pre-move frame under the placement read after the move — every
+            // desktop coordinate taken from that frame silently displaced.
             transition.placement = placement;
             transition.movement_not_before =
                 Some(shim::monotonic_nanos().unwrap_or(info.display_time_nanos.saturating_add(1)));
@@ -678,30 +688,33 @@ const fn should_reconfigure(streak: u32) -> bool {
 
 /// Returns the producer surface extent to ask for, if any.
 ///
-/// Content that does not fill the surface means the producer's container no longer
-/// matches the target, and the size to ask for is the one the target needs at its own
-/// display's backing scale — never the content extent in hand. The framework scales a
-/// target down to fit a surface too small to hold it and reports the reduced size, so
-/// asking for *that* size adopts the reduction: the next frame letterboxes into the
-/// smaller surface and reports less again. Measured on a window moved onto a
-/// higher-scale display, that loop advanced the epoch ten times inside a second and
-/// published frames at 94% of the target's resolution until a competing request sized
-/// from the live target won.
-fn surface_request(
-    extent: PixelExtent,
-    surface: PixelExtent,
-    wanted: Option<PixelExtent>,
-) -> Option<PixelExtent> {
-    // The container already holds exactly what is being delivered.
-    if extent == surface {
-        return None;
+/// The question is only ever whether the surface is the size the *target* needs at its
+/// own display's backing scale. What the frame in hand contains cannot answer it, in
+/// either direction:
+///
+/// - A surface too small to hold the target is filled anyway, because the framework
+///   scales the target down to fit and reports a scale factor absorbing the reduction.
+///   Asking for the reported content extent adopts that reduction, and the next frame
+///   scales into the smaller surface and reports less again. Measured on a window moved
+///   onto a higher-scale display: the epoch advanced ten times inside a second while
+///   frames published at 94% of the target's resolution.
+/// - Reading a filled surface as "nothing to do" is the same mistake standing still. A
+///   window moved from a 1x display to a 2x one without changing its point size needs
+///   twice the pixels, and the framework will downscale into the old surface and fill it
+///   exactly. Treating that as settled captures the target at half resolution for the
+///   life of the stream.
+///
+/// So the comparison is `wanted` against `surface`, and the content extent does not
+/// enter into it.
+fn surface_request(surface: PixelExtent, wanted: Option<PixelExtent>) -> Option<PixelExtent> {
+    match wanted {
+        // The surface is not the size the target needs, whatever it currently holds.
+        Some(wanted) if wanted != surface => Some(wanted),
+        // Either the surface is already right, or the target could not be read and
+        // there is nothing to size a request from. The content extent is exactly the
+        // wrong answer in that second case, so nothing is asked for.
+        _ => None,
     }
-    // The surface is already the size the target needs, so the mismatch is the
-    // framework mid-resize rather than a container to replace.
-    if wanted == Some(surface) {
-        return None;
-    }
-    wanted
 }
 
 /// Decides what a system-initiated stop means, by reading authorization again.
@@ -919,55 +932,50 @@ mod tests {
     }
 
     #[test]
-    fn a_letterboxed_frame_asks_for_the_targets_surface_and_not_its_scaled_content() {
-        // The reading measured on a 1718x1108-point window moved onto a
-        // backing-scale-2 display while the producer still held the surface it had
-        // at scale 1: the framework letterboxed the target into the small surface
-        // and reported 1623x1047 pixels at scale 0.9449.
-        let content = PixelExtent::new(1623, 1047);
+    fn a_surface_too_small_for_its_target_is_asked_to_grow() {
+        // Measured on a 1718x1108-point window moved onto a backing-scale-2 display
+        // while the producer still held the surface it had at scale 1: the framework
+        // scaled the target into the small surface and reported 1623x1047 pixels at
+        // scale 0.9449. Asking for that reported extent adopts the reduction.
         let surface = PixelExtent::new(1718, 1050);
         let target = PixelExtent::new(3436, 2216);
 
-        let asked = surface_request(content, surface, Some(target));
-
-        assert_eq!(
-            asked,
-            Some(target),
-            "the size asked for is the one the target needs at its display's scale"
-        );
-        assert_ne!(
-            asked,
-            Some(content),
-            "asking for the scaled content adopts the reduction and asks for less \
-             again on the next frame"
-        );
+        assert_eq!(surface_request(surface, Some(target)), Some(target));
     }
 
     #[test]
-    fn a_surface_the_content_fills_is_not_reconfigured() {
-        let extent = PixelExtent::new(3436, 2216);
+    fn a_filled_surface_at_the_wrong_scale_is_still_asked_to_grow() {
+        // The case a content-extent comparison cannot see. A window keeps its point
+        // size across a move from a 1x display to a 2x one, so it needs twice the
+        // pixels — and the framework downscales into the old surface and fills it
+        // exactly. Reading a filled surface as settled captures the target at half
+        // resolution for the life of the stream.
+        let surface = PixelExtent::new(1000, 800);
+        let target = PixelExtent::new(2000, 1600);
 
-        assert_eq!(surface_request(extent, extent, Some(extent)), None);
+        assert_eq!(
+            surface_request(surface, Some(target)),
+            Some(target),
+            "a surface the content fills can still be the wrong size for the target"
+        );
     }
 
     #[test]
     fn a_surface_already_the_size_the_target_needs_is_not_asked_for_again() {
         // Content short of a correctly sized surface is the framework mid-resize.
         // Asking again would spend a native round trip per frame to no effect.
-        let content = PixelExtent::new(1623, 1047);
         let surface = PixelExtent::new(3436, 2216);
 
-        assert_eq!(surface_request(content, surface, Some(surface)), None);
+        assert_eq!(surface_request(surface, Some(surface)), None);
     }
 
     #[test]
     fn a_surface_request_needs_a_live_reading_to_size_it() {
         // A target that could not be read gives nothing to size a request from, and
         // the content extent is exactly the wrong answer, so nothing is asked for.
-        let content = PixelExtent::new(1623, 1047);
         let surface = PixelExtent::new(1718, 1050);
 
-        assert_eq!(surface_request(content, surface, None), None);
+        assert_eq!(surface_request(surface, None), None);
     }
 
     #[test]

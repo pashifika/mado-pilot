@@ -130,6 +130,13 @@ the half a macOS host would otherwise leave to a continuous-integration job:
   The mirrored command does not exist: targeting `aarch64-apple-darwin` from Windows
   would run the shim's build script, which needs a macOS toolchain.
 
+Step 9 names one package rather than the workspace because `--workspace` at another
+target fails in `opencv`'s build script, which looks for an installation for the target
+it is building for. It needs no more than that package: crate-level `#[cfg]` gating of a
+whole file is what produces this failure, and the two platform adapters are the only
+places the workspace uses it. Elsewhere a target is selected with `cfg!()` inside an
+expression, which strips no items.
+
 The failure this reaches is never in the gated code. A crate-level `#![cfg(…)]` strips
 the whole file, and when the crate's `//!` documentation sits inside what is stripped,
 the crate root is left undocumented and `missing_docs` fails the lint. Every
