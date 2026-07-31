@@ -1,11 +1,12 @@
-# Windows capture ownership contract-test plan
+# Windows capture ownership contract tests
 
 This plan translates
-[ADR 0013](adr/0013-windows-capture-frame-detachment.md) into tests the future
-`mado-pilot-platform-windows` implementation must add. It is an acceptance
-contract, not evidence that native Windows capture exists today.
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md) into tests for
+`mado-pilot-platform-windows`. The production Adapter and its controlled test
+layers now exist; this document distinguishes that implementation evidence from
+the larger host matrix still required for release acceptance.
 
-The production Change must implement both layers below:
+The implementation uses both layers below:
 
 - deterministic Adapter-independent tests that exercise ownership, queue,
   lifecycle, and publication through controllable fakes;
@@ -16,6 +17,39 @@ The common public capture contract remains platform-neutral. Test-only
 instrumentation may expose producer-slot, detached-texture, lease, callback, and
 drop counters, but Windows or D3D11 types must not enter `mado-pilot-core`,
 `mado-pilot-capture`, the facade, or the C ABI.
+
+## Current implementation coverage
+
+| Concern | Controlled evidence |
+|---|---|
+| Picker-free discovery, deterministic order, provider identity, required format | `crates/platform/windows/src/provider.rs` unit tests and `crates/platform/windows/tests/native_capture.rs` |
+| Native-handle replacement | `a_reused_native_handle_never_reuses_the_target_identity` |
+| Producer detachment, finite pressure, lease-safe reuse, resize retirement | `crates/automation/capture/tests/native_storage.rs` and `crates/platform/windows/src/storage.rs` unit tests |
+| Aliasing negative control | `the_retained_byte_oracle_rejects_an_overwriting_two_slot_ring` intentionally overwrites a two-slot ring and proves the retained-byte oracle rejects it |
+| Callback admission fence and retry after cancellation | `callback_fence_is_retryable_after_cancelled_drain` |
+| Lazy mapping, exact byte length, late-result rejection, retained lifetime | `crates/automation/capture/tests/native_storage.rs` plus the synthetic-window native test |
+| Resize identity and old-storage survival | `a_native_frame_correlates_to_the_geometry_it_was_captured_under` plus the synthetic-window native test |
+| Signed mixed-DPI geometry | `signed_mixed_dpi_placement_is_frame_authoritative`; the native test also correlates every transform to its frame revision |
+| Access, close, disconnect, removal, and reset classification | `native_device_and_lifecycle_errors_are_typed` and the controlled target-close path |
+| Idempotent native close and post-close mapping | `synthetic_window_exercises_retention_resize_loss_and_close` |
+
+These tests are deterministic except for the explicitly native synthetic-window
+case, which skips with a reason when WGC is unavailable or the test-owned target
+cannot be discovered. They do not capture an unrelated desktop or application.
+
+The remaining release-acceptance evidence is the revision-bound 600-frame and
+dual-4K host matrix below, including resource-zeroing counters and Phase 2
+`G-013` profiles and budgets. A skip is not support evidence, and the current
+Change does not claim that matrix has run.
+
+## Privacy review
+
+Production code emits no target, frame, or pixel logs. Public discovery returns
+the window title or display name because it is caller-visible selection
+metadata, but debug output for the provider, target records, sessions, storage,
+and refusals excludes titles, native handles, process paths, pixel bytes,
+captured hashes, and native serial identifiers. Native test skip messages and
+assertions name only the test-owned fixture and typed outcomes.
 
 ## Adapter-independent contract cases
 
@@ -111,9 +145,9 @@ require an interactive Windows session and therefore may not be available on a
 headless pull-request runner. A skipped native case must report why it did not
 run; a skip is not support evidence.
 
-Before the Windows Adapter is described as implemented, the production Change
-must retain a revision-bound, redacted report from the named host, link each
-case above to its test, set the affected `G-013` budgets, and pass the shared
-capture contract suite. Until then,
-[docs/architecture.md](architecture.md) continues to say native capture is not
-implemented.
+Before Windows native capture receives release support acceptance, the project
+must retain a revision-bound, redacted report from the named host, link every
+remaining case above to its test, set the affected `G-013` budgets, and pass the
+full shared and native matrix. [docs/architecture.md](architecture.md) therefore
+records the Adapter implementation separately from that still-open release
+evidence.

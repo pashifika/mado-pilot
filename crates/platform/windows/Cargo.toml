@@ -1,12 +1,20 @@
 [package]
 name = "mado-pilot-platform-windows"
-description = "Planned MadoPilot Windows target, capture, input, permission, and capability adapter."
+description = "MadoPilot picker-free Windows target discovery and WGC/D3D11 capture adapter."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+
+[target.'cfg(windows)'.dependencies]
+mado-pilot-core = { path = "../../automation/core" }
+mado-pilot-capture = { path = "../../automation/capture" }
+windows.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+mado-pilot-testkit = { path = "../../support/testkit" }
 
 [lints]
 workspace = true

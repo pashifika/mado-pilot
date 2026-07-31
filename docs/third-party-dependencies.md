@@ -111,6 +111,7 @@ dependency surface over a framework that pulls in unrelated features.
 | `flate2` 1.1 | `mado-pilot-assets` | Selects the DEFLATE backend `zip` decompresses with. Not called directly | MIT OR Apache-2.0 |
 | `sha2` 0.11 | `mado-pilot-assets` | Verifies the content hash a manifest declares for each entry | MIT OR Apache-2.0 |
 | `opencv` 0.99 | `mado-pilot-backend-opencv` | Binds the OpenCV C++ API the CPU matching profile uses. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
+| `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, and DPI APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
 
 A replay manifest is caller-supplied data. It is parsed into a typed schema that
 rejects unknown fields, and the pixel paths it declares are validated the same
@@ -261,12 +262,22 @@ Microsoft's SDK and Visual Studio terms apply to the development tools; the
 evidence redistributes none of them. CMake is BSD-3-Clause and build-time only.
 The linked Windows libraries are operating-system components.
 
-The later `mado-pilot-platform-windows` Change must independently review and
-pin the Rust binding crates it actually adds. G-002 does not preapprove the
-`windows` crate, Windows App SDK, WIL, DirectXTK, or any other product
-dependency, and SDK 26100 does not decide the minimum supported Windows
-version. Those choices are checked against the then-current lockfile,
-advisories, and [`G-001`](validation-gates.md#g-001).
+The production `mado-pilot-platform-windows` Change independently reviewed and
+pins `windows` 0.62.2 from crates.io. The crate is maintained by Microsoft,
+declares `MIT OR Apache-2.0`, requires Rust 1.82, and is compatible with the
+workspace's Rust 1.97.1 toolchain. Default features are disabled; the selected
+features cover only WGC, D3D11/DXGI, WinRT interop, window/display enumeration,
+DWM metadata, and DPI. Cargo resolves its Rust-only `windows-*` support crates;
+MadoPilot adds no Windows App SDK, WIL, DirectXTK, native redistributable, or
+runtime DLL.
+
+The binding is target-gated in `crates/platform/windows/Cargo.toml`, so the
+macOS product graph remains unchanged. WGC and its factories are still checked
+at operation time: selecting a binding does not claim a minimum Windows
+version, preapprove a permission prompt, or resolve
+[`G-001`](validation-gates.md#g-001). The host-provided D3D11, DXGI, DWM, User32,
+GDI, and WinRT components remain serviced by Windows and are not bundled.
+The lockfile, license, source, and advisory checks are rerun by this Change.
 [../CONTRIBUTING.md](../CONTRIBUTING.md) carries the development-prerequisite
 reading of the same review, beside the macOS one.
 

@@ -147,6 +147,63 @@ struct NativeStorage {
     fill: u8,
 }
 
+/// Deliberately invalid two-slot storage used only to prove the retained-byte
+/// oracle detects aliasing. It overwrites a slot even while an older frame owns
+/// a reference to that slot, which is exactly what the production ownership
+/// rule forbids.
+#[derive(Debug)]
+struct OverwritingRing {
+    descriptor: FrameDescriptor,
+    slots: [Arc<Mutex<Box<[u8]>>>; 2],
+    next: AtomicUsize,
+}
+
+impl OverwritingRing {
+    fn new(descriptor: FrameDescriptor) -> Self {
+        let empty = || {
+            Arc::new(Mutex::new(
+                vec![0; descriptor.byte_len()].into_boxed_slice(),
+            ))
+        };
+        Self {
+            descriptor,
+            slots: [empty(), empty()],
+            next: AtomicUsize::new(0),
+        }
+    }
+
+    fn capture(&self, fill: u8) -> Arc<OverwrittenStorage> {
+        let index = self.next.fetch_add(1, Ordering::Relaxed) % self.slots.len();
+        self.slots[index].lock().expect("uncontended").fill(fill);
+        Arc::new(OverwrittenStorage {
+            descriptor: self.descriptor,
+            pixels: Arc::clone(&self.slots[index]),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct OverwrittenStorage {
+    descriptor: FrameDescriptor,
+    pixels: Arc<Mutex<Box<[u8]>>>,
+}
+
+impl FrameStorage for OverwrittenStorage {
+    fn descriptor(&self) -> FrameDescriptor {
+        self.descriptor
+    }
+
+    fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
+        None
+    }
+
+    fn read_cpu(&self, operation: &OperationContext) -> Result<Arc<CpuPixels>> {
+        let attempt = Operation::admit(operation)?;
+        let bytes = self.pixels.lock().expect("uncontended").clone();
+        Ok(attempt.commit(Arc::new(CpuPixels::new(bytes)))?)
+    }
+}
+
 impl Drop for NativeStorage {
     fn drop(&mut self) {
         *self.producer.detached_slots.lock().expect("uncontended") += 1;
@@ -266,6 +323,39 @@ fn an_exhausted_detached_budget_is_a_bounded_failure_rather_than_a_stall() {
     assert_eq!(producer.detached_slots_free(), 1);
     producer.capture(4).expect("capacity came back");
     drop(second);
+}
+
+#[test]
+fn the_retained_byte_oracle_rejects_an_overwriting_two_slot_ring() {
+    let ring = OverwritingRing::new(descriptor(4, 4));
+    let stream = stream();
+    let context = OperationContext::new();
+    let retained = stream
+        .publish_storage(publication(ring.capture(0x11), Continuity::Continuous))
+        .map_err(|refused| refused.into_error())
+        .expect("first slot published");
+    let immediate = retained
+        .map(PixelFormat::Bgra8, &context)
+        .expect("immediate mapping")
+        .bytes()
+        .to_vec();
+
+    for fill in [0x22, 0x33] {
+        stream
+            .publish_storage(publication(ring.capture(fill), Continuity::Continuous))
+            .map_err(|refused| refused.into_error())
+            .expect("blind ring published");
+    }
+    let delayed = retained
+        .map(PixelFormat::Bgra8, &context)
+        .expect("delayed mapping");
+
+    assert_ne!(
+        delayed.bytes(),
+        immediate,
+        "the negative control must corrupt retained bytes so the oracle can detect aliasing"
+    );
+    assert!(delayed.bytes().iter().all(|byte| *byte == 0x33));
 }
 
 #[test]

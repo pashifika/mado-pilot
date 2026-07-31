@@ -1,30 +1,41 @@
-//! Planned MadoPilot Windows platform adapter.
+//! Native Windows target discovery and capture.
 //!
-//! # Planned responsibility
+//! This package is the only workspace package that names Win32, Windows
+//! Graphics Capture (WGC), WinRT, D3D11, or DXGI. The platform-neutral capture
+//! contracts depend on none of them.
 //!
-//! This package will own Windows target and display discovery, Windows Graphics
-//! Capture streams with their Direct3D 11 resource lifetime, coordinate mapping
-//! across mixed-DPI displays, and the explicit system and background input
-//! implementations together with their reported capabilities and permissions.
+//! The implementation is target-gated: on non-Windows targets this crate keeps
+//! an empty, documented seam and resolves no Windows dependency. Windows builds
+//! expose [`WindowsCaptureProvider`], which performs picker-free discovery and
+//! creates free-threaded WGC sessions.
 //!
-//! # Allowed seam
+//! # Ownership
 //!
-//! This package may depend on the MadoPilot core, capture, and input contract
-//! packages. It implements those contracts and is wired in by the public facade;
-//! no contract package depends on it.
+//! The capture path implements
+//! [ADR 0013](../../../docs/adr/0013-windows-capture-frame-detachment.md):
+//! the WGC producer pool contains exactly two frames, and a callback copies a
+//! publishable surface into finite, Adapter-owned D3D11 storage before releasing
+//! the WGC frame. CPU mapping, consumer work, and host callbacks never run in the
+//! WGC callback.
 //!
-//! # Implementation status
-//!
-//! Not implemented. This package currently establishes the repository seam only
-//! and exposes no operation, and it declares no Windows dependency. The
-//! `x86_64-pc-windows-msvc` release target is verified natively in continuous
-//! integration at the build level only.
-//!
-//! The capture frame-pool ownership strategy is settled:
-//! `docs/adr/0013-windows-capture-frame-detachment.md` resolves gate `G-002`
-//! and selects a two-frame free-threaded Windows Graphics Capture pool whose
-//! callback copies each publishable frame into an Adapter-owned Direct3D 11
-//! texture before releasing the `Direct3D11CaptureFrame`. No package implements
-//! that ownership yet, so the ADR is enforced by review until this one does.
-//! The minimum supported Windows version remains unresolved; see gate `G-001`
-//! in `docs/validation-gates.md`.
+//! Close stops admission, removes both native handlers, drains admitted
+//! callbacks, closes the WGC objects, and releases the pool before the session.
+//! An already terminal native session is not closed twice; a bounded event-queue
+//! quiescence prevents a queued agile sender release from deadlocking the final
+//! WinRT session release.
+
+#![cfg_attr(not(windows), allow(dead_code))]
+
+#[cfg(windows)]
+mod availability;
+#[cfg(windows)]
+mod discovery;
+#[cfg(windows)]
+mod native;
+#[cfg(windows)]
+mod provider;
+#[cfg(windows)]
+mod storage;
+
+#[cfg(windows)]
+pub use provider::{PROVIDER, WindowsCaptureProvider};

@@ -311,6 +311,12 @@ version = "0.1.0"
 [[package]]
 name = "mado-pilot-platform-windows"
 version = "0.1.0"
+dependencies = [
+ "mado-pilot-capture",
+ "mado-pilot-core",
+ "mado-pilot-testkit",
+ "windows",
+]
 
 [[package]]
 name = "mado-pilot-runtime"

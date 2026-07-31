@@ -10,14 +10,16 @@ Detailed frame, capture, OCR, input, runtime scheduling, callback, platform
 behavior, and C ABI contracts are added here by the changes that implement and
 test them, so that this document never describes behavior a reader cannot use.
 
-**Status: Phase 1 complete — the first vertical slice ships end to end.** The
+**Status: Phase 1 complete; Phase 2 native platform work is in progress.** The
 platform-neutral core contracts, the capture contracts with the deterministic
 replay adapter, asset package loading, template matching through the OpenCV CPU
 backend, runtime orchestration, the Rust facade, the C ABI frozen at 1.0, and the
 header-only C++ wrapper are implemented and verified natively on both release
-targets. Native window and display capture, OCR, input injection, watchers,
-scheduling, diagnostics, and release packaging do not exist. See
-[Implementation status](#implementation-status).
+targets. The picker-free Windows Adapter now implements window/display discovery
+and WGC/D3D11 capture. Native facade wiring, Windows input and permission
+behavior, macOS native capture, OCR, watchers, scheduling, diagnostics, release
+packaging, and the Windows capture release-acceptance matrix remain later work.
+See [Implementation status](#implementation-status).
 
 ## Product definition
 
@@ -45,23 +47,24 @@ gate [`G-001`](validation-gates.md#g-001).
 
 ### Platform baseline
 
-Each release target has its own adapter package with a distinct planned
-responsibility and its own unresolved decisions. Neither adapter is implemented, so
-what follows is the boundary each one will own — not a capability statement.
+Each release target has its own adapter package with distinct ownership and
+unresolved decisions. The Windows Adapter implements picker-free discovery and
+WGC/D3D11 capture; Windows input and permission behavior and the macOS Adapter
+remain planned. The table records that current boundary.
 
 | | Windows | macOS |
 |---|---|---|
 | Adapter package | `mado-pilot-platform-windows` | `mado-pilot-platform-macos` |
-| Planned capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime | ScreenCaptureKit streams and native frame lifetime |
-| Planned input ownership | Explicit system and background delivery implementations | `CGEvent` input |
-| Planned permission handling | Integrity and UIPI constraints reported as observable state or typed failures | Screen Recording and Accessibility probed and reported separately, without presenting permission UI |
+| Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and native frame lifetime (planned) |
+| Input ownership | Explicit system and background delivery implementations (planned) | `CGEvent` input (planned) |
+| Permission handling | Capture presents no permission UI; integrity and UIPI reporting remain planned | Screen Recording and Accessibility probes without permission UI (planned) |
 | Native verification host | `windows-2025` | `macos-15` |
 | Open gates | [`G-001`](validation-gates.md#g-001) | [`G-001`](validation-gates.md#g-001) |
 
-The detailed capability set, permission outcome tables, coordinate transforms,
-native resource ownership rules, and unsupported-system behavior for each platform
-are added by the changes that implement and test them. Phase 0 verifies only that
-the workspace builds and tests natively on each host.
+Detailed capabilities, permission outcomes, coordinate transforms, native
+resource ownership, and unsupported-system behavior are added by the changes
+that implement and test them. The implemented Windows capture boundary is
+documented below; the remaining planned boundaries are not capability claims.
 
 #### The macOS native boundary
 
@@ -228,7 +231,7 @@ prefix.
 | `crates/automation/runtime` | `mado-pilot-runtime` | Session, scheduling, watcher, cancellation, coalescing, and diagnostic orchestration |
 | `crates/automation/assets` | `mado-pilot-assets` | Versioned manifest, validation, deterministic loading, and source-resolution contracts |
 | `crates/adapter/replay` | `mado-pilot-adapter-replay` | Deterministic replay capture from file and memory sources |
-| `crates/platform/windows` | `mado-pilot-platform-windows` | Planned Windows target, capture, input, permission, and capability adapter |
+| `crates/platform/windows` | `mado-pilot-platform-windows` | Picker-free Windows window/display discovery and WGC/D3D11 capture; Windows input and permission behavior remain later work |
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Planned macOS target, capture, input, permission, and capability adapter |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Planned ONNX Runtime OCR and execution-provider adapter |
@@ -743,15 +746,15 @@ responsibilities a later phase takes on.
 | Coordinate spaces, validated geometry, and frame-time transforms | Implemented in `mado-pilot-core` |
 | Monotonic clock domain, operation deadlines, cancellation, terminal-outcome arbitration | Implemented in `mado-pilot-core` |
 | Public statuses and structured errors | Implemented in `mado-pilot-core` |
-| Target kind, capability, permission, and redacted-diagnostic vocabulary | Implemented in `mado-pilot-core`; no Adapter reports it yet |
+| Target kind, capability, permission, and redacted-diagnostic vocabulary | Implemented in `mado-pilot-core`; the Windows capture Adapter reports window/display capture and coordinate capabilities |
 | Non-prompting permission probe contract | Implemented in `mado-pilot-core`; no platform probe exists yet |
-| Native window and display discovery | Not implemented; the typed discovery request and filter contract are implemented in `mado-pilot-capture` |
+| Native window and display discovery | Implemented on Windows with picker-free, deterministically ordered enumeration and provider-qualified identities; macOS remains unimplemented |
 | Capture contracts, immutable frames, frame views, CPU mapping | Implemented in `mado-pilot-capture` |
-| Adapter-facing opaque frame storage, storage publication, terminal stream faults | Implemented in `mado-pilot-capture`; only CPU storage exists |
+| Adapter-facing opaque frame storage, storage publication, terminal stream faults | Implemented in `mado-pilot-capture`; Windows adds independently retained D3D11 storage and lazy CPU mapping |
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
-| Windows native capture ownership policy | Decided in [ADR 0013](adr/0013-windows-capture-frame-detachment.md) on the retained `G-002` measurements; the production Adapter and its contract tests are not implemented |
+| Windows native capture ownership policy | Implemented for the production Adapter's two-frame WGC pool, finite 40-texture detached budget, lease-safe reuse, resize retirement, callback fence, and teardown; the revision-bound acceptance matrix and Phase 2 `G-013` budgets remain open |
 | macOS shim language and containment rules | Decided in [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the retained `G-003` measurements; the shim and its containment tests are not implemented |
-| Native window and display capture | Not implemented |
+| Native window and display capture | Implemented on Windows as a directly consumable capture Adapter; native facade wiring and macOS capture remain later Changes |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
 | Template preprocessing descriptors | Not implemented |
@@ -957,7 +960,7 @@ entry that would reach them are later Changes.
 
 ### Windows native capture ownership
 
-Gate [`G-002`](validation-gates.md#g-002) is resolved for the future
+Gate [`G-002`](validation-gates.md#g-002) governs the production
 `mado-pilot-platform-windows` Adapter. Its free-threaded WGC producer pool has
 two frames, and no public frame owns a `Direct3D11CaptureFrame` or WGC producer
 surface. The WGC callback copies publishable content into an Adapter-owned
@@ -977,16 +980,28 @@ state rather than a raw Adapter owner. Close detaches the owner under the
 callback-admission mutex, unregisters both handlers, drains admitted callbacks,
 publishes the fence, closes the WGC session and pool, and keeps detached
 resources and their D3D11 device alive through in-flight work. A delegate
-invoked after detachment is rejected without touching the owner. Reset creates
-a fresh device and stream epoch; leased old-generation storage is never
-repurposed.
+invoked after detachment is rejected without touching the owner. The implemented
+Adapter does not claim device recovery continuity: device removal or reset
+terminates the stream with the corresponding typed capture fault. If a later
+Change proves recovery and adds a fresh device and stream epoch, leased
+old-generation storage still cannot be repurposed.
 
 The decision is
 [ADR 0013](adr/0013-windows-capture-frame-detachment.md), its retained prototype
 record is [evidence/g-002/](evidence/g-002/), and its production acceptance
 suite is [windows-capture-contract-tests.md](windows-capture-contract-tests.md).
-This paragraph is an ownership constraint, not an implementation claim: native
-window and display capture remain not implemented.
+The Adapter now implements picker-free window/display discovery, stable
+engine/provider-qualified identities, WGC capture, lazy exact-stride BGRA CPU
+mapping, frame-time signed-origin DPI geometry, resize discontinuities, typed
+target/device failures, and retryable idempotent close. Construction touches no
+native API; discovery and open perform runtime availability checks.
+
+This is an implementation claim, not release acceptance. The controlled unit
+and synthetic-window tests are linked from the acceptance suite, while its
+revision-bound 600-frame, dual-4K host matrix and the affected Phase 2
+[`G-013`](validation-gates.md#g-013) budgets remain open. The later native
+runtime/facade Change is also what makes this Adapter reachable from the public
+composition root.
 
 ### Asset packages
 
@@ -1316,7 +1331,7 @@ against.
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | OCR, watcher, and input contract suites | Not applicable; those contracts are not implemented | Not applicable |
 | Native permission behavior and permission probes | Not applicable; no permission is requested or probed | Not applicable |
-| Windows capture ownership and native resource lifetime | Decided, not yet enforceable. [ADR 0013](adr/0013-windows-capture-frame-detachment.md) fixes the producer-pool size, callback detachment, lease-aware reuse, resize, and teardown rules on the `G-002` measurements in [evidence/g-002/](evidence/g-002/README.md) and names the ownership, pressure, lifecycle, and redaction tests the implementing Change carries in [windows-capture-contract-tests.md](windows-capture-contract-tests.md). `mado-pilot-platform-windows` is a repository seam that implements none of it, so review enforces the rules until it does | Not applicable; no native capture existed |
+| Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for two-frame WGC detachment, a finite 40-texture lease-aware pool, lazy mapping, resize generations, callback admission fencing, typed terminal loss, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). The revision-bound 600-frame/dual-4K acceptance report and Phase 2 `G-013` budgets remain open, so release support is not yet claimed | Not applicable; no native capture existed |
 | macOS shim containment and native ownership | Decided, not yet enforceable. [ADR 0012](adr/0012-macos-shim-language-and-containment.md) fixes the boundary rules on the `G-003` measurements in [evidence/g-003/](evidence/g-003/README.md) and names the containment, ownership-on-failure, autorelease, fence, teardown, panic, and linkage tests the implementing Change carries. `mado-pilot-platform-macos` is a repository seam that implements none of it, so review enforces the rules until it does | Not applicable; no native shim existed |
 | Native dependency packaging and clean-system loading | Partly applicable. Phase 1 declares one native dependency, OpenCV, and records its licence and deployment requirements; clean-system loading and packaging remain open under [`G-007`](validation-gates.md#g-007) | Not applicable; no native dependency was declared |
 
