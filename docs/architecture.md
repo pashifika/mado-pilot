@@ -1163,7 +1163,12 @@ observable sequence gap rather than a wait, an overwrite, or an unbounded
 allocation. What a surface may cost is bounded in bytes and not only per axis, because
 the two are far apart — an extent inside the per-axis limit on both sides is four
 gibibytes of BGRA — and a target beyond the byte ceiling is refused when it is
-discovered rather than when it is opened. Eight buffers is a reviewed bound rather than a measured one — these are
+discovered rather than when it is opened. Refusing it there has a consequence worth
+stating: an absent candidate is target loss by construction, so a live window that grew
+past the ceiling would be reported as having disappeared and would receive a new
+identity if it shrank back, while an already-open session on it reports no such thing.
+No window a host can present approaches the ceiling, so which of the two refusal points
+serves a caller better is left to real use rather than settled here. Eight buffers is a reviewed bound rather than a measured one — these are
 full-frame CPU allocations rather than the GPU textures the Windows Adapter budgets
 — and the Phase 2 [`G-013`](validation-gates.md#g-013) budgets remain open.
 

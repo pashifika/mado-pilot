@@ -164,10 +164,18 @@ memory and not a freed Rust allocation that Rust dereferences. Covering both sid
 This step is deliberately not a continuous-integration check. A runner has granted no
 Screen Recording, so the capture scenarios cannot run there — and because a sanitizer
 run whose scenarios never captured reports nothing at all, a skip and a pass would be
-the same line of output. The scenarios therefore *fail* under this build rather than
-skipping, which is the same rule the replay symlink tests follow, and which is why the
-step belongs to the macOS verification host alongside step 9 rather than to a job that
-can never satisfy it.
+the same line of output. A scenario that cannot reach a capture therefore *fails* under
+this build rather than skipping, which is the same rule the replay symlink tests follow,
+and which is why the step belongs to the macOS verification host alongside step 9 rather
+than to a job that can never satisfy it.
+
+One gap in that rule is deliberate and has to be read alongside it. A scenario whose
+subject is a *window* moves on when no window matches it or when every match is idle,
+and passes having noted that — because an idle window is a legitimate absence of subject
+matter rather than a host that cannot capture, and the desktop decides which it is. So a
+green step 10 means the display-based scenarios captured; it does not by itself mean the
+window-based ones did. Read the run's notes when the window paths are what a change
+touched.
 
 Step 9 names one package rather than the workspace because `--workspace` at another
 target fails in `opencv`'s build script, which looks for an installation for the target
