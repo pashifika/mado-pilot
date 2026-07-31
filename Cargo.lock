@@ -307,6 +307,11 @@ version = "0.1.0"
 [[package]]
 name = "mado-pilot-platform-macos"
 version = "0.1.0"
+dependencies = [
+ "cc",
+ "mado-pilot-capture",
+ "mado-pilot-core",
+]
 
 [[package]]
 name = "mado-pilot-platform-windows"

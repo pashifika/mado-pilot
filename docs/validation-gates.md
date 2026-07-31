@@ -146,10 +146,14 @@ rests on the language mode rather than on the prototype's C++ test.
 The ADR also records the containment rules the evidence forces — a catch-all
 boundary handler, the mandatory exception flag, borrowed frames, a per-work-item
 autorelease pool, a disable-and-drain callback fence, teardown that reports
-failure without skipping cleanup, Rust-side panic containment, and shim-owned weak
-linking with availability gating — together with the tests the implementing Change
-must carry. Until `mado-pilot-platform-macos` exists, those rules are enforced by
-review, which the ADR states rather than implies.
+failure without skipping cleanup, Rust-side panic containment, and shim-owned
+linkage with availability gating — together with the tests the implementing Change
+must carry. `mado-pilot-platform-macos` now implements the boundary and carries
+those tests, so the rules are enforced by the package rather than by review. The
+linkage rule is met by controlled dynamic loading rather than by weak framework
+linking, because Cargo does not propagate a dependency's `rustc-link-arg` to the
+binary that consumes the dependency; the ADR records that amendment and the
+property it preserves.
 
 ## G-004
 

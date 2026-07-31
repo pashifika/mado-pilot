@@ -114,7 +114,52 @@ output values written through validated pointers. Its rules are:
 8. **Linkage.** The shim's own build owns framework linkage and availability
    gating for capabilities newer than the deployment minimum — weak framework
    linking plus `@available` — rather than inheriting a binding crate's `#[link]`
-   attribute.
+   attribute. **Amended by the implementation; see
+   [Amendment: the linkage mechanism](#amendment-the-linkage-mechanism).** The rule
+   and the property it exists for are unchanged; the mechanism is controlled
+   dynamic loading rather than a weak load command, because a build script in the
+   Adapter package cannot put `-weak_framework` on the final link.
+
+## Amendment: the linkage mechanism
+
+Recorded on 2026-07-31 by the Change that implemented the boundary, at base
+revision `9f4decf9cedf542d01b54eae703ea08d6706ff99`. It amends rule 8 above and
+nothing else: the language, the exception flag, and rules 1 through 7 stand as
+measured.
+
+The prototype linked its own dynamic library directly, so `-weak_framework` was a
+flag it could pass. The production shim is compiled into a static archive that a
+Cargo package publishes as an rlib, and the binary that finally links it is a test
+binary, the C ABI's dynamic library, or a consuming application. Cargo does not
+propagate a dependency's `rustc-link-arg` to that link. That was measured on a
+two-package workspace whose dependency's build script emitted
+`cargo::rustc-link-arg=-Wl,-weak_framework,ScreenCaptureKit`: the consuming binary's
+`otool -L` listed `libSystem` alone, with no ScreenCaptureKit load command of either
+kind. `cargo::rustc-link-lib=framework=` does propagate, but produces a regular
+load command, which is the eager dependency this rule exists to prevent.
+
+The shim therefore loads ScreenCaptureKit with `dlopen` at its absolute system path,
+resolves its classes with `NSClassFromString` and its exported attachment keys with
+`dlsym`, declares the selectors it sends through protocols named for the shim rather
+than for the framework, and gates every use behind `@available(macOS 12.3, *)`. The
+absolute path is part of the decision: a bare name would let the loader's ambient
+search decide which library answers, which is the unrestricted search this project's
+packaging rules reject. Every other framework the shim needs — Foundation, Core
+Foundation, Core Graphics, Core Media, Core Video, Application Services — predates
+any minimum `G-001` could select and is declared by the build script as an ordinary
+framework link.
+
+Two consequences are worth stating. The first is that the observable property is
+preserved and now tested rather than reviewed: `tests/linkage.rs` asserts that a
+binary linking the Adapter carries no ScreenCaptureKit load command and does carry
+the six frameworks the build script declares, so an unsupported host reports
+`Unsupported` from an operation instead of failing to load. That test had to be made
+to reference the Adapter before it meant anything — a linker drops an archive nothing
+uses, and then drops the framework references that archive would have needed, so the
+first version of it passed against a binary that never contained the boundary. The
+second is that the unsupported host itself is still not exercised, for the same
+reason the prototype could not exercise it: the framework is present on every host
+available to this repository's verification.
 
 ## Alternatives
 
@@ -210,34 +255,54 @@ two exception cases while leaking a native object, because those cases gate on t
 status crossing the boundary and record ownership rather than gating on it. Those
 recorded leaks are what rejected the unflagged variant.
 
-No repository check enforces these rules today, because there is no shim for one
-to run against: `mado-pilot-platform-macos` exists as a repository seam, declares
-no macOS dependency, and implements no operation. That is stated rather than
-glossed: until that package implements the boundary, this ADR is enforced by
-review, and its module documentation names this record as the decision it will be
-built to.
-
-The Change that implements the macOS shim carries the tests that make it
-enforceable, and each one corresponds to a case recorded here:
+`mado-pilot-platform-macos` now implements the boundary and carries the tests
+listed below, so these rules are enforced by that package rather than by review.
+Enforcement is uneven, and that is stated rather than averaged: the cases marked
+*authorized host only* need a macOS host that has already granted Screen Recording
+to the process running the tests. This Adapter will not prompt, so a host that has
+neither granted nor denied it — a continuous-integration runner, for instance —
+reaches the non-prompting refusal instead of the capture path. Those cases print a
+skip with that reason rather than passing, so a green run on such a host is not
+evidence that they ran. They were run on an authorized Apple Silicon host when the
+boundary was implemented, and doing so found one thing this record did not
+anticipate: the framework's shareable-content query requires the process to hold a
+Core Graphics window-server connection and aborts on an internal assertion when it
+does not, rather than returning a status. An abort is not an exception, so rule 1's
+handlers cannot contain it; the shim establishes the connection before it loads the
+framework instead. That is a precondition the boundary owns, not a containment rule
+this record got wrong, and it is documented in `docs/architecture.md`.
 
 - **Containment.** A test per injection site — session start, before a frame
   callback, after a frame callback returned, and teardown — asserting the typed
-  status and that no exception escaped.
+  status and that no exception escaped. The sites are reached through
+  session-scoped raise seams on the shim's open request, which are zero in the
+  product and inert unless a caller sets them. *Authorized host only.*
 - **Ownership on the failure path.** The same sites asserting that no native
-  object survives a contained failure. These are the tests that fail if
-  `-fobjc-arc-exceptions` is ever dropped, which is how a build flag becomes a
-  tested invariant rather than a comment.
+  object survives a contained failure, against the shim's own count of the objects
+  it owns. These are the tests that fail if `-fobjc-arc-exceptions` is ever
+  dropped, which is how a build flag becomes a tested invariant rather than a
+  comment. *Authorized host only.*
 - **Autorelease.** A long producer run asserting that live native objects stay
   bounded by the per-item working set rather than growing with the run.
-- **Fence.** A test asserting that no callback is admitted after the fence
-  returns, that the caller may free registered state immediately afterwards, and
-  that repeated fences, repeated closes, and a fence after close all succeed.
-- **Teardown.** A test asserting that a failing close reports its failure and
-  still releases every native resource, and that close is idempotent.
-- **Panic containment.** A test asserting that a panicking host callback surfaces
-  as a typed failure with the session left consistent, and a separate
-  child-process test asserting that the unguarded form is fatal — the one case
-  that cannot be asserted in-process.
-- **Linkage.** A check that anything newer than the declared minimum macOS version
-  is weakly linked and availability-gated, so an unsupported host reports a status
-  instead of failing to load.
+  *Authorized host only.*
+- **Fence.** Asserted through close, which fences before it releases: a repeated
+  close, a close after a cancelled close, and a frame request after close all
+  succeed or report their own typed outcome, and the strong reference the shim
+  holds as its callback context is reclaimed only after a fence returns.
+  *Authorized host only.*
+- **Teardown.** A test asserting that close is idempotent and that the objects the
+  session owned are released, with the injected-failure sites covering the case
+  where close reports a failure and releases anyway. *Authorized host only.*
+- **Panic containment.** A test asserting that a panicking host callback becomes a
+  typed failure at the trampoline, and a separate child-process test asserting
+  that the unguarded form is stopped by a signal — the one case that cannot be
+  asserted in-process. Both run on any host, because neither needs a stream.
+- **Linkage.** A check that a binary linking the Adapter carries no load command
+  for the capture framework and does carry the frameworks the build script
+  declares, so an unsupported host reports a status instead of failing to load. See
+  [Amendment: the linkage mechanism](#amendment-the-linkage-mechanism) for why the
+  mechanism is controlled dynamic loading rather than a weak load command. Runs on
+  any host.
+- **Boundary layout.** A check that the compiled shim and the Rust declarations
+  that mirror it agree on the surface version and on every structure size, since
+  the two sides are written by hand. Runs on any host.
