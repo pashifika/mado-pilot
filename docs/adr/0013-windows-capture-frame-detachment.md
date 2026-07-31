@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-30
+- **Production amendment:** 2026-07-31
 - **Resolves gate:** `G-002` from
   [../validation-gates.md](../validation-gates.md)
 - **Supersedes:** _none_
@@ -71,19 +72,30 @@ Close and reset follow this order:
 1. stop admission;
 2. detach the owner from lifetime-independent shared callback state under the
    same mutex used for callback admission;
-3. unregister both `FrameArrived` and target-`Closed` handlers, drain callbacks
-   already admitted, and publish the fence;
-4. close the capture session and producer pool;
-5. allow detached frame, mapping, and backend leases to finish from their own
+3. unregister `FrameArrived`, drain callbacks already admitted, and publish the
+   owner fence;
+4. keep only the target-`Closed` handler's lifetime-independent terminal latch
+   active through the native session-close decision;
+5. close the capture session when the latch does not prove it already ended,
+   then unregister `Closed` and close the producer pool;
+6. allow detached frame, mapping, and backend leases to finish from their own
    resources;
-6. destroy old private resources and the old device only after their last
+7. destroy old private resources and the old device only after their last
    lease.
 
 The WinRT delegates capture only the shared callback state, never a raw Adapter
-owner. A delegate invoked after owner detachment is rejected without touching
-the owner. Close is idempotent. Target loss or device reset starts a new stream
-epoch and uses a fresh WGC session; reset also uses a fresh D3D11 device. A new
-generation never repurposes storage still leased by an old generation.
+owner. After owner detachment, `FrameArrived` is rejected without touching the
+owner. The target-`Closed` delegate may still set its independent atomic latch,
+but it cannot re-enter the owner. This refinement prevents an authoritative
+native end from being lost between the owner fence and the session-close
+decision. An already-closed native result is idempotent success during teardown.
+
+Close is idempotent. Target loss or device reset starts a new stream epoch only
+when a platform implementation proves continuity. The production Windows
+Adapter proves no device-recovery continuity and therefore terminates with the
+typed device outcome. If a later implementation adds recovery, it uses a fresh
+WGC session and D3D11 device, and never repurposes storage still leased by an
+old generation.
 
 ## Alternatives
 
@@ -130,6 +142,11 @@ non-blocking platform-callback boundary. CPU mapping remains lazy consumer work.
 - The Windows Adapter must retain device resources for old in-flight leases
   while a new session or device begins. Destruction order is therefore part of
   its contract and tests.
+- The production adapter refines the prototype's handler-unregistration order
+  without weakening owner isolation: only a lifetime-independent atomic
+  target-end latch remains callable after the owner fence. The amendment and
+  deterministic regression evidence are recorded in
+  [../evidence/g-002/production-amendment.md](../evidence/g-002/production-amendment.md).
 - The prototype source is not imported into a product package. Production code
   must implement the rule through the established capture contracts and pass
   the plan in
@@ -159,6 +176,12 @@ Windows 11 build `26200.8894`, MSVC 19.44, Windows SDK 26100, the RTX
 The evidence, source-manifest method, raw-run hashes, candidate rows, lifecycle
 aggregates, and redaction statement are in
 [../evidence/g-002/](../evidence/g-002/).
+
+The production amendment adds deterministic checks for an admitted target-close
+callback completing before the teardown decision, a target-close latch arriving
+after owner admission has stopped, idempotent already-closed native cleanup, and
+finite teardown ownership. It does not change the accepted producer-pool,
+detachment, texture-reuse, or callback-work result.
 
 There is no production Windows Adapter yet, so this Change cannot add its
 contract tests. The later implementation is conforming only when it implements

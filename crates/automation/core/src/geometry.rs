@@ -29,7 +29,11 @@ pub enum CoordinateSpace {
     TargetNormalized,
     /// The target's own logical units, origin at the target's top-left.
     TargetLogical,
-    /// Desktop logical units, origin at the desktop's top-left.
+    /// Desktop logical units relative to the provider's desktop origin.
+    ///
+    /// A frame placement carries their scale independently from target-logical
+    /// units, because a host may expose one global desktop coordinate plane
+    /// around targets whose own logical DPI differs.
     DesktopLogical,
 }
 

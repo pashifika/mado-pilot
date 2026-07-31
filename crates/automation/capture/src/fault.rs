@@ -46,6 +46,18 @@ pub enum CaptureFault {
     ForeignStream,
     /// The stream produced no further frames and never will.
     StreamEnded,
+    /// The operating system refused programmatic capture access.
+    AccessDenied,
+    /// The native capture item closed.
+    CaptureItemClosed,
+    /// A captured display disconnected.
+    DisplayDisconnected,
+    /// The native graphics device was removed and continuity was not proved.
+    DeviceRemoved,
+    /// The native graphics device was reset and continuity was not proved.
+    DeviceReset,
+    /// Capture was explicitly stopped by its owner.
+    ExplicitlyStopped,
     /// Every unit of the session's finite storage budget is leased by frames,
     /// mappings, or backends a caller still holds.
     ///
@@ -71,10 +83,17 @@ impl CaptureFault {
             CaptureFault::UnsupportedFormat
             | CaptureFault::UnsupportedCoordinate
             | CaptureFault::UnsupportedOption => Status::Unsupported,
-            CaptureFault::SessionClosed | CaptureFault::StreamEnded => Status::Closed,
-            CaptureFault::TargetLost => Status::TargetLost,
+            CaptureFault::SessionClosed
+            | CaptureFault::StreamEnded
+            | CaptureFault::ExplicitlyStopped => Status::Closed,
+            CaptureFault::TargetLost
+            | CaptureFault::CaptureItemClosed
+            | CaptureFault::DisplayDisconnected => Status::TargetLost,
             CaptureFault::StorageBudgetExhausted => Status::LimitExceeded,
-            CaptureFault::SourceInvalid => Status::CaptureFailed,
+            CaptureFault::SourceInvalid
+            | CaptureFault::AccessDenied
+            | CaptureFault::DeviceRemoved
+            | CaptureFault::DeviceReset => Status::CaptureFailed,
         }
     }
 
@@ -95,6 +114,12 @@ impl CaptureFault {
             CaptureFault::SourceInvalid => "configured capture source is invalid",
             CaptureFault::ForeignStream => "frame stamp belongs to another stream",
             CaptureFault::StreamEnded => "stream published its final frame",
+            CaptureFault::AccessDenied => "operating system refused capture access",
+            CaptureFault::CaptureItemClosed => "native capture item closed",
+            CaptureFault::DisplayDisconnected => "captured display disconnected",
+            CaptureFault::DeviceRemoved => "native graphics device was removed",
+            CaptureFault::DeviceReset => "native graphics device was reset",
+            CaptureFault::ExplicitlyStopped => "capture was explicitly stopped",
             CaptureFault::StorageBudgetExhausted => {
                 "every unit of the session's storage budget is retained by a caller"
             }
@@ -137,6 +162,11 @@ mod tests {
         );
         assert_eq!(CaptureFault::SessionClosed.status(), Status::Closed);
         assert_eq!(CaptureFault::SourceInvalid.status(), Status::CaptureFailed);
+        assert_eq!(CaptureFault::DeviceRemoved.status(), Status::CaptureFailed);
+        assert_eq!(
+            CaptureFault::DisplayDisconnected.status(),
+            Status::TargetLost
+        );
     }
 
     #[test]

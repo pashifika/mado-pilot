@@ -6,6 +6,7 @@
 //! a replay source and a native one.
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -261,6 +262,9 @@ pub struct StreamState {
     inner: Mutex<Inner>,
     published: Condvar,
     covers_target: bool,
+    pending_drops: AtomicU64,
+    published_any: AtomicBool,
+    accepting_drops: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -303,6 +307,9 @@ impl StreamState {
             }),
             published: Condvar::new(),
             covers_target,
+            pending_drops: AtomicU64::new(0),
+            published_any: AtomicBool::new(false),
+            accepting_drops: AtomicBool::new(true),
         }
     }
 
@@ -374,6 +381,7 @@ impl StreamState {
             publication.placement,
             publication.continuity,
             Some(publication.pixels.len()),
+            self.pending_drops.load(Ordering::Acquire),
         ) {
             Ok(prepared) => prepared,
             Err(error) => return Err(RefusedPublication::new(error, publication)),
@@ -427,6 +435,7 @@ impl StreamState {
             publication.placement,
             publication.continuity,
             None,
+            self.pending_drops.load(Ordering::Acquire),
         ) {
             Ok(prepared) => prepared,
             Err(error) => return Err(RefusedStorage::new(error, publication)),
@@ -438,6 +447,37 @@ impl StreamState {
             ..
         } = publication;
         Ok(self.commit(inner, prepared, captured_at, descriptor, storage))
+    }
+
+    /// Records one candidate frame that a finite Adapter path had to drop.
+    ///
+    /// The next successful publication advances past every recorded drop, so a
+    /// waiter observes a sequence gap while still receiving only a real immutable
+    /// frame. Before the first publication there is no frame identity against
+    /// which a caller could observe a gap, so the candidate is dropped without
+    /// accounting and this returns `Ok(false)`.
+    ///
+    /// This operation is lock-free. It is intended for a native producer callback
+    /// whose bounded path may not block when every retained-storage lease is
+    /// occupied or another publication is committing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a limit-exceeded outcome if the pending-drop counter is exhausted.
+    /// `Ok(false)` means no frame has yet been published.
+    pub fn try_record_drop(&self) -> Result<bool> {
+        if !self.accepting_drops.load(Ordering::Acquire) {
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        if !self.published_any.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        self.pending_drops
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                pending.checked_add(1)
+            })
+            .map_err(|_| Error::new(Status::LimitExceeded, "pending frame drops exhausted"))?;
+        Ok(true)
     }
 
     /// Commits one validated publication and wakes the stream's waiters.
@@ -460,6 +500,11 @@ impl StreamState {
         inner.cursor = prepared.cursor;
         inner.geometry = prepared.geometry;
         inner.latest = Some(frame.clone());
+        if prepared.consumed_drops > 0 {
+            self.pending_drops
+                .fetch_sub(prepared.consumed_drops, Ordering::AcqRel);
+        }
+        self.published_any.store(true, Ordering::Release);
         drop(inner);
         self.published.notify_all();
         frame
@@ -526,6 +571,7 @@ impl StreamState {
     ///
     /// Idempotent, and never moves a closed stream backwards.
     pub fn terminate(&self, fault: CaptureFault) {
+        self.accepting_drops.store(false, Ordering::Release);
         {
             let mut inner = self.lock();
             if inner.terminal.is_none() {
@@ -552,6 +598,7 @@ impl StreamState {
     ///
     /// Idempotent, and never moves a closed stream backwards.
     pub fn begin_close(&self) {
+        self.accepting_drops.store(false, Ordering::Release);
         {
             let mut inner = self.lock();
             if inner.lifecycle == Lifecycle::Open {
@@ -621,6 +668,7 @@ struct Prepared {
     geometry: GeometryRevision,
     stamp: FrameStamp,
     transform: TransformSnapshot,
+    consumed_drops: u64,
 }
 
 /// Applies every publication rule against `inner` without committing anything.
@@ -634,6 +682,7 @@ fn prepare(
     placement: Option<TargetPlacement>,
     declared: Continuity,
     pixel_len: Option<usize>,
+    pending_drops: u64,
 ) -> Result<Prepared> {
     if let Some(terminal) = inner.terminal {
         return Err(terminal.into());
@@ -677,6 +726,8 @@ fn prepare(
     }
     if continuity == Continuity::Discontinuous && inner.latest.is_some() {
         cursor.begin_epoch()?;
+    } else if inner.latest.is_some() {
+        cursor.skip(pending_drops)?;
     }
 
     let extent = descriptor.extent();
@@ -694,6 +745,7 @@ fn prepare(
         geometry,
         stamp,
         transform,
+        consumed_drops: pending_drops,
     })
 }
 
@@ -1483,6 +1535,47 @@ mod tests {
 
         state.drain(&context).expect("already drained");
         assert_eq!(state.lifecycle(), Lifecycle::Closed);
+    }
+
+    #[test]
+    fn a_finite_path_drop_becomes_a_sequence_gap_without_replacing_the_frame() {
+        let state = state();
+        let first = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+
+        let dropped = state.try_record_drop().expect("drop recorded");
+
+        assert!(dropped, "a current frame makes the drop observable");
+        assert_eq!(
+            state.current().expect("current remains").stamp(),
+            first.stamp(),
+            "a drop never invents frame storage"
+        );
+        let later = state
+            .publish(publication(4, 4, 2, Continuity::Continuous))
+            .expect("later publication");
+        assert_eq!(later.stamp().sequence().value(), 2);
+    }
+
+    #[test]
+    fn a_finite_path_drop_is_recorded_while_the_stream_mutex_is_busy() {
+        let state = state();
+        state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("published");
+        let guard = state.lock();
+
+        assert!(
+            state.try_record_drop().expect("lock-free drop accounting"),
+            "the existing frame makes the drop observable"
+        );
+
+        drop(guard);
+        let later = state
+            .publish(publication(4, 4, 2, Continuity::Continuous))
+            .expect("later publication");
+        assert_eq!(later.stamp().sequence().value(), 2);
     }
 
     #[test]

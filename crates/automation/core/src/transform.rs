@@ -64,7 +64,7 @@ impl Scale {
     }
 }
 
-/// Where a frame sits relative to its target, and at what scale.
+/// Where a frame sits relative to its target and desktop, and at what scales.
 ///
 /// Supplying this is a provider's assertion that the frame's capture pixels cover
 /// exactly the target's logical rectangle. Phase 1 has no frame that covers only
@@ -77,11 +77,16 @@ pub struct TargetPlacement {
     desktop_origin_y: f64,
     logical_width: f64,
     logical_height: f64,
-    scale: Scale,
+    target_scale: Scale,
+    desktop_scale: Scale,
 }
 
 impl TargetPlacement {
-    /// Describes a target's placement in desktop-logical coordinates.
+    /// Describes a target's placement in desktop coordinates.
+    ///
+    /// By default target-logical and desktop units share `scale`. A provider
+    /// whose host desktop has an independent coordinate plane can override only
+    /// the desktop scale with [`TargetPlacement::with_desktop_scale`].
     ///
     /// # Errors
     ///
@@ -109,8 +114,21 @@ impl TargetPlacement {
             desktop_origin_y,
             logical_width,
             logical_height,
-            scale,
+            target_scale: scale,
+            desktop_scale: scale,
         })
+    }
+
+    /// Uses a distinct capture-pixel scale for desktop-logical coordinates.
+    ///
+    /// The default established by [`TargetPlacement::new`] is the target-logical
+    /// scale. A provider overrides it when the host desktop uses a different
+    /// coordinate unit from the target itself, such as Windows virtual-screen
+    /// coordinates around a per-monitor-DPI target.
+    #[must_use]
+    pub const fn with_desktop_scale(mut self, scale: Scale) -> Self {
+        self.desktop_scale = scale;
+        self
     }
 
     /// Returns the target origin in desktop-logical coordinates.
@@ -128,7 +146,13 @@ impl TargetPlacement {
     /// Returns the capture pixels per logical unit.
     #[must_use]
     pub const fn scale(self) -> Scale {
-        self.scale
+        self.target_scale
+    }
+
+    /// Returns capture pixels per desktop-logical unit.
+    #[must_use]
+    pub const fn desktop_scale(self) -> Scale {
+        self.desktop_scale
     }
 
     /// Reports whether this placement's logical rectangle scales to `extent`.
@@ -138,8 +162,8 @@ impl TargetPlacement {
     /// Requiring exact equality would refuse placements that are as consistent
     /// as the source can make them.
     fn covers(self, extent: PixelExtent) -> bool {
-        covers_axis(self.logical_width * self.scale.x, extent.width())
-            && covers_axis(self.logical_height * self.scale.y, extent.height())
+        covers_axis(self.logical_width * self.target_scale.x, extent.width())
+            && covers_axis(self.logical_height * self.target_scale.y, extent.height())
     }
 }
 
@@ -363,12 +387,12 @@ impl TransformSnapshot {
                 Ok((x * frame_width, y * frame_height))
             }
             CoordinateSpace::TargetLogical => {
-                let scale = self.placement()?.scale;
+                let scale = self.placement()?.target_scale;
                 Ok((x * scale.x, y * scale.y))
             }
             CoordinateSpace::DesktopLogical => {
                 let placement = self.placement()?;
-                let scale = placement.scale;
+                let scale = placement.desktop_scale;
                 Ok((
                     (x - placement.desktop_origin_x) * scale.x,
                     (y - placement.desktop_origin_y) * scale.y,
@@ -394,12 +418,12 @@ impl TransformSnapshot {
                 Ok((x / frame_width, y / frame_height))
             }
             CoordinateSpace::TargetLogical => {
-                let scale = self.placement()?.scale;
+                let scale = self.placement()?.target_scale;
                 Ok((x / scale.x, y / scale.y))
             }
             CoordinateSpace::DesktopLogical => {
                 let placement = self.placement()?;
-                let scale = placement.scale;
+                let scale = placement.desktop_scale;
                 Ok((
                     x / scale.x + placement.desktop_origin_x,
                     y / scale.y + placement.desktop_origin_y,
@@ -754,5 +778,34 @@ mod tests {
         assert_eq!(placement.logical_size(), (960.0, 540.0));
         assert_eq!(placement.scale().x(), 2.0);
         assert_eq!(placement.scale().y(), 2.0);
+        assert_eq!(placement.desktop_scale().x(), 2.0);
+        assert_eq!(placement.desktop_scale().y(), 2.0);
+    }
+
+    #[test]
+    fn desktop_and_target_logical_spaces_can_use_distinct_scales() {
+        let placement = TargetPlacement::new(
+            (1920.0, 0.0),
+            (1280.0, 720.0),
+            Scale::new(1.5, 1.5).expect("target scale"),
+        )
+        .expect("placement")
+        .with_desktop_scale(Scale::new(1.0, 1.0).expect("desktop scale"));
+        let snapshot = TransformSnapshot::with_target(
+            GeometryRevision::FIRST,
+            PixelExtent::new(1920, 1080),
+            placement,
+        )
+        .expect("placement covers frame");
+        let far_edge = Point::new(CoordinateSpace::CapturePixels, 1920.0, 1080.0).expect("point");
+        let desktop = snapshot
+            .convert_point(far_edge, CoordinateSpace::DesktopLogical)
+            .expect("desktop conversion");
+        let target = snapshot
+            .convert_point(far_edge, CoordinateSpace::TargetLogical)
+            .expect("target conversion");
+
+        assert_eq!((desktop.x(), desktop.y()), (3840.0, 1080.0));
+        assert_eq!((target.x(), target.y()), (1280.0, 720.0));
     }
 }
