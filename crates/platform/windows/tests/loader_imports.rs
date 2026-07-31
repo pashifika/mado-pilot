@@ -1,3 +1,4 @@
+#![cfg_attr(not(windows), allow(missing_docs))]
 #![cfg(windows)]
 //! Verifies that version-sensitive Windows APIs remain runtime-resolved.
 

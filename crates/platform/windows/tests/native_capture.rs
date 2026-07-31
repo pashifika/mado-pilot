@@ -1,3 +1,4 @@
+#![cfg_attr(not(windows), allow(missing_docs))]
 #![cfg(windows)]
 //! Native WGC coverage against a test-owned synthetic Win32 window.
 
