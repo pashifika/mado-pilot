@@ -29,7 +29,7 @@ use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, invent
 use crate::native::NativeSession;
 use crate::shim::{
     self, MAX_NATIVE_WAIT, RAISE_AFTER_CALLBACK, RAISE_AT_START, RAISE_AT_TEARDOWN,
-    RAISE_BEFORE_CALLBACK,
+    RAISE_BEFORE_CALLBACK, RAISE_IN_START_COMPLETION,
 };
 use crate::storage::DETACHED_BUFFER_BUDGET;
 
@@ -963,6 +963,28 @@ fn a_closed_session_refuses_further_frame_requests() {
 fn a_contained_exception_at_the_start_site_leaves_no_native_object_alive() {
     let _serial = serialized();
     contained_site("start", RAISE_AT_START, FrameExpectation::Any);
+}
+
+/// The capture-start completion block, which the start site above cannot reach.
+///
+/// That block is invoked by the framework, so an exception leaving it unwinds into a
+/// frame with no handler above it anywhere — an abort rather than a status, which is
+/// what ADR 0012 rule 1 exists to prevent. It went in without the `@try` every other
+/// trampoline in the shim carries, and nothing could observe that: the block's own
+/// stop message is the thing that can raise there, and it is reached only when a start
+/// succeeds after teardown has already run.
+///
+/// So the seam raises at that position instead. Without the containment this case does
+/// not fail, it aborts the test process — which is the observable, and the reason the
+/// assertion below is about the session rather than about the exception.
+#[test]
+fn a_contained_exception_in_the_start_completion_leaves_no_native_object_alive() {
+    let _serial = serialized();
+    contained_site(
+        "the start completion",
+        RAISE_IN_START_COMPLETION,
+        FrameExpectation::Any,
+    );
 }
 
 #[test]

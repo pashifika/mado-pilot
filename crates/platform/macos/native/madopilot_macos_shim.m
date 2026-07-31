@@ -598,6 +598,47 @@ static void mp_shim_session_unref(struct mp_shim_session *session) {
     }
 }
 
+/*
+ * One counted hold on a session, dropped when ARC releases this object.
+ *
+ * It exists so that a block can hold a session reference without the code creating
+ * the block having to know whether the block was ever accepted. A raise from the
+ * message that would have taken the block destroys the stack block and releases this
+ * hold with it; an accepted block keeps it until the block itself is released. Either
+ * way the reference is dropped exactly once, and ARC is what guarantees that rather
+ * than an assumption about the framework.
+ *
+ * Pairing a bare retain with an unref inside the block cannot do this. The raise path
+ * would have to guess whether the block is going to run, and both guesses are wrong in
+ * one direction: unref and the block may still run against a freed session, or do not
+ * and the reference is stranded for the life of the process.
+ */
+@interface MPShimSessionHold : NSObject
+- (instancetype)initWithSession:(struct mp_shim_session *)session;
+@end
+
+@implementation MPShimSessionHold {
+    struct mp_shim_session *_session;
+}
+
+- (instancetype)initWithSession:(struct mp_shim_session *)session {
+    self = [super init];
+    if (self != nil) {
+        mp_shim_session_retain(session);
+        _session = session;
+    }
+    return self;
+}
+
+- (void)dealloc {
+    if (_session != NULL) {
+        mp_shim_session_unref(_session);
+        _session = NULL;
+    }
+}
+
+@end
+
 #pragma mark - Geometry helpers
 
 static double mp_shim_display_backing_scale(CGDirectDisplayID display) {
@@ -1116,6 +1157,16 @@ static mp_shim_status mp_shim_pool_create_locked(struct mp_shim_session *session
 static mp_shim_status mp_shim_pool_acquire(struct mp_shim_session *session, uint32_t width,
                                            uint32_t height, CVPixelBufferRef *out_buffer) {
     *out_buffer = NULL;
+    /*
+     * The allocation site bounds its own request. Every extent reaching here is derived
+     * from framework metadata, and the ceilings applied at open and reconfiguration
+     * bound what this Adapter *asked* for rather than what it was handed — so a
+     * detached copy sized from a frame is not covered by either of them.
+     */
+    if (width == 0 || height == 0 || width > MP_SHIM_MAX_PIXEL_EXTENT ||
+        height > MP_SHIM_MAX_PIXEL_EXTENT || !mp_shim_surface_within_limit(width, height)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
     if (pthread_mutex_trylock(&session->pool_mutex) != 0) {
         return MP_SHIM_BUDGET_EXHAUSTED;
     }
@@ -1420,6 +1471,16 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 
     size_t surface_width = CVPixelBufferGetWidth(image);
     size_t surface_height = CVPixelBufferGetHeight(image);
+    /*
+     * The surface is framework metadata like everything else validated here, and it is
+     * what the content extent is checked against below — so leaving it unbounded left
+     * the bound on the content meaningless. Reported rather than assumed, and a frame
+     * that fails it is dropped like any other implausible one.
+     */
+    if (surface_width > MP_SHIM_MAX_PIXEL_EXTENT || surface_height > MP_SHIM_MAX_PIXEL_EXTENT ||
+        !mp_shim_surface_within_limit((uint32_t)surface_width, (uint32_t)surface_height)) {
+        return;
+    }
     double pixel_width = content.size.width * factor;
     double pixel_height = content.size.height * factor;
     /*
@@ -1808,20 +1869,41 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
      * second stop reports that it was already in that state, which close treats as
      * the success it is.
      */
-    mp_shim_session_retain(session);
+    MPShimSessionHold *hold = [[MPShimSessionHold alloc] initWithSession:session];
     [stream startCaptureWithCompletionHandler:^(NSError *error) {
-      failure = error;
-      if (error == nil) {
-          atomic_store(&session->started, true);
-          if (atomic_load(&session->closed)) {
-              [stream stopCaptureWithCompletionHandler:^(NSError *stopped) {
-                (void)stopped;
-              }];
-              atomic_store(&session->started, false);
+      /* Captured so the session outlives this block, however the block ends and
+       * whether or not the message below ever accepted it. */
+      (void)hold;
+      /*
+       * A callback trampoline, so it contains its own exceptions the way every other
+       * one in this file does. The stop below is a framework message and can raise,
+       * and an exception leaving this block unwinds into the framework with no handler
+       * anywhere above it — which is an abort rather than a status. The signal is owed
+       * whatever happens, so it runs in @finally; a waiter that never received it
+       * would block to its own timeout for no reason.
+       */
+      @try {
+          failure = error;
+          if (error == nil) {
+              atomic_store(&session->started, true);
+              if (atomic_load(&session->closed)) {
+                  [stream stopCaptureWithCompletionHandler:^(NSError *stopped) {
+                    (void)stopped;
+                  }];
+                  atomic_store(&session->started, false);
+              }
           }
+          /* Last, so that the raise costs the outcome nothing and what it exercises is
+           * the containment alone — the position the real stop message occupies. */
+          if ((session->testing_raise_sites & MP_SHIM_RAISE_IN_START_COMPLETION) != 0) {
+              [NSException raise:@"MPShimInjectedFailure" format:@"start completion"];
+          }
+      } @catch (NSException *exception) {
+          (void)exception;
+      } @catch (...) {
+      } @finally {
+          dispatch_semaphore_signal(ready);
       }
-      dispatch_semaphore_signal(ready);
-      mp_shim_session_unref(session);
     }];
     mp_shim_status waited = mp_shim_wait(ready, timeout_nanos);
     if (waited != MP_SHIM_OK) {
@@ -2002,9 +2084,28 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
             pthread_mutex_unlock(&session->native_mutex);
 
             for (size_t slot = 0; slot < 5; slot += 1) {
-                if (released[slot] != NULL) {
+                if (released[slot] == NULL) {
+                    continue;
+                }
+                /*
+                 * Each release carries its own handler. One shared handler let a raise
+                 * from the first release skip the four after it and the pool below —
+                 * and because the slots are emptied above, nothing could reach those
+                 * objects again afterwards, so the ownership cycle with the stream
+                 * output would never be broken and no later close could retry.
+                 *
+                 * The count is noted only where the release returned. A release that
+                 * raised may have left the object alive, and reporting it as gone
+                 * would be the ownership scenarios agreeing with a leak.
+                 */
+                @try {
                     CFRelease(released[slot]);
                     mp_shim_note_released();
+                } @catch (NSException *exception) {
+                    (void)exception;
+                    reported = MP_SHIM_NATIVE_EXCEPTION;
+                } @catch (...) {
+                    reported = MP_SHIM_NATIVE_EXCEPTION;
                 }
             }
 

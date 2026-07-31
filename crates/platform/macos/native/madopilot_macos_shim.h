@@ -56,15 +56,21 @@ extern "C" {
 /*
  * Session-scoped test seams.
  *
- * A caller may ask a session to raise a native exception at one of the four
- * boundary positions ADR 0012 measured, which is how the containment and
- * failure-path ownership cases become testable. Nothing in the product sets
- * them, and a session that leaves them zero behaves as if they did not exist.
+ * A caller may ask a session to raise a native exception at one of the boundary
+ * positions ADR 0012 measured, which is how the containment and failure-path
+ * ownership cases become testable. Nothing in the product sets them, and a session
+ * that leaves them zero behaves as if they did not exist.
+ *
+ * `MP_SHIM_RAISE_IN_START_COMPLETION` is the fifth and covers a position the
+ * original four could not reach: the capture-start completion block. It is a callback
+ * trampoline the framework invokes, so rule 1 covers it, and `MP_SHIM_RAISE_AT_START`
+ * fires after the wait and therefore never enters it.
  */
 #define MP_SHIM_RAISE_AT_START 1u
 #define MP_SHIM_RAISE_BEFORE_CALLBACK 2u
 #define MP_SHIM_RAISE_AFTER_CALLBACK 4u
 #define MP_SHIM_RAISE_AT_TEARDOWN 8u
+#define MP_SHIM_RAISE_IN_START_COMPLETION 16u
 
 /* Status returned by every entry point. Zero is success. */
 typedef uint32_t mp_shim_status;

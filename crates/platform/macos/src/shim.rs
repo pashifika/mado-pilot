@@ -53,7 +53,7 @@ pub(crate) const MAX_SURFACE_EXTENT: u32 = 32768;
 /// reason the extent is — the Adapter does not ask for what would be refused.
 pub(crate) const MAX_SURFACE_BYTES: u64 = 268_435_456;
 
-/// Test seams the shim exposes for the four ADR 0012 injection positions.
+/// Test seams the shim exposes for the ADR 0012 injection positions.
 #[cfg(test)]
 pub(crate) const RAISE_AT_START: u32 = 1;
 /// See [`RAISE_AT_START`].
@@ -65,6 +65,10 @@ pub(crate) const RAISE_AFTER_CALLBACK: u32 = 4;
 /// See [`RAISE_AT_START`].
 #[cfg(test)]
 pub(crate) const RAISE_AT_TEARDOWN: u32 = 8;
+/// The capture-start completion block, which [`RAISE_AT_START`] cannot reach because
+/// it fires after the wait that block signals. See [`RAISE_AT_START`].
+#[cfg(test)]
+pub(crate) const RAISE_IN_START_COMPLETION: u32 = 16;
 
 #[repr(C)]
 struct OpaqueInventory {
