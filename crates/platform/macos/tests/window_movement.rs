@@ -499,22 +499,35 @@ fn a_window_moved_between_displays_republishes_under_a_new_geometry() {
     }
 
     // A published scale belonging to no attached display means the target was scaled
-    // down to fit a surface too small to hold it. The first frame of such a run is a
-    // transition frame and is dropped, so a small count is the producer not having
-    // caught up within one frame; a long run of them is a surface request that
-    // adopted the reduction instead of asking for what the target needs.
-    let letterboxed = states
-        .iter()
-        .filter(|state| {
-            !display_scales
-                .iter()
-                .any(|scale| (scale - state.placed.scale).abs() < 1e-9)
-        })
-        .count();
+    // down to fit a surface too small to hold it. What separates a benign transient
+    // from the defect is not how many of them there are but whether they follow one
+    // another: the window server resizes a window shortly after it lands on another
+    // display, so for a frame or two the producer still holds the surface the target
+    // needed before that, and each such state is followed by one at the target's own
+    // scale. A surface request that adopted the reduction instead produces a run of
+    // them that shrinks as it goes.
+    //
+    // Both numbers are reported because the total cannot tell those apart, and a total
+    // on its own has been read as a regression when the longest run was one. How many
+    // transients a run sees depends on the window's height when it happens to cross,
+    // so the total is not comparable between runs and the longest run is.
+    let reduced = |state: &Observed| {
+        !display_scales
+            .iter()
+            .any(|scale| (scale - state.placed.scale).abs() < 1e-9)
+    };
+    let letterboxed = states.iter().filter(|state| reduced(state)).count();
+    let mut longest_reduced_run = 0u32;
+    let mut consecutive = 0u32;
+    for state in &states {
+        consecutive = if reduced(state) { consecutive + 1 } else { 0 };
+        longest_reduced_run = longest_reduced_run.max(consecutive);
+    }
     println!(
         "measured: {moved_at_one_scale} move(s) at one scale as a geometry change, \
          {crossed_scales} cross-scale move(s) as a new epoch, {letterboxed} state(s) \
-         published at a scale no attached display has"
+         published at a scale no attached display has, the longest unbroken run of \
+         those being {longest_reduced_run}"
     );
     if crossed_scales == 0 {
         println!(
