@@ -978,41 +978,83 @@ Resize discards the size-transition frame, recreates the two-frame producer
 pool, and lets detached old-revision frames complete from old-generation
 resources. Both WinRT handlers capture lifetime-independent shared callback
 state rather than a raw Adapter owner. Close detaches the owner under the
-callback-admission mutex, unregisters both handlers, drains admitted callbacks,
-and publishes the fence before native teardown starts. Native WGC objects move
-to a teardown worker that initializes its own WinRT apartment, closes the
-session before the pool, and releases the item last. Explicit close polls that
-worker under the caller's operation deadline and can be retried; implicit
-destruction lets it finish an uninterruptible callback drain without blocking
-`Drop`. A delegate invoked after detachment is rejected without touching the
-owner. An ordinary local close is not mistaken for authoritative
-`GraphicsCaptureItem.Closed`, so it still closes the native session. The
-implemented Adapter does not claim device recovery continuity: device removal
-or reset, including one first observed during lazy mapping, terminates the
-stream with the corresponding typed capture fault. If a later Change proves
-recovery and adds a fresh device and stream epoch, leased old-generation
-storage still cannot be repurposed.
+callback-admission mutex, unregisters `FrameArrived`, drains admitted callbacks,
+and publishes the fence before native teardown starts. The capture-item
+`Closed` handler keeps only its independent terminal latch active through the
+native session-close decision and is then unregistered. Native WGC objects move
+to a fixed shared worker pool with a finite non-blocking job queue. Every worker
+initializes its WinRT apartment before a session can open; worker-start or
+apartment failure is a typed, retryable open failure rather than a `Drop` panic.
+Executor-slot acquisition and worker-readiness polling both checkpoint the
+caller's operation, so cancellation or deadline expiry also bounds initial
+startup and restart. The slot retains one in-flight startup generation when a
+caller stops waiting; later retries observe that same generation, and a failed
+generation cannot be replaced until all of its worker threads have exited.
+One global permit is reserved before each session creates native resources, so
+live sessions, running jobs, queued jobs, and any apartment-safe quarantine
+share one finite ownership bound. A job closes the session before the pool and
+releases the item last. Explicit close polls the pool under the caller's
+operation deadline and can be retried; implicit destruction lets it finish an
+uninterruptible callback drain without blocking `Drop`. Whether WGC has already
+ended is sampled after that callback drain. The capture-item `Closed` delegate
+records its lifetime-independent terminal latch even when owner admission has
+already stopped, so the latch is not lost to the callback fence. A delegate
+invoked after detachment otherwise avoids the owner. An ordinary local close is
+not mistaken for authoritative capture-item closure, while an actually closed
+item remains a kind-specific target-loss outcome even if its HWND or monitor
+still exists. An already-closed native result during idempotent teardown is
+absorbed rather than replacing the public close outcome. The implemented
+Adapter does not claim device recovery continuity: device removal or reset,
+including one first observed during lazy mapping, terminates the stream with the
+corresponding typed capture fault. A lock-free terminal latch lets the WGC
+callback publish that outcome
+without waiting for mapping; mapping checks it before and after cache assignment
+while still holding the mapping mutex, and removes any late assignment before
+it becomes observable. If a later Change proves recovery and adds a fresh
+device and stream epoch, leased old-generation storage still cannot be
+repurposed.
+
+WGC supplies no distinct positive provenance for an external explicit-stop
+outcome when an item or frame reports `RO_E_CLOSED`. The Adapter therefore
+preserves the kind-specific target-loss result in that ambiguous path rather
+than inferring `ExplicitlyStopped` from a still-present HWND or monitor. The
+owner's own explicit `CaptureSession::close` remains the ordinary idempotent
+close lifecycle, not a terminal capture fault.
 
 Each provider record observes its capture item's `Closed` event and immediately
 marks that record lost. The provider rejects the stale identity from then on.
-The registry releases the record's discovery metadata and capture item by
-replacing it with a lightweight tombstone during the next discovery
-synchronization; if no later discovery synchronization runs, the lost live
-record remains retained until the provider is dropped. A new incarnation
-receives a new identity, while an already-open session retains its own item
-safely.
+Opening that stale identity removes its lost live record, and discovery
+synchronization removes every missing or replaced record. The registry retains
+no historical tombstones: once engine and provider qualification succeeds, an
+identity absent from the live registry is conservatively reported as
+`TargetLost`. Registry allocation is therefore bounded by the peak live target
+inventory rather than lifetime target churn. If neither open nor discovery runs
+after a `Closed` event, the lost record remains until the provider is dropped.
+A new incarnation receives a new identity, while an already-open session
+retains its own item safely. Discovery serializes inventory acquisition with
+registry synchronization, and open revalidation participates in the same
+ordering, so an older concurrent inventory cannot overwrite a newer committed
+provider state.
 
 Frame timestamps come from WGC `SystemRelativeTime`, calibrated once into the
-project monotonic clock. Placement is sampled while that WGC frame is still
-held. Window client points are converted to physical per-monitor coordinates,
-and visible frame bounds supply the origin. On a movement boundary the Adapter
-drops the transition and any already-queued older WGC frames before publishing
-the first stable frame with `GeometryChanged`.
+project monotonic clock from a QPC sample bracketed by project-clock samples
+before capture starts; callback delivery latency therefore does not shift the
+frame timeline. Placement is sampled while that WGC frame is still held.
+Window client points are converted to physical per-monitor coordinates, and
+visible frame bounds supply the origin. Target-logical extents use the target's
+per-monitor scale. Desktop-logical origins follow the independent signed Windows
+virtual-screen coordinate plane, so adjacent monitors share one seam even when
+their target scales differ. On a movement boundary the
+Adapter drops the transition and any already-queued older WGC frames before
+publishing the first stable frame with `GeometryChanged`.
 
 Version-sensitive DPI, WinRT activation, and WinRT-D3D interop exports are
-resolved from system DLLs only after the operation-time availability boundary.
-The Windows loader regression test parses its own PE import table and rejects
-those exports if a binding change makes them eager imports again.
+resolved only after the operation-time availability boundary. The loader builds
+an absolute path from the actual system directory, uses
+`LOAD_LIBRARY_SEARCH_SYSTEM32`, and verifies the loaded module's parent before
+resolving an export. The Windows loader
+regression test also parses its own PE import table and rejects those exports if
+a binding change makes them eager imports again.
 
 The decision is
 [ADR 0013](adr/0013-windows-capture-frame-detachment.md), its retained prototype

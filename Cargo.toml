@@ -82,6 +82,7 @@ windows = { version = "0.62.2", default-features = false, features = [
     "Win32_System_WinRT_Graphics_Capture",
     "Win32_System_LibraryLoader",
     "Win32_System_Performance",
+    "Win32_System_SystemInformation",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
 ] }

@@ -415,17 +415,16 @@ fn placement_with_scale(
     extent: PixelExtent,
     scale: Scale,
 ) -> std::result::Result<TargetPlacement, mado_pilot_core::GeometryFault> {
+    let desktop_scale = Scale::new(1.0, 1.0)?;
     TargetPlacement::new(
-        (
-            f64::from(physical_x) / scale.x(),
-            f64::from(physical_y) / scale.y(),
-        ),
+        (f64::from(physical_x), f64::from(physical_y)),
         (
             f64::from(extent.width()) / scale.x(),
             f64::from(extent.height()) / scale.y(),
         ),
         scale,
     )
+    .map(|placement| placement.with_desktop_scale(desktop_scale))
 }
 
 fn positive_extent(width: i32, height: i32) -> Option<PixelExtent> {
@@ -443,7 +442,7 @@ mod tests {
     };
 
     #[test]
-    fn signed_mixed_dpi_placement_is_frame_authoritative() {
+    fn signed_mixed_dpi_placement_preserves_virtual_screen_coordinates() {
         let extent = PixelExtent::new(1920, 1080);
         let placement =
             placement_with_scale(-1920, -120, extent, Scale::new(1.5, 1.5).expect("scale"))
@@ -455,9 +454,41 @@ mod tests {
             .convert_point(frame_origin, CoordinateSpace::DesktopLogical)
             .expect("desktop conversion");
 
-        assert_eq!(placement.desktop_origin(), (-1280.0, -80.0));
-        assert_eq!((desktop_origin.x(), desktop_origin.y()), (-1280.0, -80.0));
+        assert_eq!(placement.desktop_origin(), (-1920.0, -120.0));
+        assert_eq!((desktop_origin.x(), desktop_origin.y()), (-1920.0, -120.0));
         assert!(snapshot.covers_target());
+    }
+
+    #[test]
+    fn differently_scaled_adjacent_monitors_share_one_desktop_seam() {
+        let primary_extent = PixelExtent::new(1920, 1080);
+        let primary =
+            placement_with_scale(0, 0, primary_extent, Scale::new(1.0, 1.0).expect("scale"))
+                .expect("primary placement");
+        let scaled_extent = PixelExtent::new(1920, 1080);
+        let scaled =
+            placement_with_scale(1920, 0, scaled_extent, Scale::new(1.5, 1.5).expect("scale"))
+                .expect("scaled placement");
+        let primary_snapshot =
+            TransformSnapshot::with_target(GeometryRevision::FIRST, primary_extent, primary)
+                .expect("primary snapshot");
+        let scaled_snapshot =
+            TransformSnapshot::with_target(GeometryRevision::FIRST, scaled_extent, scaled)
+                .expect("scaled snapshot");
+        let primary_far = Point::new(CoordinateSpace::CapturePixels, 1920.0, 0.0).expect("point");
+        let scaled_near = Point::new(CoordinateSpace::CapturePixels, 0.0, 0.0).expect("point");
+
+        assert_eq!(
+            primary_snapshot
+                .convert_point(primary_far, CoordinateSpace::DesktopLogical)
+                .expect("primary conversion")
+                .x(),
+            scaled_snapshot
+                .convert_point(scaled_near, CoordinateSpace::DesktopLogical)
+                .expect("scaled conversion")
+                .x()
+        );
+        assert_eq!(scaled.logical_size(), (1280.0, 720.0));
     }
 
     #[test]

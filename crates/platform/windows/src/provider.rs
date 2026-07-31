@@ -3,7 +3,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::thread;
+use std::time::Duration;
 
 use mado_pilot_capture::{
     CaptureFault, CaptureProvider, CaptureSession, OpenRequest, PixelFormat, TargetDescription,
@@ -15,8 +17,7 @@ use windows::core::IInspectable;
 
 use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
-use crate::native::NativeSession;
-use crate::storage::native_fault;
+use crate::native::{NativeSession, native_target_fault};
 
 /// Provider name qualifying every native Windows target identity.
 pub const PROVIDER: ProviderId = ProviderId::new("windows");
@@ -28,19 +29,16 @@ pub const PROVIDER: ProviderId = ProviderId::new("windows");
 /// making an unresolved minimum-Windows claim.
 pub struct WindowsCaptureProvider {
     issuer: Arc<IdentityIssuer>,
+    discovery_gate: Mutex<()>,
     registry: Mutex<Registry>,
 }
 
+const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(2);
+
 #[derive(Debug, Default)]
 struct Registry {
-    records: HashMap<TargetId, TargetState>,
+    records: HashMap<TargetId, Arc<TargetRecord>>,
     current: HashMap<NativeKey, TargetId>,
-}
-
-#[derive(Debug)]
-enum TargetState {
-    Live(Arc<TargetRecord>),
-    Lost,
 }
 
 struct TargetRecord {
@@ -59,11 +57,40 @@ impl WindowsCaptureProvider {
     pub fn new(issuer: Arc<IdentityIssuer>) -> Self {
         Self {
             issuer,
+            discovery_gate: Mutex::new(()),
             registry: Mutex::new(Registry::default()),
         }
     }
 
+    fn discover_with<F>(
+        &self,
+        operation: &OperationContext,
+        inventory: F,
+    ) -> Result<Vec<TargetDescription>>
+    where
+        F: FnOnce() -> Result<Vec<Candidate>>,
+    {
+        let mut attempt = Operation::admit(operation)?;
+        let descriptions = self.with_snapshot_order(&mut attempt, || {
+            let candidates = inventory()?;
+            self.synchronize(candidates)
+        })?;
+        Ok(attempt.commit(descriptions)?)
+    }
+
+    fn with_snapshot_order<T>(
+        &self,
+        operation: &mut Operation<'_>,
+        action: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        let _discovery = lock_with_operation(&self.discovery_gate, operation)?;
+        action()
+    }
+
     fn synchronize(&self, candidates: Vec<Candidate>) -> Result<Vec<TargetDescription>> {
+        // Declare retired records before the registry guard so every early
+        // return also unlocks the registry before releasing native state.
+        let mut retired = Vec::new();
         let mut registry = self.registry();
         let mut seen = HashSet::new();
         let mut descriptions = Vec::with_capacity(candidates.len());
@@ -73,7 +100,7 @@ impl WindowsCaptureProvider {
             let existing_id = registry.current.get(&candidate.key).copied();
             let existing = existing_id
                 .and_then(|id| registry.records.get(&id))
-                .and_then(TargetState::live);
+                .cloned();
             let record = if let Some(record) = existing.as_ref()
                 && same_incarnation(
                     record.lost.load(Ordering::Acquire),
@@ -83,18 +110,20 @@ impl WindowsCaptureProvider {
                 *record.metadata() = candidate.metadata;
                 Arc::clone(record)
             } else {
+                let replacement = self.create_record(candidate)?;
                 if let Some(existing) = existing {
                     existing.lost.store(true, Ordering::Release);
                 }
-                if let Some(existing_id) = existing_id {
-                    registry.records.insert(existing_id, TargetState::Lost);
+                if let Some(existing_id) = existing_id
+                    && let Some(existing) = registry.records.remove(&existing_id)
+                {
+                    retired.push(existing);
                 }
-                let record = self.create_record(candidate)?;
-                registry.current.insert(record.key, record.id);
+                registry.current.insert(replacement.key, replacement.id);
                 registry
                     .records
-                    .insert(record.id, TargetState::Live(Arc::clone(&record)));
-                record
+                    .insert(replacement.id, Arc::clone(&replacement));
+                replacement
             };
             descriptions.push(record.description());
         }
@@ -106,13 +135,15 @@ impl WindowsCaptureProvider {
             .filter(|key| !seen.contains(key))
             .collect();
         for key in missing {
-            if let Some(id) = registry.current.remove(&key) {
-                if let Some(TargetState::Live(record)) = registry.records.get(&id) {
-                    record.lost.store(true, Ordering::Release);
-                }
-                registry.records.insert(id, TargetState::Lost);
+            if let Some(id) = registry.current.remove(&key)
+                && let Some(record) = registry.records.remove(&id)
+            {
+                record.lost.store(true, Ordering::Release);
+                retired.push(record);
             }
         }
+        drop(registry);
+        drop(retired);
         Ok(descriptions)
     }
 
@@ -128,7 +159,7 @@ impl WindowsCaptureProvider {
         let closed_token = candidate
             .item
             .Closed(&closed_handler)
-            .map_err(native_fault)?;
+            .map_err(|error| native_target_fault(error, candidate.key.kind()))?;
         Ok(Arc::new(TargetRecord {
             id,
             key: candidate.key,
@@ -140,26 +171,53 @@ impl WindowsCaptureProvider {
         }))
     }
 
-    fn validate_current(&self, record: &TargetRecord) -> Result<TargetMetadata> {
-        if record.lost.load(Ordering::Acquire)
-            || !record.key.is_present()
-            || record.item.Size().is_err()
-        {
-            record.lost.store(true, Ordering::Release);
-            return Err(CaptureFault::TargetLost.into());
-        }
-        let current = inventory()?
-            .into_iter()
-            .find(|candidate| candidate.key == record.key);
-        match current {
-            Some(candidate) if candidate.fingerprint == record.fingerprint => {
-                *record.metadata() = candidate.metadata.clone();
-                Ok(candidate.metadata)
-            }
-            _ => {
+    fn validate_current(
+        &self,
+        record: &TargetRecord,
+        operation: &mut Operation<'_>,
+    ) -> Result<TargetMetadata> {
+        self.with_snapshot_order(operation, || {
+            if record.lost.load(Ordering::Acquire)
+                || !record.key.is_present()
+                || record.item.Size().is_err()
+            {
                 record.lost.store(true, Ordering::Release);
-                Err(CaptureFault::TargetLost.into())
+                return Err(CaptureFault::TargetLost.into());
             }
+            let current = inventory()?
+                .into_iter()
+                .find(|candidate| candidate.key == record.key);
+            match current {
+                Some(candidate)
+                    if candidate.fingerprint == record.fingerprint
+                        && !record.lost.load(Ordering::Acquire) =>
+                {
+                    *record.metadata() = candidate.metadata.clone();
+                    Ok(candidate.metadata)
+                }
+                _ => {
+                    record.lost.store(true, Ordering::Release);
+                    Err(CaptureFault::TargetLost.into())
+                }
+            }
+        })
+    }
+
+    fn remove_lost_record(&self, record: &Arc<TargetRecord>) {
+        if !record.lost.load(Ordering::Acquire) {
+            return;
+        }
+        let mut registry = self.registry();
+        let is_current_record = registry
+            .records
+            .get(&record.id)
+            .is_some_and(|known| Arc::ptr_eq(known, record));
+        if !is_current_record {
+            return;
+        }
+        registry.records.remove(&record.id);
+        if registry.current.get(&record.key) == Some(&record.id) {
+            registry.current.remove(&record.key);
         }
     }
 
@@ -188,11 +246,8 @@ impl CaptureProvider for WindowsCaptureProvider {
     }
 
     fn discover(&self, operation: &OperationContext) -> Result<Vec<TargetDescription>> {
-        let attempt = Operation::admit(operation)?;
         ensure_capture_available()?;
-        let candidates = inventory()?;
-        let descriptions = self.synchronize(candidates)?;
-        Ok(attempt.commit(descriptions)?)
+        self.discover_with(operation, inventory)
     }
 
     fn open(
@@ -201,7 +256,7 @@ impl CaptureProvider for WindowsCaptureProvider {
         request: &OpenRequest,
         operation: &OperationContext,
     ) -> Result<Arc<dyn CaptureSession>> {
-        let attempt = Operation::admit(operation)?;
+        let mut attempt = Operation::admit(operation)?;
         self.accepts_target(target, self.issuer.engine())?;
         ensure_capture_available()?;
         if let Some(required) = request.required_format()
@@ -210,17 +265,22 @@ impl CaptureProvider for WindowsCaptureProvider {
             return Err(CaptureFault::UnsupportedOption.into());
         }
 
+        // accepts_target established this engine and provider. TargetId is
+        // opaque, so an accepted identity absent from the live registry is
+        // conservatively stale rather than an invitation to retain history.
         let record = self
             .registry()
             .records
             .get(&target)
-            .map(|record| match record {
-                TargetState::Live(record) => Ok(Arc::clone(record)),
-                TargetState::Lost => Err(CaptureFault::TargetLost),
-            })
-            .transpose()?
-            .ok_or(CaptureFault::UnknownTarget)?;
-        let metadata = self.validate_current(&record)?;
+            .cloned()
+            .ok_or(CaptureFault::TargetLost)?;
+        let metadata = match self.validate_current(&record, &mut attempt) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                self.remove_lost_record(&record);
+                return Err(error);
+            }
+        };
         let stream = self.issuer.issue_stream()?;
         let session = NativeSession::open(
             target,
@@ -229,6 +289,7 @@ impl CaptureProvider for WindowsCaptureProvider {
             record.key,
             metadata,
             record.item.clone(),
+            &mut attempt,
         )?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
     }
@@ -238,11 +299,18 @@ fn same_incarnation(lost: bool, existing: &Fingerprint, candidate: &Fingerprint)
     !lost && existing == candidate
 }
 
-impl TargetState {
-    fn live(&self) -> Option<Arc<TargetRecord>> {
-        match self {
-            Self::Live(record) => Some(Arc::clone(record)),
-            Self::Lost => None,
+fn lock_with_operation<'mutex>(
+    mutex: &'mutex Mutex<()>,
+    operation: &mut Operation<'_>,
+) -> Result<MutexGuard<'mutex, ()>> {
+    loop {
+        match mutex.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => {
+                thread::sleep(DISCOVERY_POLL_INTERVAL);
+                operation.checkpoint()?;
+            }
         }
     }
 }
@@ -272,10 +340,12 @@ impl fmt::Debug for TargetRecord {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+    use std::time::Duration;
 
     use mado_pilot_capture::{CaptureProvider, OpenRequest, PixelFormat};
-    use mado_pilot_core::{IdentityIssuer, OperationContext, Status};
+    use mado_pilot_core::{IdentityIssuer, Operation, OperationContext, Status};
 
     use crate::discovery::Fingerprint;
 
@@ -296,6 +366,26 @@ mod tests {
             )
             .expect_err("foreign");
         assert_eq!(error.status(), Status::InvalidArgument);
+    }
+
+    #[test]
+    fn an_absent_identity_accepted_by_this_provider_is_conservatively_lost() {
+        let issuer = Arc::new(IdentityIssuer::new());
+        let absent = issuer
+            .issue_target(super::PROVIDER)
+            .expect("issued by this engine for this provider");
+        let provider = WindowsCaptureProvider::new(issuer);
+        let error = provider
+            .open(
+                absent,
+                &OpenRequest::new().require_format(PixelFormat::Bgra8),
+                &OperationContext::new(),
+            )
+            .expect_err("an absent accepted identity is not live");
+        if error.status() == Status::Unsupported {
+            return;
+        }
+        assert_eq!(error.status(), Status::TargetLost);
     }
 
     #[test]
@@ -320,7 +410,59 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_native_handle_never_reuses_the_target_identity() {
+    fn open_validation_and_discovery_share_one_snapshot_order() {
+        let provider = Arc::new(WindowsCaptureProvider::new(Arc::new(IdentityIssuer::new())));
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (release_first_tx, release_first_rx) = mpsc::channel();
+        let first = {
+            let provider = Arc::clone(&provider);
+            thread::spawn(move || {
+                let context = OperationContext::new();
+                let mut operation = Operation::admit(&context).expect("open validation admitted");
+                provider.with_snapshot_order(&mut operation, || {
+                    first_entered_tx.send(()).expect("signal first inventory");
+                    release_first_rx.recv().expect("release first inventory");
+                    Ok(())
+                })
+            })
+        };
+        first_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first inventory entered");
+
+        let (second_entered_tx, second_entered_rx) = mpsc::channel();
+        let second = {
+            let provider = Arc::clone(&provider);
+            thread::spawn(move || {
+                provider.discover_with(&OperationContext::new(), || {
+                    second_entered_tx.send(()).expect("signal second inventory");
+                    Ok(Vec::new())
+                })
+            })
+        };
+        assert!(
+            second_entered_rx
+                .recv_timeout(Duration::from_millis(40))
+                .is_err(),
+            "the newer inventory waits until the older inventory commits"
+        );
+
+        release_first_tx.send(()).expect("release first");
+        first
+            .join()
+            .expect("first thread")
+            .expect("open validation");
+        second_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second inventory enters after the first commit");
+        second
+            .join()
+            .expect("second thread")
+            .expect("second discovery");
+    }
+
+    #[test]
+    fn a_changed_native_fingerprint_never_reuses_the_target_identity() {
         let original = Fingerprint::Window {
             process_id: 17,
             thread_id: 23,

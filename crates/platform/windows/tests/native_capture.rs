@@ -2,8 +2,8 @@
 //! Native WGC coverage against a test-owned synthetic Win32 window.
 
 use std::mem::size_of;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Once};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -28,6 +28,7 @@ use windows::core::PCWSTR;
 
 static PAINT_COLOR: AtomicU32 = AtomicU32::new(0x0020_4080);
 static TEST_STAGE: AtomicU32 = AtomicU32::new(0);
+static REGISTER_SYNTHETIC_CLASS: Once = Once::new();
 
 fn stage(value: u32) {
     TEST_STAGE.store(value, Ordering::Release);
@@ -48,6 +49,7 @@ fn stage_name(value: u32) -> &'static str {
         10 => "loss-observed",
         11 => "first-close",
         12 => "second-close",
+        13 => "replacement-lifecycle",
         _ => "complete",
     }
 }
@@ -72,17 +74,19 @@ impl SyntheticWindow {
             let title = wide("MadoPilot Phase 2 native capture target");
             // SAFETY: null requests the current process module.
             let module = unsafe { GetModuleHandleW(None) }.expect("module");
-            let class = WNDCLASSEXW {
-                cbSize: u32::try_from(size_of::<WNDCLASSEXW>()).expect("class size"),
-                lpfnWndProc: Some(window_proc),
-                hInstance: HINSTANCE(module.0),
-                lpszClassName: PCWSTR(class_name.as_ptr()),
-                ..WNDCLASSEXW::default()
-            };
-            // SAFETY: class fields and string storage remain valid through
-            // CreateWindowExW on this thread.
-            let atom = unsafe { RegisterClassExW(&raw const class) };
-            assert_ne!(atom, 0, "registered synthetic class");
+            REGISTER_SYNTHETIC_CLASS.call_once(|| {
+                let class = WNDCLASSEXW {
+                    cbSize: u32::try_from(size_of::<WNDCLASSEXW>()).expect("class size"),
+                    lpfnWndProc: Some(window_proc),
+                    hInstance: HINSTANCE(module.0),
+                    lpszClassName: PCWSTR(class_name.as_ptr()),
+                    ..WNDCLASSEXW::default()
+                };
+                // SAFETY: class fields and string storage remain valid through
+                // registration, which copies the class definition process-wide.
+                let atom = unsafe { RegisterClassExW(&raw const class) };
+                assert_ne!(atom, 0, "registered synthetic class");
+            });
             // SAFETY: the registered class and title pointers are valid; no
             // parent, menu, or application-owned lparam is supplied.
             let hwnd = unsafe {
@@ -178,7 +182,14 @@ impl SyntheticWindow {
 
 impl Drop for SyntheticWindow {
     fn drop(&mut self) {
-        self.close_target();
+        if thread::panicking() {
+            self.close.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _joined = thread.join();
+            }
+        } else {
+            self.close_target();
+        }
     }
 }
 
@@ -409,6 +420,7 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
     assert!(moved.stamp().geometry() > previous.stamp().geometry());
     stage(8);
 
+    let registry_before_loss = provider_registry_counts(&provider);
     target_window.close_target();
     stage(9);
     let mut stamp = moved.stamp();
@@ -423,6 +435,38 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
     }
     stage(10);
 
+    let stale = provider
+        .open(
+            target.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &timed(),
+        )
+        .expect_err("the provider rejects and reclaims its lost live record");
+    assert_eq!(stale.status(), Status::TargetLost);
+    let reclaimed = provider
+        .open(
+            target.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &timed(),
+        )
+        .expect_err("an accepted identity absent after reclamation stays lost");
+    assert_eq!(reclaimed.status(), Status::TargetLost);
+    let registry_after_reclamation = provider_registry_counts(&provider);
+    assert_eq!(
+        registry_after_reclamation,
+        (
+            registry_before_loss
+                .0
+                .checked_sub(1)
+                .expect("the live target was registered"),
+            registry_before_loss
+                .1
+                .checked_sub(1)
+                .expect("the live native key was registered"),
+        ),
+        "stale open removes exactly its native record instead of retaining a tombstone"
+    );
+
     session.close(&close_timed()).expect("first close");
     stage(11);
     session.close(&close_timed()).expect("idempotent close");
@@ -433,7 +477,47 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
         retained_mapping.descriptor().byte_len(),
         "mapping survives target loss and session close"
     );
+
+    stage(13);
+    let _replacement_window = SyntheticWindow::spawn();
+    let replacements = provider
+        .discover_matching(&request, &timed())
+        .expect("replacement discovery");
+    let replacement = replacements
+        .first()
+        .expect("replacement synthetic target is discoverable");
+    assert_ne!(
+        replacement.id(),
+        target.id(),
+        "a replacement target receives a new identity"
+    );
+    let stale_after_replacement = provider
+        .open(
+            target.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &timed(),
+        )
+        .expect_err("the old identity never opens its replacement");
+    assert_eq!(stale_after_replacement.status(), Status::TargetLost);
     TEST_STAGE.store(u32::MAX, Ordering::Release);
+}
+
+fn provider_registry_counts(provider: &WindowsCaptureProvider) -> (usize, usize) {
+    let debug = format!("{provider:?}");
+    (
+        debug_count(&debug, "known_targets"),
+        debug_count(&debug, "current_targets"),
+    )
+}
+
+fn debug_count(debug: &str, field: &str) -> usize {
+    let marker = format!("{field}: ");
+    debug
+        .split_once(&marker)
+        .and_then(|(_, tail)| tail.split([',', ' ']).next())
+        .expect("provider debug field")
+        .parse()
+        .expect("provider debug count")
 }
 
 fn timed() -> OperationContext {

@@ -1,10 +1,20 @@
 #![cfg(windows)]
 //! Verifies that version-sensitive Windows APIs remain runtime-resolved.
 
-use std::fs;
+use std::{fs, sync::Arc};
+
+use mado_pilot_capture::CaptureProvider;
+use mado_pilot_core::{IdentityIssuer, OperationContext};
+use mado_pilot_platform_windows::WindowsCaptureProvider;
 
 #[test]
 fn optional_windows_exports_are_absent_from_the_pe_import_table() {
+    // Keep the production availability and discovery path reachable from this
+    // executable. Otherwise the linker may omit the Adapter and make an empty
+    // import table look like evidence for lazy loading.
+    let provider = WindowsCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+    let _availability = provider.discover(&OperationContext::new());
+
     let executable = std::env::current_exe().expect("current test executable");
     let bytes = fs::read(executable).expect("read test executable");
     let imports = pe_imports(&bytes);

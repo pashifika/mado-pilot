@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::num::NonZeroU32;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError, Weak};
 use std::thread;
 use std::time::Duration;
@@ -33,6 +33,33 @@ const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(2);
 /// The finite production detached-texture budget selected from the G-002
 /// retained-frame workload.
 pub(crate) const DETACHED_TEXTURE_BUDGET: NonZeroU32 = NonZeroU32::new(40).unwrap();
+
+/// Orders D3D device termination against lazy mapping cache commits.
+#[derive(Debug, Default)]
+pub(crate) struct DeviceTerminal {
+    fault: AtomicU8,
+}
+
+impl DeviceTerminal {
+    pub(crate) fn record(&self, fault: CaptureFault) {
+        let encoded = match fault {
+            CaptureFault::DeviceRemoved => 1,
+            CaptureFault::DeviceReset => 2,
+            _ => return,
+        };
+        let _first = self
+            .fault
+            .compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    fn fault(&self) -> Option<CaptureFault> {
+        match self.fault.load(Ordering::Acquire) {
+            1 => Some(CaptureFault::DeviceRemoved),
+            2 => Some(CaptureFault::DeviceReset),
+            _ => None,
+        }
+    }
+}
 
 /// One D3D11 device/context lifetime domain shared by a session and every
 /// detached frame it publishes.
@@ -434,6 +461,7 @@ pub(crate) struct WindowsFrameStorage {
     mapping: Mutex<MappingState>,
     mapped: Condvar,
     failure: Weak<dyn StorageFailureSink>,
+    device_terminal: Arc<DeviceTerminal>,
 }
 
 pub(crate) trait StorageFailureSink: Send + Sync {
@@ -452,6 +480,7 @@ impl WindowsFrameStorage {
         domain: Arc<DeviceDomain>,
         lease: TextureLease,
         failure: Weak<dyn StorageFailureSink>,
+        device_terminal: Arc<DeviceTerminal>,
     ) -> Arc<Self> {
         Arc::new(Self {
             descriptor,
@@ -460,6 +489,7 @@ impl WindowsFrameStorage {
             mapping: Mutex::new(MappingState::default()),
             mapped: Condvar::new(),
             failure,
+            device_terminal,
         })
     }
 
@@ -501,6 +531,9 @@ impl FrameStorage for WindowsFrameStorage {
             if let Some(pixels) = &state.pixels {
                 return Ok(attempt.commit(Arc::clone(pixels))?);
             }
+            if let Some(fault) = self.device_terminal.fault() {
+                return Err(fault.into());
+            }
             if !state.active {
                 state.active = true;
                 drop(state);
@@ -513,27 +546,46 @@ impl FrameStorage for WindowsFrameStorage {
             attempt.checkpoint()?;
         }
 
-        let result = self
+        let mut result = self
             .domain
             .read_texture(self.lease.texture(), self.descriptor, operation);
-        if result.is_err()
-            && let Some(fault) = self.domain.device_fault()
-            && let Some(failure) = self.failure.upgrade()
-        {
-            failure.storage_failed(fault);
+        if let Some(fault) = self.domain.device_fault() {
+            self.device_terminal.record(fault);
+            if let Some(failure) = self.failure.upgrade() {
+                failure.storage_failed(fault);
+            }
+            result = Err(fault.into());
         }
-        let result = match result {
+        let mut result = match result {
             Ok(pixels) => attempt.commit(pixels).map_err(Into::into),
             Err(error) => Err(error),
         };
         let mut state = self.mapping();
-        state.active = false;
-        if let Ok(pixels) = &result {
-            state.pixels = Some(Arc::clone(pixels));
-        }
+        finish_mapping_cache(&self.device_terminal, &mut state, &mut result, || {});
         drop(state);
         self.mapped.notify_all();
         result
+    }
+}
+
+fn finish_mapping_cache(
+    terminal: &DeviceTerminal,
+    state: &mut MappingState,
+    result: &mut Result<Arc<CpuPixels>>,
+    after_assignment: impl FnOnce(),
+) {
+    state.active = false;
+    if let Some(fault) = terminal.fault() {
+        *result = Err(fault.into());
+        return;
+    }
+    if let Ok(pixels) = result {
+        state.pixels = Some(Arc::clone(pixels));
+        after_assignment();
+        if let Some(fault) = terminal.fault() {
+            state.pixels = None;
+            *result = Err(fault.into());
+        }
     }
 }
 
@@ -599,8 +651,12 @@ mod tests {
         DXGI_ERROR_SESSION_DISCONNECTED,
     };
 
-    use super::{DETACHED_TEXTURE_BUDGET, DeviceDomain, TexturePool, native_fault};
-    use mado_pilot_capture::CaptureFault;
+    use super::{
+        DETACHED_TEXTURE_BUDGET, DeviceDomain, DeviceTerminal, MappingState, TexturePool,
+        finish_mapping_cache, native_fault,
+    };
+    use mado_pilot_capture::{CaptureFault, CpuPixels};
+    use mado_pilot_core::Status;
 
     fn descriptor(width: u32, height: u32) -> D3D11_TEXTURE2D_DESC {
         D3D11_TEXTURE2D_DESC {
@@ -722,6 +778,29 @@ mod tests {
         assert_eq!(
             fault(DXGI_ERROR_SESSION_DISCONNECTED),
             CaptureFault::DisplayDisconnected
+        );
+    }
+
+    #[test]
+    fn device_terminal_cancels_a_cache_assignment_before_it_becomes_visible() {
+        let terminal = DeviceTerminal::default();
+        let mut state = MappingState {
+            active: true,
+            pixels: None,
+        };
+        let mut result = Ok(Arc::new(CpuPixels::new(
+            vec![1, 2, 3, 4].into_boxed_slice(),
+        )));
+        finish_mapping_cache(&terminal, &mut state, &mut result, || {
+            terminal.record(CaptureFault::DeviceRemoved);
+        });
+
+        assert_eq!(terminal.fault(), Some(CaptureFault::DeviceRemoved));
+        assert!(!state.active);
+        assert!(state.pixels.is_none());
+        assert_eq!(
+            result.expect_err("device terminal rejects cache").status(),
+            Status::CaptureFailed
         );
     }
 }

@@ -3,14 +3,22 @@
 
 use std::ffi::c_void;
 use std::mem;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::{ffi::OsString, path::Path};
 
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::Foundation::{FreeLibrary, HMODULE, HWND, POINT};
 use windows::Win32::Graphics::Dxgi::IDXGIDevice;
 use windows::Win32::Graphics::Gdi::HMONITOR;
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::System::LibraryLoader::{
+    GetModuleFileNameW, GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
+use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows::Win32::System::WinRT::RO_INIT_TYPE;
-use windows::core::{BOOL, Error, GUID, HRESULT, HSTRING, IInspectable, Interface, PCSTR, Type, w};
+use windows::core::{
+    BOOL, Error, GUID, HRESULT, HSTRING, IInspectable, Interface, PCSTR, PCWSTR, Type,
+};
 
 type GetDpiForWindowFn = unsafe extern "system" fn(HWND) -> u32;
 type GetDpiForMonitorFn = unsafe extern "system" fn(HMONITOR, i32, *mut u32, *mut u32) -> HRESULT;
@@ -170,37 +178,119 @@ fn create_direct3d_device_fn() -> Option<CreateDirect3D11DeviceFromDxgiDeviceFn>
 fn load_user32<T: Copy>(name: &'static [u8]) -> Option<T> {
     // SAFETY: this process-lifetime module reference is intentionally retained;
     // every requested symbol has a signature checked at its typed call site.
-    let module = unsafe { LoadLibraryW(w!("user32.dll")) }.ok()?;
+    let module = load_system_module("user32.dll")?;
     load_symbol(module, name)
 }
 
 fn load_shcore<T: Copy>(name: &'static [u8]) -> Option<T> {
     // SAFETY: see load_user32. Retaining the module keeps cached function
     // pointers valid for the process lifetime.
-    let module = unsafe { LoadLibraryW(w!("shcore.dll")) }.ok()?;
+    let module = load_system_module("shcore.dll")?;
     load_symbol(module, name)
 }
 
 fn load_combase<T: Copy>(name: &'static [u8]) -> Option<T> {
     // SAFETY: see load_user32.
-    let module = unsafe { LoadLibraryW(w!("combase.dll")) }.ok()?;
+    let module = load_system_module("combase.dll")?;
     load_symbol(module, name)
 }
 
 fn load_d3d11<T: Copy>(name: &'static [u8]) -> Option<T> {
     // SAFETY: see load_user32.
-    let module = unsafe { LoadLibraryW(w!("d3d11.dll")) }.ok()?;
+    let module = load_system_module("d3d11.dll")?;
     load_symbol(module, name)
 }
 
-fn load_symbol<T: Copy>(
-    module: windows::Win32::Foundation::HMODULE,
-    name: &'static [u8],
-) -> Option<T> {
+fn load_system_module(name: &str) -> Option<HMODULE> {
+    let path = system_directory()?.join(name);
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: wide is a NUL-terminated absolute path retained for the call. The
+    // search flag also confines this system module's dependent DLL resolution.
+    let module =
+        unsafe { LoadLibraryExW(PCWSTR(wide.as_ptr()), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+            .ok()?;
+    if module_is_in_system_directory(module) {
+        Some(module)
+    } else {
+        // SAFETY: module is the owned reference returned by LoadLibraryExW.
+        let _released = unsafe { FreeLibrary(module) };
+        None
+    }
+}
+
+fn module_is_in_system_directory(module: HMODULE) -> bool {
+    let Some(module_path) = module_path(module) else {
+        return false;
+    };
+    let Some(system_directory) = system_directory() else {
+        return false;
+    };
+    module_path
+        .parent()
+        .is_some_and(|parent| paths_equal_ignore_ascii_case(parent, system_directory))
+}
+
+fn module_path(module: HMODULE) -> Option<PathBuf> {
+    let mut buffer = vec![0u16; 260];
+    loop {
+        // SAFETY: buffer is writable and module is a live loader handle.
+        let written = unsafe { GetModuleFileNameW(Some(module), &mut buffer) };
+        let written = usize::try_from(written).ok()?;
+        if written == 0 {
+            return None;
+        }
+        if written < buffer.len() {
+            return Some(PathBuf::from(OsString::from_wide(&buffer[..written])));
+        }
+        buffer.resize(buffer.len().checked_mul(2)?, 0);
+    }
+}
+
+fn system_directory() -> Option<&'static PathBuf> {
+    static DIRECTORY: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIRECTORY.get_or_init(read_system_directory).as_ref()
+}
+
+fn read_system_directory() -> Option<PathBuf> {
+    let mut buffer = vec![0u16; 260];
+    loop {
+        // SAFETY: buffer is writable for its complete length.
+        let written = unsafe { GetSystemDirectoryW(Some(&mut buffer)) };
+        let written = usize::try_from(written).ok()?;
+        if written == 0 {
+            return None;
+        }
+        if written < buffer.len() {
+            return Some(PathBuf::from(OsString::from_wide(&buffer[..written])));
+        }
+        buffer.resize(written.checked_add(1)?, 0);
+    }
+}
+
+fn paths_equal_ignore_ascii_case(left: &Path, right: &Path) -> bool {
+    left.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+}
+
+fn load_symbol<T: Copy>(module: HMODULE, name: &'static [u8]) -> Option<T> {
     // SAFETY: name is NUL-terminated and module is a successfully loaded system
     // DLL. The typed wrappers above supply the matching ABI signature.
     let function = unsafe { GetProcAddress(module, PCSTR(name.as_ptr())) }?;
     // SAFETY: FARPROC and the requested system function pointer have the same
     // pointer representation on supported 64-bit Windows targets.
     Some(unsafe { mem::transmute_copy(&function) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_system_module, module_is_in_system_directory};
+
+    #[test]
+    fn optional_modules_resolve_only_from_the_system_directory() {
+        for name in ["user32.dll", "shcore.dll", "combase.dll", "d3d11.dll"] {
+            let module = load_system_module(name).expect("system module");
+            assert!(module_is_in_system_directory(module));
+        }
+    }
 }
