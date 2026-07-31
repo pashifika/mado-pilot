@@ -6,7 +6,7 @@
 //!
 //! The implementation is target-gated: on non-Windows targets this crate keeps
 //! an empty, documented seam and resolves no Windows dependency. Windows builds
-//! expose [`WindowsCaptureProvider`], which performs picker-free discovery and
+//! expose `WindowsCaptureProvider`, which performs picker-free discovery and
 //! creates free-threaded WGC sessions.
 //!
 //! # Ownership
