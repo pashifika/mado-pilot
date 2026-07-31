@@ -322,10 +322,81 @@ fn discovery_error(status: ShimStatus) -> mado_pilot_core::Error {
 #[cfg(test)]
 mod tests {
     use mado_pilot_core::{
-        CoordinateSpace, GeometryFault, GeometryRevision, PixelExtent, Point, TransformSnapshot,
+        CapabilitySupport, CoordinateSpace, GeometryFault, GeometryRevision, IdentityIssuer,
+        InputDelivery, InputOperationKind, PermissionKind, PixelExtent, Point, TargetKind,
+        TransformSnapshot,
     };
 
-    use super::{Fingerprint, MAX_SURFACE_EXTENT, NativeKey, placement_from_points, surface_for};
+    use super::{
+        Fingerprint, MAX_SURFACE_EXTENT, NativeKey, TargetMetadata, placement_from_points,
+        surface_for,
+    };
+
+    /// The metadata any described target is built from. The values are arbitrary;
+    /// what the description says about capability does not depend on them.
+    fn metadata() -> TargetMetadata {
+        let extent = PixelExtent::new(2560, 1600);
+        TargetMetadata {
+            name: "a target".to_owned(),
+            extent,
+            placement: placement_from_points((0.0, 0.0), (1280.0, 800.0), 2.0, extent)
+                .expect("a doubled backing scale covers the frame"),
+        }
+    }
+
+    #[test]
+    fn a_described_target_offers_capture_under_screen_recording_and_no_input_at_all() {
+        // The requirement this pins was rewritten during this Change to match the
+        // implementation, after the spec had asked for `CGEvent` system input that no
+        // code here provides. A requirement corrected toward the code and then left
+        // unpinned reverses quietly: adding a pair to `describe` — the natural edit
+        // when the macOS input Change lands and someone extends the capture provider
+        // instead of the input one — would otherwise fail nothing.
+        let issuer = IdentityIssuer::new();
+        let id = issuer
+            .issue_target(crate::provider::PROVIDER)
+            .expect("issued");
+
+        let description = metadata().describe(id, TargetKind::Window);
+        let capability = description.capability();
+
+        assert_eq!(capability.kind(), Some(TargetKind::Window));
+        assert_eq!(
+            capability.capture(),
+            CapabilitySupport::Supported,
+            "a discovered target is one this provider can capture"
+        );
+        assert_eq!(
+            capability.capture_permission(),
+            Some(PermissionKind::ScreenCapture),
+            "the authorization capture requires is named, so a caller can read it \
+             before opening anything"
+        );
+        assert!(
+            description
+                .coordinates()
+                .supports(CoordinateSpace::DesktopLogical),
+            "placement-bearing targets convert into the desktop plane"
+        );
+
+        // The scenario's own outcome: a caller asking about background delivery finds
+        // it unavailable, before opening anything or causing an input side effect.
+        // Asserted over every pair rather than the one a reader happens to think of,
+        // so no operation kind can acquire a delivery mechanism unnoticed.
+        let input = capability.input();
+        assert!(!input.is_available());
+        assert_eq!(input.permission(), None);
+        for kind in InputOperationKind::ALL {
+            for delivery in InputDelivery::ALL {
+                assert!(
+                    !input.supports(kind, delivery),
+                    "a capture-only provider claimed {} over {}",
+                    kind.as_str(),
+                    delivery.as_str()
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_retina_target_reports_two_capture_pixels_per_point() {
