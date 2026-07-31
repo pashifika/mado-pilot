@@ -39,6 +39,14 @@ const FRAME_WAIT: Duration = Duration::from_secs(5);
 /// How long a scenario collecting a run of frames waits for each one.
 const COLLECT_WAIT: Duration = Duration::from_millis(500);
 
+/// How long one window candidate is given to publish before the next is tried.
+///
+/// A producing window delivers its first frame within a stream start and a refresh
+/// interval, well inside this. The budget is deliberately much shorter than
+/// [`FRAME_WAIT`] because a scenario may work through several idle candidates before
+/// it finds a live one, and the full budget each time would dominate the suite.
+const LIVENESS_WAIT: Duration = Duration::from_secs(1);
+
 /// How far ahead of its delivery a frame's own time may legitimately sit.
 ///
 /// The producer reports a frame's *display* time, so a frame handed over before the
@@ -193,6 +201,57 @@ fn next_frame_within(
     session.frame(&request, &context)
 }
 
+/// Returns the first window matching `wanted` that actually publishes, with the frame
+/// it published and the session that published it.
+///
+/// The framework publishes on content change, so a window nobody is touching delivers
+/// nothing — not even a first frame, which is where a window differs from a display.
+/// A scenario whose subject is a *published frame* therefore has to establish that its
+/// candidate produces one, and move on to the next candidate when it does not. Taking
+/// only the first match turned an idle window into a failure of a property the run
+/// never got to test, which is how this scenario failed on a verification host whose
+/// left-hand display happened to hold nothing that was redrawing.
+///
+/// A candidate that fails rather than going quiet still fails the scenario: only a
+/// budget that expires is read as idleness.
+fn producing_window(
+    scenario: &str,
+    candidates: &[Candidate],
+    wanted: impl Fn(&Candidate) -> bool,
+) -> Option<(Harness, Arc<NativeSession>, Frame)> {
+    let mut considered = 0u32;
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| candidate.key.kind() == TargetKind::Window && wanted(candidate))
+    {
+        considered += 1;
+        let harness = Harness::from_candidate(candidate);
+        // A window discovered a moment ago may have closed or resized since, and the
+        // Adapter is required to say so rather than capture something else.
+        let Ok(session) = harness.open(0) else {
+            continue;
+        };
+        match next_frame_within(&session, FrameRequest::latest(), LIVENESS_WAIT) {
+            Ok(frame) => return Some((harness, session, frame)),
+            Err(error) if error.status() == Status::CaptureFailed => {
+                panic!("a window session failed rather than going quiet: {error}")
+            }
+            Err(_) => {
+                let _closed = close(&session);
+            }
+        }
+    }
+    if considered == 0 {
+        println!("noted {scenario}: this host reports no window matching the scenario");
+    } else {
+        println!(
+            "noted {scenario}: none of the {considered} matching window(s) published \
+             within the budget, so every one of them is idle"
+        );
+    }
+    None
+}
+
 fn close(session: &NativeSession) -> mado_pilot_core::Result<()> {
     let context = OperationContext::new()
         .with_timeout(Duration::from_secs(10))
@@ -321,27 +380,13 @@ fn successive_frames_carry_advancing_times_in_the_engine_clock_domain() {
 #[test]
 fn a_window_session_publishes_frames_whose_own_geometry_places_them() {
     let _serial = serialized();
-    let Some(harness) = Harness::acquire_kind("window publication", TargetKind::Window) else {
+    let Some(candidates) = discovered("window publication") else {
         return;
     };
-    let session = match harness.open(0) {
-        Ok(session) => session,
-        // A window discovered a moment ago may have closed or resized since, and
-        // the Adapter is required to say so rather than capture something else.
-        Err(error) if error.status() == Status::TargetLost => {
-            println!("noted: the chosen window was lost between discovery and open");
-            return;
-        }
-        Err(error) => panic!("a discovered window failed to open: {error}"),
-    };
-
-    let frame = match next_frame(&session, FrameRequest::latest()) {
-        Ok(frame) => frame,
-        Err(error) if error.status() == Status::TargetLost => {
-            println!("noted: the chosen window was lost while waiting for a frame");
-            return;
-        }
-        Err(error) => panic!("a window session published nothing: {error}"),
+    let Some((_harness, session, frame)) =
+        producing_window("window publication", &candidates, |_| true)
+    else {
+        return;
     };
 
     // Asserted against the frame's own transform rather than the discovery
@@ -594,37 +639,15 @@ fn a_window_left_of_the_main_display_reports_signed_desktop_coordinates() {
     let Some(candidates) = discovered("signed window placement") else {
         return;
     };
-    let Some(window) = candidates.iter().find(|candidate| {
-        candidate.key.kind() == TargetKind::Window && {
+    let Some((harness, session, frame)) =
+        producing_window("signed window placement", &candidates, |candidate| {
             let (x, y) = candidate.metadata.placement.desktop_origin();
             x < 0.0 || y < 0.0
-        }
-    }) else {
-        println!(
-            "noted: no window currently sits above or left of the main display, \
-             so a signed window origin is not exercised"
-        );
+        })
+    else {
         return;
     };
-
-    let expected = window.metadata.placement.desktop_origin();
-    let harness = Harness::from_candidate(window);
-    let session = match harness.open(0) {
-        Ok(session) => session,
-        Err(error) if error.status() == Status::TargetLost => {
-            println!("noted: the chosen window was lost between discovery and open");
-            return;
-        }
-        Err(error) => panic!("a discovered window failed to open: {error}"),
-    };
-    let frame = match next_frame(&session, FrameRequest::latest()) {
-        Ok(frame) => frame,
-        Err(error) if error.status() == Status::TargetLost => {
-            println!("noted: the chosen window was lost while waiting for a frame");
-            return;
-        }
-        Err(error) => panic!("a window session published nothing: {error}"),
-    };
+    let expected = harness.metadata.placement.desktop_origin();
 
     let origin = frame
         .transform()

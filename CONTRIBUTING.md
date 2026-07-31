@@ -57,6 +57,15 @@ Recording to the terminal or editor that launches `cargo test`, under System Set
 ▸ Privacy & Security ▸ Screen & System Audio Recording, and restart it so the new
 grant applies.
 
+A runner reaches that skip rather than a crash for a reason worth knowing, because the
+alternative is not a failure but an abort. The capture framework's shareable-content
+query aborts, rather than returning a status, in a process holding no Core Graphics
+window-server connection — and an abort is not an exception, so no handler contains
+it. Both shim entry points that would reach that query return the non-prompting
+authorization refusal first, so the query is unreachable without the grant, and a grant
+implies the session the connection comes from. Keep that order if either entry point is
+edited: the preflight is what stands between an unauthorized host and an abort.
+
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
 Capture, Direct3D 11, and DXGI, and needs no NuGet package, Windows App SDK,
@@ -102,7 +111,39 @@ cargo deny --locked check
 #    consumer project. Only run natively on a release target.
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+
+# 9. macOS host only: the macOS adapter as the *other* release target sees it.
+#    Step 3 above cannot reach that configuration here, because on this host the
+#    macOS adapter compiles under its own target.
+cargo clippy --locked --target x86_64-pc-windows-msvc \
+  -p mado-pilot-platform-macos --all-targets -- -D warnings
 ```
+
+Both platform adapters are workspace members on both targets, so step 3 lints each of
+them with the *other* platform's code compiled away — which is a configuration neither
+adapter's own host ever produces. The coverage is asymmetric, and step 9 is what closes
+the half a macOS host would otherwise leave to a continuous-integration job:
+
+- a **macOS** host's step 3 lints the Windows adapter gated away, and step 9 adds the
+  macOS adapter gated away;
+- a **Windows** host's step 3 lints the macOS adapter gated away, so it needs no step 9.
+  The mirrored command does not exist: targeting `aarch64-apple-darwin` from Windows
+  would run the shim's build script, which needs a macOS toolchain.
+
+The failure this reaches is never in the gated code. A crate-level `#![cfg(…)]` strips
+the whole file, and when the crate's `//!` documentation sits inside what is stripped,
+the crate root is left undocumented and `missing_docs` fails the lint. Every
+target-gated test file in both adapters therefore opens with the guard before the gate:
+
+```rust
+#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
+#![cfg(target_os = "macos")]
+//! …
+```
+
+Keep it there. Without it a file passes only while its documentation happens to sit
+above the gate — an ordering no reader can be expected to preserve, and one that has
+already broken a continuous-integration job once for each adapter.
 
 Step 4 needs one thing of a Windows host: the privilege to create a symbolic
 link. Two tests in `mado-pilot-adapter-replay` prove that a linked path component

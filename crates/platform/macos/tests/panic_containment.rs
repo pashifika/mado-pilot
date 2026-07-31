@@ -1,3 +1,5 @@
+#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
+#![cfg(target_os = "macos")]
 //! Asserts why the callback trampolines contain their own panics.
 //!
 //! ADR 0012 measured that an unguarded Rust panic at the callback boundary stops
@@ -5,8 +7,6 @@
 //! of the call. The contained form is asserted in the package's own unit tests; the
 //! unguarded form cannot be asserted in-process, because observing it ends the
 //! process observing it. This test runs it in a child.
-
-#![cfg(target_os = "macos")]
 
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;

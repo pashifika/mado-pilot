@@ -1,3 +1,5 @@
+#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
+#![cfg(target_os = "macos")]
 //! Asserts that nothing newer than the deployment minimum is linked eagerly.
 //!
 //! ADR 0012 requires that a capability newer than the declared minimum macOS
@@ -12,8 +14,6 @@
 //! What this cannot do is exercise the unsupported host itself. The framework is
 //! present here, and no host without it is available to this repository's
 //! verification; that limit is recorded rather than glossed.
-
-#![cfg(target_os = "macos")]
 
 use std::process::Command;
 

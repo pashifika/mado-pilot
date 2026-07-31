@@ -1,3 +1,5 @@
+#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
+#![cfg(target_os = "macos")]
 //! Opt-in probe for a window moving between displays inside one live stream.
 //!
 //! This is the one case in the macOS capture Change that no automated run can
@@ -27,8 +29,6 @@
 //!
 //! Everything here goes through the public provider surface, so the probe measures
 //! what a caller would see rather than adapter internals.
-
-#![cfg(target_os = "macos")]
 
 use std::fmt;
 use std::sync::Arc;
