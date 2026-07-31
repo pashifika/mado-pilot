@@ -5,14 +5,22 @@ use std::sync::OnceLock;
 
 use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::Result;
-use windows::Graphics::Capture::{GraphicsCaptureItem, GraphicsCaptureSession};
-use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
-use windows::Win32::System::Com::CoIncrementMTAUsage;
-use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::System::WinRT::{
-    RO_INIT_MULTITHREADED, RoGetActivationFactory, RoInitialize, RoUninitialize,
+use windows::Graphics::Capture::{
+    Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession,
+    IDirect3D11CaptureFramePoolStatics2, IGraphicsCaptureSessionStatics,
 };
-use windows::core::{HSTRING, RuntimeName};
+use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
+use windows::Graphics::DirectX::DirectXPixelFormat;
+use windows::Graphics::SizeInt32;
+use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::Win32::System::WinRT::RO_INIT_MULTITHREADED;
+use windows::core::{Interface, RuntimeName, Type};
+
+use crate::optional_api::{
+    activation_factory, geometry_api_available, increment_mta_usage, initialize_winrt,
+    uninitialize_winrt, winrt_loader_available,
+};
 
 thread_local! {
     /// WinRT initialization belongs to a thread, not a provider. This value
@@ -34,13 +42,13 @@ struct Apartment {
 impl Apartment {
     fn initialize() -> Self {
         // SAFETY: this initializer runs once per thread.
-        let state = match unsafe { RoInitialize(RO_INIT_MULTITHREADED) } {
-            Ok(()) => ApartmentState::Owned,
-            Err(error) if error.code() == RPC_E_CHANGED_MODE => {
+        let state = match initialize_winrt(RO_INIT_MULTITHREADED) {
+            Some(result) if result.is_ok() => ApartmentState::Owned,
+            Some(result) if result == RPC_E_CHANGED_MODE => {
                 // The caller already initialized another COM apartment.
                 ApartmentState::Borrowed
             }
-            Err(_) => ApartmentState::Failed,
+            _ => ApartmentState::Failed,
         };
         Self { state }
     }
@@ -52,7 +60,7 @@ impl Drop for Apartment {
             // SAFETY: this thread successfully paired RoInitialize with this
             // guard, which is dropped on the same thread. The process-wide MTA
             // usage below keeps windows-rs factory caches valid independently.
-            unsafe { RoUninitialize() };
+            uninitialize_winrt();
         }
     }
 }
@@ -63,7 +71,27 @@ impl Drop for Apartment {
 /// reported as a typed unsupported capture outcome at operation time.
 pub(crate) fn ensure_capture_available() -> Result<()> {
     ensure_winrt_apartment()?;
-    if !GraphicsCaptureSession::IsSupported().map_err(|_| CaptureFault::UnsupportedOption)? {
+    if !winrt_loader_available() {
+        return Err(CaptureFault::UnsupportedOption.into());
+    }
+    let session_factory: IGraphicsCaptureSessionStatics =
+        activation_factory(GraphicsCaptureSession::NAME)
+            .map_err(|_| CaptureFault::UnsupportedOption)?;
+    let mut supported = false;
+    // SAFETY: supported is writable and session_factory is the documented
+    // activation factory interface for GraphicsCaptureSession.
+    unsafe {
+        (Interface::vtable(&session_factory).IsSupported)(
+            Interface::as_raw(&session_factory),
+            &raw mut supported,
+        )
+    }
+    .ok()
+    .map_err(|_| CaptureFault::UnsupportedOption)?;
+    if !supported {
+        return Err(CaptureFault::UnsupportedOption.into());
+    }
+    if !geometry_api_available() {
         return Err(CaptureFault::UnsupportedOption.into());
     }
 
@@ -75,15 +103,37 @@ pub(crate) fn ensure_capture_available() -> Result<()> {
 /// calling thread's WinRT apartment.
 pub(crate) fn capture_item_factory() -> Result<IGraphicsCaptureItemInterop> {
     ensure_winrt_apartment()?;
-    let class_name = HSTRING::from(GraphicsCaptureItem::NAME);
-    // SAFETY: the requested interface is the documented desktop interop factory
-    // for GraphicsCaptureItem. Failure is kept at the operation boundary.
-    let factory: windows::core::Result<IGraphicsCaptureItemInterop> =
-        unsafe { RoGetActivationFactory(&class_name) };
-    factory.map_err(|_| CaptureFault::UnsupportedOption.into())
+    activation_factory(GraphicsCaptureItem::NAME)
+        .map_err(|_| CaptureFault::UnsupportedOption.into())
 }
 
-fn ensure_winrt_apartment() -> Result<()> {
+pub(crate) fn create_free_threaded_frame_pool(
+    device: &IDirect3DDevice,
+    pixel_format: DirectXPixelFormat,
+    buffers: i32,
+    size: SizeInt32,
+) -> windows::core::Result<Direct3D11CaptureFramePool> {
+    let factory: IDirect3D11CaptureFramePoolStatics2 =
+        activation_factory(Direct3D11CaptureFramePool::NAME)?;
+    let mut frame_pool = std::ptr::null_mut();
+    // SAFETY: device is a live WinRT D3D device, frame_pool is writable, and the
+    // remaining values are validated by WGC.
+    unsafe {
+        (Interface::vtable(&factory).CreateFreeThreaded)(
+            Interface::as_raw(&factory),
+            Interface::as_raw(device),
+            pixel_format,
+            buffers,
+            size,
+            &raw mut frame_pool,
+        )
+    }
+    .ok()?;
+    // SAFETY: a successful factory call returned one owned frame-pool reference.
+    unsafe { Type::from_abi(frame_pool) }
+}
+
+pub(crate) fn ensure_winrt_apartment() -> Result<()> {
     static PROCESS_MTA: OnceLock<bool> = OnceLock::new();
     let process_mta = *PROCESS_MTA.get_or_init(|| {
         // SAFETY: the returned opaque usage token is intentionally held by the
@@ -91,7 +141,7 @@ fn ensure_winrt_apartment() -> Result<()> {
         // factory caches backed by an MTA even when a short-lived calling thread
         // exits; the operating system releases the process-scoped reference at
         // process teardown.
-        unsafe { CoIncrementMTAUsage() }.is_ok()
+        increment_mta_usage()
     });
     if !process_mta {
         return Err(CaptureFault::UnsupportedOption.into());

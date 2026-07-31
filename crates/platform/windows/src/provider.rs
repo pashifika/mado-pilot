@@ -9,11 +9,14 @@ use mado_pilot_capture::{
     CaptureFault, CaptureProvider, CaptureSession, OpenRequest, PixelFormat, TargetDescription,
 };
 use mado_pilot_core::{IdentityIssuer, Operation, OperationContext, ProviderId, Result, TargetId};
+use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::GraphicsCaptureItem;
+use windows::core::IInspectable;
 
 use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
 use crate::native::NativeSession;
+use crate::storage::native_fault;
 
 /// Provider name qualifying every native Windows target identity.
 pub const PROVIDER: ProviderId = ProviderId::new("windows");
@@ -30,8 +33,14 @@ pub struct WindowsCaptureProvider {
 
 #[derive(Debug, Default)]
 struct Registry {
-    records: HashMap<TargetId, Arc<TargetRecord>>,
+    records: HashMap<TargetId, TargetState>,
     current: HashMap<NativeKey, TargetId>,
+}
+
+#[derive(Debug)]
+enum TargetState {
+    Live(Arc<TargetRecord>),
+    Lost,
 }
 
 struct TargetRecord {
@@ -41,6 +50,7 @@ struct TargetRecord {
     metadata: Mutex<TargetMetadata>,
     item: GraphicsCaptureItem,
     lost: Arc<AtomicBool>,
+    _closed_token: i64,
 }
 
 impl WindowsCaptureProvider {
@@ -60,11 +70,10 @@ impl WindowsCaptureProvider {
 
         for candidate in candidates {
             seen.insert(candidate.key);
-            let existing = registry
-                .current
-                .get(&candidate.key)
-                .and_then(|id| registry.records.get(id))
-                .cloned();
+            let existing_id = registry.current.get(&candidate.key).copied();
+            let existing = existing_id
+                .and_then(|id| registry.records.get(&id))
+                .and_then(TargetState::live);
             let record = if let Some(record) = existing.as_ref()
                 && same_incarnation(
                     record.lost.load(Ordering::Acquire),
@@ -77,9 +86,14 @@ impl WindowsCaptureProvider {
                 if let Some(existing) = existing {
                     existing.lost.store(true, Ordering::Release);
                 }
+                if let Some(existing_id) = existing_id {
+                    registry.records.insert(existing_id, TargetState::Lost);
+                }
                 let record = self.create_record(candidate)?;
                 registry.current.insert(record.key, record.id);
-                registry.records.insert(record.id, Arc::clone(&record));
+                registry
+                    .records
+                    .insert(record.id, TargetState::Live(Arc::clone(&record)));
                 record
             };
             descriptions.push(record.description());
@@ -92,10 +106,11 @@ impl WindowsCaptureProvider {
             .filter(|key| !seen.contains(key))
             .collect();
         for key in missing {
-            if let Some(id) = registry.current.remove(&key)
-                && let Some(record) = registry.records.get(&id)
-            {
-                record.lost.store(true, Ordering::Release);
+            if let Some(id) = registry.current.remove(&key) {
+                if let Some(TargetState::Live(record)) = registry.records.get(&id) {
+                    record.lost.store(true, Ordering::Release);
+                }
+                registry.records.insert(id, TargetState::Lost);
             }
         }
         Ok(descriptions)
@@ -104,6 +119,16 @@ impl WindowsCaptureProvider {
     fn create_record(&self, candidate: Candidate) -> Result<Arc<TargetRecord>> {
         let id = self.issuer.issue_target(PROVIDER)?;
         let lost = Arc::new(AtomicBool::new(false));
+        let closed_lost = Arc::clone(&lost);
+        let closed_handler =
+            TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(move |_, _| {
+                closed_lost.store(true, Ordering::Release);
+                Ok(())
+            });
+        let closed_token = candidate
+            .item
+            .Closed(&closed_handler)
+            .map_err(native_fault)?;
         Ok(Arc::new(TargetRecord {
             id,
             key: candidate.key,
@@ -111,6 +136,7 @@ impl WindowsCaptureProvider {
             metadata: Mutex::new(candidate.metadata),
             item: candidate.item,
             lost,
+            _closed_token: closed_token,
         }))
     }
 
@@ -188,7 +214,11 @@ impl CaptureProvider for WindowsCaptureProvider {
             .registry()
             .records
             .get(&target)
-            .cloned()
+            .map(|record| match record {
+                TargetState::Live(record) => Ok(Arc::clone(record)),
+                TargetState::Lost => Err(CaptureFault::TargetLost),
+            })
+            .transpose()?
             .ok_or(CaptureFault::UnknownTarget)?;
         let metadata = self.validate_current(&record)?;
         let stream = self.issuer.issue_stream()?;
@@ -206,6 +236,15 @@ impl CaptureProvider for WindowsCaptureProvider {
 
 fn same_incarnation(lost: bool, existing: &Fingerprint, candidate: &Fingerprint) -> bool {
     !lost && existing == candidate
+}
+
+impl TargetState {
+    fn live(&self) -> Option<Arc<TargetRecord>> {
+        match self {
+            Self::Live(record) => Some(Arc::clone(record)),
+            Self::Lost => None,
+        }
+    }
 }
 
 impl TargetRecord {
@@ -256,20 +295,16 @@ mod tests {
                 &OperationContext::new(),
             )
             .expect_err("foreign");
-        // An unavailable host may win before identity admission because runtime
-        // availability is checked at the operation boundary. A supported host
-        // must reach the foreign-target result.
-        assert!(matches!(
-            error.status(),
-            Status::InvalidArgument | Status::Unsupported
-        ));
+        assert_eq!(error.status(), Status::InvalidArgument);
     }
 
     #[test]
     fn discovery_is_deterministic_when_wgc_is_available() {
         let provider = WindowsCaptureProvider::new(Arc::new(IdentityIssuer::new()));
-        let Ok(first) = provider.discover(&OperationContext::new()) else {
-            return;
+        let first = match provider.discover(&OperationContext::new()) {
+            Ok(first) => first,
+            Err(error) if error.status() == Status::Unsupported => return,
+            Err(error) => panic!("discovery failed on a supported host: {error}"),
         };
         let second = provider
             .discover(&OperationContext::new())

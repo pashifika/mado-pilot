@@ -11,19 +11,21 @@ use mado_pilot_core::{
 };
 use windows::Graphics::Capture::GraphicsCaptureItem;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
-use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+use windows::Win32::Graphics::Dwm::{
+    DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
+};
 use windows::Win32::Graphics::Gdi::{
     ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-    IsWindow, IsWindowVisible,
+    EnumWindows, GetClassNameW, GetClientRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindow, IsWindowVisible,
 };
 use windows::core::BOOL;
 
 use crate::availability::capture_item_factory;
+use crate::optional_api::{logical_to_physical, monitor_scale, window_dpi};
 
 const DEFAULT_DPI: u32 = 96;
 const MAX_CLASS_NAME: usize = 256;
@@ -317,14 +319,66 @@ fn window_class(hwnd: HWND) -> String {
 }
 
 fn window_placement(hwnd: HWND, extent: PixelExtent) -> Option<TargetPlacement> {
-    let mut origin = POINT::default();
-    // SAFETY: origin is writable and hwnd is from the current enumeration.
-    if !unsafe { ClientToScreen(hwnd, &raw mut origin) }.as_bool() {
+    let mut client = RECT::default();
+    // SAFETY: client is writable and hwnd is from the current enumeration.
+    if unsafe { GetClientRect(hwnd, &raw mut client) }.is_err() {
         return None;
     }
-    // SAFETY: hwnd is from the current enumeration. Zero means unavailable.
-    let dpi = unsafe { GetDpiForWindow(hwnd) };
-    placement(origin.x, origin.y, extent, dpi, dpi).ok()
+    let logical_width = client.right.checked_sub(client.left)?;
+    let logical_height = client.bottom.checked_sub(client.top)?;
+    if logical_width <= 0 || logical_height <= 0 {
+        return None;
+    }
+
+    let mut client_origin = POINT::default();
+    let mut client_far = POINT {
+        x: logical_width,
+        y: logical_height,
+    };
+    // SAFETY: client_origin is writable and hwnd is a current window.
+    let origin_converted = unsafe { ClientToScreen(hwnd, &raw mut client_origin) }.as_bool();
+    // SAFETY: client_far is writable and hwnd is a current window.
+    let far_converted = unsafe { ClientToScreen(hwnd, &raw mut client_far) }.as_bool();
+    if !origin_converted || !far_converted {
+        return None;
+    }
+    let converted =
+        logical_to_physical(hwnd, &mut client_origin) && logical_to_physical(hwnd, &mut client_far);
+    let scale = if converted {
+        let physical_width = client_far.x.checked_sub(client_origin.x)?;
+        let physical_height = client_far.y.checked_sub(client_origin.y)?;
+        if physical_width <= 0 || physical_height <= 0 {
+            return None;
+        }
+        Scale::new(
+            f64::from(physical_width) / f64::from(logical_width),
+            f64::from(physical_height) / f64::from(logical_height),
+        )
+        .ok()?
+    } else {
+        let dpi = window_dpi(hwnd).unwrap_or(DEFAULT_DPI);
+        let scale = f64::from(dpi) / f64::from(DEFAULT_DPI);
+        Scale::new(scale, scale).ok()?
+    };
+
+    let mut bounds = RECT::default();
+    // DWM extended-frame bounds are physical and are not DPI-virtualized. WGC
+    // captures that visible surface, so this origin avoids the client area's
+    // title-bar offset.
+    // SAFETY: bounds points to a complete RECT and hwnd is current.
+    let physical_origin = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            (&raw mut bounds).cast::<c_void>(),
+            u32::try_from(size_of::<RECT>()).expect("RECT size fits u32"),
+        )
+    }
+    .map_or(client_origin, |()| POINT {
+        x: bounds.left,
+        y: bounds.top,
+    });
+    placement_with_scale(physical_origin.x, physical_origin.y, extent, scale).ok()
 }
 
 fn monitor_metadata(monitor: HMONITOR) -> Option<(String, RECT)> {
@@ -349,30 +403,18 @@ fn monitor_placement(
     bounds: RECT,
     extent: PixelExtent,
 ) -> Result<TargetPlacement> {
-    let mut dpi_x = DEFAULT_DPI;
-    let mut dpi_y = DEFAULT_DPI;
-    // SAFETY: outputs are valid local u32 values and monitor came from the
-    // current enumeration. Older hosts may reject the optional DPI query; the
-    // documented 96-DPI fallback keeps the target usable without an eager load.
-    let _dpi =
-        unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y) };
-    placement(bounds.left, bounds.top, extent, dpi_x, dpi_y)
+    let scale = monitor_scale(monitor).ok_or(CaptureFault::UnsupportedOption)?;
+    let scale = Scale::new(scale, scale).map_err(|_| CaptureFault::SourceInvalid)?;
+    placement_with_scale(bounds.left, bounds.top, extent, scale)
         .map_err(|_| CaptureFault::SourceInvalid.into())
 }
 
-fn placement(
+fn placement_with_scale(
     physical_x: i32,
     physical_y: i32,
     extent: PixelExtent,
-    dpi_x: u32,
-    dpi_y: u32,
+    scale: Scale,
 ) -> std::result::Result<TargetPlacement, mado_pilot_core::GeometryFault> {
-    let dpi_x = if dpi_x == 0 { DEFAULT_DPI } else { dpi_x };
-    let dpi_y = if dpi_y == 0 { DEFAULT_DPI } else { dpi_y };
-    let scale = Scale::new(
-        f64::from(dpi_x) / f64::from(DEFAULT_DPI),
-        f64::from(dpi_y) / f64::from(DEFAULT_DPI),
-    )?;
     TargetPlacement::new(
         (
             f64::from(physical_x) / scale.x(),
@@ -395,15 +437,17 @@ fn positive_extent(width: i32, height: i32) -> Option<PixelExtent> {
 
 #[cfg(test)]
 mod tests {
-    use super::{placement, positive_extent};
+    use super::{placement_with_scale, positive_extent};
     use mado_pilot_core::{
-        CoordinateSpace, GeometryRevision, PixelExtent, Point, TransformSnapshot,
+        CoordinateSpace, GeometryRevision, PixelExtent, Point, Scale, TransformSnapshot,
     };
 
     #[test]
     fn signed_mixed_dpi_placement_is_frame_authoritative() {
         let extent = PixelExtent::new(1920, 1080);
-        let placement = placement(-1920, -120, extent, 144, 144).expect("valid");
+        let placement =
+            placement_with_scale(-1920, -120, extent, Scale::new(1.5, 1.5).expect("scale"))
+                .expect("valid");
         let snapshot = TransformSnapshot::with_target(GeometryRevision::FIRST, extent, placement)
             .expect("placement covers the frame");
         let frame_origin = Point::new(CoordinateSpace::CapturePixels, 0.0, 0.0).expect("valid");

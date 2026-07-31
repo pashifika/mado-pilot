@@ -2,7 +2,9 @@
 
 use std::fmt;
 use std::num::NonZeroU32;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
 use std::thread;
 use std::time::Duration;
 
@@ -11,8 +13,8 @@ use mado_pilot_capture::{
     QueuePolicy, SessionDescription, StoragePublication, StreamState,
 };
 use mado_pilot_core::{
-    Clock, Operation, OperationContext, PixelExtent, Result, StreamId, SystemClock, TargetId,
-    TargetPlacement,
+    Clock, MonotonicInstant, Operation, OperationContext, PixelExtent, Result, StreamId,
+    SystemClock, TargetId, TargetPlacement,
 };
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
@@ -21,18 +23,19 @@ use windows::Graphics::Capture::{
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Graphics::SizeInt32;
 use windows::Win32::Graphics::Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Texture2D};
+use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::WinRT::Direct3D11::IDirect3DDxgiInterfaceAccess;
 use windows::core::{IInspectable, Interface};
 
+use crate::availability::{create_free_threaded_frame_pool, ensure_winrt_apartment};
 use crate::discovery::{NativeKey, TargetMetadata, current_placement};
 use crate::storage::{
-    DETACHED_TEXTURE_BUDGET, DeviceDomain, TexturePool, WindowsFrameStorage,
+    DETACHED_TEXTURE_BUDGET, DeviceDomain, StorageFailureSink, TexturePool, WindowsFrameStorage,
     descriptor_from_native, native_fault,
 };
 
 const WGC_PRODUCER_POOL_SIZE: i32 = 2;
 const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(2);
-const NATIVE_RELEASE_QUIESCENCE: Duration = Duration::from_millis(5);
 
 pub(crate) struct NativeSession {
     description: SessionDescription,
@@ -44,7 +47,9 @@ pub(crate) struct NativeSession {
 struct RuntimeState {
     resources: Option<NativeResources>,
     handlers_removed: bool,
-    native_closed: bool,
+    close_task: Option<Receiver<Option<CaptureFault>>>,
+    close_result: Option<Option<CaptureFault>>,
+    close_fault_reported: bool,
 }
 
 struct NativeResources {
@@ -62,6 +67,8 @@ struct SessionCore {
     domain: Arc<DeviceDomain>,
     textures: Arc<TexturePool>,
     callbacks: Arc<CallbackControl>,
+    native_ended: AtomicBool,
+    failure: OnceLock<Weak<dyn StorageFailureSink>>,
     transition: Mutex<TransitionState>,
 }
 
@@ -70,6 +77,10 @@ struct TransitionState {
     extent: PixelExtent,
     placement: TargetPlacement,
     pending_discontinuity: bool,
+    pending_geometry_change: bool,
+    movement_not_before: Option<i64>,
+    clock_anchor: Option<(i64, MonotonicInstant)>,
+    published: bool,
 }
 
 impl NativeSession {
@@ -90,17 +101,27 @@ impl NativeSession {
             state: StreamState::with_target_extent(stream),
             domain,
             textures,
-            callbacks,
+            callbacks: Arc::clone(&callbacks),
+            native_ended: AtomicBool::new(false),
+            failure: OnceLock::new(),
             transition: Mutex::new(TransitionState {
                 extent: metadata.extent,
                 placement: metadata.placement,
                 pending_discontinuity: false,
+                pending_geometry_change: false,
+                movement_not_before: None,
+                clock_anchor: None,
+                published: false,
             }),
         });
+        let failure: Arc<dyn StorageFailureSink> = core.clone();
+        core.failure
+            .set(Arc::downgrade(&failure))
+            .expect("failure sink initializes once");
 
         let size = native_size(metadata.extent)?;
         let winrt_device = core.domain.winrt_device()?;
-        let frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+        let frame_pool = create_free_threaded_frame_pool(
             &winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
             WGC_PRODUCER_POOL_SIZE,
@@ -112,12 +133,13 @@ impl NativeSession {
             .map_err(native_fault)?;
 
         let frame_weak = Arc::downgrade(&core);
+        let frame_callbacks = Arc::clone(&callbacks);
         let frame_handler =
             TypedEventHandler::<Direct3D11CaptureFramePool, IInspectable>::new(move |sender, _| {
-                let Some(core) = frame_weak.upgrade() else {
+                let Some(_lease) = frame_callbacks.admit() else {
                     return Ok(());
                 };
-                let Some(_lease) = core.callbacks.admit() else {
+                let Some(core) = frame_weak.upgrade() else {
                     return Ok(());
                 };
                 if let Some(sender) = sender.as_ref() {
@@ -130,12 +152,15 @@ impl NativeSession {
             .map_err(native_fault)?;
 
         let closed_weak = Arc::downgrade(&core);
+        let closed_callbacks = Arc::clone(&callbacks);
         let closed_handler =
             TypedEventHandler::<GraphicsCaptureItem, IInspectable>::new(move |_, _| {
-                if let Some(core) = closed_weak.upgrade()
-                    && let Some(_lease) = core.callbacks.admit()
-                {
+                let Some(_lease) = closed_callbacks.admit() else {
+                    return Ok(());
+                };
+                if let Some(core) = closed_weak.upgrade() {
                     core.callbacks.stop_admission();
+                    core.native_ended.store(true, Ordering::Release);
                     let fault = match core.target_kind {
                         mado_pilot_core::TargetKind::Window => CaptureFault::CaptureItemClosed,
                         mado_pilot_core::TargetKind::Display => CaptureFault::DisplayDisconnected,
@@ -176,7 +201,9 @@ impl NativeSession {
                     closed_token,
                 }),
                 handlers_removed: false,
-                native_closed: false,
+                close_task: None,
+                close_result: None,
+                close_fault_reported: false,
             }),
             close_gate: Mutex::new(()),
         });
@@ -222,53 +249,109 @@ impl NativeSession {
         }
     }
 
-    fn close_native(&self) -> Result<()> {
-        let capture_already_ended = self.core.state.terminal().is_some();
-        let resources = {
-            let mut runtime = self.runtime();
-            if runtime.native_closed {
+    fn start_native_close(&self, drain_callbacks: bool) {
+        let mut runtime = self.runtime();
+        if runtime.close_task.is_some() || runtime.close_result.is_some() {
+            return;
+        }
+        let Some(resources) = runtime.resources.take() else {
+            runtime.close_result = Some(None);
+            return;
+        };
+        let remove_handlers = !runtime.handlers_removed;
+        runtime.handlers_removed = true;
+        let (complete, result) = mpsc::channel();
+        runtime.close_task = Some(result);
+        let capture_already_ended = self.core.native_ended.load(Ordering::Acquire);
+        let callbacks = Arc::clone(&self.core.callbacks);
+        thread::spawn(move || {
+            let apartment = ensure_winrt_apartment().map_err(|_| CaptureFault::UnsupportedOption);
+            if apartment.is_ok() && remove_handlers {
+                let _frame = resources
+                    .frame_pool
+                    .RemoveFrameArrived(resources.frame_token);
+                let _closed = resources.item.RemoveClosed(resources.closed_token);
+            }
+            if drain_callbacks {
+                callbacks.drain_uninterruptible();
+            }
+            let fault = apartment
+                .and_then(|()| close_native_resources(resources, capture_already_ended))
+                .err();
+            let _sent = complete.send(fault);
+        });
+    }
+
+    fn close_native(&self, operation: &OperationContext) -> Result<()> {
+        self.start_native_close(false);
+        let mut attempt = Operation::admit(operation)?;
+        loop {
+            let result = {
+                let mut runtime = self.runtime();
+                if let Some(result) = runtime.close_result {
+                    Some(result)
+                } else if let Some(task) = runtime.close_task.as_ref() {
+                    match task.try_recv() {
+                        Ok(result) => {
+                            runtime.close_task = None;
+                            runtime.close_result = Some(result);
+                            Some(result)
+                        }
+                        Err(TryRecvError::Empty) => None,
+                        Err(TryRecvError::Disconnected) => {
+                            runtime.close_task = None;
+                            let result = Some(CaptureFault::SourceInvalid);
+                            runtime.close_result = Some(result);
+                            Some(result)
+                        }
+                    }
+                } else {
+                    runtime.close_result = Some(None);
+                    Some(None)
+                }
+            };
+            if let Some(result) = result {
+                attempt.commit(())?;
+                if let Some(fault) = result {
+                    let mut runtime = self.runtime();
+                    if !runtime.close_fault_reported {
+                        runtime.close_fault_reported = true;
+                        return Err(fault.into());
+                    }
+                }
                 return Ok(());
             }
-            runtime.native_closed = true;
-            runtime.resources.take()
-        };
-        if let Some(resources) = resources {
-            let NativeResources {
-                item,
-                frame_pool,
-                capture,
-                frame_token: _,
-                closed_token: _,
-            } = resources;
-            // A terminal native outcome means WGC already ended the capture.
-            // Calling GraphicsCaptureSession::Close again after Item.Closed can
-            // wait indefinitely inside WinRT. Releasing that ended session is
-            // sufficient; an ordinary caller close still invokes Close.
-            let capture_result = if capture_already_ended {
-                Ok(())
-            } else {
-                capture.Close().map_err(native_fault)
-            };
-            let pool_result = frame_pool.Close().map_err(native_fault);
-            let close_fault = capture_result.err().or_else(|| pool_result.err());
-            drop(frame_pool);
-            if capture_already_ended || close_fault.is_some() {
-                // A removed handler can still leave a queued agile delegate's
-                // sender reference in the WGC event queue for one scheduling
-                // turn. Releasing the terminal session in that interval can
-                // deadlock its RPC teardown against the queued release. The
-                // pool is already closed and callbacks are fenced, so allow a
-                // small bounded quiescence window before the final release.
-                thread::sleep(NATIVE_RELEASE_QUIESCENCE);
-            }
-            drop(capture);
-            drop(item);
-            if let Some(fault) = close_fault {
-                return Err(fault.into());
-            }
+            thread::sleep(CALLBACK_POLL_INTERVAL);
+            attempt.checkpoint()?;
         }
-        Ok(())
     }
+}
+
+fn close_native_resources(
+    resources: NativeResources,
+    capture_already_ended: bool,
+) -> std::result::Result<(), CaptureFault> {
+    ensure_winrt_apartment().map_err(|_| CaptureFault::UnsupportedOption)?;
+    let NativeResources {
+        item,
+        frame_pool,
+        capture,
+        frame_token: _,
+        closed_token: _,
+    } = resources;
+    // Item.Closed is the one state proving WGC already ended the capture.
+    // Ordinary close and unrelated stream terminal faults still invoke Close.
+    let capture_result = if capture_already_ended {
+        Ok(())
+    } else {
+        capture.Close().map_err(native_fault)
+    };
+    let pool_result = frame_pool.Close().map_err(native_fault);
+    let close_fault = capture_result.err().or_else(|| pool_result.err());
+    drop(frame_pool);
+    drop(capture);
+    drop(item);
+    close_fault.map_or(Ok(()), Err)
 }
 
 impl fmt::Debug for NativeSession {
@@ -301,12 +384,13 @@ impl CaptureSession for NativeSession {
     }
 
     fn close(&self, operation: &OperationContext) -> Result<()> {
+        ensure_winrt_apartment()?;
         self.core.state.begin_close();
         self.core.callbacks.stop_admission();
         let _close = lock_with_operation(&self.close_gate, operation)?;
         self.remove_handlers();
         self.core.callbacks.drain(operation)?;
-        self.close_native()?;
+        self.close_native(operation)?;
         self.core.state.drain(operation)
     }
 
@@ -318,8 +402,7 @@ impl CaptureSession for NativeSession {
 impl Drop for NativeSession {
     fn drop(&mut self) {
         self.core.callbacks.stop_admission();
-        self.remove_handlers();
-        let _closed = self.close_native();
+        self.start_native_close(true);
     }
 }
 
@@ -327,9 +410,20 @@ impl SessionCore {
     fn on_frame(&self, sender: &Direct3D11CaptureFramePool) {
         let result = self.process_frame(sender);
         if let Err(fault) = result {
-            self.callbacks.stop_admission();
-            self.state.terminate(fault);
+            if fault == CaptureFault::SessionClosed && self.state.lifecycle() != Lifecycle::Open {
+                return;
+            }
+            self.fail_native(fault);
         }
+    }
+
+    fn fail_native(&self, fault: CaptureFault) {
+        let fault = normalize_native_fault(fault, self.target_kind, self.key.is_present());
+        if fault == CaptureFault::ExplicitlyStopped {
+            self.native_ended.store(true, Ordering::Release);
+        }
+        self.callbacks.stop_admission();
+        self.state.terminate(fault);
     }
 
     fn process_frame(
@@ -344,6 +438,11 @@ impl SessionCore {
         let frame = sender.TryGetNextFrame().map_err(native_fault)?;
         let frame = WgcFrameGuard(Some(frame));
         let content_size = frame.frame().ContentSize().map_err(native_fault)?;
+        let native_time = frame
+            .frame()
+            .SystemRelativeTime()
+            .map_err(native_fault)?
+            .Duration;
         let extent = positive_extent(content_size)?;
 
         if extent != transition.extent {
@@ -351,10 +450,11 @@ impl SessionCore {
             // pool recreation. The first frame from the recreated pool receives
             // the discontinuity.
             drop(frame);
-            let device = self
-                .domain
-                .winrt_device()
-                .map_err(|_| CaptureFault::SourceInvalid)?;
+            let device = self.domain.winrt_device().map_err(|_| {
+                self.domain
+                    .device_fault()
+                    .unwrap_or(CaptureFault::SourceInvalid)
+            })?;
             sender
                 .Recreate(
                     &device,
@@ -363,10 +463,28 @@ impl SessionCore {
                     content_size,
                 )
                 .map_err(native_fault)?;
-            self.textures.retire_for_resize();
+            let _retired = self.textures.try_retire_for_resize();
             transition.extent = extent;
-            transition.pending_discontinuity = true;
+            transition.pending_discontinuity = transition.published;
+            transition.movement_not_before = None;
             return Ok(());
+        }
+
+        let placement = current_placement(self.key, extent).ok_or(CaptureFault::TargetLost)?;
+        if transition.published && placement != transition.placement {
+            transition.placement = placement;
+            transition.pending_geometry_change = true;
+            transition.movement_not_before =
+                Some(native_monotonic_now().unwrap_or_else(|| native_time.saturating_add(1)));
+            let _drop = self.state.try_record_drop();
+            return Ok(());
+        }
+        if let Some(not_before) = transition.movement_not_before {
+            if native_time < not_before {
+                let _drop = self.state.try_record_drop();
+                return Ok(());
+            }
+            transition.movement_not_before = None;
         }
 
         let surface = frame.frame().Surface().map_err(native_fault)?;
@@ -380,11 +498,12 @@ impl SessionCore {
         let descriptor = descriptor_from_native(&native_descriptor, extent)
             .map_err(|_| CaptureFault::UnsupportedFormat)?;
 
-        let Some(lease) = self
-            .textures
-            .try_acquire(native_descriptor)
-            .map_err(|_| CaptureFault::SourceInvalid)?
-        else {
+        let lease = self.textures.try_acquire(native_descriptor).map_err(|_| {
+            self.domain
+                .device_fault()
+                .unwrap_or(CaptureFault::SourceInvalid)
+        })?;
+        let Some(lease) = lease else {
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
@@ -400,18 +519,26 @@ impl SessionCore {
         drop(surface);
         drop(frame);
 
-        let placement = current_placement(self.key, extent).ok_or(CaptureFault::TargetLost)?;
+        let captured_at = frame_time(&mut transition, native_time);
         let continuity = if transition.pending_discontinuity {
             Continuity::Discontinuous
-        } else if placement != transition.placement {
+        } else if transition.pending_geometry_change {
             Continuity::GeometryChanged
         } else {
             Continuity::Continuous
         };
-        let storage = WindowsFrameStorage::new(descriptor, Arc::clone(&self.domain), lease);
+        let storage = WindowsFrameStorage::new(
+            descriptor,
+            Arc::clone(&self.domain),
+            lease,
+            self.failure
+                .get()
+                .cloned()
+                .expect("failure sink initialized before capture starts"),
+        );
         self.state
             .publish_storage(StoragePublication {
-                captured_at: SystemClock.now(),
+                captured_at,
                 placement: Some(placement),
                 storage,
                 continuity,
@@ -425,7 +552,37 @@ impl SessionCore {
             })?;
         transition.placement = placement;
         transition.pending_discontinuity = false;
+        transition.pending_geometry_change = false;
+        transition.published = true;
         Ok(())
+    }
+}
+
+impl StorageFailureSink for SessionCore {
+    fn storage_failed(&self, fault: CaptureFault) {
+        self.fail_native(fault);
+    }
+}
+
+fn normalize_native_fault(
+    fault: CaptureFault,
+    kind: mado_pilot_core::TargetKind,
+    target_present: bool,
+) -> CaptureFault {
+    match fault {
+        CaptureFault::CaptureItemClosed if target_present => CaptureFault::ExplicitlyStopped,
+        CaptureFault::CaptureItemClosed if kind == mado_pilot_core::TargetKind::Display => {
+            CaptureFault::DisplayDisconnected
+        }
+        CaptureFault::DisplayDisconnected
+            if kind == mado_pilot_core::TargetKind::Window && target_present =>
+        {
+            CaptureFault::ExplicitlyStopped
+        }
+        CaptureFault::DisplayDisconnected if kind == mado_pilot_core::TargetKind::Window => {
+            CaptureFault::CaptureItemClosed
+        }
+        _ => fault,
     }
 }
 
@@ -511,6 +668,28 @@ impl CallbackControl {
         }
     }
 
+    fn drain_uninterruptible(&self) {
+        loop {
+            let state = self.lock();
+            if state.fenced {
+                return;
+            }
+            if state.active == 0 {
+                drop(state);
+                let mut state = self.lock();
+                if state.active == 0 {
+                    state.fenced = true;
+                    return;
+                }
+                continue;
+            }
+            let _state = self
+                .drained
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, CallbackState> {
         self.state
             .lock()
@@ -548,6 +727,40 @@ fn positive_extent(size: SizeInt32) -> std::result::Result<PixelExtent, CaptureF
     Ok(PixelExtent::new(width, height))
 }
 
+fn native_monotonic_now() -> Option<i64> {
+    static FREQUENCY: OnceLock<i64> = OnceLock::new();
+    let frequency = *FREQUENCY.get_or_init(|| {
+        let mut frequency = 0;
+        // SAFETY: frequency points to one writable i64.
+        unsafe { QueryPerformanceFrequency(&raw mut frequency) }
+            .map(|()| frequency)
+            .unwrap_or(0)
+    });
+    if frequency <= 0 {
+        return None;
+    }
+    let mut counter = 0;
+    // SAFETY: counter points to one writable i64.
+    unsafe { QueryPerformanceCounter(&raw mut counter) }.ok()?;
+    let scaled = i128::from(counter)
+        .checked_mul(10_000_000)?
+        .checked_div(i128::from(frequency))?;
+    i64::try_from(scaled).ok()
+}
+
+fn frame_time(transition: &mut TransitionState, native_time: i64) -> MonotonicInstant {
+    let (native_origin, mado_origin) = *transition
+        .clock_anchor
+        .get_or_insert_with(|| (native_time, SystemClock.now()));
+    let elapsed = native_time.saturating_sub(native_origin);
+    let elapsed = u64::try_from(elapsed)
+        .ok()
+        .and_then(|ticks| ticks.checked_mul(100))
+        .map(Duration::from_nanos)
+        .unwrap_or(Duration::ZERO);
+    mado_origin.checked_add(elapsed).unwrap_or(mado_origin)
+}
+
 fn lock_with_operation<'mutex>(
     mutex: &'mutex Mutex<()>,
     operation: &OperationContext,
@@ -570,10 +783,15 @@ fn lock_with_operation<'mutex>(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
 
-    use mado_pilot_core::{CancellationToken, OperationContext, Status};
+    use mado_pilot_capture::CaptureFault;
+    use mado_pilot_core::{
+        CancellationToken, OperationContext, PixelExtent, Scale, Status, TargetPlacement,
+    };
 
-    use super::CallbackControl;
+    use super::{CallbackControl, TransitionState, frame_time, normalize_native_fault};
 
     #[test]
     fn callback_fence_is_retryable_after_cancelled_drain() {
@@ -596,5 +814,78 @@ mod tests {
             .expect("later close completes the same drain");
         assert!(control.lock().fenced);
         assert!(control.admit().is_none(), "nothing admits after the fence");
+    }
+
+    #[test]
+    fn native_close_faults_are_normalized_by_target_kind_and_presence() {
+        assert_eq!(
+            normalize_native_fault(
+                CaptureFault::CaptureItemClosed,
+                mado_pilot_core::TargetKind::Display,
+                false,
+            ),
+            CaptureFault::DisplayDisconnected
+        );
+        assert_eq!(
+            normalize_native_fault(
+                CaptureFault::CaptureItemClosed,
+                mado_pilot_core::TargetKind::Window,
+                true,
+            ),
+            CaptureFault::ExplicitlyStopped
+        );
+        assert_eq!(
+            normalize_native_fault(
+                CaptureFault::DeviceRemoved,
+                mado_pilot_core::TargetKind::Window,
+                true,
+            ),
+            CaptureFault::DeviceRemoved
+        );
+    }
+
+    #[test]
+    fn uninterruptible_drop_drain_waits_for_an_admitted_callback() {
+        let control = Arc::new(CallbackControl::default());
+        let lease = control.admit().expect("callback admitted");
+        control.stop_admission();
+        let drainer = {
+            let control = Arc::clone(&control);
+            thread::spawn(move || control.drain_uninterruptible())
+        };
+
+        assert!(
+            !drainer.is_finished(),
+            "active callback keeps the fence open"
+        );
+        drop(lease);
+        drainer.join().expect("drop drain completed");
+        assert!(control.lock().fenced);
+    }
+
+    #[test]
+    fn native_frame_times_keep_the_wgc_relative_interval() {
+        let mut transition = TransitionState {
+            extent: PixelExtent::new(4, 4),
+            placement: TargetPlacement::new(
+                (0.0, 0.0),
+                (4.0, 4.0),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("placement"),
+            pending_discontinuity: false,
+            pending_geometry_change: false,
+            movement_not_before: None,
+            clock_anchor: None,
+            published: false,
+        };
+
+        let first = frame_time(&mut transition, 100);
+        let second = frame_time(&mut transition, 130);
+
+        assert_eq!(
+            second.saturating_duration_since(first),
+            Duration::from_micros(3)
+        );
     }
 }

@@ -583,6 +583,29 @@ impl StreamCursor {
         ))
     }
 
+    /// Advances past `count` unpublished observations.
+    ///
+    /// Native adapters use this to make bounded producer drops observable as a
+    /// gap in the next published sequence without inventing frame stamps or
+    /// iterating once per drop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFault::SequenceExhausted`] when the skipped range would
+    /// exhaust or wrap the current epoch.
+    pub fn skip(&mut self, count: u64) -> Result<(), IdentityFault> {
+        if count == 0 {
+            return Ok(());
+        }
+        let sequence = self.next_sequence.ok_or(IdentityFault::SequenceExhausted)?;
+        self.next_sequence = Some(
+            sequence
+                .checked_add(count)
+                .ok_or(IdentityFault::SequenceExhausted)?,
+        );
+        Ok(())
+    }
+
     /// Begins a later epoch after a discontinuity, resetting the sequence.
     ///
     /// # Errors
@@ -726,6 +749,19 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(second.sequence().value(), first.sequence().value() + 1);
         assert_eq!(first.order(&second), Ok(FrameOrder::Before));
+    }
+
+    #[test]
+    fn skipped_observations_become_a_sequence_gap_without_iteration() {
+        let issuer = IdentityIssuer::new();
+        let mut cursor = StreamCursor::new(issuer.issue_stream().expect("issued"));
+
+        let first = cursor.publish(GeometryRevision::FIRST).expect("published");
+        cursor.skip(3).expect("three bounded drops");
+        let after_gap = cursor.publish(GeometryRevision::FIRST).expect("published");
+
+        assert_eq!(first.sequence().value(), 0);
+        assert_eq!(after_gap.sequence().value(), 4);
     }
 
     #[test]

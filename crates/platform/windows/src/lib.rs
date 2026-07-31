@@ -19,10 +19,10 @@
 //! WGC callback.
 //!
 //! Close stops admission, removes both native handlers, drains admitted
-//! callbacks, closes the WGC objects, and releases the pool before the session.
-//! An already terminal native session is not closed twice; a bounded event-queue
-//! quiescence prevents a queued agile sender release from deadlocking the final
-//! WinRT session release.
+//! callbacks, and moves the WGC objects to an apartment-initialized teardown
+//! worker. Explicit close polls that worker under the caller's operation
+//! deadline; implicit destruction leaves the worker to finish its
+//! uninterruptible callback drain and ordered native release.
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
@@ -32,6 +32,8 @@ mod availability;
 mod discovery;
 #[cfg(windows)]
 mod native;
+#[cfg(windows)]
+mod optional_api;
 #[cfg(windows)]
 mod provider;
 #[cfg(windows)]

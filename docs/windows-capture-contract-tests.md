@@ -27,15 +27,18 @@ drop counters, but Windows or D3D11 types must not enter `mado-pilot-core`,
 | Producer detachment, finite pressure, lease-safe reuse, resize retirement | `crates/automation/capture/tests/native_storage.rs` and `crates/platform/windows/src/storage.rs` unit tests |
 | Aliasing negative control | `the_retained_byte_oracle_rejects_an_overwriting_two_slot_ring` intentionally overwrites a two-slot ring and proves the retained-byte oracle rejects it |
 | Callback admission fence and retry after cancellation | `callback_fence_is_retryable_after_cancelled_drain` |
+| Implicit teardown drain and cross-thread apartment | `uninterruptible_drop_drain_waits_for_an_admitted_callback` plus native cross-thread close and implicit-drop paths |
 | Lazy mapping, exact byte length, late-result rejection, retained lifetime | `crates/automation/capture/tests/native_storage.rs` plus the synthetic-window native test |
 | Resize identity and old-storage survival | `a_native_frame_correlates_to_the_geometry_it_was_captured_under` plus the synthetic-window native test |
-| Signed mixed-DPI geometry | `signed_mixed_dpi_placement_is_frame_authoritative`; the native test also correlates every transform to its frame revision |
+| WGC-relative time and signed mixed-DPI geometry | `native_frame_times_keep_the_wgc_relative_interval`, `signed_mixed_dpi_placement_is_frame_authoritative`, and the synthetic-window movement case |
 | Access, close, disconnect, removal, and reset classification | `native_device_and_lifecycle_errors_are_typed` and the controlled target-close path |
 | Idempotent native close and post-close mapping | `synthetic_window_exercises_retention_resize_loss_and_close` |
+| Optional-export loader boundary | `optional_windows_exports_are_absent_from_the_pe_import_table` parses the built test executable's PE imports |
 
 These tests are deterministic except for the explicitly native synthetic-window
-case, which skips with a reason when WGC is unavailable or the test-owned target
-cannot be discovered. They do not capture an unrelated desktop or application.
+case, which skips with a reason only when WGC is unavailable. On a supported
+host, failure to discover the test-owned target is a test failure. The tests do
+not capture an unrelated desktop or application.
 
 The remaining release-acceptance evidence is the revision-bound 600-frame and
 dual-4K host matrix below, including resource-zeroing counters and Phase 2
@@ -66,7 +69,7 @@ assertions name only the test-owned fixture and typed outcomes.
 | Resize transition | The first changed-content-size frame is not published; the new pool uses the new size and advances geometry revision once |
 | Old resize generation | Retained old-size frames and mappings complete under their old revision while unused incompatible textures retire |
 | Close admission fence | Both native handlers use lifetime-independent shared state; owner detachment and admission are synchronized; no callback is admitted to the owner after the fence; a delegate deliberately paused before admission is rejected safely after close |
-| Idempotent close | Concurrent and repeated close calls converge on one terminal state without double release or a host callback under a lock |
+| Idempotent close | Concurrent and repeated close calls converge on one terminal state without double release or a host callback under a lock; native teardown runs in an initialized apartment and explicit close remains bounded by its operation deadline |
 | Target loss | Loss stops admission, reports the typed terminal outcome, and does not mutate retained frames |
 | Device reset | The replacement device/session starts a new stream epoch; old-generation resources live only until their old leases release |
 | Resource bound | WGC frames never exceed two; detached and staging resources never exceed their configured bounds; every counter reaches zero after final release |
@@ -79,9 +82,8 @@ implementation.
 
 ## Native Windows contract cases
 
-Native tests use a test-owned synthetic Win32 target and
-`Direct3D11CaptureFramePool::CreateFreeThreaded`. They never capture an unrelated
-desktop or application window.
+Native tests use a test-owned synthetic Win32 target and a free-threaded WGC
+frame pool. They never capture an unrelated desktop or application window.
 
 The retained-frame case matches the G-002 evidence:
 
@@ -106,6 +108,12 @@ The native lifecycle suite adds:
 - close with mapping and backend leases in flight;
 - a deterministic pre-admission barrier that holds one queued delegate while
   close detaches the owner and publishes the fence, then proves safe rejection;
+- close from a fresh thread whose WinRT apartment is initialized by the Adapter;
+- retention past the two-frame producer-pool depth and finite 40-texture
+  pressure, followed by release, resumed production, and an observable sequence
+  gap;
+- movement of the synthetic target followed by a stable frame with a newer
+  geometry revision and no spurious stream-epoch reset;
 - a real controlled-target close and an idempotent second close;
 - injected device-loss admission stop followed by complete D3D11 device and WGC
   session recreation.

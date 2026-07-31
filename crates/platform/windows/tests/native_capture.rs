@@ -43,16 +43,18 @@ fn stage_name(value: u32) -> &'static str {
         5 => "retained-progress",
         6 => "mapped",
         7 => "resized",
-        8 => "target-closed",
-        9 => "loss-observed",
-        10 => "first-close",
-        11 => "second-close",
+        8 => "moved",
+        9 => "target-closed",
+        10 => "loss-observed",
+        11 => "first-close",
+        12 => "second-close",
         _ => "complete",
     }
 }
 
 struct SyntheticWindow {
     resize: Arc<AtomicBool>,
+    move_window: Arc<AtomicBool>,
     close: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -60,8 +62,10 @@ struct SyntheticWindow {
 impl SyntheticWindow {
     fn spawn() -> Self {
         let resize = Arc::new(AtomicBool::new(false));
+        let move_window = Arc::new(AtomicBool::new(false));
         let close = Arc::new(AtomicBool::new(false));
         let thread_resize = Arc::clone(&resize);
+        let thread_move = Arc::clone(&move_window);
         let thread_close = Arc::clone(&close);
         let thread = thread::spawn(move || {
             let class_name = wide("MadoPilotPhase2NativeCaptureTestClass");
@@ -123,6 +127,21 @@ impl SyntheticWindow {
                     }
                     .expect("resized synthetic target");
                 }
+                if thread_move.swap(false, Ordering::AcqRel) {
+                    // SAFETY: movement preserves size, z-order, and focus.
+                    unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            None,
+                            260,
+                            180,
+                            820,
+                            540,
+                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        )
+                    }
+                    .expect("moved synthetic target");
+                }
                 pump_messages();
                 thread::sleep(Duration::from_millis(16));
             }
@@ -135,6 +154,7 @@ impl SyntheticWindow {
         thread::sleep(Duration::from_millis(100));
         Self {
             resize,
+            move_window,
             close,
             thread: Some(thread),
         }
@@ -142,6 +162,10 @@ impl SyntheticWindow {
 
     fn resize(&self) {
         self.resize.store(true, Ordering::Release);
+    }
+
+    fn move_window(&self) {
+        self.move_window.store(true, Ordering::Release);
     }
 
     fn close_target(&mut self) {
@@ -186,10 +210,9 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
         }
         Err(error) => panic!("native discovery failed: {error}"),
     };
-    let Some(target) = targets.first() else {
-        eprintln!("SKIP native WGC contract: synthetic target was not discoverable");
-        return;
-    };
+    let target = targets
+        .first()
+        .expect("supported WGC discovers its test-owned synthetic target");
     stage(2);
     assert_eq!(target.provider(), PROVIDER);
     assert_eq!(target.capability().kind(), Some(TargetKind::Window));
@@ -218,14 +241,78 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
     let ordinary_frame = ordinary_close
         .frame(&FrameRequest::latest(), &timed())
         .expect("ordinary-close frame");
-    ordinary_close.close(&timed()).expect("ordinary close");
+    let ordinary_close = thread::spawn(move || {
+        ordinary_close
+            .close(&close_timed())
+            .expect("cross-thread ordinary close initializes WinRT");
+        ordinary_close
+    })
+    .join()
+    .expect("cross-thread close worker");
     ordinary_close
-        .close(&timed())
+        .close(&close_timed())
         .expect("ordinary close is idempotent");
     ordinary_frame
         .map(PixelFormat::Bgra8, &timed())
         .expect("ordinary-close frame remains mappable");
+
+    let implicit_drop = provider
+        .open(
+            target.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &timed(),
+        )
+        .expect("opened implicit-drop session");
+    let implicit_frame = implicit_drop
+        .frame(&FrameRequest::latest(), &timed())
+        .expect("implicit-drop frame");
+    thread::spawn(move || drop(implicit_drop))
+        .join()
+        .expect("cross-thread implicit drop");
+    implicit_frame
+        .map(PixelFormat::Bgra8, &timed())
+        .expect("implicit-drop frame remains mappable");
     stage(3);
+
+    let pressure = provider
+        .open(
+            target.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &timed(),
+        )
+        .expect("opened finite-pressure session");
+    let mut retained = vec![
+        pressure
+            .frame(&FrameRequest::latest(), &timed())
+            .expect("first retained pressure frame"),
+    ];
+    while retained.len() < 40 {
+        let next = pressure
+            .frame(
+                &FrameRequest::newer_than(retained.last().expect("retained frame").stamp()),
+                &timed(),
+            )
+            .expect("filled finite retained-storage budget");
+        retained.push(next);
+    }
+    let before_pressure = retained.last().expect("last retained frame").stamp();
+    let blocked = pressure
+        .frame(&FrameRequest::newer_than(before_pressure), &short_timed())
+        .expect_err("full retained budget publishes no invented frame");
+    assert_eq!(blocked.status(), Status::DeadlineExceeded);
+    retained.remove(0);
+    let resumed = pressure
+        .frame(&FrameRequest::newer_than(before_pressure), &timed())
+        .expect("release resumes finite producer progress");
+    assert!(
+        resumed.stamp().sequence().value() > before_pressure.sequence().value() + 1,
+        "pressure drops become an observable sequence gap"
+    );
+    pressure
+        .close(&close_timed())
+        .expect("pressure session close");
+    drop(retained);
+    drop(resumed);
 
     let session = provider
         .open(
@@ -248,9 +335,13 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
     let first = session
         .frame(&FrameRequest::latest(), &timed())
         .expect("first frame");
-    let second = session
-        .frame(&FrameRequest::newer_than(first.stamp()), &timed())
-        .expect("producer progressed while first frame was retained");
+    let mut progressed = first.clone();
+    for _ in 0..3 {
+        progressed = session
+            .frame(&FrameRequest::newer_than(progressed.stamp()), &timed())
+            .expect("producer progressed beyond its two-frame pool");
+    }
+    let second = progressed;
     stage(5);
     let retained_mapping = first
         .map(PixelFormat::Bgra8, &timed())
@@ -289,9 +380,38 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
     );
     stage(7);
 
-    target_window.close_target();
+    let before_move_origin = resized
+        .transform()
+        .target()
+        .expect("window placement")
+        .desktop_origin();
+    target_window.move_window();
+    let mut previous = resized;
+    let moved = loop {
+        let candidate = session
+            .frame(&FrameRequest::newer_than(previous.stamp()), &timed())
+            .expect("frame after movement request");
+        let origin = candidate
+            .transform()
+            .target()
+            .expect("moved window placement")
+            .desktop_origin();
+        if origin != before_move_origin {
+            break candidate;
+        }
+        previous = candidate;
+    };
+    assert_eq!(
+        moved.stamp().epoch(),
+        previous.stamp().epoch(),
+        "movement changes geometry without resetting the resized epoch"
+    );
+    assert!(moved.stamp().geometry() > previous.stamp().geometry());
     stage(8);
-    let mut stamp = resized.stamp();
+
+    target_window.close_target();
+    stage(9);
+    let mut stamp = moved.stamp();
     loop {
         match session.frame(&FrameRequest::newer_than(stamp), &timed()) {
             Ok(late) => stamp = late.stamp(),
@@ -301,12 +421,12 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
             }
         }
     }
-    stage(9);
-
-    session.close(&timed()).expect("first close");
     stage(10);
-    session.close(&timed()).expect("idempotent close");
+
+    session.close(&close_timed()).expect("first close");
     stage(11);
+    session.close(&close_timed()).expect("idempotent close");
+    stage(12);
     assert!(session.is_closed());
     assert_eq!(
         retained_mapping.bytes().len(),
@@ -319,6 +439,21 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
 fn timed() -> OperationContext {
     OperationContext::new()
         .with_timeout(Duration::from_secs(5))
+        .expect("deadline representable")
+}
+
+fn close_timed() -> OperationContext {
+    // Native teardown remains deadline-bounded, but a saturated workspace test
+    // host can take longer than an ordinary frame request to schedule the
+    // apartment-initialized close worker.
+    OperationContext::new()
+        .with_timeout(Duration::from_secs(20))
+        .expect("deadline representable")
+}
+
+fn short_timed() -> OperationContext {
+    OperationContext::new()
+        .with_timeout(Duration::from_millis(200))
         .expect("deadline representable")
 }
 

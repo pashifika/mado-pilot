@@ -969,22 +969,50 @@ ownership.
 
 Private textures are lease-aware and finite. A texture can be reused only after
 public-frame, mapping, and backend leases all release it. Exhaustion produces an
-observable bounded-queue drop rather than callback blocking, overwrite, or
-unbounded allocation. Mapping, matching, waits, and host callbacks remain
-outside the WGC callback.
+observable sequence gap rather than callback blocking, overwrite, or unbounded
+allocation. Drop debt and contended lease release are recorded without waiting
+for the stream or texture-pool mutex. Mapping, matching, waits, and host
+callbacks remain outside the WGC callback.
 
 Resize discards the size-transition frame, recreates the two-frame producer
 pool, and lets detached old-revision frames complete from old-generation
 resources. Both WinRT handlers capture lifetime-independent shared callback
 state rather than a raw Adapter owner. Close detaches the owner under the
 callback-admission mutex, unregisters both handlers, drains admitted callbacks,
-publishes the fence, closes the WGC session and pool, and keeps detached
-resources and their D3D11 device alive through in-flight work. A delegate
-invoked after detachment is rejected without touching the owner. The implemented
-Adapter does not claim device recovery continuity: device removal or reset
-terminates the stream with the corresponding typed capture fault. If a later
-Change proves recovery and adds a fresh device and stream epoch, leased
-old-generation storage still cannot be repurposed.
+and publishes the fence before native teardown starts. Native WGC objects move
+to a teardown worker that initializes its own WinRT apartment, closes the
+session before the pool, and releases the item last. Explicit close polls that
+worker under the caller's operation deadline and can be retried; implicit
+destruction lets it finish an uninterruptible callback drain without blocking
+`Drop`. A delegate invoked after detachment is rejected without touching the
+owner. An ordinary local close is not mistaken for authoritative
+`GraphicsCaptureItem.Closed`, so it still closes the native session. The
+implemented Adapter does not claim device recovery continuity: device removal
+or reset, including one first observed during lazy mapping, terminates the
+stream with the corresponding typed capture fault. If a later Change proves
+recovery and adds a fresh device and stream epoch, leased old-generation
+storage still cannot be repurposed.
+
+Each provider record observes its capture item's `Closed` event and immediately
+marks that record lost. The provider rejects the stale identity from then on.
+The registry releases the record's discovery metadata and capture item by
+replacing it with a lightweight tombstone during the next discovery
+synchronization; if no later discovery synchronization runs, the lost live
+record remains retained until the provider is dropped. A new incarnation
+receives a new identity, while an already-open session retains its own item
+safely.
+
+Frame timestamps come from WGC `SystemRelativeTime`, calibrated once into the
+project monotonic clock. Placement is sampled while that WGC frame is still
+held. Window client points are converted to physical per-monitor coordinates,
+and visible frame bounds supply the origin. On a movement boundary the Adapter
+drops the transition and any already-queued older WGC frames before publishing
+the first stable frame with `GeometryChanged`.
+
+Version-sensitive DPI, WinRT activation, and WinRT-D3D interop exports are
+resolved from system DLLs only after the operation-time availability boundary.
+The Windows loader regression test parses its own PE import table and rejects
+those exports if a binding change makes them eager imports again.
 
 The decision is
 [ADR 0013](adr/0013-windows-capture-frame-detachment.md), its retained prototype
@@ -994,7 +1022,8 @@ The Adapter now implements picker-free window/display discovery, stable
 engine/provider-qualified identities, WGC capture, lazy exact-stride BGRA CPU
 mapping, frame-time signed-origin DPI geometry, resize discontinuities, typed
 target/device failures, and retryable idempotent close. Construction touches no
-native API; discovery and open perform runtime availability checks.
+native API; discovery and open perform runtime availability checks, and each
+thread that touches WinRT is initialized by the Adapter first.
 
 This is an implementation claim, not release acceptance. The controlled unit
 and synthetic-window tests are linked from the acceptance suite, while its
@@ -1331,7 +1360,7 @@ against.
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | OCR, watcher, and input contract suites | Not applicable; those contracts are not implemented | Not applicable |
 | Native permission behavior and permission probes | Not applicable; no permission is requested or probed | Not applicable |
-| Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for two-frame WGC detachment, a finite 40-texture lease-aware pool, lazy mapping, resize generations, callback admission fencing, typed terminal loss, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). The revision-bound 600-frame/dual-4K acceptance report and Phase 2 `G-013` budgets remain open, so release support is not yet claimed | Not applicable; no native capture existed |
+| Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for two-frame WGC detachment, a finite 40-texture lease-aware pool, lock-free drop debt, lazy mapping, resize generations, callback admission fencing, apartment-safe asynchronous native teardown, typed terminal loss, runtime-resolved optional exports, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). The revision-bound 600-frame/dual-4K acceptance report and Phase 2 `G-013` budgets remain open, so release support is not yet claimed | Not applicable; no native capture existed |
 | macOS shim containment and native ownership | Decided, not yet enforceable. [ADR 0012](adr/0012-macos-shim-language-and-containment.md) fixes the boundary rules on the `G-003` measurements in [evidence/g-003/](evidence/g-003/README.md) and names the containment, ownership-on-failure, autorelease, fence, teardown, panic, and linkage tests the implementing Change carries. `mado-pilot-platform-macos` is a repository seam that implements none of it, so review enforces the rules until it does | Not applicable; no native shim existed |
 | Native dependency packaging and clean-system loading | Partly applicable. Phase 1 declares one native dependency, OpenCV, and records its licence and deployment requirements; clean-system loading and packaging remain open under [`G-007`](validation-gates.md#g-007) | Not applicable; no native dependency was declared |
 

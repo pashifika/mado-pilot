@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError, Weak};
 use std::thread;
 use std::time::Duration;
@@ -23,8 +24,9 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_HUNG, DXGI_ERROR_DEVICE_REMOVED,
     DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_SESSION_DISCONNECTED, IDXGIDevice,
 };
-use windows::Win32::System::WinRT::Direct3D11::CreateDirect3D11DeviceFromDXGIDevice;
 use windows::core::Interface;
+
+use crate::optional_api::create_direct3d_device;
 
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
@@ -55,9 +57,16 @@ impl DeviceDomain {
     pub(crate) fn winrt_device(&self) -> Result<IDirect3DDevice> {
         let dxgi_device: IDXGIDevice = self.device.cast().map_err(classify_native_error)?;
         // SAFETY: dxgi_device is obtained from this D3D11 device.
-        let inspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) }
-            .map_err(classify_native_error)?;
+        let inspectable = create_direct3d_device(&dxgi_device).map_err(classify_native_error)?;
         inspectable.cast().map_err(classify_native_error)
+    }
+
+    /// Reports a terminal D3D device fault without replacing its native kind.
+    pub(crate) fn device_fault(&self) -> Option<CaptureFault> {
+        // SAFETY: GetDeviceRemovedReason reads device state only.
+        unsafe { self.device.GetDeviceRemovedReason() }
+            .err()
+            .map(native_fault)
     }
 
     fn create_default_texture(
@@ -242,6 +251,7 @@ pub(crate) struct TexturePool {
     domain: Arc<DeviceDomain>,
     state: Mutex<PoolState>,
     capacity: usize,
+    deferred_discards: AtomicUsize,
 }
 
 #[derive(Debug, Default)]
@@ -280,6 +290,7 @@ impl TexturePool {
             state: Mutex::new(PoolState::default()),
             capacity: usize::try_from(DETACHED_TEXTURE_BUDGET.get())
                 .expect("u32 budget fits usize"),
+            deferred_discards: AtomicUsize::new(0),
         })
     }
 
@@ -293,6 +304,7 @@ impl TexturePool {
             Err(TryLockError::WouldBlock) => return Ok(None),
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
+        self.apply_deferred_discards(&mut state);
         let shape = TextureShape::from_descriptor(&descriptor);
         if state.shape != Some(shape) {
             let retired = state.free.len();
@@ -321,16 +333,38 @@ impl TexturePool {
         }))
     }
 
-    pub(crate) fn retire_for_resize(&self) {
-        let mut state = self.lock();
+    /// Retires reusable textures without waiting for a consumer-side release.
+    ///
+    /// Returning `false` is safe: the next successful acquisition observes the
+    /// new descriptor shape and performs the same retirement before reuse.
+    pub(crate) fn try_retire_for_resize(&self) -> bool {
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return false,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        self.apply_deferred_discards(&mut state);
         let retired = state.free.len();
         state.free.clear();
         state.allocated = state.allocated.saturating_sub(retired);
         state.shape = None;
+        true
     }
 
     fn release(&self, texture: ID3D11Texture2D, shape: TextureShape) {
-        let mut state = self.lock();
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => {
+                // Discarding is always safe. Defer only the accounting so a
+                // callback-side lease drop never waits for a consumer holding
+                // the pool mutex.
+                self.deferred_discards.fetch_add(1, Ordering::AcqRel);
+                drop(texture);
+                return;
+            }
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        self.apply_deferred_discards(&mut state);
         state.leased = state.leased.saturating_sub(1);
         if state.shape == Some(shape) {
             state.free.push(texture);
@@ -339,10 +373,20 @@ impl TexturePool {
         }
     }
 
+    fn apply_deferred_discards(&self, state: &mut PoolState) {
+        let discarded = self.deferred_discards.swap(0, Ordering::AcqRel);
+        state.leased = state.leased.saturating_sub(discarded);
+        state.allocated = state.allocated.saturating_sub(discarded);
+    }
+
+    #[cfg(test)]
     fn lock(&self) -> MutexGuard<'_, PoolState> {
-        self.state
+        let mut state = self
+            .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.apply_deferred_discards(&mut state);
+        state
     }
 
     #[cfg(test)]
@@ -389,6 +433,11 @@ pub(crate) struct WindowsFrameStorage {
     lease: TextureLease,
     mapping: Mutex<MappingState>,
     mapped: Condvar,
+    failure: Weak<dyn StorageFailureSink>,
+}
+
+pub(crate) trait StorageFailureSink: Send + Sync {
+    fn storage_failed(&self, fault: CaptureFault);
 }
 
 #[derive(Debug, Default)]
@@ -402,6 +451,7 @@ impl WindowsFrameStorage {
         descriptor: FrameDescriptor,
         domain: Arc<DeviceDomain>,
         lease: TextureLease,
+        failure: Weak<dyn StorageFailureSink>,
     ) -> Arc<Self> {
         Arc::new(Self {
             descriptor,
@@ -409,6 +459,7 @@ impl WindowsFrameStorage {
             lease,
             mapping: Mutex::new(MappingState::default()),
             mapped: Condvar::new(),
+            failure,
         })
     }
 
@@ -465,6 +516,12 @@ impl FrameStorage for WindowsFrameStorage {
         let result = self
             .domain
             .read_texture(self.lease.texture(), self.descriptor, operation);
+        if result.is_err()
+            && let Some(fault) = self.domain.device_fault()
+            && let Some(failure) = self.failure.upgrade()
+        {
+            failure.storage_failed(fault);
+        }
         let result = match result {
             Ok(pixels) => attempt.commit(pixels).map_err(Into::into),
             Err(error) => Err(error),
@@ -616,7 +673,7 @@ mod tests {
         drop(reusable);
         assert_eq!(pool.counts(), (2, 1, 1));
 
-        pool.retire_for_resize();
+        assert!(pool.try_retire_for_resize());
         assert_eq!(pool.counts(), (1, 1, 0));
         let new = pool
             .try_acquire(descriptor(8, 6))
@@ -628,6 +685,26 @@ mod tests {
         assert_eq!(pool.counts(), (1, 1, 0));
         drop(new);
         assert_eq!(pool.counts(), (1, 0, 1));
+    }
+
+    #[test]
+    fn lease_release_never_waits_for_the_pool_mutex() {
+        let domain = DeviceDomain::create().expect("D3D11 device");
+        let pool = TexturePool::new(domain);
+        let lease = pool
+            .try_acquire(descriptor(4, 4))
+            .expect("acquire")
+            .expect("lease");
+        let guard = pool.state.lock().expect("pool lock");
+
+        drop(lease);
+
+        drop(guard);
+        assert_eq!(
+            pool.counts(),
+            (0, 0, 0),
+            "the discarded texture is reconciled after contention"
+        );
     }
 
     #[test]

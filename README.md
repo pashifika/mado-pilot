@@ -8,14 +8,17 @@ conditions, inject input through explicit platform capabilities, and report
 structured diagnostics — without owning a GUI, tray, overlay, editor, updater,
 scheduler, or scripting language of its own.
 
-## Status: one deterministic workflow in three languages, no native capture
+## Status: one deterministic workflow plus a direct Windows capture adapter
 
 **MadoPilot is not usable for real automation yet.** What works end to end is a
 deterministic workflow over *replayed* frames: configure a replay source and
 require the OpenCV CPU backend, discover and open a target, take a frame, map
 it, load an asset package, prepare a template, find it in that exact frame, and
 close. That runs on both release targets, from Rust, from C, and from C++, and
-the three examples answer the same questions with the same numbers:
+the three examples answer the same questions with the same numbers. A directly
+consumable Rust Windows adapter also implements picker-free native window and
+display capture, but facade wiring and its release-acceptance matrix remain
+later work:
 
 ```text
 crates/mado-pilot/examples/deterministic-slice.rs
@@ -23,8 +26,8 @@ crates/bindings/capi/examples/c/deterministic-slice.c
 crates/bindings/capi/examples/cpp/deterministic-slice.cpp
 ```
 
-Nothing captures a real window, recognizes text, waits on a condition, or
-injects input. Adding a package here is not a claim that its behavior exists.
+Nothing recognizes text, waits on a condition, or injects input. Adding a
+package here is not a claim that its behavior exists.
 
 | Area | Status |
 |---|---|
@@ -37,7 +40,8 @@ injects input. Adding a package here is not a claim that its behavior exists.
 | Template-matching contracts, ordering, suppression, source correlation | Implemented |
 | Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
-| Native capture, OCR, watchers, input | Not implemented |
+| Native capture | Implemented in the direct Windows Rust adapter; facade wiring, release acceptance, and macOS capture remain open |
+| OCR, watchers, input | Not implemented |
 | C ABI, tracked C header, dynamic library | Implemented for the Phase 1 prefix |
 | Header-only C++ RAII wrapper and CMake targets | Implemented for the Phase 1 prefix |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |

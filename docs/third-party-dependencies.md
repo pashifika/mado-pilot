@@ -267,14 +267,17 @@ pins `windows` 0.62.2 from crates.io. The crate is maintained by Microsoft,
 declares `MIT OR Apache-2.0`, requires Rust 1.82, and is compatible with the
 workspace's Rust 1.97.1 toolchain. Default features are disabled; the selected
 features cover only WGC, D3D11/DXGI, WinRT interop, window/display enumeration,
-DWM metadata, and DPI. Cargo resolves its Rust-only `windows-*` support crates;
-MadoPilot adds no Windows App SDK, WIL, DirectXTK, native redistributable, or
-runtime DLL.
+DWM metadata, high-resolution timing, dynamic system-library lookup, and DPI.
+Cargo resolves its Rust-only `windows-*` support crates; MadoPilot adds no
+Windows App SDK, WIL, DirectXTK, native redistributable, or runtime DLL.
 
 The binding is target-gated in `crates/platform/windows/Cargo.toml`, so the
 macOS product graph remains unchanged. WGC and its factories are still checked
-at operation time: selecting a binding does not claim a minimum Windows
-version, preapprove a permission prompt, or resolve
+at operation time. Version-sensitive DPI, WinRT activation/apartment, and
+WinRT-D3D interop exports are resolved dynamically from host system DLLs after
+that boundary, and a PE import-table test prevents them from becoming eager
+imports. Selecting a binding does not claim a minimum Windows version,
+preapprove a permission prompt, or resolve
 [`G-001`](validation-gates.md#g-001). The host-provided D3D11, DXGI, DWM, User32,
 GDI, and WinRT components remain serviced by Windows and are not bundled.
 The lockfile, license, source, and advisory checks are rerun by this Change.
