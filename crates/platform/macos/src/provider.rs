@@ -277,7 +277,14 @@ impl CaptureProvider for MacosCaptureProvider {
             }
         };
         let stream = self.issuer.issue_stream()?;
-        let session = NativeSession::open(target, stream, record.key, metadata, &mut attempt)?;
+        let session = NativeSession::open(
+            target,
+            stream,
+            record.key,
+            record.fingerprint,
+            metadata,
+            &mut attempt,
+        )?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
     }
 }

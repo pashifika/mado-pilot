@@ -38,6 +38,22 @@ extern "C" {
 #define MP_SHIM_DEFAULT_TIMEOUT_NANOS 1000000000ull
 
 /*
+ * The largest surface the shim will accept, in bytes.
+ *
+ * The per-axis limit above is what bounds the conversions; it does not bound the
+ * allocation, and the two are far apart. A target at the axis limit on both sides is
+ * 32768 x 32768 BGRA, which is four gibibytes for a single surface, and a session
+ * holds a producer queue and a detached budget of them.
+ *
+ * An 8K display at BGRA8 is 132,710,400 bytes. This is the next power of two above
+ * it, so every target a host can really present passes and no single surface reaches
+ * a gibibyte. Bounding a whole session rather than one surface would mean expressing
+ * the detached budget in bytes, which is a public queue-policy question and belongs
+ * to the `G-013` budgets with the bound it would redefine.
+ */
+#define MP_SHIM_MAX_SURFACE_BYTES 268435456u
+
+/*
  * Session-scoped test seams.
  *
  * A caller may ask a session to raise a native exception at one of the four
@@ -161,6 +177,17 @@ typedef struct mp_shim_open_request {
     uint32_t struct_size;
     uint32_t kind;
     uint64_t native_id;
+    /*
+     * The owning process the caller resolved this window against, or zero for a
+     * display and for a window whose owner the framework did not name.
+     *
+     * macOS recycles window numbers, so the number alone does not name an
+     * incarnation. The caller already carries this to reject a replacement that
+     * inherited the number; the lookup here consults it too, because the caller
+     * validated against its own snapshot of the shareable content and this open
+     * takes another. Zero is a value to match, not the absence of a constraint.
+     */
+    int64_t owner_process;
     uint32_t pixel_width;
     uint32_t pixel_height;
     /* Producer queue depth. Bounded by the shim to a reviewed range. */

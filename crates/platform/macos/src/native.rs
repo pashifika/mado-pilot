@@ -32,7 +32,7 @@ use mado_pilot_core::{
     SystemClock, TargetId, TargetKind, TargetPlacement,
 };
 
-use crate::discovery::{NativeKey, PlacementReading, TargetMetadata, read_placement};
+use crate::discovery::{Fingerprint, NativeKey, PlacementReading, TargetMetadata, read_placement};
 use crate::shim::{
     self, BorrowedFrame, DEFAULT_NATIVE_WAIT, DetachedFrame, FrameInfo, MAX_NATIVE_WAIT,
     OpenRequest, ShimStatus,
@@ -234,10 +234,11 @@ impl NativeSession {
         target: TargetId,
         stream: StreamId,
         key: NativeKey,
+        fingerprint: Fingerprint,
         metadata: TargetMetadata,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(target, stream, key, metadata, 0, operation)
+        Self::open_inner(target, stream, key, fingerprint, metadata, 0, operation)
     }
 
     /// Opens a session that raises a contained native exception at `sites`.
@@ -249,17 +250,19 @@ impl NativeSession {
         target: TargetId,
         stream: StreamId,
         key: NativeKey,
+        fingerprint: Fingerprint,
         metadata: TargetMetadata,
         sites: u32,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(target, stream, key, metadata, sites, operation)
+        Self::open_inner(target, stream, key, fingerprint, metadata, sites, operation)
     }
 
     fn open_inner(
         target: TargetId,
         stream: StreamId,
         key: NativeKey,
+        fingerprint: Fingerprint,
         metadata: TargetMetadata,
         testing_raise_sites: u32,
         operation: &mut Operation<'_>,
@@ -287,6 +290,9 @@ impl NativeSession {
         let request = OpenRequest {
             kind: key.native_kind(),
             native_id: key.native_id(),
+            // The shim queries the shareable content again, so it needs the owner to
+            // reject a window that inherited the number since discovery.
+            owner_process: fingerprint.native_owner(),
             extent: metadata.extent,
             queue_depth: PRODUCER_QUEUE_DEPTH,
             detached_budget: DETACHED_BUFFER_BUDGET.get(),

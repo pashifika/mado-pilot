@@ -25,7 +25,7 @@ use mado_pilot_core::{
 };
 
 use crate::availability::ensure_capture_available;
-use crate::discovery::{Candidate, NativeKey, TargetMetadata, inventory};
+use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
 use crate::native::NativeSession;
 use crate::shim::{
     self, MAX_NATIVE_WAIT, RAISE_AFTER_CALLBACK, RAISE_AT_START, RAISE_AT_TEARDOWN,
@@ -74,6 +74,7 @@ fn serialized() -> MutexGuard<'static, ()> {
 struct Harness {
     issuer: Arc<IdentityIssuer>,
     key: NativeKey,
+    fingerprint: Fingerprint,
     metadata: TargetMetadata,
 }
 
@@ -140,6 +141,7 @@ impl Harness {
         Self {
             issuer: Arc::new(IdentityIssuer::new()),
             key: candidate.key,
+            fingerprint: candidate.fingerprint,
             metadata: candidate.metadata.clone(),
         }
     }
@@ -189,6 +191,7 @@ impl Harness {
             target,
             stream,
             self.key,
+            self.fingerprint,
             self.metadata.clone(),
             raise_sites,
             &mut operation,

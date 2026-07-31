@@ -1135,7 +1135,11 @@ Discovery is picker-free and deterministic: windows and displays are ordered by
 kind, then lowercased name, then native key, so two passes over an unchanged
 desktop produce the same identities in the same order. A window carries its owning
 process alongside its window number, because macOS reuses window numbers and a
-replacement from another process is a different target. A display carries its
+replacement from another process is a different target. Opening one matches on both,
+not only on the number: an open resolves the target against a snapshot of its own, so
+carrying the owner no further than the caller's own comparison would let a recycled
+number reach capture — and the window captured could belong to another application. A
+display carries its
 captured extent rather than its placement, so rearranging displays keeps the same
 display's identity and reports the move as a geometry revision on the next frame,
 while a mode change — which changes the shape of what capture produces — is a new
@@ -1151,7 +1155,10 @@ that state — not a producer surface, not the pool, and not the stream, all of 
 close releases whether or not a frame is still held. The pool is
 non-blocking in both directions: exhaustion and lock contention both produce an
 observable sequence gap rather than a wait, an overwrite, or an unbounded
-allocation. Eight buffers is a reviewed bound rather than a measured one — these are
+allocation. What a surface may cost is bounded in bytes and not only per axis, because
+the two are far apart — an extent inside the per-axis limit on both sides is four
+gibibytes of BGRA — and a target beyond the byte ceiling is refused when it is
+discovered rather than when it is opened. Eight buffers is a reviewed bound rather than a measured one — these are
 full-frame CPU allocations rather than the GPU textures the Windows Adapter budgets
 — and the Phase 2 [`G-013`](validation-gates.md#g-013) budgets remain open.
 

@@ -685,6 +685,19 @@ static bool mp_shim_window_frame(CGWindowID window, CGRect *out_frame) {
     return resolved;
 }
 
+/*
+ * Reports whether a surface of this extent is within the byte ceiling.
+ *
+ * Both axes are needed at once, which is why this is separate from the per-axis
+ * check: the product is the quantity that decides what gets allocated, and the axes
+ * bound only what the conversions can express. The multiplication is widened because
+ * the point of the check is that the 32-bit product overflows.
+ */
+static bool mp_shim_surface_within_limit(uint32_t width, uint32_t height) {
+    uint64_t bytes = (uint64_t)width * (uint64_t)height * 4ull;
+    return bytes <= (uint64_t)MP_SHIM_MAX_SURFACE_BYTES;
+}
+
 static uint32_t mp_shim_pixels_from_points(double points, double scale) {
     double pixels = points * scale;
     if (!isfinite(pixels) || pixels < 1.0) {
@@ -788,7 +801,10 @@ static MPShimInventoryEntry *mp_shim_window_entry(id<MPShimWindow> window) {
     double scale = mp_shim_scale_for_frame(frame);
     uint32_t pixel_width = mp_shim_pixels_from_points(frame.size.width, scale);
     uint32_t pixel_height = mp_shim_pixels_from_points(frame.size.height, scale);
-    if (pixel_width == 0 || pixel_height == 0) {
+    if (pixel_width == 0 || pixel_height == 0 ||
+        !mp_shim_surface_within_limit(pixel_width, pixel_height)) {
+        /* Refused at discovery rather than at open: a target this size cannot be
+         * captured, and listing it would offer the caller something that fails. */
         return nil;
     }
 
@@ -830,7 +846,10 @@ static MPShimInventoryEntry *mp_shim_display_entry(id<MPShimDisplay> display) {
     double scale = mp_shim_display_backing_scale(identifier);
     uint32_t pixel_width = mp_shim_pixels_from_points(frame.size.width, scale);
     uint32_t pixel_height = mp_shim_pixels_from_points(frame.size.height, scale);
-    if (pixel_width == 0 || pixel_height == 0) {
+    if (pixel_width == 0 || pixel_height == 0 ||
+        !mp_shim_surface_within_limit(pixel_width, pixel_height)) {
+        /* Refused at discovery rather than at open: a target this size cannot be
+         * captured, and listing it would offer the caller something that fails. */
         return nil;
     }
 
@@ -1532,9 +1551,20 @@ static bool mp_shim_session_valid(const struct mp_shim_session *session) {
     return session != NULL && session->magic == MP_SHIM_SESSION_MAGIC;
 }
 
+/*
+ * Finds the window or display the request names, in a snapshot of its own.
+ *
+ * A window is matched on its owner as well as its number. The number alone does not
+ * name an incarnation, because macOS recycles it: an application that closes a window
+ * and opens another can be handed the same number, and matching on the number alone
+ * then captures a window the caller never asked for — another application's, if the
+ * number crossed processes. The caller records the owner for exactly this reason and
+ * cannot enforce it here, because this open queries the shareable content again
+ * rather than reusing what the caller validated.
+ */
 static id mp_shim_find_native_target(const MPShimFramework *framework, uint32_t kind,
-                                     uint64_t native_id, uint64_t timeout_nanos,
-                                     mp_shim_status *out_status) {
+                                     uint64_t native_id, int64_t owner_process,
+                                     uint64_t timeout_nanos, mp_shim_status *out_status) {
     id content = mp_shim_shareable_content(framework, timeout_nanos, out_status);
     if (content == nil) {
         return nil;
@@ -1542,10 +1572,21 @@ static id mp_shim_find_native_target(const MPShimFramework *framework, uint32_t 
     id<MPShimShareableContent> shareable_content = (id<MPShimShareableContent>)content;
     if (kind == MP_SHIM_TARGET_WINDOW) {
         for (id window in shareable_content.windows) {
-            if (((id<MPShimWindow>)window).windowID == (uint32_t)native_id) {
+            id<MPShimWindow> typed = (id<MPShimWindow>)window;
+            if (typed.windowID != (uint32_t)native_id) {
+                continue;
+            }
+            id owner = typed.owningApplication;
+            int64_t owned_by =
+                owner == nil ? 0 : (int64_t)((id<MPShimRunningApplication>)owner).processID;
+            if (owned_by == owner_process) {
                 *out_status = MP_SHIM_OK;
                 return window;
             }
+            /* The number matched and the owner did not, so this is a different
+             * incarnation rather than the target that was asked for. */
+            *out_status = MP_SHIM_TARGET_LOST;
+            return nil;
         }
     } else {
         for (id display in shareable_content.displays) {
@@ -1597,7 +1638,9 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     if (request == NULL || request->struct_size < sizeof(mp_shim_open_request) ||
         request->frame_callback == NULL || request->pixel_width == 0 ||
         request->pixel_height == 0 || request->pixel_width > MP_SHIM_MAX_PIXEL_EXTENT ||
-        request->pixel_height > MP_SHIM_MAX_PIXEL_EXTENT || request->detached_budget == 0 ||
+        request->pixel_height > MP_SHIM_MAX_PIXEL_EXTENT ||
+        !mp_shim_surface_within_limit(request->pixel_width, request->pixel_height) ||
+        request->detached_budget == 0 ||
         request->detached_budget > MP_SHIM_MAX_DETACHED_BUDGET ||
         (request->kind != MP_SHIM_TARGET_WINDOW && request->kind != MP_SHIM_TARGET_DISPLAY)) {
         return MP_SHIM_INVALID_ARGUMENT;
@@ -1620,7 +1663,7 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
      */
     mp_shim_status located = MP_SHIM_PLATFORM_FAILURE;
     id target = mp_shim_find_native_target(framework, request->kind, request->native_id,
-                                           request->timeout_nanos, &located);
+                                           request->owner_process, request->timeout_nanos, &located);
     if (target == nil) {
         return located;
     }
@@ -1799,7 +1842,8 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
 mp_shim_status mp_shim_session_reconfigure(mp_shim_session *session, uint32_t pixel_width,
                                            uint32_t pixel_height, uint64_t timeout_nanos) {
     if (!mp_shim_session_valid(session) || pixel_width == 0 || pixel_height == 0 ||
-        pixel_width > MP_SHIM_MAX_PIXEL_EXTENT || pixel_height > MP_SHIM_MAX_PIXEL_EXTENT) {
+        pixel_width > MP_SHIM_MAX_PIXEL_EXTENT || pixel_height > MP_SHIM_MAX_PIXEL_EXTENT ||
+        !mp_shim_surface_within_limit(pixel_width, pixel_height)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     if (atomic_load(&session->closed)) {

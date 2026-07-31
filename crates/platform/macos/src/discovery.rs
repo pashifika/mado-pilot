@@ -28,7 +28,9 @@ use mado_pilot_core::{
     TargetCapability, TargetId, TargetKind, TargetPlacement,
 };
 
-use crate::shim::{self, Inventory, KIND_DISPLAY, KIND_WINDOW, MAX_SURFACE_EXTENT, ShimStatus};
+use crate::shim::{
+    self, Inventory, KIND_DISPLAY, KIND_WINDOW, MAX_SURFACE_BYTES, MAX_SURFACE_EXTENT, ShimStatus,
+};
 
 /// The stable native lookup key. It is never exposed through a public contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -90,6 +92,20 @@ impl NativeKey {
 pub(crate) enum Fingerprint {
     Window { owner_process: i64 },
     Display { extent: PixelExtent },
+}
+
+impl Fingerprint {
+    /// Returns the owning process an open must match, or zero when there is none.
+    ///
+    /// A display has no owner, and a window whose owner the framework did not name
+    /// records zero — which the native lookup treats as a value to match rather than
+    /// as an absent constraint, so that an unnamed owner cannot stand in for any.
+    pub(crate) const fn native_owner(self) -> i64 {
+        match self {
+            Fingerprint::Window { owner_process } => owner_process,
+            Fingerprint::Display { .. } => 0,
+        }
+    }
 }
 
 /// The mutable metadata one discovery pass observed for a target.
@@ -253,10 +269,14 @@ pub(crate) fn read_placement(key: NativeKey, extent: PixelExtent, scale: f64) ->
 /// `None` for anything the shim would refuse anyway, so a nonsensical live reading
 /// asks for no reconfiguration rather than an absurd surface.
 fn surface_for(size: (f64, f64), scale: f64) -> Option<PixelExtent> {
-    Some(PixelExtent::new(
-        surface_pixels(size.0, scale)?,
-        surface_pixels(size.1, scale)?,
-    ))
+    let width = surface_pixels(size.0, scale)?;
+    let height = surface_pixels(size.1, scale)?;
+    // The axes are bounded one at a time above; what gets allocated is their product,
+    // and the shim refuses a surface beyond its byte ceiling however the axes look.
+    if u64::from(width) * u64::from(height) * 4 > MAX_SURFACE_BYTES {
+        return None;
+    }
+    Some(PixelExtent::new(width, height))
 }
 
 #[expect(
@@ -513,6 +533,43 @@ mod tests {
         );
         assert_eq!(surface_for((f64::NAN, 10.0), 1.0), None);
         assert_eq!(surface_for((10.0, 10.0), f64::INFINITY), None);
+
+        // The extent bound is per axis and the allocation is their product, so a
+        // surface can sit inside the first and outside the second.
+        assert_eq!(
+            surface_for((8192.0, 8192.0), 1.0),
+            Some(PixelExtent::new(8192, 8192)),
+            "exactly the byte ceiling"
+        );
+        assert_eq!(
+            surface_for((8192.0, 8193.0), 1.0),
+            None,
+            "past the byte ceiling with both axes well inside the extent bound"
+        );
+    }
+
+    #[test]
+    fn only_a_window_carries_an_owner_into_the_native_lookup() {
+        assert_eq!(
+            Fingerprint::Window {
+                owner_process: 4321
+            }
+            .native_owner(),
+            4321,
+            "the owner the discovery pass recorded is what an open must match"
+        );
+        assert_eq!(
+            Fingerprint::Display {
+                extent: PixelExtent::new(2560, 1600)
+            }
+            .native_owner(),
+            0,
+            "a display has no owning process"
+        );
+        // A window the framework named no owner for records zero, and the lookup
+        // matches that value rather than treating it as no constraint — otherwise an
+        // unnamed owner would stand in for every owner.
+        assert_eq!(Fingerprint::Window { owner_process: 0 }.native_owner(), 0);
     }
 
     #[test]

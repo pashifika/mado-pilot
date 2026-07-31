@@ -45,6 +45,14 @@ pub(crate) const PIXEL_BGRA8: u32 = 0;
 /// does not ask.
 pub(crate) const MAX_SURFACE_EXTENT: u32 = 32768;
 
+/// The largest producer surface the shim accepts in bytes, mirroring
+/// `MP_SHIM_MAX_SURFACE_BYTES`.
+///
+/// Separate from the extent above because it bounds a different quantity: two axes
+/// inside that limit still multiply to four gibibytes. Mirrored here for the same
+/// reason the extent is — the Adapter does not ask for what would be refused.
+pub(crate) const MAX_SURFACE_BYTES: u64 = 268_435_456;
+
 /// Test seams the shim exposes for the four ADR 0012 injection positions.
 #[cfg(test)]
 pub(crate) const RAISE_AT_START: u32 = 1;
@@ -332,6 +340,12 @@ pub(crate) struct OpenRequest {
     pub(crate) kind: u32,
     /// The native identity the discovery pass recorded.
     pub(crate) native_id: u64,
+    /// The owning process the identity was validated against, or zero for a display.
+    ///
+    /// Carried so that the shim's own lookup applies the rule the caller applied to
+    /// its own snapshot: a window number is recycled, so the number alone does not
+    /// name the incarnation that was discovered.
+    pub(crate) owner_process: i64,
     /// The producer surface size, in capture pixels.
     pub(crate) extent: PixelExtent,
     /// Producer queue depth. The shim clamps this to its reviewed range.
@@ -373,6 +387,7 @@ impl Session {
                 .expect("structure size fits u32"),
             kind: request.kind,
             native_id: request.native_id,
+            owner_process: request.owner_process,
             pixel_width: request.extent.width(),
             pixel_height: request.extent.height(),
             queue_depth: request.queue_depth,
@@ -856,6 +871,7 @@ struct NativeOpenRequest {
     struct_size: u32,
     kind: u32,
     native_id: u64,
+    owner_process: i64,
     pixel_width: u32,
     pixel_height: u32,
     queue_depth: u32,
@@ -947,11 +963,13 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        ABI_VERSION, DEFAULT_NATIVE_WAIT, FrameInfo, MAX_NATIVE_WAIT, OpaqueFrame, ShimStatus,
+        ABI_VERSION, DEFAULT_NATIVE_WAIT, FrameInfo, KIND_DISPLAY, MAX_NATIVE_WAIT,
+        MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest, Session, ShimStatus,
         contained_frame_callback, contained_stopped_callback, declared_layout, linked_layout,
         live_objects, monotonic_nanos, nanos,
     };
     use mado_pilot_capture::CaptureFault;
+    use mado_pilot_core::PixelExtent;
 
     /// Runs `body` with panic reporting suppressed, so a deliberately panicking
     /// callback does not print a backtrace over the test output.
@@ -969,6 +987,63 @@ mod tests {
 
         assert_eq!(version, ABI_VERSION);
         assert_eq!(sizes, declared_layout());
+    }
+
+    /// A surface the shim would refuse to allocate is refused before it tries.
+    ///
+    /// Deterministic on any host, and that is a property of where the check sits: the
+    /// request is validated before the framework is loaded and before authorization is
+    /// consulted, so this runs where the capture scenarios report a skip — including a
+    /// continuous-integration runner, which is the only place the pool allocation
+    /// itself could never be attempted.
+    #[test]
+    fn a_surface_larger_than_the_byte_ceiling_is_refused_before_anything_is_allocated() {
+        extern "C" fn unreached_frame(
+            _context: *mut c_void,
+            _frame: *mut OpaqueFrame,
+            _info: *const FrameInfo,
+        ) -> u32 {
+            unreachable!("the request is refused before a producer exists")
+        }
+        extern "C" fn unreached_stopped(_context: *mut c_void, _status: u32) {
+            unreachable!("the request is refused before a producer exists")
+        }
+
+        // `kCGNullDirectDisplay`, so no host resolves it. The request is refused
+        // before the lookup in the case this is about, and by the lookup in the case
+        // it is contrasted against, and neither opens a producer either way.
+        let open = |width: u32, height: u32| {
+            let request = OpenRequest {
+                kind: KIND_DISPLAY,
+                native_id: u64::from(u32::MAX),
+                owner_process: 0,
+                extent: PixelExtent::new(width, height),
+                queue_depth: 3,
+                detached_budget: 8,
+                wait: DEFAULT_NATIVE_WAIT,
+                testing_raise_sites: 0,
+            };
+            Session::open(
+                &request,
+                std::ptr::null_mut(),
+                unreached_frame,
+                unreached_stopped,
+            )
+            .err()
+        };
+
+        // Both axes are inside the per-axis limit and their product is four
+        // gibibytes. The axis bound is what protects the conversions; it never
+        // protected the allocation, and the two are thirty-two times apart.
+        assert_eq!(
+            open(MAX_SURFACE_EXTENT, MAX_SURFACE_EXTENT),
+            Some(ShimStatus::InvalidArgument)
+        );
+
+        // 8192 x 8192 BGRA is exactly the ceiling, so the boundary is inclusive: this
+        // request is refused for whatever this host says about an absent display or
+        // its authorization, but never as a malformed one.
+        assert_ne!(open(8192, 8192), Some(ShimStatus::InvalidArgument));
     }
 
     #[test]
