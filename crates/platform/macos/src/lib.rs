@@ -7,8 +7,8 @@
 //!
 //! The implementation is target-gated: off macOS this crate keeps an empty,
 //! documented seam and resolves no macOS dependency. macOS builds expose
-//! [`MacosCaptureProvider`] for picker-free discovery and capture, and
-//! [`MacosPermissionProbe`] for the two authorizations macOS grants separately.
+//! `MacosCaptureProvider` for picker-free discovery and capture, and
+//! `MacosPermissionProbe` for the two authorizations macOS grants separately.
 //!
 //! # The native boundary
 //!
