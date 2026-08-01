@@ -39,11 +39,11 @@ Version one targets two platforms, and each is verified natively:
 | Release target | Native verification host |
 |---|---|
 | `x86_64-pc-windows-msvc` | `windows-2025` |
-| `aarch64-apple-darwin` | `macos-15` |
+| `aarch64-apple-darwin` | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 
 A cross-compiled result never stands in for native verification of the other
-target. The exact minimum supported Windows and macOS versions are unresolved; see
-gate [`G-001`](validation-gates.md#g-001).
+target. The Windows minimum remains unresolved; ADR 0014 fixes the macOS deployment
+floor to the qualified host above. See gate [`G-001`](validation-gates.md#g-001).
 
 ### Platform baseline
 
@@ -57,8 +57,9 @@ capture; input remains planned on both. The table records that current boundary.
 | Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and Core Video frame lifetime (implemented) |
 | Input ownership | Explicit system and background delivery implementations (planned) | `CGEvent` input (planned) |
 | Permission handling | Capture presents no permission UI; integrity and UIPI reporting remain planned | Screen Recording and Accessibility reported separately without permission UI (implemented) |
-| Native verification host | `windows-2025` | `macos-15` |
-| Open gates | [`G-001`](validation-gates.md#g-001) | [`G-001`](validation-gates.md#g-001) |
+| Native verification host | `windows-2025` | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
+| Deployment floor | unresolved | macOS 26.5.2; older versions unsupported |
+| Open gates | [`G-001`](validation-gates.md#g-001) minimum | [`G-001`](validation-gates.md#g-001) replacement acceptance |
 
 Detailed capabilities, permission outcomes, coordinate transforms, native
 resource ownership, and unsupported-system behavior are added by the changes
@@ -103,8 +104,8 @@ disable-and-drain before a caller may release registered state, and the host
 callback is never invoked under an internal lock; close is idempotent and completes
 its release even when it reports a failure; every Rust callback catches its own
 panics, because an escaping one aborts the process; and the shim's own build owns
-framework linkage and availability gating for anything newer than the deployment
-minimum, rather than inheriting a binding crate's link attribute. The internal
+framework linkage and runtime surface validation, rather than inheriting a binding
+crate's link attribute. The internal
 surface is not a public ABI: it is not installed, and the compatibility policy in
 [c-abi.md](c-abi.md) does not cover it. A test asserts that the compiled shim and
 the Rust declarations that mirror it agree on version and structure sizes.
@@ -118,17 +119,19 @@ on the final link — measured on a two-package workspace, where the flag produc
 load command at all. The shim therefore loads ScreenCaptureKit from its absolute
 system location, resolves its classes by name and its exported attachment keys by
 symbol, and gates every use behind `@available`. Every other framework it needs
-predates any minimum this project could select and is linked normally. The
-observable property the rule exists for is unchanged and is now tested: a binary
-linking the Adapter carries no load command for the capture framework, so an
-unsupported host reports `Unsupported` instead of failing to load. What that test
-cannot do is exercise such a host, because the framework is present on every
-verification host available here.
+is part of the 26.5.2 baseline and is linked normally. The tested property is now
+restricted ambient resolution: a binary carries no ScreenCaptureKit load command,
+and a missing required class or attachment key reports `Unsupported`. The final
+artifact itself declares 26.5.2 and is not promised to load on an older host.
 
-The minimum supported macOS version remains
-[`G-001`](validation-gates.md#g-001). This decision constrains it in one direction
-only — whatever minimum `G-001` settles on, the shim defers loading and
-availability-gates anything newer.
+The macOS half of [`G-001`](validation-gates.md#g-001) is fixed by
+[ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md): Apple Silicon
+macOS 26.5.2 (25F84), SDK 26.5, is the qualified implementation and deployment
+floor. Earlier macOS versions are unqualified and unsupported. The workspace Cargo
+configuration places that version in final Rust artifact metadata and the shim
+repeats it for native objects. The automated permissioned live suite and manual
+cross-scale movement probe passed on that host; exact owned-window replacement
+remains an acceptance item. The Windows minimum remains open.
 
 ## Integration surfaces
 
@@ -576,7 +579,7 @@ verification, and reports three stable check names:
 |---|---|---|
 | `Repository policy` | `ubuntu-latest` | Package inventory, dependency directions, formatting, dependency policy |
 | `Windows x86_64-pc-windows-msvc` | `windows-2025` | Native inventory, lint, test, doctest, and documentation checks, and the C ABI and C++ wrapper check |
-| `macOS aarch64-apple-darwin` | `macos-15` | Native inventory, lint, test, doctest, and documentation checks, and the C ABI and C++ wrapper check |
+| `macOS aarch64-apple-darwin` | `macos-26` | Native inventory, lint, test, doctest, and documentation checks, and the C ABI and C++ wrapper check |
 
 That split is not incidental, so the rule behind it is recorded here rather than
 inferred from the table. The `Repository policy` job builds no product package,
@@ -1100,7 +1103,7 @@ composition root.
 
 `mado-pilot-platform-macos` owns non-prompting authorization probes,
 shareable-content discovery, ScreenCaptureKit streams, Core Video frame lifetime,
-Retina and signed multi-display transforms, the internal Objective-C shim, and
+Retina and same-frame signed multi-display transforms, the Objective-C shim, and
 bounded teardown. No Objective-C, Core Video, or ScreenCaptureKit type reaches a
 Rust seam.
 
@@ -1132,29 +1135,54 @@ native check returns an error code, so inventing one would make the report look 
 though it had consulted something it had not.
 
 Discovery is picker-free and deterministic: windows and displays are ordered by
-kind, then lowercased name, then native key, so two passes over an unchanged
-desktop produce the same identities in the same order. A window carries its owning
-process alongside its window number, because macOS reuses window numbers and a
-replacement from another process is a different target. Opening one matches on both,
-not only on the number: an open resolves the target against a snapshot of its own, so
-carrying the owner no further than the caller's own comparison would let a recycled
-number reach capture — and the window captured could belong to another application.
-The framework reports that owner as optional, and a window without one is not listed
-at all, because the owning process is the whole of a window's identity here and two
-windows lacking it would be indistinguishable. Offering such a window would be
-offering an identity this Adapter cannot stand behind; on the verification host every
-on-screen, layer-zero window the framework reported had a named owner. A
-display carries its
-captured extent rather than its placement, so rearranging displays keeps the same
-display's identity and reports the move as a geometry revision on the next frame,
-while a mode change — which changes the shape of what capture produces — is a new
-incarnation. No vendor, model, or serial number is read: those describe the user's
-hardware, and the extent answers the question being asked.
+kind, then lowercased name, then native key. Determinism applies to snapshot order,
+not public identity: every successful discovery pass mints fresh `TargetId` values.
+While that pass still owns the native inventory, each candidate is converted
+transactionally into an `SCContentFilter` for the selected `SCWindow` or `SCDisplay`.
+That retained filter, not the window number, display number, owner process, title,
+bounds, or an Objective-C wrapper address, is the selection authority carried into
+open. Open gives the retained filter directly to `SCStream` and performs no later
+inventory query or identifier lookup that could select a replacement.
+
+The provider keeps only the current and immediately previous discovery generations
+openable. This finite lease lets a caller discover and then open even if one newer
+snapshot committed concurrently; an older unopened identity reports target loss.
+Candidates, filters, identities, and descriptions are staged first; a generation is
+installed and an older lease evicted only after the discovery operation's final
+deadline/cancellation arbitration commits success. A caller that receives a late
+interruption therefore cannot silently change which identities remain openable.
+An opened session owns its filter independently and is unaffected by registry
+eviction or later discovery. The Adapter never compares wrappers across snapshots:
+qualified-host evidence shows that ScreenCaptureKit changes wrapper objects and
+numeric identifiers even when the underlying targets are unchanged. Consequently,
+fresh discovery cannot itself prove target loss. Loss is reported only from explicit
+ScreenCaptureKit no-source/no-list outcomes or stream-stop outcomes whose meaning the
+framework defines. Geometry and visibility from a later inventory never enter an
+open session or a frame publication.
+
+A window still carries its owning process alongside its window number as descriptive
+metadata repeated at the native boundary. The framework reports that owner as
+optional, and a window without one is not listed. On the verification host every
+on-screen, layer-zero window the framework reported had a named owner. A display
+carries its captured extent rather than its placement because the extent supplies
+the opening producer size while placement belongs to each frame. Every later
+discovery mints a fresh identity regardless of movement or mode. No vendor, model,
+or serial number is read: those describe the user's hardware and cannot strengthen
+the retained-filter selection.
 
 A producer surface belongs to a queue of fixed depth, so no public frame owns one.
-The producer callback validates the frame, copies its content into an Adapter-owned
-Core Video buffer from a finite pool, and publishes that detached buffer; a retained
-public frame therefore pins nothing capture needs to make progress. What it does keep
+The first producer callback validates the frame and copies its content into one
+capacity-one Adapter-owned Core Video staging slot. After that callback returns,
+native delivery completes every remaining throwing step and invokes a separate
+contained commit callback as its last fallible operation. Only that callback takes
+the staged buffer, accounts for the transition, and publishes it. A native exception
+before commit terminalizes the session, whose stopped callback releases the staged
+buffer before publishing the terminal state; a later or duplicate commit then sees
+an empty slot. A retained public frame therefore pins nothing capture needs to make
+progress. Neither callback performs a shareable-content query, native wait, CPU
+mapping, matching, input, or host callback. Reconfiguration is offered to a separate
+finite latest-wins worker, and contention, coalescing, or shutdown rejection is an
+observable sequence gap. What a public frame does keep
 alive is the session's own bookkeeping allocation, because returning its lease reads
 that state — not a producer surface, not the pool, and not the stream, all of which
 close releases whether or not a frame is still held. The pool is
@@ -1163,12 +1191,12 @@ observable sequence gap rather than a wait, an overwrite, or an unbounded
 allocation. What a surface may cost is bounded in bytes and not only per axis, because
 the two are far apart — an extent inside the per-axis limit on both sides is four
 gibibytes of BGRA — and a target beyond the byte ceiling is refused when it is
-discovered rather than when it is opened. Refusing it there has a consequence worth
-stating: an absent candidate is target loss by construction, so a live window that grew
-past the ceiling would be reported as having disappeared and would receive a new
-identity if it shrank back, while an already-open session on it reports no such thing.
-No window a host can present approaches the ceiling, so which of the two refusal points
-serves a caller better is left to real use rather than settled here. Eight buffers is a reviewed bound rather than a measured one — these are
+discovered rather than when it is opened. Refusing it there means the oversized
+target receives no identity in that snapshot; an identity from the immediately
+previous generation remains usable only for its finite lease, while an already-open
+session is unaffected. No window a host can present approaches the ceiling, so which
+of the two refusal points serves a caller better is left to real use rather than
+settled here. Eight buffers is a reviewed bound rather than a measured one — these are
 full-frame CPU allocations rather than the GPU textures the Windows Adapter budgets
 — and the Phase 2 [`G-013`](validation-gates.md#g-013) budgets remain open.
 
@@ -1179,17 +1207,25 @@ conversion runs at a time and the rest wait for its result rather than each copy
 the same buffer; a conversion that finishes after it may no longer commit releases
 its bytes instead of caching them.
 
-Geometry is frame-authoritative. The producer reports the backing scale and the
-content rectangle for each frame, and placement is re-read at frame arrival, so a
-retained frame never consults live host geometry after publication. macOS measures
-both the desktop and each target in one continuous plane of points with a top-left
-origin on the main display, and capture pixels per point is the target display's
-backing scale, so a target's own scale and the desktop's are the same factor and no
-independent desktop scale is needed. That is a real difference from the Windows
-Adapter, whose desktop plane is measured in physical pixels. Adjacent displays of
-different scale therefore share one seam in points. A logical size that contradicts
-the captured extent is refused rather than scaled to fit, because the two
-observations would be describing different rectangles.
+Every published macOS frame takes extent, content rectangle, effective scale, and
+onscreen placement from that sample buffer's frame-information dictionary.
+`SCStreamFrameInfoScreenRect` is the same-frame placement authority; the shim
+requires it, validates finite signed origin and positive size, and checks its logical
+size against content extent divided by `scaleFactor × contentScale`. Missing or a
+full logical-point contradiction advances observable drop accounting and publishes
+nothing. Session and target descriptors report
+`CoordinateSupport::with_target_placement()`, so capture-pixel, normalized,
+target-logical, and desktop-logical conversions all use immutable metadata attached
+to their own frame.
+
+No shareable-content snapshot is acquired for a frame. Snapshot placement and scale
+never enter a publication or transition, and no wrapper comparison attempts to infer
+identity or loss. The shim keeps two same-sample scale facts distinct:
+`scaleFactor × contentScale` is the effective scale that describes the current
+pixels, while `screenRect.size × scaleFactor` is rounded and bounded into an optional
+source-resolution producer-capacity recommendation. The latter has no publication
+authority. It can only ask the finite reconfiguration worker to enlarge a future
+surface; no later inventory geometry is assigned to earlier pixels.
 
 Orientation is normalized by not mixing conventions rather than by converting
 between them. macOS has two: AppKit measures a window's frame from the bottom-left
@@ -1199,20 +1235,33 @@ The Adapter reads only the second, so there is no vertical flip anywhere in it, 
 an AppKit rectangle entering later would be a defect rather than a conversion to
 add.
 
-A content extent that changes is a discontinuity: the transition frame is dropped,
-the next frame carries it, and a new producer surface is requested. The size asked for
-is the one the target needs at its own display's backing scale, read from the live
-target rather than taken from the frame in hand: the framework scales a target down to
-fit a surface too small to hold it and reports the reduced size, so a request sized
-from that content would adopt the reduction and ask for less again on the next frame.
-A surface that is already the size the target needs is left alone, because content
-short of it is the framework mid-resize rather than a container to replace. That
-request is carried out by a worker rather than by the callback, because the framework's
-reconfiguration is asynchronous and completing it on the sample queue would stall
-delivery; if the worker cannot start, the session keeps publishing the content that
-fits the surface it already has rather than failing. Observed movement drops the
-transition frame and any already-queued frame whose producer timestamp predates the
-move, then publishes the first stable frame with `GeometryChanged`. Frame timestamps
+A content extent that changes is a discontinuity: the transition frame is dropped
+and the next frame carries it under a new epoch. For a window, the shim derives a
+prospective surface recommendation from the current sample's validated `screenRect`
+and raw display-resolution `scaleFactor`. It accepts only finite factors in the SDK's
+`[1, 4]` range and recommendations inside both the 32,768-per-axis and 256 MiB BGRA
+pair limits. A surface grows when either recommended axis exceeds its capacity; an
+oversized surface is retained as a high-water envelope, so moving back to 1x does not
+immediately discard the capacity needed for a later 2x move. A recommendation that
+cannot satisfy the limits is omitted and capture continues at its self-consistent
+reduced extent without shrinking an existing window surface. Display capture alone
+retains the prior same-frame content-extent reconfiguration path when no window hint
+exists.
+
+The request is carried out by a worker rather than by the callback, because the
+framework's reconfiguration is asynchronous and completing it on the sample queue
+would stall delivery. The callback publishes the latest requested extent through one
+atomic slot and a capacity-one non-blocking wake channel; bursts coalesce to the
+newest extent, and coalescing or shutdown rejection advances observable drop
+accounting. The session retains the worker join handle. Close first refuses new
+requests and drains or joins any request already in flight; bounded Drop quarantines
+the session state on
+a helper thread when that drain cannot finish immediately, so native teardown never
+overtakes reconfiguration work. If the worker cannot start, the session keeps
+publishing the content that fits the surface it already has rather than failing.
+Movement carried by a frame's `screenRect` is a geometry change; an extent change is
+a discontinuity. A later inventory snapshot neither validates nor annotates that
+frame and cannot terminate the retained-filter session. Frame timestamps
 come from the producer's own clock, calibrated once into the project monotonic
 clock from a host-clock sample bracketed by project-clock samples, so callback
 delivery latency does not shift the frame timeline. The framework reports that clock
@@ -1221,19 +1270,31 @@ every timestamp crossing it carries the unit the boundary declares. What it repo
 is a frame's *display* time, so a frame handed over before the refresh it was
 scheduled for carries a timestamp shortly ahead of its delivery.
 
+Callback-boundary failures are terminal and one-shot. A native exception around
+frame delivery or a non-success status returned by the contained Rust trampoline
+stops admission and enters the same atomic terminal-report gate as a producer stop.
+The resulting typed stopped callback runs exactly once and without an admission,
+native-slot, pool, transition, or close mutex held; a later producer stop or close
+cannot replace or duplicate that first outcome. Detach and publication are split so
+an exception after the first Rust callback cannot race a staged frame into a waiter:
+terminal cleanup owns discard, and publication starts only after that exception site.
+
 Teardown is retryable and idempotent. Close stops admitting callbacks, shuts down
-the reconfiguration worker, joins a capture start still in flight, fences until no
-callback is in flight, removes the stream output, stops the producer, and releases
-native state in a defined order. Joining the start is what keeps its outcome
+and drains the reconfiguration worker, joins a capture start still in flight,
+removes the stream output, stops the producer, fences until no callback is in flight,
+clears any staged frame, and releases native state in explicit resumable phases. A dedicated close claim
+allows only one caller to advance those phases, but its mutex is released before
+every native wait; another close waits only within its own deadline. Joining the start is what keeps its outcome
 reportable: a start can outlive the wait its own caller gave it, and settling after
 teardown had finished would leave that outcome with nowhere to go, since open has
 returned and a successful fence has already released the state a callback would reach.
-Close therefore reads a settled result and reports it as its own. The
-fence and the native stop are each bounded by a slice of the caller's remaining
-budget, and a native wait that expires becomes the caller's own deadline or
-cancellation rather than a fault, so a cancelled close leaves a state a later close
-finishes. Release completes even when close reports a failure, and a close failure
-is reported once rather than by every later close. The strong reference the shim
+Close therefore reads a settled result and reports it as its own. Start, stop, and
+fence gates remain pending when one wait expires, and the saved phase is resumed by
+the same caller or a later close rather than restarted. Each wait is bounded by a
+slice of the caller's remaining budget, and expiry becomes the caller's own deadline
+or cancellation rather than a fault. Release completes even when close reports a
+non-timeout failure, and that failure is reported once rather than by every later
+close. The strong reference the shim
 holds as its callback context is reclaimed only after a fence proves no callback can
 reach it; if a fence never succeeds, that one reference stays quarantined rather
 than being freed under a live callback. That fence covers the producer's terminal
@@ -1246,10 +1307,10 @@ An open that is interrupted before it returns tears down whatever it had reached
 registration handed to the shim, and the native session once there is one, are owned
 for the whole window in which an open can still fail, so a caller whose deadline
 expires mid-open is not told the open failed while capture continues behind it. One
-residue is stated rather than claimed away: when even teardown's own budget expires
-before a start settles, the start stops the producer itself when it finally completes,
-and that stop's failure has no caller left to receive it. Everything short of that
-reports through the close that waited.
+bounded drop attempt drains auxiliary work and advances teardown; if either cannot
+settle in that budget, a quarantined helper retains both the native session and the
+callback-visible Rust state and resumes the same phases. A late start therefore
+cannot escape teardown or perform an unreported orphan stop.
 
 The session's own native allocation is reference counted rather than owned by the
 handle, because a retained frame, a producer callback, and the handle can each be the
@@ -1282,13 +1343,33 @@ system stop is reported as the stream having ended, which is what is known.
 This is an implementation claim, not release acceptance. Its enforceability is
 uneven and the tables above say which cases run where: the scenarios that drive a
 real stream need a host that has granted Screen Recording, and they report a skip
-with that reason rather than a pass anywhere else. All of them have been run on an
-authorized Apple Silicon host with three displays attached — one of them left of the
-main display and set to a 1x mode, so signed desktop origins and a seam between
-differing scales are measured rather than only computed; a continuous-integration run
-is not where that evidence comes from. The seam is converted through each display's
-own frame at its own scale and resolves to the same coordinate, which is the property
-this section claims and the Windows plane cannot offer.
+with that reason rather than a pass anywhere else. Earlier authorized-host runs
+measured signed origins and mixed-scale seams from shareable-content snapshots. The
+current suite additionally compares each produced display frame's attached
+`screenRect` origin, logical size, and scale against that inventory and exercises
+signed window conversion when such a window exists. It also verifies that a fresh
+discovery snapshot does not terminate an already-producing session. A host that
+skips these for missing Screen Recording has verified neither the placement plane
+nor the live retained-filter path. The 2026-08-01 qualified-host ASan run exercised
+those live paths and passed all 95 library tests with no sanitizer finding. Two
+pre-fix manual runs then kept producing while the window moved fully onto a 2x
+display, but the old surface filled with reduced 1x-effective content and never
+requested growth; fresh discovery after close alone saw 2x. The SDK contract and
+code path identified the lost raw-scale distinction, although those two raw values
+were not printed by the probe. That evidence motivated the distinct same-sample
+capacity recommendation above.
+
+The hardened permissioned probe subsequently passed 2/2 on the repaired tree. Over
+4,097 frames and 3,401 observed transitions it recorded 3,371 same-scale moves and
+30 cross-scale moves, with epochs advancing exactly from 0 through 30. Both scale-1
+1718x1108 and scale-2 3436x2216 frames were published, the stream did not stall, and
+the final frame agreed with the post-close placement reading. Cross-scale movement
+acceptance is therefore closed on the qualified host. A fresh post-repair ASan build
+also passed all 101 library tests with live capture scenarios running and no
+sanitizer finding; the manual movement probe itself used the ordinary debug build.
+Exact replacement remains a release oracle: a qualified-host run must prove that
+replacing an owned window after discovery never retargets its retained filter to the
+replacement.
 
 Two properties of that verification are worth stating, because they decide what a
 green run means. A scenario whose subject is what happens *as frames arrive*

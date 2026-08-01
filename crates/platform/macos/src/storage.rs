@@ -71,6 +71,21 @@ struct MappingState {
     pixels: Option<Arc<CpuPixels>>,
 }
 
+fn wait_for_mapping(
+    mapped: &Condvar,
+    state: MutexGuard<'_, MappingState>,
+    attempt: &mut Operation<'_>,
+) -> Result<()> {
+    let (state, _timeout) = mapped
+        .wait_timeout(state, MAPPING_POLL_INTERVAL)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    drop(state);
+    // The operation context owns a caller-supplied clock, so consult it only
+    // after releasing the mapping mutex.
+    attempt.checkpoint()?;
+    Ok(())
+}
+
 impl MacosFrameStorage {
     /// Wraps `frame` as the storage described by `descriptor`.
     pub(crate) fn new(descriptor: FrameDescriptor, frame: DetachedFrame) -> Arc<Self> {
@@ -134,12 +149,7 @@ impl FrameStorage for MacosFrameStorage {
                 drop(state);
                 break;
             }
-            let (_state, _timeout) = self
-                .mapped
-                .wait_timeout(state, MAPPING_POLL_INTERVAL)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            // The operation context is consulted with no lock held.
-            attempt.checkpoint()?;
+            wait_for_mapping(&self.mapped, state, &mut attempt)?;
         }
 
         let converted = self.convert();
@@ -172,11 +182,56 @@ impl FrameStorage for MacosFrameStorage {
 
 #[cfg(test)]
 mod tests {
-    use mado_pilot_capture::{CaptureFault, PixelFormat};
-    use mado_pilot_core::PixelExtent;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
-    use super::{DETACHED_BUFFER_BUDGET, descriptor_from_native};
+    use mado_pilot_capture::{CaptureFault, PixelFormat};
+    use mado_pilot_core::{Clock, MonotonicInstant, Operation, OperationContext, PixelExtent};
+
+    use super::{DETACHED_BUFFER_BUDGET, MappingState, descriptor_from_native, wait_for_mapping};
     use crate::shim::PIXEL_BGRA8;
+
+    #[derive(Debug)]
+    struct ReentrantMappingClock {
+        mapping: Arc<Mutex<MappingState>>,
+        reads: AtomicUsize,
+    }
+
+    impl Clock for ReentrantMappingClock {
+        fn now(&self) -> MonotonicInstant {
+            let mapping = self
+                .mapping
+                .try_lock()
+                .expect("the caller clock must not run under the mapping mutex");
+            drop(mapping);
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    #[test]
+    fn a_mapping_wait_releases_its_mutex_before_reading_the_caller_clock() {
+        let mapping = Arc::new(Mutex::new(MappingState {
+            active: true,
+            pixels: None,
+        }));
+        let clock = Arc::new(ReentrantMappingClock {
+            mapping: Arc::clone(&mapping),
+            reads: AtomicUsize::new(0),
+        });
+        let context = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+        let mut attempt = Operation::admit(&context).expect("mapping is admitted");
+        clock.reads.store(0, Ordering::Relaxed);
+        let state = mapping.lock().expect("mapping state is not poisoned");
+
+        wait_for_mapping(&std::sync::Condvar::new(), state, &mut attempt)
+            .expect("the unexpired mapping wait continues");
+
+        assert_eq!(clock.reads.load(Ordering::Relaxed), 1);
+    }
 
     #[test]
     fn a_published_descriptor_carries_no_adapter_row_padding() {

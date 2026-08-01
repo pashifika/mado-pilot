@@ -1,27 +1,19 @@
 #![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
 #![cfg(target_os = "macos")]
-//! Asserts that nothing newer than the deployment minimum is linked eagerly.
+//! Asserts the deployment metadata and controlled framework linkage.
 //!
-//! ADR 0012 requires that a capability newer than the declared minimum macOS
-//! version reports a status on an unsupported host rather than failing to load.
-//! The mechanism the shim uses is controlled dynamic loading rather than the
-//! `-weak_framework` the ADR named, because Cargo does not propagate a
-//! dependency's `rustc-link-arg` to the binary that consumes the dependency. This
-//! test pins the property that matters either way: a binary that links this
-//! Adapter carries no load command for the capture framework, so the dynamic
-//! loader has nothing to fail on.
-//!
-//! What this cannot do is exercise the unsupported host itself. The framework is
-//! present here, and no host without it is available to this repository's
-//! verification; that limit is recorded rather than glossed.
+//! The qualified implementation floor is macOS 26.5.2 on Apple Silicon. The
+//! workspace Cargo configuration owns the final Rust artifact's deployment target,
+//! while the shim build repeats it for native object files. ScreenCaptureKit stays
+//! controlled-loaded from its absolute system path, so no ambient or eager framework
+//! resolution enters the final binary.
 
 use std::process::Command;
 
 use mado_pilot_core::{OperationContext, PermissionProbe};
 use mado_pilot_platform_macos::MacosPermissionProbe;
 
-/// Frameworks the shim's build script declares. Every one of them predates any
-/// macOS version this project could select as its minimum.
+/// Frameworks the shim's build script declares eagerly.
 const EXPECTED_FRAMEWORKS: [&str; 6] = [
     "ApplicationServices",
     "CoreFoundation",
@@ -31,7 +23,7 @@ const EXPECTED_FRAMEWORKS: [&str; 6] = [
     "Foundation",
 ];
 
-/// The framework that arrived in macOS 12.3 and must not be a load command.
+/// The framework whose absolute-path loading must not become an eager load command.
 const DEFERRED_FRAMEWORK: &str = "ScreenCaptureKit";
 
 /// Forces the shim into this binary's link.
@@ -57,6 +49,33 @@ fn load_commands() -> Option<String> {
         return None;
     }
     String::from_utf8(output.stdout).ok()
+}
+
+fn build_commands() -> Option<String> {
+    link_the_shim();
+    let executable = std::env::current_exe().ok()?;
+    let output = Command::new("otool")
+        .arg("-l")
+        .arg(&executable)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+#[test]
+fn the_final_artifact_declares_the_qualified_deployment_floor() {
+    let Some(commands) = build_commands() else {
+        println!("skipped: otool is unavailable, so build metadata cannot be inspected");
+        return;
+    };
+
+    assert!(
+        commands.lines().any(|line| line.trim() == "minos 26.5.2"),
+        "the final artifact does not declare macOS 26.5.2:\n{commands}"
+    );
 }
 
 #[test]

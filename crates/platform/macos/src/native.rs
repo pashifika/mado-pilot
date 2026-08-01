@@ -2,12 +2,11 @@
 //!
 //! # What the producer callback does
 //!
-//! Admission, validation, a non-blocking detach into Adapter-owned storage,
-//! frame-time geometry, accounting, and publication. It performs no CPU
-//! conversion, no matching, no input, no host callback, and no wait: a
-//! reconfiguration a resize needs is requested here and carried out by a worker,
-//! because the framework's own reconfiguration is asynchronous and completing it
-//! on the sample queue would stall delivery.
+//! Admission, same-frame metadata validation, and a bounded detach into one staged
+//! slot. Native delivery invokes a second contained callback to publish only after
+//! every remaining throwing native frame step has completed. No fresh inventory or
+//! native wait runs per frame. CPU conversion, matching, input, host callbacks, and
+//! native reconfiguration never run in either producer callback.
 //!
 //! # Lock order
 //!
@@ -18,10 +17,11 @@
 use std::ffi::c_void;
 use std::fmt;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
-use std::thread;
-use std::time::Duration;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use mado_pilot_capture::{
     CaptureFault, CaptureSession, Continuity, CoordinateSupport, Frame, FrameRequest, Lifecycle,
@@ -32,10 +32,10 @@ use mado_pilot_core::{
     SystemClock, TargetId, TargetKind, TargetPlacement,
 };
 
-use crate::discovery::{Fingerprint, NativeKey, PlacementReading, TargetMetadata, read_placement};
+use crate::discovery::{Fingerprint, NativeKey, TargetMetadata, frame_placement};
 use crate::shim::{
     self, BorrowedFrame, DEFAULT_NATIVE_WAIT, DetachedFrame, FrameInfo, MAX_NATIVE_WAIT,
-    OpenRequest, ShimStatus,
+    OpenRequest, ShimStatus, TargetToken,
 };
 use crate::storage::{DETACHED_BUFFER_BUDGET, MacosFrameStorage, descriptor_from_native};
 
@@ -46,17 +46,6 @@ const PRODUCER_QUEUE_DEPTH: u32 = 3;
 
 /// How long a caller contending for the close gate sleeps between attempts.
 const CLOSE_POLL_INTERVAL: Duration = Duration::from_millis(2);
-
-/// How many consecutive frames must disagree with the target's live geometry before
-/// the producer is asked for a different surface.
-///
-/// One frame is not enough, and that was measured rather than guessed. While a
-/// window is dragged, the window server briefly reports the size it will have on the
-/// display it is heading for, so a single frame disagrees and then agrees again.
-/// Reconfiguring on that blip changed the surface for one frame, and a surface change
-/// is a discontinuity — so a move that kept its extent was published as one, telling
-/// a caller its frames were incomparable when they were not.
-const UNSETTLED_BEFORE_RECONFIGURE: u32 = 3;
 
 pub(crate) struct NativeSession {
     description: SessionDescription,
@@ -69,6 +58,36 @@ pub(crate) struct NativeSession {
     close_reported: AtomicBool,
 }
 
+/// Everything selected discovery established for one native session open.
+pub(crate) struct SessionTarget {
+    target: TargetId,
+    stream: StreamId,
+    key: NativeKey,
+    fingerprint: Fingerprint,
+    selection: TargetToken,
+    metadata: TargetMetadata,
+}
+
+impl SessionTarget {
+    pub(crate) fn new(
+        target: TargetId,
+        stream: StreamId,
+        key: NativeKey,
+        fingerprint: Fingerprint,
+        selection: TargetToken,
+        metadata: TargetMetadata,
+    ) -> Self {
+        Self {
+            target,
+            stream,
+            key,
+            fingerprint,
+            selection,
+            metadata,
+        }
+    }
+}
+
 // SAFETY: `registered` is an `Arc::into_raw` pointer that is only read for its
 // address and only consumed in `Drop`. Everything it refers to is `Send`, and the
 // pointer itself is never dereferenced outside the shim callbacks, which hold
@@ -78,23 +97,24 @@ unsafe impl Send for NativeSession {}
 unsafe impl Sync for NativeSession {}
 
 struct SessionCore {
-    key: NativeKey,
     target_kind: TargetKind,
     state: StreamState,
     session: OnceLock<shim::Session>,
+    pending_frame: PendingSlot<PendingFrame>,
     transition: Mutex<TransitionState>,
     reconfigure: Arc<Reconfigure>,
     clock_anchor: (u64, MonotonicInstant),
+    #[cfg(test)]
+    testing_sites: u32,
+    #[cfg(test)]
+    terminal_reports: AtomicU64,
 }
 
 /// What the stream last received from this Adapter.
 ///
 /// Continuity is decided against this rather than against a flag accumulated from
-/// intermediate observations. That distinction is the whole point: while a window is
-/// dragged, the extent and the producer surface wobble through values that are never
-/// published, and a sticky "discontinuous" flag set by one of those wobbles then
-/// attached itself to a frame whose shape was identical to the one before it —
-/// telling a caller its frames were incomparable when only the position had changed.
+/// intermediate observations. Both values come from frames that were actually
+/// published; a later inventory snapshot never enters this comparison.
 #[derive(Debug, Clone, Copy)]
 struct Published {
     extent: PixelExtent,
@@ -107,57 +127,211 @@ struct TransitionState {
     extent: PixelExtent,
     /// The producer surface extent the last frame was observed in.
     surface: PixelExtent,
-    /// The placement the last frame was observed at.
-    placement: TargetPlacement,
-    /// Producer timestamp before which a frame predates an observed move.
-    movement_not_before: Option<u64>,
-    /// Consecutive frames whose extent disagreed with the target's live geometry.
-    unsettled_streak: u32,
     published: Option<Published>,
 }
 
+struct PendingFrame {
+    detached: DetachedFrame,
+    info: FrameInfo,
+}
+
+/// The one detached frame native delivery has staged but not yet authorized.
+struct PendingSlot<T> {
+    value: Mutex<Option<T>>,
+}
+
+impl<T> Default for PendingSlot<T> {
+    fn default() -> Self {
+        Self {
+            value: Mutex::new(None),
+        }
+    }
+}
+
+impl<T> PendingSlot<T> {
+    /// Stages without waiting on the sample queue. Full or contended stays finite.
+    fn try_stage(&self, value: T) -> std::result::Result<(), T> {
+        let mut slot = match self.value.try_lock() {
+            Ok(slot) => slot,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Err(value),
+        };
+        if slot.is_some() {
+            return Err(value);
+        }
+        *slot = Some(value);
+        Ok(())
+    }
+
+    fn take(&self) -> Option<T> {
+        self.value
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+
+    fn clear(&self) {
+        drop(self.take());
+    }
+}
+
 /// The reconfiguration request a producer callback leaves for its worker.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Reconfigure {
-    state: Mutex<ReconfigureState>,
-    requested: Condvar,
+    wanted: AtomicU64,
+    shutdown: AtomicBool,
+    wake: SyncSender<()>,
+    worker: Mutex<ReconfigureWorker>,
+    finished: Condvar,
+    coalesced: AtomicU64,
+    rejected: AtomicU64,
 }
 
 #[derive(Debug, Default)]
-struct ReconfigureState {
-    wanted: Option<PixelExtent>,
-    shutdown: bool,
+struct ReconfigureWorker {
+    handle: Option<JoinHandle<()>>,
+    finished: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconfigurePublication {
+    Published,
+    Coalesced,
+    Rejected,
 }
 
 impl Reconfigure {
-    /// Records a wanted surface extent without blocking the producer callback.
-    fn request(&self, extent: PixelExtent) {
-        {
-            let mut state = self.lock();
-            if state.shutdown {
-                return;
-            }
-            // Latest wins: an intermediate size a resize passed through is not
-            // worth a native round trip.
-            state.wanted = Some(extent);
+    fn new() -> (Arc<Self>, Receiver<()>) {
+        let (wake, receiver) = mpsc::sync_channel(1);
+        (
+            Arc::new(Self {
+                wanted: AtomicU64::new(0),
+                shutdown: AtomicBool::new(false),
+                wake,
+                worker: Mutex::new(ReconfigureWorker {
+                    handle: None,
+                    finished: true,
+                }),
+                finished: Condvar::new(),
+                coalesced: AtomicU64::new(0),
+                rejected: AtomicU64::new(0),
+            }),
+            receiver,
+        )
+    }
+
+    /// Publishes a latest-wins request without taking any mutex.
+    fn request(&self, extent: PixelExtent) -> ReconfigurePublication {
+        if self.shutdown.load(Ordering::Acquire) {
+            self.rejected.fetch_add(1, Ordering::AcqRel);
+            return ReconfigurePublication::Rejected;
         }
-        self.requested.notify_all();
+        let encoded = encode_extent(extent);
+        let previous = self.wanted.swap(encoded, Ordering::AcqRel);
+        if self.shutdown.load(Ordering::Acquire) {
+            self.wanted.store(0, Ordering::Release);
+            self.rejected.fetch_add(1, Ordering::AcqRel);
+            return ReconfigurePublication::Rejected;
+        }
+        match self.wake.try_send(()) {
+            Ok(()) | Err(TrySendError::Full(())) => {}
+            Err(TrySendError::Disconnected(())) => {
+                self.shutdown.store(true, Ordering::Release);
+                self.wanted.store(0, Ordering::Release);
+                self.rejected.fetch_add(1, Ordering::AcqRel);
+                return ReconfigurePublication::Rejected;
+            }
+        }
+        if previous == 0 {
+            ReconfigurePublication::Published
+        } else {
+            self.coalesced.fetch_add(1, Ordering::AcqRel);
+            ReconfigurePublication::Coalesced
+        }
     }
 
     fn shutdown(&self) {
-        {
-            let mut state = self.lock();
-            state.shutdown = true;
-            state.wanted = None;
+        if !self.shutdown.swap(true, Ordering::AcqRel) {
+            if self.wanted.swap(0, Ordering::AcqRel) != 0 {
+                self.rejected.fetch_add(1, Ordering::AcqRel);
+            }
+            let _wake = self.wake.try_send(());
         }
-        self.requested.notify_all();
     }
 
-    fn lock(&self) -> MutexGuard<'_, ReconfigureState> {
-        self.state
+    fn worker(&self) -> MutexGuard<'_, ReconfigureWorker> {
+        self.worker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    fn prepare_worker(&self) {
+        self.worker().finished = false;
+    }
+
+    fn install_worker(&self, handle: JoinHandle<()>) {
+        self.worker().handle = Some(handle);
+    }
+
+    fn worker_finished(&self) {
+        self.worker().finished = true;
+        self.finished.notify_all();
+    }
+
+    fn drain(&self, operation: &OperationContext) -> Result<()> {
+        self.shutdown();
+        let mut attempt = Operation::admit(operation)?;
+        let handle = loop {
+            let mut worker = self.worker();
+            if worker.finished {
+                break worker.handle.take();
+            }
+            let (worker, _timed) = self
+                .finished
+                .wait_timeout(worker, CLOSE_POLL_INTERVAL)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(worker);
+            attempt.checkpoint()?;
+        };
+        if let Some(handle) = handle {
+            handle
+                .join()
+                .map_err(|_| mado_pilot_core::Error::from(CaptureFault::SourceInvalid))?;
+        }
+        Ok(attempt.commit(())?)
+    }
+
+    fn drain_for_drop(&self, wait: Duration) -> bool {
+        self.shutdown();
+        let deadline = Instant::now() + wait;
+        let handle = loop {
+            let mut worker = self.worker();
+            if worker.finished {
+                break worker.handle.take();
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let left = deadline.saturating_duration_since(now);
+            let (worker, _timed) = self
+                .finished
+                .wait_timeout(worker, left.min(CLOSE_POLL_INTERVAL))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(worker);
+        };
+        handle.is_none_or(|handle| handle.join().is_ok())
+    }
+}
+
+const fn encode_extent(extent: PixelExtent) -> u64 {
+    (extent.width() as u64) << 32 | extent.height() as u64
+}
+
+fn decode_extent(encoded: u64) -> Option<PixelExtent> {
+    let width = u32::try_from(encoded >> 32).ok()?;
+    let height = u32::try_from(encoded & u64::from(u32::MAX)).ok()?;
+    (width > 0 && height > 0).then(|| PixelExtent::new(width, height))
 }
 
 /// Owns the callback registration for the window in which `open` can still fail.
@@ -212,14 +386,12 @@ impl Drop for PendingRegistration<'_> {
         self.core.reconfigure.shutdown();
         if let Some(session) = self.core.session.get() {
             session.disable_callbacks();
-            let fenced = session.fence(DEFAULT_NATIVE_WAIT);
-            let _closed = session.close(DEFAULT_NATIVE_WAIT);
-            if fenced.is_err() {
-                // The rule `NativeSession::drop` follows, for the same reason: a
-                // callback still in flight would read freed state, and one leaked
-                // core is a bounded cost against that.
+            if !self.core.reconfigure.drain_for_drop(DEFAULT_NATIVE_WAIT) {
+                quarantine_session(Arc::clone(self.core), self.registered);
                 return;
             }
+            let _closed = close_registered(self.core, self.registered);
+            return;
         }
         // SAFETY: this came from `Arc::into_raw` in `new`, no other owner exists on
         // this path, and either no native session was ever registered against it or a
@@ -231,14 +403,10 @@ impl Drop for PendingRegistration<'_> {
 impl NativeSession {
     /// Opens and starts a session for the target `metadata` describes.
     pub(crate) fn open(
-        target: TargetId,
-        stream: StreamId,
-        key: NativeKey,
-        fingerprint: Fingerprint,
-        metadata: TargetMetadata,
+        selected: SessionTarget,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(target, stream, key, fingerprint, metadata, 0, operation)
+        Self::open_inner(selected, 0, Duration::ZERO, Duration::ZERO, operation)
     }
 
     /// Opens a session that raises a contained native exception at `sites`.
@@ -247,62 +415,83 @@ impl NativeSession {
     /// requires become reachable; nothing in the product asks for a raise site.
     #[cfg(test)]
     pub(crate) fn open_with_raise_sites(
-        target: TargetId,
-        stream: StreamId,
-        key: NativeKey,
-        fingerprint: Fingerprint,
-        metadata: TargetMetadata,
+        selected: SessionTarget,
         sites: u32,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
-        Self::open_inner(target, stream, key, fingerprint, metadata, sites, operation)
+        Self::open_inner(selected, sites, Duration::ZERO, Duration::ZERO, operation)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_with_delays(
+        selected: SessionTarget,
+        start_delay: Duration,
+        stop_delay: Duration,
+        operation: &mut Operation<'_>,
+    ) -> Result<Arc<Self>> {
+        Self::open_inner(selected, 0, start_delay, stop_delay, operation)
     }
 
     fn open_inner(
-        target: TargetId,
-        stream: StreamId,
-        key: NativeKey,
-        fingerprint: Fingerprint,
-        metadata: TargetMetadata,
+        selected: SessionTarget,
         testing_raise_sites: u32,
+        testing_start_delay: Duration,
+        testing_stop_delay: Duration,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
-        let anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
-        let reconfigure = Arc::new(Reconfigure::default());
-        let core = Arc::new(SessionCore {
+        let SessionTarget {
+            target,
+            stream,
             key,
+            fingerprint,
+            selection,
+            metadata,
+        } = selected;
+        let anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
+        let (reconfigure, reconfigure_receiver) = Reconfigure::new();
+        let core = Arc::new(SessionCore {
             target_kind: key.kind(),
             state: StreamState::with_target_extent(stream),
             session: OnceLock::new(),
+            pending_frame: PendingSlot::default(),
             transition: Mutex::new(TransitionState {
                 extent: metadata.extent,
                 surface: metadata.extent,
-                placement: metadata.placement,
-                movement_not_before: None,
-                unsettled_streak: 0,
                 published: None,
             }),
             reconfigure: Arc::clone(&reconfigure),
             clock_anchor: anchor,
+            #[cfg(test)]
+            testing_sites: testing_raise_sites,
+            #[cfg(test)]
+            terminal_reports: AtomicU64::new(0),
         });
 
         let pending = PendingRegistration::new(&core);
         let request = OpenRequest {
             kind: key.native_kind(),
             native_id: key.native_id(),
-            // The shim queries the shareable content again, so it needs the owner to
-            // reject a window that inherited the number since discovery.
+            // Descriptive metadata is validated against the retained filter handle;
+            // it is never used to resolve another target.
             owner_process: fingerprint.native_owner(),
+            target: selection,
             extent: metadata.extent,
             queue_depth: PRODUCER_QUEUE_DEPTH,
             detached_budget: DETACHED_BUFFER_BUDGET.get(),
-            wait: native_wait(operation),
+            testing_start_delay,
+            testing_stop_delay,
             testing_raise_sites,
         };
         // Every exit from here to the `NativeSession` below drops `pending`, which
         // closes whatever was opened and reclaims the registration.
-        let session = shim::Session::open(&request, pending.context(), on_frame, on_stopped)
-            .map_err(|status| open_error(status, key.kind()))?;
+        let session = shim::Session::open(
+            &request,
+            pending.context(),
+            on_frame,
+            on_frame_commit,
+            on_stopped,
+        )
+        .map_err(|status| open_error(status, key.kind()))?;
         if let Err(unused) = core.session.set(session) {
             // Unreachable: the `OnceLock` was created a few statements above and
             // nothing else can have set it. Handled rather than discarded so that the
@@ -312,7 +501,7 @@ impl NativeSession {
         }
         operation.checkpoint()?;
 
-        spawn_reconfigure_worker(&core, reconfigure);
+        spawn_reconfigure_worker(&core, reconfigure, reconfigure_receiver);
 
         let description = SessionDescription::new(
             target,
@@ -355,7 +544,16 @@ impl NativeSession {
                 Err(status) => return Err(status.into()),
             }
         }
-        let closed = session.close(native_wait(&attempt));
+        self.core.discard_pending_frame();
+        let closed = loop {
+            match session.close(native_wait(&attempt)) {
+                Ok(()) => break Ok(()),
+                // Native close is a resumable phase machine. A slice expiring
+                // leaves its current phase for this same caller or a later close.
+                Err(ShimStatus::TimedOut) => attempt.checkpoint()?,
+                Err(status) => break Err(status),
+            }
+        };
         attempt.commit(())?;
         match closed {
             Ok(()) => Ok(()),
@@ -366,6 +564,11 @@ impl NativeSession {
                 _ => Ok(()),
             },
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn terminal_reports(&self) -> u64 {
+        self.core.terminal_reports.load(Ordering::Acquire)
     }
 }
 
@@ -386,14 +589,6 @@ impl CaptureSession for NativeSession {
     }
 
     fn frame(&self, request: &FrameRequest, operation: &OperationContext) -> Result<Frame> {
-        // Admitted before the liveness read, not after. That read is a window-server
-        // query, so performing it first let an already-cancelled or already-expired
-        // request do native work — and, worse, terminate the session on what the query
-        // returned. A request the caller has given up on decides nothing.
-        Operation::admit(operation)?;
-        if !self.core.key.is_present() {
-            self.core.fail_native(target_fault(self.core.target_kind));
-        }
         self.core.state.frame(request, operation)
     }
 
@@ -402,6 +597,7 @@ impl CaptureSession for NativeSession {
         self.core.session().disable_callbacks();
         self.core.reconfigure.shutdown();
         let _gate = lock_with_operation(&self.close_gate, operation)?;
+        self.core.reconfigure.drain(operation)?;
         self.fence_and_close(operation)?;
         self.core.state.drain(operation)
     }
@@ -416,17 +612,63 @@ impl Drop for NativeSession {
         let session = self.core.session();
         session.disable_callbacks();
         self.core.reconfigure.shutdown();
-        let fenced = session.fence(DEFAULT_NATIVE_WAIT);
-        let _closed = session.close(DEFAULT_NATIVE_WAIT);
-        if fenced.is_ok() {
-            // SAFETY: the fence returned, so the shim admits no further callback
-            // and none is in flight; this consumes the single reference handed to
-            // it at open.
-            drop(unsafe { Arc::from_raw(self.registered) });
+        if !self.core.reconfigure.drain_for_drop(DEFAULT_NATIVE_WAIT) {
+            quarantine_session(Arc::clone(&self.core), self.registered);
+            return;
         }
-        // Otherwise the reference stays quarantined: a callback that is still in
-        // flight would read freed state, and one leaked session core is a bounded
-        // cost against that.
+        let _closed = close_registered(&self.core, self.registered);
+    }
+}
+
+/// Completes native teardown after all Rust-owned auxiliary work has drained.
+///
+/// Returns false when the callback registration must remain quarantined.
+fn close_registered(core: &Arc<SessionCore>, registered: *const SessionCore) -> bool {
+    let session = core.session();
+    let fenced = session.fence(DEFAULT_NATIVE_WAIT);
+    if fenced.is_ok() {
+        core.discard_pending_frame();
+    }
+    let _closed = session.close(DEFAULT_NATIVE_WAIT);
+    if fenced.is_err() {
+        return false;
+    }
+    // SAFETY: the fence returned, so the shim admits no further callback and none
+    // is in flight; this consumes the single reference handed to it at open.
+    drop(unsafe { Arc::from_raw(registered) });
+    true
+}
+
+/// Lets bounded Drop return while preserving the ordering that native storage is
+/// released only after reconfiguration work can no longer reach it.
+fn quarantine_session(core: Arc<SessionCore>, registered: *const SessionCore) {
+    let registered = registered as usize;
+    let spawned = thread::Builder::new()
+        .name("mado-pilot-sck-close-quarantine".to_owned())
+        .spawn(move || {
+            while !core.reconfigure.drain_for_drop(MAX_NATIVE_WAIT) {}
+            let session = core.session();
+            session.disable_callbacks();
+            loop {
+                match session.fence(DEFAULT_NATIVE_WAIT) {
+                    Ok(()) => break,
+                    Err(ShimStatus::TimedOut) => {}
+                    Err(_) => return,
+                }
+            }
+            core.discard_pending_frame();
+            while matches!(
+                session.close(DEFAULT_NATIVE_WAIT),
+                Err(ShimStatus::TimedOut)
+            ) {}
+            // SAFETY: successful fencing above proves the callback registration is
+            // unreachable, and this pointer is the one raw Arc the drop path handed
+            // exclusively to this quarantine worker.
+            drop(unsafe { Arc::from_raw(registered as *const SessionCore) });
+        });
+    if spawned.is_err() {
+        // The raw Arc intentionally remains quarantined. Callback admission is
+        // already disabled, so this is a bounded leak rather than a use-after-free.
     }
 }
 
@@ -439,38 +681,74 @@ impl SessionCore {
 
     fn fail_native(&self, fault: CaptureFault) {
         let fault = normalize_native_fault(fault, self.target_kind);
+        self.discard_pending_frame();
         self.session().disable_callbacks();
         self.reconfigure.shutdown();
         self.state.terminate(fault);
     }
 
-    fn on_frame(&self, borrowed: &BorrowedFrame<'_>, info: &FrameInfo) -> ShimStatus {
-        match self.process_frame(borrowed, info) {
-            Ok(()) => ShimStatus::Ok,
-            Err(fault) => {
-                if fault == CaptureFault::SessionClosed && self.state.lifecycle() != Lifecycle::Open
-                {
-                    // An ordinary close raced this callback. Nothing failed.
-                    return ShimStatus::Closed;
-                }
-                self.fail_native(fault);
-                ShimStatus::PlatformFailure
-            }
+    fn stage_frame(&self, borrowed: &BorrowedFrame<'_>, info: &FrameInfo) -> ShimStatus {
+        #[cfg(test)]
+        if (self.testing_sites & shim::PANIC_IN_RUST_CALLBACK) != 0 {
+            panic!("injected Rust frame callback panic");
         }
+        if info.screen_rect().is_none() {
+            // A complete image without the required same-frame placement
+            // is a rejected publication, not a silent capability downgrade.
+            let _drop = self.state.try_record_drop();
+            return ShimStatus::Ok;
+        }
+        let detached = match borrowed.detach() {
+            Ok(detached) => detached,
+            // Finite pressure: every unit of the budget is retained by a caller.
+            // The candidate is dropped rather than blocking the producer.
+            Err(ShimStatus::BudgetExhausted | ShimStatus::FrameIncomplete) => {
+                let _drop = self.state.try_record_drop();
+                return ShimStatus::Ok;
+            }
+            Err(status) => return status,
+        };
+        if self
+            .pending_frame
+            .try_stage(PendingFrame {
+                detached,
+                info: *info,
+            })
+            .is_err()
+        {
+            // A previous frame was never committed or terminal cleanup briefly
+            // owns the slot. Drop this detached frame instead of waiting or growing.
+            let _drop = self.state.try_record_drop();
+        }
+        ShimStatus::Ok
+    }
+
+    fn commit_staged_frame(&self) -> ShimStatus {
+        let Some(PendingFrame { detached, info }) = self.pending_frame.take() else {
+            // Duplicate commit and a stage that deliberately dropped are both safe.
+            return ShimStatus::Ok;
+        };
+        if let Err(fault) = self.process_frame(detached, &info)
+            && (fault != CaptureFault::SessionClosed || self.state.lifecycle() == Lifecycle::Open)
+        {
+            self.fail_native(fault);
+        }
+        ShimStatus::Ok
+    }
+
+    fn discard_pending_frame(&self) {
+        self.pending_frame.clear();
     }
 
     fn process_frame(
         &self,
-        borrowed: &BorrowedFrame<'_>,
+        detached: DetachedFrame,
         info: &FrameInfo,
     ) -> std::result::Result<(), CaptureFault> {
-        let mut transition = match self.transition.try_lock() {
-            Ok(transition) => transition,
-            // Another transition is committing. Dropping is always safe and the
-            // alternative is waiting inside the producer callback.
-            Err(TryLockError::WouldBlock) => return Ok(()),
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-        };
+        let mut transition = self
+            .transition
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let extent = info.extent().ok_or(CaptureFault::InconsistentDescriptor)?;
         let surface = info
             .surface_extent()
@@ -482,88 +760,20 @@ impl SessionCore {
         // from it — the content extent below is what a caller sees.
         transition.surface = surface;
 
-        // Read before any reconfiguration is asked for, because the size to ask for
-        // comes from the live target rather than from this frame.
-        let reading = read_placement(self.key, extent, info.scale_factor);
-        if let Some(wanted) = surface_request(surface, reading.wanted()) {
+        let placement = frame_placement(info)?;
+        // The hint is prospective producer capacity derived and bounded beside this
+        // sample's metadata. It never changes the placement or extent published for
+        // the current pixels, and a later inventory never participates.
+        if let Some(wanted) = surface_request(self.target_kind, info) {
             // The worker performs the native call off this queue.
-            self.reconfigure.request(wanted);
+            self.request_reconfigure(wanted);
         }
-        if extent != transition.extent {
-            transition.extent = extent;
+        if !extent_ready_for_publication(&mut transition, extent) {
             let _drop = self.state.try_record_drop();
             return Ok(());
-        }
-
-        let placement = match reading {
-            PlacementReading::Ready { placement, .. } => placement,
-            // The window server has already resized or moved the target since this
-            // frame was produced — which is what a drag between displays looks
-            // like, because the target is resized a moment after it lands. The
-            // frame is a transition frame, so it is dropped and the producer is
-            // asked for a surface matching the target as it is now. Reporting this
-            // as target loss, which an earlier version did, ends a stream whose
-            // target is plainly still there.
-            PlacementReading::Unsettled { wanted } => {
-                // No continuity is decided here. Whether the next publication is a
-                // geometry change or a discontinuity follows from what the extent
-                // turns out to be once the producer and the window agree again, and
-                // the ordinary comparisons above already answer that. Deciding it
-                // here published a move that kept its extent as a discontinuity.
-                transition.unsettled_streak = transition.unsettled_streak.saturating_add(1);
-                if should_reconfigure(transition.unsettled_streak)
-                    && let Some(wanted) = wanted
-                {
-                    self.reconfigure.request(wanted);
-                }
-                let _drop = self.state.try_record_drop();
-                return Ok(());
-            }
-            PlacementReading::Unusable => return Err(CaptureFault::InconsistentDescriptor),
-            PlacementReading::Lost => return Err(target_fault(self.target_kind)),
-        };
-        transition.unsettled_streak = 0;
-        if placement != transition.placement {
-            // A move was just observed. This frame's pixels predate it, so it is
-            // dropped and frames older than the move are refused below until the
-            // producer catches up.
-            //
-            // Not gated on having published before. A target that moves while capture
-            // is starting is the same move, and skipping the fence for it published a
-            // queued pre-move frame under the placement read after the move — every
-            // desktop coordinate taken from that frame silently displaced.
-            transition.placement = placement;
-            transition.movement_not_before =
-                Some(shim::monotonic_nanos().unwrap_or(info.display_time_nanos.saturating_add(1)));
-            let _drop = self.state.try_record_drop();
-            return Ok(());
-        }
-        if let Some(not_before) = transition.movement_not_before {
-            if info.display_time_nanos < not_before {
-                // This frame was produced before the move was observed, so its
-                // pixels do not belong to the geometry now recorded.
-                let _drop = self.state.try_record_drop();
-                return Ok(());
-            }
-            transition.movement_not_before = None;
         }
 
         let descriptor = descriptor_from_native(info.pixel_format, extent)?;
-        let detached = match borrowed.detach() {
-            Ok(detached) => detached,
-            // Finite pressure: every unit of the budget is retained by a caller.
-            // The candidate is dropped rather than blocking the producer.
-            Err(ShimStatus::BudgetExhausted) => {
-                let _drop = self.state.try_record_drop();
-                return Ok(());
-            }
-            Err(ShimStatus::FrameIncomplete) => {
-                let _drop = self.state.try_record_drop();
-                return Ok(());
-            }
-            Err(status) => return Err(status.fault()),
-        };
-
         let continuity = continuity_against(transition.published, extent, placement);
         self.publish(
             &mut transition,
@@ -599,7 +809,6 @@ impl SessionCore {
                     CaptureFault::SourceInvalid
                 }
             })?;
-        transition.placement = placement;
         transition.published = Some(Published {
             extent: descriptor.extent(),
             placement,
@@ -607,7 +816,17 @@ impl SessionCore {
         Ok(())
     }
 
+    fn request_reconfigure(&self, wanted: PixelExtent) {
+        if self.reconfigure.request(wanted) != ReconfigurePublication::Published {
+            // Coalescing and shutdown rejection are observable in the next public
+            // sequence rather than disappearing as hidden worker pressure.
+            let _drop = self.state.try_record_drop();
+        }
+    }
+
     fn on_stopped(&self, status: ShimStatus) {
+        #[cfg(test)]
+        self.terminal_reports.fetch_add(1, Ordering::AcqRel);
         let fault = match status {
             // The framework names a deliberate stop, so it is reported as one
             // rather than as a target that went away.
@@ -617,51 +836,68 @@ impl SessionCore {
             // reading the authorization again rather than assumed from the stop.
             ShimStatus::StoppedBySystem => system_stop_fault(),
             ShimStatus::PermissionDenied => CaptureFault::AccessDenied,
-            // The stream ended with nothing to distinguish it by. A producer that
-            // stops without an error most often means its target is gone, and the
-            // kind-specific loss is the conservative reading of that.
-            ShimStatus::Ok | ShimStatus::Closed => target_fault(self.target_kind),
+            // Only explicit ScreenCaptureKit no-source/list outcomes become target
+            // loss. An unexplained stop remains CaptureFailed rather than inferring
+            // absence from a wrapper or inventory observation.
+            ShimStatus::Ok => CaptureFault::SourceInvalid,
+            ShimStatus::Closed => CaptureFault::ExplicitlyStopped,
+            ShimStatus::TargetLost => target_fault(self.target_kind),
             other => other.fault(),
         };
         self.fail_native(fault);
     }
 }
 
-fn spawn_reconfigure_worker(core: &Arc<SessionCore>, reconfigure: Arc<Reconfigure>) {
+fn spawn_reconfigure_worker(
+    core: &Arc<SessionCore>,
+    reconfigure: Arc<Reconfigure>,
+    receiver: Receiver<()>,
+) {
     let weak = Arc::downgrade(core);
     let owned = Arc::clone(&reconfigure);
+    reconfigure.prepare_worker();
     let worker = thread::Builder::new()
         .name("mado-pilot-sck-reconfigure".to_owned())
-        .spawn(move || run_reconfigure_worker(&weak, &owned));
-    if worker.is_err() {
-        // Without a worker the session still captures at its opening extent; a
-        // resize then reports a discontinuity and keeps publishing the content
-        // that fits. Shutting the request path down says so rather than letting
-        // callbacks queue requests nothing will read.
-        reconfigure.shutdown();
+        .spawn(move || {
+            struct Finished(Arc<Reconfigure>);
+            impl Drop for Finished {
+                fn drop(&mut self) {
+                    self.0.worker_finished();
+                }
+            }
+            let _finished = Finished(Arc::clone(&owned));
+            run_reconfigure_worker(&weak, &owned, &receiver);
+        });
+    match worker {
+        Ok(worker) => reconfigure.install_worker(worker),
+        Err(_) => {
+            // Without a worker the session still captures at its opening extent;
+            // request rejection is recorded as observable stream pressure.
+            reconfigure.worker_finished();
+            reconfigure.shutdown();
+        }
     }
 }
 
-fn run_reconfigure_worker(core: &Weak<SessionCore>, reconfigure: &Reconfigure) {
+fn run_reconfigure_worker(
+    core: &Weak<SessionCore>,
+    reconfigure: &Reconfigure,
+    receiver: &Receiver<()>,
+) {
     loop {
-        let wanted = {
-            let mut state = reconfigure.lock();
-            while state.wanted.is_none() && !state.shutdown {
-                let (next, _timeout) = reconfigure
-                    .requested
-                    .wait_timeout(state, CLOSE_POLL_INTERVAL.saturating_mul(50))
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                state = next;
-                if state.wanted.is_none() && core.strong_count() == 0 {
-                    return;
-                }
-            }
-            if state.shutdown {
-                return;
-            }
-            state.wanted.take()
-        };
-        let Some(extent) = wanted else {
+        if reconfigure.shutdown.load(Ordering::Acquire) {
+            return;
+        }
+        match receiver.recv_timeout(CLOSE_POLL_INTERVAL.saturating_mul(50)) {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) if core.strong_count() > 0 => continue,
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+        if reconfigure.shutdown.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(extent) = decode_extent(reconfigure.wanted.swap(0, Ordering::AcqRel)) else {
+            // A shutdown can clear the slot after the wake token was queued.
             continue;
         };
         let Some(core) = core.upgrade() else {
@@ -671,6 +907,14 @@ fn run_reconfigure_worker(core: &Weak<SessionCore>, reconfigure: &Reconfigure) {
         // its own failure is not terminal: the session keeps publishing the
         // content that fits the surface it already has.
         let _reconfigured = core.session().reconfigure(extent, MAX_NATIVE_WAIT);
+        // Collapse any redundant queued wake token. A request that arrived while
+        // the native call ran remains in the atomic slot and one token is enough.
+        match receiver.try_recv() {
+            Ok(()) | Err(TryRecvError::Empty | TryRecvError::Disconnected) => {}
+        }
+        if reconfigure.wanted.load(Ordering::Acquire) != 0 {
+            let _wake = reconfigure.wake.try_send(());
+        }
     }
 }
 
@@ -690,8 +934,22 @@ unsafe extern "C" fn on_frame(
             context,
             frame,
             info,
-            |core, borrowed, report| core.on_frame(&borrowed, report),
+            |core, borrowed, report| core.stage_frame(&borrowed, report),
         )
+    }
+}
+
+/// Commits the frame staged by [`on_frame`] after native delivery can no longer raise.
+///
+/// # Safety
+///
+/// Called only by the shim, with the context registered at open.
+unsafe extern "C" fn on_frame_commit(context: *mut c_void) -> u32 {
+    // SAFETY: the shim passes the registered context after a successful stage.
+    unsafe {
+        shim::contained_frame_commit_callback::<SessionCore>(context, |core| {
+            core.commit_staged_frame()
+        })
     }
 }
 
@@ -748,41 +1006,38 @@ fn continuity_against(
     }
 }
 
-/// Reports whether a run of frames disagreeing with live geometry has lasted long
-/// enough to be worth a native reconfiguration.
-const fn should_reconfigure(streak: u32) -> bool {
-    streak >= UNSETTLED_BEFORE_RECONFIGURE
-}
-
 /// Returns the producer surface extent to ask for, if any.
 ///
-/// The question is only ever whether the surface is the size the *target* needs at its
-/// own display's backing scale. What the frame in hand contains cannot answer it, in
-/// either direction:
-///
-/// - A surface too small to hold the target is filled anyway, because the framework
-///   scales the target down to fit and reports a scale factor absorbing the reduction.
-///   Asking for the reported content extent adopts that reduction, and the next frame
-///   scales into the smaller surface and reports less again. Measured on a window moved
-///   onto a higher-scale display: the epoch advanced ten times inside a second while
-///   frames published at 94% of the target's resolution.
-/// - Reading a filled surface as "nothing to do" is the same mistake standing still. A
-///   window moved from a 1x display to a 2x one without changing its point size needs
-///   twice the pixels, and the framework will downscale into the old surface and fill it
-///   exactly. Treating that as settled captures the target at half resolution for the
-///   life of the stream.
-///
-/// So the comparison is `wanted` against `surface`, and the content extent does not
-/// enter into it.
-fn surface_request(surface: PixelExtent, wanted: Option<PixelExtent>) -> Option<PixelExtent> {
-    match wanted {
-        // The surface is not the size the target needs, whatever it currently holds.
-        Some(wanted) if wanted != surface => Some(wanted),
-        // Either the surface is already right, or the target could not be read and
-        // there is nothing to size a request from. The content extent is exactly the
-        // wrong answer in that second case, so nothing is asked for.
+/// A recommendation is a capacity high-water hint, not publication geometry.
+/// Retaining an oversized window surface prevents a 2x-to-1x move from immediately
+/// surrendering the capacity a later move back to 2x needs. Displays retain their
+/// prior same-frame content reconfiguration path.
+fn surface_request(target_kind: TargetKind, info: &FrameInfo) -> Option<PixelExtent> {
+    let surface = info.surface_extent()?;
+    if target_kind == TargetKind::Window {
+        let wanted = info.recommended_surface_extent()?;
+        return (wanted.width() > surface.width() || wanted.height() > surface.height())
+            .then_some(wanted);
+    }
+    match target_kind {
+        TargetKind::Display => {
+            let content = info.extent()?;
+            (content != surface).then_some(content)
+        }
         _ => None,
     }
+}
+
+/// Drops the first observation of a changed content extent before publication.
+///
+/// A later frame at the same extent is compared with the last published frame and
+/// therefore becomes discontinuous exactly once through [`continuity_against`].
+fn extent_ready_for_publication(transition: &mut TransitionState, extent: PixelExtent) -> bool {
+    if extent == transition.extent {
+        return true;
+    }
+    transition.extent = extent;
+    false
 }
 
 /// Decides what a system-initiated stop means, by reading authorization again.
@@ -875,8 +1130,10 @@ fn lock_with_operation<'mutex>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex, OnceLock};
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock, mpsc};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use mado_pilot_capture::{CaptureFault, StreamState};
     use mado_pilot_core::{
@@ -884,13 +1141,40 @@ mod tests {
         PixelExtent, Scale, TargetKind, TargetPlacement,
     };
 
-    use crate::discovery::NativeKey;
-
     use super::{
-        MAX_NATIVE_WAIT, PendingRegistration, Published, Reconfigure, SessionCore, TransitionState,
-        UNSETTLED_BEFORE_RECONFIGURE, continuity_against, frame_time, native_wait,
-        normalize_native_fault, should_reconfigure, surface_request, target_fault,
+        MAX_NATIVE_WAIT, PendingRegistration, PendingSlot, Published, Reconfigure,
+        ReconfigurePublication, SessionCore, TransitionState, continuity_against, decode_extent,
+        extent_ready_for_publication, frame_time, native_wait, normalize_native_fault,
+        surface_request, target_fault,
     };
+    use crate::shim::FrameInfo;
+
+    #[test]
+    fn terminal_discard_outranks_a_staged_commit_and_releases_the_value() {
+        struct DropProbe(Arc<AtomicU64>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+
+        let drops = Arc::new(AtomicU64::new(0));
+        let pending = PendingSlot::default();
+        assert!(pending.try_stage(DropProbe(Arc::clone(&drops))).is_ok());
+
+        // This is the stopped callback's order: release staged storage first,
+        // then publish the terminal state. A later/duplicate commit sees nothing.
+        pending.clear();
+        assert!(pending.take().is_none());
+        assert_eq!(drops.load(Ordering::Acquire), 1);
+
+        // The slot remains usable and a normal take transfers exactly one value.
+        assert!(pending.try_stage(DropProbe(Arc::clone(&drops))).is_ok());
+        drop(pending.take());
+        assert!(pending.take().is_none());
+        assert_eq!(drops.load(Ordering::Acquire), 2);
+    }
 
     #[test]
     fn a_target_lifetime_fault_is_reported_in_its_kind_specific_form() {
@@ -959,27 +1243,22 @@ mod tests {
     fn unregistered_core() -> Arc<SessionCore> {
         let issuer = IdentityIssuer::new();
         let extent = PixelExtent::new(64, 48);
-        let placement = TargetPlacement::new(
-            (0.0, 0.0),
-            (64.0, 48.0),
-            Scale::new(1.0, 1.0).expect("scale"),
-        )
-        .expect("placement");
         Arc::new(SessionCore {
-            key: NativeKey::Display(1),
             target_kind: TargetKind::Display,
             state: StreamState::with_target_extent(issuer.issue_stream().expect("stream identity")),
             session: OnceLock::new(),
+            pending_frame: PendingSlot::default(),
             transition: Mutex::new(TransitionState {
                 extent,
                 surface: extent,
-                placement,
-                movement_not_before: None,
-                unsettled_streak: 0,
                 published: None,
             }),
-            reconfigure: Arc::new(Reconfigure::default()),
+            reconfigure: Reconfigure::new().0,
             clock_anchor: (0, MonotonicInstant::from_origin(Duration::ZERO)),
+            #[cfg(test)]
+            testing_sites: 0,
+            #[cfg(test)]
+            terminal_reports: AtomicU64::new(0),
         })
     }
 
@@ -1023,64 +1302,50 @@ mod tests {
     }
 
     #[test]
-    fn a_move_that_keeps_its_extent_is_a_geometry_change_and_not_a_new_epoch() {
+    fn a_same_frame_placement_change_advances_only_the_geometry_revision() {
         let extent = PixelExtent::new(1718, 1050);
         let scale = Scale::new(1.0, 1.0).expect("scale");
         let at =
             |x: f64| TargetPlacement::new((x, 400.0), (1718.0, 1050.0), scale).expect("placement");
+        let original = at(-2489.0);
+        let moved = at(0.0);
         let published = Published {
             extent,
-            placement: at(-2041.0),
+            placement: original,
         };
 
-        // The case a real drag produced: same extent, same scale, new origin. An
-        // epoch advance here tells a caller its frames are incomparable when only
-        // the position changed.
         assert_eq!(
-            continuity_against(Some(published), extent, at(-2489.0)),
+            continuity_against(Some(published), extent, moved),
             mado_pilot_capture::Continuity::GeometryChanged
         );
-        // The same frame again is continuous, whatever wobbled in between.
         assert_eq!(
-            continuity_against(Some(published), extent, at(-2041.0)),
+            continuity_against(Some(published), extent, original),
             mado_pilot_capture::Continuity::Continuous
         );
-        // A different extent is discontinuous, which is the cross-scale move.
         assert_eq!(
-            continuity_against(Some(published), PixelExtent::new(3436, 2216), at(-270.0)),
+            continuity_against(Some(published), PixelExtent::new(3436, 2216), moved,),
             mado_pilot_capture::Continuity::Discontinuous
         );
-        // Nothing published yet cannot be discontinuous with anything.
         assert_eq!(
-            continuity_against(None, extent, at(0.0)),
+            continuity_against(None, extent, moved),
             mado_pilot_capture::Continuity::Continuous
         );
-    }
-
-    #[test]
-    fn one_frame_disagreeing_with_live_geometry_does_not_reconfigure() {
-        // The blip a drag produces. Reconfiguring on it changes the producer
-        // surface, and a surface change is a discontinuity, so acting on a single
-        // frame turned a move that kept its extent into an epoch advance.
-        assert!(!should_reconfigure(1));
-        assert!(!should_reconfigure(UNSETTLED_BEFORE_RECONFIGURE - 1));
-        assert!(should_reconfigure(UNSETTLED_BEFORE_RECONFIGURE));
-        assert!(should_reconfigure(u32::MAX));
-        // A single disagreeing frame must never be enough, which is what the first
-        // assertion above already pins for the value this build compiled with.
-        const { assert!(UNSETTLED_BEFORE_RECONFIGURE > 1) }
     }
 
     #[test]
     fn a_surface_too_small_for_its_target_is_asked_to_grow() {
-        // Measured on a 1718x1108-point window moved onto a backing-scale-2 display
-        // while the producer still held the surface it had at scale 1: the framework
-        // scaled the target into the small surface and reported 1623x1047 pixels at
-        // scale 0.9449. Asking for that reported extent adopts the reduction.
-        let surface = PixelExtent::new(1718, 1050);
+        let surface = PixelExtent::new(1718, 1108);
         let target = PixelExtent::new(3436, 2216);
+        let info = FrameInfo::testing_screen_rect_with_surface_recommendation(
+            surface,
+            surface,
+            1.0,
+            (0.0, 0.0),
+            (1718.0, 1108.0),
+            target,
+        );
 
-        assert_eq!(surface_request(surface, Some(target)), Some(target));
+        assert_eq!(surface_request(TargetKind::Window, &info), Some(target));
     }
 
     #[test]
@@ -1090,58 +1355,321 @@ mod tests {
         // pixels — and the framework downscales into the old surface and fills it
         // exactly. Reading a filled surface as settled captures the target at half
         // resolution for the life of the stream.
-        let surface = PixelExtent::new(1000, 800);
-        let target = PixelExtent::new(2000, 1600);
+        let surface = PixelExtent::new(1718, 1108);
+        let target = PixelExtent::new(3436, 2216);
+        let info = FrameInfo::testing_screen_rect_with_surface_recommendation(
+            surface,
+            surface,
+            // raw scaleFactor=2 and contentScale=0.5 produced effective scale 1.
+            1.0,
+            (34.0, 191.0),
+            (1718.0, 1108.0),
+            target,
+        );
+        let placement = crate::discovery::frame_placement(&info).expect("same-frame placement");
 
         assert_eq!(
-            surface_request(surface, Some(target)),
+            surface_request(TargetKind::Window, &info),
             Some(target),
             "a surface the content fills can still be the wrong size for the target"
         );
+        assert_eq!(placement.scale().x(), 1.0);
+        assert_eq!(placement.desktop_origin(), (34.0, 191.0));
     }
 
     #[test]
     fn a_surface_already_the_size_the_target_needs_is_not_asked_for_again() {
-        // Content short of a correctly sized surface is the framework mid-resize.
-        // Asking again would spend a native round trip per frame to no effect.
         let surface = PixelExtent::new(3436, 2216);
+        let content = PixelExtent::new(1718, 1108);
+        let info = FrameInfo::testing_screen_rect_with_surface_recommendation(
+            content,
+            surface,
+            1.0,
+            (0.0, 0.0),
+            (1718.0, 1108.0),
+            surface,
+        );
 
-        assert_eq!(surface_request(surface, Some(surface)), None);
+        assert_eq!(surface_request(TargetKind::Window, &info), None);
     }
 
     #[test]
-    fn a_surface_request_needs_a_live_reading_to_size_it() {
-        // A target that could not be read gives nothing to size a request from, and
-        // the content extent is exactly the wrong answer, so nothing is asked for.
-        let surface = PixelExtent::new(1718, 1050);
+    fn a_window_without_a_valid_hint_does_not_surrender_an_oversized_surface() {
+        let content = PixelExtent::new(1718, 1108);
+        let mut info = FrameInfo::testing_screen_rect(content, 1.0, (0.0, 0.0), (1718.0, 1108.0));
+        info.surface_width = 3436;
+        info.surface_height = 2216;
 
-        assert_eq!(surface_request(surface, None), None);
+        assert_eq!(surface_request(TargetKind::Window, &info), None);
     }
 
     #[test]
-    fn a_reconfiguration_request_keeps_only_the_latest_extent() {
-        let reconfigure = Reconfigure::default();
-
-        reconfigure.request(PixelExtent::new(100, 100));
-        reconfigure.request(PixelExtent::new(200, 200));
+    fn a_display_frame_without_a_hint_keeps_the_existing_content_reconfigure_path() {
+        let content = PixelExtent::new(1920, 1080);
+        let info = FrameInfo::testing_screen_rect(content, 1.0, (0.0, 0.0), (1920.0, 1080.0));
+        let mut resized = info;
+        resized.surface_width = 2560;
+        resized.surface_height = 1440;
 
         assert_eq!(
-            reconfigure.lock().wanted,
-            Some(PixelExtent::new(200, 200)),
-            "an intermediate size a resize passed through is not worth a round trip"
+            surface_request(TargetKind::Display, &resized),
+            Some(content)
         );
     }
 
     #[test]
+    fn a_larger_surface_is_retained_when_a_window_returns_to_one_x() {
+        let content = PixelExtent::new(1718, 1108);
+        let surface = PixelExtent::new(3436, 2216);
+        let info = FrameInfo::testing_screen_rect_with_surface_recommendation(
+            content,
+            surface,
+            1.0,
+            (0.0, 0.0),
+            (1718.0, 1108.0),
+            content,
+        );
+
+        assert_eq!(
+            surface_request(TargetKind::Window, &info),
+            None,
+            "a 2x-to-1x move cannot surrender already-allocated capacity"
+        );
+    }
+
+    #[test]
+    fn growth_in_one_axis_requests_the_exact_bounded_recommendation() {
+        let content = PixelExtent::new(1000, 800);
+        let surface = PixelExtent::new(2000, 1600);
+        let wanted = PixelExtent::new(2500, 1200);
+        let info = FrameInfo::testing_screen_rect_with_surface_recommendation(
+            content,
+            surface,
+            1.0,
+            (0.0, 0.0),
+            (1000.0, 800.0),
+            wanted,
+        );
+
+        assert_eq!(surface_request(TargetKind::Window, &info), Some(wanted));
+    }
+
+    #[test]
+    fn a_reconfigured_two_x_extent_becomes_one_discontinuity_after_the_transition_drop() {
+        let one_x = PixelExtent::new(1718, 1108);
+        let two_x = PixelExtent::new(3436, 2216);
+        let one_scale = Scale::new(1.0, 1.0).expect("scale");
+        let published_placement =
+            TargetPlacement::new((-700.0, 191.0), (1718.0, 1108.0), one_scale).expect("placement");
+        let mut transition = TransitionState {
+            extent: one_x,
+            surface: one_x,
+            published: Some(Published {
+                extent: one_x,
+                placement: published_placement,
+            }),
+        };
+        let reduced = FrameInfo::testing_screen_rect_with_surface_recommendation(
+            one_x,
+            one_x,
+            1.0,
+            (34.0, 191.0),
+            (1718.0, 1108.0),
+            two_x,
+        );
+        let reduced_placement =
+            crate::discovery::frame_placement(&reduced).expect("reduced placement");
+        assert!(extent_ready_for_publication(&mut transition, one_x));
+        assert_eq!(
+            continuity_against(transition.published, one_x, reduced_placement),
+            mado_pilot_capture::Continuity::GeometryChanged
+        );
+        assert_eq!(surface_request(TargetKind::Window, &reduced), Some(two_x));
+        transition.published = Some(Published {
+            extent: one_x,
+            placement: reduced_placement,
+        });
+
+        let settled = FrameInfo::testing_screen_rect_with_surface_recommendation(
+            two_x,
+            two_x,
+            2.0,
+            (34.0, 191.0),
+            (1718.0, 1108.0),
+            two_x,
+        );
+        let settled_placement =
+            crate::discovery::frame_placement(&settled).expect("settled placement");
+        assert!(
+            !extent_ready_for_publication(&mut transition, two_x),
+            "the first changed-extent observation is dropped"
+        );
+        assert!(extent_ready_for_publication(&mut transition, two_x));
+        assert_eq!(surface_request(TargetKind::Window, &settled), None);
+        assert_eq!(
+            continuity_against(transition.published, two_x, settled_placement),
+            mado_pilot_capture::Continuity::Discontinuous,
+            "StreamState turns this one publication into the new epoch"
+        );
+    }
+
+    #[test]
+    fn a_reconfiguration_request_keeps_only_the_latest_extent() {
+        let (reconfigure, _receiver) = Reconfigure::new();
+
+        assert_eq!(
+            reconfigure.request(PixelExtent::new(100, 100)),
+            ReconfigurePublication::Published
+        );
+        assert_eq!(
+            reconfigure.request(PixelExtent::new(200, 200)),
+            ReconfigurePublication::Coalesced
+        );
+
+        assert_eq!(
+            decode_extent(reconfigure.wanted.load(Ordering::Acquire)),
+            Some(PixelExtent::new(200, 200)),
+            "an intermediate size a resize passed through is not worth a round trip"
+        );
+        assert_eq!(reconfigure.coalesced.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn every_valid_extent_round_trips_through_the_atomic_slot_encoding() {
+        for extent in [
+            PixelExtent::new(1, 1),
+            PixelExtent::new(u32::MAX, 1),
+            PixelExtent::new(1, u32::MAX),
+            PixelExtent::new(u32::MAX, u32::MAX),
+        ] {
+            let encoded = super::encode_extent(extent);
+            assert_ne!(encoded, 0, "zero remains the empty-slot sentinel");
+            assert_eq!(decode_extent(encoded), Some(extent));
+        }
+    }
+
+    #[test]
     fn a_request_after_shutdown_is_refused_so_nothing_queues_unread() {
-        let reconfigure = Arc::new(Reconfigure::default());
+        let (reconfigure, _receiver) = Reconfigure::new();
 
         reconfigure.shutdown();
-        reconfigure.request(PixelExtent::new(64, 64));
+        assert_eq!(
+            reconfigure.request(PixelExtent::new(64, 64)),
+            ReconfigurePublication::Rejected
+        );
 
-        let state = reconfigure.lock();
-        assert!(state.shutdown);
-        assert_eq!(state.wanted, None);
+        assert!(reconfigure.shutdown.load(Ordering::Acquire));
+        assert_eq!(reconfigure.wanted.load(Ordering::Acquire), 0);
+        assert_eq!(reconfigure.rejected.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn callback_side_reconfiguration_is_non_blocking_and_latest_wins_under_contention() {
+        let (reconfigure, _receiver) = Reconfigure::new();
+        let held_worker_state = reconfigure.worker();
+        let (published, observed) = mpsc::channel();
+        let producer = Arc::clone(&reconfigure);
+        let producer_thread = thread::spawn(move || {
+            let began = Instant::now();
+            let first = producer.request(PixelExtent::new(100, 100));
+            let second = producer.request(PixelExtent::new(200, 200));
+            published
+                .send((first, second, began.elapsed()))
+                .expect("observe callback-side publication");
+        });
+
+        let result = observed.recv_timeout(Duration::from_millis(250));
+        drop(held_worker_state);
+        producer_thread.join().expect("producer thread");
+        let (first, second, elapsed) =
+            result.expect("publication returns while the worker-state mutex is held");
+
+        assert_eq!(first, ReconfigurePublication::Published);
+        assert_eq!(second, ReconfigurePublication::Coalesced);
+        assert!(elapsed < Duration::from_millis(250));
+        assert_eq!(
+            decode_extent(reconfigure.wanted.load(Ordering::Acquire)),
+            Some(PixelExtent::new(200, 200))
+        );
+    }
+
+    #[test]
+    fn successful_drain_finishes_in_flight_reconfiguration_before_native_teardown() {
+        let (reconfigure, _receiver) = Reconfigure::new();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        reconfigure.prepare_worker();
+        let worker_state = Arc::clone(&reconfigure);
+        let worker = thread::spawn(move || {
+            entered_tx.send(()).expect("worker entered");
+            release_rx.recv().expect("release worker");
+            worker_state.worker_finished();
+        });
+        reconfigure.install_worker(worker);
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker entered its in-flight section");
+
+        let native_teardown = Arc::new(AtomicBool::new(false));
+        let teardown_flag = Arc::clone(&native_teardown);
+        let draining = Arc::clone(&reconfigure);
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let close_thread = thread::spawn(move || {
+            let context = OperationContext::new()
+                .with_timeout(Duration::from_secs(2))
+                .expect("timeout");
+            let drained = draining.drain(&context).is_ok();
+            teardown_flag.store(true, Ordering::Release);
+            finished_tx.send(drained).expect("close result");
+        });
+
+        assert!(
+            finished_rx.recv_timeout(Duration::from_millis(40)).is_err(),
+            "native teardown cannot overtake in-flight reconfiguration"
+        );
+        assert!(!native_teardown.load(Ordering::Acquire));
+        release_tx.send(()).expect("release reconfiguration");
+        assert!(
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("drain completes")
+        );
+        close_thread.join().expect("close thread");
+        assert!(native_teardown.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn drop_timeout_keeps_in_flight_reconfiguration_quarantined_until_it_can_join() {
+        let (reconfigure, _receiver) = Reconfigure::new();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        reconfigure.prepare_worker();
+        let worker_state = Arc::clone(&reconfigure);
+        let worker = thread::spawn(move || {
+            entered_tx.send(()).expect("worker entered");
+            release_rx.recv().expect("release worker");
+            worker_state.worker_finished();
+        });
+        reconfigure.install_worker(worker);
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker entered its in-flight section");
+
+        assert!(!reconfigure.drain_for_drop(Duration::from_millis(10)));
+        {
+            let worker = reconfigure.worker();
+            assert!(!worker.finished);
+            assert!(
+                worker.handle.is_some(),
+                "the join handle remains quarantined"
+            );
+        }
+
+        release_tx.send(()).expect("release reconfiguration");
+        assert!(reconfigure.drain_for_drop(Duration::from_secs(1)));
+        let worker = reconfigure.worker();
+        assert!(worker.finished);
+        assert!(worker.handle.is_none(), "the completed worker was joined");
     }
 
     #[test]

@@ -1,11 +1,9 @@
 //! Runtime checks for capture capabilities newer than the deployment minimum.
 //!
-//! The minimum supported macOS version is still gate `G-001`, and ScreenCaptureKit
-//! arrived in 12.3. Rather than let the linker decide what happens below that,
-//! the shim loads the framework at runtime and this module reports its absence as
-//! a typed unsupported outcome at operation time. An application can therefore
-//! include this package without making an unresolved minimum-macOS claim, and a
-//! host that cannot capture still loads the library.
+//! This implementation's declared deployment floor is macOS 26.5.2. It requires the
+//! frame-attached `SCStreamFrameInfoScreenRect` key and is qualified only on the
+//! Apple Silicon 26.5.2 (25F84) development host. The shim still loads the
+//! framework under a runtime 26.5.2 gate and reports absence as typed unsupported.
 
 use std::sync::OnceLock;
 
@@ -21,9 +19,9 @@ use crate::shim::{self, ShimStatus};
 ///
 /// # Errors
 ///
-/// Returns an unsupported outcome when the framework is absent, when the host
-/// predates it, or when the linked shim disagrees with the declarations this
-/// build mirrors.
+/// Returns an unsupported outcome when the framework or required frame key is
+/// absent, when the host predates macOS 26.5.2, or when the linked shim disagrees with
+/// the declarations this build mirrors.
 pub(crate) fn ensure_capture_available() -> Result<()> {
     if !linked_shim_agrees() {
         return Err(CaptureFault::UnsupportedOption.into());

@@ -12,12 +12,10 @@
 //! no feature macro for the flag, so the shim's `#error` and the flag stay in one
 //! review.
 //!
-//! The frameworks declared below all predate every macOS version this project
-//! could select as its minimum, so linking them is safe on any supported host.
-//! ScreenCaptureKit is deliberately absent: the shim loads it from its absolute
-//! system location at runtime, because an eager dependency on a framework that
-//! arrived in 12.3 would make an older host fail to load instead of reporting an
-//! unsupported status.
+//! The workspace declares macOS 26.5.2 as this implementation's deployment floor.
+//! ScreenCaptureKit remains deliberately absent from eager linkage: controlled
+//! loading keeps capability failure typed and lets the linkage test prove the shim
+//! has no ambient-framework dependency.
 //!
 //! `MADO_PILOT_MACOS_ASAN=1` additionally builds the shim under AddressSanitizer.
 //! That mode exists because the session's ownership scenarios assert that a live
@@ -113,6 +111,7 @@ fn main() {
         .flag("-fobjc-arc")
         .flag("-fobjc-arc-exceptions")
         .define("MP_SHIM_ARC_EXCEPTIONS", "1")
+        .flag("-mmacosx-version-min=26.5.2")
         .warnings(true)
         .extra_warnings(true);
 

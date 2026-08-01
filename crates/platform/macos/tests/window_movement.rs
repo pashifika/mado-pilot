@@ -65,6 +65,24 @@ const HEARTBEAT: Duration = Duration::from_secs(10);
 /// content having settled — and those two call for opposite next steps.
 const STALL: Duration = Duration::from_secs(5);
 
+/// Backing scales closer than this are the same display scale for this probe.
+const SCALE_TOLERANCE: f64 = 1e-9;
+
+/// Whether the host offers the mixed-scale transition this probe promises to test.
+fn has_differing_display_scales(scales: &[f64]) -> bool {
+    scales.first().is_some_and(|first| {
+        scales
+            .iter()
+            .skip(1)
+            .any(|scale| (scale - first).abs() >= SCALE_TOLERANCE)
+    })
+}
+
+/// Whether an opt-in run produced the acceptance evidence its name promises.
+fn cross_scale_acceptance_met(scales: &[f64], crossed_scales: u32) -> bool {
+    has_differing_display_scales(scales) && crossed_scales > 0
+}
+
 /// Where a window sits and how large it is, carrying no stream identity.
 ///
 /// Separate from [`Observed`] so the same reading can come from a frame or from a
@@ -224,30 +242,31 @@ fn a_window_moved_between_displays_republishes_under_a_new_geometry() {
     let context = OperationContext::new()
         .with_timeout(Duration::from_secs(10))
         .expect("a positive timeout");
-    let targets = match provider.discover(&context) {
-        Ok(targets) => targets,
-        Err(error) => {
-            println!(
-                "skipped: discovery reported {error}; the probe needs a host that has \
-                 granted Screen Recording to this process"
-            );
-            return;
-        }
-    };
+    let targets = provider.discover(&context).unwrap_or_else(|error| {
+        panic!(
+            "the requested probe could not discover targets: {error}; grant Screen \
+             Recording to this process before collecting acceptance evidence"
+        )
+    });
 
     // Printed first so the run says which way to drag. A pair that is adjacent and
     // disagrees about scale is the one worth crossing, because it exercises the
     // scale half of the scenario as well as the move.
     let display_scales = report_display_arrangement(&provider, &targets);
+    assert!(
+        has_differing_display_scales(&display_scales),
+        "the opt-in probe needs at least two capturable displays with different \
+         backing scales"
+    );
 
     let windows: Vec<&TargetDescription> = targets
         .iter()
         .filter(|target| target.capability().kind() == Some(TargetKind::Window))
         .collect();
-    if windows.is_empty() {
-        println!("skipped: this host reports no window target");
-        return;
-    }
+    assert!(
+        !windows.is_empty(),
+        "the requested probe needs at least one capturable window target"
+    );
     println!("windows this probe can capture:");
     for (index, window) in windows.iter().enumerate() {
         println!(
@@ -514,7 +533,7 @@ fn a_window_moved_between_displays_republishes_under_a_new_geometry() {
     let reduced = |state: &Observed| {
         !display_scales
             .iter()
-            .any(|scale| (scale - state.placed.scale).abs() < 1e-9)
+            .any(|scale| (scale - state.placed.scale).abs() < SCALE_TOLERANCE)
     };
     let letterboxed = states.iter().filter(|state| reduced(state)).count();
     let mut longest_reduced_run = 0u32;
@@ -529,12 +548,6 @@ fn a_window_moved_between_displays_republishes_under_a_new_geometry() {
          published at a scale no attached display has, the longest unbroken run of \
          those being {longest_reduced_run}"
     );
-    if crossed_scales == 0 {
-        println!(
-            "noted: no move crossed displays of differing scale; drag the window across \
-             the seam named above to cover that"
-        );
-    }
     if moved_at_one_scale == 0 {
         println!(
             "noted: no move kept the extent, so the geometry-change path was not \
@@ -542,7 +555,15 @@ fn a_window_moved_between_displays_republishes_under_a_new_geometry() {
         );
     }
     assert!(
-        moved_at_one_scale + crossed_scales > 0,
-        "states changed but none of them was a move"
+        cross_scale_acceptance_met(&display_scales, crossed_scales),
+        "the opt-in probe published no transition across displays of differing scale; \
+         cross the named seam early enough for frames to arrive on both sides"
     );
+}
+
+#[test]
+fn an_opt_in_probe_is_green_only_after_a_mixed_scale_transition() {
+    assert!(!cross_scale_acceptance_met(&[2.0], 1));
+    assert!(!cross_scale_acceptance_met(&[1.0, 2.0], 0));
+    assert!(cross_scale_acceptance_met(&[1.0, 2.0], 1));
 }

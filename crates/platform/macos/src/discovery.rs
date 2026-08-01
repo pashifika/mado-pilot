@@ -28,11 +28,10 @@ use mado_pilot_core::{
     TargetCapability, TargetId, TargetKind, TargetPlacement,
 };
 
-use crate::shim::{
-    self, Inventory, KIND_DISPLAY, KIND_WINDOW, MAX_SURFACE_BYTES, MAX_SURFACE_EXTENT, ShimStatus,
-};
+use crate::shim::{self, FrameInfo, Inventory, KIND_DISPLAY, KIND_WINDOW, ShimStatus, TargetToken};
 
-/// The stable native lookup key. It is never exposed through a public contract.
+/// The native descriptive key used for ordering and request validation.
+/// It is never exposed through a public contract or used to re-resolve a filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum NativeKey {
     Window(u32),
@@ -60,11 +59,6 @@ impl NativeKey {
         }
     }
 
-    /// Reports whether the target is still present, without opening anything.
-    pub(crate) fn is_present(self) -> bool {
-        shim::current_placement(self.native_kind(), self.native_id()).is_ok()
-    }
-
     fn from_info(kind: u32, native_id: u64) -> Option<Self> {
         let identifier = u32::try_from(native_id).ok()?;
         match kind {
@@ -75,22 +69,16 @@ impl NativeKey {
     }
 }
 
-/// Native observations that distinguish one incarnation of a target from a
-/// replacement that happens to have inherited its identifier.
+/// Native metadata repeated to validate an originating snapshot selection.
 ///
-/// macOS reuses window numbers, so the owning process is carried alongside the
-/// identifier: a window that closes and is replaced by another window of another
-/// process is a different target even if the number matches. The framework reports
-/// that owner as optional, and a window without one carries no incarnation identity at
-/// all — two of them would compare equal — so the shim does not list such a window
-/// rather than fingerprinting it with a value that distinguishes nothing.
+/// PID and window number can both be reused by one process, so these values are not
+/// an incarnation identity. [`Candidate::target`] retains the filter constructed
+/// from this snapshot; the owner here remains descriptive validation metadata.
 ///
-/// A display carries its captured extent rather than its placement. Rearranging
-/// displays moves the same physical display, so its identity persists and the
-/// geometry revision of the next published frame reports the move; changing its
-/// mode changes the shape of what capture produces, which is a new incarnation. The
-/// extent is used rather than a vendor or serial number because those describe the
-/// user's hardware and this fingerprint is compared, not reported.
+/// A display carries its captured extent rather than its placement because the
+/// extent supplies the opening producer size and frame placement is same-frame
+/// metadata. The extent is used rather than a vendor or serial number because those
+/// describe the user's hardware and cannot strengthen the retained filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Fingerprint {
     Window { owner_process: i64 },
@@ -119,6 +107,7 @@ impl Fingerprint {
 pub(crate) struct TargetMetadata {
     pub(crate) name: String,
     pub(crate) extent: PixelExtent,
+    #[allow(dead_code)] // Read by the authorized-host screenRect acceptance matrix.
     pub(crate) placement: TargetPlacement,
 }
 
@@ -135,6 +124,9 @@ impl TargetMetadata {
             self.name.clone(),
             self.extent,
             PixelFormat::Bgra8,
+            // The qualified host supplies onscreen placement in each frame's own
+            // attachment dictionary. Inventory placement describes discovery;
+            // only the per-frame rectangle authorizes publication.
             CoordinateSupport::with_target_placement(),
         )
         .with_capability(
@@ -149,6 +141,7 @@ impl TargetMetadata {
 pub(crate) struct Candidate {
     pub(crate) key: NativeKey,
     pub(crate) fingerprint: Fingerprint,
+    pub(crate) target: TargetToken,
     pub(crate) metadata: TargetMetadata,
 }
 
@@ -180,9 +173,13 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
             continue;
         };
         let name = inventory.name(index).unwrap_or("").to_owned();
+        let Ok(target) = inventory.target(index) else {
+            continue;
+        };
         candidates.push(Candidate {
             key,
             fingerprint: fingerprint(key, &info, extent),
+            target,
             metadata: TargetMetadata {
                 name,
                 extent,
@@ -203,100 +200,6 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
             .then_with(|| left.key.cmp(&right.key))
     });
     Ok(candidates)
-}
-
-/// What re-reading the target's live placement established for one frame.
-///
-/// The three outcomes are deliberately separate. Collapsing the middle one into
-/// [`PlacementReading::Lost`] is how a resize in flight became a permanent target
-/// loss: a window dragged between displays is resized by the window server a
-/// fraction of a second after the move, so for a few frames the producer's surface
-/// and the live window disagree — and a target that is plainly still there was
-/// reported as gone.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum PlacementReading {
-    /// The live geometry agrees with this frame's own extent and scale.
-    ///
-    /// `wanted` is the producer surface extent the target needs at its own display's
-    /// backing scale. It is not always this frame's extent: the framework scales a
-    /// target down to fit a surface too small to hold it and reports the reduced
-    /// size, so the size to ask a producer for comes from the target rather than
-    /// from the content in hand.
-    Ready {
-        placement: TargetPlacement,
-        wanted: Option<PixelExtent>,
-    },
-    /// The live geometry has moved on since this frame was produced. Carries the
-    /// producer surface extent that would match the target as it is now, when one
-    /// can be computed.
-    Unsettled { wanted: Option<PixelExtent> },
-    /// The frame's own reported scale is not a usable factor.
-    Unusable,
-    /// The target is no longer present.
-    Lost,
-}
-
-impl PlacementReading {
-    /// Returns the producer surface extent the live target needs, when this reading
-    /// established one.
-    pub(crate) const fn wanted(self) -> Option<PixelExtent> {
-        match self {
-            Self::Ready { wanted, .. } | Self::Unsettled { wanted } => wanted,
-            // Neither reading established a live size to derive one from.
-            Self::Unusable | Self::Lost => None,
-        }
-    }
-}
-
-/// Re-reads placement at frame arrival, so a retained frame never consults live
-/// host geometry after publication.
-pub(crate) fn read_placement(key: NativeKey, extent: PixelExtent, scale: f64) -> PlacementReading {
-    let Ok(live) = shim::current_placement(key.native_kind(), key.native_id()) else {
-        return PlacementReading::Lost;
-    };
-    let origin = (live.frame[0], live.frame[1]);
-    let size = (live.frame[2], live.frame[3]);
-    match placement_from_points(origin, size, scale, extent) {
-        Ok(placement) => PlacementReading::Ready {
-            placement,
-            wanted: surface_for(size, live.display_scale),
-        },
-        // The frame agreed with nothing because its scale is unusable, which is a
-        // descriptor problem rather than anything about the target.
-        Err(GeometryFault::NotFinite | GeometryFault::NegativeSize) => PlacementReading::Unusable,
-        Err(_) => PlacementReading::Unsettled {
-            wanted: surface_for(size, live.display_scale),
-        },
-    }
-}
-
-/// Returns the producer surface extent that matches `size` points at `scale`.
-///
-/// `None` for anything the shim would refuse anyway, so a nonsensical live reading
-/// asks for no reconfiguration rather than an absurd surface.
-fn surface_for(size: (f64, f64), scale: f64) -> Option<PixelExtent> {
-    let width = surface_pixels(size.0, scale)?;
-    let height = surface_pixels(size.1, scale)?;
-    // The axes are bounded one at a time above; what gets allocated is their product,
-    // and the shim refuses a surface beyond its byte ceiling however the axes look.
-    if u64::from(width) * u64::from(height) * 4 > MAX_SURFACE_BYTES {
-        return None;
-    }
-    Some(PixelExtent::new(width, height))
-}
-
-#[expect(
-    clippy::cast_sign_loss,
-    clippy::cast_possible_truncation,
-    reason = "the range check below proves the rounded value is a positive integer \
-              within the shim's own extent bound, so it converts exactly"
-)]
-fn surface_pixels(points: f64, scale: f64) -> Option<u32> {
-    let rounded = (points * scale).round();
-    if !rounded.is_finite() || rounded < 1.0 || rounded > f64::from(MAX_SURFACE_EXTENT) {
-        return None;
-    }
-    Some(rounded as u32)
 }
 
 /// Builds the placement for a target whose logical rectangle is `size` points at
@@ -329,6 +232,22 @@ fn placement_from_points(
     TargetPlacement::new(origin, logical, scale)
 }
 
+/// Builds the only placement a native publication may carry.
+///
+/// `screenRect`, content extent, and effective scale all come from the same sample
+/// buffer. The shim has already checked them, and this second validation keeps the
+/// Rust boundary independently defensive if the native report layout changes.
+pub(crate) fn frame_placement(
+    info: &FrameInfo,
+) -> std::result::Result<TargetPlacement, CaptureFault> {
+    let extent = info.extent().ok_or(CaptureFault::InconsistentDescriptor)?;
+    let (origin, size) = info
+        .screen_rect()
+        .ok_or(CaptureFault::InconsistentDescriptor)?;
+    placement_from_points(origin, size, info.scale_factor, extent)
+        .map_err(|_| CaptureFault::InconsistentDescriptor)
+}
+
 fn fingerprint(key: NativeKey, info: &shim::TargetInfo, extent: PixelExtent) -> Fingerprint {
     match key {
         NativeKey::Window(_) => Fingerprint::Window {
@@ -356,10 +275,7 @@ mod tests {
         TransformSnapshot,
     };
 
-    use super::{
-        Fingerprint, MAX_SURFACE_EXTENT, NativeKey, TargetMetadata, placement_from_points,
-        surface_for,
-    };
+    use super::{Fingerprint, NativeKey, TargetMetadata, frame_placement, placement_from_points};
 
     /// The metadata any described target is built from. The values are arbitrary;
     /// what the description says about capability does not depend on them.
@@ -404,8 +320,14 @@ mod tests {
         assert!(
             description
                 .coordinates()
+                .supports(CoordinateSpace::TargetNormalized),
+            "the frame covers the selected target"
+        );
+        assert!(
+            description
+                .coordinates()
                 .supports(CoordinateSpace::DesktopLogical),
-            "placement-bearing targets convert into the desktop plane"
+            "qualified-host frame attachments provide same-frame desktop placement"
         );
 
         // The scenario's own outcome: a caller asking about background delivery finds
@@ -442,6 +364,32 @@ mod tests {
         // Under a point still passes, which is what the slack is for.
         placement_from_points((0.0, 0.0), (1280.4, 800.0), 2.0, extent)
             .expect("quantization below one point is the same rectangle");
+    }
+
+    #[test]
+    fn frame_placement_accepts_only_geometry_attached_to_that_frame() {
+        let extent = PixelExtent::new(2560, 1600);
+        let valid = crate::shim::FrameInfo::testing_screen_rect(
+            extent,
+            2.0,
+            (-1280.0, 0.0),
+            (1280.0, 800.0),
+        );
+        let placement = frame_placement(&valid).expect("same-frame geometry agrees");
+        assert_eq!(placement.desktop_origin(), (-1280.0, 0.0));
+
+        let missing = crate::shim::FrameInfo::empty();
+        assert_eq!(
+            frame_placement(&missing),
+            Err(mado_pilot_capture::CaptureFault::InconsistentDescriptor)
+        );
+
+        let contradictory =
+            crate::shim::FrameInfo::testing_screen_rect(extent, 2.0, (0.0, 0.0), (1281.0, 800.0));
+        assert_eq!(
+            frame_placement(&contradictory),
+            Err(mado_pilot_capture::CaptureFault::InconsistentDescriptor)
+        );
     }
 
     #[test]
@@ -508,61 +456,25 @@ mod tests {
     }
 
     #[test]
-    fn a_live_size_that_has_moved_on_is_unsettled_rather_than_lost() {
-        // The reading a cross-display drag produces: the window server has already
-        // resized the target, so the live point size no longer matches the extent
-        // the producer is still delivering. Reporting that as target loss ended a
-        // stream whose target was plainly still there, which is the defect this
-        // classification exists to prevent.
+    fn a_same_frame_size_that_contradicts_its_extent_is_refused() {
         let stale_extent = PixelExtent::new(1718, 1050);
-        let live_points = (1718.0, 1108.0);
+        let frame_points = (1718.0, 1108.0);
 
-        let refused = placement_from_points((0.0, 0.0), live_points, 1.0, stale_extent)
-            .expect_err("the extent and the live size describe different rectangles");
+        let refused = placement_from_points((0.0, 0.0), frame_points, 1.0, stale_extent)
+            .expect_err("the attached rectangle and extent describe different rectangles");
 
         assert_eq!(refused, GeometryFault::SpaceMismatch);
-        assert_eq!(
-            surface_for(live_points, 2.0),
-            Some(PixelExtent::new(3436, 2216)),
-            "the surface asked for is the live size at the new display's scale"
-        );
     }
 
     #[test]
-    fn a_surface_beyond_what_the_shim_accepts_is_never_asked_for() {
-        assert_eq!(surface_for((1.0, 1.0), 1.0), Some(PixelExtent::new(1, 1)));
-        assert_eq!(surface_for((0.4, 10.0), 1.0), None, "under one pixel");
-        assert_eq!(
-            surface_for((f64::from(MAX_SURFACE_EXTENT) + 1.0, 10.0), 1.0),
-            None,
-            "beyond the shim's own bound"
-        );
-        assert_eq!(surface_for((f64::NAN, 10.0), 1.0), None);
-        assert_eq!(surface_for((10.0, 10.0), f64::INFINITY), None);
-
-        // The extent bound is per axis and the allocation is their product, so a
-        // surface can sit inside the first and outside the second.
-        assert_eq!(
-            surface_for((8192.0, 8192.0), 1.0),
-            Some(PixelExtent::new(8192, 8192)),
-            "exactly the byte ceiling"
-        );
-        assert_eq!(
-            surface_for((8192.0, 8193.0), 1.0),
-            None,
-            "past the byte ceiling with both axes well inside the extent bound"
-        );
-    }
-
-    #[test]
-    fn only_a_window_carries_an_owner_into_the_native_lookup() {
+    fn only_a_window_repeats_an_owner_in_the_native_request() {
         assert_eq!(
             Fingerprint::Window {
                 owner_process: 4321
             }
             .native_owner(),
             4321,
-            "the owner the discovery pass recorded is what an open must match"
+            "the owner the discovery pass recorded is repeated with its filter"
         );
         assert_eq!(
             Fingerprint::Display {
@@ -572,9 +484,8 @@ mod tests {
             0,
             "a display has no owning process"
         );
-        // A window the framework named no owner for records zero, and the lookup
-        // matches that value rather than treating it as no constraint — otherwise an
-        // unnamed owner would stand in for every owner.
+        // The metadata conversion itself preserves zero; discovery omits such a
+        // window and the native open boundary independently refuses it.
         assert_eq!(Fingerprint::Window { owner_process: 0 }.native_owner(), 0);
     }
 
@@ -604,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_window_number_from_another_process_is_another_target() {
+    fn different_window_owner_metadata_remains_distinguishable() {
         let first = Fingerprint::Window { owner_process: 501 };
         let second = Fingerprint::Window { owner_process: 907 };
 
@@ -613,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn a_display_mode_change_is_a_new_incarnation_and_a_move_is_not() {
+    fn a_display_fingerprint_tracks_opening_extent_and_not_placement() {
         let original = Fingerprint::Display {
             extent: PixelExtent::new(2560, 1600),
         };
@@ -630,7 +541,7 @@ mod tests {
             Fingerprint::Display {
                 extent: PixelExtent::new(2560, 1600)
             },
-            "rearranging displays moves the same display, so its identity persists"
+            "placement is intentionally absent from opening metadata"
         );
     }
 

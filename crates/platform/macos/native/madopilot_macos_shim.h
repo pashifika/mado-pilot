@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 1u
+#define MP_SHIM_ABI_VERSION 2u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -53,6 +53,9 @@ extern "C" {
  */
 #define MP_SHIM_MAX_SURFACE_BYTES 268435456u
 
+/* Finite bound for signed coordinates in the global logical desktop plane. */
+#define MP_SHIM_MAX_DESKTOP_COORDINATE 1000000000.0
+
 /*
  * Session-scoped test seams.
  *
@@ -61,16 +64,19 @@ extern "C" {
  * ownership cases become testable. Nothing in the product sets them, and a session
  * that leaves them zero behaves as if they did not exist.
  *
- * `MP_SHIM_RAISE_IN_START_COMPLETION` is the fifth and covers a position the
- * original four could not reach: the capture-start completion block. It is a callback
- * trampoline the framework invokes, so rule 1 covers it, and `MP_SHIM_RAISE_AT_START`
- * fires after the wait and therefore never enters it.
+ * The completion seams cover callback trampolines the framework invokes after the
+ * registering entry point has returned. A catch around that entry point cannot
+ * contain a later exception, so each completion owns its own containment and owed
+ * gate settlement.
  */
 #define MP_SHIM_RAISE_AT_START 1u
 #define MP_SHIM_RAISE_BEFORE_CALLBACK 2u
 #define MP_SHIM_RAISE_AFTER_CALLBACK 4u
 #define MP_SHIM_RAISE_AT_TEARDOWN 8u
 #define MP_SHIM_RAISE_IN_START_COMPLETION 16u
+/* Rust-only companion seam: the Rust trampoline panics before processing. */
+#define MP_SHIM_PANIC_IN_RUST_CALLBACK 32u
+#define MP_SHIM_RAISE_IN_STOP_COMPLETION 64u
 
 /* Status returned by every entry point. Zero is success. */
 typedef uint32_t mp_shim_status;
@@ -121,8 +127,14 @@ typedef uint32_t mp_shim_status;
 /* The only pixel layout this shim publishes. */
 #define MP_SHIM_PIXEL_BGRA8 0u
 
+/* `screen_*` in `mp_shim_frame_info` contains a validated per-frame rectangle. */
+#define MP_SHIM_FRAME_INFO_SCREEN_RECT 1u
+/* A same-sample, bounded producer-capacity recommendation is present. */
+#define MP_SHIM_FRAME_INFO_SURFACE_RECOMMENDATION (1u << 1)
+
 /* Opaque handles. Each has a complete lifecycle below. */
 typedef struct mp_shim_inventory mp_shim_inventory;
+typedef struct mp_shim_target mp_shim_target;
 typedef struct mp_shim_session mp_shim_session;
 typedef struct mp_shim_frame mp_shim_frame;
 
@@ -164,9 +176,11 @@ typedef struct mp_shim_frame_info {
     /* Extent of the producer surface the content sits in, in capture pixels. */
     uint32_t surface_width;
     uint32_t surface_height;
+    /* Which optional frame-attached reports below passed validation. */
+    uint32_t flags;
     /* Declared rather than left to padding, so the layout is the same on both
      * sides of the boundary without either side inferring it. */
-    uint32_t reserved[2];
+    uint32_t reserved;
     /* Producer timestamp, in nanoseconds on the host's monotonic clock — the same
      * clock and unit `mp_shim_monotonic_nanos` reports, so the two are directly
      * comparable. The framework supplies mach absolute units; the shim converts. */
@@ -176,6 +190,18 @@ typedef struct mp_shim_frame_info {
     /* Content origin within the surface, in capture pixels. */
     double content_origin_x;
     double content_origin_y;
+    /* Onscreen content rectangle from SCStreamFrameInfoScreenRect, in the
+     * framework's logical coordinate plane. This is authoritative only when
+     * MP_SHIM_FRAME_INFO_SCREEN_RECT is set. */
+    double screen_x;
+    double screen_y;
+    double screen_width;
+    double screen_height;
+    /* Source-resolution producer capacity derived from this sample's validated
+     * screenRect and raw SCStreamFrameInfoScaleFactor. It has no publication
+     * geometry authority and is valid only with the matching flag. */
+    uint32_t recommended_surface_width;
+    uint32_t recommended_surface_height;
 } mp_shim_frame_info;
 
 /* What a session is being opened for. */
@@ -184,24 +210,28 @@ typedef struct mp_shim_open_request {
     uint32_t kind;
     uint64_t native_id;
     /*
-     * The owning process the caller resolved this window against, or zero for a
-     * display and for a window whose owner the framework did not name.
+     * The owning process recorded for this window, or zero for a display.
      *
      * macOS recycles window numbers, so the number alone does not name an
-     * incarnation. The caller already carries this to reject a replacement that
-     * inherited the number; the lookup here consults it too, because the caller
-     * validated against its own snapshot of the shareable content and this open
-     * takes another. Zero is a value to match, not the absence of a constraint.
+     * incarnation. The retained selection below is authoritative; this value is
+     * metadata that must agree with it. Zero is valid only for a display.
      */
     int64_t owner_process;
+    /*
+     * The retained SCContentFilter constructed transactionally from the candidate
+     * in its originating inventory snapshot. Open consumes it directly; numeric
+     * metadata is never used to resolve another object.
+     */
+    const mp_shim_target *target;
     uint32_t pixel_width;
     uint32_t pixel_height;
     /* Producer queue depth. Bounded by the shim to a reviewed range. */
     uint32_t queue_depth;
     /* How many detached buffers the session may lease at once. */
     uint32_t detached_budget;
-    /* Bounds the one native asynchronous query this open performs. */
-    uint64_t timeout_nanos;
+    /* Test-only completion delays. Zero in the product. */
+    uint64_t testing_start_delay_nanos;
+    uint64_t testing_stop_delay_nanos;
     /* Zero in the product. See the MP_SHIM_RAISE_* test seams above. */
     uint32_t testing_raise_sites;
     bool shows_cursor;
@@ -216,6 +246,12 @@ typedef struct mp_shim_open_request {
      */
     mp_shim_status (*frame_callback)(void *context, mp_shim_frame *borrowed,
                                     const mp_shim_frame_info *info);
+    /*
+     * Invoked only after frame_callback returned success and every remaining
+     * throwing native frame step completed. It commits or safely ignores the
+     * frame staged by frame_callback and must contain Rust panics.
+     */
+    mp_shim_status (*frame_commit_callback)(void *context);
     /* Invoked once if the producer stops for a reason of its own. */
     void (*stopped_callback)(void *context, mp_shim_status status);
 } mp_shim_open_request;
@@ -277,6 +313,39 @@ mp_shim_status mp_shim_monotonic_nanos(uint64_t *out_nanos);
 mp_shim_status mp_shim_live_objects(uint64_t *out_live);
 
 /*
+ * Deterministic test seam for the production exactly-once terminal helper.
+ * Calls terminalization twice; `stopped_callback` must observe only `first`.
+ */
+mp_shim_status mp_shim_testing_terminalize_twice(
+    void *context, void (*stopped_callback)(void *context, mp_shim_status status),
+    mp_shim_status first, mp_shim_status second);
+
+/*
+ * Deterministic test seam for the resumable asynchronous start/stop gates.
+ * Each first wait expires while the delayed completion remains pending; each
+ * second wait resumes that same gate and observes its completion.
+ */
+mp_shim_status mp_shim_testing_gate_retries(
+    uint64_t completion_delay_nanos, uint64_t first_wait_nanos, uint64_t second_wait_nanos,
+    mp_shim_status *out_start_first, mp_shim_status *out_start_second,
+    mp_shim_status *out_stop_first, mp_shim_status *out_stop_second);
+
+/*
+ * Runs the production stop-completion trampoline with an injected exception.
+ * The returned status proves that the exception was translated and the stop gate
+ * was settled instead of remaining pending.
+ */
+mp_shim_status mp_shim_testing_stop_completion_exception(mp_shim_status *out_status,
+                                                          bool *out_started);
+
+/* Pure seam for the same-sample source-resolution surface recommendation. */
+mp_shim_status mp_shim_testing_surface_recommendation(double logical_width,
+                                                      double logical_height,
+                                                      double display_scale,
+                                                      uint32_t *out_width,
+                                                      uint32_t *out_height);
+
+/*
  * Enumerates the currently shareable windows and displays.
  *
  * `timeout_nanos` bounds the one native asynchronous query this performs. The
@@ -301,20 +370,18 @@ mp_shim_status mp_shim_inventory_entry(const mp_shim_inventory *inventory, size_
 mp_shim_status mp_shim_inventory_name(const mp_shim_inventory *inventory, size_t index,
                                       const uint8_t **out_bytes, size_t *out_len);
 
+/*
+ * Constructs and retains an exact SCContentFilter from the target at `index`.
+ * The caller owns the returned opaque selection handle.
+ */
+mp_shim_status mp_shim_inventory_target(const mp_shim_inventory *inventory, size_t index,
+                                        mp_shim_target **out);
+
 /* Releases the inventory and every view borrowed from it. Accepts NULL. */
 void mp_shim_inventory_release(mp_shim_inventory *inventory);
 
-/*
- * Reads the target's current placement, for use at frame time.
- *
- * Writes four doubles into `out_frame`: origin x, origin y, width, height, in
- * global points. Writes the backing scale of the display holding the target into
- * `out_scale`, which is what an Adapter needs to ask for a producer surface at the
- * target's native resolution after it has moved. Returns MP_SHIM_TARGET_LOST when
- * the target is no longer present.
- */
-mp_shim_status mp_shim_current_placement(uint32_t kind, uint64_t native_id, double *out_frame,
-                                        double *out_scale);
+/* Releases one retained selection handle. Accepts NULL. */
+void mp_shim_target_release(mp_shim_target *target);
 
 /*
  * Creates a session and registers its callbacks. Does not start the producer.
@@ -349,9 +416,11 @@ mp_shim_status mp_shim_session_disable_callbacks(mp_shim_session *session);
 mp_shim_status mp_shim_session_fence(mp_shim_session *session, uint64_t timeout_nanos);
 
 /*
- * Stops the producer, removes the stream output, and releases native state.
+ * Joins a pending start, removes the stream output, stops the producer, fences
+ * admitted callbacks, and releases native state in resumable phases.
  *
- * Idempotent, and completes its release even when it reports a failure.
+ * A timeout preserves the current phase for a later call. Idempotent, and
+ * completes its release even when it reports a non-timeout failure.
  */
 mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_nanos);
 

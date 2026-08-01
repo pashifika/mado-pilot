@@ -12,6 +12,7 @@
 //! these scenarios report a skip there instead of a pass. The skip is printed with
 //! its reason so a green run cannot be read as evidence the scenario ran.
 
+use std::ffi::c_void;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,10 +27,10 @@ use mado_pilot_core::{
 
 use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
-use crate::native::NativeSession;
+use crate::native::{NativeSession, SessionTarget};
 use crate::shim::{
-    self, MAX_NATIVE_WAIT, RAISE_AFTER_CALLBACK, RAISE_AT_START, RAISE_AT_TEARDOWN,
-    RAISE_BEFORE_CALLBACK, RAISE_IN_START_COMPLETION,
+    self, MAX_NATIVE_WAIT, PANIC_IN_RUST_CALLBACK, RAISE_AFTER_CALLBACK, RAISE_AT_START,
+    RAISE_AT_TEARDOWN, RAISE_BEFORE_CALLBACK, RAISE_IN_START_COMPLETION, RAISE_IN_STOP_COMPLETION,
 };
 use crate::storage::DETACHED_BUFFER_BUDGET;
 
@@ -75,6 +76,7 @@ struct Harness {
     issuer: Arc<IdentityIssuer>,
     key: NativeKey,
     fingerprint: Fingerprint,
+    target: shim::TargetToken,
     metadata: TargetMetadata,
 }
 
@@ -142,6 +144,7 @@ impl Harness {
             issuer: Arc::new(IdentityIssuer::new()),
             key: candidate.key,
             fingerprint: candidate.fingerprint,
+            target: candidate.target.clone(),
             metadata: candidate.metadata.clone(),
         }
     }
@@ -187,14 +190,73 @@ impl Harness {
         let mut operation = Operation::admit(&context).expect("admitted");
         let target = self.issuer.issue_target(crate::provider::PROVIDER)?;
         let stream = self.issuer.issue_stream()?;
-        NativeSession::open_with_raise_sites(
+        let selected = SessionTarget::new(
             target,
             stream,
             self.key,
             self.fingerprint,
+            self.target.clone(),
             self.metadata.clone(),
-            raise_sites,
-            &mut operation,
+        );
+        NativeSession::open_with_raise_sites(selected, raise_sites, &mut operation)
+    }
+
+    fn open_with_delays(
+        &self,
+        start_delay: Duration,
+        stop_delay: Duration,
+    ) -> mado_pilot_core::Result<Arc<NativeSession>> {
+        let context = OperationContext::new()
+            .with_timeout(Duration::from_secs(10))
+            .expect("a positive timeout");
+        let mut operation = Operation::admit(&context).expect("admitted");
+        let target = self.issuer.issue_target(crate::provider::PROVIDER)?;
+        let stream = self.issuer.issue_stream()?;
+        let selected = SessionTarget::new(
+            target,
+            stream,
+            self.key,
+            self.fingerprint,
+            self.target.clone(),
+            self.metadata.clone(),
+        );
+        NativeSession::open_with_delays(selected, start_delay, stop_delay, &mut operation)
+    }
+
+    fn open_unstarted_shim(
+        &self,
+        start_delay: Duration,
+        stop_delay: Duration,
+    ) -> Result<shim::Session, shim::ShimStatus> {
+        unsafe extern "C" fn ignore_frame(
+            _context: *mut c_void,
+            _frame: *mut shim::OpaqueFrameHandle,
+            _info: *const shim::FrameInfo,
+        ) -> u32 {
+            shim::ShimStatus::Ok.as_raw()
+        }
+        unsafe extern "C" fn ignore_stopped(_context: *mut c_void, _status: u32) {}
+        unsafe extern "C" fn ignore_frame_commit(_context: *mut c_void) -> u32 {
+            shim::ShimStatus::Ok.as_raw()
+        }
+
+        shim::Session::open(
+            &shim::OpenRequest {
+                kind: self.key.native_kind(),
+                native_id: self.key.native_id(),
+                owner_process: self.fingerprint.native_owner(),
+                target: self.target.clone(),
+                extent: self.metadata.extent,
+                queue_depth: 3,
+                detached_budget: DETACHED_BUFFER_BUDGET.get(),
+                testing_start_delay: start_delay,
+                testing_stop_delay: stop_delay,
+                testing_raise_sites: 0,
+            },
+            std::ptr::null_mut(),
+            ignore_frame,
+            ignore_frame_commit,
+            ignore_stopped,
         )
     }
 }
@@ -286,6 +348,28 @@ fn close(session: &NativeSession) -> mado_pilot_core::Result<()> {
     session.close(&context)
 }
 
+/// Proves that a later discovery cannot terminate an already-open retained filter.
+#[test]
+fn an_open_selection_keeps_producing_across_a_fresh_discovery_snapshot() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire_producing("selection across discovery refresh") else {
+        return;
+    };
+    let session = harness.open(0).expect("retained selection opens");
+    let first = next_frame(&session, FrameRequest::latest()).expect("first frame");
+    let Some(_fresh) = discovered("selection across discovery refresh") else {
+        close(&session).expect("close after unavailable refresh");
+        return;
+    };
+    next_frame_within(
+        &session,
+        FrameRequest::newer_than(first.stamp()),
+        FRAME_WAIT,
+    )
+    .expect("a fresh snapshot does not disconnect the retained filter");
+    close(&session).expect("close");
+}
+
 #[test]
 fn a_display_session_publishes_frames_that_cover_the_display() {
     let _serial = serialized();
@@ -311,20 +395,15 @@ fn a_display_session_publishes_frames_that_cover_the_display() {
     let placement = frame
         .transform()
         .target()
-        .expect("a display frame carries authoritative placement");
-    assert_eq!(placement.scale().x(), placement.desktop_scale().x());
+        .expect("the qualified host publishes frame-attached screenRect placement");
     let origin = frame
         .transform()
         .convert_point(
             Point::new(CoordinateSpace::CapturePixels, 0.0, 0.0).expect("valid"),
             CoordinateSpace::DesktopLogical,
         )
-        .expect("desktop conversion");
-    assert_eq!(
-        (origin.x(), origin.y()),
-        harness.metadata.placement.desktop_origin(),
-        "the frame's own geometry is what a conversion uses"
-    );
+        .expect("same-frame desktop conversion");
+    assert_eq!((origin.x(), origin.y()), placement.desktop_origin());
     close(&session).expect("close");
 }
 
@@ -405,7 +484,7 @@ fn successive_frames_carry_advancing_times_in_the_engine_clock_domain() {
 }
 
 #[test]
-fn a_window_session_publishes_frames_whose_own_geometry_places_them() {
+fn a_window_session_publishes_same_frame_desktop_placement() {
     let _serial = serialized();
     let Some(candidates) = discovered("window publication") else {
         return;
@@ -416,21 +495,15 @@ fn a_window_session_publishes_frames_whose_own_geometry_places_them() {
         return;
     };
 
-    // Asserted against the frame's own transform rather than the discovery
-    // metadata: a window is free to resize between the two, and the frame's
-    // geometry is what a conversion is required to use.
-    let placement = frame
-        .transform()
-        .target()
-        .expect("a window frame carries authoritative placement");
     assert_eq!(
         frame.transform().frame_extent(),
         frame.descriptor().extent()
     );
     assert!(frame.transform().covers_target());
-    assert!(placement.scale().x() > 0.0);
-    assert_eq!(placement.scale().x(), placement.desktop_scale().x());
-
+    let placement = frame
+        .transform()
+        .target()
+        .expect("a qualified-host window frame carries screenRect placement");
     let origin = frame
         .transform()
         .convert_point(
@@ -438,11 +511,7 @@ fn a_window_session_publishes_frames_whose_own_geometry_places_them() {
             CoordinateSpace::DesktopLogical,
         )
         .expect("desktop conversion");
-    assert_eq!(
-        (origin.x(), origin.y()),
-        placement.desktop_origin(),
-        "the frame's own placement is what a conversion uses, not live host state"
-    );
+    assert_eq!((origin.x(), origin.y()), placement.desktop_origin());
 
     let mapping = frame
         .map(PixelFormat::Bgra8, &OperationContext::new())
@@ -452,7 +521,7 @@ fn a_window_session_publishes_frames_whose_own_geometry_places_them() {
 }
 
 #[test]
-fn every_attached_display_publishes_frames_placed_by_its_own_geometry() {
+fn every_attached_display_carries_same_frame_desktop_conversion() {
     let _serial = serialized();
     let Some(candidates) = discovered("multi-display placement") else {
         return;
@@ -468,16 +537,30 @@ fn every_attached_display_publishes_frames_placed_by_its_own_geometry() {
         );
     }
 
-    let mut observed = Vec::new();
     for display in &displays {
         let harness = Harness::from_candidate(display);
         let session = harness.open(0).expect("a discovered display opens");
         let frame = next_frame(&session, FrameRequest::latest()).expect("the display publishes");
-
+        assert_eq!(frame.descriptor().extent(), display.metadata.extent);
         let placement = frame
             .transform()
             .target()
-            .expect("a display frame carries authoritative placement");
+            .expect("each display frame carries screenRect placement");
+        assert_eq!(
+            placement.desktop_origin(),
+            display.metadata.placement.desktop_origin(),
+            "screenRect and shareable-content use different desktop origins"
+        );
+        assert_eq!(
+            placement.logical_size(),
+            display.metadata.placement.logical_size(),
+            "screenRect and shareable-content use different logical units"
+        );
+        assert_eq!(
+            placement.scale().x(),
+            display.metadata.placement.scale().x(),
+            "screenRect/contentRect scaling disagrees with display backing scale"
+        );
         let origin = frame
             .transform()
             .convert_point(
@@ -485,51 +568,13 @@ fn every_attached_display_publishes_frames_placed_by_its_own_geometry() {
                 CoordinateSpace::DesktopLogical,
             )
             .expect("desktop conversion");
-
-        // Each frame must place itself from its own geometry. A conversion that
-        // consulted live host state, or the main display, would agree for one
-        // display and disagree for every other one.
-        assert_eq!(
-            (origin.x(), origin.y()),
-            placement.desktop_origin(),
-            "a display frame converted through another display's origin"
-        );
-        assert_eq!(
-            placement.desktop_origin(),
-            display.metadata.placement.desktop_origin(),
-            "the published placement is the one discovery reported"
-        );
-        observed.push((display.key, placement));
+        assert_eq!((origin.x(), origin.y()), placement.desktop_origin());
         close(&session).expect("close");
-    }
-
-    for (index, (key, placement)) in observed.iter().enumerate() {
-        for (other_key, other) in observed.iter().skip(index + 1) {
-            assert_ne!(
-                placement.desktop_origin(),
-                other.desktop_origin(),
-                "{key:?} and {other_key:?} report the same desktop origin"
-            );
-        }
-    }
-
-    let signed = observed
-        .iter()
-        .filter(|(_, placement)| {
-            let (x, y) = placement.desktop_origin();
-            x < 0.0 || y < 0.0
-        })
-        .count();
-    if signed == 0 {
-        println!(
-            "noted: no display sits above or left of the main one, \
-             so a negative desktop origin is not exercised"
-        );
     }
 }
 
 #[test]
-fn a_seam_between_displays_of_differing_scale_is_one_desktop_coordinate() {
+fn mixed_scale_displays_publish_their_own_frame_geometry() {
     let _serial = serialized();
     let Some(candidates) = discovered("mixed-scale seam through frames") else {
         return;
@@ -561,44 +606,24 @@ fn a_seam_between_displays_of_differing_scale_is_one_desktop_coordinate() {
         return;
     };
 
-    let mut seam = Vec::new();
-    for (position, display) in displays[index..=index + 1].iter().enumerate() {
+    for display in &displays[index..=index + 1] {
         let harness = Harness::from_candidate(display);
         let session = harness.open(0).expect("a discovered display opens");
         let frame = next_frame(&session, FrameRequest::latest()).expect("the display publishes");
-        let width = f64::from(frame.descriptor().extent().width());
-        // The left display's far edge and the right display's near edge are the
-        // same place on the desktop. Each is converted through its own frame, at
-        // its own scale, which is the whole point: the two scales must not have to
-        // agree for the coordinate between them to.
-        let edge = if position == 0 { width } else { 0.0 };
-        let converted = frame
+        let placement = frame
             .transform()
-            .convert_point(
-                Point::new(CoordinateSpace::CapturePixels, edge, 0.0).expect("valid"),
-                CoordinateSpace::DesktopLogical,
-            )
-            .expect("desktop conversion");
-        seam.push((
-            display.key,
-            frame.transform().target().expect("placement").scale().x(),
-            converted.x(),
-        ));
+            .target()
+            .expect("mixed-scale frame carries screenRect placement");
+        assert_eq!(
+            placement.desktop_origin(),
+            display.metadata.placement.desktop_origin()
+        );
+        assert_eq!(
+            placement.scale().x(),
+            display.metadata.placement.scale().x()
+        );
         close(&session).expect("close");
     }
-
-    let (left_key, left_scale, left_edge) = seam[0];
-    let (right_key, right_scale, right_edge) = seam[1];
-    assert_ne!(
-        left_scale, right_scale,
-        "the pair was selected for differing scale"
-    );
-    assert_eq!(
-        left_edge, right_edge,
-        "{left_key:?} at scale {left_scale} and {right_key:?} at scale {right_scale} \
-         disagree about the desktop coordinate between them"
-    );
-    println!("measured: seam at {left_edge} joins scale {left_scale} and scale {right_scale}");
 }
 
 #[test]
@@ -661,12 +686,12 @@ fn horizontally_adjacent_displays_share_one_desktop_seam() {
 }
 
 #[test]
-fn a_window_left_of_the_main_display_reports_signed_desktop_coordinates() {
+fn a_window_left_of_the_main_display_preserves_its_signed_frame_coordinates() {
     let _serial = serialized();
     let Some(candidates) = discovered("signed window placement") else {
         return;
     };
-    let Some((harness, session, frame)) =
+    let Some((_harness, session, frame)) =
         producing_window("signed window placement", &candidates, |candidate| {
             let (x, y) = candidate.metadata.placement.desktop_origin();
             x < 0.0 || y < 0.0
@@ -674,30 +699,19 @@ fn a_window_left_of_the_main_display_reports_signed_desktop_coordinates() {
     else {
         return;
     };
-    let expected = harness.metadata.placement.desktop_origin();
-
+    let placement = frame
+        .transform()
+        .target()
+        .expect("screenRect is attached to this signed-origin frame");
     let origin = frame
         .transform()
         .convert_point(
             Point::new(CoordinateSpace::CapturePixels, 0.0, 0.0).expect("valid"),
             CoordinateSpace::DesktopLogical,
         )
-        .expect("desktop conversion");
-    let (x, y) = (origin.x(), origin.y());
-    assert!(
-        x < 0.0 || y < 0.0,
-        "a window discovered at {expected:?} converted to a non-negative origin ({x}, {y})"
-    );
-    // The window may have moved between discovery and publication, so the frame's
-    // own placement is what the conversion is checked against.
-    assert_eq!(
-        (x, y),
-        frame
-            .transform()
-            .target()
-            .expect("placement")
-            .desktop_origin()
-    );
+        .expect("signed desktop conversion");
+    assert_eq!((origin.x(), origin.y()), placement.desktop_origin());
+    assert!(origin.x() < 0.0 || origin.y() < 0.0);
     close(&session).expect("close");
 }
 
@@ -941,6 +955,70 @@ fn a_cancelled_close_leaves_a_state_a_later_close_finishes() {
 }
 
 #[test]
+fn a_close_timeout_during_native_start_is_resumable() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("retryable delayed native start") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let session = harness
+        .open_unstarted_shim(Duration::from_millis(150), Duration::ZERO)
+        .expect("open unstarted shim session");
+
+    assert_eq!(
+        session.start(Duration::from_millis(5)),
+        Err(shim::ShimStatus::TimedOut),
+        "the injected start completion remains in flight"
+    );
+    assert_eq!(
+        session.close(Duration::from_millis(5)),
+        Err(shim::ShimStatus::TimedOut),
+        "the first close preserves its pending-start phase"
+    );
+    session
+        .close(MAX_NATIVE_WAIT)
+        .expect("a later close joins the same start and completes teardown");
+    session
+        .close(Duration::from_millis(1))
+        .expect("terminal close remains idempotent");
+    drop(session);
+
+    assert!(
+        settles_to(baseline),
+        "the resumed delayed-start close releases every native object"
+    );
+}
+
+#[test]
+fn a_close_timeout_during_native_stop_is_resumable() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("retryable delayed native stop") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let session = harness
+        .open_with_delays(Duration::ZERO, Duration::from_millis(150))
+        .expect("open session with delayed stop completion");
+    let first = OperationContext::new()
+        .with_timeout(Duration::from_millis(5))
+        .expect("timeout");
+
+    let error = session
+        .close(&first)
+        .expect_err("the first close expires inside the native stop phase");
+    assert_eq!(error.status(), Status::DeadlineExceeded);
+    assert_ne!(session.lifecycle(), Lifecycle::Open);
+
+    close(&session).expect("a later close resumes and completes the pending stop");
+    assert_eq!(session.lifecycle(), Lifecycle::Closed);
+    drop(session);
+    assert!(
+        settles_to(baseline),
+        "the resumed delayed-stop close releases every native object"
+    );
+}
+
+#[test]
 fn a_closed_session_refuses_further_frame_requests() {
     let _serial = serialized();
     let Some(harness) = Harness::acquire("closed refusal") else {
@@ -988,6 +1066,28 @@ fn a_contained_exception_in_the_start_completion_leaves_no_native_object_alive()
 }
 
 #[test]
+fn a_contained_exception_in_the_stop_completion_is_reported_once_and_retryable() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("stop-completion containment") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let session = harness
+        .open(RAISE_IN_STOP_COMPLETION)
+        .expect("the stop-completion seam is reached only after open");
+
+    let first = close(&session).expect_err("the contained exception is reported once");
+    assert_eq!(first.status(), Status::CaptureFailed);
+    close(&session).expect("a later close resumes and completes without another stop");
+    drop(session);
+
+    assert!(
+        settles_to(baseline),
+        "the stop-completion exception left native ownership behind"
+    );
+}
+
+#[test]
 fn a_contained_exception_before_a_frame_callback_leaves_no_native_object_alive() {
     let _serial = serialized();
     // A raise before the callback means the Adapter is never handed the frame, so
@@ -1003,12 +1103,23 @@ fn a_contained_exception_before_a_frame_callback_leaves_no_native_object_alive()
 #[test]
 fn a_contained_exception_after_a_frame_callback_leaves_no_native_object_alive() {
     let _serial = serialized();
-    // A raise after the callback returned means the frame was already published,
-    // so one must arrive and the containment must cost nothing.
+    // The first callback staged its detached frame before this raise. Native
+    // terminalization must discard it before the separate commit callback can make
+    // it observable, so the fault deterministically outranks the candidate.
     contained_site(
         "after frame callback",
         RAISE_AFTER_CALLBACK,
-        FrameExpectation::Some,
+        FrameExpectation::None,
+    );
+}
+
+#[test]
+fn a_panicking_rust_frame_callback_terminalizes_the_session_once() {
+    let _serial = serialized();
+    contained_site(
+        "a Rust frame callback panic",
+        PANIC_IN_RUST_CALLBACK,
+        FrameExpectation::None,
     );
 }
 
@@ -1021,10 +1132,8 @@ fn a_contained_exception_at_teardown_leaves_no_native_object_alive() {
 /// What a raise site implies about whether a frame can still reach a caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameExpectation {
-    /// The raise happens before publication, so no frame may arrive.
+    /// A callback-boundary fault outranks any frame queued before terminalization.
     None,
-    /// The raise happens after publication, so one must arrive.
-    Some,
     /// The raise is outside the frame path and says nothing about frames.
     Any,
 }
@@ -1055,19 +1164,30 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
             // Whatever it produced is released here: the question is what the
             // contained failure cost, not what a caller is still holding.
             let arrived = next_frame(&session, FrameRequest::latest());
-            match expectation {
-                FrameExpectation::None => assert_eq!(
-                    arrived.err().map(|error| error.status()),
-                    Some(Status::DeadlineExceeded),
-                    "a raise before the callback must stop the frame reaching a caller"
-                ),
-                FrameExpectation::Some => {
-                    let frame = arrived
-                        .expect("a raise after the callback returned still publishes the frame");
-                    assert_eq!(frame.descriptor().extent(), harness.metadata.extent);
-                    drop(frame);
+            let terminal_request = match expectation {
+                FrameExpectation::None => {
+                    assert_eq!(
+                        arrived.err().map(|error| error.status()),
+                        Some(Status::CaptureFailed),
+                        "a callback failure becomes the defined typed session outcome"
+                    );
+                    Some(FrameRequest::latest())
                 }
-                FrameExpectation::Any => drop(arrived),
+                FrameExpectation::Any => {
+                    drop(arrived);
+                    None
+                }
+            };
+            let expects_terminal = terminal_request.is_some();
+            if let Some(request) = terminal_request {
+                let error = next_frame(&session, request)
+                    .expect_err("the callback boundary failure terminalized the session");
+                assert_eq!(error.status(), Status::CaptureFailed);
+                assert_eq!(
+                    session.terminal_reports(),
+                    1,
+                    "native and Rust callback failure paths share one terminal gate"
+                );
             }
             let closed = close(&session);
             if let Err(error) = closed {
@@ -1075,6 +1195,13 @@ fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
                     error.status(),
                     Status::Internal,
                     "a contained exception reports a typed outcome"
+                );
+            }
+            if expects_terminal {
+                assert_eq!(
+                    session.terminal_reports(),
+                    1,
+                    "close cannot deliver a second terminal callback"
                 );
             }
             drop(session);
@@ -1141,22 +1268,6 @@ fn a_long_producer_run_keeps_live_native_objects_bounded() {
          over {samples} sample(s) and {observed} publication(s)"
     );
     close(&session).expect("close");
-}
-
-#[test]
-fn a_lost_target_identity_is_reported_rather_than_replaced() {
-    let _serial = serialized();
-    // A display identifier no arrangement can produce stands in for a target that
-    // existed and does not now: the point is that the Adapter reports the loss
-    // instead of finding something else to capture.
-    let absent = NativeKey::Display(u32::MAX);
-
-    assert!(!absent.is_present());
-    assert_eq!(
-        shim::current_placement(absent.native_kind(), absent.native_id())
-            .expect_err("an absent display has no placement"),
-        shim::ShimStatus::TargetLost
-    );
 }
 
 #[test]

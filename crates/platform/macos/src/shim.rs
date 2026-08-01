@@ -16,13 +16,14 @@ use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::slice;
 use std::str;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 1;
+pub(crate) const ABI_VERSION: u32 = 2;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -39,6 +40,11 @@ pub(crate) const KIND_DISPLAY: u32 = 1;
 
 /// The only pixel layout the shim publishes.
 pub(crate) const PIXEL_BGRA8: u32 = 0;
+
+/// `FrameInfo` carries a validated same-frame `SCStreamFrameInfoScreenRect`.
+pub(crate) const FRAME_INFO_SCREEN_RECT: u32 = 1;
+/// `FrameInfo` carries a bounded same-sample producer-capacity recommendation.
+pub(crate) const FRAME_INFO_SURFACE_RECOMMENDATION: u32 = 1 << 1;
 
 /// The largest producer surface extent the shim accepts, mirroring
 /// `MP_SHIM_MAX_PIXEL_EXTENT`. Asking beyond it would be refused, so the Adapter
@@ -69,9 +75,22 @@ pub(crate) const RAISE_AT_TEARDOWN: u32 = 8;
 /// it fires after the wait that block signals. See [`RAISE_AT_START`].
 #[cfg(test)]
 pub(crate) const RAISE_IN_START_COMPLETION: u32 = 16;
+/// Makes the Rust frame body panic so the returned non-OK status traverses the
+/// complete native terminal trampoline.
+#[cfg(test)]
+pub(crate) const PANIC_IN_RUST_CALLBACK: u32 = 32;
+/// The asynchronous stop-completion trampoline, after its registering entry point
+/// has returned.
+#[cfg(test)]
+pub(crate) const RAISE_IN_STOP_COMPLETION: u32 = 64;
 
 #[repr(C)]
 struct OpaqueInventory {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct OpaqueTarget {
     _private: [u8; 0],
 }
 
@@ -143,11 +162,18 @@ pub(crate) struct FrameInfo {
     pub(crate) content_height: u32,
     pub(crate) surface_width: u32,
     pub(crate) surface_height: u32,
-    reserved: [u32; 2],
+    flags: u32,
+    reserved: u32,
     pub(crate) display_time_nanos: u64,
     pub(crate) scale_factor: f64,
     pub(crate) content_origin_x: f64,
     pub(crate) content_origin_y: f64,
+    screen_x: f64,
+    screen_y: f64,
+    screen_width: f64,
+    screen_height: f64,
+    recommended_surface_width: u32,
+    recommended_surface_height: u32,
 }
 
 impl FrameInfo {
@@ -161,11 +187,80 @@ impl FrameInfo {
             content_height: 0,
             surface_width: 0,
             surface_height: 0,
-            reserved: [0; 2],
+            flags: 0,
+            reserved: 0,
             display_time_nanos: 0,
             scale_factor: 1.0,
             content_origin_x: 0.0,
             content_origin_y: 0.0,
+            screen_x: 0.0,
+            screen_y: 0.0,
+            screen_width: 0.0,
+            screen_height: 0.0,
+            recommended_surface_width: 0,
+            recommended_surface_height: 0,
+        }
+    }
+
+    /// Builds a same-frame geometry report for pure Rust boundary tests.
+    #[cfg(test)]
+    pub(crate) const fn testing_screen_rect(
+        extent: PixelExtent,
+        scale_factor: f64,
+        origin: (f64, f64),
+        size: (f64, f64),
+    ) -> Self {
+        Self {
+            struct_size: 0,
+            pixel_format: PIXEL_BGRA8,
+            content_width: extent.width(),
+            content_height: extent.height(),
+            surface_width: extent.width(),
+            surface_height: extent.height(),
+            flags: FRAME_INFO_SCREEN_RECT,
+            reserved: 0,
+            display_time_nanos: 0,
+            scale_factor,
+            content_origin_x: 0.0,
+            content_origin_y: 0.0,
+            screen_x: origin.0,
+            screen_y: origin.1,
+            screen_width: size.0,
+            screen_height: size.1,
+            recommended_surface_width: 0,
+            recommended_surface_height: 0,
+        }
+    }
+
+    /// Builds same-frame geometry with a private producer-capacity hint.
+    #[cfg(test)]
+    pub(crate) const fn testing_screen_rect_with_surface_recommendation(
+        extent: PixelExtent,
+        surface: PixelExtent,
+        scale_factor: f64,
+        origin: (f64, f64),
+        size: (f64, f64),
+        recommended: PixelExtent,
+    ) -> Self {
+        Self {
+            struct_size: 0,
+            pixel_format: PIXEL_BGRA8,
+            content_width: extent.width(),
+            content_height: extent.height(),
+            surface_width: surface.width(),
+            surface_height: surface.height(),
+            flags: FRAME_INFO_SCREEN_RECT | FRAME_INFO_SURFACE_RECOMMENDATION,
+            reserved: 0,
+            display_time_nanos: 0,
+            scale_factor,
+            content_origin_x: 0.0,
+            content_origin_y: 0.0,
+            screen_x: origin.0,
+            screen_y: origin.1,
+            screen_width: size.0,
+            screen_height: size.1,
+            recommended_surface_width: recommended.width(),
+            recommended_surface_height: recommended.height(),
         }
     }
 
@@ -179,6 +274,35 @@ impl FrameInfo {
     pub(crate) fn surface_extent(&self) -> Option<PixelExtent> {
         (self.surface_width > 0 && self.surface_height > 0)
             .then(|| PixelExtent::new(self.surface_width, self.surface_height))
+    }
+
+    /// Returns the frame-attached onscreen rectangle after native validation.
+    pub(crate) fn screen_rect(&self) -> Option<((f64, f64), (f64, f64))> {
+        (self.flags & FRAME_INFO_SCREEN_RECT != 0).then_some((
+            (self.screen_x, self.screen_y),
+            (self.screen_width, self.screen_height),
+        ))
+    }
+
+    /// Returns the same-sample producer capacity hint after repeating its bounds.
+    pub(crate) fn recommended_surface_extent(&self) -> Option<PixelExtent> {
+        if self.flags & FRAME_INFO_SURFACE_RECOMMENDATION == 0
+            || self.recommended_surface_width == 0
+            || self.recommended_surface_height == 0
+            || self.recommended_surface_width > MAX_SURFACE_EXTENT
+            || self.recommended_surface_height > MAX_SURFACE_EXTENT
+        {
+            return None;
+        }
+        let bytes = u64::from(self.recommended_surface_width)
+            .checked_mul(u64::from(self.recommended_surface_height))?
+            .checked_mul(4)?;
+        (bytes <= MAX_SURFACE_BYTES).then(|| {
+            PixelExtent::new(
+                self.recommended_surface_width,
+                self.recommended_surface_height,
+            )
+        })
     }
 }
 
@@ -318,6 +442,11 @@ impl Inventory {
         let view = unsafe { slice::from_raw_parts(bytes, len) };
         Ok(str::from_utf8(view).unwrap_or(""))
     }
+
+    /// Constructs and retains the exact capture filter represented by `index`.
+    pub(crate) fn target(&self, index: usize) -> Result<TargetToken, ShimStatus> {
+        TargetToken::from_inventory(self, index)
+    }
 }
 
 impl fmt::Debug for Inventory {
@@ -337,27 +466,107 @@ impl Drop for Inventory {
     }
 }
 
+/// An exact capture selection constructed from one discovery snapshot.
+///
+/// The native handle retains an `SCContentFilter`, not an `SCWindow` wrapper.
+/// Numeric ids and process ids remain descriptive metadata and are never used to
+/// re-resolve the selection at open.
+#[derive(Clone)]
+pub(crate) struct TargetToken {
+    inner: Arc<TargetTokenInner>,
+}
+
+struct TargetTokenInner {
+    handle: Option<NonNull<OpaqueTarget>>,
+    #[cfg(test)]
+    synthetic_identity: u64,
+}
+
+// SAFETY: the native handle owns an immutable retained SCContentFilter and every
+// operation on it is read-only.
+unsafe impl Send for TargetTokenInner {}
+// SAFETY: see the Send justification.
+unsafe impl Sync for TargetTokenInner {}
+
+impl TargetToken {
+    fn from_inventory(inventory: &Inventory, index: usize) -> Result<Self, ShimStatus> {
+        let mut target = std::ptr::null_mut();
+        // SAFETY: the inventory is owned here and `target` is a writable output.
+        let status =
+            unsafe { mp_shim_inventory_target(inventory.handle.as_ptr(), index, &raw mut target) };
+        ShimStatus::from_raw(status).into_result()?;
+        let handle = NonNull::new(target).ok_or(ShimStatus::PlatformFailure)?;
+        Ok(Self {
+            inner: Arc::new(TargetTokenInner {
+                handle: Some(handle),
+                #[cfg(test)]
+                synthetic_identity: 0,
+            }),
+        })
+    }
+
+    fn as_ptr(&self) -> *const OpaqueTarget {
+        self.inner
+            .handle
+            .map_or(std::ptr::null(), |handle| handle.as_ptr())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic(identity: u64) -> Self {
+        Self {
+            inner: Arc::new(TargetTokenInner {
+                handle: None,
+                synthetic_identity: identity,
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic_identity(&self) -> u64 {
+        self.inner.synthetic_identity
+    }
+}
+
+impl fmt::Debug for TargetToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TargetToken")
+            .field("retained_selection", &self.inner.handle.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for TargetTokenInner {
+    fn drop(&mut self) {
+        let Some(handle) = self.handle else {
+            return;
+        };
+        // SAFETY: the last Rust clone owns the one native handle and releases it once.
+        unsafe { mp_shim_target_release(handle.as_ptr()) };
+    }
+}
+
 /// What a session is being opened for.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct OpenRequest {
     /// [`KIND_WINDOW`] or [`KIND_DISPLAY`].
     pub(crate) kind: u32,
-    /// The native identity the discovery pass recorded.
+    /// Descriptive native metadata repeated to validate the retained selection.
     pub(crate) native_id: u64,
-    /// The owning process the identity was validated against, or zero for a display.
-    ///
-    /// Carried so that the shim's own lookup applies the rule the caller applied to
-    /// its own snapshot: a window number is recycled, so the number alone does not
-    /// name the incarnation that was discovered.
+    /// The descriptive owning process, or zero for a display.
     pub(crate) owner_process: i64,
+    /// The exact retained capture filter selected at discovery.
+    pub(crate) target: TargetToken,
     /// The producer surface size, in capture pixels.
     pub(crate) extent: PixelExtent,
     /// Producer queue depth. The shim clamps this to its reviewed range.
     pub(crate) queue_depth: u32,
     /// How many detached buffers the session may lease at once.
     pub(crate) detached_budget: u32,
-    /// How long the one native query this open performs may take.
-    pub(crate) wait: Duration,
+    /// Test-only delay inside the capture-start completion.
+    pub(crate) testing_start_delay: Duration,
+    /// Test-only delay inside the producer-stop completion.
+    pub(crate) testing_stop_delay: Duration,
     /// Zero in the product. See the shim's `MP_SHIM_RAISE_*` seams.
     pub(crate) testing_raise_sites: u32,
 }
@@ -384,24 +593,32 @@ impl Session {
         request: &OpenRequest,
         context: *mut c_void,
         frame: FrameCallback,
+        frame_commit: FrameCommitCallback,
         stopped: StoppedCallback,
     ) -> Result<Self, ShimStatus> {
+        validate_open_shape_and_metadata(request)?;
+        if request.target.as_ptr().is_null() {
+            return Err(ShimStatus::InvalidArgument);
+        }
         let native = NativeOpenRequest {
             struct_size: u32::try_from(size_of::<NativeOpenRequest>())
                 .expect("structure size fits u32"),
             kind: request.kind,
             native_id: request.native_id,
             owner_process: request.owner_process,
+            target: request.target.as_ptr(),
             pixel_width: request.extent.width(),
             pixel_height: request.extent.height(),
             queue_depth: request.queue_depth,
             detached_budget: request.detached_budget,
-            timeout_nanos: nanos(request.wait),
+            testing_start_delay_nanos: nanos(request.testing_start_delay),
+            testing_stop_delay_nanos: nanos(request.testing_stop_delay),
             testing_raise_sites: request.testing_raise_sites,
             shows_cursor: false,
             reserved: [0; 3],
             callback_context: context,
             frame_callback: Some(frame),
+            frame_commit_callback: Some(frame_commit),
             stopped_callback: Some(stopped),
         };
         let mut session = std::ptr::null_mut();
@@ -484,6 +701,31 @@ impl Session {
             0
         }
     }
+}
+
+/// Validates the platform-neutral part of an open request.
+///
+/// The native boundary repeats these checks and additionally validates the exact
+/// retained target handle. Keeping the handle check separate gives tests a safe
+/// pure seam without manufacturing an Objective-C object or weakening production
+/// selection validation.
+fn validate_open_shape_and_metadata(request: &OpenRequest) -> Result<(), ShimStatus> {
+    let width = request.extent.width();
+    let height = request.extent.height();
+    let surface_bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(ShimStatus::InvalidArgument)?;
+    if (request.kind != KIND_WINDOW && request.kind != KIND_DISPLAY)
+        || (request.kind == KIND_WINDOW && request.owner_process <= 0)
+        || width > MAX_SURFACE_EXTENT
+        || height > MAX_SURFACE_EXTENT
+        || surface_bytes > MAX_SURFACE_BYTES
+        || request.detached_budget == 0
+    {
+        return Err(ShimStatus::InvalidArgument);
+    }
+    Ok(())
 }
 
 impl fmt::Debug for Session {
@@ -577,37 +819,6 @@ pub(crate) fn launch_context() -> LaunchContext {
         2 => LaunchContext::Unbundled,
         _ => LaunchContext::Unknown,
     }
-}
-
-/// The target's placement as it is now, with the scale of the display holding it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct LivePlacement {
-    /// Origin and size in global points: x, y, width, height.
-    pub(crate) frame: [f64; 4],
-    /// Capture pixels per point for the display the target is on.
-    pub(crate) display_scale: f64,
-}
-
-/// Reads the target's placement as it is now, in global points.
-///
-/// For the frame-time transform an Adapter records with a publication rather than
-/// for live consultation afterwards. The display scale comes back with it because
-/// a target that has moved needs a producer surface sized for its new display, and
-/// the frame in hand reports the scale it was produced at rather than that one.
-pub(crate) fn current_placement(kind: u32, native_id: u64) -> Result<LivePlacement, ShimStatus> {
-    let mut frame = [0.0; 4];
-    let mut display_scale = 0.0;
-    // SAFETY: `frame` is writable for the four doubles the shim documents and
-    // `display_scale` for one.
-    let status = unsafe {
-        mp_shim_current_placement(kind, native_id, frame.as_mut_ptr(), &raw mut display_scale)
-    };
-    ShimStatus::from_raw(status)
-        .into_result()
-        .map(|()| LivePlacement {
-            frame,
-            display_scale,
-        })
 }
 
 /// Classifies one capture-framework error code as the shim maps it.
@@ -807,6 +1018,9 @@ fn nanos(wait: Duration) -> u64 {
 pub(crate) type FrameCallback =
     unsafe extern "C" fn(*mut c_void, *mut OpaqueFrame, *const FrameInfo) -> u32;
 
+/// The frame-commit callback signature the shim invokes after native work succeeds.
+pub(crate) type FrameCommitCallback = unsafe extern "C" fn(*mut c_void) -> u32;
+
 /// The producer-stopped callback signature the shim invokes.
 pub(crate) type StoppedCallback = unsafe extern "C" fn(*mut c_void, u32);
 
@@ -848,6 +1062,30 @@ pub(crate) unsafe fn contained_frame_callback<C>(
     }
 }
 
+/// Wraps a staged-frame commit so no panic or invalid context crosses back.
+///
+/// # Safety
+///
+/// `context` must be the value registered with the session that is calling.
+pub(crate) unsafe fn contained_frame_commit_callback<C>(
+    context: *mut c_void,
+    body: impl FnOnce(&C) -> ShimStatus,
+) -> u32 {
+    if context.is_null() {
+        return ShimStatus::InvalidArgument.as_raw();
+    }
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: the caller guarantees `context` is the registered value for a
+        // live session.
+        let owner = unsafe { &*context.cast::<C>() };
+        body(owner)
+    }));
+    match outcome {
+        Ok(status) => status.as_raw(),
+        Err(_) => ShimStatus::PlatformFailure.as_raw(),
+    }
+}
+
 /// Wraps a producer-stopped callback body so no panic crosses back.
 ///
 /// # Safety
@@ -869,6 +1107,79 @@ pub(crate) unsafe fn contained_stopped_callback<C>(
     }));
 }
 
+#[cfg(test)]
+fn testing_terminalize_twice(
+    context: *mut c_void,
+    stopped: StoppedCallback,
+    first: ShimStatus,
+    second: ShimStatus,
+) -> Result<(), ShimStatus> {
+    // SAFETY: the test owns `context` for the call and the callback uses the same
+    // signature as a real session registration.
+    let status = unsafe {
+        mp_shim_testing_terminalize_twice(context, Some(stopped), first.as_raw(), second.as_raw())
+    };
+    ShimStatus::from_raw(status).into_result()
+}
+
+#[cfg(test)]
+fn testing_gate_retries(
+    completion_delay: Duration,
+    first_wait: Duration,
+    second_wait: Duration,
+) -> Result<[ShimStatus; 4], ShimStatus> {
+    let mut statuses = [u32::MAX; 4];
+    let [start_first, start_second, stop_first, stop_second] = &mut statuses;
+    // SAFETY: every output is writable for one status and all durations are
+    // encoded in the fixed-width nanosecond unit the shim declares.
+    let status = unsafe {
+        mp_shim_testing_gate_retries(
+            nanos(completion_delay),
+            nanos(first_wait),
+            nanos(second_wait),
+            &raw mut *start_first,
+            &raw mut *start_second,
+            &raw mut *stop_first,
+            &raw mut *stop_second,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok(statuses.map(ShimStatus::from_raw))
+}
+
+#[cfg(test)]
+fn testing_stop_completion_exception() -> Result<(ShimStatus, bool), ShimStatus> {
+    let mut completion = u32::MAX;
+    let mut started = true;
+    // SAFETY: both outputs are writable and the native seam contains its injected
+    // exception before returning.
+    let status =
+        unsafe { mp_shim_testing_stop_completion_exception(&raw mut completion, &raw mut started) };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((ShimStatus::from_raw(completion), started))
+}
+
+#[cfg(test)]
+fn testing_surface_recommendation(
+    logical_size: (f64, f64),
+    display_scale: f64,
+) -> Option<PixelExtent> {
+    let mut width = 0;
+    let mut height = 0;
+    // SAFETY: both outputs are writable and the native seam performs no allocation
+    // or callback; it applies the exact helper used by frame delivery.
+    let status = unsafe {
+        mp_shim_testing_surface_recommendation(
+            logical_size.0,
+            logical_size.1,
+            display_scale,
+            &raw mut width,
+            &raw mut height,
+        )
+    };
+    (ShimStatus::from_raw(status) == ShimStatus::Ok).then(|| PixelExtent::new(width, height))
+}
+
 #[repr(C)]
 #[derive(Debug)]
 struct NativeOpenRequest {
@@ -876,16 +1187,19 @@ struct NativeOpenRequest {
     kind: u32,
     native_id: u64,
     owner_process: i64,
+    target: *const OpaqueTarget,
     pixel_width: u32,
     pixel_height: u32,
     queue_depth: u32,
     detached_budget: u32,
-    timeout_nanos: u64,
+    testing_start_delay_nanos: u64,
+    testing_stop_delay_nanos: u64,
     testing_raise_sites: u32,
     shows_cursor: bool,
     reserved: [u8; 3],
     callback_context: *mut c_void,
     frame_callback: Option<FrameCallback>,
+    frame_commit_callback: Option<FrameCommitCallback>,
     stopped_callback: Option<StoppedCallback>,
 }
 
@@ -905,6 +1219,36 @@ unsafe extern "C" {
     fn mp_shim_monotonic_nanos(out_nanos: *mut u64) -> u32;
     #[cfg(test)]
     fn mp_shim_live_objects(out_live: *mut u64) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_terminalize_twice(
+        context: *mut c_void,
+        stopped_callback: Option<StoppedCallback>,
+        first: u32,
+        second: u32,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_gate_retries(
+        completion_delay_nanos: u64,
+        first_wait_nanos: u64,
+        second_wait_nanos: u64,
+        out_start_first: *mut u32,
+        out_start_second: *mut u32,
+        out_stop_first: *mut u32,
+        out_stop_second: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_stop_completion_exception(
+        out_status: *mut u32,
+        out_started: *mut bool,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_surface_recommendation(
+        logical_width: f64,
+        logical_height: f64,
+        display_scale: f64,
+        out_width: *mut u32,
+        out_height: *mut u32,
+    ) -> u32;
 
     fn mp_shim_inventory_acquire(timeout_nanos: u64, out: *mut *mut OpaqueInventory) -> u32;
     fn mp_shim_inventory_count(inventory: *const OpaqueInventory, out_count: *mut usize) -> u32;
@@ -919,15 +1263,13 @@ unsafe extern "C" {
         out_bytes: *mut *const u8,
         out_len: *mut usize,
     ) -> u32;
-    fn mp_shim_inventory_release(inventory: *mut OpaqueInventory);
-
-    fn mp_shim_current_placement(
-        kind: u32,
-        native_id: u64,
-        out_frame: *mut f64,
-        out_scale: *mut f64,
+    fn mp_shim_inventory_target(
+        inventory: *const OpaqueInventory,
+        index: usize,
+        out: *mut *mut OpaqueTarget,
     ) -> u32;
-
+    fn mp_shim_inventory_release(inventory: *mut OpaqueInventory);
+    fn mp_shim_target_release(target: *mut OpaqueTarget);
     fn mp_shim_session_open(request: *const NativeOpenRequest, out: *mut *mut OpaqueSession)
     -> u32;
     fn mp_shim_session_start(session: *mut OpaqueSession, timeout_nanos: u64) -> u32;
@@ -963,14 +1305,16 @@ mod tests {
     use std::ffi::c_void;
     use std::panic;
     use std::ptr::NonNull;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Duration;
 
     use super::{
         ABI_VERSION, DEFAULT_NATIVE_WAIT, FrameInfo, KIND_DISPLAY, KIND_WINDOW, MAX_NATIVE_WAIT,
-        MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest, Session, ShimStatus,
-        contained_frame_callback, contained_stopped_callback, declared_layout, linked_layout,
-        live_objects, monotonic_nanos, nanos,
+        MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest, ShimStatus, TargetToken,
+        contained_frame_callback, contained_frame_commit_callback, contained_stopped_callback,
+        declared_layout, linked_layout, live_objects, monotonic_nanos, nanos, testing_gate_retries,
+        testing_stop_completion_exception, testing_surface_recommendation,
+        testing_terminalize_twice, validate_open_shape_and_metadata,
     };
     use mado_pilot_capture::CaptureFault;
     use mado_pilot_core::PixelExtent;
@@ -993,6 +1337,45 @@ mod tests {
         assert_eq!(sizes, declared_layout());
     }
 
+    #[test]
+    fn native_surface_recommendations_use_raw_display_scale_and_existing_limits() {
+        assert_eq!(
+            testing_surface_recommendation((1718.0, 1108.0), 2.0),
+            Some(PixelExtent::new(3436, 2216))
+        );
+        assert_eq!(testing_surface_recommendation((1718.0, 1108.0), 0.5), None);
+        assert_eq!(testing_surface_recommendation((1718.0, 1108.0), 5.0), None);
+        assert_eq!(
+            testing_surface_recommendation((8193.0, 8193.0), 1.0),
+            None,
+            "a recommendation over the 256 MiB pair limit is refused"
+        );
+    }
+
+    #[test]
+    fn rust_rejects_an_out_of_bounds_surface_recommendation_at_the_abi_boundary() {
+        let content = PixelExtent::new(64, 48);
+        let over_axis = FrameInfo::testing_screen_rect_with_surface_recommendation(
+            content,
+            content,
+            1.0,
+            (0.0, 0.0),
+            (64.0, 48.0),
+            PixelExtent::new(MAX_SURFACE_EXTENT + 1, 1),
+        );
+        let over_bytes = FrameInfo::testing_screen_rect_with_surface_recommendation(
+            content,
+            content,
+            1.0,
+            (0.0, 0.0),
+            (64.0, 48.0),
+            PixelExtent::new(8193, 8193),
+        );
+
+        assert_eq!(over_axis.recommended_surface_extent(), None);
+        assert_eq!(over_bytes.recommended_surface_extent(), None);
+    }
+
     /// A surface the shim would refuse to allocate is refused before it tries.
     ///
     /// Deterministic on any host, and that is a property of where the check sits: the
@@ -1002,52 +1385,34 @@ mod tests {
     /// itself could never be attempted.
     #[test]
     fn a_surface_larger_than_the_byte_ceiling_is_refused_before_anything_is_allocated() {
-        extern "C" fn unreached_frame(
-            _context: *mut c_void,
-            _frame: *mut OpaqueFrame,
-            _info: *const FrameInfo,
-        ) -> u32 {
-            unreachable!("the request is refused before a producer exists")
-        }
-        extern "C" fn unreached_stopped(_context: *mut c_void, _status: u32) {
-            unreachable!("the request is refused before a producer exists")
-        }
-
-        // `kCGNullDirectDisplay`, so no host resolves it. The request is refused
-        // before the lookup in the case this is about, and by the lookup in the case
-        // it is contrasted against, and neither opens a producer either way.
-        let open = |width: u32, height: u32| {
+        let validate = |width: u32, height: u32| {
             let request = OpenRequest {
                 kind: KIND_DISPLAY,
                 native_id: u64::from(u32::MAX),
                 owner_process: 0,
+                target: TargetToken::synthetic(1),
                 extent: PixelExtent::new(width, height),
                 queue_depth: 3,
                 detached_budget: 8,
-                wait: DEFAULT_NATIVE_WAIT,
+                testing_start_delay: Duration::ZERO,
+                testing_stop_delay: Duration::ZERO,
                 testing_raise_sites: 0,
             };
-            Session::open(
-                &request,
-                std::ptr::null_mut(),
-                unreached_frame,
-                unreached_stopped,
-            )
-            .err()
+            validate_open_shape_and_metadata(&request).err()
         };
 
         // Both axes are inside the per-axis limit and their product is four
         // gibibytes. The axis bound is what protects the conversions; it never
         // protected the allocation, and the two are thirty-two times apart.
         assert_eq!(
-            open(MAX_SURFACE_EXTENT, MAX_SURFACE_EXTENT),
+            validate(MAX_SURFACE_EXTENT, MAX_SURFACE_EXTENT),
             Some(ShimStatus::InvalidArgument)
         );
 
         // 8192 x 8192 BGRA is exactly the ceiling, so the boundary is inclusive: this
-        // request is refused for whatever this host says about an absent display or
-        // its authorization, but never as a malformed one.
-        assert_ne!(open(8192, 8192), Some(ShimStatus::InvalidArgument));
+        // request is structurally valid. The retained native-token check remains a
+        // separate, mandatory production check and is intentionally not bypassed.
+        assert_eq!(validate(8192, 8192), None);
     }
 
     /// A window opened without a real owning process is refused before anything else.
@@ -1056,51 +1421,106 @@ mod tests {
     /// request is validated before the framework is loaded or authorization consulted.
     #[test]
     fn a_window_request_without_an_owning_process_is_refused() {
-        extern "C" fn unreached_frame(
-            _context: *mut c_void,
-            _frame: *mut OpaqueFrame,
-            _info: *const FrameInfo,
-        ) -> u32 {
-            unreachable!("the request is refused before a producer exists")
-        }
-        extern "C" fn unreached_stopped(_context: *mut c_void, _status: u32) {
-            unreachable!("the request is refused before a producer exists")
-        }
-
-        let open = |kind: u32, owner_process: i64| {
+        let validate = |kind: u32, owner_process: i64| {
             let request = OpenRequest {
                 kind,
                 native_id: u64::from(u32::MAX),
                 owner_process,
+                target: TargetToken::synthetic(1),
                 extent: PixelExtent::new(64, 48),
                 queue_depth: 3,
                 detached_budget: 8,
-                wait: DEFAULT_NATIVE_WAIT,
+                testing_start_delay: Duration::ZERO,
+                testing_stop_delay: Duration::ZERO,
                 testing_raise_sites: 0,
             };
-            Session::open(
-                &request,
-                std::ptr::null_mut(),
-                unreached_frame,
-                unreached_stopped,
-            )
-            .err()
+            validate_open_shape_and_metadata(&request).err()
         };
 
-        // Zero is what a window whose owner the framework did not name used to record,
-        // and it matched the next such window rather than distinguishing it. Discovery
-        // no longer lists one, so zero reaching a window request is a fabricated
-        // identity and is refused rather than compared.
+        // Discovery no longer lists a window whose owner the framework did not
+        // name, so zero reaching a window request cannot match the boundary shape
+        // of a real selection and is refused.
         assert_eq!(
-            open(KIND_WINDOW, 0),
+            validate(KIND_WINDOW, 0),
             Some(ShimStatus::InvalidArgument),
-            "a window with no owning process names no incarnation"
+            "a listed window selection always carries its owning process metadata"
         );
-        assert_eq!(open(KIND_WINDOW, -1), Some(ShimStatus::InvalidArgument));
+        assert_eq!(validate(KIND_WINDOW, -1), Some(ShimStatus::InvalidArgument));
 
         // A display has no owner and the field is not consulted for one, so the same
         // zero is not an error there.
-        assert_ne!(open(KIND_DISPLAY, 0), Some(ShimStatus::InvalidArgument));
+        assert_eq!(validate(KIND_DISPLAY, 0), None);
+    }
+
+    #[test]
+    fn native_and_rust_callback_failures_terminalize_once_with_the_first_typed_status() {
+        struct Probe {
+            calls: AtomicU64,
+            status: AtomicU64,
+        }
+
+        unsafe extern "C" fn record(context: *mut c_void, status: u32) {
+            // SAFETY: every invocation below passes a live `Probe` for the duration
+            // of the native test seam.
+            let probe = unsafe { &*context.cast::<Probe>() };
+            probe.status.store(u64::from(status), Ordering::Release);
+            probe.calls.fetch_add(1, Ordering::AcqRel);
+        }
+
+        for first in [ShimStatus::NativeException, ShimStatus::PlatformFailure] {
+            let probe = Probe {
+                calls: AtomicU64::new(0),
+                status: AtomicU64::new(u64::MAX),
+            };
+            testing_terminalize_twice(
+                (&raw const probe).cast_mut().cast(),
+                record,
+                first,
+                ShimStatus::StoppedBySystem,
+            )
+            .expect("the native terminal seam runs");
+
+            assert_eq!(probe.calls.load(Ordering::Acquire), 1);
+            assert_eq!(
+                probe.status.load(Ordering::Acquire),
+                u64::from(first.as_raw()),
+                "the first callback fault is the terminal outcome"
+            );
+            assert_eq!(first.fault(), CaptureFault::SourceInvalid);
+        }
+    }
+
+    #[test]
+    fn delayed_native_start_and_stop_gates_resume_after_the_first_wait_expires() {
+        let statuses = testing_gate_retries(
+            Duration::from_millis(30),
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+        )
+        .expect("native retry gates");
+
+        assert_eq!(
+            statuses,
+            [
+                ShimStatus::TimedOut,
+                ShimStatus::Ok,
+                ShimStatus::TimedOut,
+                ShimStatus::Ok,
+            ],
+            "both asynchronous phases preserve pending work for the later close wait"
+        );
+    }
+
+    #[test]
+    fn a_stop_completion_exception_is_contained_and_settles_its_gate() {
+        let (status, started) = testing_stop_completion_exception()
+            .expect("the deterministic native stop-completion seam runs");
+
+        assert_eq!(status, ShimStatus::NativeException);
+        assert!(
+            !started,
+            "the completion clears started even when it raises"
+        );
     }
 
     #[test]
@@ -1205,6 +1625,25 @@ mod tests {
                     frame,
                     &raw const info,
                     |_owner, _borrowed, _report| panic!("a host callback panicked"),
+                )
+            }
+        });
+
+        assert_eq!(ShimStatus::from_raw(status), ShimStatus::PlatformFailure);
+    }
+
+    #[test]
+    fn a_panicking_frame_commit_becomes_a_typed_failure_rather_than_an_abort() {
+        struct Owner;
+        let owner = Owner;
+
+        let status = without_panic_output(|| {
+            // SAFETY: the context is a live Owner and the body contains no
+            // reference borrowed from native code.
+            unsafe {
+                contained_frame_commit_callback::<Owner>(
+                    (&raw const owner).cast_mut().cast::<c_void>(),
+                    |_owner| panic!("a frame commit panicked"),
                 )
             }
         });

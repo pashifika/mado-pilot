@@ -1,8 +1,7 @@
-//! Public macOS capture provider and its native-identity registry.
+//! Public macOS capture provider and its snapshot-scoped selection registry.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::Duration;
@@ -14,21 +13,25 @@ use mado_pilot_core::{IdentityIssuer, Operation, OperationContext, ProviderId, R
 
 use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
-use crate::native::NativeSession;
-use crate::shim::MAX_NATIVE_WAIT;
+use crate::native::{NativeSession, SessionTarget};
+use crate::shim::{MAX_NATIVE_WAIT, TargetToken};
 
 /// Provider name qualifying every native macOS target identity.
 pub const PROVIDER: ProviderId = ProviderId::new("macos");
 
 const DISCOVERY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
+/// Current and immediately previous discovery selections remain openable.
+const RETAINED_DISCOVERY_GENERATIONS: usize = 2;
+
 /// Picker-free macOS target discovery and ScreenCaptureKit capture.
 ///
 /// Construction touches no native API and requests no authorization. Discovery
 /// and open perform the runtime availability check and the non-prompting
-/// authorization preflight, which lets an application include this package
-/// without making an unresolved minimum-macOS claim and without the presence of
-/// the package changing what the operating system asks the user.
+/// authorization preflight. The implementation is qualified on Apple Silicon
+/// macOS 26.5.2 (25F84); older hosts are outside its support contract. Merely
+/// constructing the provider still cannot change what the operating system asks
+/// the user.
 pub struct MacosCaptureProvider {
     issuer: Arc<IdentityIssuer>,
     discovery_gate: Mutex<()>,
@@ -38,15 +41,21 @@ pub struct MacosCaptureProvider {
 #[derive(Debug, Default)]
 struct Registry {
     records: HashMap<TargetId, Arc<TargetRecord>>,
-    current: HashMap<NativeKey, TargetId>,
+    generations: VecDeque<Vec<TargetId>>,
 }
 
 struct TargetRecord {
     id: TargetId,
     key: NativeKey,
     fingerprint: Fingerprint,
-    metadata: Mutex<TargetMetadata>,
-    lost: AtomicBool,
+    selection: TargetToken,
+    metadata: TargetMetadata,
+}
+
+struct PreparedSnapshot {
+    records: Vec<Arc<TargetRecord>>,
+    descriptions: Vec<TargetDescription>,
+    generation: Vec<TargetId>,
 }
 
 impl MacosCaptureProvider {
@@ -69,139 +78,80 @@ impl MacosCaptureProvider {
         F: FnOnce() -> Result<Vec<Candidate>>,
     {
         let mut attempt = Operation::admit(operation)?;
-        let descriptions = self.with_snapshot_order(&mut attempt, || {
-            let candidates = inventory()?;
-            self.synchronize(candidates)
-        })?;
-        Ok(attempt.commit(descriptions)?)
+        let _discovery = lock_with_operation(&self.discovery_gate, &mut attempt)?;
+        let candidates = match inventory() {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                attempt.checkpoint()?;
+                return Err(error);
+            }
+        };
+        attempt.checkpoint()?;
+        let prepared = match self.prepare_snapshot(candidates) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                attempt.checkpoint()?;
+                return Err(error);
+            }
+        };
+
+        // Final arbitration precedes the registry mutation. A late result may
+        // consume issuer values while being staged, but it cannot add a generation
+        // or evict an openable selection unless this operation commits success.
+        let prepared = attempt.commit(prepared)?;
+        Ok(self.commit_snapshot(prepared))
     }
 
-    fn with_snapshot_order<T>(
-        &self,
-        operation: &mut Operation<'_>,
-        action: impl FnOnce() -> Result<T>,
-    ) -> Result<T> {
-        let _discovery = lock_with_operation(&self.discovery_gate, operation)?;
-        action()
-    }
-
-    fn synchronize(&self, candidates: Vec<Candidate>) -> Result<Vec<TargetDescription>> {
-        // Declared before the registry guard so every early return also unlocks
-        // the registry before releasing the records it retired.
-        let mut retired = Vec::new();
-        let mut registry = self.registry();
-        let mut seen = HashSet::new();
-        let mut descriptions = Vec::with_capacity(candidates.len());
-
+    fn prepare_snapshot(&self, candidates: Vec<Candidate>) -> Result<PreparedSnapshot> {
+        let mut records = Vec::with_capacity(candidates.len());
         for candidate in candidates {
-            seen.insert(candidate.key);
-            let existing_id = registry.current.get(&candidate.key).copied();
-            let existing = existing_id
-                .and_then(|id| registry.records.get(&id))
-                .cloned();
-            let record = if let Some(record) = existing.as_ref()
-                && same_incarnation(
-                    record.lost.load(Ordering::Acquire),
-                    record.fingerprint,
-                    candidate.fingerprint,
-                ) {
-                *record.metadata() = candidate.metadata;
-                Arc::clone(record)
-            } else {
-                let replacement = self.create_record(candidate)?;
-                if let Some(existing) = existing {
-                    existing.lost.store(true, Ordering::Release);
-                }
-                if let Some(existing_id) = existing_id
-                    && let Some(existing) = registry.records.remove(&existing_id)
-                {
-                    retired.push(existing);
-                }
-                registry.current.insert(replacement.key, replacement.id);
-                registry
-                    .records
-                    .insert(replacement.id, Arc::clone(&replacement));
-                replacement
-            };
-            descriptions.push(record.description());
+            records.push(self.create_record(candidate)?);
         }
+        let descriptions = records.iter().map(|record| record.description()).collect();
+        let generation = records.iter().map(|record| record.id).collect();
+        Ok(PreparedSnapshot {
+            records,
+            descriptions,
+            generation,
+        })
+    }
 
-        let missing: Vec<NativeKey> = registry
-            .current
-            .keys()
-            .copied()
-            .filter(|key| !seen.contains(key))
-            .collect();
-        for key in missing {
-            if let Some(id) = registry.current.remove(&key)
-                && let Some(record) = registry.records.remove(&id)
-            {
-                record.lost.store(true, Ordering::Release);
-                retired.push(record);
+    fn commit_snapshot(&self, prepared: PreparedSnapshot) -> Vec<TargetDescription> {
+        let PreparedSnapshot {
+            records,
+            descriptions,
+            generation,
+        } = prepared;
+        let mut registry = self.registry();
+        for record in records {
+            registry.records.insert(record.id, record);
+        }
+        registry.generations.push_back(generation);
+        while registry.generations.len() > RETAINED_DISCOVERY_GENERATIONS {
+            if let Some(expired) = registry.generations.pop_front() {
+                for id in expired {
+                    registry.records.remove(&id);
+                }
             }
         }
-        drop(registry);
-        drop(retired);
-        Ok(descriptions)
+        descriptions
     }
 
     fn create_record(&self, candidate: Candidate) -> Result<Arc<TargetRecord>> {
         let id = self.issuer.issue_target(PROVIDER)?;
+        let Candidate {
+            key,
+            fingerprint,
+            target,
+            metadata,
+        } = candidate;
         Ok(Arc::new(TargetRecord {
             id,
-            key: candidate.key,
-            fingerprint: candidate.fingerprint,
-            metadata: Mutex::new(candidate.metadata),
-            lost: AtomicBool::new(false),
+            key,
+            fingerprint,
+            selection: target,
+            metadata,
         }))
-    }
-
-    fn validate_current(
-        &self,
-        record: &TargetRecord,
-        operation: &mut Operation<'_>,
-    ) -> Result<TargetMetadata> {
-        let wait = inventory_wait(operation.context().remaining());
-        self.with_snapshot_order(operation, || {
-            if record.lost.load(Ordering::Acquire) || !record.key.is_present() {
-                record.lost.store(true, Ordering::Release);
-                return Err(CaptureFault::TargetLost.into());
-            }
-            let current = inventory(wait)?
-                .into_iter()
-                .find(|candidate| candidate.key == record.key);
-            match current {
-                Some(candidate)
-                    if candidate.fingerprint == record.fingerprint
-                        && !record.lost.load(Ordering::Acquire) =>
-                {
-                    *record.metadata() = candidate.metadata.clone();
-                    Ok(candidate.metadata)
-                }
-                _ => {
-                    record.lost.store(true, Ordering::Release);
-                    Err(CaptureFault::TargetLost.into())
-                }
-            }
-        })
-    }
-
-    fn remove_lost_record(&self, record: &Arc<TargetRecord>) {
-        if !record.lost.load(Ordering::Acquire) {
-            return;
-        }
-        let mut registry = self.registry();
-        let is_current_record = registry
-            .records
-            .get(&record.id)
-            .is_some_and(|known| Arc::ptr_eq(known, record));
-        if !is_current_record {
-            return;
-        }
-        registry.records.remove(&record.id);
-        if registry.current.get(&record.key) == Some(&record.id) {
-            registry.current.remove(&record.key);
-        }
     }
 
     fn registry(&self) -> MutexGuard<'_, Registry> {
@@ -229,7 +179,7 @@ impl fmt::Debug for MacosCaptureProvider {
             .debug_struct("MacosCaptureProvider")
             .field("engine", &self.issuer.engine())
             .field("known_targets", &registry.records.len())
-            .field("current_targets", &registry.current.len())
+            .field("retained_generations", &registry.generations.len())
             .finish()
     }
 }
@@ -261,36 +211,26 @@ impl CaptureProvider for MacosCaptureProvider {
         }
 
         // accepts_target established this engine and provider. TargetId is
-        // opaque, so an accepted identity absent from the live registry is
-        // conservatively stale rather than an invitation to retain history.
+        // snapshot-scoped, so only the current and previous discovery leases are
+        // openable; an older identity is conservatively stale.
         let record = self
             .registry()
             .records
             .get(&target)
             .cloned()
             .ok_or(CaptureFault::TargetLost)?;
-        let metadata = match self.validate_current(&record, &mut attempt) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                self.remove_lost_record(&record);
-                return Err(error);
-            }
-        };
         let stream = self.issuer.issue_stream()?;
-        let session = NativeSession::open(
+        let selected = SessionTarget::new(
             target,
             stream,
             record.key,
             record.fingerprint,
-            metadata,
-            &mut attempt,
-        )?;
+            record.selection.clone(),
+            record.metadata.clone(),
+        );
+        let session = NativeSession::open(selected, &mut attempt)?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
     }
-}
-
-fn same_incarnation(lost: bool, existing: Fingerprint, candidate: Fingerprint) -> bool {
-    !lost && existing == candidate
 }
 
 fn lock_with_operation<'mutex>(
@@ -310,14 +250,8 @@ fn lock_with_operation<'mutex>(
 }
 
 impl TargetRecord {
-    fn metadata(&self) -> MutexGuard<'_, TargetMetadata> {
-        self.metadata
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     fn description(&self) -> TargetDescription {
-        self.metadata().describe(self.id, self.key.kind())
+        self.metadata.describe(self.id, self.key.kind())
     }
 }
 
@@ -327,21 +261,73 @@ impl fmt::Debug for TargetRecord {
             .debug_struct("TargetRecord")
             .field("id", &self.id)
             .field("kind", &self.key.kind())
-            .field("lost", &self.lost.load(Ordering::Acquire))
             .finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::Duration;
 
     use mado_pilot_capture::{CaptureProvider, OpenRequest, PixelFormat};
-    use mado_pilot_core::{IdentityIssuer, Operation, OperationContext, Status};
+    use mado_pilot_core::{
+        Clock, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, Scale, Status,
+        TargetKind, TargetPlacement,
+    };
 
-    use super::{Fingerprint, MacosCaptureProvider, inventory_wait, same_incarnation};
+    use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata};
+    use crate::shim::TargetToken;
+
+    use super::{MacosCaptureProvider, RETAINED_DISCOVERY_GENERATIONS, inventory_wait};
+
+    fn window_candidate(incarnation: u64) -> Candidate {
+        let extent = PixelExtent::new(64, 48);
+        Candidate {
+            key: NativeKey::Window(7),
+            fingerprint: Fingerprint::Window { owner_process: 501 },
+            target: TargetToken::synthetic(incarnation),
+            metadata: TargetMetadata {
+                name: "window".to_owned(),
+                extent,
+                placement: TargetPlacement::new(
+                    (0.0, 0.0),
+                    (64.0, 48.0),
+                    Scale::new(1.0, 1.0).expect("scale"),
+                )
+                .expect("placement"),
+            },
+        }
+    }
+
+    fn commit_candidates(
+        provider: &MacosCaptureProvider,
+        candidates: Vec<Candidate>,
+    ) -> Vec<mado_pilot_capture::TargetDescription> {
+        let prepared = provider
+            .prepare_snapshot(candidates)
+            .expect("snapshot stages");
+        provider.commit_snapshot(prepared)
+    }
+
+    /// Expires exactly when `Operation::commit` performs final arbitration.
+    #[derive(Debug, Default)]
+    struct CommitDeadlineClock {
+        reads: AtomicUsize,
+    }
+
+    impl Clock for CommitDeadlineClock {
+        fn now(&self) -> MonotonicInstant {
+            let read = self.reads.fetch_add(1, Ordering::AcqRel) + 1;
+            if read >= 3 {
+                MonotonicInstant::from_origin(Duration::from_millis(1))
+            } else {
+                MonotonicInstant::ORIGIN
+            }
+        }
+    }
 
     #[test]
     fn a_native_inventory_wait_never_exceeds_the_callers_own_budget() {
@@ -433,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_is_deterministic_when_capture_is_authorized() {
+    fn successive_discoveries_mint_fresh_ids_and_keep_the_previous_generation_openable() {
         let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
         let first = match provider.discover(&OperationContext::new()) {
             Ok(first) => first,
@@ -446,36 +432,52 @@ mod tests {
 
         let first_ids: Vec<_> = first.iter().map(|target| target.id()).collect();
         let second_ids: Vec<_> = second.iter().map(|target| target.id()).collect();
-        assert_eq!(
-            first_ids, second_ids,
-            "an unchanged desktop keeps its identities and its order"
+        assert!(
+            first_ids.iter().all(|id| !second_ids.contains(id)),
+            "each discovery snapshot owns fresh identities even when live metadata changes"
         );
         assert!(
             first
                 .iter()
+                .chain(&second)
                 .all(|target| target.provider() == super::PROVIDER)
         );
         assert!(
             first
                 .iter()
+                .chain(&second)
                 .all(|target| target.format() == PixelFormat::Bgra8)
         );
+
+        if let Some(old_display) = first
+            .iter()
+            .find(|target| target.capability().kind() == Some(TargetKind::Display))
+        {
+            let session = provider
+                .open(
+                    old_display.id(),
+                    &OpenRequest::new(),
+                    &OperationContext::new(),
+                )
+                .expect("the previous generation's retained filter still opens");
+            session
+                .close(&OperationContext::new())
+                .expect("old-generation session closes");
+        }
     }
 
     #[test]
-    fn open_validation_and_discovery_share_one_snapshot_order() {
+    fn discovery_snapshots_commit_in_query_order() {
         let provider = Arc::new(MacosCaptureProvider::new(Arc::new(IdentityIssuer::new())));
         let (first_entered_tx, first_entered_rx) = mpsc::channel();
         let (release_first_tx, release_first_rx) = mpsc::channel();
         let first = {
             let provider = Arc::clone(&provider);
             thread::spawn(move || {
-                let context = OperationContext::new();
-                let mut operation = Operation::admit(&context).expect("open validation admitted");
-                provider.with_snapshot_order(&mut operation, || {
+                provider.discover_with(&OperationContext::new(), || {
                     first_entered_tx.send(()).expect("signal first inventory");
                     release_first_rx.recv().expect("release first inventory");
-                    Ok(())
+                    Ok(Vec::new())
                 })
             })
         };
@@ -504,7 +506,7 @@ mod tests {
         first
             .join()
             .expect("first thread")
-            .expect("open validation");
+            .expect("first discovery");
         second_entered_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("second inventory enters after the first commit");
@@ -515,15 +517,64 @@ mod tests {
     }
 
     #[test]
-    fn a_reused_window_number_never_reuses_the_target_identity() {
-        let original = Fingerprint::Window { owner_process: 501 };
-        let replacement = Fingerprint::Window { owner_process: 907 };
+    fn identical_metadata_in_two_snapshots_mints_fresh_ids_without_retargeting() {
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let first = commit_candidates(&provider, vec![window_candidate(1)]);
+        let second = commit_candidates(&provider, vec![window_candidate(2)]);
 
-        assert!(same_incarnation(false, original, original));
+        assert_ne!(first[0].id(), second[0].id());
+        let registry = provider.registry();
+        let old = registry
+            .records
+            .get(&first[0].id())
+            .expect("old lease retained");
+        let new = registry
+            .records
+            .get(&second[0].id())
+            .expect("new lease retained");
+        assert_eq!(old.selection.synthetic_identity(), 1);
+        assert_eq!(new.selection.synthetic_identity(), 2);
+    }
+
+    #[test]
+    fn discovery_generations_are_bounded_and_evict_only_expired_unopened_selections() {
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let mut ids = Vec::new();
+        for generation in 1..=RETAINED_DISCOVERY_GENERATIONS + 1 {
+            let descriptions =
+                commit_candidates(&provider, vec![window_candidate(generation as u64)]);
+            ids.push(descriptions[0].id());
+        }
+        let registry = provider.registry();
+        assert_eq!(registry.generations.len(), RETAINED_DISCOVERY_GENERATIONS);
         assert!(
-            !same_incarnation(true, original, original),
-            "a target already reported lost is never the same incarnation"
+            !registry.records.contains_key(&ids[0]),
+            "the generation older than the lease is evicted"
         );
-        assert!(!same_incarnation(false, original, replacement));
+        assert!(registry.records.contains_key(&ids[1]));
+        assert!(registry.records.contains_key(&ids[2]));
+    }
+
+    #[test]
+    fn a_deadline_winning_at_final_arbitration_does_not_advance_the_registry() {
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let first = commit_candidates(&provider, vec![window_candidate(1)])[0].id();
+        let second = commit_candidates(&provider, vec![window_candidate(2)])[0].id();
+        let generations_before = provider.registry().generations.clone();
+
+        let clock = Arc::new(CommitDeadlineClock::default());
+        let operation = OperationContext::new()
+            .with_clock(clock)
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(1)));
+        let error = provider
+            .discover_with(&operation, || Ok(vec![window_candidate(3)]))
+            .expect_err("the deadline wins after staging and before state mutation");
+
+        assert_eq!(error.status(), Status::DeadlineExceeded);
+        let registry = provider.registry();
+        assert_eq!(registry.generations, generations_before);
+        assert_eq!(registry.records.len(), RETAINED_DISCOVERY_GENERATIONS);
+        assert!(registry.records.contains_key(&first));
+        assert!(registry.records.contains_key(&second));
     }
 }

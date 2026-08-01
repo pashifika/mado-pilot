@@ -21,14 +21,16 @@
 //! releases registered state, and close is idempotent and completes its release
 //! even when it reports a failure.
 //!
-//! ScreenCaptureKit is loaded from its absolute system location at runtime rather
+//! The implementation and deployment floor is macOS 26.5.2 on Apple Silicon.
+//! ScreenCaptureKit
+//! is loaded from its absolute system location at runtime rather
 //! than linked. That is a change of mechanism from the `-weak_framework` the ADR
 //! named, for a reason the prototype could not observe: Cargo does not propagate a
 //! dependency's `rustc-link-arg` to the binary that consumes it, so a build script
 //! here cannot own that flag. The property the ADR asked for is unchanged — a host
-//! below the framework's minimum reports an unsupported status rather than failing
-//! to load — and `tests/linkage.rs` asserts it. The minimum supported macOS
-//! version itself remains gate `G-001`.
+//! below that floor is outside the support contract — and `tests/linkage.rs`
+//! asserts the produced binary's deployment metadata. The qualified host is build
+//! 25F84 with SDK 26.5; Screen Recording-dependent acceptance remains explicit.
 //!
 //! # Authorization
 //!
@@ -40,10 +42,20 @@
 //!
 //! # Ownership
 //!
-//! A producer surface belongs to a pool of fixed depth, so the callback copies a
-//! frame's content into Adapter-owned Core Video storage from a finite budget and
-//! publishes that. A retained public frame therefore pins nothing capture needs to
+//! A producer surface belongs to a pool of fixed depth, so the first callback copies
+//! a frame's content into one finite Adapter-owned staging slot. A second contained
+//! callback publishes it only after native delivery has passed every remaining
+//! throwing step. A retained public frame therefore pins nothing capture needs to
 //! make progress, and CPU conversion happens only under an explicit mapping.
+//!
+//! # Coordinate capability
+//!
+//! On the qualified 26.5.2 floor, every published frame carries validated
+//! `SCStreamFrameInfoScreenRect`, content rectangle, and effective scale metadata
+//! from the same sample buffer. Public frames therefore support target-logical and
+//! desktop-logical mapping. Discovery constructs a retained `SCContentFilter` for
+//! each fresh snapshot identity; open consumes that filter directly, and later
+//! shareable-content snapshots do not validate or annotate the session.
 
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 

@@ -34,13 +34,19 @@ development prerequisite only: the v0.1.0 source release bundles no native
 dependency and makes no installable deployment-profile claim, which remains gate
 `G-007`.
 
-The macOS native shim adds no prerequisite beyond that. The production shim in
+The macOS implementation is qualified only on Apple Silicon macOS 26.5.2
+(25F84), SDK 26.5; earlier macOS versions are unsupported investigation targets,
+not compatibility claims. `.cargo/config.toml` sets the final artifact deployment
+metadata to 26.5.2 and the native build repeats that floor. The macOS native shim
+adds no prerequisite beyond that environment. The production shim in
 `mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
 Command Line Tools alone**, on a host where full Xcode is not installed; its only
-Cargo addition is `cc`, as a build dependency gated on macOS. That confirms on the
-finished adapter what the `G-003` prototype had suggested on the same setup, and the
-measurements are in [docs/evidence/g-003/](docs/evidence/g-003/README.md). Full Xcode
-is still not evaluated, so this remains a positive result about the smaller
+Cargo addition is `cc`, declared as an unconditional build dependency so Cargo
+resolves the edge on every host. The build script returns before compiling the shim
+or emitting Apple framework link directives for a non-macOS target. That confirms on
+the finished adapter what the `G-003` prototype had suggested on the same setup, and
+the measurements are in [docs/evidence/g-003/](docs/evidence/g-003/README.md). Full
+Xcode is still not evaluated, so this remains a positive result about the smaller
 installation rather than a statement that the two are interchangeable. The shim is
 compiled with `-fobjc-arc-exceptions`, which
 [docs/adr/0012-macos-shim-language-and-containment.md](docs/adr/0012-macos-shim-language-and-containment.md)
@@ -119,7 +125,8 @@ cargo clippy --locked --target x86_64-pc-windows-msvc \
   -p mado-pilot-platform-macos --all-targets -- -D warnings
 
 # 10. macOS host only: the capture scenarios with the native shim instrumented.
-#     Needs Screen Recording granted, and fails rather than skips without it.
+#     Run on the qualified 26.5.2 (25F84) Apple Silicon host. Needs Screen
+#     Recording granted, and fails rather than skips without it.
 MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
   -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
@@ -143,6 +150,16 @@ Objective-C shim under AddressSanitizer and links the sanitizer runtime into tha
 package's test binaries; with the variable unset the build is unchanged, and the runtime
 is never part of a released artifact. The Xcode Command Line Tools ship it, so the step
 needs nothing installed that the shim did not already need.
+
+The same run is also the permissioned coordinate/selection acceptance gate. It
+compares frame-attached `screenRect` origin, logical size, and effective scale with
+the qualified host's display inventory and checks that a fresh discovery does not
+terminate an already-open retained filter. A run that fails because Screen Recording
+is not granted is useful denial evidence, but passes neither that live gate nor the
+manual window move/resize/loss probe in
+`crates/platform/macos/tests/window_movement.rs`. Release acceptance additionally
+requires an owned-window replacement oracle proving that a retained filter never
+captures a replacement after its selected window is destroyed.
 
 Every part of that command is load-bearing rather than a matter of taste:
 
@@ -395,7 +412,7 @@ The stable check names are:
 | `Validate branch flow` | `branch-policy.yml` | The source and target branches follow the pull request flow. |
 | `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, and dependency policy. |
 | `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
-| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-15` Apple Silicon inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
+| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-26` Apple Silicon inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
 
 The `Repository policy` job builds no product package, which is why
 documentation, lints, tests, and the C and C++ boundary are verified only in the
@@ -411,7 +428,7 @@ its first successful run on the branch it will guard, and only with separate
 maintainer authorization. Enabling a required check that has never reported turns
 every open pull request into a blocked pull request.
 
-The native jobs name `windows-2025` and `macos-15` rather than a `-latest` label, so
+The native jobs name `windows-2025` and `macos-26` rather than a `-latest` label, so
 moving to a new operating-system version is a reviewed change. Those labels still
 pin only an OS version: GitHub migrates the images behind them on its own schedule,
 so the toolchain and the exact image contents are not frozen by the label. The

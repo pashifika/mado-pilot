@@ -69,6 +69,7 @@
 #define MP_SHIM_SESSION_MAGIC 0x4d505353u
 #define MP_SHIM_FRAME_MAGIC 0x4d505346u
 #define MP_SHIM_INVENTORY_MAGIC 0x4d505349u
+#define MP_SHIM_TARGET_MAGIC 0x4d505354u
 
 /*
  * Every entry point and callback trampoline wraps its body in these. Both
@@ -227,6 +228,7 @@ typedef struct MPShimFramework {
     CFTypeRef key_scale_factor;
     CFTypeRef key_content_scale;
     CFTypeRef key_content_rect;
+    CFTypeRef key_screen_rect;
     CFTypeRef error_domain;
     bool loaded;
 } MPShimFramework;
@@ -249,7 +251,7 @@ static CFTypeRef mp_shim_string_symbol(void *handle, const char *name) {
  * makes satisfying the precondition the only available answer, and this shim the
  * place that owns it. `CGMainDisplayID` is what establishes the connection, and it
  * was the smallest call measured to do so; it takes no capability the Adapter does
- * not already use, since frame-time placement reads display bounds anyway.
+ * not already use, since discovery already reads display bounds.
  */
 static void mp_shim_connect_window_server(void) { (void)CGMainDisplayID(); }
 
@@ -283,19 +285,24 @@ static void mp_shim_load_framework(void) {
     loaded.key_scale_factor = mp_shim_string_symbol(handle, "SCStreamFrameInfoScaleFactor");
     loaded.key_content_scale = mp_shim_string_symbol(handle, "SCStreamFrameInfoContentScale");
     loaded.key_content_rect = mp_shim_string_symbol(handle, "SCStreamFrameInfoContentRect");
+    loaded.key_screen_rect = mp_shim_string_symbol(handle, "SCStreamFrameInfoScreenRect");
     loaded.error_domain = mp_shim_string_symbol(handle, "SCStreamErrorDomain");
 
     loaded.loaded = loaded.shareable_content != Nil && loaded.stream != Nil &&
                     loaded.stream_configuration != Nil && loaded.content_filter != Nil &&
                     loaded.key_status != NULL && loaded.key_content_rect != NULL &&
-                    loaded.key_scale_factor != NULL && loaded.error_domain != NULL;
+                    loaded.key_screen_rect != NULL && loaded.key_scale_factor != NULL &&
+                    loaded.error_domain != NULL;
     if (loaded.loaded) {
         mp_shim_framework = loaded;
     }
 }
 
 static const MPShimFramework *mp_shim_capture_framework(void) {
-    if (@available(macOS 12.3, *)) {
+    /* Version one needs SCStreamFrameInfoScreenRect for every published frame.
+     * The qualified Apple Silicon environment and declared implementation floor
+     * are macOS 26.5.2 and SDK 26.5; earlier hosts are outside the support contract. */
+    if (@available(macOS 26.5.2, *)) {
         pthread_once(&mp_shim_framework_once, mp_shim_load_framework);
         return mp_shim_framework.loaded ? &mp_shim_framework : NULL;
     }
@@ -320,6 +327,16 @@ static mp_shim_status mp_shim_wait(dispatch_semaphore_t semaphore, uint64_t time
     int64_t interval = timeout_nanos > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)timeout_nanos;
     dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW, interval);
     return dispatch_semaphore_wait(semaphore, deadline) == 0 ? MP_SHIM_OK : MP_SHIM_TIMED_OUT;
+}
+
+static void mp_shim_testing_delay(uint64_t delay_nanos) {
+    if (delay_nanos == 0) {
+        return;
+    }
+    struct timespec delay;
+    delay.tv_sec = (time_t)(delay_nanos / 1000000000ull);
+    delay.tv_nsec = (long)(delay_nanos % 1000000000ull);
+    (void)nanosleep(&delay, NULL);
 }
 
 /*
@@ -494,23 +511,20 @@ static mp_shim_status mp_shim_admission_fence(MPShimAdmission *admission, uint64
  * waiting for the start is what puts that outcome back where a caller can see it —
  * close reads the settled result and reports it through its own status.
  *
- * `orphaned` covers the case teardown cannot wait out. When close gives up on its
- * budget, whoever settles the start owns stopping it, because by then nothing else is
- * tracking the producer. That stop's own failure is genuinely unreportable, which is
- * the one hole this gate does not close and is recorded as such.
+ * A timed-out close leaves `pending` intact. A later close resumes this same wait;
+ * the completion owns the session through its counted hold, so no orphaning shortcut
+ * is needed and no late successful start escapes teardown.
  */
 typedef struct MPShimStartGate {
     pthread_mutex_t mutex;
     pthread_cond_t settled;
     bool pending;
-    bool orphaned;
 } MPShimStartGate;
 
 static void mp_shim_start_gate_init(MPShimStartGate *gate) {
     pthread_mutex_init(&gate->mutex, NULL);
     pthread_cond_init(&gate->settled, NULL);
     gate->pending = false;
-    gate->orphaned = false;
 }
 
 static void mp_shim_start_gate_destroy(MPShimStartGate *gate) {
@@ -524,14 +538,11 @@ static void mp_shim_start_gate_begin(MPShimStartGate *gate) {
     pthread_mutex_unlock(&gate->mutex);
 }
 
-/* Settles the start and reports whether teardown gave up waiting for it. */
-static bool mp_shim_start_gate_end(MPShimStartGate *gate) {
+static void mp_shim_start_gate_end(MPShimStartGate *gate) {
     pthread_mutex_lock(&gate->mutex);
     gate->pending = false;
-    bool orphaned = gate->orphaned;
     pthread_cond_broadcast(&gate->settled);
     pthread_mutex_unlock(&gate->mutex);
-    return orphaned;
 }
 
 /*
@@ -562,12 +573,166 @@ static mp_shim_status mp_shim_start_gate_wait(MPShimStartGate *gate, uint64_t ti
             break;
         }
     }
-    if (status != MP_SHIM_OK) {
-        /* Hand the start its own teardown, since this one is leaving without it. */
-        gate->orphaned = true;
-    }
     pthread_mutex_unlock(&gate->mutex);
     return status;
+}
+
+typedef struct MPShimStopGate {
+    pthread_mutex_t mutex;
+    pthread_cond_t settled;
+    bool pending;
+    mp_shim_status result;
+} MPShimStopGate;
+
+static void mp_shim_stop_gate_init(MPShimStopGate *gate) {
+    pthread_mutex_init(&gate->mutex, NULL);
+    pthread_cond_init(&gate->settled, NULL);
+    gate->pending = false;
+    gate->result = MP_SHIM_OK;
+}
+
+static void mp_shim_stop_gate_destroy(MPShimStopGate *gate) {
+    pthread_cond_destroy(&gate->settled);
+    pthread_mutex_destroy(&gate->mutex);
+}
+
+static void mp_shim_stop_gate_begin(MPShimStopGate *gate) {
+    pthread_mutex_lock(&gate->mutex);
+    gate->pending = true;
+    gate->result = MP_SHIM_OK;
+    pthread_mutex_unlock(&gate->mutex);
+}
+
+static void mp_shim_stop_gate_end(MPShimStopGate *gate, mp_shim_status result) {
+    pthread_mutex_lock(&gate->mutex);
+    if (gate->pending) {
+        gate->result = result;
+        gate->pending = false;
+        pthread_cond_broadcast(&gate->settled);
+    }
+    pthread_mutex_unlock(&gate->mutex);
+}
+
+static bool mp_shim_stop_gate_pending(MPShimStopGate *gate) {
+    pthread_mutex_lock(&gate->mutex);
+    bool pending = gate->pending;
+    pthread_mutex_unlock(&gate->mutex);
+    return pending;
+}
+
+static mp_shim_status mp_shim_stop_gate_wait(MPShimStopGate *gate, uint64_t timeout_nanos) {
+    uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t deadline = began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
+
+    pthread_mutex_lock(&gate->mutex);
+    while (gate->pending) {
+        uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
+        if (now >= deadline) {
+            pthread_mutex_unlock(&gate->mutex);
+            return MP_SHIM_TIMED_OUT;
+        }
+        uint64_t left = deadline - now;
+        struct timespec relative;
+        relative.tv_sec = (time_t)(left / 1000000000ull);
+        relative.tv_nsec = (long)(left % 1000000000ull);
+        if (pthread_cond_timedwait_relative_np(&gate->settled, &gate->mutex, &relative) != 0 &&
+            gate->pending) {
+            pthread_mutex_unlock(&gate->mutex);
+            return MP_SHIM_TIMED_OUT;
+        }
+    }
+    mp_shim_status result = gate->result;
+    pthread_mutex_unlock(&gate->mutex);
+    return result;
+}
+
+/*
+ * The asynchronous stop completion's complete no-throw boundary.
+ *
+ * `gate` and `started` belong to a session retained by the completion block. The
+ * gate is settled exactly once from @finally, including when delay, error
+ * translation, or the deliberate regression seam raises.
+ */
+static void mp_shim_complete_stop(MPShimStopGate *gate, atomic_bool *started, NSError *error,
+                                  uint64_t delay_nanos, bool raise_for_test) {
+    mp_shim_status status = MP_SHIM_NATIVE_EXCEPTION;
+    @try {
+        mp_shim_testing_delay(delay_nanos);
+        status = error == nil ? MP_SHIM_OK : mp_shim_error_status(error);
+        if (raise_for_test) {
+            [NSException raise:@"MPShimInjectedFailure" format:@"stop completion"];
+        }
+    } @catch (NSException *exception) {
+        (void)exception;
+        status = MP_SHIM_NATIVE_EXCEPTION;
+    } @catch (...) {
+        status = MP_SHIM_NATIVE_EXCEPTION;
+    } @finally {
+        atomic_store(started, false);
+        mp_shim_stop_gate_end(gate, status);
+    }
+}
+
+mp_shim_status mp_shim_testing_gate_retries(
+    uint64_t completion_delay_nanos, uint64_t first_wait_nanos, uint64_t second_wait_nanos,
+    mp_shim_status *out_start_first, mp_shim_status *out_start_second,
+    mp_shim_status *out_stop_first, mp_shim_status *out_stop_second) {
+    if (completion_delay_nanos == 0 || out_start_first == NULL || out_start_second == NULL ||
+        out_stop_first == NULL || out_stop_second == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+
+    MPShimStartGate start;
+    mp_shim_start_gate_init(&start);
+    mp_shim_start_gate_begin(&start);
+    MPShimStartGate *start_ptr = &start;
+    dispatch_group_t start_group = dispatch_group_create();
+    dispatch_group_enter(start_group);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      mp_shim_testing_delay(completion_delay_nanos);
+      mp_shim_start_gate_end(start_ptr);
+      dispatch_group_leave(start_group);
+    });
+    *out_start_first = mp_shim_start_gate_wait(&start, first_wait_nanos);
+    *out_start_second = mp_shim_start_gate_wait(&start, second_wait_nanos);
+    dispatch_group_wait(start_group, DISPATCH_TIME_FOREVER);
+    mp_shim_start_gate_destroy(&start);
+
+    MPShimStopGate stop;
+    mp_shim_stop_gate_init(&stop);
+    mp_shim_stop_gate_begin(&stop);
+    MPShimStopGate *stop_ptr = &stop;
+    dispatch_group_t stop_group = dispatch_group_create();
+    dispatch_group_enter(stop_group);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      mp_shim_testing_delay(completion_delay_nanos);
+      mp_shim_stop_gate_end(stop_ptr, MP_SHIM_OK);
+      dispatch_group_leave(stop_group);
+    });
+    *out_stop_first = mp_shim_stop_gate_wait(&stop, first_wait_nanos);
+    *out_stop_second = mp_shim_stop_gate_wait(&stop, second_wait_nanos);
+    dispatch_group_wait(stop_group, DISPATCH_TIME_FOREVER);
+    mp_shim_stop_gate_destroy(&stop);
+    return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_testing_stop_completion_exception(mp_shim_status *out_status,
+                                                         bool *out_started) {
+    if (out_status == NULL || out_started == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MPShimStopGate gate;
+    atomic_bool started;
+    atomic_init(&started, true);
+    mp_shim_stop_gate_init(&gate);
+    mp_shim_stop_gate_begin(&gate);
+    mp_shim_complete_stop(&gate, &started, nil, 0, true);
+    /* A later duplicate settlement cannot replace the first contained result. */
+    mp_shim_stop_gate_end(&gate, MP_SHIM_OK);
+    *out_status = mp_shim_stop_gate_wait(&gate, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+    *out_started = atomic_load(&started);
+    mp_shim_stop_gate_destroy(&gate);
+    return MP_SHIM_OK;
 }
 
 #pragma mark - Handles
@@ -576,6 +741,27 @@ struct mp_shim_inventory {
     uint32_t magic;
     CFTypeRef entries; /* NSArray<MPShimInventoryEntry *> */
 };
+
+/*
+ * One exact capture filter constructed from a discovery snapshot.
+ *
+ * `native_id` and `owner_process` are repeated here only to validate metadata at
+ * the boundary. `filter` is the authority and open performs no later lookup.
+ */
+struct mp_shim_target {
+    uint32_t magic;
+    uint32_t kind;
+    uint64_t native_id;
+    int64_t owner_process;
+    CFTypeRef filter; /* SCContentFilter */
+};
+
+#define MP_SHIM_CLOSE_START 0u
+#define MP_SHIM_CLOSE_OUTPUT 1u
+#define MP_SHIM_CLOSE_STOP 2u
+#define MP_SHIM_CLOSE_FENCE 3u
+#define MP_SHIM_CLOSE_RELEASE 4u
+#define MP_SHIM_CLOSE_COMPLETE 5u
 
 /*
  * One capture session.
@@ -603,10 +789,21 @@ struct mp_shim_session {
     MPShimAdmission admission;
     /* Lets teardown join a capture start that outlived its own caller's wait. */
     MPShimStartGate start_gate;
+    /* Preserves one asynchronous stop across close retries. */
+    MPShimStopGate stop_gate;
+    /* Serializes claims on the resumable close phases without spanning waits. */
+    pthread_mutex_t close_mutex;
+    pthread_cond_t close_idle;
+    bool close_active;
+    uint32_t close_phase;
+    mp_shim_status close_error;
+    bool close_error_reported;
 
     uint32_t kind;
     uint64_t native_id;
     uint32_t testing_raise_sites;
+    uint64_t testing_start_delay_nanos;
+    uint64_t testing_stop_delay_nanos;
 
     /*
      * Native ownership. Each slot is retained exactly once and released by
@@ -633,10 +830,12 @@ struct mp_shim_session {
 
     void *callback_context;
     mp_shim_status (*frame_callback)(void *, mp_shim_frame *, const mp_shim_frame_info *);
+    mp_shim_status (*frame_commit_callback)(void *);
     void (*stopped_callback)(void *, mp_shim_status);
 
     atomic_bool output_added;
     atomic_bool started;
+    atomic_bool closing;
     atomic_bool closed;
     atomic_bool stop_reported;
 };
@@ -651,9 +850,48 @@ struct mp_shim_frame {
     struct mp_shim_session *session;
 };
 
+/* Claims exclusive phase advancement without holding the mutex across a wait. */
+static mp_shim_status mp_shim_close_claim(struct mp_shim_session *session, uint64_t deadline,
+                                          bool *out_complete) {
+    *out_complete = false;
+    pthread_mutex_lock(&session->close_mutex);
+    while (session->close_active) {
+        uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
+        if (now >= deadline) {
+            pthread_mutex_unlock(&session->close_mutex);
+            return MP_SHIM_TIMED_OUT;
+        }
+        uint64_t left = deadline - now;
+        struct timespec relative;
+        relative.tv_sec = (time_t)(left / 1000000000ull);
+        relative.tv_nsec = (long)(left % 1000000000ull);
+        if (pthread_cond_timedwait_relative_np(&session->close_idle, &session->close_mutex,
+                                               &relative) != 0 &&
+            session->close_active) {
+            pthread_mutex_unlock(&session->close_mutex);
+            return MP_SHIM_TIMED_OUT;
+        }
+    }
+    if (session->close_phase == MP_SHIM_CLOSE_COMPLETE) {
+        *out_complete = true;
+    } else {
+        session->close_active = true;
+    }
+    pthread_mutex_unlock(&session->close_mutex);
+    return MP_SHIM_OK;
+}
+
+static void mp_shim_close_release(struct mp_shim_session *session) {
+    pthread_mutex_lock(&session->close_mutex);
+    session->close_active = false;
+    pthread_cond_broadcast(&session->close_idle);
+    pthread_mutex_unlock(&session->close_mutex);
+}
+
 @interface MPShimInventoryEntry : NSObject
 @property(nonatomic, assign) mp_shim_target_info info;
 @property(nonatomic, copy) NSData *name;
+@property(nonatomic, strong) id nativeTarget;
 @end
 
 @implementation MPShimInventoryEntry
@@ -672,6 +910,9 @@ struct mp_shim_frame {
 static void mp_shim_session_abandon(struct mp_shim_session *session) {
     mp_shim_admission_destroy(&session->admission);
     mp_shim_start_gate_destroy(&session->start_gate);
+    mp_shim_stop_gate_destroy(&session->stop_gate);
+    pthread_cond_destroy(&session->close_idle);
+    pthread_mutex_destroy(&session->close_mutex);
     pthread_mutex_destroy(&session->native_mutex);
     pthread_mutex_destroy(&session->pool_mutex);
     session->magic = 0;
@@ -745,28 +986,6 @@ static double mp_shim_display_backing_scale(CGDirectDisplayID display) {
     return (double)pixels / (double)points;
 }
 
-static bool mp_shim_display_is_active(CGDirectDisplayID display) {
-    uint32_t count = 0;
-    if (CGGetActiveDisplayList(0, NULL, &count) != kCGErrorSuccess || count == 0) {
-        return false;
-    }
-    CGDirectDisplayID *displays = calloc(count, sizeof(CGDirectDisplayID));
-    if (displays == NULL) {
-        return false;
-    }
-    bool found = false;
-    if (CGGetActiveDisplayList(count, displays, &count) == kCGErrorSuccess) {
-        for (uint32_t index = 0; index < count; index += 1) {
-            if (displays[index] == display) {
-                found = true;
-                break;
-            }
-        }
-    }
-    free(displays);
-    return found;
-}
-
 /* Returns the backing scale of the display holding the greater part of `frame`. */
 static double mp_shim_scale_for_frame(CGRect frame) {
     uint32_t count = 0;
@@ -786,34 +1005,6 @@ static double mp_shim_scale_for_frame(CGRect frame) {
         }
     }
     return best_scale;
-}
-
-static bool mp_shim_window_frame(CGWindowID window, CGRect *out_frame) {
-/*
- * The shareable-content query is asynchronous and would be wrong inside a
- * producer callback, which is where frame-time placement is read. This
- * synchronous Core Graphics query answers the same question. It is soft
- * deprecated in favour of the capture framework, and is kept because the
- * replacement is unavailable on the older hosts this adapter still supports;
- * only window bounds are read, which needs no authorization.
- */
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow, window);
-#pragma clang diagnostic pop
-    if (list == NULL) {
-        return false;
-    }
-    bool resolved = false;
-    if (CFArrayGetCount(list) > 0) {
-        CFDictionaryRef entry = (CFDictionaryRef)CFArrayGetValueAtIndex(list, 0);
-        CFDictionaryRef bounds = (CFDictionaryRef)CFDictionaryGetValue(entry, kCGWindowBounds);
-        if (bounds != NULL) {
-            resolved = CGRectMakeWithDictionaryRepresentation(bounds, out_frame);
-        }
-    }
-    CFRelease(list);
-    return resolved;
 }
 
 /*
@@ -839,6 +1030,39 @@ static uint32_t mp_shim_pixels_from_points(double points, double scale) {
         return 0;
     }
     return (uint32_t)rounded;
+}
+
+/* Derives prospective producer capacity from one sample's source-resolution facts. */
+static bool mp_shim_recommended_surface(CGSize logical_size, double display_scale,
+                                        uint32_t *out_width, uint32_t *out_height) {
+    if (out_width == NULL || out_height == NULL || !isfinite(display_scale) ||
+        display_scale < 1.0 || display_scale > 4.0) {
+        return false;
+    }
+    uint32_t width = mp_shim_pixels_from_points(logical_size.width, display_scale);
+    uint32_t height = mp_shim_pixels_from_points(logical_size.height, display_scale);
+    if (width == 0 || height == 0 || !mp_shim_surface_within_limit(width, height)) {
+        return false;
+    }
+    *out_width = width;
+    *out_height = height;
+    return true;
+}
+
+mp_shim_status mp_shim_testing_surface_recommendation(double logical_width,
+                                                       double logical_height,
+                                                       double display_scale,
+                                                       uint32_t *out_width,
+                                                       uint32_t *out_height) {
+    if (out_width == NULL || out_height == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_width = 0;
+    *out_height = 0;
+    CGSize logical_size = CGSizeMake(logical_width, logical_height);
+    return mp_shim_recommended_surface(logical_size, display_scale, out_width, out_height)
+               ? MP_SHIM_OK
+               : MP_SHIM_INVALID_ARGUMENT;
 }
 
 #pragma mark - Version, availability, and authorization
@@ -942,14 +1166,11 @@ static MPShimInventoryEntry *mp_shim_window_entry(id<MPShimWindow> window) {
     /*
      * A window whose owner the framework does not name is not listed at all.
      *
-     * `owningApplication` is optional, and the owning process is the whole of a
-     * window's fingerprint — macOS recycles window numbers, and nothing else this
-     * framework reports identifies an incarnation, because a title and an extent both
-     * change legitimately. So a window with no owner cannot be told apart from the next
-     * window to inherit its number, and offering one would be offering an identity this
-     * Adapter cannot stand behind. It is refused here rather than at open for the same
-     * reason an over-sized target is: listing it would hand a caller something that
-     * cannot be honoured.
+     * `owningApplication` is optional, and macOS recycles window numbers. The
+     * retained filter is the actual selection; the owner is descriptive metadata
+     * repeated at open so a mismatched request and filter are rejected. A window
+     * without that metadata is refused here rather than handed to a boundary whose
+     * declared request shape cannot represent it.
      *
      * The cost was measured rather than assumed: on the verification host every
      * on-screen, layer-zero window the framework reported had a named owner. Those two
@@ -986,6 +1207,7 @@ static MPShimInventoryEntry *mp_shim_window_entry(id<MPShimWindow> window) {
     MPShimInventoryEntry *entry = [MPShimInventoryEntry new];
     entry.info = info;
     entry.name = encoded;
+    entry.nativeTarget = window;
     return entry;
 }
 
@@ -1026,6 +1248,7 @@ static MPShimInventoryEntry *mp_shim_display_entry(id<MPShimDisplay> display) {
     MPShimInventoryEntry *entry = [MPShimInventoryEntry new];
     entry.info = info;
     entry.name = encoded;
+    entry.nativeTarget = display;
     return entry;
 }
 
@@ -1171,6 +1394,49 @@ mp_shim_status mp_shim_inventory_name(const mp_shim_inventory *inventory, size_t
     MP_SHIM_END
 }
 
+mp_shim_status mp_shim_inventory_target(const mp_shim_inventory *inventory, size_t index,
+                                        mp_shim_target **out) {
+    if (out == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out = NULL;
+    MP_SHIM_BEGIN
+    MPShimInventoryEntry *entry = mp_shim_inventory_at(inventory, index);
+    if (entry == nil || entry.nativeTarget == nil) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    const MPShimFramework *framework = mp_shim_capture_framework();
+    if (framework == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    mp_shim_target_info info = entry.info;
+    id<MPShimContentFilterInit> filter = nil;
+    if (info.kind == MP_SHIM_TARGET_WINDOW) {
+        filter = [(id<MPShimContentFilterInit>)[framework->content_filter alloc]
+            initWithDesktopIndependentWindow:entry.nativeTarget];
+    } else if (info.kind == MP_SHIM_TARGET_DISPLAY) {
+        filter = [(id<MPShimContentFilterInit>)[framework->content_filter alloc]
+              initWithDisplay:entry.nativeTarget
+             excludingWindows:@[]];
+    }
+    if (filter == nil) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    struct mp_shim_target *target = calloc(1, sizeof(struct mp_shim_target));
+    if (target == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    target->magic = MP_SHIM_TARGET_MAGIC;
+    target->kind = info.kind;
+    target->native_id = info.native_id;
+    target->owner_process = info.owner_process;
+    target->filter = CFBridgingRetain(filter);
+    mp_shim_note_owned();
+    *out = target;
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
 void mp_shim_inventory_release(mp_shim_inventory *inventory) {
     if (inventory == NULL || inventory->magic != MP_SHIM_INVENTORY_MAGIC) {
         return;
@@ -1189,38 +1455,22 @@ void mp_shim_inventory_release(mp_shim_inventory *inventory) {
     free(inventory);
 }
 
-mp_shim_status mp_shim_current_placement(uint32_t kind, uint64_t native_id, double *out_frame,
-                                        double *out_scale) {
-    if (out_frame == NULL || out_scale == NULL) {
-        return MP_SHIM_INVALID_ARGUMENT;
+void mp_shim_target_release(mp_shim_target *target) {
+    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC) {
+        return;
     }
-    MP_SHIM_BEGIN
-    CGRect frame = CGRectNull;
-    double scale = 1.0;
-    if (kind == MP_SHIM_TARGET_WINDOW) {
-        if (native_id > UINT32_MAX || !mp_shim_window_frame((CGWindowID)native_id, &frame)) {
-            return MP_SHIM_TARGET_LOST;
+    @try {
+        if (target->filter != NULL) {
+            CFRelease(target->filter);
+            target->filter = NULL;
+            mp_shim_note_released();
         }
-        scale = mp_shim_scale_for_frame(frame);
-    } else if (kind == MP_SHIM_TARGET_DISPLAY) {
-        if (native_id > UINT32_MAX || !mp_shim_display_is_active((CGDirectDisplayID)native_id)) {
-            return MP_SHIM_TARGET_LOST;
-        }
-        frame = CGDisplayBounds((CGDirectDisplayID)native_id);
-        scale = mp_shim_display_backing_scale((CGDirectDisplayID)native_id);
-    } else {
-        return MP_SHIM_INVALID_ARGUMENT;
+        target->magic = 0;
+    } @catch (NSException *exception) {
+        (void)exception;
+    } @catch (...) {
     }
-    if (CGRectIsNull(frame) || frame.size.width < 1.0 || frame.size.height < 1.0) {
-        return MP_SHIM_TARGET_LOST;
-    }
-    out_frame[0] = frame.origin.x;
-    out_frame[1] = frame.origin.y;
-    out_frame[2] = frame.size.width;
-    out_frame[3] = frame.size.height;
-    *out_scale = scale;
-    return MP_SHIM_OK;
-    MP_SHIM_END
+    free(target);
 }
 
 #pragma mark - Detached buffer pool
@@ -1482,6 +1732,52 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 #pragma mark - Stream output
 
 /*
+ * Stops frame admission and delivers one typed terminal report.
+ *
+ * The compare-and-exchange is the exactly-once decision shared by producer stop,
+ * a contained native frame exception, and a non-OK Rust frame callback status.
+ * No admission/native/pool mutex is held while the host callback runs. This helper
+ * contains the complete terminal trampoline because it is also called from
+ * `@finally`, where an exception would not be caught by the surrounding `@catch`.
+ */
+static void mp_shim_session_terminalize(struct mp_shim_session *session,
+                                        mp_shim_status status) {
+    @try {
+        mp_shim_admission_stop(&session->admission);
+        bool expected = false;
+        if (atomic_compare_exchange_strong(&session->stop_reported, &expected, true) &&
+            session->stopped_callback != NULL) {
+            @try {
+                session->stopped_callback(session->callback_context, status);
+            } @catch (NSException *exception) {
+                (void)exception;
+            } @catch (...) {
+            }
+        }
+    } @catch (NSException *exception) {
+        (void)exception;
+    } @catch (...) {
+    }
+}
+
+mp_shim_status mp_shim_testing_terminalize_twice(
+    void *context, void (*stopped_callback)(void *context, mp_shim_status status),
+    mp_shim_status first, mp_shim_status second) {
+    if (stopped_callback == NULL || first == MP_SHIM_OK || second == MP_SHIM_OK) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    struct mp_shim_session session = {0};
+    mp_shim_admission_init(&session.admission);
+    atomic_init(&session.stop_reported, false);
+    session.callback_context = context;
+    session.stopped_callback = stopped_callback;
+    mp_shim_session_terminalize(&session, first);
+    mp_shim_session_terminalize(&session, second);
+    mp_shim_admission_destroy(&session.admission);
+    return MP_SHIM_OK;
+}
+
+/*
  * The stream's output and its delegate, which are one object here.
  *
  * It holds a counted reference to its session from the moment it adopts one until
@@ -1531,44 +1827,54 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
     /* Each work item pools its own temporaries: without this the pool does not
      * drain between items and the live temporary count grows with the run. */
     @autoreleasepool {
+        mp_shim_status terminal = MP_SHIM_OK;
         @try {
-            [self deliver:sampleBuffer session:session];
+            terminal = [self deliver:sampleBuffer session:session];
         } @catch (NSException *exception) {
             (void)exception;
+            terminal = MP_SHIM_NATIVE_EXCEPTION;
         } @catch (...) {
+            terminal = MP_SHIM_NATIVE_EXCEPTION;
         } @finally {
-            /* Decremented here so a thrown exception cannot strand the fence. */
-            mp_shim_admission_leave(&session->admission);
+            @try {
+                if (terminal != MP_SHIM_OK) {
+                    mp_shim_session_terminalize(session, terminal);
+                }
+            } @finally {
+                /* Decremented here so a thrown exception cannot strand the fence. */
+                mp_shim_admission_leave(&session->admission);
+            }
         }
     }
 }
 
-- (void)deliver:(CMSampleBufferRef)sampleBuffer session:(struct mp_shim_session *)session {
+- (mp_shim_status)deliver:(CMSampleBufferRef)sampleBuffer
+                   session:(struct mp_shim_session *)session {
     const MPShimFramework *framework = mp_shim_capture_framework();
     if (framework == NULL || sampleBuffer == NULL || !CMSampleBufferIsValid(sampleBuffer)) {
-        return;
+        return MP_SHIM_OK;
     }
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
     if (attachments == NULL || CFArrayGetCount(attachments) == 0) {
-        return;
+        return MP_SHIM_OK;
     }
     NSDictionary *attachment =
         (__bridge NSDictionary *)(CFDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
     NSNumber *status = attachment[(__bridge NSString *)framework->key_status];
     if (status == nil || status.integerValue != MPShimFrameStatusComplete) {
-        return;
+        return MP_SHIM_OK;
     }
 
     CVImageBufferRef image = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (image == NULL || CVPixelBufferGetPixelFormatType(image) != kCVPixelFormatType_32BGRA) {
-        return;
+        return MP_SHIM_OK;
     }
 
     CGRect content = CGRectNull;
     NSDictionary *rect = attachment[(__bridge NSString *)framework->key_content_rect];
     if (rect == nil ||
         !CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)rect, &content)) {
-        return;
+        return MP_SHIM_OK;
     }
     NSNumber *scale_factor = attachment[(__bridge NSString *)framework->key_scale_factor];
     NSNumber *content_scale = framework->key_content_scale == NULL
@@ -1576,8 +1882,10 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
                                   : attachment[(__bridge NSString *)framework->key_content_scale];
     double factor = scale_factor == nil ? 1.0 : scale_factor.doubleValue;
     double scale = content_scale == nil ? 1.0 : content_scale.doubleValue;
-    if (!isfinite(factor) || factor <= 0.0 || !isfinite(scale) || scale <= 0.0) {
-        return;
+    double effective_scale = factor * scale;
+    if (!isfinite(factor) || factor <= 0.0 || !isfinite(scale) || scale <= 0.0 ||
+        !isfinite(effective_scale) || effective_scale <= 0.0) {
+        return MP_SHIM_OK;
     }
 
     size_t surface_width = CVPixelBufferGetWidth(image);
@@ -1590,7 +1898,7 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
      */
     if (surface_width > MP_SHIM_MAX_PIXEL_EXTENT || surface_height > MP_SHIM_MAX_PIXEL_EXTENT ||
         !mp_shim_surface_within_limit((uint32_t)surface_width, (uint32_t)surface_height)) {
-        return;
+        return MP_SHIM_OK;
     }
     double pixel_width = content.size.width * factor;
     double pixel_height = content.size.height * factor;
@@ -1604,19 +1912,45 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
     if (!isfinite(pixel_width) || !isfinite(pixel_height) || pixel_width < 1.0 ||
         pixel_height < 1.0 || pixel_width > (double)MP_SHIM_MAX_PIXEL_EXTENT ||
         pixel_height > (double)MP_SHIM_MAX_PIXEL_EXTENT) {
-        return;
+        return MP_SHIM_OK;
     }
     double origin_x = floor(content.origin.x * factor);
     double origin_y = floor(content.origin.y * factor);
     if (!isfinite(origin_x) || !isfinite(origin_y) || origin_x < 0.0 || origin_y < 0.0 ||
         origin_x > (double)MP_SHIM_MAX_PIXEL_EXTENT || origin_y > (double)MP_SHIM_MAX_PIXEL_EXTENT) {
-        return;
+        return MP_SHIM_OK;
     }
     uint32_t content_width = (uint32_t)floor(pixel_width);
     uint32_t content_height = (uint32_t)floor(pixel_height);
     if ((size_t)origin_x + content_width > surface_width ||
         (size_t)origin_y + content_height > surface_height) {
-        return;
+        return MP_SHIM_OK;
+    }
+
+    /* `screenRect` is the only placement attached to these exact pixels. A
+     * shareable-content snapshot acquired later is deliberately not substituted.
+     * Missing or contradictory metadata reaches the Rust callback with no valid
+     * flag, where it advances observable drop accounting without publishing. */
+    CGRect screen = CGRectNull;
+    NSDictionary *screen_rect = attachment[(__bridge NSString *)framework->key_screen_rect];
+    bool screen_valid = screen_rect != nil &&
+                        CGRectMakeWithDictionaryRepresentation(
+                            (__bridge CFDictionaryRef)screen_rect, &screen) &&
+                        isfinite(screen.origin.x) && isfinite(screen.origin.y) &&
+                        isfinite(screen.size.width) && isfinite(screen.size.height) &&
+                        screen.size.width > 0.0 && screen.size.height > 0.0 &&
+                        fabs(screen.origin.x) <= MP_SHIM_MAX_DESKTOP_COORDINATE &&
+                        fabs(screen.origin.y) <= MP_SHIM_MAX_DESKTOP_COORDINATE &&
+                        screen.size.width <= (double)MP_SHIM_MAX_PIXEL_EXTENT &&
+                        screen.size.height <= (double)MP_SHIM_MAX_PIXEL_EXTENT;
+    if (screen_valid) {
+        double logical_width = (double)content_width / effective_scale;
+        double logical_height = (double)content_height / effective_scale;
+        /* Less than one logical point allows only the quantization already
+         * introduced by the framework's pixel rectangle. A full point is a real
+         * resize and must not be attached to these pixels. */
+        screen_valid = fabs(logical_width - screen.size.width) < 1.0 &&
+                       fabs(logical_height - screen.size.height) < 1.0;
     }
 
     uint64_t display_time = 0;
@@ -1628,8 +1962,7 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
          * Unconverted it is the same clock the shim reads but roughly forty times
          * too small, which put it a host uptime behind the stream's calibration
          * anchor: every frame's public timestamp collapsed onto the clock origin,
-         * and the gate that holds back frames produced before an observed move
-         * never opened again. */
+         * and every frame's public time collapsed onto the clock origin. */
         display_time = mp_shim_nanos_from_ticks(native_time.unsignedLongLongValue);
     } else {
         /* The presentation timestamp is already in nanoseconds, and measured
@@ -1650,9 +1983,26 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
     info.surface_width = (uint32_t)surface_width;
     info.surface_height = (uint32_t)surface_height;
     info.display_time_nanos = display_time;
-    info.scale_factor = factor * scale;
+    info.scale_factor = effective_scale;
     info.content_origin_x = origin_x;
     info.content_origin_y = origin_y;
+    if (screen_valid) {
+        info.flags |= MP_SHIM_FRAME_INFO_SCREEN_RECT;
+        info.screen_x = screen.origin.x;
+        info.screen_y = screen.origin.y;
+        info.screen_width = screen.size.width;
+        info.screen_height = screen.size.height;
+        if (session->kind == MP_SHIM_TARGET_WINDOW && scale_factor != nil) {
+            uint32_t recommended_width = 0;
+            uint32_t recommended_height = 0;
+            if (mp_shim_recommended_surface(screen.size, factor, &recommended_width,
+                                            &recommended_height)) {
+                info.flags |= MP_SHIM_FRAME_INFO_SURFACE_RECOMMENDATION;
+                info.recommended_surface_width = recommended_width;
+                info.recommended_surface_height = recommended_height;
+            }
+        }
+    }
 
     struct mp_shim_frame borrowed;
     memset(&borrowed, 0, sizeof(borrowed));
@@ -1665,10 +2015,11 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
     if ((session->testing_raise_sites & MP_SHIM_RAISE_BEFORE_CALLBACK) != 0) {
         [NSException raise:@"MPShimInjectedFailure" format:@"before frame callback"];
     }
+    mp_shim_status callback_status = MP_SHIM_OK;
     if (session->frame_callback != NULL) {
         /* No shim lock is held here: invoking a host callback under one is how a
          * deadlock between the producer and a consumer is built. */
-        (void)session->frame_callback(session->callback_context, &borrowed, &info);
+        callback_status = session->frame_callback(session->callback_context, &borrowed, &info);
     }
     /* The borrow ends with the call, so the handle stops being usable here. */
     borrowed.magic = 0;
@@ -1676,6 +2027,20 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
     if ((session->testing_raise_sites & MP_SHIM_RAISE_AFTER_CALLBACK) != 0) {
         [NSException raise:@"MPShimInjectedFailure" format:@"after frame callback returned"];
     }
+    if (callback_status != MP_SHIM_OK) {
+        return callback_status;
+    }
+    /*
+     * The stage callback owns no publication authority. This is deliberately the
+     * last fallible frame operation: a native exception above terminalizes the
+     * session and lets the stopped callback discard the staged frame before any
+     * waiter can observe it. The commit trampoline contains Rust panics and no
+     * framework message follows a successful publication.
+     */
+    if (session->frame_commit_callback != NULL) {
+        return session->frame_commit_callback(session->callback_context);
+    }
+    return MP_SHIM_INVALID_ARGUMENT;
 }
 
 - (void)stream:(id)stream didStopWithError:(NSError *)error {
@@ -1698,17 +2063,7 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
     @try {
         /* The producer has ended. Admission stops before the report, so no frame is
          * admitted after the stop the caller is about to observe. */
-        mp_shim_admission_stop(&session->admission);
-        bool expected = false;
-        if (atomic_compare_exchange_strong(&session->stop_reported, &expected, true) &&
-            session->stopped_callback != NULL) {
-            @try {
-                session->stopped_callback(session->callback_context, mp_shim_error_status(error));
-            } @catch (NSException *exception) {
-                (void)exception;
-            } @catch (...) {
-            }
-        }
+        mp_shim_session_terminalize(session, mp_shim_error_status(error));
     } @finally {
         /* Decremented here so a thrown exception cannot strand the fence. */
         mp_shim_admission_leave(&session->admission);
@@ -1721,60 +2076,6 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 
 static bool mp_shim_session_valid(const struct mp_shim_session *session) {
     return session != NULL && session->magic == MP_SHIM_SESSION_MAGIC;
-}
-
-/*
- * Finds the window or display the request names, in a snapshot of its own.
- *
- * A window is matched on its owner as well as its number. The number alone does not
- * name an incarnation, because macOS recycles it: an application that closes a window
- * and opens another can be handed the same number, and matching on the number alone
- * then captures a window the caller never asked for — another application's, if the
- * number crossed processes. The caller records the owner for exactly this reason and
- * cannot enforce it here, because this open queries the shareable content again
- * rather than reusing what the caller validated.
- *
- * Both sides of that comparison are known to be a real process: discovery lists no
- * window whose owner the framework did not name, and the request validation refuses a
- * non-positive owner. Without both, two windows whose owners were equally unknown
- * compared equal and the match proved nothing.
- */
-static id mp_shim_find_native_target(const MPShimFramework *framework, uint32_t kind,
-                                     uint64_t native_id, int64_t owner_process,
-                                     uint64_t timeout_nanos, mp_shim_status *out_status) {
-    id content = mp_shim_shareable_content(framework, timeout_nanos, out_status);
-    if (content == nil) {
-        return nil;
-    }
-    id<MPShimShareableContent> shareable_content = (id<MPShimShareableContent>)content;
-    if (kind == MP_SHIM_TARGET_WINDOW) {
-        for (id window in shareable_content.windows) {
-            id<MPShimWindow> typed = (id<MPShimWindow>)window;
-            if (typed.windowID != (uint32_t)native_id) {
-                continue;
-            }
-            id owner = typed.owningApplication;
-            int64_t owned_by =
-                owner == nil ? 0 : (int64_t)((id<MPShimRunningApplication>)owner).processID;
-            if (owned_by == owner_process) {
-                *out_status = MP_SHIM_OK;
-                return window;
-            }
-            /* The number matched and the owner did not, so this is a different
-             * incarnation rather than the target that was asked for. */
-            *out_status = MP_SHIM_TARGET_LOST;
-            return nil;
-        }
-    } else {
-        for (id display in shareable_content.displays) {
-            if (((id<MPShimDisplay>)display).displayID == (CGDirectDisplayID)native_id) {
-                *out_status = MP_SHIM_OK;
-                return display;
-            }
-        }
-    }
-    *out_status = MP_SHIM_TARGET_LOST;
-    return nil;
 }
 
 /*
@@ -1813,7 +2114,12 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     }
     *out = NULL;
     if (request == NULL || request->struct_size < sizeof(mp_shim_open_request) ||
-        request->frame_callback == NULL || request->pixel_width == 0 ||
+        request->frame_callback == NULL || request->frame_commit_callback == NULL ||
+        request->target == NULL ||
+        request->target->magic != MP_SHIM_TARGET_MAGIC || request->target->filter == NULL ||
+        request->target->kind != request->kind ||
+        request->target->native_id != request->native_id ||
+        request->target->owner_process != request->owner_process || request->pixel_width == 0 ||
         request->pixel_height == 0 || request->pixel_width > MP_SHIM_MAX_PIXEL_EXTENT ||
         request->pixel_height > MP_SHIM_MAX_PIXEL_EXTENT ||
         !mp_shim_surface_within_limit(request->pixel_width, request->pixel_height) ||
@@ -1847,25 +2153,9 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
      * them. Ownership moves into the session struct only after the last failure
      * point, which is what makes the failure path leak nothing.
      */
-    mp_shim_status located = MP_SHIM_PLATFORM_FAILURE;
-    id target = mp_shim_find_native_target(framework, request->kind, request->native_id,
-                                           request->owner_process, request->timeout_nanos, &located);
-    if (target == nil) {
-        return located;
-    }
-
-    id<MPShimContentFilterInit> filter = nil;
-    if (request->kind == MP_SHIM_TARGET_WINDOW) {
-        filter = [(id<MPShimContentFilterInit>)[framework->content_filter alloc]
-            initWithDesktopIndependentWindow:target];
-    } else {
-        filter = [(id<MPShimContentFilterInit>)[framework->content_filter alloc]
-              initWithDisplay:target
-             excludingWindows:@[]];
-    }
-    if (filter == nil) {
-        return MP_SHIM_PLATFORM_FAILURE;
-    }
+    /* The originating inventory already constructed this exact filter. No fresh
+     * wrapper, numeric identifier, or process lookup is consulted here. */
+    id<MPShimContentFilterInit> filter = (__bridge id)request->target->filter;
 
     id<MPShimStreamConfiguration> configuration = [[framework->stream_configuration alloc] init];
     if (configuration == nil) {
@@ -1910,6 +2200,9 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     atomic_store(&session->refs, 1u);
     mp_shim_admission_init(&session->admission);
     mp_shim_start_gate_init(&session->start_gate);
+    mp_shim_stop_gate_init(&session->stop_gate);
+    pthread_mutex_init(&session->close_mutex, NULL);
+    pthread_cond_init(&session->close_idle, NULL);
     pthread_mutex_init(&session->native_mutex, NULL);
     pthread_mutex_init(&session->pool_mutex, NULL);
     session->kind = request->kind;
@@ -1917,12 +2210,20 @@ mp_shim_status mp_shim_session_open(const mp_shim_open_request *request, mp_shim
     session->detached_budget = request->detached_budget;
     session->callback_context = request->callback_context;
     session->frame_callback = request->frame_callback;
+    session->frame_commit_callback = request->frame_commit_callback;
     session->stopped_callback = request->stopped_callback;
     session->testing_raise_sites = request->testing_raise_sites;
+    session->testing_start_delay_nanos = request->testing_start_delay_nanos;
+    session->testing_stop_delay_nanos = request->testing_stop_delay_nanos;
     atomic_store(&session->output_added, false);
     atomic_store(&session->started, false);
+    atomic_store(&session->closing, false);
     atomic_store(&session->closed, false);
     atomic_store(&session->stop_reported, false);
+    session->close_active = false;
+    session->close_phase = MP_SHIM_CLOSE_START;
+    session->close_error = MP_SHIM_OK;
+    session->close_error_reported = false;
 
     NSError *output_error = nil;
     BOOL added = NO;
@@ -1975,7 +2276,7 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
     if (!mp_shim_session_valid(session)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
-    if (atomic_load(&session->closed)) {
+    if (atomic_load(&session->closing) || atomic_load(&session->closed)) {
         return MP_SHIM_CLOSED;
     }
     MP_SHIM_BEGIN
@@ -2005,8 +2306,9 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
        * anywhere above it — which is an abort rather than a status. The signal and the
        * gate are owed whatever happens, so they are settled in @finally; a waiter that
        * never received either would block to its own timeout for no reason.
-       */
+      */
       @try {
+          mp_shim_testing_delay(session->testing_start_delay_nanos);
           failure = error;
           if (error == nil) {
               atomic_store(&session->started, true);
@@ -2020,27 +2322,8 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
           (void)exception;
       } @catch (...) {
       } @finally {
-          bool orphaned = mp_shim_start_gate_end(&session->start_gate);
-          @try {
-              /*
-               * Ordinarily close is waiting on the gate just settled and owns the stop,
-               * which is what lets it report the outcome. This branch is the case where
-               * close could not wait that long: nothing else is tracking the producer,
-               * so it is stopped here, and this stop's own failure has no caller left to
-               * receive it.
-               */
-              if (orphaned && atomic_load(&session->started)) {
-                  [stream stopCaptureWithCompletionHandler:^(NSError *stopped) {
-                    (void)stopped;
-                  }];
-                  atomic_store(&session->started, false);
-              }
-          } @catch (NSException *exception) {
-              (void)exception;
-          } @catch (...) {
-          } @finally {
-              dispatch_semaphore_signal(ready);
-          }
+          mp_shim_start_gate_end(&session->start_gate);
+          dispatch_semaphore_signal(ready);
       }
     };
     /* Declared in flight before the message, so a close racing this start joins it
@@ -2056,7 +2339,7 @@ mp_shim_status mp_shim_session_start(mp_shim_session *session, uint64_t timeout_
          * settling twice is harmless, which is the difference from the session reference
          * this block also holds: that one is counted, so a second drop would be a free.
          */
-        (void)mp_shim_start_gate_end(&session->start_gate);
+        mp_shim_start_gate_end(&session->start_gate);
         @throw;
     }
     mp_shim_status waited = mp_shim_wait(ready, timeout_nanos);
@@ -2082,7 +2365,7 @@ mp_shim_status mp_shim_session_reconfigure(mp_shim_session *session, uint32_t pi
         !mp_shim_surface_within_limit(pixel_width, pixel_height)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
-    if (atomic_load(&session->closed)) {
+    if (atomic_load(&session->closing) || atomic_load(&session->closed)) {
         return MP_SHIM_CLOSED;
     }
     MP_SHIM_BEGIN
@@ -2136,162 +2419,192 @@ mp_shim_status mp_shim_session_close(mp_shim_session *session, uint64_t timeout_
     if (!mp_shim_session_valid(session)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
-    bool expected = false;
-    if (!atomic_compare_exchange_strong(&session->closed, &expected, true)) {
-        /* Idempotent: a later close finds the release already done. */
+    uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t deadline = began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
+    bool complete = false;
+    mp_shim_status claimed = mp_shim_close_claim(session, deadline, &complete);
+    if (claimed != MP_SHIM_OK) {
+        return claimed;
+    }
+    if (complete) {
         return MP_SHIM_OK;
+    }
+    atomic_store(&session->closing, true);
+    mp_shim_admission_stop(&session->admission);
+
+    while (session->close_phase != MP_SHIM_CLOSE_COMPLETE) {
+        uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
+        uint64_t remaining = now >= deadline ? 0 : deadline - now;
+        if (remaining == 0 && session->close_phase != MP_SHIM_CLOSE_RELEASE) {
+            mp_shim_close_release(session);
+            return MP_SHIM_TIMED_OUT;
+        }
+
+        if (session->close_phase == MP_SHIM_CLOSE_START) {
+            mp_shim_status settled = mp_shim_start_gate_wait(&session->start_gate, remaining);
+            if (settled == MP_SHIM_TIMED_OUT) {
+                mp_shim_close_release(session);
+                return settled;
+            }
+            if (settled != MP_SHIM_OK && session->close_error == MP_SHIM_OK) {
+                session->close_error = settled;
+            }
+            session->close_phase = MP_SHIM_CLOSE_OUTPUT;
+            continue;
+        }
+
+        id<MPShimStream> stream = mp_shim_session_copy_stream(session);
+        if (session->close_phase == MP_SHIM_CLOSE_OUTPUT) {
+            id output = mp_shim_session_copy_slot(session, &session->output);
+            if (stream != nil && atomic_load(&session->output_added)) {
+                @try {
+                    NSError *removed = nil;
+                    if (![stream removeStreamOutput:output
+                                              type:MPShimStreamOutputTypeScreen
+                                             error:&removed] &&
+                        session->close_error == MP_SHIM_OK) {
+                        session->close_error = mp_shim_error_status(removed);
+                    }
+                } @catch (NSException *exception) {
+                    (void)exception;
+                    if (session->close_error == MP_SHIM_OK) {
+                        session->close_error = MP_SHIM_NATIVE_EXCEPTION;
+                    }
+                } @catch (...) {
+                    if (session->close_error == MP_SHIM_OK) {
+                        session->close_error = MP_SHIM_NATIVE_EXCEPTION;
+                    }
+                }
+                atomic_store(&session->output_added, false);
+            }
+            session->close_phase = MP_SHIM_CLOSE_STOP;
+            continue;
+        }
+
+        if (session->close_phase == MP_SHIM_CLOSE_STOP) {
+            if (stream != nil && atomic_load(&session->started) &&
+                !mp_shim_stop_gate_pending(&session->stop_gate)) {
+                mp_shim_stop_gate_begin(&session->stop_gate);
+                @try {
+                    MPShimSessionHold *hold = [[MPShimSessionHold alloc] initWithSession:session];
+                    if (hold == nil) {
+                        mp_shim_stop_gate_end(&session->stop_gate, MP_SHIM_PLATFORM_FAILURE);
+                    } else {
+                        [stream stopCaptureWithCompletionHandler:^(NSError *error) {
+                          (void)hold;
+                          mp_shim_complete_stop(
+                              &session->stop_gate, &session->started, error,
+                              session->testing_stop_delay_nanos,
+                              (session->testing_raise_sites &
+                               MP_SHIM_RAISE_IN_STOP_COMPLETION) != 0);
+                        }];
+                    }
+                } @catch (NSException *exception) {
+                    (void)exception;
+                    mp_shim_stop_gate_end(&session->stop_gate, MP_SHIM_NATIVE_EXCEPTION);
+                } @catch (...) {
+                    mp_shim_stop_gate_end(&session->stop_gate, MP_SHIM_NATIVE_EXCEPTION);
+                }
+            }
+            mp_shim_status stopped = mp_shim_stop_gate_wait(&session->stop_gate, remaining);
+            if (stopped == MP_SHIM_TIMED_OUT) {
+                mp_shim_close_release(session);
+                return stopped;
+            }
+            if (stopped != MP_SHIM_OK && stopped != MP_SHIM_CLOSED &&
+                stopped != MP_SHIM_STOPPED_BY_USER && stopped != MP_SHIM_STOPPED_BY_SYSTEM &&
+                session->close_error == MP_SHIM_OK) {
+                session->close_error = stopped;
+            }
+            session->close_phase = MP_SHIM_CLOSE_FENCE;
+            continue;
+        }
+
+        if (session->close_phase == MP_SHIM_CLOSE_FENCE) {
+            mp_shim_status fenced = mp_shim_admission_fence(&session->admission, remaining);
+            if (fenced == MP_SHIM_TIMED_OUT) {
+                mp_shim_close_release(session);
+                return fenced;
+            }
+            if (fenced != MP_SHIM_OK && session->close_error == MP_SHIM_OK) {
+                session->close_error = fenced;
+            }
+            session->close_phase = MP_SHIM_CLOSE_RELEASE;
+            continue;
+        }
+
+        /* Release is non-blocking and always runs to completion once entered. */
+        if ((session->testing_raise_sites & MP_SHIM_RAISE_AT_TEARDOWN) != 0) {
+            @try {
+                [NSException raise:@"MPShimInjectedFailure" format:@"teardown"];
+            } @catch (NSException *exception) {
+                (void)exception;
+                if (session->close_error == MP_SHIM_OK) {
+                    session->close_error = MP_SHIM_NATIVE_EXCEPTION;
+                }
+            } @catch (...) {
+                if (session->close_error == MP_SHIM_OK) {
+                    session->close_error = MP_SHIM_NATIVE_EXCEPTION;
+                }
+            }
+        }
+
+        CFTypeRef released[5];
+        pthread_mutex_lock(&session->native_mutex);
+        released[0] = session->stream;
+        released[1] = session->output;
+        released[2] = session->configuration;
+        released[3] = session->filter;
+        released[4] = session->queue;
+        session->stream = NULL;
+        session->output = NULL;
+        session->configuration = NULL;
+        session->filter = NULL;
+        session->queue = NULL;
+        pthread_mutex_unlock(&session->native_mutex);
+        for (size_t slot = 0; slot < 5; slot += 1) {
+            if (released[slot] == NULL) {
+                continue;
+            }
+            @try {
+                CFRelease(released[slot]);
+                mp_shim_note_released();
+            } @catch (NSException *exception) {
+                (void)exception;
+                if (session->close_error == MP_SHIM_OK) {
+                    session->close_error = MP_SHIM_NATIVE_EXCEPTION;
+                }
+            } @catch (...) {
+                if (session->close_error == MP_SHIM_OK) {
+                    session->close_error = MP_SHIM_NATIVE_EXCEPTION;
+                }
+            }
+        }
+        pthread_mutex_lock(&session->pool_mutex);
+        @try {
+            mp_shim_pool_release_locked(session);
+        } @catch (NSException *exception) {
+            (void)exception;
+            if (session->close_error == MP_SHIM_OK) {
+                session->close_error = MP_SHIM_NATIVE_EXCEPTION;
+            }
+        } @catch (...) {
+            if (session->close_error == MP_SHIM_OK) {
+                session->close_error = MP_SHIM_NATIVE_EXCEPTION;
+            }
+        } @finally {
+            pthread_mutex_unlock(&session->pool_mutex);
+        }
+        session->close_phase = MP_SHIM_CLOSE_COMPLETE;
+        atomic_store(&session->closed, true);
     }
 
     mp_shim_status reported = MP_SHIM_OK;
-    @try {
-        mp_shim_admission_stop(&session->admission);
-        /*
-         * A start still in flight is joined before anything is decided about the
-         * producer. Without this, a start that outlived its own caller's wait settled
-         * after teardown had finished: the outcome arrived with open already returned
-         * and the fence already succeeded, so there was no status and no callback left
-         * to carry it, and the corrective stop it had to perform itself could fail
-         * silently. Waiting here is what puts that outcome inside a close the caller is
-         * holding, so `started` below is read settled rather than raced.
-         *
-         * Returns at once when no start is in flight, which is every ordinary close.
-         */
-        mp_shim_status settled = mp_shim_start_gate_wait(&session->start_gate, timeout_nanos);
-        if (settled != MP_SHIM_OK) {
-            reported = settled;
-        }
-        id<MPShimStream> stream = mp_shim_session_copy_stream(session);
-        id output = mp_shim_session_copy_slot(session, &session->output);
-
-        if (stream != nil && atomic_load(&session->output_added)) {
-            NSError *removed = nil;
-            if (![stream removeStreamOutput:output
-                                      type:MPShimStreamOutputTypeScreen
-                                     error:&removed]) {
-                reported = mp_shim_error_status(removed);
-            }
-            atomic_store(&session->output_added, false);
-        }
-
-        if (stream != nil && atomic_load(&session->started)) {
-            __block NSError *failure = nil;
-            dispatch_semaphore_t ready = dispatch_semaphore_create(0);
-            [stream stopCaptureWithCompletionHandler:^(NSError *error) {
-              failure = error;
-              dispatch_semaphore_signal(ready);
-            }];
-            mp_shim_status waited = mp_shim_wait(ready, timeout_nanos);
-            if (waited != MP_SHIM_OK) {
-                reported = waited;
-            } else if (failure != nil) {
-                mp_shim_status status = mp_shim_error_status(failure);
-                /* A producer that has already stopped — because it was already in
-                 * that state, or because the user or the system ended it first — is
-                 * not a failure of the close the caller asked for. */
-                if (status != MP_SHIM_CLOSED && status != MP_SHIM_STOPPED_BY_USER &&
-                    status != MP_SHIM_STOPPED_BY_SYSTEM) {
-                    reported = status;
-                }
-            }
-            atomic_store(&session->started, false);
-        }
-
-        mp_shim_status fenced = mp_shim_admission_fence(&session->admission, timeout_nanos);
-        if (fenced != MP_SHIM_OK && reported == MP_SHIM_OK) {
-            reported = fenced;
-        }
-        /*
-         * The output object's session pointer is deliberately left alone. Clearing it
-         * here is what this used to do, and it protected nothing: a callback that has
-         * already read the pointer holds the address whatever this writes afterwards.
-         * The object holds a counted reference instead, so the fence above is what
-         * makes it safe for the caller to release its own state, and the release
-         * below is what lets the object — and with it that reference — go.
-         */
-
-        if ((session->testing_raise_sites & MP_SHIM_RAISE_AT_TEARDOWN) != 0) {
-            [NSException raise:@"MPShimInjectedFailure" format:@"teardown"];
-        }
-    } @catch (NSException *exception) {
-        (void)exception;
-        reported = MP_SHIM_NATIVE_EXCEPTION;
-    } @catch (...) {
-        reported = MP_SHIM_NATIVE_EXCEPTION;
-    } @finally {
-        /*
-         * Release runs here so a cleanup failure is reported without costing the
-         * cleanup. The order is the stream, then the objects it was built from,
-         * then the queue that delivered to it, then the detached pool.
-         *
-         * The slots are emptied under `native_mutex` and released after it, never
-         * under it. Two reasons, and the second is the sharper one: a read-and-retain
-         * elsewhere must not see a slot whose object this has already released, and
-         * releasing the output object here runs its `dealloc`, which drops the
-         * session reference it holds — so holding the mutex across that release would
-         * be holding a mutex that the last reference destroys.
-         *
-         * Its own handlers, because an exception raised inside a @finally is not
-         * caught by the @catch pair belonging to the same @try — it leaves the
-         * function. This entry point opens a bare @try rather than MP_SHIM_BEGIN, so
-         * nothing outside would catch it either, and a raise while releasing a bridged
-         * framework object would cross the boundary that ADR 0012 rule 1 exists to
-         * close.
-         */
-        @try {
-            CFTypeRef released[5];
-            pthread_mutex_lock(&session->native_mutex);
-            released[0] = session->stream;
-            released[1] = session->output;
-            released[2] = session->configuration;
-            released[3] = session->filter;
-            released[4] = session->queue;
-            session->stream = NULL;
-            session->output = NULL;
-            session->configuration = NULL;
-            session->filter = NULL;
-            session->queue = NULL;
-            pthread_mutex_unlock(&session->native_mutex);
-
-            for (size_t slot = 0; slot < 5; slot += 1) {
-                if (released[slot] == NULL) {
-                    continue;
-                }
-                /*
-                 * Each release carries its own handler. One shared handler let a raise
-                 * from the first release skip the four after it and the pool below —
-                 * and because the slots are emptied above, nothing could reach those
-                 * objects again afterwards, so the ownership cycle with the stream
-                 * output would never be broken and no later close could retry.
-                 *
-                 * The count is noted only where the release returned. A release that
-                 * raised may have left the object alive, and reporting it as gone
-                 * would be the ownership scenarios agreeing with a leak.
-                 */
-                @try {
-                    CFRelease(released[slot]);
-                    mp_shim_note_released();
-                } @catch (NSException *exception) {
-                    (void)exception;
-                    reported = MP_SHIM_NATIVE_EXCEPTION;
-                } @catch (...) {
-                    reported = MP_SHIM_NATIVE_EXCEPTION;
-                }
-            }
-
-            pthread_mutex_lock(&session->pool_mutex);
-            /* Unlocked in @finally for the reason mp_shim_pool_acquire is. */
-            @try {
-                mp_shim_pool_release_locked(session);
-            } @finally {
-                pthread_mutex_unlock(&session->pool_mutex);
-            }
-        } @catch (NSException *exception) {
-            (void)exception;
-            reported = MP_SHIM_NATIVE_EXCEPTION;
-        } @catch (...) {
-            reported = MP_SHIM_NATIVE_EXCEPTION;
-        }
+    if (!session->close_error_reported && session->close_error != MP_SHIM_OK) {
+        session->close_error_reported = true;
+        reported = session->close_error;
     }
+    mp_shim_close_release(session);
     return reported;
 }
 
@@ -2305,7 +2618,19 @@ void mp_shim_session_release(mp_shim_session *session) {
      * so a release that skipped the close would leak both rather than freeing either.
      */
     if (!atomic_load(&session->closed)) {
-        (void)mp_shim_session_close(session, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+        mp_shim_status closed = mp_shim_session_close(session, MP_SHIM_DEFAULT_TIMEOUT_NANOS);
+        if (closed == MP_SHIM_TIMED_OUT) {
+            /* A void release has no caller operation to wait under. Preserve the
+             * incomplete phase in a bounded Drop quarantine instead of releasing
+             * native state underneath its completion. */
+            mp_shim_session_retain(session);
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+              while (mp_shim_session_close(session, MP_SHIM_DEFAULT_TIMEOUT_NANOS) ==
+                     MP_SHIM_TIMED_OUT) {
+              }
+              mp_shim_session_unref(session);
+            });
+        }
     }
     /* Drops the handle's reference. A frame the caller still holds, or a callback
      * still in flight, keeps the allocation alive past this point. */

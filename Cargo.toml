@@ -31,8 +31,9 @@ repository = "https://github.com/pashifika/mado-pilot"
 [workspace.dependencies]
 # Compiles the macOS Objective-C shim. `cc` was already an indirect build
 # dependency of the workspace through the OpenCV binding generator, so the macOS
-# adapter adds an edge rather than a crate. The consuming package places it behind
-# cfg(target_os = "macos"), so no Windows build resolves it.
+# adapter adds an edge rather than a crate. Its package declares that edge under
+# unconditional `[build-dependencies]`; `build.rs` gates shim compilation and
+# Apple framework link directives on a macOS target.
 # See docs/adr/0012-macos-shim-language-and-containment.md.
 cc = "1.4.0"
 serde = { version = "1.0.228", features = ["derive"] }
