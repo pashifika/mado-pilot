@@ -56,7 +56,7 @@
 //! | Session closed | [`Status::Closed`] |
 //! | Capture failed | [`Status::CaptureFailed`] |
 //! | Asset package refused | [`Status::AssetInvalid`] |
-//! | A documented asset ceiling would have been exceeded, or a counter reached its end: geometry revisions, stream epochs, frame sequence numbers, or the identity space | [`Status::LimitExceeded`] |
+//! | A documented capture-resource or asset ceiling would have been exceeded, or a counter reached its end: geometry revisions, stream epochs, frame sequence numbers, or the identity space | [`Status::LimitExceeded`] |
 //! | Matching backend unavailable or failed | [`Status::VisionFailed`] |
 //! | An invariant this implementation is responsible for did not hold | [`Status::Internal`] |
 //!
@@ -264,12 +264,12 @@ pub use mado_pilot_runtime::{
     FrameDescriptor, FrameOrder, FrameRequest, FrameSelection, FrameSequence, FrameStamp,
     FrameView, GeometryFault, GeometryRevision, IdentityFault, Interruption, LoadStage, Manifest,
     Match, MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage, MonotonicInstant,
-    OpenRequest, OperationContext, PackagePath, PackageSource, PixelExtent, PixelFormat, PixelRect,
-    Point, PreparedTemplate, Provenance, ProviderId, Rect, RegionSelection, Result, Scale,
-    SearchFrame, Session, SessionDescription, Status, StreamEpoch, StreamId, Suppression,
-    SystemClock, TargetDescription, TargetId, TargetPlacement, TemplateDeclaration,
-    TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest, TransformSnapshot,
-    VisionFault,
+    OpenRequest, OperationContext, OverflowPolicy, PackagePath, PackageSource, PixelExtent,
+    PixelFormat, PixelRect, Point, PreparedTemplate, Provenance, ProviderId, QueuePolicy, Rect,
+    RegionSelection, Result, RetainedStoragePolicy, Scale, SearchFrame, Session,
+    SessionDescription, Status, StreamEpoch, StreamId, Suppression, SystemClock, TargetDescription,
+    TargetId, TargetPlacement, TemplateDeclaration, TemplateEncoding, TemplateId, TemplateSource,
+    TemplateSourceRequest, TransformSnapshot, VisionFault,
 };
 
 /// The asset vocabulary's three module-level constants, qualified.

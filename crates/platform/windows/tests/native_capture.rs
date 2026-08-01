@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use mado_pilot_capture::{
     CaptureProvider, DiscoveryRequest, FrameRequest, OpenRequest, PixelFormat,
+    RetainedStoragePolicy,
 };
 use mado_pilot_core::{FrameSequence, IdentityIssuer, OperationContext, Status, TargetKind};
 use mado_pilot_platform_windows::{PROVIDER, WindowsCaptureProvider};
@@ -360,6 +361,11 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
             .map(|value| value.get()),
         Some(40)
     );
+    assert_eq!(
+        session.description().queue().retained_storage_policy(),
+        Some(RetainedStoragePolicy::ProcessShared),
+        "the 40-allocation local maximum shares the process byte budget"
+    );
 
     let first = session
         .frame(&FrameRequest::latest(), &timed())
@@ -459,7 +465,7 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
             &OpenRequest::new().require_format(PixelFormat::Bgra8),
             &timed(),
         )
-        .expect_err("the provider rejects and reclaims its lost live record");
+        .expect_err("the provider rejects its lost retained selection");
     assert_eq!(stale.status(), Status::TargetLost);
     let reclaimed = provider
         .open(
@@ -467,22 +473,12 @@ fn synthetic_window_exercises_retention_resize_loss_and_close() {
             &OpenRequest::new().require_format(PixelFormat::Bgra8),
             &timed(),
         )
-        .expect_err("an accepted identity absent after reclamation stays lost");
+        .expect_err("the same retained selection stays lost");
     assert_eq!(reclaimed.status(), Status::TargetLost);
     let registry_after_reclamation = provider_registry_counts(&provider);
     assert_eq!(
-        registry_after_reclamation,
-        (
-            registry_before_loss
-                .0
-                .checked_sub(1)
-                .expect("the live target was registered"),
-            registry_before_loss
-                .1
-                .checked_sub(1)
-                .expect("the live native key was registered"),
-        ),
-        "stale open removes exactly its native record instead of retaining a tombstone"
+        registry_after_reclamation, registry_before_loss,
+        "lost selections remain only for the finite current/previous generation lease"
     );
 
     session.close(&close_timed()).expect("first close");
@@ -524,7 +520,7 @@ fn provider_registry_counts(provider: &WindowsCaptureProvider) -> (usize, usize)
     let debug = format!("{provider:?}");
     (
         debug_count(&debug, "known_targets"),
-        debug_count(&debug, "current_targets"),
+        debug_count(&debug, "retained_generations"),
     )
 }
 

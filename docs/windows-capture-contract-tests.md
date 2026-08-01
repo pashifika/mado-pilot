@@ -22,13 +22,17 @@ drop counters, but Windows or D3D11 types must not enter `mado-pilot-core`,
 
 | Concern | Controlled evidence |
 |---|---|
-| Picker-free discovery, deterministic concurrent commit order, provider identity, required format | `open_validation_and_discovery_share_one_snapshot_order`, other `crates/platform/windows/src/provider.rs` unit tests, and `crates/platform/windows/tests/native_capture.rs` |
-| Replacement identity and bounded live-registry history | `a_changed_native_fingerprint_never_reuses_the_target_identity`, `an_absent_identity_accepted_by_this_provider_is_conservatively_lost`, and the synthetic replacement-window path |
+| Picker-free discovery, staged final arbitration, deterministic concurrent commit order, provider identity, required format | `r1_1_deadline_at_final_arbitration_leaves_all_registry_state_unchanged`, `discovery_snapshots_commit_in_query_order`, other `crates/platform/windows/src/provider.rs` unit tests, and `crates/platform/windows/tests/native_capture.rs` |
+| Replacement identity and bounded current/previous generations | `r1_4_identical_raw_identity_with_a_fresh_lifetime_never_retargets_the_old_id`, `an_absent_identity_accepted_by_this_provider_is_conservatively_lost`, and the synthetic replacement-window path |
 | Producer detachment, finite pressure, lease-safe reuse, resize retirement | `crates/automation/capture/tests/native_storage.rs` and `crates/platform/windows/src/storage.rs` unit tests |
+| Checked surface and retained-byte bounds | `r1_2_surface_axes_and_bytes_accept_the_exact_boundary_and_reject_one_over`, `r1_2_surface_and_mapping_multiplication_overflow_is_typed_before_allocation`, `r1_2_production_limits_admit_the_exact_4k_retention_and_mapping_workload`, `r1_2_reported_capacity_is_truthful_for_4k_and_reduced_for_8k`, `r1_2_derived_4k_capacity_admits_first_and_fortieth_then_refuses_forty_one`, `r1_2_derived_8k_capacity_admits_the_first_and_twelfth_then_refuses_thirteen`, `r1_2_production_session_and_global_limits_are_exact_and_shared`, `r1_2_production_multi_session_description_matches_shared_pressure_and_resume`, `r1_2_mapping_budget_follows_pixels_that_outlive_the_session_owner`, `r1_2_process_shared_mapping_stays_charged_after_session_close_until_pixels_release`, and the resize budget-release assertion |
+| Pressure/discontinuity precedence | `finite_path_drop_debt_survives_discontinuities_until_a_gap_can_represent_it` preserves two drops through two `FIRST` epochs, `unrepresentable_drop_debt_neither_wraps_nor_disappears_at_a_discontinuity` proves checked refusal retains debt, and `r1_2_production_multi_session_description_matches_shared_pressure_and_resume` covers production shared-budget refusal, resize/release, the new epoch's `FIRST`, and the next legal pressure-visible publication |
+| Producer reservation and native teardown lifetime | `r1_2_producer_reservation_stays_with_queued_native_ownership_until_close`, `r1_2_producer_reservation_stays_charged_in_quarantine`, and `r1_2_resize_replaces_producer_reservation_only_after_native_success` use the production native-owner seam to hold queue/quarantine ownership and exercise failed/successful replacement |
+| Capacity-one latest-wins handoff | `r1_3_declared_latest_wins_matches_two_publications_before_observation` publishes twice before observation and checks the returned bytes, sequence, and absence of an invented producer-drop gap |
 | Aliasing negative control | `the_retained_byte_oracle_rejects_an_overwriting_two_slot_ring` intentionally overwrites a two-slot ring and proves the retained-byte oracle rejects it |
 | Callback admission fence, post-drain native-end decision, and retry after cancellation | `callback_fence_is_retryable_after_cancelled_drain`, `native_end_state_is_sampled_after_the_admitted_callback_drain`, and `authoritative_native_end_latches_after_owner_admission_stops` |
 | Bounded implicit teardown and initialized cross-thread apartment | `teardown_executor_starts_only_the_fixed_worker_count`, `cancelled_waiters_share_one_in_flight_teardown_generation`, `teardown_queue_is_finite_and_non_blocking`, `teardown_permits_bound_live_and_queued_session_ownership`, `teardown_start_observes_operation_cancellation_before_spawning`, `uninterruptible_drop_drain_waits_for_an_admitted_callback`, both injected startup-failure tests, and native cross-thread close and implicit-drop paths |
-| Lazy mapping, exact byte length, device-terminal commit fence, retained lifetime | `device_terminal_cancels_a_cache_assignment_before_it_becomes_visible`, `crates/automation/capture/tests/native_storage.rs`, and the synthetic-window native test |
+| Lazy mapping, exact byte length, retained byte lease, device-terminal commit fence, retained lifetime | `r1_2_mapping_budget_follows_pixels_that_outlive_the_session_owner`, `device_terminal_cancels_a_cache_assignment_before_it_becomes_visible`, `crates/automation/capture/tests/native_storage.rs`, and the synthetic-window native test |
 | Resize identity and old-storage survival | `a_native_frame_correlates_to_the_geometry_it_was_captured_under` plus the synthetic-window native test |
 | Precalibrated WGC time and signed mixed-DPI geometry | `native_frame_times_use_the_precalibrated_project_clock`, `signed_mixed_dpi_placement_preserves_virtual_screen_coordinates`, `differently_scaled_adjacent_monitors_share_one_desktop_seam`, and the synthetic-window movement case |
 | Access, capture-item close, disconnect, removal, and reset classification | `native_target_faults_are_normalized_by_target_kind`, `native_device_and_lifecycle_errors_are_typed`, and the controlled target-close path |
@@ -68,11 +72,12 @@ assertions name only the test-owned fixture and typed outcomes.
 | Callback boundary | Test hooks prove the callback performs only acquire, validate, copy, account, enqueue, and release; mapping, waits, backends, and host callbacks fail the test if invoked there |
 | Resize transition | The first changed-content-size frame is not published; the new pool uses the new size and advances geometry revision once |
 | Old resize generation | Retained old-size frames and mappings complete under their old revision while unused incompatible textures retire |
+| Pressure before resize | A discontinuous publication starts its new epoch at `FIRST` and therefore preserves all pending pressure debt; repeated discontinuities preserve it, and the first later non-discontinuous publication consumes it only by committing the checked same-epoch sequence gap |
 | Close admission fence | Both native handlers use lifetime-independent shared state; owner detachment and admission are synchronized; no callback is admitted to the owner after the fence; a delegate deliberately paused before admission is rejected safely after close |
 | Idempotent close | Concurrent and repeated close calls converge on one terminal state without double release or a host callback under a lock; native teardown runs on a fixed shared worker pool whose apartments and global ownership permits are established before open, startup failures are typed and retryable, and explicit close remains bounded by its operation deadline |
 | Target loss | Loss stops admission, reports the typed terminal outcome, and does not mutate retained frames |
 | Device removal/reset | Admission stops, the typed device outcome terminates the session, no late callback publishes or mapping state commits, and teardown remains bounded |
-| Resource bound | WGC frames never exceed two; detached and staging resources never exceed their configured bounds; every counter reaches zero after final release |
+| Resource bound | WGC frames never exceed two; a surface stays within 16,384 per axis and 128 MiB; detached, staging, and mapped ownership stays within 2 GiB per session and 4 GiB process-wide; the extent-derived retained count is enforced as a session-local maximum capped at 40 and is publicly marked process-shared; global contention may refuse earlier and every byte lease returns after final release |
 | Diagnostic redaction | Drop, close, reset, and mapping failures exclude pixel bytes, captured hashes, recognized text, titles, process paths, and native serial identifiers |
 
 The finite-pressure test must include an unsafe test Adapter that overwrites a
@@ -110,12 +115,17 @@ The native lifecycle suite adds:
   close detaches the owner and publishes the fence, then proves safe rejection;
 - close from a fresh thread whose WinRT apartment is initialized by the Adapter;
 - retention past the two-frame producer-pool depth and finite 40-texture
-  pressure, followed by release, resumed production, and an observable sequence
+  pressure, followed by release and resumed production; if resize intervenes,
+  its `FIRST` preserves the debt and the next non-discontinuous publication
+  exposes the gap;
+- several successfully admitted sessions contending under the production 4 GiB
+  shared budget, with each description reporting a process-shared local maximum,
+  exact refusal, release/resume, and the first legal non-discontinuous sequence
   gap;
 - movement of the synthetic target followed by a stable frame with a newer
   geometry revision and no spurious stream-epoch reset;
-- stale-target open reclamation, a repeated `TargetLost` result after the live
-  record is gone, and a same-title replacement receiving a new `TargetId`;
+- repeated stale-target `TargetLost` under the finite generation lease, and a
+  same-title replacement receiving a new `TargetId` without old-item retargeting;
 - a real controlled-target close and an idempotent second close;
 - injected device-loss admission stop followed by a typed terminal outcome, no
   late callback publication or mapping-state commit, and bounded teardown.

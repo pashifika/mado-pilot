@@ -451,11 +451,14 @@ impl StreamState {
 
     /// Records one candidate frame that a finite Adapter path had to drop.
     ///
-    /// The next successful publication advances past every recorded drop, so a
-    /// waiter observes a sequence gap while still receiving only a real immutable
-    /// frame. Before the first publication there is no frame identity against
-    /// which a caller could observe a gap, so the candidate is dropped without
-    /// accounting and this returns `Ok(false)`.
+    /// The next successful same-epoch publication advances past every recorded
+    /// drop, so a waiter observes a sequence gap while still receiving only a
+    /// real immutable frame. A discontinuous publication must begin its new
+    /// epoch at sequence `FrameSequence::FIRST`, so it preserves the debt for
+    /// the first later non-discontinuous publication; repeated discontinuities
+    /// preserve it in the same way. Before the first publication there is no
+    /// frame identity against which a caller could observe a gap, so the
+    /// candidate is dropped without accounting and this returns `Ok(false)`.
     ///
     /// This operation is lock-free. It is intended for a native producer callback
     /// whose bounded path may not block when every retained-storage lease is
@@ -724,11 +727,18 @@ fn prepare(
             .next()
             .ok_or_else(|| Error::new(Status::LimitExceeded, "geometry revisions exhausted"))?;
     }
-    if continuity == Continuity::Discontinuous && inner.latest.is_some() {
+    let consumed_drops = if continuity == Continuity::Discontinuous && inner.latest.is_some() {
         cursor.begin_epoch()?;
+        // FIRST is the only legal first sequence in a new epoch, so it cannot
+        // also represent drops from the preceding epoch. Keep that debt until
+        // a same-epoch publication can expose it as a checked sequence gap.
+        0
     } else if inner.latest.is_some() {
         cursor.skip(pending_drops)?;
-    }
+        pending_drops
+    } else {
+        0
+    };
 
     let extent = descriptor.extent();
     let stamp = cursor.publish(geometry)?;
@@ -745,7 +755,7 @@ fn prepare(
         geometry,
         stamp,
         transform,
-        consumed_drops: pending_drops,
+        consumed_drops,
     })
 }
 
@@ -1556,6 +1566,64 @@ mod tests {
             .publish(publication(4, 4, 2, Continuity::Continuous))
             .expect("later publication");
         assert_eq!(later.stamp().sequence().value(), 2);
+    }
+
+    #[test]
+    fn finite_path_drop_debt_survives_discontinuities_until_a_gap_can_represent_it() {
+        let state = state();
+        state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("first publication");
+        assert!(state.try_record_drop().expect("first drop recorded"));
+
+        let first_discontinuity = state
+            .publish(publication(8, 8, 2, Continuity::Discontinuous))
+            .expect("first discontinuity");
+        assert_eq!(first_discontinuity.stamp().sequence().value(), 0);
+        assert!(state.try_record_drop().expect("second drop recorded"));
+
+        let second_discontinuity = state
+            .publish(publication(16, 16, 3, Continuity::Discontinuous))
+            .expect("second discontinuity");
+        assert_eq!(second_discontinuity.stamp().sequence().value(), 0);
+
+        let pressure_visible = state
+            .publish(publication(16, 16, 4, Continuity::Continuous))
+            .expect("continuous publication exposes the accumulated debt");
+        assert_eq!(
+            pressure_visible.stamp().sequence().value(),
+            3,
+            "two pending drops remain debt across both FIRST publications"
+        );
+    }
+
+    #[test]
+    fn unrepresentable_drop_debt_neither_wraps_nor_disappears_at_a_discontinuity() {
+        let state = state();
+        let first = state
+            .publish(publication(4, 4, 1, Continuity::Continuous))
+            .expect("first publication");
+        state.pending_drops.store(u64::MAX, Ordering::Release);
+
+        let error = state
+            .publish(publication(4, 4, 2, Continuity::Continuous))
+            .expect_err("checked skip refuses an unrepresentable gap");
+        assert_eq!(error.status(), Status::LimitExceeded);
+        assert_eq!(
+            state.current().expect("current remains").stamp(),
+            first.stamp()
+        );
+        assert_eq!(state.pending_drops.load(Ordering::Acquire), u64::MAX);
+
+        let discontinuous = state
+            .publish(publication(8, 8, 3, Continuity::Discontinuous))
+            .expect("FIRST does not apply the unrepresentable debt");
+        assert_eq!(discontinuous.stamp().sequence().value(), 0);
+        assert_eq!(
+            state.pending_drops.load(Ordering::Acquire),
+            u64::MAX,
+            "the discontinuity cannot consume debt it did not represent"
+        );
     }
 
     #[test]

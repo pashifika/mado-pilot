@@ -327,6 +327,48 @@ impl TargetDescription {
     }
 }
 
+/// Whether a declared retained-storage count is isolated from other sessions.
+///
+/// The numeric count remains available through [`QueuePolicy::retained_storage`].
+/// This policy tells a caller whether that count is a realizable session promise
+/// or a session-local maximum whose backing bytes are shared process-wide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RetainedStoragePolicy {
+    /// Other sessions cannot reduce the declared retained-storage capacity.
+    Guaranteed,
+    /// The declared count is a session-local maximum subject to process-shared
+    /// resource contention.
+    ///
+    /// A native producer that loses that contention publishes no invented frame.
+    /// After at least one frame has published, the first later successful
+    /// non-discontinuous publication exposes the pressure as a sequence gap. A
+    /// discontinuity still starts its new epoch at sequence
+    /// `FrameSequence::FIRST` and preserves the accumulated pressure debt;
+    /// repeated discontinuities do the same. Debt accumulation and the eventual
+    /// sequence skip are checked rather than wrapping. Explicit allocation
+    /// operations, such as lazy mapping, may instead return a limit-exceeded
+    /// outcome.
+    ProcessShared,
+}
+
+impl RetainedStoragePolicy {
+    /// Returns a stable lowercase slug for diagnostics.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Guaranteed => "guaranteed",
+            Self::ProcessShared => "process_shared",
+        }
+    }
+}
+
+impl fmt::Display for RetainedStoragePolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// What a session's finite publication path holds, and what it does when full.
 ///
 /// A queue that grows with the producer's rate is how a slow consumer turns into
@@ -334,10 +376,14 @@ impl TargetDescription {
 /// reported to the caller. The policy is part of the description rather than an
 /// internal detail because it is what explains a dropped frame: a caller that
 /// sees a sequence gap can tell whether the session was built to allow one.
+///
+/// [`RetainedStoragePolicy`] states whether a retained-storage count is isolated
+/// from other sessions or shares a process-wide backing budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct QueuePolicy {
     handoff: NonZeroU32,
     retained_storage: Option<NonZeroU32>,
+    retained_storage_policy: Option<RetainedStoragePolicy>,
     overflow: OverflowPolicy,
 }
 
@@ -349,6 +395,7 @@ impl QueuePolicy {
         Self {
             handoff: NonZeroU32::MIN,
             retained_storage: None,
+            retained_storage_policy: None,
             overflow: OverflowPolicy::LatestWins,
         }
     }
@@ -359,15 +406,32 @@ impl QueuePolicy {
         Self {
             handoff,
             retained_storage: None,
+            retained_storage_policy: None,
             overflow,
         }
     }
 
     /// Declares how many independently retained storage allocations the session
-    /// can keep leased.
+    /// can keep leased without another session reducing that capacity.
     #[must_use]
     pub const fn with_retained_storage(mut self, retained_storage: NonZeroU32) -> Self {
         self.retained_storage = Some(retained_storage);
+        self.retained_storage_policy = Some(RetainedStoragePolicy::Guaranteed);
+        self
+    }
+
+    /// Declares a session-local retained-storage maximum backed by a
+    /// process-shared resource budget.
+    ///
+    /// The session may encounter finite pressure before reaching this count when
+    /// other sessions retain resources from the same process budget.
+    #[must_use]
+    pub const fn with_process_shared_retained_storage(
+        mut self,
+        retained_storage: NonZeroU32,
+    ) -> Self {
+        self.retained_storage = Some(retained_storage);
+        self.retained_storage_policy = Some(RetainedStoragePolicy::ProcessShared);
         self
     }
 
@@ -377,10 +441,19 @@ impl QueuePolicy {
         self.handoff
     }
 
-    /// Returns the finite retained-storage capacity an Adapter declared.
+    /// Returns the finite retained-storage count an Adapter declared.
+    ///
+    /// Consult [`QueuePolicy::retained_storage_policy`] to distinguish a
+    /// guaranteed capacity from a process-shared session-local maximum.
     #[must_use]
     pub const fn retained_storage(self) -> Option<NonZeroU32> {
         self.retained_storage
+    }
+
+    /// Returns how the declared retained-storage count is backed.
+    #[must_use]
+    pub const fn retained_storage_policy(self) -> Option<RetainedStoragePolicy> {
+        self.retained_storage_policy
     }
 
     /// Returns what the session does with a frame that does not fit.
@@ -532,7 +605,7 @@ mod tests {
 
     use super::{
         CoordinateSupport, FrameDescriptor, OverflowPolicy, PixelFormat, QueuePolicy,
-        SessionDescription, TargetDescription,
+        RetainedStoragePolicy, SessionDescription, TargetDescription,
     };
     use crate::fault::CaptureFault;
     use mado_pilot_core::{
@@ -691,6 +764,7 @@ mod tests {
         assert_eq!(description.queue(), QueuePolicy::synchronous());
         assert_eq!(description.queue().handoff().get(), 1);
         assert_eq!(description.queue().retained_storage(), None);
+        assert_eq!(description.queue().retained_storage_policy(), None);
         assert_eq!(description.queue().overflow(), OverflowPolicy::LatestWins);
     }
 
@@ -711,6 +785,10 @@ mod tests {
         assert_eq!(queue.retained_storage(), None);
         let retained_storage = NonZeroU32::new(8).expect("non-zero");
         let queue = queue.with_retained_storage(retained_storage);
+        assert_eq!(
+            queue.retained_storage_policy(),
+            Some(RetainedStoragePolicy::Guaranteed)
+        );
 
         let description = SessionDescription::new(
             target,
@@ -729,6 +807,31 @@ mod tests {
             Some(retained_storage)
         );
         assert_eq!(queue.to_string(), "handoff 2 latest_wins");
+    }
+
+    #[test]
+    fn retained_storage_distinguishes_guaranteed_and_process_shared_capacity() {
+        let retained_storage = NonZeroU32::new(8).expect("non-zero");
+        let queue = QueuePolicy::new(NonZeroU32::MIN, OverflowPolicy::LatestWins);
+
+        let guaranteed = queue.with_retained_storage(retained_storage);
+        assert_eq!(
+            guaranteed.retained_storage_policy(),
+            Some(RetainedStoragePolicy::Guaranteed)
+        );
+        assert_eq!(guaranteed.retained_storage(), Some(retained_storage));
+
+        let process_shared = queue.with_process_shared_retained_storage(retained_storage);
+        assert_eq!(
+            process_shared.retained_storage_policy(),
+            Some(RetainedStoragePolicy::ProcessShared)
+        );
+        assert_eq!(process_shared.retained_storage(), Some(retained_storage));
+        assert_eq!(RetainedStoragePolicy::Guaranteed.to_string(), "guaranteed");
+        assert_eq!(
+            RetainedStoragePolicy::ProcessShared.to_string(),
+            "process_shared"
+        );
     }
 
     #[test]

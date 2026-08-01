@@ -18,6 +18,17 @@
 //! the WGC frame. CPU mapping, consumer work, and host callbacks never run in the
 //! WGC callback.
 //!
+//! Discovery stages a complete snapshot before final operation arbitration,
+//! mints fresh identities, and keeps only the current and previous retained-item
+//! generations openable. Capture surfaces are checked against D3D11's axis limit
+//! and a 128 MiB byte ceiling; producer, detached, staging, and mapped ownership
+//! also shares 2 GiB per-session and 4 GiB process retained-byte ceilings. The
+//! reported retained count is an extent-derived session-local maximum that
+//! leaves headroom for the two producer surfaces plus one staging-and-output
+//! mapping. Its public policy reports that the backing 4 GiB budget is shared
+//! across Windows sessions, so process contention may produce pressure before
+//! the local count is reached.
+//!
 //! Close stops admission, removes both native handlers, drains admitted
 //! callbacks, and moves the WGC objects to an apartment-initialized teardown
 //! worker. Explicit close polls that worker under the caller's operation

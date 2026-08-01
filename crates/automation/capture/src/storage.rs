@@ -37,31 +37,50 @@ use crate::fault::CaptureFault;
 /// frame, publishing a later one, or closing the session leaves mapped bytes
 /// readable. Nothing hands out a mutable reference to the bytes after
 /// construction.
-pub struct CpuPixels(Box<[u8]>);
+pub struct CpuPixels {
+    bytes: Box<[u8]>,
+    _retained: Option<Arc<dyn Send + Sync>>,
+}
 
 impl CpuPixels {
     /// Takes ownership of `bytes` as immutable pixels.
     #[must_use]
     pub fn new(bytes: Box<[u8]>) -> Self {
-        Self(bytes)
+        Self {
+            bytes,
+            _retained: None,
+        }
+    }
+
+    /// Takes ownership of pixels and an ownership-only resource retainer.
+    ///
+    /// Native Adapters use this when mapped bytes must keep allocation accounting
+    /// alive after their source frame and session are gone. The retainer is never
+    /// exposed or interpreted by the capture contract.
+    #[must_use]
+    pub fn with_retainer(bytes: Box<[u8]>, retainer: Arc<dyn Send + Sync>) -> Self {
+        Self {
+            bytes,
+            _retained: Some(retainer),
+        }
     }
 
     /// Returns the bytes.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        &self.0
+        &self.bytes
     }
 
     /// Returns how many bytes are stored.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.bytes.len()
     }
 
     /// Reports whether the storage holds no bytes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.bytes.is_empty()
     }
 }
 
@@ -73,7 +92,7 @@ impl fmt::Debug for CpuPixels {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("CpuPixels")
-            .field("bytes", &self.0.len())
+            .field("bytes", &self.bytes.len())
             .finish()
     }
 }
