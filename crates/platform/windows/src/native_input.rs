@@ -10,8 +10,8 @@ use mado_pilot_core::{
     TransformSnapshot,
 };
 use mado_pilot_input::{
-    FocusPolicy, GeometryPolicy, InputEvent, InputFault, Key, PointerButton, PointerGeometry,
-    PressedState,
+    CleanupBudget, FocusPolicy, GeometryPolicy, InputEvent, InputFault, Key, PointerButton,
+    PointerGeometry, PressedState,
 };
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_ACCESS_DENIED, GetLastError, HANDLE, HWND, LPARAM, POINT, SetLastError,
@@ -43,13 +43,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::discovery::{NativeKey, current_placement};
 use crate::fixture_protocol::{ACKNOWLEDGED, CLASS_NAME, COPYDATA_TAG, encode_event, query_packet};
 use crate::input::{
-    DeliveryFailure, DriverState, GeometryFingerprint, InputDriver, PointerState,
+    DeliveryContexts, DeliveryFailure, DriverState, GeometryFingerprint, InputDriver, PointerState,
     SystemButtonState, SystemKeyState,
 };
 use crate::provider::TargetRecord;
 
 const BACKGROUND_EVENT_TIMEOUT: Duration = Duration::from_millis(100);
 type DeliveryResult = Result<(), DeliveryFailure>;
+
+/// The mutable native state consulted at the final system-input commit boundary.
+///
+/// Keeping the guard and insertion behind one source lets deterministic tests
+/// move operation, target, focus, and geometry state after preparation without
+/// ever calling the process-global `SendInput` API.
+trait SystemCommitSource {
+    fn revalidate_system_commit(
+        &self,
+        focus: FocusPolicy,
+        expected_geometry: Option<GeometryFingerprint>,
+    ) -> Result<(), InputFault>;
+
+    fn send_input(&self, inputs: &[INPUT]) -> usize;
+}
 
 pub(crate) struct NativeInputDriver {
     record: Arc<TargetRecord>,
@@ -198,6 +213,8 @@ impl NativeInputDriver {
         event: &InputEvent,
         geometry: PointerGeometry,
         state: &mut DriverState,
+        operation: &OperationContext,
+        cleanup_budget: CleanupBudget,
     ) -> DeliveryResult {
         self.record.ensure_live()?;
         self.ensure_system_focus(focus)?;
@@ -208,14 +225,14 @@ impl NativeInputDriver {
         match event {
             InputEvent::PointerMove(point) => {
                 let resolved = self.resolve_pointer(*point, geometry)?;
-                send_system_pointer_move(resolved.screen, &self.record)?;
+                send_system_pointer_move(resolved, self, focus, operation)?;
                 state.pointer = Some(resolved);
                 Ok(())
             }
             InputEvent::PointerPress(button) => {
-                let _pointer = self.pointer_for_non_move(geometry, state)?;
+                let pointer = self.pointer_for_non_move(geometry, state)?;
                 let physical = physical_button(*button)?;
-                send_physical_button(physical, true, &self.record)?;
+                send_physical_button(physical, true, pointer.geometry, self, focus, operation)?;
                 state.buttons.push(SystemButtonState {
                     logical: *button,
                     physical,
@@ -223,7 +240,7 @@ impl NativeInputDriver {
                 Ok(())
             }
             InputEvent::PointerRelease(button) => {
-                let _pointer = self.pointer_for_non_move(geometry, state)?;
+                let pointer = self.pointer_for_non_move(geometry, state)?;
                 let index = state
                     .buttons
                     .iter()
@@ -231,7 +248,7 @@ impl NativeInputDriver {
                 let physical = index
                     .map(|index| state.buttons[index].physical)
                     .map_or_else(|| physical_button(*button), Ok)?;
-                send_physical_button(physical, false, &self.record)?;
+                send_physical_button(physical, false, pointer.geometry, self, focus, operation)?;
                 if let Some(index) = index {
                     state.buttons.remove(index);
                 }
@@ -241,12 +258,19 @@ impl NativeInputDriver {
                 horizontal,
                 vertical,
             } => {
-                let _pointer = self.pointer_for_non_move(geometry, state)?;
-                send_system_scroll(*horizontal, *vertical, &self.record)
+                let pointer = self.pointer_for_non_move(geometry, state)?;
+                send_system_scroll(
+                    *horizontal,
+                    *vertical,
+                    pointer.geometry,
+                    self,
+                    focus,
+                    operation,
+                )
             }
             InputEvent::KeyPress(key) => {
                 let (virtual_key, extended) = resolve_virtual_key(*key, &self.record)?;
-                send_resolved_key(virtual_key, extended, true, &self.record)?;
+                send_resolved_key(virtual_key, extended, true, self, focus, operation)?;
                 state.keys.push(SystemKeyState {
                     logical: *key,
                     virtual_key: virtual_key.0,
@@ -267,13 +291,15 @@ impl NativeInputDriver {
                         )
                     })
                     .map_or_else(|| resolve_virtual_key(*key, &self.record), Ok)?;
-                send_resolved_key(virtual_key, extended, false, &self.record)?;
+                send_resolved_key(virtual_key, extended, false, self, focus, operation)?;
                 if let Some(index) = index {
                     state.keys.remove(index);
                 }
                 Ok(())
             }
-            InputEvent::Text(text) => send_system_text(text, &self.record),
+            InputEvent::Text(text) => {
+                send_system_text(text, self, focus, operation, cleanup_budget)
+            }
             InputEvent::Delay(_) => Err(InputFault::UnsupportedCombination.into()),
             _ => Err(InputFault::UnsupportedCombination.into()),
         }
@@ -301,6 +327,31 @@ impl NativeInputDriver {
         };
         let packet = encode_event(event, point)?;
         send_fixture_packet(&self.record, &packet, operation, InputFault::DeliveryFailed)
+    }
+}
+
+impl SystemCommitSource for NativeInputDriver {
+    fn revalidate_system_commit(
+        &self,
+        focus: FocusPolicy,
+        expected_geometry: Option<GeometryFingerprint>,
+    ) -> Result<(), InputFault> {
+        self.record.ensure_live()?;
+        self.ensure_system_focus(focus)?;
+        if target_has_higher_integrity(&self.record)? == Some(true) {
+            return Err(InputFault::PolicyRefused);
+        }
+        if let Some(expected) = expected_geometry {
+            let (_, current) = self.current_geometry()?;
+            if current != expected {
+                return Err(InputFault::GeometryChanged);
+            }
+        }
+        Ok(())
+    }
+
+    fn send_input(&self, inputs: &[INPUT]) -> usize {
+        raw_send(inputs)
     }
 }
 
@@ -358,11 +409,17 @@ impl InputDriver for NativeInputDriver {
         event: &InputEvent,
         geometry: PointerGeometry,
         state: &mut DriverState,
-        operation: &OperationContext,
+        contexts: DeliveryContexts<'_>,
     ) -> DeliveryResult {
+        let DeliveryContexts {
+            operation,
+            cleanup_budget,
+        } = contexts;
         operation_fault(operation)?;
         match delivery {
-            InputDelivery::System => self.deliver_system(focus, event, geometry, state),
+            InputDelivery::System => {
+                self.deliver_system(focus, event, geometry, state, operation, cleanup_budget)
+            }
             InputDelivery::BackgroundTarget => {
                 self.deliver_background(event, geometry, state, operation)
             }
@@ -379,7 +436,7 @@ impl InputDriver for NativeInputDriver {
     ) -> Result<(), InputFault> {
         operation_fault(operation)?;
         match delivery {
-            InputDelivery::System => send_system_release(pressed, state, &self.record),
+            InputDelivery::System => send_system_release(pressed, state, self, operation),
             InputDelivery::BackgroundTarget => {
                 let event = match pressed {
                     PressedState::Button(button) => InputEvent::PointerRelease(button),
@@ -408,6 +465,31 @@ fn operation_fault(operation: &OperationContext) -> Result<(), InputFault> {
     operation
         .interruption()
         .map_or(Ok(()), |interruption| Err(InputFault::from(interruption)))
+}
+
+fn commit_prepared_system_input<S: SystemCommitSource + ?Sized>(
+    source: &S,
+    focus: FocusPolicy,
+    expected_geometry: Option<GeometryFingerprint>,
+    operation: &OperationContext,
+    inputs: &[INPUT],
+) -> Result<usize, DeliveryFailure> {
+    operation_fault(operation)?;
+    source.revalidate_system_commit(focus, expected_geometry)?;
+    // Native revalidation can perform target, foreground, integrity, and geometry
+    // queries. Arbitration is therefore checked once more as the final operation
+    // immediately adjacent to the irreversible global insertion.
+    operation_fault(operation)?;
+    Ok(source.send_input(inputs))
+}
+
+fn commit_cleanup_system_input<S: SystemCommitSource + ?Sized>(
+    source: &S,
+    cleanup: &OperationContext,
+    inputs: &[INPUT],
+) -> Result<usize, InputFault> {
+    operation_fault(cleanup)?;
+    Ok(source.send_input(inputs))
 }
 
 fn fingerprint(transform: &TransformSnapshot) -> Result<GeometryFingerprint, InputFault> {
@@ -449,17 +531,28 @@ fn contains_screen_point(geometry: GeometryFingerprint, point: (i32, i32)) -> bo
     x >= left && x < right && y >= top && y < bottom
 }
 
-fn send_system_pointer_move(screen: (i32, i32), record: &TargetRecord) -> DeliveryResult {
+fn send_system_pointer_move(
+    pointer: PointerState,
+    driver: &NativeInputDriver,
+    focus: FocusPolicy,
+    operation: &OperationContext,
+) -> DeliveryResult {
     let desktop = virtual_desktop()?;
-    let dx = normalize_absolute(screen.0, desktop.0, desktop.2)?;
-    let dy = normalize_absolute(screen.1, desktop.1, desktop.3)?;
+    let dx = normalize_absolute(pointer.screen.0, desktop.0, desktop.2)?;
+    let dy = normalize_absolute(pointer.screen.1, desktop.1, desktop.3)?;
     let input = mouse_input(
         dx,
         dy,
         0,
         MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
     );
-    send_exact(std::slice::from_ref(&input), record)
+    send_exact(
+        std::slice::from_ref(&input),
+        driver,
+        focus,
+        Some(pointer.geometry),
+        operation,
+    )
 }
 
 fn physical_button(button: PointerButton) -> Result<u8, InputFault> {
@@ -475,7 +568,14 @@ fn physical_button(button: PointerButton) -> Result<u8, InputFault> {
     }
 }
 
-fn send_physical_button(physical: u8, pressed: bool, record: &TargetRecord) -> DeliveryResult {
+fn send_physical_button(
+    physical: u8,
+    pressed: bool,
+    geometry: GeometryFingerprint,
+    driver: &NativeInputDriver,
+    focus: FocusPolicy,
+    operation: &OperationContext,
+) -> DeliveryResult {
     let flags = match (physical, pressed) {
         (1, true) => MOUSEEVENTF_LEFTDOWN,
         (1, false) => MOUSEEVENTF_LEFTUP,
@@ -486,10 +586,23 @@ fn send_physical_button(physical: u8, pressed: bool, record: &TargetRecord) -> D
         _ => return Err(InputFault::UnsupportedCombination.into()),
     };
     let input = mouse_input(0, 0, 0, flags);
-    send_exact(std::slice::from_ref(&input), record)
+    send_exact(
+        std::slice::from_ref(&input),
+        driver,
+        focus,
+        Some(geometry),
+        operation,
+    )
 }
 
-fn send_system_scroll(horizontal: i16, vertical: i16, record: &TargetRecord) -> DeliveryResult {
+fn send_system_scroll(
+    horizontal: i16,
+    vertical: i16,
+    geometry: GeometryFingerprint,
+    driver: &NativeInputDriver,
+    focus: FocusPolicy,
+    operation: &OperationContext,
+) -> DeliveryResult {
     const WHEEL_DELTA: i32 = 120;
     let mut inputs = Vec::with_capacity(2);
     if vertical != 0 {
@@ -502,14 +615,16 @@ fn send_system_scroll(horizontal: i16, vertical: i16, record: &TargetRecord) -> 
         let delta = i32::from(horizontal) * WHEEL_DELTA;
         inputs.push(mouse_input(0, 0, delta.cast_unsigned(), MOUSEEVENTF_HWHEEL));
     }
-    send_exact(&inputs, record)
+    send_exact(&inputs, driver, focus, Some(geometry), operation)
 }
 
 fn send_resolved_key(
     virtual_key: VIRTUAL_KEY,
     extended: bool,
     pressed: bool,
-    record: &TargetRecord,
+    driver: &NativeInputDriver,
+    focus: FocusPolicy,
+    operation: &OperationContext,
 ) -> DeliveryResult {
     let mut flags = KEYBD_EVENT_FLAGS(0);
     if extended {
@@ -519,10 +634,16 @@ fn send_resolved_key(
         flags |= KEYEVENTF_KEYUP;
     }
     let input = keyboard_input(virtual_key, 0, flags);
-    send_exact(std::slice::from_ref(&input), record)
+    send_exact(std::slice::from_ref(&input), driver, focus, None, operation)
 }
 
-fn send_system_text(text: &str, record: &TargetRecord) -> DeliveryResult {
+fn send_system_text(
+    text: &str,
+    driver: &NativeInputDriver,
+    focus: FocusPolicy,
+    operation: &OperationContext,
+    cleanup_budget: CleanupBudget,
+) -> DeliveryResult {
     let units = text.encode_utf16().collect::<Vec<_>>();
     let mut inputs = Vec::with_capacity(units.len().saturating_mul(2));
     for unit in &units {
@@ -534,7 +655,7 @@ fn send_system_text(text: &str, record: &TargetRecord) -> DeliveryResult {
         ));
     }
 
-    let inserted = raw_send(&inputs);
+    let inserted = commit_prepared_system_input(driver, focus, None, operation, &inputs)?;
     if inserted == inputs.len() {
         return Ok(());
     }
@@ -544,15 +665,18 @@ fn send_system_text(text: &str, record: &TargetRecord) -> DeliveryResult {
         && let Some(unit) = units.get(inserted / 2)
     {
         let release = keyboard_input(VIRTUAL_KEY(0), *unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
-        let _released = raw_send(std::slice::from_ref(&release));
+        let cleanup = cleanup_budget.context(operation);
+        let _released =
+            commit_cleanup_system_input(driver, &cleanup, std::slice::from_ref(&release));
     }
-    Err(send_failure(record, inserted))
+    Err(send_failure(&driver.record, inserted))
 }
 
 fn send_system_release(
     pressed: PressedState,
     state: &mut DriverState,
-    record: &TargetRecord,
+    driver: &NativeInputDriver,
+    cleanup: &OperationContext,
 ) -> Result<(), InputFault> {
     match pressed {
         PressedState::Button(button) => {
@@ -563,7 +687,14 @@ fn send_system_release(
             let physical = index
                 .map(|index| state.buttons[index].physical)
                 .map_or_else(|| physical_button(button), Ok)?;
-            send_physical_button(physical, false, record).map_err(|failure| failure.fault)?;
+            let flags = match physical {
+                1 => MOUSEEVENTF_LEFTUP,
+                2 => MOUSEEVENTF_RIGHTUP,
+                3 => MOUSEEVENTF_MIDDLEUP,
+                _ => return Err(InputFault::UnsupportedCombination),
+            };
+            let input = mouse_input(0, 0, 0, flags);
+            send_cleanup_exact(std::slice::from_ref(&input), driver, cleanup)?;
             if let Some(index) = index {
                 state.buttons.remove(index);
             }
@@ -581,9 +712,13 @@ fn send_system_release(
                         state.keys[index].extended,
                     )
                 })
-                .map_or_else(|| resolve_virtual_key(key, record), Ok)?;
-            send_resolved_key(virtual_key, extended, false, record)
-                .map_err(|failure| failure.fault)?;
+                .map_or_else(|| resolve_virtual_key(key, &driver.record), Ok)?;
+            let mut flags = KEYEVENTF_KEYUP;
+            if extended {
+                flags |= KEYEVENTF_EXTENDEDKEY;
+            }
+            let input = keyboard_input(virtual_key, 0, flags);
+            send_cleanup_exact(std::slice::from_ref(&input), driver, cleanup)?;
             if let Some(index) = index {
                 state.keys.remove(index);
             }
@@ -624,12 +759,32 @@ fn keyboard_input(virtual_key: VIRTUAL_KEY, scan: u16, flags: KEYBD_EVENT_FLAGS)
     }
 }
 
-fn send_exact(inputs: &[INPUT], record: &TargetRecord) -> DeliveryResult {
-    let inserted = raw_send(inputs);
+fn send_exact(
+    inputs: &[INPUT],
+    driver: &NativeInputDriver,
+    focus: FocusPolicy,
+    expected_geometry: Option<GeometryFingerprint>,
+    operation: &OperationContext,
+) -> DeliveryResult {
+    let inserted =
+        commit_prepared_system_input(driver, focus, expected_geometry, operation, inputs)?;
     if inserted == inputs.len() {
         Ok(())
     } else {
-        Err(send_failure(record, inserted))
+        Err(send_failure(&driver.record, inserted))
+    }
+}
+
+fn send_cleanup_exact(
+    inputs: &[INPUT],
+    driver: &NativeInputDriver,
+    cleanup: &OperationContext,
+) -> Result<(), InputFault> {
+    let inserted = commit_cleanup_system_input(driver, cleanup, inputs)?;
+    if inserted == inputs.len() {
+        Ok(())
+    } else {
+        Err(send_failure(&driver.record, inserted).fault)
     }
 }
 
@@ -951,10 +1106,245 @@ impl Drop for OwnedHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_absolute, point_to_screen};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use super::{
+        SystemCommitSource, commit_prepared_system_input, keyboard_input, normalize_absolute,
+        point_to_screen,
+    };
     use crate::input::GeometryFingerprint;
-    use mado_pilot_core::{CoordinateSpace, PixelExtent, Point, Scale, TargetPlacement};
-    use mado_pilot_input::InputFault;
+    use mado_pilot_core::{
+        CancellationToken, Clock, CoordinateSpace, MonotonicInstant, OperationContext, PixelExtent,
+        Point, Scale, TargetPlacement,
+    };
+    use mado_pilot_input::{FocusPolicy, InputFault};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, KEYBD_EVENT_FLAGS, VIRTUAL_KEY};
+
+    #[derive(Debug, Clone, Copy)]
+    struct CommitState {
+        live: bool,
+        focused: bool,
+        geometry: GeometryFingerprint,
+    }
+
+    #[derive(Debug)]
+    struct ScriptedCommitSource {
+        state: Mutex<CommitState>,
+        cancel_during_revalidation: Mutex<Option<CancellationToken>>,
+        advance_during_revalidation: Mutex<Option<(Arc<ManualClock>, Duration)>>,
+        sends: AtomicUsize,
+    }
+
+    impl ScriptedCommitSource {
+        fn new(geometry: GeometryFingerprint) -> Self {
+            Self {
+                state: Mutex::new(CommitState {
+                    live: true,
+                    focused: true,
+                    geometry,
+                }),
+                cancel_during_revalidation: Mutex::new(None),
+                advance_during_revalidation: Mutex::new(None),
+                sends: AtomicUsize::new(0),
+            }
+        }
+
+        fn change(&self, change: impl FnOnce(&mut CommitState)) {
+            change(&mut self.state.lock().expect("uncontended"));
+        }
+
+        fn send_count(&self) -> usize {
+            self.sends.load(Ordering::Acquire)
+        }
+
+        fn cancel_during_revalidation(&self, token: CancellationToken) {
+            *self.cancel_during_revalidation.lock().expect("uncontended") = Some(token);
+        }
+
+        fn advance_during_revalidation(&self, clock: Arc<ManualClock>, step: Duration) {
+            *self
+                .advance_during_revalidation
+                .lock()
+                .expect("uncontended") = Some((clock, step));
+        }
+    }
+
+    impl SystemCommitSource for ScriptedCommitSource {
+        fn revalidate_system_commit(
+            &self,
+            focus: FocusPolicy,
+            expected_geometry: Option<GeometryFingerprint>,
+        ) -> Result<(), InputFault> {
+            let state = *self.state.lock().expect("uncontended");
+            if !state.live {
+                return Err(InputFault::TargetLost);
+            }
+            if !state.focused
+                && matches!(focus, FocusPolicy::RequireFocused | FocusPolicy::Preserve)
+            {
+                return Err(InputFault::FocusRequired);
+            }
+            if expected_geometry.is_some_and(|expected| expected != state.geometry) {
+                return Err(InputFault::GeometryChanged);
+            }
+            if let Some(token) = self
+                .cancel_during_revalidation
+                .lock()
+                .expect("uncontended")
+                .take()
+            {
+                token.cancel();
+            }
+            if let Some((clock, step)) = self
+                .advance_during_revalidation
+                .lock()
+                .expect("uncontended")
+                .take()
+            {
+                clock.advance(step);
+            }
+            Ok(())
+        }
+
+        fn send_input(&self, inputs: &[INPUT]) -> usize {
+            self.sends.fetch_add(1, Ordering::AcqRel);
+            inputs.len()
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ManualClock {
+        elapsed: Mutex<Duration>,
+    }
+
+    impl ManualClock {
+        fn advance(&self, step: Duration) {
+            let mut elapsed = self.elapsed.lock().expect("uncontended");
+            *elapsed = elapsed.saturating_add(step);
+        }
+    }
+
+    impl Clock for ManualClock {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::from_origin(*self.elapsed.lock().expect("uncontended"))
+        }
+    }
+
+    fn commit_geometry() -> GeometryFingerprint {
+        GeometryFingerprint {
+            extent: PixelExtent::new(100, 50),
+            placement: TargetPlacement::new(
+                (10.0, 20.0),
+                (100.0, 50.0),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("placement"),
+        }
+    }
+
+    fn prepared_input() -> INPUT {
+        keyboard_input(VIRTUAL_KEY(0), 0, KEYBD_EVENT_FLAGS(0))
+    }
+
+    fn assert_pre_send_refusal(
+        source: &ScriptedCommitSource,
+        operation: &OperationContext,
+        geometry: Option<GeometryFingerprint>,
+        expected: InputFault,
+    ) {
+        let input = prepared_input();
+        let failure = commit_prepared_system_input(
+            source,
+            FocusPolicy::RequireFocused,
+            geometry,
+            operation,
+            std::slice::from_ref(&input),
+        )
+        .expect_err("the adjacent guard refuses the prepared input");
+        assert_eq!(failure.fault, expected);
+        assert!(!failure.current_event_may_have_effect);
+        assert_eq!(source.send_count(), 0, "SendInput seam was not invoked");
+    }
+
+    #[test]
+    fn cancellation_after_preparation_refuses_before_native_send() {
+        let geometry = commit_geometry();
+        let source = ScriptedCommitSource::new(geometry);
+        let token = CancellationToken::new();
+        let operation = OperationContext::new().with_cancellation(token.clone());
+        let _prepared = prepared_input();
+        source.cancel_during_revalidation(token);
+
+        assert_pre_send_refusal(&source, &operation, None, InputFault::Cancelled);
+    }
+
+    #[test]
+    fn deadline_after_preparation_refuses_before_native_send() {
+        let geometry = commit_geometry();
+        let source = ScriptedCommitSource::new(geometry);
+        let clock = Arc::new(ManualClock::default());
+        let operation = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(5)));
+        let _prepared = prepared_input();
+        source.advance_during_revalidation(clock, Duration::from_millis(5));
+
+        assert_pre_send_refusal(&source, &operation, None, InputFault::DeadlineExceeded);
+    }
+
+    #[test]
+    fn target_loss_after_preparation_refuses_before_native_send() {
+        let geometry = commit_geometry();
+        let source = ScriptedCommitSource::new(geometry);
+        let _prepared = prepared_input();
+        source.change(|state| state.live = false);
+
+        assert_pre_send_refusal(
+            &source,
+            &OperationContext::new(),
+            None,
+            InputFault::TargetLost,
+        );
+    }
+
+    #[test]
+    fn focus_change_after_preparation_refuses_before_native_send() {
+        let geometry = commit_geometry();
+        let source = ScriptedCommitSource::new(geometry);
+        let _prepared = prepared_input();
+        source.change(|state| state.focused = false);
+
+        assert_pre_send_refusal(
+            &source,
+            &OperationContext::new(),
+            None,
+            InputFault::FocusRequired,
+        );
+    }
+
+    #[test]
+    fn geometry_change_after_pointer_preparation_refuses_before_native_send() {
+        let geometry = commit_geometry();
+        let source = ScriptedCommitSource::new(geometry);
+        let _prepared = prepared_input();
+        source.change(|state| {
+            state.geometry.placement = TargetPlacement::new(
+                (11.0, 20.0),
+                (100.0, 50.0),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("moved placement");
+        });
+
+        assert_pre_send_refusal(
+            &source,
+            &OperationContext::new(),
+            Some(geometry),
+            InputFault::GeometryChanged,
+        );
+    }
 
     #[test]
     fn signed_virtual_desktop_coordinates_normalize_at_both_edges() {

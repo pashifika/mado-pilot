@@ -13,8 +13,8 @@ use mado_pilot_core::{
     TransformSnapshot,
 };
 use mado_pilot_input::{
-    Admission, FocusPolicy, InputController, InputDescriptor, InputEvent, InputFault, InputReceipt,
-    InputRequest, Key, PointerButton, PointerGeometry, PressedState,
+    Admission, CleanupBudget, FocusPolicy, InputController, InputDescriptor, InputEvent,
+    InputFault, InputReceipt, InputRequest, Key, PointerButton, PointerGeometry, PressedState,
 };
 
 use crate::fixture_protocol::CLASS_NAME;
@@ -142,6 +142,12 @@ pub(crate) struct DeliveryFailure {
     pub(crate) current_event_may_have_effect: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DeliveryContexts<'operation> {
+    pub(crate) operation: &'operation OperationContext,
+    pub(crate) cleanup_budget: CleanupBudget,
+}
+
 impl DeliveryFailure {
     pub(crate) const fn before_event(fault: InputFault) -> Self {
         Self {
@@ -186,7 +192,7 @@ pub(crate) trait InputDriver: fmt::Debug + Send + Sync {
         event: &InputEvent,
         geometry: PointerGeometry,
         state: &mut DriverState,
-        operation: &OperationContext,
+        contexts: DeliveryContexts<'_>,
     ) -> Result<(), DeliveryFailure>;
 
     fn release(
@@ -385,7 +391,10 @@ impl InputController for WindowsInputController {
                         event,
                         request.pointer_geometry(),
                         &mut state,
-                        operation,
+                        DeliveryContexts {
+                            operation,
+                            cleanup_budget: request.cleanup_budget(),
+                        },
                     ),
                 }
             };

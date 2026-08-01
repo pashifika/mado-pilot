@@ -138,7 +138,7 @@ struct SessionCore {
     target_kind: TargetKind,
     key: NativeKey,
     state: StreamState,
-    geometry: Arc<GeometryLedger>,
+    geometry: GeometryRegistration,
     domain: Arc<DeviceDomain>,
     memory: Arc<SessionMemory>,
     native: OnceLock<Weak<NativeOwnership<WgcResources>>>,
@@ -149,6 +149,32 @@ struct SessionCore {
     native_ended: Arc<AtomicBool>,
     failure: OnceLock<Weak<dyn StorageFailureSink>>,
     transition: Mutex<TransitionState>,
+}
+
+/// Owns one live stream's geometry-ledger membership.
+///
+/// `SessionCore` is retained by every admitted callback. Binding removal to this
+/// member's final drop means teardown cannot remove the entry and then let an
+/// already-admitted callback publish it again.
+struct GeometryRegistration {
+    ledger: Arc<GeometryLedger>,
+    stream: StreamId,
+}
+
+impl GeometryRegistration {
+    fn new(ledger: Arc<GeometryLedger>, stream: StreamId) -> Self {
+        Self { ledger, stream }
+    }
+
+    fn publish(&self, frame: &Frame) {
+        self.ledger.publish(frame);
+    }
+}
+
+impl Drop for GeometryRegistration {
+    fn drop(&mut self) {
+        self.ledger.remove(self.stream);
+    }
 }
 
 #[derive(Debug)]
@@ -258,7 +284,7 @@ impl NativeSession {
             target_kind: kind,
             key,
             state: StreamState::with_target_extent(stream),
-            geometry,
+            geometry: GeometryRegistration::new(geometry, stream),
             domain,
             memory,
             native: OnceLock::new(),
@@ -966,7 +992,6 @@ impl CaptureSession for NativeSession {
 
 impl Drop for NativeSession {
     fn drop(&mut self) {
-        self.core.geometry.remove(self.core.state.stream());
         self.core.callbacks.stop_admission();
         let _start = self.start_native_close(true, None);
         let abandoned = self.runtime().resources.take();
@@ -1133,14 +1158,16 @@ impl SessionCore {
             Arc::clone(&self.device_terminal),
             Arc::clone(&self.memory),
         );
-        let published = self
-            .state
-            .publish_storage(StoragePublication {
-                captured_at,
-                placement: Some(placement),
-                storage,
-                continuity,
-            })
+        self.state
+            .publish_storage_with(
+                StoragePublication {
+                    captured_at,
+                    placement: Some(placement),
+                    storage,
+                    continuity,
+                },
+                |frame| self.geometry.publish(frame),
+            )
             .map_err(|refused| {
                 if refused.error().status() == mado_pilot_core::Status::Closed {
                     CaptureFault::SessionClosed
@@ -1148,7 +1175,6 @@ impl SessionCore {
                     CaptureFault::SourceInvalid
                 }
             })?;
-        self.geometry.publish(&published);
         transition.placement = placement;
         transition.pending_discontinuity = false;
         transition.pending_geometry_change = false;
@@ -1426,18 +1452,19 @@ mod tests {
     use windows::Graphics::SizeInt32;
     use windows::Win32::Foundation::RO_E_CLOSED;
 
+    use crate::input::GeometryLedger;
     use crate::storage::{
         GLOBAL_RETAINED_BYTES, SESSION_RETAINED_BYTES, SessionMemory, retained_storage_capacity,
         validate_surface,
     };
 
     use super::{
-        CallbackControl, NativeOwnership, TEARDOWN_QUEUE_CAPACITY, TEARDOWN_WORKER_COUNT,
-        TeardownExecutorSlot, TeardownPermits, TransitionState, WGC_PRODUCER_POOL_SIZE,
-        capture_already_ended_after_drain, frame_time, map_worker_start, native_close_result,
-        native_size, normalize_native_fault, positive_extent, record_authoritative_native_end,
-        session_queue_policy, start_teardown_executor_with, target_fault, teardown_channel,
-        teardown_executor_from_slot,
+        CallbackControl, GeometryRegistration, NativeOwnership, TEARDOWN_QUEUE_CAPACITY,
+        TEARDOWN_WORKER_COUNT, TeardownExecutorSlot, TeardownPermits, TransitionState,
+        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain, frame_time, map_worker_start,
+        native_close_result, native_size, normalize_native_fault, positive_extent,
+        record_authoritative_native_end, session_queue_policy, start_teardown_executor_with,
+        target_fault, teardown_channel, teardown_executor_from_slot,
     };
 
     static STALLED_INITIALIZERS: AtomicUsize = AtomicUsize::new(0);
@@ -1929,6 +1956,55 @@ mod tests {
         drop(lease);
         drainer.join().expect("drop drain completed");
         assert!(control.lock().fenced);
+    }
+
+    #[test]
+    fn geometry_membership_outlives_an_admitted_callback_and_is_removed_last() {
+        let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
+        let state = StreamState::with_target_extent(stream);
+        let ledger = Arc::new(GeometryLedger::default());
+        let extent = PixelExtent::new(4, 4);
+        let descriptor = FrameDescriptor::packed(extent, PixelFormat::Bgra8).expect("descriptor");
+        let placement = TargetPlacement::new(
+            (10.0, 20.0),
+            (4.0, 4.0),
+            Scale::new(1.0, 1.0).expect("scale"),
+        )
+        .expect("placement");
+        let frame = state
+            .publish(Publication {
+                captured_at: MonotonicInstant::ORIGIN,
+                descriptor,
+                placement: Some(placement),
+                pixels: vec![0; descriptor.byte_len()].into_boxed_slice(),
+                continuity: Continuity::Continuous,
+            })
+            .expect("published");
+        ledger.publish(&frame);
+
+        let owner = Arc::new(GeometryRegistration::new(Arc::clone(&ledger), stream));
+        let callback_owner = Arc::clone(&owner);
+        let (admitted_tx, admitted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let callback = thread::spawn(move || {
+            admitted_tx.send(()).expect("callback admitted");
+            release_rx.recv().expect("callback released");
+            drop(callback_owner);
+        });
+        admitted_rx.recv().expect("callback owns registration");
+
+        drop(owner);
+        assert!(
+            ledger.source_transform(frame.stamp()).is_some(),
+            "teardown owner removal cannot outrun the admitted callback"
+        );
+        release_tx.send(()).expect("finish callback");
+        callback.join().expect("callback joined");
+        assert_eq!(
+            ledger.source_transform(frame.stamp()),
+            None,
+            "the final owner removes the dead stream after callback completion"
+        );
     }
 
     #[test]

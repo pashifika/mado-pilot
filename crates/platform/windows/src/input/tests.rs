@@ -1,8 +1,13 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::time::Duration;
 
 use crate::fixture_protocol::CLASS_NAME;
+use mado_pilot_capture::{
+    Continuity, CpuFrameStorage, FrameDescriptor, FrameRequest, FrameStorage, PixelFormat,
+    StoragePublication, StreamState,
+};
 use mado_pilot_core::{
     CancellationToken, Clock, CoordinateSpace, GeometryRevision, IdentityIssuer, InputCapability,
     InputDelivery, InputOperationKind, MonotonicInstant, OperationContext, PixelExtent, ProviderId,
@@ -15,8 +20,8 @@ use mado_pilot_input::{
 };
 
 use super::{
-    DeliveryFailure, DriverState, GeometryLedger, InputDriver, WindowsInputController,
-    input_capability,
+    DeliveryContexts, DeliveryFailure, DriverState, GeometryLedger, InputDriver,
+    WindowsInputController, input_capability,
 };
 
 #[derive(Debug, Default)]
@@ -99,7 +104,7 @@ impl InputDriver for ScriptedDriver {
         event: &InputEvent,
         _geometry: PointerGeometry,
         _state: &mut DriverState,
-        _operation: &OperationContext,
+        _contexts: DeliveryContexts<'_>,
     ) -> Result<(), DeliveryFailure> {
         let index = self.attempts.fetch_add(1, Ordering::AcqRel);
         if let Some((failure_index, fault, during_event)) =
@@ -247,6 +252,80 @@ fn geometry_ledger_retains_only_the_live_streams_latest_revision() {
     assert_eq!(ledger.source_transform(moved), None);
 }
 
+#[test]
+fn a_frame_waiter_cannot_observe_a_stamp_before_its_geometry_commit() {
+    let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
+    let state = Arc::new(StreamState::with_target_extent(stream));
+    let ledger = Arc::new(GeometryLedger::default());
+    let descriptor =
+        FrameDescriptor::packed(PixelExtent::new(4, 4), PixelFormat::Bgra8).expect("descriptor");
+    let storage: Arc<dyn FrameStorage> = Arc::new(
+        CpuFrameStorage::new(
+            descriptor,
+            vec![0; descriptor.byte_len()].into_boxed_slice(),
+        )
+        .expect("storage"),
+    );
+    let placement = TargetPlacement::new(
+        (10.0, 20.0),
+        (4.0, 4.0),
+        Scale::new(1.0, 1.0).expect("scale"),
+    )
+    .expect("placement");
+    let publication = StoragePublication {
+        captured_at: MonotonicInstant::ORIGIN,
+        placement: Some(placement),
+        storage,
+        continuity: Continuity::Continuous,
+    };
+
+    let (waiter_started_tx, waiter_started_rx) = mpsc::channel();
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let waiter_state = Arc::clone(&state);
+    let waiter = thread::spawn(move || {
+        waiter_started_tx.send(()).expect("started");
+        let frame = waiter_state
+            .frame(&FrameRequest::latest(), &OperationContext::new())
+            .expect("frame becomes observable");
+        observed_tx.send(frame).expect("observed");
+    });
+    waiter_started_rx.recv().expect("waiter entered");
+
+    let (hook_tx, hook_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let publisher_state = Arc::clone(&state);
+    let publisher_ledger = Arc::clone(&ledger);
+    let publisher = thread::spawn(move || {
+        publisher_state
+            .publish_storage_with(publication, |frame| {
+                publisher_ledger.publish(frame);
+                hook_tx.send(frame.stamp()).expect("hook reached");
+                release_rx.recv().expect("release publication");
+            })
+            .expect("published")
+    });
+
+    let staged_stamp = hook_rx.recv().expect("metadata commit reached");
+    assert!(
+        ledger.source_transform(staged_stamp).is_some(),
+        "the ledger is populated at the pre-observe boundary"
+    );
+    assert!(
+        observed_rx.try_recv().is_err(),
+        "the frame remains unobservable while correlated metadata is staged"
+    );
+    release_tx.send(()).expect("release hook");
+
+    let observed = observed_rx.recv().expect("waiter woke");
+    assert_eq!(observed.stamp(), staged_stamp);
+    assert!(ledger.source_transform(observed.stamp()).is_some());
+    assert_eq!(
+        publisher.join().expect("publisher joined").stamp(),
+        staged_stamp
+    );
+    waiter.join().expect("waiter joined");
+}
+
 fn transform(origin: (f64, f64), revision: GeometryRevision) -> TransformSnapshot {
     let extent = PixelExtent::new(64, 48);
     let placement = TargetPlacement::new(
@@ -387,6 +466,30 @@ fn a_partial_sequence_never_retries_through_another_mode() {
             PressedState::Key(Key::Modifier(Modifier::Control))
         )]
     );
+}
+
+#[test]
+fn a_pre_send_refusal_is_unexecuted_and_never_falls_back() {
+    let target = target();
+    let driver = Arc::new(ScriptedDriver::default().fail_at(0, InputFault::FocusRequired));
+    let controller = controller(target, Arc::clone(&driver));
+    let request = InputRequest::new(
+        target,
+        chord(),
+        DeliveryPlan::ordered(vec![InputDelivery::System, InputDelivery::BackgroundTarget])
+            .expect("valid"),
+    )
+    .with_focus(FocusPolicy::ActivateIfRequired);
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("pre-send refusal is receipted");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.delivered(), 0);
+    assert_eq!(receipt.failure(), Some(InputFault::FocusRequired));
+    assert_eq!(receipt.attempted(), [InputDelivery::System]);
+    assert!(driver.delivered.lock().expect("uncontended").is_empty());
 }
 
 #[test]
