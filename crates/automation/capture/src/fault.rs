@@ -67,6 +67,13 @@ pub enum CaptureFault {
     /// limit. Releasing retained frames and mappings makes capacity available
     /// again.
     StorageBudgetExhausted,
+    /// A native surface or retained allocation exceeds an Adapter's reviewed
+    /// per-resource, per-session, or process-wide byte ceiling.
+    ///
+    /// Distinct from [`CaptureFault::StorageBudgetExhausted`], which is ordinary
+    /// transient pressure caused by retained frame leases. This fault rejects a
+    /// shape or allocation request before the native or Rust allocation begins.
+    ResourceLimitExceeded,
 }
 
 impl CaptureFault {
@@ -89,7 +96,9 @@ impl CaptureFault {
             CaptureFault::TargetLost
             | CaptureFault::CaptureItemClosed
             | CaptureFault::DisplayDisconnected => Status::TargetLost,
-            CaptureFault::StorageBudgetExhausted => Status::LimitExceeded,
+            CaptureFault::StorageBudgetExhausted | CaptureFault::ResourceLimitExceeded => {
+                Status::LimitExceeded
+            }
             CaptureFault::SourceInvalid
             | CaptureFault::AccessDenied
             | CaptureFault::DeviceRemoved
@@ -122,6 +131,9 @@ impl CaptureFault {
             CaptureFault::ExplicitlyStopped => "capture was explicitly stopped",
             CaptureFault::StorageBudgetExhausted => {
                 "every unit of the session's storage budget is retained by a caller"
+            }
+            CaptureFault::ResourceLimitExceeded => {
+                "native capture resource exceeds its reviewed allocation limit"
             }
         }
     }
@@ -163,6 +175,10 @@ mod tests {
         assert_eq!(CaptureFault::SessionClosed.status(), Status::Closed);
         assert_eq!(CaptureFault::SourceInvalid.status(), Status::CaptureFailed);
         assert_eq!(CaptureFault::DeviceRemoved.status(), Status::CaptureFailed);
+        assert_eq!(
+            CaptureFault::ResourceLimitExceeded.status(),
+            Status::LimitExceeded
+        );
         assert_eq!(
             CaptureFault::DisplayDisconnected.status(),
             Status::TargetLost

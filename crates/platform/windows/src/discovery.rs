@@ -19,16 +19,15 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetClientRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, IsWindow, IsWindowVisible,
+    EnumWindows, GetClientRect, GetWindowTextLengthW, GetWindowTextW, IsWindow, IsWindowVisible,
 };
 use windows::core::BOOL;
 
 use crate::availability::capture_item_factory;
 use crate::optional_api::{logical_to_physical, monitor_scale, window_dpi};
+use crate::storage::validate_surface;
 
 const DEFAULT_DPI: u32 = 96;
-const MAX_CLASS_NAME: usize = 256;
 
 /// The stable native lookup key. It is never exposed through a public contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -60,23 +59,7 @@ impl NativeKey {
     }
 }
 
-/// Native observations that distinguish a window incarnation from an obvious
-/// handle replacement. The retained WGC item and its Closed event provide the
-/// authoritative lifetime signal; this fingerprint rejects replacement before
-/// that event is delivered.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Fingerprint {
-    Window {
-        process_id: u32,
-        thread_id: u32,
-        class_name: String,
-    },
-    Display {
-        device_name: String,
-    },
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TargetMetadata {
     pub(crate) name: String,
     pub(crate) extent: PixelExtent,
@@ -100,12 +83,30 @@ impl TargetMetadata {
     }
 }
 
+pub(crate) enum CaptureItem {
+    Native(GraphicsCaptureItem),
+    #[cfg(test)]
+    Synthetic(u64),
+}
+
+impl std::fmt::Debug for CaptureItem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Native(_) => formatter.write_str("CaptureItem::Native"),
+            #[cfg(test)]
+            Self::Synthetic(identity) => formatter
+                .debug_tuple("CaptureItem::Synthetic")
+                .field(identity)
+                .finish(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Candidate {
     pub(crate) key: NativeKey,
-    pub(crate) fingerprint: Fingerprint,
     pub(crate) metadata: TargetMetadata,
-    pub(crate) item: GraphicsCaptureItem,
+    pub(crate) item: CaptureItem,
 }
 
 pub(crate) fn inventory() -> Result<Vec<Candidate>> {
@@ -171,23 +172,14 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
             continue;
         };
 
-        let mut process_id = 0;
-        // SAFETY: the output points to a valid local u32 and hwnd was validated.
-        let thread_id = unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut process_id)) };
-        let class_name = window_class(hwnd);
         candidates.push(Candidate {
             key: NativeKey::Window(raw),
-            fingerprint: Fingerprint::Window {
-                process_id,
-                thread_id,
-                class_name,
-            },
             metadata: TargetMetadata {
                 name,
                 extent,
                 placement,
             },
-            item,
+            item: CaptureItem::Native(item),
         });
     }
     Ok(candidates)
@@ -216,15 +208,12 @@ fn display_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candi
         let placement = monitor_placement(monitor, bounds, extent)?;
         candidates.push(Candidate {
             key: NativeKey::Display(raw),
-            fingerprint: Fingerprint::Display {
-                device_name: device_name.clone(),
-            },
             metadata: TargetMetadata {
                 name: device_name,
                 extent,
                 placement,
             },
-            item,
+            item: CaptureItem::Native(item),
         });
     }
     Ok(candidates)
@@ -304,18 +293,6 @@ fn window_title(hwnd: HWND) -> Option<String> {
     let written = unsafe { GetWindowTextW(hwnd, &mut buffer) };
     let written = usize::try_from(written).ok()?;
     (written > 0).then(|| String::from_utf16_lossy(&buffer[..written]))
-}
-
-fn window_class(hwnd: HWND) -> String {
-    let mut buffer = [0u16; MAX_CLASS_NAME];
-    // SAFETY: buffer is writable and hwnd is from the current enumeration.
-    let written = unsafe { GetClassNameW(hwnd, &mut buffer) };
-    usize::try_from(written)
-        .ok()
-        .filter(|length| *length > 0)
-        .map_or_else(String::new, |length| {
-            String::from_utf16_lossy(&buffer[..length])
-        })
 }
 
 fn window_placement(hwnd: HWND, extent: PixelExtent) -> Option<TargetPlacement> {
@@ -428,10 +405,10 @@ fn placement_with_scale(
 }
 
 fn positive_extent(width: i32, height: i32) -> Option<PixelExtent> {
-    Some(PixelExtent::new(
-        u32::try_from(width).ok().filter(|value| *value > 0)?,
-        u32::try_from(height).ok().filter(|value| *value > 0)?,
-    ))
+    let width = u32::try_from(width).ok().filter(|value| *value > 0)?;
+    let height = u32::try_from(height).ok().filter(|value| *value > 0)?;
+    validate_surface(width, height).ok()?;
+    Some(PixelExtent::new(width, height))
 }
 
 #[cfg(test)]

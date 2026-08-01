@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use mado_pilot_capture::{
     CaptureFault, CaptureSession, CoordinateSupport, Frame, FrameRequest, Lifecycle, PixelFormat,
+    RetainedStoragePolicy,
 };
 use mado_pilot_core::{
     CancellationToken, Clock, CoordinateSpace, IdentityIssuer, Operation, OperationContext,
@@ -386,6 +387,11 @@ fn a_display_session_publishes_frames_that_cover_the_display() {
         description.queue().retained_storage(),
         Some(DETACHED_BUFFER_BUDGET),
         "the finite detached budget is what the caller is told about"
+    );
+    assert_eq!(
+        description.queue().retained_storage_policy(),
+        Some(RetainedStoragePolicy::Guaranteed),
+        "the macOS detached pool is isolated per session"
     );
 
     let frame = next_frame(&session, FrameRequest::latest()).expect("the display produces frames");

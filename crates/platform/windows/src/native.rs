@@ -32,8 +32,9 @@ use windows::core::{IInspectable, Interface};
 use crate::availability::{create_free_threaded_frame_pool, ensure_winrt_apartment};
 use crate::discovery::{NativeKey, TargetMetadata, current_placement};
 use crate::storage::{
-    DETACHED_TEXTURE_BUDGET, DeviceDomain, DeviceTerminal, StorageFailureSink, TexturePool,
-    WindowsFrameStorage, descriptor_from_native, native_fault,
+    DeviceDomain, DeviceTerminal, RetainedBytes, SessionMemory, StorageFailureSink, TexturePool,
+    WindowsFrameStorage, descriptor_from_native, native_fault, retained_storage_capacity,
+    validate_surface,
 };
 
 const WGC_PRODUCER_POOL_SIZE: i32 = 2;
@@ -58,13 +59,46 @@ struct RuntimeState {
     close_fault_reported: bool,
 }
 
-struct NativeResources {
+type NativeResources = Arc<NativeOwnership<WgcResources>>;
+
+struct NativeOwnership<T> {
+    native: T,
+    producer_bytes: Mutex<RetainedBytes>,
+}
+
+struct WgcResources {
     item: GraphicsCaptureItem,
     frame_pool: Direct3D11CaptureFramePool,
     capture: GraphicsCaptureSession,
     frame_token: i64,
     closed_token: i64,
-    teardown_permit: TeardownPermit,
+    _teardown_permit: TeardownPermit,
+}
+
+impl<T> NativeOwnership<T> {
+    fn new(native: T, producer_bytes: RetainedBytes) -> Arc<Self> {
+        Arc::new(Self {
+            native,
+            producer_bytes: Mutex::new(producer_bytes),
+        })
+    }
+
+    fn replace_producer_after_recreate(
+        &self,
+        replacement: RetainedBytes,
+        recreate: impl FnOnce() -> std::result::Result<(), CaptureFault>,
+    ) -> std::result::Result<(), CaptureFault> {
+        let mut current = match self.producer_bytes.try_lock() {
+            Ok(current) => current,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Err(CaptureFault::SourceInvalid),
+        };
+        recreate()?;
+        let retired = std::mem::replace(&mut *current, replacement);
+        drop(current);
+        drop(retired);
+        Ok(())
+    }
 }
 
 struct SessionCore {
@@ -72,6 +106,9 @@ struct SessionCore {
     key: NativeKey,
     state: StreamState,
     domain: Arc<DeviceDomain>,
+    memory: Arc<SessionMemory>,
+    native: OnceLock<Weak<NativeOwnership<WgcResources>>>,
+    retained_storage_capacity: NonZeroU32,
     device_terminal: Arc<DeviceTerminal>,
     textures: Arc<TexturePool>,
     callbacks: Arc<CallbackControl>,
@@ -80,7 +117,7 @@ struct SessionCore {
     transition: Mutex<TransitionState>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct TransitionState {
     extent: PixelExtent,
     placement: TargetPlacement,
@@ -164,14 +201,29 @@ impl NativeSession {
         let teardown_permit = teardown.reserve(operation)?;
         let clock_anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
         let domain = DeviceDomain::create()?;
+        let layout = validate_surface(metadata.extent.width(), metadata.extent.height())?;
+        let retained_storage_capacity = retained_storage_capacity(layout)?;
+        let memory = SessionMemory::production();
+        let producer_bytes = layout
+            .bytes()
+            .checked_mul(u64::try_from(WGC_PRODUCER_POOL_SIZE).expect("positive pool size"))
+            .ok_or(CaptureFault::ResourceLimitExceeded)?;
+        let producer_bytes = memory.reserve(producer_bytes)?;
         let device_terminal = Arc::new(DeviceTerminal::default());
-        let textures = TexturePool::new(Arc::clone(&domain));
+        let textures = TexturePool::new(
+            Arc::clone(&domain),
+            Arc::clone(&memory),
+            retained_storage_capacity,
+        );
         let callbacks = Arc::new(CallbackControl::default());
         let core = Arc::new(SessionCore {
             target_kind: kind,
             key,
             state: StreamState::with_target_extent(stream),
             domain,
+            memory,
+            native: OnceLock::new(),
+            retained_storage_capacity,
             device_terminal,
             textures,
             callbacks: Arc::clone(&callbacks),
@@ -250,6 +302,20 @@ impl NativeSession {
             }
         };
 
+        let resources = NativeOwnership::new(
+            WgcResources {
+                item,
+                frame_pool,
+                capture,
+                frame_token,
+                closed_token,
+                _teardown_permit: teardown_permit,
+            },
+            producer_bytes,
+        );
+        core.native
+            .set(Arc::downgrade(&resources))
+            .expect("native ownership initializes once");
         let description = SessionDescription::new(
             target,
             stream,
@@ -257,22 +323,12 @@ impl NativeSession {
             mado_pilot_capture::PixelFormat::Bgra8,
             mado_pilot_capture::CoordinateSupport::with_target_placement(),
         )
-        .with_queue(
-            QueuePolicy::new(NonZeroU32::MIN, OverflowPolicy::Reject)
-                .with_retained_storage(DETACHED_TEXTURE_BUDGET),
-        );
+        .with_queue(session_queue_policy(retained_storage_capacity));
         let session = Arc::new(Self {
             description,
             core,
             runtime: Mutex::new(RuntimeState {
-                resources: Some(NativeResources {
-                    item,
-                    frame_pool,
-                    capture,
-                    frame_token,
-                    closed_token,
-                    teardown_permit,
-                }),
+                resources: Some(resources),
                 frame_handler_removed: false,
                 close_task: None,
                 close_result: None,
@@ -287,6 +343,7 @@ impl NativeSession {
                 .resources
                 .as_ref()
                 .expect("resources exist before start")
+                .native
                 .capture
                 .StartCapture()
                 .map_err(|error| native_target_fault(error, kind))?;
@@ -307,10 +364,12 @@ impl NativeSession {
                 None
             } else {
                 runtime.frame_handler_removed = true;
-                runtime
-                    .resources
-                    .as_ref()
-                    .map(|resources| (resources.frame_pool.clone(), resources.frame_token))
+                runtime.resources.as_ref().map(|resources| {
+                    (
+                        resources.native.frame_pool.clone(),
+                        resources.native.frame_token,
+                    )
+                })
             }
         };
         if let Some((frame_pool, frame_token)) = handler {
@@ -436,32 +495,33 @@ impl NativeSession {
     }
 }
 
+fn session_queue_policy(retained_storage_capacity: NonZeroU32) -> QueuePolicy {
+    QueuePolicy::new(NonZeroU32::MIN, OverflowPolicy::LatestWins)
+        .with_process_shared_retained_storage(retained_storage_capacity)
+}
+
 fn close_native_resources(
     resources: NativeResources,
     capture_already_ended: bool,
 ) -> std::result::Result<(), CaptureFault> {
-    let NativeResources {
-        item,
-        frame_pool,
-        capture,
-        frame_token: _,
-        closed_token,
-        teardown_permit,
-    } = resources;
     // Item.Closed is the one state proving WGC already ended the capture.
     // Ordinary close and unrelated stream terminal faults still invoke Close.
     let capture_result = if capture_already_ended {
         Ok(())
     } else {
-        native_close_result(capture.Close())
+        native_close_result(resources.native.capture.Close())
     };
-    let _closed = item.RemoveClosed(closed_token);
-    let pool_result = native_close_result(frame_pool.Close());
+    let _closed = resources
+        .native
+        .item
+        .RemoveClosed(resources.native.closed_token);
+    let pool_result = native_close_result(resources.native.frame_pool.Close());
     let close_fault = capture_result.err().or_else(|| pool_result.err());
-    drop(frame_pool);
-    drop(capture);
-    drop(item);
-    drop(teardown_permit);
+    // Callback drain guarantees the teardown job owns the final strong native
+    // owner. Dropping it releases the frame pool and its producer reservation
+    // together, independently of the closed SessionCore handle lifetime.
+    debug_assert_eq!(Arc::strong_count(&resources), 1);
+    drop(resources);
     close_fault.map_or(Ok(()), Err)
 }
 
@@ -477,8 +537,9 @@ impl TeardownJob {
         } = self;
         if remove_frame_handler {
             let _frame = resources
+                .native
                 .frame_pool
-                .RemoveFrameArrived(resources.frame_token);
+                .RemoveFrameArrived(resources.native.frame_token);
         }
         let capture_already_ended =
             capture_already_ended_after_drain(drain_callbacks, &callbacks, &native_ended);
@@ -918,6 +979,21 @@ impl SessionCore {
         let extent = positive_extent(content_size)?;
 
         if extent != transition.extent {
+            let layout = validate_surface(extent.width(), extent.height())?;
+            if retained_storage_capacity(layout)? < self.retained_storage_capacity {
+                return Err(CaptureFault::ResourceLimitExceeded);
+            }
+            let producer_bytes = layout
+                .bytes()
+                .checked_mul(u64::try_from(WGC_PRODUCER_POOL_SIZE).expect("positive pool size"))
+                .ok_or(CaptureFault::ResourceLimitExceeded)?;
+            let producer_bytes = self.memory.reserve(producer_bytes).map_err(|error| {
+                if error.status() == mado_pilot_core::Status::LimitExceeded {
+                    CaptureFault::ResourceLimitExceeded
+                } else {
+                    CaptureFault::SourceInvalid
+                }
+            })?;
             // The transition frame and its producer surface are released before
             // pool recreation. The first frame from the recreated pool receives
             // the discontinuity.
@@ -927,14 +1003,21 @@ impl SessionCore {
                     .device_fault()
                     .unwrap_or(CaptureFault::SourceInvalid)
             })?;
-            sender
-                .Recreate(
-                    &device,
-                    DirectXPixelFormat::B8G8R8A8UIntNormalized,
-                    WGC_PRODUCER_POOL_SIZE,
-                    content_size,
-                )
-                .map_err(native_fault)?;
+            let native = self
+                .native
+                .get()
+                .and_then(Weak::upgrade)
+                .ok_or(CaptureFault::SessionClosed)?;
+            native.replace_producer_after_recreate(producer_bytes, || {
+                sender
+                    .Recreate(
+                        &device,
+                        DirectXPixelFormat::B8G8R8A8UIntNormalized,
+                        WGC_PRODUCER_POOL_SIZE,
+                        content_size,
+                    )
+                    .map_err(native_fault)
+            })?;
             let _retired = self.textures.try_retire_for_resize();
             transition.extent = extent;
             transition.pending_discontinuity = transition.published;
@@ -968,8 +1051,7 @@ impl SessionCore {
         let mut native_descriptor = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: output is valid for the complete descriptor.
         unsafe { source.GetDesc(&raw mut native_descriptor) };
-        let descriptor = descriptor_from_native(&native_descriptor, extent)
-            .map_err(|_| CaptureFault::UnsupportedFormat)?;
+        let descriptor = descriptor_from_native(&native_descriptor, extent)?;
 
         let lease = self.textures.try_acquire(native_descriptor).map_err(|_| {
             self.domain
@@ -1009,6 +1091,7 @@ impl SessionCore {
                 .cloned()
                 .expect("failure sink initialized before capture starts"),
             Arc::clone(&self.device_terminal),
+            Arc::clone(&self.memory),
         );
         self.state
             .publish_storage(StoragePublication {
@@ -1202,6 +1285,7 @@ impl Drop for CallbackLease {
 }
 
 fn native_size(extent: PixelExtent) -> Result<SizeInt32> {
+    validate_surface(extent.width(), extent.height())?;
     Ok(SizeInt32 {
         Width: i32::try_from(extent.width()).map_err(|_| CaptureFault::InconsistentDescriptor)?,
         Height: i32::try_from(extent.height()).map_err(|_| CaptureFault::InconsistentDescriptor)?,
@@ -1214,6 +1298,7 @@ fn positive_extent(size: SizeInt32) -> std::result::Result<PixelExtent, CaptureF
     if width == 0 || height == 0 {
         return Err(CaptureFault::InconsistentDescriptor);
     }
+    validate_surface(width, height)?;
     Ok(PixelExtent::new(width, height))
 }
 
@@ -1284,28 +1369,424 @@ fn lock_with_operation<'mutex>(
 #[cfg(test)]
 mod tests {
     use std::io;
+    use std::mem::ManuallyDrop;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use mado_pilot_capture::CaptureFault;
-    use mado_pilot_core::{
-        CancellationToken, MonotonicInstant, Operation, OperationContext, PixelExtent, Scale,
-        Status, TargetPlacement,
+    use mado_pilot_capture::{
+        CaptureFault, Continuity, CoordinateSupport, CpuPixels, FrameDescriptor, FrameRequest,
+        OverflowPolicy, PixelFormat, Publication, RetainedStoragePolicy, SessionDescription,
+        StreamState,
     };
+    use mado_pilot_core::{
+        CancellationToken, IdentityIssuer, MonotonicInstant, Operation, OperationContext,
+        PixelExtent, ProviderId, Scale, Status, TargetPlacement,
+    };
+    use windows::Graphics::SizeInt32;
     use windows::Win32::Foundation::RO_E_CLOSED;
 
+    use crate::storage::{
+        GLOBAL_RETAINED_BYTES, SESSION_RETAINED_BYTES, SessionMemory, retained_storage_capacity,
+        validate_surface,
+    };
+
     use super::{
-        CallbackControl, TEARDOWN_QUEUE_CAPACITY, TEARDOWN_WORKER_COUNT, TeardownExecutorSlot,
-        TeardownPermits, TransitionState, capture_already_ended_after_drain, frame_time,
-        map_worker_start, native_close_result, normalize_native_fault,
-        record_authoritative_native_end, start_teardown_executor_with, target_fault,
-        teardown_channel, teardown_executor_from_slot,
+        CallbackControl, NativeOwnership, TEARDOWN_QUEUE_CAPACITY, TEARDOWN_WORKER_COUNT,
+        TeardownExecutorSlot, TeardownPermits, TransitionState, WGC_PRODUCER_POOL_SIZE,
+        capture_already_ended_after_drain, frame_time, map_worker_start, native_close_result,
+        native_size, normalize_native_fault, positive_extent, record_authoritative_native_end,
+        session_queue_policy, start_teardown_executor_with, target_fault, teardown_channel,
+        teardown_executor_from_slot,
     };
 
     static STALLED_INITIALIZERS: AtomicUsize = AtomicUsize::new(0);
     static RELEASE_INITIALIZERS: AtomicBool = AtomicBool::new(false);
+
+    struct NativeDropProbe {
+        memory: Arc<SessionMemory>,
+        observed: Arc<AtomicBool>,
+        expected: u64,
+    }
+
+    impl Drop for NativeDropProbe {
+        fn drop(&mut self) {
+            assert_eq!(
+                self.memory.usage(),
+                (self.expected, self.expected),
+                "producer bytes remain charged until the native payload drops"
+            );
+            self.observed.store(true, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn r1_2_initial_pool_and_resize_validate_shape_before_native_allocation() {
+        native_size(PixelExtent::new(8192, 4096)).expect("exact surface ceiling");
+        assert_eq!(
+            native_size(PixelExtent::new(8192, 4097))
+                .expect_err("initial frame pool is refused before CreateFreeThreaded")
+                .status(),
+            Status::LimitExceeded
+        );
+        assert_eq!(
+            positive_extent(SizeInt32 {
+                Width: 8192,
+                Height: 4097,
+            }),
+            Err(CaptureFault::ResourceLimitExceeded),
+            "resize is refused before FramePool::Recreate"
+        );
+    }
+
+    #[test]
+    fn r1_2_producer_reservation_stays_with_queued_native_ownership_until_close() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let native_dropped = Arc::new(AtomicBool::new(false));
+        let owner = NativeOwnership::new(
+            NativeDropProbe {
+                memory: Arc::clone(&memory),
+                observed: Arc::clone(&native_dropped),
+                expected: 128,
+            },
+            memory.reserve(128).expect("initial producer reservation"),
+        );
+        let closed_session_link = Arc::downgrade(&owner);
+        let (sender, queued) = mpsc::sync_channel(1);
+
+        sender
+            .try_send(owner)
+            .expect("teardown queue accepts owner");
+        assert_eq!(
+            memory.usage(),
+            (128, 128),
+            "queued native resources keep both counters charged"
+        );
+
+        let closing = queued.recv().expect("worker receives native owner");
+        drop(closing);
+        assert_eq!(
+            memory.usage(),
+            (0, 0),
+            "native close releases producer bytes even while the closed core link remains"
+        );
+        assert!(closed_session_link.upgrade().is_none());
+        assert!(
+            native_dropped.load(Ordering::Acquire),
+            "the queued native payload actually closed before its charge released"
+        );
+    }
+
+    #[test]
+    fn r1_2_producer_reservation_stays_charged_in_quarantine() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let owner = NativeOwnership::new(
+            (),
+            memory.reserve(192).expect("initial producer reservation"),
+        );
+        let quarantined = ManuallyDrop::new(owner);
+
+        assert_eq!(
+            memory.usage(),
+            (192, 192),
+            "quarantined native ownership must not undercount live resources"
+        );
+
+        // Production quarantine is process-lifetime. Recover only so this
+        // isolated test can prove the final native-owner release is exact.
+        drop(ManuallyDrop::into_inner(quarantined));
+        assert_eq!(memory.usage(), (0, 0));
+    }
+
+    #[test]
+    fn r1_2_resize_replaces_producer_reservation_only_after_native_success() {
+        let memory = SessionMemory::testing_isolated(512, 512);
+        let owner = NativeOwnership::new(
+            (),
+            memory.reserve(64).expect("initial producer reservation"),
+        );
+
+        let held = owner
+            .producer_bytes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let replacement = memory.reserve(96).expect("contended replacement");
+        let contention = owner.replace_producer_after_recreate(replacement, || {
+            panic!("contended replacement must refuse before native recreation")
+        });
+        assert_eq!(contention, Err(CaptureFault::SourceInvalid));
+        drop(held);
+        assert_eq!(
+            memory.usage(),
+            (64, 64),
+            "non-blocking contention keeps only the current producer lease"
+        );
+
+        let replacement = memory.reserve(96).expect("replacement is pre-reserved");
+        let failure = owner.replace_producer_after_recreate(replacement, || {
+            assert_eq!(
+                memory.usage(),
+                (160, 160),
+                "old and replacement reservations cover native recreation"
+            );
+            Err(CaptureFault::SourceInvalid)
+        });
+        assert_eq!(failure, Err(CaptureFault::SourceInvalid));
+        assert_eq!(
+            memory.usage(),
+            (64, 64),
+            "failed recreation keeps the old owner and retires the replacement"
+        );
+
+        let replacement = memory.reserve(96).expect("replacement retry");
+        owner
+            .replace_producer_after_recreate(replacement, || {
+                assert_eq!(memory.usage(), (160, 160));
+                Ok(())
+            })
+            .expect("recreation succeeds");
+        assert_eq!(
+            memory.usage(),
+            (96, 96),
+            "success retires exactly the old reservation"
+        );
+
+        drop(owner);
+        assert_eq!(memory.usage(), (0, 0));
+    }
+
+    #[test]
+    fn r1_3_declared_latest_wins_matches_two_publications_before_observation() {
+        let issuer = IdentityIssuer::new();
+        let state = StreamState::with_target_extent(issuer.issue_stream().expect("stream"));
+        let descriptor = FrameDescriptor::packed(PixelExtent::new(2, 2), PixelFormat::Bgra8)
+            .expect("descriptor");
+        let publish = |fill| Publication {
+            captured_at: MonotonicInstant::ORIGIN,
+            descriptor,
+            placement: None,
+            pixels: vec![fill; descriptor.byte_len()].into_boxed_slice(),
+            continuity: Continuity::Continuous,
+        };
+
+        let first = state.publish(publish(0x11)).expect("first publication");
+        let second = state.publish(publish(0x22)).expect("second publication");
+        let observed = state
+            .frame(&FrameRequest::latest(), &OperationContext::new())
+            .expect("latest frame");
+
+        assert_eq!(
+            session_queue_policy(std::num::NonZeroU32::MIN).overflow(),
+            OverflowPolicy::LatestWins
+        );
+        assert_eq!(observed.stamp(), second.stamp());
+        assert_eq!(
+            second.stamp().sequence().value(),
+            first.stamp().sequence().value() + 1,
+            "supersession itself invents no producer-drop gap"
+        );
+        assert_eq!(
+            observed
+                .map(PixelFormat::Bgra8, &OperationContext::new())
+                .expect("mapping")
+                .bytes(),
+            &[0x22; 16]
+        );
+    }
+
+    #[test]
+    fn r1_2_production_multi_session_description_matches_shared_pressure_and_resume() {
+        let layout = validate_surface(3840, 2160).expect("4K layout");
+        let surface_bytes = layout.bytes();
+        let capacity = retained_storage_capacity(layout).expect("4K retained capacity");
+        assert_eq!(capacity.get(), 40);
+        let producer_bytes = surface_bytes
+            .checked_mul(u64::try_from(WGC_PRODUCER_POOL_SIZE).expect("positive producer count"))
+            .expect("producer bytes");
+        let memories =
+            SessionMemory::testing_shared(SESSION_RETAINED_BYTES, GLOBAL_RETAINED_BYTES, 3);
+        let first_producer = memories[0]
+            .reserve(producer_bytes)
+            .expect("first session admitted");
+        let second_producer = memories[1]
+            .reserve(producer_bytes)
+            .expect("second session admitted");
+        let third_producer = memories[2]
+            .reserve(producer_bytes)
+            .expect("third session admitted");
+        let issuer = IdentityIssuer::new();
+        let descriptions: Vec<_> = (0..3)
+            .map(|_| {
+                SessionDescription::new(
+                    issuer
+                        .issue_target(ProviderId::new("windows"))
+                        .expect("target"),
+                    issuer.issue_stream().expect("stream"),
+                    PixelExtent::new(3840, 2160),
+                    PixelFormat::Bgra8,
+                    CoordinateSupport::with_target_placement(),
+                )
+                .with_queue(session_queue_policy(capacity))
+            })
+            .collect();
+        for description in &descriptions {
+            assert_eq!(description.queue().retained_storage(), Some(capacity));
+            assert_eq!(
+                description.queue().retained_storage_policy(),
+                Some(RetainedStoragePolicy::ProcessShared),
+                "every admitted session reports that its local maximum shares process backing"
+            );
+        }
+
+        let state = StreamState::with_target_extent(descriptions[2].stream());
+        let descriptor = FrameDescriptor::packed(PixelExtent::new(2, 2), PixelFormat::Bgra8)
+            .expect("descriptor");
+        let publish = |descriptor, fill, continuity| Publication {
+            captured_at: MonotonicInstant::ORIGIN,
+            descriptor,
+            placement: None,
+            pixels: vec![fill; descriptor.byte_len()].into_boxed_slice(),
+            continuity,
+        };
+        let first_fill = memories[0]
+            .reserve(SESSION_RETAINED_BYTES - producer_bytes)
+            .expect("first session reaches its exact local ceiling");
+        let zero_retained_fill_bytes = GLOBAL_RETAINED_BYTES
+            .checked_sub(SESSION_RETAINED_BYTES)
+            .and_then(|remaining| remaining.checked_sub(producer_bytes * 2))
+            .expect("remaining process budget");
+        let zero_retained_fill = memories[1]
+            .reserve(zero_retained_fill_bytes)
+            .expect("other sessions consume the exact remaining process budget");
+        assert_eq!(memories[2].usage().1, GLOBAL_RETAINED_BYTES);
+
+        assert_eq!(
+            memories[2]
+                .reserve(surface_bytes)
+                .expect_err("shared pressure can refuse below the local count")
+                .status(),
+            Status::LimitExceeded
+        );
+        assert!(
+            !state
+                .try_record_drop()
+                .expect("pre-publication pressure is bounded"),
+            "before the first frame there is no identity on which to expose a gap"
+        );
+
+        drop(zero_retained_fill);
+        let third_first_storage = memories[2]
+            .reserve(surface_bytes)
+            .expect("global release admits the session's first retained allocation");
+        let first = state
+            .publish(publish(descriptor, 0x31, Continuity::Continuous))
+            .expect("first publication");
+
+        let after_first_fill_bytes = GLOBAL_RETAINED_BYTES
+            .checked_sub(SESSION_RETAINED_BYTES)
+            .and_then(|remaining| remaining.checked_sub(producer_bytes * 2 + surface_bytes))
+            .expect("remaining process budget after the first storage");
+        let after_first_fill = memories[1]
+            .reserve(after_first_fill_bytes)
+            .expect("other sessions refill the process budget");
+        assert_eq!(memories[2].usage().1, GLOBAL_RETAINED_BYTES);
+        assert_eq!(
+            memories[2]
+                .reserve(surface_bytes)
+                .expect_err("shared pressure refuses another below-local-count allocation")
+                .status(),
+            Status::LimitExceeded
+        );
+        assert!(
+            state.try_record_drop().expect("pressure drop recorded"),
+            "a prior publication makes process pressure observable"
+        );
+
+        drop(after_first_fill);
+        let resumed_storage = memories[2]
+            .reserve(surface_bytes)
+            .expect("global release resumes the contended session at a resize");
+        let resized_descriptor =
+            FrameDescriptor::packed(PixelExtent::new(3, 2), PixelFormat::Bgra8)
+                .expect("resized descriptor");
+        let discontinuous = state
+            .publish(publish(resized_descriptor, 0x32, Continuity::Discontinuous))
+            .expect("resized publication");
+        assert_eq!(
+            discontinuous.stamp().sequence().value(),
+            0,
+            "a resized epoch still starts at FIRST"
+        );
+        assert_ne!(
+            discontinuous.stamp().epoch(),
+            first.stamp().epoch(),
+            "the resize advances the stream epoch"
+        );
+
+        drop(third_first_storage);
+        let pressure_visible_storage = memories[2]
+            .reserve(surface_bytes)
+            .expect("old-storage release admits the next same-size frame");
+        let pressure_visible = state
+            .publish(publish(resized_descriptor, 0x33, Continuity::Continuous))
+            .expect("continuous publication after the resize");
+        assert_eq!(
+            pressure_visible.stamp().sequence().value(),
+            discontinuous.stamp().sequence().value() + 2,
+            "the pre-resize shared-pressure refusal remains visible after FIRST"
+        );
+
+        drop(pressure_visible_storage);
+        drop(resumed_storage);
+        drop(first_fill);
+        drop(first_producer);
+        drop(second_producer);
+        drop(third_producer);
+        assert_eq!(memories[0].usage().1, 0);
+    }
+
+    #[test]
+    fn r1_2_process_shared_mapping_stays_charged_after_session_close_until_pixels_release() {
+        let layout = validate_surface(3840, 2160).expect("4K layout");
+        let mapping_bytes = layout.bytes().checked_mul(2).expect("staging plus output");
+        let mut memories =
+            SessionMemory::testing_shared(SESSION_RETAINED_BYTES, GLOBAL_RETAINED_BYTES, 4);
+        let source = memories.remove(0);
+        let mapping = source
+            .reserve(mapping_bytes)
+            .expect("mapping admitted before close");
+        let retainer: Arc<dyn Send + Sync> = Arc::new(mapping);
+        let pixels = Arc::new(CpuPixels::with_retainer(
+            vec![0; 1].into_boxed_slice(),
+            retainer,
+        ));
+        drop(source);
+
+        let first_peer = memories[0]
+            .reserve(SESSION_RETAINED_BYTES)
+            .expect("first peer reaches its local ceiling");
+        let second_peer = memories[1]
+            .reserve(GLOBAL_RETAINED_BYTES - SESSION_RETAINED_BYTES - mapping_bytes)
+            .expect("mapping plus peers reaches the exact global ceiling");
+        assert_eq!(memories[2].usage().1, GLOBAL_RETAINED_BYTES);
+        assert_eq!(
+            memories[2]
+                .reserve(1)
+                .expect_err("closed-session pixels still consume shared backing")
+                .status(),
+            Status::LimitExceeded
+        );
+
+        drop(pixels);
+        let resumed = memories[2]
+            .reserve(1)
+            .expect("final mapped-pixel release resumes another session");
+        drop(resumed);
+        drop(second_peer);
+        drop(first_peer);
+        assert_eq!(memories[0].usage().1, 0);
+    }
 
     fn stalled_teardown_initializer() -> Result<(), CaptureFault> {
         STALLED_INITIALIZERS.fetch_add(1, Ordering::AcqRel);

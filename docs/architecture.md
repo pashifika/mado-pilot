@@ -776,7 +776,7 @@ responsibilities a later phase takes on.
 | Capture contracts, immutable frames, frame views, CPU mapping | Implemented in `mado-pilot-capture` |
 | Adapter-facing opaque frame storage, storage publication, terminal stream faults | Implemented in `mado-pilot-capture`; Windows adds independently retained D3D11 storage and macOS detached Core Video storage, each with lazy CPU mapping |
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
-| Windows native capture ownership policy | Implemented for the production Adapter's two-frame WGC pool, finite 40-texture detached budget, lease-safe reuse, resize retirement, callback fence, and teardown; the revision-bound acceptance matrix and Phase 2 `G-013` budgets remain open |
+| Windows native capture ownership policy | Implemented for the production Adapter's two-frame WGC pool, extent-derived process-shared retained maximum capped at 40, 128 MiB surface / 2 GiB session / 4 GiB process safety ceilings, lease-safe reuse, resize retirement, callback fence, and teardown; the revision-bound acceptance matrix and Phase 2 `G-013` performance budgets remain open |
 | macOS shim language and containment rules | Decided in [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the retained `G-003` measurements, and implemented in `mado-pilot-platform-macos` with the containment, ownership, autorelease, fence, teardown, panic, and linkage tests the record named. The containment and ownership cases need a host that has granted Screen Recording and report a skip elsewhere |
 | macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, reference-counted native session lifetime, and idempotent teardown. The lifetime is verified by running the ownership scenarios with the shim compiled under AddressSanitizer, which is step 10 of the [contributing](../CONTRIBUTING.md) sequence and needs the same granted host those scenarios do; the detached budget is a reviewed rather than a measured bound and the Phase 2 `G-013` budgets remain open |
 | Native window and display capture | Implemented on both targets as directly consumable capture Adapters; native facade wiring remains a later Change |
@@ -929,10 +929,12 @@ state, so a caller waiting for a frame is told that the target was lost or the
 device failed rather than that the session closed. Session close remains
 idempotent after one. A session description's `QueuePolicy` reports its handoff
 capacity and, when the Adapter has selected one, a separate non-zero
-`retained_storage` capacity; an absent value means that the Adapter has not
-declared that platform policy. `CaptureFault::StorageBudgetExhausted` is the
-observable bounded outcome when a retaining caller has consumed the declared
-finite storage budget.
+`retained_storage` count plus `RetainedStoragePolicy`. `Guaranteed` means other
+sessions cannot reduce the declared capacity. `ProcessShared` means the count is
+a session-local maximum and another session may consume its process-wide backing
+first; an absent count and policy mean that the Adapter has not declared that
+platform policy. `CaptureFault::StorageBudgetExhausted` is the observable bounded
+outcome when a retaining caller has consumed a guaranteed finite storage budget.
 
 ### Input contracts
 
@@ -999,9 +1001,56 @@ allocation. Drop debt and contended lease release are recorded without waiting
 for the stream or texture-pool mutex. Mapping, matching, waits, and host
 callbacks remain outside the WGC callback.
 
+Count and bytes are separate bounds. The detached pool retains at most 40
+textures, while every BGRA surface is checked before allocation against D3D11's
+16,384-per-axis limit and a 128 MiB surface limit. The byte limit admits 8K UHD
+and therefore the dual-4K acceptance workload, without admitting the roughly
+1 GiB 16,384-square surface D3D11's independent axis limits otherwise allow.
+Producer-pool surfaces, detached textures, staging textures, and CPU mappings
+also hold non-blocking byte leases under a 2 GiB session ceiling and a shared
+4 GiB process ceiling. One 4K BGRA surface is 33,177,600 bytes, so the required
+two producer surfaces plus 30 retained frames plus one staging texture and one
+CPU output consume 1,128,038,400 bytes; two such workloads fit globally.
+Mapping carries its lease with the returned immutable CPU pixels, so bytes that
+outlive their frame or session remain accounted. The staging-plus-output lease
+is deliberately conservative: it remains charged until the mapped bytes release
+even though staging itself is shorter lived.
+
+The public retained-storage count is derived from the opening extent after
+reserving two-producer and one staging-plus-output mapping headroom, then capped
+at 40. It reports 40 at 4K and 12 at 8K UHD, and the detached pool enforces that
+derived count. Windows declares `RetainedStoragePolicy::ProcessShared`: the
+number is the session-local maximum, while other Windows sessions may consume
+the shared 4 GiB backing and cause pressure before it is reached. After a first
+publication, callback-side shared pressure publishes no invented frame. A
+resize discontinuity still begins its new epoch at sequence `FIRST`, so that
+publication cannot represent earlier pressure and does not consume its debt.
+One or more consecutive discontinuities preserve all accumulated debt; the
+first later successful non-discontinuous publication applies the stream's
+checked sequence skip and consumes only the debt represented by that committed
+gap. Counter or sequence exhaustion never wraps or consumes unrepresented debt.
+Explicit mapping may return `ResourceLimitExceeded`. The queue policy remains
+fixed after open, so resize refuses a larger extent before recreation when that
+extent could not preserve the advertised local maximum. Open and resize also
+report `ResourceLimitExceeded` before allocation when a shape or byte
+reservation cannot be admitted. These are reviewed safety ceilings, not the
+still-open Phase 2 `G-013` performance budgets.
+
+The session handoff is capacity one and truthfully reports `LatestWins`: when two
+frames publish before observation, the newer frame is returned with its own next
+sequence and the older pending frame is superseded. A producer/storage-pressure
+drop remains distinct and advances a later successful non-discontinuous
+publication across an observable sequence gap.
+
 Resize discards the size-transition frame, recreates the two-frame producer
 pool, and lets detached old-revision frames complete from old-generation
-resources. Both WinRT handlers capture lifetime-independent shared callback
+resources. The replacement producer reservation is acquired before
+`Recreate`; native failure keeps the old reservation, while success swaps and
+releases it only after native ownership changes. The producer reservation and
+frame pool live in one native-owner allocation. The core holds only a weak link,
+so queued teardown and process-lifetime quarantine remain charged, while native
+close releases the producer bytes even if a closed session handle remains.
+Both WinRT handlers capture lifetime-independent shared callback
 state rather than a raw Adapter owner. Close detaches the owner under the
 callback-admission mutex, unregisters `FrameArrived`, drains admitted callbacks,
 and publishes the fence before native teardown starts. The capture-item
@@ -1046,20 +1095,27 @@ than inferring `ExplicitlyStopped` from a still-present HWND or monitor. The
 owner's own explicit `CaptureSession::close` remains the ordinary idempotent
 close lifecycle, not a terminal capture fault.
 
-Each provider record observes its capture item's `Closed` event and immediately
-marks that record lost. The provider rejects the stale identity from then on.
-Opening that stale identity removes its lost live record, and discovery
-synchronization removes every missing or replaced record. The registry retains
-no historical tombstones: once engine and provider qualification succeeds, an
-identity absent from the live registry is conservatively reported as
-`TargetLost`. Registry allocation is therefore bounded by the peak live target
-inventory rather than lifetime target churn. If neither open nor discovery runs
-after a `Closed` event, the lost record remains until the provider is dropped.
-A new incarnation receives a new identity, while an already-open session
-retains its own item safely. Discovery serializes inventory acquisition with
-registry synchronization, and open revalidation participates in the same
-ordering, so an older concurrent inventory cannot overwrite a newer committed
-provider state.
+Every successful discovery snapshot mints fresh identities and retains its own
+`GraphicsCaptureItem` selections. The provider keeps only the current and
+immediately previous generations openable; an older unopened identity reports
+`TargetLost`, while an already-open session owns its item independently. This
+bounded lease replaces PID, UI-thread, class-name, title, and raw HWND/HMONITOR
+matching as incarnation authority. Native-key absence may prove loss, but key
+presence never proves identity because Windows may recycle a handle. A record's
+retained item and its `Closed` event remain the lifetime authority, so identical
+raw keys in two snapshots still receive different `TargetId` values and the old
+identity cannot select the replacement item.
+
+Candidates, event handlers, identities, descriptions, and a complete next
+registry are staged under the discovery-order gate. Final operation arbitration
+then occurs before any live-registry mutation, and success installs the staged
+registry with one allocation-free swap. A cancellation or deadline that wins at
+that boundary therefore changes no membership, metadata, lost flag, generation
+order, or openable mapping. Concurrent discoveries still commit in query order.
+An item's independent `Closed` signal may of course mark its own record lost at
+any time; that authoritative native event is not a discovery result. Lost records
+remain only for their finite generation lease rather than being accumulated as
+lifetime tombstones.
 
 Frame timestamps come from WGC `SystemRelativeTime`, calibrated once into the
 project monotonic clock from a QPC sample bracketed by project-clock samples
@@ -1713,7 +1769,7 @@ against.
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | OCR, watcher, and input contract suites | Not applicable; those contracts are not implemented | Not applicable |
 | Native permission behavior and permission probes | Implemented on macOS and enforceable: Screen Recording and Accessibility are read separately through non-prompting checks, discovery and open preflight the capture authorization and refuse before reaching the framework query that would present the system dialog, and no permission-request API is called anywhere. Which states a host reports depends on what the user granted the process, so the tests assert independence, cancellation, and the refusal path rather than values. No Windows probe exists yet | Not applicable; no permission was requested or probed |
-| Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for two-frame WGC detachment, a finite 40-texture lease-aware pool, lock-free drop debt, lazy mapping, resize generations, callback admission fencing, apartment-safe asynchronous native teardown, typed terminal loss, runtime-resolved optional exports, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). The revision-bound 600-frame/dual-4K acceptance report and Phase 2 `G-013` budgets remain open, so release support is not yet claimed | Not applicable; no native capture existed |
+| Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for staged current/previous discovery generations, two-frame WGC detachment, an extent-derived process-shared retained maximum capped at 40, checked 128 MiB surfaces and 2 GiB session / 4 GiB process retained-byte ceilings, deterministic multi-session contention/release behavior, producer leases bound to queued/quarantined native ownership, lock-free drop debt, lazy mapping, resize generations, callback admission fencing, apartment-safe asynchronous native teardown, typed terminal loss, runtime-resolved optional exports, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). The revision-bound 600-frame/dual-4K acceptance report and Phase 2 `G-013` performance budgets remain open, so release support is not yet claimed | Not applicable; no native capture existed |
 | macOS shim containment and native ownership | Implemented in `mado-pilot-platform-macos` for exception containment at every entry point and callback trampoline, panic containment on the Rust side of every callback, per-work-item autorelease pooling, disable-and-drain callback fencing, detached Core Video storage from a finite budget, lazy CPU mapping at an exact stride, frame-authoritative Retina and signed multi-display geometry, and retryable idempotent teardown. Enforceability is uneven and stated rather than averaged: the surface-layout, status, geometry, panic-containment, and linkage cases run anywhere, while the containment, ownership-on-failure, autorelease, fence, and teardown cases need a host that has granted Screen Recording and report a skip with that reason elsewhere. The linkage rule is met by controlled dynamic loading rather than the weak framework linking [ADR 0012](adr/0012-macos-shim-language-and-containment.md) described, because Cargo does not propagate a dependency's `rustc-link-arg` to the final link | Not applicable; no native shim existed |
 | Native dependency packaging and clean-system loading | Partly applicable. Phase 1 declares one native dependency, OpenCV, and records its licence and deployment requirements; clean-system loading and packaging remain open under [`G-007`](validation-gates.md#g-007) | Not applicable; no native dependency was declared |
 

@@ -106,8 +106,8 @@ pub use mado_pilot_assets::{
 };
 pub use mado_pilot_capture::{
     CaptureFault, CaptureProvider, Continuity, CoordinateSupport, CpuMapping, Frame,
-    FrameDescriptor, FrameRequest, FrameSelection, FrameView, OpenRequest, PixelFormat,
-    SessionDescription, TargetDescription,
+    FrameDescriptor, FrameRequest, FrameSelection, FrameView, OpenRequest, OverflowPolicy,
+    PixelFormat, QueuePolicy, RetainedStoragePolicy, SessionDescription, TargetDescription,
 };
 pub use mado_pilot_core::{
     CancellationToken, ClipPolicy, Clock, CoordinateSpace, EngineId, Error, FrameOrder,
