@@ -421,6 +421,33 @@ impl StreamState {
         &self,
         publication: StoragePublication,
     ) -> std::result::Result<Frame, RefusedStorage> {
+        self.publish_storage_with(publication, |_| {})
+    }
+
+    /// Publishes Adapter-owned immutable storage after committing correlated
+    /// Adapter metadata at the same observable boundary.
+    ///
+    /// `before_observe` runs with the prepared frame while the stream mutex still
+    /// excludes readers, before the frame is installed as `latest` and before any
+    /// waiter is notified. Native Adapters use this narrow hook to publish metadata
+    /// indexed by the new [`FrameStamp`] without creating a window in which the
+    /// frame is observable but that metadata is not. The hook must be bounded and
+    /// must not call back into this `StreamState`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RefusedStorage`] under the same conditions as
+    /// [`StreamState::publish_storage`]. `before_observe` is not invoked for a
+    /// refused publication.
+    #[allow(clippy::result_large_err)]
+    pub fn publish_storage_with<F>(
+        &self,
+        publication: StoragePublication,
+        before_observe: F,
+    ) -> std::result::Result<Frame, RefusedStorage>
+    where
+        F: FnOnce(&Frame),
+    {
         // Read the Adapter's own value before taking the stream mutex. The
         // documented lock order is platform callback state, then detached storage
         // ownership, then this mutex, and nothing about a fixed descriptor needs to
@@ -446,7 +473,14 @@ impl StreamState {
             storage,
             ..
         } = publication;
-        Ok(self.commit(inner, prepared, captured_at, descriptor, storage))
+        Ok(self.commit_with(
+            inner,
+            prepared,
+            captured_at,
+            descriptor,
+            storage,
+            before_observe,
+        ))
     }
 
     /// Records one candidate frame that a finite Adapter path had to drop.
@@ -486,12 +520,28 @@ impl StreamState {
     /// Commits one validated publication and wakes the stream's waiters.
     fn commit(
         &self,
-        mut inner: MutexGuard<'_, Inner>,
+        inner: MutexGuard<'_, Inner>,
         prepared: Prepared,
         captured_at: MonotonicInstant,
         descriptor: FrameDescriptor,
         storage: Arc<dyn FrameStorage>,
     ) -> Frame {
+        self.commit_with(inner, prepared, captured_at, descriptor, storage, |_| {})
+    }
+
+    /// Installs one prepared frame only after its correlated metadata is ready.
+    fn commit_with<F>(
+        &self,
+        mut inner: MutexGuard<'_, Inner>,
+        prepared: Prepared,
+        captured_at: MonotonicInstant,
+        descriptor: FrameDescriptor,
+        storage: Arc<dyn FrameStorage>,
+        before_observe: F,
+    ) -> Frame
+    where
+        F: FnOnce(&Frame),
+    {
         let frame = Frame::from_validated(
             prepared.stamp,
             captured_at,
@@ -500,6 +550,7 @@ impl StreamState {
             storage,
         );
 
+        before_observe(&frame);
         inner.cursor = prepared.cursor;
         inner.geometry = prepared.geometry;
         inner.latest = Some(frame.clone());

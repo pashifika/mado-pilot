@@ -18,7 +18,11 @@ use crate::fault::InputFault;
 pub enum SequenceOutcome {
     /// Every event was delivered.
     Complete,
-    /// Some events were delivered and then the sequence stopped.
+    /// Some input may have reached the target and then the sequence stopped.
+    ///
+    /// `delivered` still counts only complete logical events. This outcome may
+    /// therefore accompany zero completed events when a platform accepted part
+    /// of the first event and cannot undo or precisely observe that native work.
     Partial,
     /// No event was delivered.
     ///
@@ -128,10 +132,13 @@ impl InputReceipt {
         }
     }
 
-    /// Records a sequence that delivered some events and then stopped.
+    /// Records a sequence for which some input may have reached the target before
+    /// it stopped.
     ///
-    /// `delivered` counts the events that reached the target, and `failure` is why
-    /// the next one did not. Cleanup is recorded separately with
+    /// `delivered` counts only logical events known to have completed. It may be
+    /// zero when the platform reports that only part of the first event's native
+    /// representation took effect. `failure` is why delivery stopped. Cleanup is
+    /// recorded separately with
     /// [`InputReceipt::with_cleanup`], because it happens after this outcome is
     /// already decided.
     #[must_use]
@@ -362,6 +369,21 @@ mod tests {
         assert_eq!(receipt.delivered(), 2);
         assert_eq!(receipt.last_completed(), Some(1));
         assert_eq!(receipt.failure(), Some(InputFault::DeliveryFailed));
+    }
+
+    #[test]
+    fn a_partial_receipt_can_report_native_effect_before_any_event_completed() {
+        let receipt = InputReceipt::partial(
+            target(),
+            InputDelivery::System,
+            0,
+            InputFault::DeliveryFailed,
+        );
+
+        assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
+        assert_eq!(receipt.delivered(), 0);
+        assert_eq!(receipt.last_completed(), None);
+        assert_eq!(receipt.delivery(), Some(InputDelivery::System));
     }
 
     #[test]

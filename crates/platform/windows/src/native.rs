@@ -16,7 +16,7 @@ use mado_pilot_capture::{
 };
 use mado_pilot_core::{
     Clock, MonotonicInstant, Operation, OperationContext, PixelExtent, Result, StreamId,
-    SystemClock, TargetId, TargetPlacement,
+    SystemClock, TargetId, TargetKind, TargetPlacement,
 };
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
@@ -31,6 +31,7 @@ use windows::core::{IInspectable, Interface};
 
 use crate::availability::{create_free_threaded_frame_pool, ensure_winrt_apartment};
 use crate::discovery::{NativeKey, TargetMetadata, current_placement};
+use crate::input::GeometryLedger;
 use crate::storage::{
     DeviceDomain, DeviceTerminal, RetainedBytes, SessionMemory, StorageFailureSink, TexturePool,
     WindowsFrameStorage, descriptor_from_native, native_fault, retained_storage_capacity,
@@ -42,6 +43,38 @@ const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(2);
 const TEARDOWN_START_TIMEOUT: Duration = Duration::from_secs(5);
 const TEARDOWN_QUEUE_CAPACITY: usize = 64;
 const TEARDOWN_WORKER_COUNT: usize = 4;
+
+pub(crate) struct NativeSessionSource {
+    target: TargetId,
+    stream: StreamId,
+    kind: TargetKind,
+    key: NativeKey,
+    metadata: TargetMetadata,
+    item: GraphicsCaptureItem,
+    geometry: Arc<GeometryLedger>,
+}
+
+impl NativeSessionSource {
+    pub(crate) fn new(
+        target: TargetId,
+        stream: StreamId,
+        kind: TargetKind,
+        key: NativeKey,
+        metadata: TargetMetadata,
+        item: GraphicsCaptureItem,
+        geometry: Arc<GeometryLedger>,
+    ) -> Self {
+        Self {
+            target,
+            stream,
+            kind,
+            key,
+            metadata,
+            item,
+            geometry,
+        }
+    }
+}
 
 pub(crate) struct NativeSession {
     description: SessionDescription,
@@ -102,9 +135,10 @@ impl<T> NativeOwnership<T> {
 }
 
 struct SessionCore {
-    target_kind: mado_pilot_core::TargetKind,
+    target_kind: TargetKind,
     key: NativeKey,
     state: StreamState,
+    geometry: GeometryRegistration,
     domain: Arc<DeviceDomain>,
     memory: Arc<SessionMemory>,
     native: OnceLock<Weak<NativeOwnership<WgcResources>>>,
@@ -115,6 +149,32 @@ struct SessionCore {
     native_ended: Arc<AtomicBool>,
     failure: OnceLock<Weak<dyn StorageFailureSink>>,
     transition: Mutex<TransitionState>,
+}
+
+/// Owns one live stream's geometry-ledger membership.
+///
+/// `SessionCore` is retained by every admitted callback. Binding removal to this
+/// member's final drop means teardown cannot remove the entry and then let an
+/// already-admitted callback publish it again.
+struct GeometryRegistration {
+    ledger: Arc<GeometryLedger>,
+    stream: StreamId,
+}
+
+impl GeometryRegistration {
+    fn new(ledger: Arc<GeometryLedger>, stream: StreamId) -> Self {
+        Self { ledger, stream }
+    }
+
+    fn publish(&self, frame: &Frame) {
+        self.ledger.publish(frame);
+    }
+}
+
+impl Drop for GeometryRegistration {
+    fn drop(&mut self) {
+        self.ledger.remove(self.stream);
+    }
 }
 
 #[derive(Debug)]
@@ -189,14 +249,18 @@ struct WorkerGuard {
 
 impl NativeSession {
     pub(crate) fn open(
-        target: TargetId,
-        stream: StreamId,
-        kind: mado_pilot_core::TargetKind,
-        key: NativeKey,
-        metadata: TargetMetadata,
-        item: GraphicsCaptureItem,
+        source: NativeSessionSource,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
+        let NativeSessionSource {
+            target,
+            stream,
+            kind,
+            key,
+            metadata,
+            item,
+            geometry,
+        } = source;
         let teardown = teardown_executor(operation)?;
         let teardown_permit = teardown.reserve(operation)?;
         let clock_anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
@@ -220,6 +284,7 @@ impl NativeSession {
             target_kind: kind,
             key,
             state: StreamState::with_target_extent(stream),
+            geometry: GeometryRegistration::new(geometry, stream),
             domain,
             memory,
             native: OnceLock::new(),
@@ -1094,12 +1159,15 @@ impl SessionCore {
             Arc::clone(&self.memory),
         );
         self.state
-            .publish_storage(StoragePublication {
-                captured_at,
-                placement: Some(placement),
-                storage,
-                continuity,
-            })
+            .publish_storage_with(
+                StoragePublication {
+                    captured_at,
+                    placement: Some(placement),
+                    storage,
+                    continuity,
+                },
+                |frame| self.geometry.publish(frame),
+            )
             .map_err(|refused| {
                 if refused.error().status() == mado_pilot_core::Status::Closed {
                     CaptureFault::SessionClosed
@@ -1121,22 +1189,19 @@ impl StorageFailureSink for SessionCore {
     }
 }
 
-fn normalize_native_fault(fault: CaptureFault, kind: mado_pilot_core::TargetKind) -> CaptureFault {
+fn normalize_native_fault(fault: CaptureFault, kind: TargetKind) -> CaptureFault {
     match fault {
-        CaptureFault::CaptureItemClosed if kind == mado_pilot_core::TargetKind::Display => {
+        CaptureFault::CaptureItemClosed if kind == TargetKind::Display => {
             CaptureFault::DisplayDisconnected
         }
-        CaptureFault::DisplayDisconnected if kind == mado_pilot_core::TargetKind::Window => {
+        CaptureFault::DisplayDisconnected if kind == TargetKind::Window => {
             CaptureFault::CaptureItemClosed
         }
         _ => fault,
     }
 }
 
-pub(crate) fn native_target_fault(
-    error: windows::core::Error,
-    kind: mado_pilot_core::TargetKind,
-) -> CaptureFault {
+pub(crate) fn native_target_fault(error: windows::core::Error, kind: TargetKind) -> CaptureFault {
     normalize_native_fault(native_fault(error), kind)
 }
 
@@ -1151,10 +1216,10 @@ fn native_close_result(result: windows::core::Result<()>) -> std::result::Result
     }
 }
 
-const fn target_fault(kind: mado_pilot_core::TargetKind) -> CaptureFault {
+const fn target_fault(kind: TargetKind) -> CaptureFault {
     match kind {
-        mado_pilot_core::TargetKind::Window => CaptureFault::CaptureItemClosed,
-        mado_pilot_core::TargetKind::Display => CaptureFault::DisplayDisconnected,
+        TargetKind::Window => CaptureFault::CaptureItemClosed,
+        TargetKind::Display => CaptureFault::DisplayDisconnected,
         _ => CaptureFault::TargetLost,
     }
 }
@@ -1387,18 +1452,19 @@ mod tests {
     use windows::Graphics::SizeInt32;
     use windows::Win32::Foundation::RO_E_CLOSED;
 
+    use crate::input::GeometryLedger;
     use crate::storage::{
         GLOBAL_RETAINED_BYTES, SESSION_RETAINED_BYTES, SessionMemory, retained_storage_capacity,
         validate_surface,
     };
 
     use super::{
-        CallbackControl, NativeOwnership, TEARDOWN_QUEUE_CAPACITY, TEARDOWN_WORKER_COUNT,
-        TeardownExecutorSlot, TeardownPermits, TransitionState, WGC_PRODUCER_POOL_SIZE,
-        capture_already_ended_after_drain, frame_time, map_worker_start, native_close_result,
-        native_size, normalize_native_fault, positive_extent, record_authoritative_native_end,
-        session_queue_policy, start_teardown_executor_with, target_fault, teardown_channel,
-        teardown_executor_from_slot,
+        CallbackControl, GeometryRegistration, NativeOwnership, TEARDOWN_QUEUE_CAPACITY,
+        TEARDOWN_WORKER_COUNT, TeardownExecutorSlot, TeardownPermits, TransitionState,
+        WGC_PRODUCER_POOL_SIZE, capture_already_ended_after_drain, frame_time, map_worker_start,
+        native_close_result, native_size, normalize_native_fault, positive_extent,
+        record_authoritative_native_end, session_queue_policy, start_teardown_executor_with,
+        target_fault, teardown_channel, teardown_executor_from_slot,
     };
 
     static STALLED_INITIALIZERS: AtomicUsize = AtomicUsize::new(0);
@@ -1890,6 +1956,55 @@ mod tests {
         drop(lease);
         drainer.join().expect("drop drain completed");
         assert!(control.lock().fenced);
+    }
+
+    #[test]
+    fn geometry_membership_outlives_an_admitted_callback_and_is_removed_last() {
+        let stream = IdentityIssuer::new().issue_stream().expect("issued stream");
+        let state = StreamState::with_target_extent(stream);
+        let ledger = Arc::new(GeometryLedger::default());
+        let extent = PixelExtent::new(4, 4);
+        let descriptor = FrameDescriptor::packed(extent, PixelFormat::Bgra8).expect("descriptor");
+        let placement = TargetPlacement::new(
+            (10.0, 20.0),
+            (4.0, 4.0),
+            Scale::new(1.0, 1.0).expect("scale"),
+        )
+        .expect("placement");
+        let frame = state
+            .publish(Publication {
+                captured_at: MonotonicInstant::ORIGIN,
+                descriptor,
+                placement: Some(placement),
+                pixels: vec![0; descriptor.byte_len()].into_boxed_slice(),
+                continuity: Continuity::Continuous,
+            })
+            .expect("published");
+        ledger.publish(&frame);
+
+        let owner = Arc::new(GeometryRegistration::new(Arc::clone(&ledger), stream));
+        let callback_owner = Arc::clone(&owner);
+        let (admitted_tx, admitted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let callback = thread::spawn(move || {
+            admitted_tx.send(()).expect("callback admitted");
+            release_rx.recv().expect("callback released");
+            drop(callback_owner);
+        });
+        admitted_rx.recv().expect("callback owns registration");
+
+        drop(owner);
+        assert!(
+            ledger.source_transform(frame.stamp()).is_some(),
+            "teardown owner removal cannot outrun the admitted callback"
+        );
+        release_tx.send(()).expect("finish callback");
+        callback.join().expect("callback joined");
+        assert_eq!(
+            ledger.source_transform(frame.stamp()),
+            None,
+            "the final owner removes the dead stream after callback completion"
+        );
     }
 
     #[test]

@@ -178,6 +178,7 @@ cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<
 | [docs/validation-gates.md](docs/validation-gates.md) | The `G-001`–`G-014` registry of unresolved version-one decisions |
 | [docs/performance.md](docs/performance.md) | Benchmark profile and budget format, the Phase 1 workloads, and their correctness oracles |
 | [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |
+| [docs/windows-input-verification.md](docs/windows-input-verification.md) | Windows input capability matrix, focus/UIPI behavior, fixture privacy bounds, and native checks |
 | [docs/releases/](docs/releases/) | Canonical release notes and exact artifact limitations |
 | [docs/adr/](docs/adr/) | Architecture decision records, and [the template](docs/adr/0000-template.md) with the rule for when one is required |
 | [docs/evidence/](docs/evidence/) | The measurements behind decisions that rest on them |
@@ -192,10 +193,12 @@ and diagnostics that exclude captured images, recognized text, and credentials b
 default. On macOS, permission state will be probed and reported without presenting
 permission UI.
 
-These are contract commitments for the implementing changes. Phase 1 still
-requests no permission and probes none: it captures from tracked replay
-sequences and files on disk, not from the screen, and injects no input. The
-commitments above become testable with the platform adapters.
+The Phase 1 public workflow still requests no permission, captures only tracked
+replay sequences and files, and injects no input. The native platform packages
+now make part of these commitments testable below that facade: both implement
+capture, macOS implements non-prompting permission probes, and Windows implements
+platform-level input with no elevation and redacted fixture evidence. Runtime and
+public-facade wiring remain later work.
 
 ## Contributing
 

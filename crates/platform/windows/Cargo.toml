@@ -1,6 +1,6 @@
 [package]
 name = "mado-pilot-platform-windows"
-description = "MadoPilot picker-free Windows target discovery and WGC/D3D11 capture adapter."
+description = "MadoPilot native Windows discovery, capture, and input adapter."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,7 @@ publish = false
 [target.'cfg(windows)'.dependencies]
 mado-pilot-core = { path = "../../automation/core" }
 mado-pilot-capture = { path = "../../automation/capture" }
+mado-pilot-input = { path = "../../automation/input" }
 windows.workspace = true
 
 [lints]
