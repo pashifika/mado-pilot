@@ -40,7 +40,7 @@ registry is itself a Phase 0 deliverable.
 
 | ID | Unresolved decision | Due | Blocks | Status |
 |---|---|---|---|---|
-| [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Native support claim and release | Open |
+| [`G-001`](#g-001) | Minimum Windows version; macOS fixed by ADR 0014 | Before Phase 2 exit | Windows support claim and release; macOS replacement acceptance | Open for Windows and remaining macOS acceptance |
 | [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open |
@@ -57,22 +57,42 @@ registry is itself a Phase 0 deliverable.
 
 ## G-001
 
-**Unresolved decision.** The exact minimum supported Windows and macOS versions
-that published artifacts declare.
+**Decision and remaining question.** [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md)
+fixes the macOS implementation and deployment floor at Apple Silicon macOS 26.5.2
+(25F84), SDK 26.5. Earlier macOS versions are unqualified and unsupported. The
+exact minimum supported Windows version remains unresolved.
 
-**Required evidence.** Build and load probes on the candidate oldest systems for
-both release targets, including the behavior of every capability that uses an API
-newer than the declared minimum.
+**Required evidence.** Windows still needs build and load probes on its candidate
+oldest system. macOS deployment metadata and controlled linkage are pinned. Its
+2026-08-01 permissioned ASan run passed all 95 library tests with live display and
+window capture, signed and mixed-scale placement checks, retained-filter discovery,
+and no sanitizer finding. Two later manual runs moved the window fully onto a 2x
+display while thousands of frames kept arriving, but the open stream stayed at its
+old 1x extent and effective scale; only fresh discovery after close saw 2x. That
+exposed the missing same-sample producer-capacity signal. The repaired, hardened
+permissioned probe then passed 2/2 over 4,097 frames: 3,371 same-scale moves preserved
+their epoch and 30 cross-scale moves advanced exactly from epoch 0 through epoch 30,
+publishing both the 1x and 2x extents without a stall. Cross-scale acceptance is
+closed. A fresh post-repair ASan build then passed all 101 library tests with live
+capture scenarios running and no sanitizer finding. The owned-window
+destroy/replacement oracle remains and must show that destroying the selected window
+cannot retarget its retained `SCContentFilter` to a replacement. The host version
+and a successful build alone do not pass that capability.
 
 **Due.** Before Phase 2 exit.
 
-**Blocks.** Any native support claim, and release.
+**Blocks.** A Windows support claim and release. On macOS, it blocks claiming that
+the permissioned Phase 2 live acceptance matrix passed, not the minimum-version
+decision itself.
 
-**Status.** Open.
+**Status.** macOS minimum and cross-scale movement resolved by ADR 0014 and its
+qualified-host evidence; the Windows minimum and macOS replacement acceptance stay
+open.
 
-**Resolution.** An ADR that records the chosen minimums, the probe results, and
-the availability-check or weak-linking strategy for newer APIs, followed by
-synchronized platform support documentation.
+**Resolution.** A Windows ADR must record its chosen minimum and probes. The macOS
+acceptance remainder closes when the replacement result named above is recorded
+against 26.5.2 (25F84); ADR 0014 already records its availability,
+controlled-linkage, and cross-scale movement evidence.
 
 ## G-002
 
@@ -146,10 +166,14 @@ rests on the language mode rather than on the prototype's C++ test.
 The ADR also records the containment rules the evidence forces — a catch-all
 boundary handler, the mandatory exception flag, borrowed frames, a per-work-item
 autorelease pool, a disable-and-drain callback fence, teardown that reports
-failure without skipping cleanup, Rust-side panic containment, and shim-owned weak
-linking with availability gating — together with the tests the implementing Change
-must carry. Until `mado-pilot-platform-macos` exists, those rules are enforced by
-review, which the ADR states rather than implies.
+failure without skipping cleanup, Rust-side panic containment, and shim-owned
+linkage with availability gating — together with the tests the implementing Change
+must carry. `mado-pilot-platform-macos` now implements the boundary and carries
+those tests, so the rules are enforced by the package rather than by review. The
+linkage rule is met by controlled dynamic loading rather than by weak framework
+linking, because Cargo does not propagate a dependency's `rustc-link-arg` to the
+binary that consumes the dependency; the ADR records that amendment and the
+property it preserves.
 
 ## G-004
 

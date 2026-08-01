@@ -29,6 +29,13 @@ repository = "https://github.com/pashifika/mado-pilot"
 # Product dependencies are added only by the change that implements and tests the
 # behavior requiring them. Entries here are maintenance-tool dependencies.
 [workspace.dependencies]
+# Compiles the macOS Objective-C shim. `cc` was already an indirect build
+# dependency of the workspace through the OpenCV binding generator, so the macOS
+# adapter adds an edge rather than a crate. Its package declares that edge under
+# unconditional `[build-dependencies]`; `build.rs` gates shim compilation and
+# Apple framework link directives on a macOS target.
+# See docs/adr/0012-macos-shim-language-and-containment.md.
+cc = "1.4.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 # `zip`'s `deflate-flate2` feature declares the flate2 dependency but selects no

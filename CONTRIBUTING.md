@@ -34,21 +34,43 @@ development prerequisite only: the v0.1.0 source release bundles no native
 dependency and makes no installable deployment-profile claim, which remains gate
 `G-007`.
 
-The macOS native shim is not expected to add a prerequisite beyond that. The
-`G-003` prototype compiled Objective-C and Objective-C++, archived both into static
-libraries, linked those into a Rust binary, and separately linked each as a dynamic
-library for dependency inspection — all with the **Xcode Command Line Tools alone**,
-on a host where full Xcode is not installed; the measurements are in
-[docs/evidence/g-003/](docs/evidence/g-003/README.md). Two limits on reading that:
-full Xcode was not evaluated, so it is a positive result about the smaller
-installation rather than a statement that the two are interchangeable; and the
-prototype built no production shim and pulled in no Cargo dependency, so the
-prerequisite is carried by the build steps that were exercised rather than measured
-on the finished adapter. The shim is compiled with
-`-fobjc-arc-exceptions`, which
+The macOS implementation is qualified only on Apple Silicon macOS 26.5.2
+(25F84), SDK 26.5; earlier macOS versions are unsupported investigation targets,
+not compatibility claims. `.cargo/config.toml` sets the final artifact deployment
+metadata to 26.5.2 and the native build repeats that floor. The macOS native shim
+adds no prerequisite beyond that environment. The production shim in
+`mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
+Command Line Tools alone**, on a host where full Xcode is not installed; its only
+Cargo addition is `cc`, declared as an unconditional build dependency so Cargo
+resolves the edge on every host. The build script returns before compiling the shim
+or emitting Apple framework link directives for a non-macOS target. That confirms on
+the finished adapter what the `G-003` prototype had suggested on the same setup, and
+the measurements are in [docs/evidence/g-003/](docs/evidence/g-003/README.md). Full
+Xcode is still not evaluated, so this remains a positive result about the smaller
+installation rather than a statement that the two are interchangeable. The shim is
+compiled with `-fobjc-arc-exceptions`, which
 [docs/adr/0012-macos-shim-language-and-containment.md](docs/adr/0012-macos-shim-language-and-containment.md)
 records as a correctness requirement rather than a style choice: without it, an
 exception unwinding out of a scope that holds a native object leaks it.
+
+Running that adapter's capture scenarios needs one thing the build does not:
+**Screen Recording granted to the process running the tests**. MadoPilot never
+prompts, so on a host that has neither granted nor denied it the scenarios reach the
+non-prompting refusal and print a skip naming that reason instead of passing. A green
+`cargo test` on such a host — including a continuous-integration runner — is
+therefore not evidence that macOS capture ran. To exercise them, grant Screen
+Recording to the terminal or editor that launches `cargo test`, under System Settings
+▸ Privacy & Security ▸ Screen & System Audio Recording, and restart it so the new
+grant applies.
+
+A runner reaches that skip rather than a crash for a reason worth knowing, because the
+alternative is not a failure but an abort. The capture framework's shareable-content
+query aborts, rather than returning a status, in a process holding no Core Graphics
+window-server connection — and an abort is not an exception, so no handler contains
+it. Both shim entry points that would reach that query return the non-prompting
+authorization refusal first, so the query is unreachable without the grant, and a grant
+implies the session the connection comes from. Keep that order if either entry point is
+edited: the preflight is what stands between an unauthorized host and an abort.
 
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
@@ -95,7 +117,104 @@ cargo deny --locked check
 #    consumer project. Only run natively on a release target.
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+
+# 9. macOS host only: the macOS adapter as the *other* release target sees it.
+#    Step 3 above cannot reach that configuration here, because on this host the
+#    macOS adapter compiles under its own target.
+cargo clippy --locked --target x86_64-pc-windows-msvc \
+  -p mado-pilot-platform-macos --all-targets -- -D warnings
+
+# 10. macOS host only: the capture scenarios with the native shim instrumented.
+#     Run on the qualified 26.5.2 (25F84) Apple Silicon host. Needs Screen
+#     Recording granted, and fails rather than skips without it.
+MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
+  -p mado-pilot-platform-macos --target-dir target/asan --lib -- --test-threads=1
 ```
+
+Both platform adapters are workspace members on both targets, so step 3 lints each of
+them with the *other* platform's code compiled away — which is a configuration neither
+adapter's own host ever produces. The coverage is asymmetric, and step 9 is what closes
+the half a macOS host would otherwise leave to a continuous-integration job:
+
+- a **macOS** host's step 3 lints the Windows adapter gated away, and step 9 adds the
+  macOS adapter gated away;
+- a **Windows** host's step 3 lints the macOS adapter gated away, so it needs no step 9.
+  The mirrored command does not exist: targeting `aarch64-apple-darwin` from Windows
+  would run the shim's build script, which needs a macOS toolchain.
+
+Step 10 looks for a defect none of the steps above it can see. The macOS ownership
+scenarios assert that a live native object *count* returns to its baseline, and a count
+cannot observe an access after a free — which is how a confirmed use-after-free in the
+native session's lifetime passed 72 green cases. `MADO_PILOT_MACOS_ASAN=1` compiles the
+Objective-C shim under AddressSanitizer and links the sanitizer runtime into that
+package's test binaries; with the variable unset the build is unchanged, and the runtime
+is never part of a released artifact. The Xcode Command Line Tools ship it, so the step
+needs nothing installed that the shim did not already need.
+
+The same run is also the permissioned coordinate/selection acceptance gate. It
+compares frame-attached `screenRect` origin, logical size, and effective scale with
+the qualified host's display inventory and checks that a fresh discovery does not
+terminate an already-open retained filter. A run that fails because Screen Recording
+is not granted is useful denial evidence, but passes neither that live gate nor the
+manual window move/resize/loss probe in
+`crates/platform/macos/tests/window_movement.rs`. Release acceptance additionally
+requires an owned-window replacement oracle proving that a retained filter never
+captures a replacement after its selected window is destroyed.
+
+Every part of that command is load-bearing rather than a matter of taste:
+
+- **the single package**, because the runtime is attached with
+  `cargo::rustc-link-arg`, which Cargo applies to the emitting package's own binaries
+  and tests and does not propagate to a consumer. A wider build instruments the shim
+  and then fails to link everything downstream of it;
+- **the separate target directory**, so the instrumented archive never reaches a link
+  that steps 3 through 8 read from — the mixed-cache hazard the section below
+  describes, with a linker error instead of a puzzle;
+- **one test thread**, because the sanitizer halts on its first violation and aborts
+  the process, which is every test thread at once. One run therefore names one defect,
+  and fixing the group it belongs to is an iteration rather than a single report.
+
+Only the shim is instrumented, so the step observes any access the shim makes to freed
+memory and not a freed Rust allocation that Rust dereferences. Covering both sides needs
+`-Zsanitizer=address` on nightly, which the toolchain pin above rules out.
+
+This step is deliberately not a continuous-integration check. A runner has granted no
+Screen Recording, so the capture scenarios cannot run there — and because a sanitizer
+run whose scenarios never captured reports nothing at all, a skip and a pass would be
+the same line of output. A scenario that cannot reach a capture therefore *fails* under
+this build rather than skipping, which is the same rule the replay symlink tests follow,
+and which is why the step belongs to the macOS verification host alongside step 9 rather
+than to a job that can never satisfy it.
+
+One gap in that rule is deliberate and has to be read alongside it. A scenario whose
+subject is a *window* moves on when no window matches it or when every match is idle,
+and passes having noted that — because an idle window is a legitimate absence of subject
+matter rather than a host that cannot capture, and the desktop decides which it is. So a
+green step 10 means the display-based scenarios captured; it does not by itself mean the
+window-based ones did. Read the run's notes when the window paths are what a change
+touched.
+
+Step 9 names one package rather than the workspace because `--workspace` at another
+target fails in `opencv`'s build script, which looks for an installation for the target
+it is building for. It needs no more than that package: crate-level `#[cfg]` gating of a
+whole file is what produces this failure, and the two platform adapters are the only
+places the workspace uses it. Elsewhere a target is selected with `cfg!()` inside an
+expression, which strips no items.
+
+The failure this reaches is never in the gated code. A crate-level `#![cfg(…)]` strips
+the whole file, and when the crate's `//!` documentation sits inside what is stripped,
+the crate root is left undocumented and `missing_docs` fails the lint. Every
+target-gated test file in both adapters therefore opens with the guard before the gate:
+
+```rust
+#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
+#![cfg(target_os = "macos")]
+//! …
+```
+
+Keep it there. Without it a file passes only while its documentation happens to sit
+above the gate — an ordering no reader can be expected to preserve, and one that has
+already broken a continuous-integration job once for each adapter.
 
 Step 4 needs one thing of a Windows host: the privilege to create a symbolic
 link. Two tests in `mado-pilot-adapter-replay` prove that a linked path component
@@ -293,7 +412,7 @@ The stable check names are:
 | `Validate branch flow` | `branch-policy.yml` | The source and target branches follow the pull request flow. |
 | `Repository policy` | `rust.yml` | Package inventory, dependency directions, formatting, and dependency policy. |
 | `Windows x86_64-pc-windows-msvc` | `rust.yml` | Native `windows-2025` inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
-| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-15` Apple Silicon inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
+| `macOS aarch64-apple-darwin` | `rust.yml` | Native `macos-26` Apple Silicon inventory, lint, test, doctest, and documentation checks against the committed lockfile, and step 8's C ABI and C++ wrapper check. |
 
 The `Repository policy` job builds no product package, which is why
 documentation, lints, tests, and the C and C++ boundary are verified only in the
@@ -309,7 +428,7 @@ its first successful run on the branch it will guard, and only with separate
 maintainer authorization. Enabling a required check that has never reported turns
 every open pull request into a blocked pull request.
 
-The native jobs name `windows-2025` and `macos-15` rather than a `-latest` label, so
+The native jobs name `windows-2025` and `macos-26` rather than a `-latest` label, so
 moving to a new operating-system version is a reviewed change. Those labels still
 pin only an OS version: GitHub migrates the images behind them on its own schedule,
 so the toolchain and the exact image contents are not frozen by the label. The
