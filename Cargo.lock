@@ -319,6 +319,7 @@ version = "0.1.0"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
+ "mado-pilot-input",
  "windows",
 ]
 

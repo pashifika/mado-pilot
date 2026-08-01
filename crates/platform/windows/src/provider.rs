@@ -11,13 +11,18 @@ use mado_pilot_capture::{
     CaptureFault, CaptureProvider, CaptureSession, OpenRequest, PixelFormat, TargetDescription,
 };
 use mado_pilot_core::{IdentityIssuer, Operation, OperationContext, ProviderId, Result, TargetId};
+use mado_pilot_input::{
+    InputController, InputDescriptor, InputFault, InputOpenRequest, InputProvider,
+};
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::GraphicsCaptureItem;
 use windows::core::IInspectable;
 
 use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, CaptureItem, NativeKey, TargetMetadata, inventory};
-use crate::native::{NativeSession, native_target_fault};
+use crate::input::{GeometryLedger, WindowsInputController};
+use crate::native::{NativeSession, NativeSessionSource, native_target_fault};
+use crate::storage::validate_surface;
 
 /// Provider name qualifying every native Windows target identity.
 pub const PROVIDER: ProviderId = ProviderId::new("windows");
@@ -44,12 +49,13 @@ struct Registry {
     generations: VecDeque<Vec<TargetId>>,
 }
 
-struct TargetRecord {
+pub(crate) struct TargetRecord {
     id: TargetId,
     key: NativeKey,
     metadata: TargetMetadata,
     item: CaptureItem,
     lost: Arc<AtomicBool>,
+    geometry: Arc<GeometryLedger>,
     _closed_token: Option<i64>,
 }
 
@@ -160,6 +166,7 @@ impl WindowsCaptureProvider {
             metadata: candidate.metadata,
             item: candidate.item,
             lost,
+            geometry: Arc::new(GeometryLedger::default()),
             _closed_token: closed_token,
         }))
     }
@@ -171,18 +178,23 @@ impl WindowsCaptureProvider {
             .get(&target)
             .cloned()
             .ok_or(CaptureFault::TargetLost)?;
-        let (present, usable) = match &record.item {
-            CaptureItem::Native(item) => (record.key.is_present(), item.Size().is_ok()),
-            #[cfg(test)]
-            CaptureItem::Synthetic(_) => (true, true),
-        };
-        // Native-key presence may prove loss, but never proves identity: a
-        // recycled key remains present and still opens only this record's
-        // retained GraphicsCaptureItem.
-        if record.lost.load(Ordering::Acquire) || !present || !usable {
-            record.lost.store(true, Ordering::Release);
+        if record.ensure_live().is_err() {
             return Err(CaptureFault::TargetLost.into());
         }
+        Ok(record)
+    }
+
+    fn select_input_record(
+        &self,
+        target: TargetId,
+    ) -> std::result::Result<Arc<TargetRecord>, InputFault> {
+        let record = self
+            .registry()
+            .records
+            .get(&target)
+            .cloned()
+            .ok_or(InputFault::TargetLost)?;
+        record.ensure_live()?;
         Ok(record)
     }
 
@@ -222,7 +234,7 @@ impl CaptureProvider for WindowsCaptureProvider {
         operation: &OperationContext,
     ) -> Result<Arc<dyn CaptureSession>> {
         let mut attempt = Operation::admit(operation)?;
-        self.accepts_target(target, self.issuer.engine())?;
+        CaptureProvider::accepts_target(self, target, self.issuer.engine())?;
         ensure_capture_available()?;
         if let Some(required) = request.required_format()
             && required != PixelFormat::Bgra8
@@ -241,15 +253,49 @@ impl CaptureProvider for WindowsCaptureProvider {
         };
         let stream = self.issuer.issue_stream()?;
         let session = NativeSession::open(
-            target,
-            stream,
-            record.key.kind(),
-            record.key,
-            record.metadata.clone(),
-            item,
+            NativeSessionSource::new(
+                target,
+                stream,
+                record.key.kind(),
+                record.key,
+                record.metadata.clone(),
+                item,
+                Arc::clone(&record.geometry),
+            ),
             &mut attempt,
         )?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
+    }
+}
+
+impl InputProvider for WindowsCaptureProvider {
+    fn provider(&self) -> ProviderId {
+        PROVIDER
+    }
+
+    fn permission(&self) -> Option<mado_pilot_core::PermissionKind> {
+        None
+    }
+
+    fn describe(&self, target: TargetId, operation: &OperationContext) -> Result<InputDescriptor> {
+        let attempt = Operation::admit(operation)?;
+        InputProvider::accepts_target(self, target, self.issuer.engine())?;
+        let record = self.select_input_record(target)?;
+        Ok(attempt.commit(record.input_descriptor())?)
+    }
+
+    fn open(
+        &self,
+        target: TargetId,
+        request: &InputOpenRequest,
+        operation: &OperationContext,
+    ) -> Result<Arc<dyn InputController>> {
+        let attempt = Operation::admit(operation)?;
+        InputProvider::accepts_target(self, target, self.issuer.engine())?;
+        let record = self.select_input_record(target)?;
+        request.check(record.input_descriptor().capability())?;
+        let controller = WindowsInputController::new(record);
+        Ok(attempt.commit(controller as Arc<dyn InputController>)?)
     }
 }
 
@@ -272,6 +318,69 @@ fn lock_with_operation<'mutex>(
 impl TargetRecord {
     fn description(&self) -> TargetDescription {
         self.metadata.describe(self.id, self.key.kind())
+    }
+
+    pub(crate) fn target(&self) -> TargetId {
+        self.id
+    }
+
+    pub(crate) fn key(&self) -> NativeKey {
+        self.key
+    }
+
+    pub(crate) fn kind(&self) -> mado_pilot_core::TargetKind {
+        self.key.kind()
+    }
+
+    pub(crate) fn class_name(&self) -> Option<&str> {
+        self.metadata.class_name.as_deref()
+    }
+
+    pub(crate) fn geometry(&self) -> &Arc<GeometryLedger> {
+        &self.geometry
+    }
+
+    pub(crate) fn input_descriptor(&self) -> InputDescriptor {
+        InputDescriptor::new(self.id, self.description().capability().input())
+    }
+
+    pub(crate) fn current_extent(
+        &self,
+    ) -> std::result::Result<mado_pilot_core::PixelExtent, InputFault> {
+        match &self.item {
+            CaptureItem::Native(item) => {
+                let size = item.Size().map_err(|_| InputFault::TargetLost)?;
+                let width = u32::try_from(size.Width)
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or(InputFault::TargetLost)?;
+                let height = u32::try_from(size.Height)
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or(InputFault::TargetLost)?;
+                validate_surface(width, height).map_err(|_| InputFault::DeliveryUnavailable)?;
+                Ok(mado_pilot_core::PixelExtent::new(width, height))
+            }
+            #[cfg(test)]
+            CaptureItem::Synthetic(_) => Ok(self.metadata.extent),
+        }
+    }
+
+    pub(crate) fn ensure_live(&self) -> std::result::Result<(), InputFault> {
+        let (present, usable) = match &self.item {
+            CaptureItem::Native(item) => (self.key.is_present(), item.Size().is_ok()),
+            #[cfg(test)]
+            CaptureItem::Synthetic(_) => (true, true),
+        };
+        // Native-key presence may prove loss, but never proves identity: a
+        // recycled key remains present and input still consults this retained
+        // GraphicsCaptureItem's authoritative Closed state.
+        if self.lost.load(Ordering::Acquire) || !present || !usable {
+            self.lost.store(true, Ordering::Release);
+            Err(InputFault::TargetLost)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -309,6 +418,7 @@ mod tests {
             key: NativeKey::Window(raw),
             metadata: TargetMetadata {
                 name: name.to_owned(),
+                class_name: None,
                 extent,
                 placement: TargetPlacement::new(
                     (0.0, 0.0),

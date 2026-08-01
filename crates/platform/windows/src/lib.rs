@@ -1,4 +1,4 @@
-//! Native Windows target discovery and capture.
+//! Native Windows target discovery, capture, and input.
 //!
 //! This package is the only workspace package that names Win32, Windows
 //! Graphics Capture (WGC), WinRT, D3D11, or DXGI. The platform-neutral capture
@@ -7,7 +7,8 @@
 //! The implementation is target-gated: on non-Windows targets this crate keeps
 //! an empty, documented seam and resolves no Windows dependency. Windows builds
 //! expose `WindowsCaptureProvider`, which performs picker-free discovery and
-//! creates free-threaded WGC sessions.
+//! creates free-threaded WGC sessions and explicitly requested input
+//! controllers.
 //!
 //! # Ownership
 //!
@@ -42,7 +43,15 @@ mod availability;
 #[cfg(windows)]
 mod discovery;
 #[cfg(windows)]
+#[doc(hidden)]
+#[allow(missing_docs)]
+pub mod fixture_protocol;
+#[cfg(windows)]
+mod input;
+#[cfg(windows)]
 mod native;
+#[cfg(windows)]
+mod native_input;
 #[cfg(windows)]
 mod optional_api;
 #[cfg(windows)]

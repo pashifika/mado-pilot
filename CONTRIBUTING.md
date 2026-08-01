@@ -82,6 +82,29 @@ review is in
 [docs/adr/0013-windows-capture-frame-detachment.md](docs/adr/0013-windows-capture-frame-detachment.md)
 records the ownership decision that the production implementation follows.
 
+The Windows input implementation adds no external prerequisite or helper process.
+It uses target-gated Win32 bindings, does not elevate, and does not attach another
+thread's input queue. The ordinary workspace test run starts the dedicated
+`MadoPilotInputFixture` without activating it and exercises only its acknowledged
+background protocol, so that check does not move the pointer or type into the
+desktop. The fixture retains bounded event summaries and never input text.
+
+Successful system injection is deliberately excluded from the automatic suite
+because Windows requires a real foreground target. On an interactive Windows host,
+run the following command and click the exact PID-qualified fixture within the
+15-second prompt:
+
+```sh
+cargo test --locked -p mado-pilot-platform-windows --test native_input interactive_system_delivery_targets_only_the_exact_fixture -- --ignored --exact --nocapture --test-threads=1
+```
+
+The test sends no click, restores the previous pointer position and foreground
+window when Windows permits, and fails before system input if exact target selection
+or focus is unavailable. Do not make it pass through `AttachThreadInput`, elevation,
+or another foreground-policy bypass. The capability matrix, typed outcomes,
+privacy bounds, and focused commands are in
+[docs/windows-input-verification.md](docs/windows-input-verification.md).
+
 ## Verification
 
 Run this sequence from the repository root before opening a pull request. The

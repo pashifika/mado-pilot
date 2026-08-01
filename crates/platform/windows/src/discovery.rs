@@ -19,11 +19,13 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClientRect, GetWindowTextLengthW, GetWindowTextW, IsWindow, IsWindowVisible,
+    EnumWindows, GetClassNameW, GetClientRect, GetWindowTextLengthW, GetWindowTextW, IsWindow,
+    IsWindowVisible,
 };
 use windows::core::BOOL;
 
 use crate::availability::capture_item_factory;
+use crate::input::input_capability;
 use crate::optional_api::{logical_to_physical, monitor_scale, window_dpi};
 use crate::storage::validate_surface;
 
@@ -62,6 +64,7 @@ impl NativeKey {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TargetMetadata {
     pub(crate) name: String,
+    pub(crate) class_name: Option<String>,
     pub(crate) extent: PixelExtent,
     pub(crate) placement: TargetPlacement,
 }
@@ -78,7 +81,7 @@ impl TargetMetadata {
         .with_capability(TargetCapability::new(
             kind,
             CapabilitySupport::Supported,
-            mado_pilot_core::InputCapability::none(),
+            input_capability(kind, self.class_name.as_deref()),
         ))
     }
 }
@@ -156,6 +159,7 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
         let Some(name) = window_title(hwnd) else {
             continue;
         };
+        let class_name = window_class(hwnd);
         // SAFETY: factory is the documented GraphicsCaptureItem desktop interop
         // factory, and hwnd was just validated. A protected/uncapturable window
         // is filtered by the returned error without prompting.
@@ -176,6 +180,7 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
             key: NativeKey::Window(raw),
             metadata: TargetMetadata {
                 name,
+                class_name,
                 extent,
                 placement,
             },
@@ -210,6 +215,7 @@ fn display_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candi
             key: NativeKey::Display(raw),
             metadata: TargetMetadata {
                 name: device_name,
+                class_name: None,
                 extent,
                 placement,
             },
@@ -291,6 +297,18 @@ fn window_title(hwnd: HWND) -> Option<String> {
     let mut buffer = vec![0u16; capacity];
     // SAFETY: buffer is writable and includes room for the terminator.
     let written = unsafe { GetWindowTextW(hwnd, &mut buffer) };
+    let written = usize::try_from(written).ok()?;
+    (written > 0).then(|| String::from_utf16_lossy(&buffer[..written]))
+}
+
+fn window_class(hwnd: HWND) -> Option<String> {
+    // Win32 window class names are bounded to 256 UTF-16 code units including
+    // the terminator. A failed query disables class-specific background
+    // capability but does not make system input or capture disappear.
+    let mut buffer = [0u16; 256];
+    // SAFETY: buffer is writable for the duration of the call and hwnd came from
+    // the current EnumWindows snapshot.
+    let written = unsafe { GetClassNameW(hwnd, &mut buffer) };
     let written = usize::try_from(written).ok()?;
     (written > 0).then(|| String::from_utf16_lossy(&buffer[..written]))
 }

@@ -111,7 +111,7 @@ dependency surface over a framework that pulls in unrelated features.
 | `flate2` 1.1 | `mado-pilot-assets` | Selects the DEFLATE backend `zip` decompresses with. Not called directly | MIT OR Apache-2.0 |
 | `sha2` 0.11 | `mado-pilot-assets` | Verifies the content hash a manifest declares for each entry | MIT OR Apache-2.0 |
 | `opencv` 0.99 | `mado-pilot-backend-opencv` | Binds the OpenCV C++ API the CPU matching profile uses. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
-| `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, and DPI APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
+| `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, DPI, system input, window messaging, and token-integrity APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
 | `cc` 1.4 | `mado-pilot-platform-macos` (build) | Compiles the Objective-C shim that owns the macOS native boundary. The package declares the build dependency unconditionally, so Cargo resolves the edge on every host; `build.rs` gates Objective-C compilation and Apple framework link directives on a macOS target. It was already an indirect build dependency through the OpenCV binding generator, so the graph gains an edge rather than a crate | MIT OR Apache-2.0 |
 
 A replay manifest is caller-supplied data. It is parsed into a typed schema that
@@ -282,7 +282,10 @@ pins `windows` 0.62.2 from crates.io. The crate is maintained by Microsoft,
 declares `MIT OR Apache-2.0`, requires Rust 1.82, and is compatible with the
 workspace's Rust 1.97.1 toolchain. Default features are disabled; the selected
 features cover only WGC, D3D11/DXGI, WinRT interop, window/display enumeration,
-DWM metadata, high-resolution timing, dynamic system-library lookup, and DPI.
+DWM metadata, high-resolution timing, dynamic system-library lookup, DPI, system
+pointer/keyboard input, bounded fixture messaging, process handles, and token
+integrity inspection.
+
 Cargo resolves its Rust-only `windows-*` support crates; MadoPilot adds no
 Windows App SDK, WIL, DirectXTK, native redistributable, or runtime DLL.
 

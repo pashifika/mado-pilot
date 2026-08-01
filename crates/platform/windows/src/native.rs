@@ -16,7 +16,7 @@ use mado_pilot_capture::{
 };
 use mado_pilot_core::{
     Clock, MonotonicInstant, Operation, OperationContext, PixelExtent, Result, StreamId,
-    SystemClock, TargetId, TargetPlacement,
+    SystemClock, TargetId, TargetKind, TargetPlacement,
 };
 use windows::Foundation::TypedEventHandler;
 use windows::Graphics::Capture::{
@@ -31,6 +31,7 @@ use windows::core::{IInspectable, Interface};
 
 use crate::availability::{create_free_threaded_frame_pool, ensure_winrt_apartment};
 use crate::discovery::{NativeKey, TargetMetadata, current_placement};
+use crate::input::GeometryLedger;
 use crate::storage::{
     DeviceDomain, DeviceTerminal, RetainedBytes, SessionMemory, StorageFailureSink, TexturePool,
     WindowsFrameStorage, descriptor_from_native, native_fault, retained_storage_capacity,
@@ -42,6 +43,38 @@ const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(2);
 const TEARDOWN_START_TIMEOUT: Duration = Duration::from_secs(5);
 const TEARDOWN_QUEUE_CAPACITY: usize = 64;
 const TEARDOWN_WORKER_COUNT: usize = 4;
+
+pub(crate) struct NativeSessionSource {
+    target: TargetId,
+    stream: StreamId,
+    kind: TargetKind,
+    key: NativeKey,
+    metadata: TargetMetadata,
+    item: GraphicsCaptureItem,
+    geometry: Arc<GeometryLedger>,
+}
+
+impl NativeSessionSource {
+    pub(crate) fn new(
+        target: TargetId,
+        stream: StreamId,
+        kind: TargetKind,
+        key: NativeKey,
+        metadata: TargetMetadata,
+        item: GraphicsCaptureItem,
+        geometry: Arc<GeometryLedger>,
+    ) -> Self {
+        Self {
+            target,
+            stream,
+            kind,
+            key,
+            metadata,
+            item,
+            geometry,
+        }
+    }
+}
 
 pub(crate) struct NativeSession {
     description: SessionDescription,
@@ -102,9 +135,10 @@ impl<T> NativeOwnership<T> {
 }
 
 struct SessionCore {
-    target_kind: mado_pilot_core::TargetKind,
+    target_kind: TargetKind,
     key: NativeKey,
     state: StreamState,
+    geometry: Arc<GeometryLedger>,
     domain: Arc<DeviceDomain>,
     memory: Arc<SessionMemory>,
     native: OnceLock<Weak<NativeOwnership<WgcResources>>>,
@@ -189,14 +223,18 @@ struct WorkerGuard {
 
 impl NativeSession {
     pub(crate) fn open(
-        target: TargetId,
-        stream: StreamId,
-        kind: mado_pilot_core::TargetKind,
-        key: NativeKey,
-        metadata: TargetMetadata,
-        item: GraphicsCaptureItem,
+        source: NativeSessionSource,
         operation: &mut Operation<'_>,
     ) -> Result<Arc<Self>> {
+        let NativeSessionSource {
+            target,
+            stream,
+            kind,
+            key,
+            metadata,
+            item,
+            geometry,
+        } = source;
         let teardown = teardown_executor(operation)?;
         let teardown_permit = teardown.reserve(operation)?;
         let clock_anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
@@ -220,6 +258,7 @@ impl NativeSession {
             target_kind: kind,
             key,
             state: StreamState::with_target_extent(stream),
+            geometry,
             domain,
             memory,
             native: OnceLock::new(),
@@ -927,6 +966,7 @@ impl CaptureSession for NativeSession {
 
 impl Drop for NativeSession {
     fn drop(&mut self) {
+        self.core.geometry.remove(self.core.state.stream());
         self.core.callbacks.stop_admission();
         let _start = self.start_native_close(true, None);
         let abandoned = self.runtime().resources.take();
@@ -1093,7 +1133,8 @@ impl SessionCore {
             Arc::clone(&self.device_terminal),
             Arc::clone(&self.memory),
         );
-        self.state
+        let published = self
+            .state
             .publish_storage(StoragePublication {
                 captured_at,
                 placement: Some(placement),
@@ -1107,6 +1148,7 @@ impl SessionCore {
                     CaptureFault::SourceInvalid
                 }
             })?;
+        self.geometry.publish(&published);
         transition.placement = placement;
         transition.pending_discontinuity = false;
         transition.pending_geometry_change = false;
@@ -1121,22 +1163,19 @@ impl StorageFailureSink for SessionCore {
     }
 }
 
-fn normalize_native_fault(fault: CaptureFault, kind: mado_pilot_core::TargetKind) -> CaptureFault {
+fn normalize_native_fault(fault: CaptureFault, kind: TargetKind) -> CaptureFault {
     match fault {
-        CaptureFault::CaptureItemClosed if kind == mado_pilot_core::TargetKind::Display => {
+        CaptureFault::CaptureItemClosed if kind == TargetKind::Display => {
             CaptureFault::DisplayDisconnected
         }
-        CaptureFault::DisplayDisconnected if kind == mado_pilot_core::TargetKind::Window => {
+        CaptureFault::DisplayDisconnected if kind == TargetKind::Window => {
             CaptureFault::CaptureItemClosed
         }
         _ => fault,
     }
 }
 
-pub(crate) fn native_target_fault(
-    error: windows::core::Error,
-    kind: mado_pilot_core::TargetKind,
-) -> CaptureFault {
+pub(crate) fn native_target_fault(error: windows::core::Error, kind: TargetKind) -> CaptureFault {
     normalize_native_fault(native_fault(error), kind)
 }
 
@@ -1151,10 +1190,10 @@ fn native_close_result(result: windows::core::Result<()>) -> std::result::Result
     }
 }
 
-const fn target_fault(kind: mado_pilot_core::TargetKind) -> CaptureFault {
+const fn target_fault(kind: TargetKind) -> CaptureFault {
     match kind {
-        mado_pilot_core::TargetKind::Window => CaptureFault::CaptureItemClosed,
-        mado_pilot_core::TargetKind::Display => CaptureFault::DisplayDisconnected,
+        TargetKind::Window => CaptureFault::CaptureItemClosed,
+        TargetKind::Display => CaptureFault::DisplayDisconnected,
         _ => CaptureFault::TargetLost,
     }
 }
