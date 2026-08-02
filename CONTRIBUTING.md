@@ -72,6 +72,39 @@ authorization refusal first, so the query is unreachable without the grant, and 
 implies the session the connection comes from. Keep that order if either entry point is
 edited: the preflight is what stands between an unauthorized host and an abort.
 
+The macOS input implementation adds a second authorization with the same
+non-prompting rule: **Accessibility granted to the process running the tests**,
+under System Settings ▸ Privacy & Security ▸ Accessibility. macOS does not fail a
+synthesized event from an untrusted process — it discards it silently — so the
+Adapter reads that decision before every irreversible event and reports
+`NotAuthorized` rather than claiming a delivery. Screen Recording and
+Accessibility are separate grants and neither implies the other.
+
+The ordinary workspace test run **delivers no macOS input at all**. macOS offers
+no background channel, so there is no way to reach a fixture without focusing it
+and posting real system input; the automatic checks exercise the read-only native
+observations and the refusals that happen before any event. Starting the fixture
+window is itself opt-in, because it takes focus:
+
+```sh
+MADO_PILOT_MACOS_FIXTURE=1 cargo test --locked \
+  -p mado-pilot-platform-macos --test native_input
+```
+
+Successful macOS injection is the explicit user-focused check, run on an
+interactive desktop with both grants in place:
+
+```sh
+cargo test --locked -p mado-pilot-platform-macos --test native_input interactive_system_delivery_targets_only_the_exact_fixture -- --ignored --exact --nocapture --test-threads=1
+```
+
+It sends no click and no pointer movement, stops before input when selection is
+absent or ambiguous, and refuses rather than activating anything on its own. Do
+not make it pass by requesting a permission, opening System Settings, or
+activating another application to force focus. The capability matrix, typed
+outcomes, privacy bounds, and bundling step are in
+[docs/macos-input-verification.md](docs/macos-input-verification.md).
+
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
 Capture, Direct3D 11, and DXGI, and needs no NuGet package, Windows App SDK,

@@ -93,6 +93,30 @@ fn link_address_sanitizer_runtime(shim: &cc::Build) {
     println!("cargo::rustc-link-arg=-Wl,-rpath,{}", directory.display());
 }
 
+/// Compiles the interactive fixture's window into an archive of its own.
+///
+/// A separate archive rather than another file in the shim, because the fixture
+/// creates a window and observes events and nothing in a released artifact may
+/// reach that code. The linker drops an archive no target references, so the
+/// library and the ordinary test binaries carry none of it.
+///
+/// It declares no framework of its own: the fixture opens AppKit at runtime, so
+/// the Adapter's load commands stay exactly what `tests/linkage.rs` asserts.
+fn compile_input_fixture() {
+    println!("cargo::rerun-if-changed=native/madopilot_macos_input_fixture.m");
+    println!("cargo::rerun-if-changed=native/madopilot_macos_input_fixture.h");
+
+    cc::Build::new()
+        .file("native/madopilot_macos_input_fixture.m")
+        .include("native")
+        .flag("-fobjc-arc")
+        .flag("-fobjc-arc-exceptions")
+        .flag("-mmacosx-version-min=26.5.2")
+        .warnings(true)
+        .extra_warnings(true)
+        .compile("madopilot_macos_input_fixture");
+}
+
 fn main() {
     println!("cargo::rerun-if-changed=native/madopilot_macos_shim.m");
     println!("cargo::rerun-if-changed=native/madopilot_macos_shim.h");
@@ -127,6 +151,7 @@ fn main() {
     }
 
     shim.compile("madopilot_macos_shim");
+    compile_input_fixture();
 
     for framework in [
         "ApplicationServices",

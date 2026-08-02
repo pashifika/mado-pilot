@@ -23,7 +23,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 2;
+pub(crate) const ABI_VERSION: u32 = 3;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -855,6 +855,162 @@ pub(crate) fn live_objects() -> u64 {
     }
 }
 
+/// One pointer button, as the native surface numbers them.
+pub(crate) const INPUT_BUTTON_PRIMARY: u32 = 0;
+/// See [`INPUT_BUTTON_PRIMARY`].
+pub(crate) const INPUT_BUTTON_SECONDARY: u32 = 1;
+/// See [`INPUT_BUTTON_PRIMARY`].
+pub(crate) const INPUT_BUTTON_MIDDLE: u32 = 2;
+/// No button is involved, which a move reports and nothing else may.
+pub(crate) const INPUT_BUTTON_NONE: u32 = u32::MAX;
+
+/// What one pointer post does.
+pub(crate) const INPUT_POINTER_MOVE: u32 = 0;
+/// See [`INPUT_POINTER_MOVE`].
+pub(crate) const INPUT_POINTER_PRESS: u32 = 1;
+/// See [`INPUT_POINTER_MOVE`].
+pub(crate) const INPUT_POINTER_RELEASE: u32 = 2;
+
+/// Modifier state one posted event carries.
+pub(crate) const INPUT_FLAG_SHIFT: u32 = 1;
+/// See [`INPUT_FLAG_SHIFT`].
+pub(crate) const INPUT_FLAG_CONTROL: u32 = 1 << 1;
+/// See [`INPUT_FLAG_SHIFT`].
+pub(crate) const INPUT_FLAG_ALT: u32 = 1 << 2;
+/// See [`INPUT_FLAG_SHIFT`].
+pub(crate) const INPUT_FLAG_META: u32 = 1 << 3;
+
+/// The most UTF-16 units one posted text event carries, mirroring
+/// `MP_SHIM_INPUT_MAX_TEXT_CHUNK`. A longer string is posted in chunks so the
+/// count reported to a caller is the count that was posted.
+pub(crate) const INPUT_MAX_TEXT_CHUNK: usize = 16;
+
+/// The click count an ordinary single press or release declares.
+pub(crate) const INPUT_SINGLE_CLICK: u64 = 1;
+
+/// One target's live rectangle in the global point space, with its backing scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct NativeBounds {
+    pub(crate) origin: (f64, f64),
+    pub(crate) size: (f64, f64),
+    pub(crate) scale: f64,
+}
+
+/// Reports the frontmost ordinary window and the process that owns it.
+pub(crate) fn input_frontmost_window() -> Result<(u64, i64), ShimStatus> {
+    let mut window = 0u64;
+    let mut owner = 0i64;
+    // SAFETY: both outputs are writable for one value each.
+    let status = unsafe { mp_shim_input_frontmost_window(&raw mut window, &raw mut owner) };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((window, owner))
+}
+
+/// Reports one target's current rectangle, and thereby whether it still exists.
+pub(crate) fn input_target_bounds(
+    kind: u32,
+    native_id: u64,
+    owner_process: i64,
+) -> Result<NativeBounds, ShimStatus> {
+    let mut values = [0.0f64; 5];
+    let [x, y, width, height, scale] = &mut values;
+    // SAFETY: all five outputs are writable for one f64 each.
+    let status = unsafe {
+        mp_shim_input_target_bounds(
+            kind,
+            native_id,
+            owner_process,
+            &raw mut *x,
+            &raw mut *y,
+            &raw mut *width,
+            &raw mut *height,
+            &raw mut *scale,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok(NativeBounds {
+        origin: (values[0], values[1]),
+        size: (values[2], values[3]),
+        scale: values[4],
+    })
+}
+
+/// Reads the pointer location in the global point space.
+pub(crate) fn input_pointer_location() -> Result<(f64, f64), ShimStatus> {
+    let mut x = 0.0f64;
+    let mut y = 0.0f64;
+    // SAFETY: both outputs are writable for one f64 each.
+    let status = unsafe { mp_shim_input_pointer_location(&raw mut x, &raw mut y) };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((x, y))
+}
+
+/// Activates the application owning `owner_process`, presenting no interface.
+pub(crate) fn input_activate_owner(owner_process: i64) -> Result<(), ShimStatus> {
+    // SAFETY: the call takes one scalar and writes nothing.
+    ShimStatus::from_raw(unsafe { mp_shim_input_activate_owner(owner_process) }).into_result()
+}
+
+/// Resolves one Unicode scalar to a key code reachable without modifiers.
+pub(crate) fn input_resolve_character(scalar: u32) -> Result<u16, ShimStatus> {
+    let mut key_code = 0u16;
+    // SAFETY: the output is writable for one u16.
+    let status = unsafe { mp_shim_input_resolve_character(scalar, &raw mut key_code) };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok(key_code)
+}
+
+/// Posts one pointer event at a global point.
+pub(crate) fn input_post_pointer(
+    action: u32,
+    button: u32,
+    click_state: u64,
+    location: (f64, f64),
+    flags: u32,
+) -> Result<(), ShimStatus> {
+    // SAFETY: the call takes scalars only and writes nothing.
+    ShimStatus::from_raw(unsafe {
+        mp_shim_input_post_pointer(action, button, click_state, location.0, location.1, flags)
+    })
+    .into_result()
+}
+
+/// Posts one line-unit scroll, positive being down and right.
+pub(crate) fn input_post_scroll(
+    horizontal: i32,
+    vertical: i32,
+    flags: u32,
+) -> Result<(), ShimStatus> {
+    // SAFETY: the call takes scalars only and writes nothing.
+    ShimStatus::from_raw(unsafe { mp_shim_input_post_scroll(horizontal, vertical, flags) })
+        .into_result()
+}
+
+/// Posts one key event for a hardware key code.
+pub(crate) fn input_post_key(key_code: u16, down: bool, flags: u32) -> Result<(), ShimStatus> {
+    // SAFETY: the call takes scalars only and writes nothing.
+    ShimStatus::from_raw(unsafe { mp_shim_input_post_key(key_code, down, flags) }).into_result()
+}
+
+/// Posts one bounded chunk of UTF-16 units as text.
+///
+/// The error carries how many units had already reached the target, because a
+/// caller that stops mid-text has to report native effect it cannot take back.
+pub(crate) fn input_post_text(units: &[u16], flags: u32) -> Result<(), (ShimStatus, usize)> {
+    if units.is_empty() || units.len() > INPUT_MAX_TEXT_CHUNK {
+        return Err((ShimStatus::InvalidArgument, 0));
+    }
+    let mut posted = 0usize;
+    // SAFETY: `units` is a complete initialized slice whose length is passed
+    // beside it, and `posted` is writable for one `usize`.
+    let status =
+        unsafe { mp_shim_input_post_text(units.as_ptr(), units.len(), flags, &raw mut posted) };
+    match ShimStatus::from_raw(status) {
+        ShimStatus::Ok => Ok(()),
+        other => Err((other, posted)),
+    }
+}
+
 /// Returns the surface version and structure sizes the linked shim was built to.
 pub(crate) fn linked_layout() -> (u32, [u32; 3]) {
     // SAFETY: the version call takes no arguments.
@@ -1293,6 +1449,37 @@ unsafe extern "C" {
         destination: *mut u8,
         capacity: usize,
         destination_stride: u64,
+    ) -> u32;
+
+    fn mp_shim_input_frontmost_window(out_window_id: *mut u64, out_owner_pid: *mut i64) -> u32;
+    fn mp_shim_input_target_bounds(
+        kind: u32,
+        native_id: u64,
+        owner_process: i64,
+        out_x: *mut f64,
+        out_y: *mut f64,
+        out_width: *mut f64,
+        out_height: *mut f64,
+        out_scale: *mut f64,
+    ) -> u32;
+    fn mp_shim_input_pointer_location(out_x: *mut f64, out_y: *mut f64) -> u32;
+    fn mp_shim_input_activate_owner(owner_process: i64) -> u32;
+    fn mp_shim_input_resolve_character(scalar: u32, out_key_code: *mut u16) -> u32;
+    fn mp_shim_input_post_pointer(
+        action: u32,
+        button: u32,
+        click_state: u64,
+        x: f64,
+        y: f64,
+        flags: u32,
+    ) -> u32;
+    fn mp_shim_input_post_scroll(horizontal: i32, vertical: i32, flags: u32) -> u32;
+    fn mp_shim_input_post_key(key_code: u16, down: bool, flags: u32) -> u32;
+    fn mp_shim_input_post_text(
+        units: *const u16,
+        count: usize,
+        flags: u32,
+        out_posted: *mut usize,
     ) -> u32;
 }
 

@@ -9,12 +9,19 @@ use std::time::Duration;
 use mado_pilot_capture::{
     CaptureFault, CaptureProvider, CaptureSession, OpenRequest, PixelFormat, TargetDescription,
 };
-use mado_pilot_core::{IdentityIssuer, Operation, OperationContext, ProviderId, Result, TargetId};
+use mado_pilot_core::{
+    IdentityIssuer, Operation, OperationContext, PermissionKind, ProviderId, Result, TargetId,
+    TargetKind,
+};
+use mado_pilot_input::{
+    InputController, InputDescriptor, InputFault, InputOpenRequest, InputProvider,
+};
 
 use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
+use crate::input::{GeometryLedger, MacosInputController};
 use crate::native::{NativeSession, SessionTarget};
-use crate::shim::{MAX_NATIVE_WAIT, TargetToken};
+use crate::shim::{self, MAX_NATIVE_WAIT, NativeBounds, ShimStatus, TargetToken};
 
 /// Provider name qualifying every native macOS target identity.
 pub const PROVIDER: ProviderId = ProviderId::new("macos");
@@ -44,12 +51,13 @@ struct Registry {
     generations: VecDeque<Vec<TargetId>>,
 }
 
-struct TargetRecord {
+pub(crate) struct TargetRecord {
     id: TargetId,
     key: NativeKey,
     fingerprint: Fingerprint,
     selection: TargetToken,
     metadata: TargetMetadata,
+    geometry: Arc<GeometryLedger>,
 }
 
 struct PreparedSnapshot {
@@ -151,7 +159,27 @@ impl MacosCaptureProvider {
             fingerprint,
             selection: target,
             metadata,
+            geometry: Arc::new(GeometryLedger::default()),
         }))
+    }
+
+    /// Returns the record an input operation names, or why it cannot be used.
+    ///
+    /// `TargetId` is snapshot-scoped exactly as it is for capture, so an accepted
+    /// identity absent from the retained generations is conservatively stale
+    /// rather than an invitation to re-resolve a native object by number.
+    fn select_input_record(
+        &self,
+        target: TargetId,
+    ) -> std::result::Result<Arc<TargetRecord>, InputFault> {
+        let record = self
+            .registry()
+            .records
+            .get(&target)
+            .cloned()
+            .ok_or(InputFault::TargetLost)?;
+        record.ensure_live()?;
+        Ok(record)
     }
 
     fn registry(&self) -> MutexGuard<'_, Registry> {
@@ -202,7 +230,7 @@ impl CaptureProvider for MacosCaptureProvider {
         operation: &OperationContext,
     ) -> Result<Arc<dyn CaptureSession>> {
         let mut attempt = Operation::admit(operation)?;
-        self.accepts_target(target, self.issuer.engine())?;
+        CaptureProvider::accepts_target(self, target, self.issuer.engine())?;
         ensure_capture_available()?;
         if let Some(required) = request.required_format()
             && required != PixelFormat::Bgra8
@@ -227,9 +255,46 @@ impl CaptureProvider for MacosCaptureProvider {
             record.fingerprint,
             record.selection.clone(),
             record.metadata.clone(),
+            Arc::clone(&record.geometry),
         );
         let session = NativeSession::open(selected, &mut attempt)?;
         Ok(attempt.commit(session as Arc<dyn CaptureSession>)?)
+    }
+}
+
+impl InputProvider for MacosCaptureProvider {
+    fn provider(&self) -> ProviderId {
+        PROVIDER
+    }
+
+    /// Reports the authorization macOS grants for input separately from capture.
+    ///
+    /// Naming it is not a claim that it is held: the probe reads the decision and
+    /// every irreversible event re-reads it, because macOS can revoke it between
+    /// the two.
+    fn permission(&self) -> Option<PermissionKind> {
+        Some(PermissionKind::InputControl)
+    }
+
+    fn describe(&self, target: TargetId, operation: &OperationContext) -> Result<InputDescriptor> {
+        let attempt = Operation::admit(operation)?;
+        InputProvider::accepts_target(self, target, self.issuer.engine())?;
+        let record = self.select_input_record(target)?;
+        Ok(attempt.commit(record.input_descriptor())?)
+    }
+
+    fn open(
+        &self,
+        target: TargetId,
+        request: &InputOpenRequest,
+        operation: &OperationContext,
+    ) -> Result<Arc<dyn InputController>> {
+        let attempt = Operation::admit(operation)?;
+        InputProvider::accepts_target(self, target, self.issuer.engine())?;
+        let record = self.select_input_record(target)?;
+        request.check(record.input_descriptor().capability())?;
+        let controller = MacosInputController::new(record);
+        Ok(attempt.commit(controller as Arc<dyn InputController>)?)
     }
 }
 
@@ -252,6 +317,53 @@ fn lock_with_operation<'mutex>(
 impl TargetRecord {
     fn description(&self) -> TargetDescription {
         self.metadata.describe(self.id, self.key.kind())
+    }
+
+    pub(crate) fn target(&self) -> TargetId {
+        self.id
+    }
+
+    pub(crate) fn key(&self) -> NativeKey {
+        self.key
+    }
+
+    pub(crate) fn kind(&self) -> TargetKind {
+        self.key.kind()
+    }
+
+    /// Returns the owning process this target's discovery pass recorded.
+    ///
+    /// Zero for a display, which has none. macOS recycles window numbers, so the
+    /// owner is repeated at every native boundary that resolves this target: a
+    /// number now belonging to another process is loss rather than a target.
+    pub(crate) fn owner_process(&self) -> i64 {
+        self.fingerprint.native_owner()
+    }
+
+    pub(crate) fn geometry(&self) -> &Arc<GeometryLedger> {
+        &self.geometry
+    }
+
+    pub(crate) fn input_descriptor(&self) -> InputDescriptor {
+        InputDescriptor::new(self.id, self.description().capability().input())
+    }
+
+    /// Reads the target's live rectangle, which is also how liveness is decided.
+    pub(crate) fn current_bounds(&self) -> std::result::Result<NativeBounds, InputFault> {
+        shim::input_target_bounds(
+            self.key.native_kind(),
+            self.key.native_id(),
+            self.owner_process(),
+        )
+        .map_err(|status| match status {
+            ShimStatus::TargetLost => InputFault::TargetLost,
+            ShimStatus::InvalidArgument => InputFault::UnsupportedCoordinate,
+            _ => InputFault::DeliveryFailed,
+        })
+    }
+
+    pub(crate) fn ensure_live(&self) -> std::result::Result<(), InputFault> {
+        self.current_bounds().map(|_bounds| ())
     }
 }
 

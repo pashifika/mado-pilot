@@ -311,6 +311,7 @@ dependencies = [
  "cc",
  "mado-pilot-capture",
  "mado-pilot-core",
+ "mado-pilot-input",
 ]
 
 [[package]]

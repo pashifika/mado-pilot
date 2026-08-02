@@ -2662,3 +2662,627 @@ mp_shim_status mp_shim_session_live_objects(const mp_shim_session *session, uint
     *out_live = live;
     return MP_SHIM_OK;
 }
+
+#pragma mark - Input: the two frameworks it loads rather than links
+
+/*
+ * Neither AppKit nor HIToolbox is imported, for the reason at the top of this
+ * file: a header import creates a load command, and this Adapter is a headless
+ * library that must not depend on the desktop UI framework or on Carbon to load.
+ * Both are opened from an absolute system path on first use and their entry
+ * points resolved by symbol, so a host that cannot provide one reports
+ * MP_SHIM_UNSUPPORTED for exactly the operation that needed it.
+ */
+
+typedef struct MPShimOpaqueInputSource *MPShimInputSourceRef;
+typedef MPShimInputSourceRef (*MPShimCopyKeyboardLayoutSource)(void);
+typedef void *(*MPShimInputSourceProperty)(MPShimInputSourceRef source, CFStringRef key);
+typedef OSStatus (*MPShimKeyTranslate)(const void *layout, UInt16 key_code, UInt16 action,
+                                       UInt32 modifier_state, UInt32 keyboard_type,
+                                       OptionBits options, UInt32 *dead_key_state,
+                                       UniCharCount capacity, UniCharCount *out_length,
+                                       UniChar *out_units);
+
+/* UCKeyAction.kUCKeyActionDown and the no-dead-keys translate option. */
+static const UInt16 MPShimKeyActionDown = 0;
+static const OptionBits MPShimKeyTranslateNoDeadKeys = 1u << 0;
+/* How many UTF-16 units one key may legitimately produce on any layout. */
+#define MP_SHIM_LAYOUT_UNIT_CAPACITY 8u
+/* Hardware key codes are seven bits wide on every keyboard the layout describes. */
+#define MP_SHIM_LAYOUT_KEY_CODES 128u
+/* Upper bound for one active-display enumeration. Matches the geometry helper's. */
+#define MP_SHIM_MAX_ACTIVE_DISPLAYS 16u
+
+typedef struct MPShimKeyboardLayoutApi {
+    bool loaded;
+    MPShimCopyKeyboardLayoutSource copy_current;
+    MPShimCopyKeyboardLayoutSource copy_ascii_capable;
+    MPShimInputSourceProperty property;
+    MPShimKeyTranslate translate;
+    CFStringRef unicode_layout_key;
+} MPShimKeyboardLayoutApi;
+
+static MPShimKeyboardLayoutApi mp_shim_layout_api;
+static pthread_once_t mp_shim_layout_once = PTHREAD_ONCE_INIT;
+
+static void mp_shim_load_keyboard_layout_api(void) {
+    void *handle = dlopen("/System/Library/Frameworks/Carbon.framework/Frameworks/"
+                          "HIToolbox.framework/Versions/A/HIToolbox",
+                          RTLD_LAZY | RTLD_LOCAL);
+    if (handle == NULL) {
+        handle = dlopen("/System/Library/Frameworks/Carbon.framework/Frameworks/"
+                        "HIToolbox.framework/HIToolbox",
+                        RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (handle == NULL) {
+        return;
+    }
+
+    MPShimKeyboardLayoutApi loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    loaded.copy_current = (MPShimCopyKeyboardLayoutSource)dlsym(
+        handle, "TISCopyCurrentKeyboardLayoutInputSource");
+    loaded.copy_ascii_capable = (MPShimCopyKeyboardLayoutSource)dlsym(
+        handle, "TISCopyCurrentASCIICapableKeyboardLayoutInputSource");
+    loaded.property = (MPShimInputSourceProperty)dlsym(handle, "TISGetInputSourceProperty");
+    loaded.translate = (MPShimKeyTranslate)dlsym(handle, "UCKeyTranslate");
+    loaded.unicode_layout_key =
+        (CFStringRef)mp_shim_string_symbol(handle, "kTISPropertyUnicodeKeyLayoutData");
+
+    loaded.loaded = loaded.copy_current != NULL && loaded.property != NULL &&
+                    loaded.translate != NULL && loaded.unicode_layout_key != NULL;
+    if (loaded.loaded) {
+        mp_shim_layout_api = loaded;
+    }
+}
+
+static const MPShimKeyboardLayoutApi *mp_shim_keyboard_layout_api(void) {
+    pthread_once(&mp_shim_layout_once, mp_shim_load_keyboard_layout_api);
+    return mp_shim_layout_api.loaded ? &mp_shim_layout_api : NULL;
+}
+
+@protocol MPShimRunningApplicationClass <NSObject>
++ (id)runningApplicationWithProcessIdentifier:(pid_t)identifier;
+@end
+
+@protocol MPShimActivatableApplication <NSObject>
+- (BOOL)activateWithOptions:(NSUInteger)options;
+@end
+
+/*
+ * NSApplicationActivateAllWindows.
+ *
+ * NSApplicationActivateIgnoringOtherApps is deliberately absent: it asks macOS to
+ * take focus away from whatever the user is doing, and this Adapter reports a
+ * refusal instead of overriding the system's activation policy.
+ */
+static const NSUInteger MPShimActivateAllWindows = 1u << 0;
+
+static Class mp_shim_running_application_class = Nil;
+static pthread_once_t mp_shim_appkit_once = PTHREAD_ONCE_INIT;
+
+static void mp_shim_load_appkit(void) {
+    void *handle =
+        dlopen("/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit", RTLD_LAZY | RTLD_LOCAL);
+    if (handle == NULL) {
+        handle = dlopen("/System/Library/Frameworks/AppKit.framework/AppKit", RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (handle == NULL) {
+        return;
+    }
+    mp_shim_running_application_class = NSClassFromString(@"NSRunningApplication");
+}
+
+static Class mp_shim_activation_class(void) {
+    pthread_once(&mp_shim_appkit_once, mp_shim_load_appkit);
+    return mp_shim_running_application_class;
+}
+
+#pragma mark - Input: window-server observations
+
+/* Reads one numeric value out of a window-server dictionary without messaging. */
+static bool mp_shim_window_number(CFDictionaryRef entry, CFStringRef key, int64_t *out_value) {
+    CFTypeRef value = CFDictionaryGetValue(entry, key);
+    if (value == NULL || CFGetTypeID(value) != CFNumberGetTypeID()) {
+        return false;
+    }
+    return CFNumberGetValue((CFNumberRef)value, kCFNumberSInt64Type, out_value);
+}
+
+static bool mp_shim_window_bounds(CFDictionaryRef entry, CGRect *out_bounds) {
+    CFTypeRef value = CFDictionaryGetValue(entry, kCGWindowBounds);
+    if (value == NULL || CFGetTypeID(value) != CFDictionaryGetTypeID()) {
+        return false;
+    }
+    return CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)value, out_bounds);
+}
+
+mp_shim_status mp_shim_input_frontmost_window(uint64_t *out_window_id, int64_t *out_owner_pid) {
+    if (out_window_id == NULL || out_owner_pid == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_window_id = 0;
+    *out_owner_pid = 0;
+    MP_SHIM_BEGIN
+    mp_shim_connect_window_server();
+    /* Onscreen order is front to back, and the name key is never read, so this
+     * observation needs no Screen Recording authorization. */
+    CFArrayRef windows = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (windows == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    mp_shim_status status = MP_SHIM_TARGET_LOST;
+    CFIndex count = CFArrayGetCount(windows);
+    for (CFIndex index = 0; index < count; index += 1) {
+        CFTypeRef element = CFArrayGetValueAtIndex(windows, index);
+        if (element == NULL || CFGetTypeID(element) != CFDictionaryGetTypeID()) {
+            continue;
+        }
+        CFDictionaryRef entry = (CFDictionaryRef)element;
+        int64_t layer = 0;
+        int64_t number = 0;
+        int64_t owner = 0;
+        /* Layer zero is the ordinary application window band. Menu bars, docks,
+         * and overlays sit above it and are not what "frontmost" means here. */
+        if (!mp_shim_window_number(entry, kCGWindowLayer, &layer) || layer != 0) {
+            continue;
+        }
+        if (!mp_shim_window_number(entry, kCGWindowNumber, &number) ||
+            !mp_shim_window_number(entry, kCGWindowOwnerPID, &owner) || number <= 0 || owner <= 0) {
+            continue;
+        }
+        *out_window_id = (uint64_t)number;
+        *out_owner_pid = owner;
+        status = MP_SHIM_OK;
+        break;
+    }
+    CFRelease(windows);
+    return status;
+    MP_SHIM_END
+}
+
+static mp_shim_status mp_shim_input_window_rect(uint64_t native_id, int64_t owner_process,
+                                                CGRect *out_bounds) {
+    if (native_id == 0 || native_id > UINT32_MAX || owner_process <= 0) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    mp_shim_connect_window_server();
+    CFArrayRef windows = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow,
+                                                    (CGWindowID)native_id);
+    if (windows == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    mp_shim_status status = MP_SHIM_TARGET_LOST;
+    CFIndex count = CFArrayGetCount(windows);
+    for (CFIndex index = 0; index < count; index += 1) {
+        CFTypeRef element = CFArrayGetValueAtIndex(windows, index);
+        if (element == NULL || CFGetTypeID(element) != CFDictionaryGetTypeID()) {
+            continue;
+        }
+        CFDictionaryRef entry = (CFDictionaryRef)element;
+        int64_t number = 0;
+        int64_t owner = 0;
+        if (!mp_shim_window_number(entry, kCGWindowNumber, &number) ||
+            (uint64_t)number != native_id) {
+            continue;
+        }
+        /* macOS recycles window numbers. The owning process the discovery pass
+         * recorded is repeated here so a recycled number belonging to another
+         * process reports loss rather than being delivered to. */
+        if (!mp_shim_window_number(entry, kCGWindowOwnerPID, &owner) || owner != owner_process) {
+            continue;
+        }
+        CFTypeRef onscreen = CFDictionaryGetValue(entry, kCGWindowIsOnscreen);
+        if (onscreen == NULL || CFGetTypeID(onscreen) != CFBooleanGetTypeID() ||
+            !CFBooleanGetValue((CFBooleanRef)onscreen)) {
+            break;
+        }
+        CGRect bounds = CGRectNull;
+        if (!mp_shim_window_bounds(entry, &bounds) || CGRectIsNull(bounds) ||
+            bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+            break;
+        }
+        *out_bounds = bounds;
+        status = MP_SHIM_OK;
+        break;
+    }
+    CFRelease(windows);
+    return status;
+}
+
+static mp_shim_status mp_shim_input_display_rect(uint64_t native_id, CGRect *out_bounds) {
+    if (native_id > UINT32_MAX) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    mp_shim_connect_window_server();
+    CGDirectDisplayID display = (CGDirectDisplayID)native_id;
+    uint32_t count = 0;
+    CGDirectDisplayID active[MP_SHIM_MAX_ACTIVE_DISPLAYS];
+    if (CGGetActiveDisplayList(MP_SHIM_MAX_ACTIVE_DISPLAYS, active, &count) != kCGErrorSuccess) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    for (uint32_t index = 0; index < count; index += 1) {
+        if (active[index] != display) {
+            continue;
+        }
+        CGRect bounds = CGDisplayBounds(display);
+        if (CGRectIsNull(bounds) || bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+            return MP_SHIM_TARGET_LOST;
+        }
+        *out_bounds = bounds;
+        return MP_SHIM_OK;
+    }
+    return MP_SHIM_TARGET_LOST;
+}
+
+mp_shim_status mp_shim_input_target_bounds(uint32_t kind, uint64_t native_id, int64_t owner_process,
+                                           double *out_x, double *out_y, double *out_width,
+                                           double *out_height, double *out_scale) {
+    if (out_x == NULL || out_y == NULL || out_width == NULL || out_height == NULL ||
+        out_scale == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_x = 0.0;
+    *out_y = 0.0;
+    *out_width = 0.0;
+    *out_height = 0.0;
+    *out_scale = 0.0;
+    MP_SHIM_BEGIN
+    CGRect bounds = CGRectNull;
+    mp_shim_status status;
+    double scale;
+    if (kind == MP_SHIM_TARGET_WINDOW) {
+        status = mp_shim_input_window_rect(native_id, owner_process, &bounds);
+        scale = status == MP_SHIM_OK ? mp_shim_scale_for_frame(bounds) : 0.0;
+    } else if (kind == MP_SHIM_TARGET_DISPLAY) {
+        status = mp_shim_input_display_rect(native_id, &bounds);
+        scale = status == MP_SHIM_OK ? mp_shim_display_backing_scale((CGDirectDisplayID)native_id)
+                                     : 0.0;
+    } else {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    if (!isfinite(bounds.origin.x) || !isfinite(bounds.origin.y) ||
+        !isfinite(bounds.size.width) || !isfinite(bounds.size.height) || !isfinite(scale) ||
+        scale <= 0.0 || fabs(bounds.origin.x) > MP_SHIM_MAX_DESKTOP_COORDINATE ||
+        fabs(bounds.origin.y) > MP_SHIM_MAX_DESKTOP_COORDINATE) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_x = bounds.origin.x;
+    *out_y = bounds.origin.y;
+    *out_width = bounds.size.width;
+    *out_height = bounds.size.height;
+    *out_scale = scale;
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_input_pointer_location(double *out_x, double *out_y) {
+    if (out_x == NULL || out_y == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_x = 0.0;
+    *out_y = 0.0;
+    MP_SHIM_BEGIN
+    CGEventRef reading = CGEventCreate(NULL);
+    if (reading == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    CGPoint location = CGEventGetLocation(reading);
+    CFRelease(reading);
+    if (!isfinite(location.x) || !isfinite(location.y)) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_x = location.x;
+    *out_y = location.y;
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_input_activate_owner(int64_t owner_process) {
+    if (owner_process <= 0 || owner_process > INT32_MAX) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    Class class = mp_shim_activation_class();
+    if (class == Nil) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    id<MPShimRunningApplicationClass> factory = (id<MPShimRunningApplicationClass>)class;
+    id running = [factory runningApplicationWithProcessIdentifier:(pid_t)owner_process];
+    if (running == nil) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    id<MPShimActivatableApplication> application = (id<MPShimActivatableApplication>)running;
+    /* macOS may decline under its own activation policy. A refusal is reported;
+     * nothing here retries, elevates, or overrides the user's foreground app. */
+    return [application activateWithOptions:MPShimActivateAllWindows] ? MP_SHIM_OK
+                                                                      : MP_SHIM_PLATFORM_FAILURE;
+    MP_SHIM_END
+}
+
+#pragma mark - Input: layout resolution
+
+static const void *mp_shim_unicode_layout(const MPShimKeyboardLayoutApi *api,
+                                          MPShimInputSourceRef *out_source) {
+    MPShimInputSourceRef source = api->copy_current();
+    void *data = source == NULL ? NULL : api->property(source, api->unicode_layout_key);
+    if (data == NULL) {
+        /* An input method rather than a keyboard layout is current, and it
+         * publishes no key layout. The ASCII-capable layout the system keeps
+         * beside it is what a key code actually means on this host. */
+        if (source != NULL) {
+            CFRelease(source);
+            source = NULL;
+        }
+        if (api->copy_ascii_capable != NULL) {
+            source = api->copy_ascii_capable();
+            data = source == NULL ? NULL : api->property(source, api->unicode_layout_key);
+        }
+    }
+    if (data == NULL || CFGetTypeID((CFTypeRef)data) != CFDataGetTypeID()) {
+        if (source != NULL) {
+            CFRelease(source);
+        }
+        return NULL;
+    }
+    *out_source = source;
+    return CFDataGetBytePtr((CFDataRef)data);
+}
+
+static uint32_t mp_shim_keyboard_type(void) {
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+    if (source == NULL) {
+        return 0;
+    }
+    uint32_t type = (uint32_t)CGEventSourceGetKeyboardType(source);
+    CFRelease(source);
+    return type;
+}
+
+mp_shim_status mp_shim_input_resolve_character(uint32_t scalar, uint16_t *out_key_code) {
+    if (out_key_code == NULL || scalar > 0x10FFFFu || (scalar >= 0xD800u && scalar <= 0xDFFFu)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_key_code = 0;
+    MP_SHIM_BEGIN
+    const MPShimKeyboardLayoutApi *api = mp_shim_keyboard_layout_api();
+    if (api == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+
+    UniChar wanted[2];
+    UniCharCount wanted_length;
+    if (scalar > 0xFFFFu) {
+        uint32_t offset = scalar - 0x10000u;
+        wanted[0] = (UniChar)(0xD800u + (offset >> 10));
+        wanted[1] = (UniChar)(0xDC00u + (offset & 0x3FFu));
+        wanted_length = 2;
+    } else {
+        wanted[0] = (UniChar)scalar;
+        wanted_length = 1;
+    }
+
+    MPShimInputSourceRef source = NULL;
+    const void *layout = mp_shim_unicode_layout(api, &source);
+    if (layout == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    uint32_t keyboard_type = mp_shim_keyboard_type();
+    mp_shim_status status = MP_SHIM_UNSUPPORTED;
+    for (uint32_t code = 0; code < MP_SHIM_LAYOUT_KEY_CODES; code += 1) {
+        UInt32 dead_key_state = 0;
+        UniCharCount produced = 0;
+        UniChar units[MP_SHIM_LAYOUT_UNIT_CAPACITY];
+        /* Modifier state zero is the whole rule: a character this layout produces
+         * only with a modifier is not a key the caller can press, and reporting it
+         * as one would deliver a different character. */
+        OSStatus translated =
+            api->translate(layout, (UInt16)code, MPShimKeyActionDown, 0, keyboard_type,
+                           MPShimKeyTranslateNoDeadKeys, &dead_key_state,
+                           MP_SHIM_LAYOUT_UNIT_CAPACITY, &produced, units);
+        if (translated != 0 || produced != wanted_length) {
+            continue;
+        }
+        if (memcmp(units, wanted, (size_t)wanted_length * sizeof(UniChar)) != 0) {
+            continue;
+        }
+        *out_key_code = (uint16_t)code;
+        status = MP_SHIM_OK;
+        break;
+    }
+    if (source != NULL) {
+        CFRelease(source);
+    }
+    return status;
+    MP_SHIM_END
+}
+
+#pragma mark - Input: posting
+
+static CGEventFlags mp_shim_input_event_flags(uint32_t flags) {
+    CGEventFlags result = 0;
+    if ((flags & MP_SHIM_INPUT_FLAG_SHIFT) != 0) {
+        result |= kCGEventFlagMaskShift;
+    }
+    if ((flags & MP_SHIM_INPUT_FLAG_CONTROL) != 0) {
+        result |= kCGEventFlagMaskControl;
+    }
+    if ((flags & MP_SHIM_INPUT_FLAG_ALT) != 0) {
+        result |= kCGEventFlagMaskAlternate;
+    }
+    if ((flags & MP_SHIM_INPUT_FLAG_META) != 0) {
+        result |= kCGEventFlagMaskCommand;
+    }
+    return result;
+}
+
+static bool mp_shim_input_mouse_button(uint32_t button, CGMouseButton *out_button) {
+    switch (button) {
+    case MP_SHIM_INPUT_BUTTON_PRIMARY:
+        *out_button = kCGMouseButtonLeft;
+        return true;
+    case MP_SHIM_INPUT_BUTTON_SECONDARY:
+        *out_button = kCGMouseButtonRight;
+        return true;
+    case MP_SHIM_INPUT_BUTTON_MIDDLE:
+        *out_button = kCGMouseButtonCenter;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool mp_shim_input_pointer_type(uint32_t action, uint32_t button, CGEventType *out_type) {
+    if (action == MP_SHIM_INPUT_POINTER_MOVE) {
+        /* A move while this sequence holds a button is a drag. Reporting it as a
+         * plain move would leave every drag gesture inert. */
+        switch (button) {
+        case MP_SHIM_INPUT_BUTTON_NONE:
+            *out_type = kCGEventMouseMoved;
+            return true;
+        case MP_SHIM_INPUT_BUTTON_PRIMARY:
+            *out_type = kCGEventLeftMouseDragged;
+            return true;
+        case MP_SHIM_INPUT_BUTTON_SECONDARY:
+            *out_type = kCGEventRightMouseDragged;
+            return true;
+        case MP_SHIM_INPUT_BUTTON_MIDDLE:
+            *out_type = kCGEventOtherMouseDragged;
+            return true;
+        default:
+            return false;
+        }
+    }
+    bool pressed = action == MP_SHIM_INPUT_POINTER_PRESS;
+    if (!pressed && action != MP_SHIM_INPUT_POINTER_RELEASE) {
+        return false;
+    }
+    switch (button) {
+    case MP_SHIM_INPUT_BUTTON_PRIMARY:
+        *out_type = pressed ? kCGEventLeftMouseDown : kCGEventLeftMouseUp;
+        return true;
+    case MP_SHIM_INPUT_BUTTON_SECONDARY:
+        *out_type = pressed ? kCGEventRightMouseDown : kCGEventRightMouseUp;
+        return true;
+    case MP_SHIM_INPUT_BUTTON_MIDDLE:
+        *out_type = pressed ? kCGEventOtherMouseDown : kCGEventOtherMouseUp;
+        return true;
+    default:
+        return false;
+    }
+}
+
+mp_shim_status mp_shim_input_post_pointer(uint32_t action, uint32_t button, uint64_t click_state,
+                                          double x, double y, uint32_t flags) {
+    if (!isfinite(x) || !isfinite(y) || fabs(x) > MP_SHIM_MAX_DESKTOP_COORDINATE ||
+        fabs(y) > MP_SHIM_MAX_DESKTOP_COORDINATE || click_state > MP_SHIM_INPUT_MAX_CLICK_STATE) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    CGEventType type;
+    if (!mp_shim_input_pointer_type(action, button, &type)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    CGMouseButton mouse_button = kCGMouseButtonLeft;
+    if (button != MP_SHIM_INPUT_BUTTON_NONE && !mp_shim_input_mouse_button(button, &mouse_button)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), mouse_button);
+    if (event == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    if (action != MP_SHIM_INPUT_POINTER_MOVE) {
+        CGEventSetIntegerValueField(event, kCGMouseEventClickState, (int64_t)click_state);
+    }
+    /* The flags are set rather than merged: a sequence delivers the modifiers it
+     * pressed, and inheriting whatever the user is holding would change the
+     * keystroke a caller asked for into a different one. */
+    CGEventSetFlags(event, mp_shim_input_event_flags(flags));
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_input_post_scroll(int32_t horizontal, int32_t vertical, uint32_t flags) {
+    if (horizontal == 0 && vertical == 0) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    if (horizontal < -MP_SHIM_INPUT_MAX_SCROLL_LINES ||
+        horizontal > MP_SHIM_INPUT_MAX_SCROLL_LINES || vertical < -MP_SHIM_INPUT_MAX_SCROLL_LINES ||
+        vertical > MP_SHIM_INPUT_MAX_SCROLL_LINES) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    /* Core Graphics counts a positive vertical wheel value as scrolling the
+     * content up and a positive horizontal value as scrolling it left. The
+     * platform-neutral contract counts positive as down and right, so both axes
+     * are negated exactly here rather than at each caller. */
+    CGEventRef event = CGEventCreateScrollWheelEvent2(NULL, kCGScrollEventUnitLine, 2, -vertical,
+                                                      -horizontal, 0);
+    if (event == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    CGEventSetFlags(event, mp_shim_input_event_flags(flags));
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_input_post_key(uint16_t key_code, bool down, uint32_t flags) {
+    if (key_code >= MP_SHIM_LAYOUT_KEY_CODES) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)key_code, down);
+    if (event == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    CGEventSetFlags(event, mp_shim_input_event_flags(flags));
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_input_post_text(const uint16_t *units, size_t count, uint32_t flags,
+                                       size_t *out_posted) {
+    if (out_posted == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_posted = 0;
+    if (units == NULL || count == 0 || count > MP_SHIM_INPUT_MAX_TEXT_CHUNK) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    CGEventFlags event_flags = mp_shim_input_event_flags(flags);
+    /* A key code of zero with an attached string is how Core Graphics delivers
+     * text rather than a key press, which is what the Text operation means. */
+    CGEventRef down = CGEventCreateKeyboardEvent(NULL, 0, true);
+    if (down == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    CGEventKeyboardSetUnicodeString(down, (UniCharCount)count, (const UniChar *)units);
+    CGEventSetFlags(down, event_flags);
+    CGEventPost(kCGHIDEventTap, down);
+    CFRelease(down);
+    /* The chunk has reached the target. Everything after this reports how the
+     * matching release went, never that nothing happened. */
+    *out_posted = count;
+
+    CGEventRef up = CGEventCreateKeyboardEvent(NULL, 0, false);
+    if (up == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    CGEventKeyboardSetUnicodeString(up, (UniCharCount)count, (const UniChar *)units);
+    CGEventSetFlags(up, event_flags);
+    CGEventPost(kCGHIDEventTap, up);
+    CFRelease(up);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}

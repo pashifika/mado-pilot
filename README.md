@@ -179,6 +179,7 @@ cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<
 | [docs/performance.md](docs/performance.md) | Benchmark profile and budget format, the Phase 1 workloads, and their correctness oracles |
 | [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |
 | [docs/windows-input-verification.md](docs/windows-input-verification.md) | Windows input capability matrix, focus/UIPI behavior, fixture privacy bounds, and native checks |
+| [docs/macos-input-verification.md](docs/macos-input-verification.md) | macOS input capability matrix, Accessibility and focus behavior, fixture privacy bounds, and native checks |
 | [docs/releases/](docs/releases/) | Canonical release notes and exact artifact limitations |
 | [docs/adr/](docs/adr/) | Architecture decision records, and [the template](docs/adr/0000-template.md) with the rule for when one is required |
 | [docs/evidence/](docs/evidence/) | The measurements behind decisions that rest on them |
@@ -196,9 +197,10 @@ permission UI.
 The Phase 1 public workflow still requests no permission, captures only tracked
 replay sequences and files, and injects no input. The native platform packages
 now make part of these commitments testable below that facade: both implement
-capture, macOS implements non-prompting permission probes, and Windows implements
-platform-level input with no elevation and redacted fixture evidence. Runtime and
-public-facade wiring remain later work.
+capture and platform-level input with no elevation and redacted fixture evidence,
+and macOS implements non-prompting permission probes and reads the Accessibility
+decision again before every event it delivers rather than requesting it. Runtime
+and public-facade wiring remain later work.
 
 ## Contributing
 

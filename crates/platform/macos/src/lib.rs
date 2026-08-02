@@ -1,13 +1,14 @@
-//! Native macOS target discovery, permission probes, and ScreenCaptureKit capture.
+//! Native macOS target discovery, permission probes, ScreenCaptureKit capture,
+//! and `CGEvent` input.
 //!
 //! This package is the only workspace package that names ScreenCaptureKit, Core
 //! Video, Core Graphics, Accessibility, or Objective-C. The platform-neutral
-//! capture contracts depend on none of them, and no Objective-C type appears in
-//! any Rust or public API.
+//! capture and input contracts depend on none of them, and no Objective-C type
+//! appears in any Rust or public API.
 //!
 //! The implementation is target-gated: off macOS this crate keeps an empty,
 //! documented seam and resolves no macOS dependency. macOS builds expose
-//! `MacosCaptureProvider` for picker-free discovery and capture, and
+//! `MacosCaptureProvider` for picker-free discovery, capture, and input, and
 //! `MacosPermissionProbe` for the two authorizations macOS grants separately.
 //!
 //! # The native boundary
@@ -64,7 +65,14 @@ mod availability;
 #[cfg(target_os = "macos")]
 mod discovery;
 #[cfg(target_os = "macos")]
+#[doc(hidden)]
+pub mod fixture_protocol;
+#[cfg(target_os = "macos")]
+mod input;
+#[cfg(target_os = "macos")]
 mod native;
+#[cfg(target_os = "macos")]
+mod native_input;
 #[cfg(target_os = "macos")]
 mod permission;
 #[cfg(target_os = "macos")]
