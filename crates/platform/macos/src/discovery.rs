@@ -24,10 +24,11 @@
 
 use mado_pilot_capture::{CaptureFault, CoordinateSupport, PixelFormat, TargetDescription};
 use mado_pilot_core::{
-    CapabilitySupport, GeometryFault, InputCapability, PermissionKind, PixelExtent, Result, Scale,
-    TargetCapability, TargetId, TargetKind, TargetPlacement,
+    CapabilitySupport, GeometryFault, PermissionKind, PixelExtent, Result, Scale, TargetCapability,
+    TargetId, TargetKind, TargetPlacement,
 };
 
+use crate::input::input_capability;
 use crate::shim::{self, FrameInfo, Inventory, KIND_DISPLAY, KIND_WINDOW, ShimStatus, TargetToken};
 
 /// The native descriptive key used for ordering and request validation.
@@ -114,10 +115,12 @@ pub(crate) struct TargetMetadata {
 impl TargetMetadata {
     /// Describes the target as this provider can act on it.
     ///
-    /// The capability states what this Change implements and nothing more: capture
-    /// through ScreenCaptureKit, every coordinate space the placement supports,
-    /// and no input. macOS input arrives with the Change that implements and tests
-    /// it, and advertising it here would be a claim without an implementation.
+    /// The capability states what this Adapter implements and nothing more:
+    /// capture through ScreenCaptureKit, every coordinate space the placement
+    /// supports, and `CGEvent` system input under Accessibility. Background
+    /// delivery is absent because macOS offers no per-window channel an unfocused
+    /// process may post to, and advertising one would be a claim without an
+    /// implementation.
     pub(crate) fn describe(&self, id: TargetId, kind: TargetKind) -> TargetDescription {
         TargetDescription::new(
             id,
@@ -130,7 +133,7 @@ impl TargetMetadata {
             CoordinateSupport::with_target_placement(),
         )
         .with_capability(
-            TargetCapability::new(kind, CapabilitySupport::Supported, InputCapability::none())
+            TargetCapability::new(kind, CapabilitySupport::Supported, input_capability(kind))
                 .with_capture_permission(PermissionKind::ScreenCapture),
         )
     }
@@ -209,7 +212,7 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
 /// point size. Both describe the same rectangle, but only the extent is what the
 /// frame actually contains, and a placement whose scaled logical size is not the
 /// frame extent is refused by the transform snapshot that consumes it.
-fn placement_from_points(
+pub(crate) fn placement_from_points(
     origin: (f64, f64),
     size: (f64, f64),
     scale: f64,
@@ -290,13 +293,12 @@ mod tests {
     }
 
     #[test]
-    fn a_described_target_offers_capture_under_screen_recording_and_no_input_at_all() {
-        // The requirement this pins was rewritten during this Change to match the
-        // implementation, after the spec had asked for `CGEvent` system input that no
-        // code here provides. A requirement corrected toward the code and then left
-        // unpinned reverses quietly: adding a pair to `describe` — the natural edit
-        // when the macOS input Change lands and someone extends the capture provider
-        // instead of the input one — would otherwise fail nothing.
+    fn a_described_target_offers_capture_and_system_input_but_never_background_delivery() {
+        // The negative half of this is the one that reverses quietly. macOS offers
+        // no per-window channel an unfocused process may post to, so a background
+        // pair appearing here would be a capability claim with nothing behind it,
+        // and admission would then route a caller that asked not to disturb the
+        // desktop into system input that focuses a window.
         let issuer = IdentityIssuer::new();
         let id = issuer
             .issue_target(crate::provider::PROVIDER)
@@ -330,22 +332,57 @@ mod tests {
             "qualified-host frame attachments provide same-frame desktop placement"
         );
 
-        // The scenario's own outcome: a caller asking about background delivery finds
-        // it unavailable, before opening anything or causing an input side effect.
-        // Asserted over every pair rather than the one a reader happens to think of,
-        // so no operation kind can acquire a delivery mechanism unnoticed.
         let input = capability.input();
-        assert!(!input.is_available());
-        assert_eq!(input.permission(), None);
+        assert_eq!(
+            input.permission(),
+            Some(PermissionKind::InputControl),
+            "Accessibility is the authorization input needs, named separately from \
+             the one capture needs"
+        );
         for kind in InputOperationKind::ALL {
-            for delivery in InputDelivery::ALL {
-                assert!(
-                    !input.supports(kind, delivery),
-                    "a capture-only provider claimed {} over {}",
-                    kind.as_str(),
-                    delivery.as_str()
-                );
-            }
+            assert!(
+                input.supports(kind, InputDelivery::System),
+                "a window accepts {} through system delivery",
+                kind.as_str()
+            );
+            assert!(
+                !input.supports(kind, InputDelivery::BackgroundTarget),
+                "a macOS target claimed background {}",
+                kind.as_str()
+            );
+        }
+        assert!(
+            input.requires_focus(InputDelivery::System),
+            "system delivery reaches whatever is focused, so it needs the target to be"
+        );
+    }
+
+    #[test]
+    fn a_display_accepts_pointer_input_and_nothing_that_needs_focus() {
+        let issuer = IdentityIssuer::new();
+        let id = issuer
+            .issue_target(crate::provider::PROVIDER)
+            .expect("issued");
+
+        let input = metadata()
+            .describe(id, TargetKind::Display)
+            .capability()
+            .input();
+
+        assert!(input.supports(InputOperationKind::Pointer, InputDelivery::System));
+        for kind in [InputOperationKind::Keyboard, InputOperationKind::Text] {
+            assert!(
+                !input.supports(kind, InputDelivery::System),
+                "a display is not a focusable target, so {} has nothing to reach",
+                kind.as_str()
+            );
+        }
+        assert!(
+            !input.requires_focus(InputDelivery::System),
+            "pointer input to a display needs nothing focused"
+        );
+        for kind in InputOperationKind::ALL {
+            assert!(!input.supports(kind, InputDelivery::BackgroundTarget));
         }
     }
 

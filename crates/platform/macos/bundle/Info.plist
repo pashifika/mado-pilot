@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Bundle metadata for the interactive macOS input fixture.
+
+  macOS records an authorization decision against an application identity, so the
+  fixture is given a stable one here rather than inheriting whatever launched it.
+  docs/macos-input-verification.md is the step that assembles the bundle; running
+  the bare executable is also supported and reports itself as unbundled.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>dev.mado-pilot.macos-input-fixture</string>
+    <key>CFBundleName</key>
+    <string>MadoPilot Input Fixture</string>
+    <key>CFBundleDisplayName</key>
+    <string>MadoPilot Input Fixture</string>
+    <key>CFBundleExecutable</key>
+    <string>mado-pilot-macos-input-fixture</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>26.5.2</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>

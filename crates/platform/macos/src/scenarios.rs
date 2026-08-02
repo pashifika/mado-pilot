@@ -28,6 +28,7 @@ use mado_pilot_core::{
 
 use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
+use crate::input::GeometryLedger;
 use crate::native::{NativeSession, SessionTarget};
 use crate::shim::{
     self, MAX_NATIVE_WAIT, PANIC_IN_RUST_CALLBACK, RAISE_AFTER_CALLBACK, RAISE_AT_START,
@@ -198,6 +199,7 @@ impl Harness {
             self.fingerprint,
             self.target.clone(),
             self.metadata.clone(),
+            Arc::new(GeometryLedger::default()),
         );
         NativeSession::open_with_raise_sites(selected, raise_sites, &mut operation)
     }
@@ -220,6 +222,7 @@ impl Harness {
             self.fingerprint,
             self.target.clone(),
             self.metadata.clone(),
+            Arc::new(GeometryLedger::default()),
         );
         NativeSession::open_with_delays(selected, start_delay, stop_delay, &mut operation)
     }

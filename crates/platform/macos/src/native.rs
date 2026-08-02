@@ -33,6 +33,7 @@ use mado_pilot_core::{
 };
 
 use crate::discovery::{Fingerprint, NativeKey, TargetMetadata, frame_placement};
+use crate::input::GeometryLedger;
 use crate::shim::{
     self, BorrowedFrame, DEFAULT_NATIVE_WAIT, DetachedFrame, FrameInfo, MAX_NATIVE_WAIT,
     OpenRequest, ShimStatus, TargetToken,
@@ -66,6 +67,10 @@ pub(crate) struct SessionTarget {
     fingerprint: Fingerprint,
     selection: TargetToken,
     metadata: TargetMetadata,
+    /// Where each published frame's authoritative transform is recorded, so a
+    /// later input request can resolve a coordinate against the frame it came
+    /// from rather than against whatever the target looks like now.
+    geometry: Arc<GeometryLedger>,
 }
 
 impl SessionTarget {
@@ -76,6 +81,7 @@ impl SessionTarget {
         fingerprint: Fingerprint,
         selection: TargetToken,
         metadata: TargetMetadata,
+        geometry: Arc<GeometryLedger>,
     ) -> Self {
         Self {
             target,
@@ -84,6 +90,7 @@ impl SessionTarget {
             fingerprint,
             selection,
             metadata,
+            geometry,
         }
     }
 }
@@ -96,8 +103,35 @@ unsafe impl Send for NativeSession {}
 // SAFETY: see the Send justification.
 unsafe impl Sync for NativeSession {}
 
+/// One stream's entry in the target's geometry ledger, retired when it ends.
+///
+/// The registration rather than the ledger itself, so an entry cannot outlive the
+/// session that published it whether the caller closed explicitly or dropped the
+/// last reference.
+struct GeometryRegistration {
+    ledger: Arc<GeometryLedger>,
+    stream: StreamId,
+}
+
+impl GeometryRegistration {
+    fn new(ledger: Arc<GeometryLedger>, stream: StreamId) -> Self {
+        Self { ledger, stream }
+    }
+
+    fn publish(&self, frame: &Frame) {
+        self.ledger.publish(frame);
+    }
+}
+
+impl Drop for GeometryRegistration {
+    fn drop(&mut self) {
+        self.ledger.remove(self.stream);
+    }
+}
+
 struct SessionCore {
     target_kind: TargetKind,
+    geometry: GeometryRegistration,
     state: StreamState,
     session: OnceLock<shim::Session>,
     pending_frame: PendingSlot<PendingFrame>,
@@ -446,11 +480,13 @@ impl NativeSession {
             fingerprint,
             selection,
             metadata,
+            geometry,
         } = selected;
         let anchor = clock_calibration().ok_or(CaptureFault::SourceInvalid)?;
         let (reconfigure, reconfigure_receiver) = Reconfigure::new();
         let core = Arc::new(SessionCore {
             target_kind: key.kind(),
+            geometry: GeometryRegistration::new(geometry, stream),
             state: StreamState::with_target_extent(stream),
             session: OnceLock::new(),
             pending_frame: PendingSlot::default(),
@@ -796,12 +832,18 @@ impl SessionCore {
     ) -> std::result::Result<(), CaptureFault> {
         let storage = MacosFrameStorage::new(descriptor, detached);
         self.state
-            .publish_storage(StoragePublication {
-                captured_at: frame_time(self.clock_anchor, display_time_nanos),
-                placement: Some(placement),
-                storage,
-                continuity,
-            })
+            .publish_storage_with(
+                StoragePublication {
+                    captured_at: frame_time(self.clock_anchor, display_time_nanos),
+                    placement: Some(placement),
+                    storage,
+                    continuity,
+                },
+                // Recorded while the stream still excludes readers, so no frame is
+                // observable before the transform an input request would resolve
+                // its coordinates against.
+                |frame| self.geometry.publish(frame),
+            )
             .map_err(|refused| {
                 if refused.error().status() == mado_pilot_core::Status::Closed {
                     CaptureFault::SessionClosed
@@ -1141,6 +1183,9 @@ mod tests {
         PixelExtent, Scale, TargetKind, TargetPlacement,
     };
 
+    use crate::input::GeometryLedger;
+    use crate::native::GeometryRegistration;
+
     use super::{
         MAX_NATIVE_WAIT, PendingRegistration, PendingSlot, Published, Reconfigure,
         ReconfigurePublication, SessionCore, TransitionState, continuity_against, decode_extent,
@@ -1243,9 +1288,11 @@ mod tests {
     fn unregistered_core() -> Arc<SessionCore> {
         let issuer = IdentityIssuer::new();
         let extent = PixelExtent::new(64, 48);
+        let stream = issuer.issue_stream().expect("stream identity");
         Arc::new(SessionCore {
             target_kind: TargetKind::Display,
-            state: StreamState::with_target_extent(issuer.issue_stream().expect("stream identity")),
+            geometry: GeometryRegistration::new(Arc::new(GeometryLedger::default()), stream),
+            state: StreamState::with_target_extent(stream),
             session: OnceLock::new(),
             pending_frame: PendingSlot::default(),
             transition: Mutex::new(TransitionState {

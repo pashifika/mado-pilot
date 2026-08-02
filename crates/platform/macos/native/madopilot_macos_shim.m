@@ -127,6 +127,231 @@ static void mp_shim_note_owned(void) { atomic_fetch_add(&mp_shim_owned_objects, 
 
 static void mp_shim_note_released(void) { atomic_fetch_sub(&mp_shim_owned_objects, 1u); }
 
+static CFTypeRef mp_shim_string_symbol(void *handle, const char *name);
+
+#pragma mark - Public code-signing inspection loaded without an eager framework
+
+/*
+ * Security.framework is opened from an absolute system path for the same reason
+ * ScreenCaptureKit, AppKit, and HIToolbox are: reporting execution context must
+ * not add an eager load command to every binary that links this Adapter. These
+ * are the exact public SecCode signatures in the qualified SDK, expressed with
+ * opaque Core Foundation types so importing Security headers is unnecessary.
+ */
+typedef OSStatus (*MPShimSecCodeCopySelf)(uint32_t flags, CFTypeRef *out_code);
+typedef OSStatus (*MPShimSecCodeCheckValidity)(CFTypeRef code, uint32_t flags,
+                                               CFTypeRef requirement);
+typedef OSStatus (*MPShimSecCodeCopySigningInformation)(CFTypeRef code, uint32_t flags,
+                                                        CFDictionaryRef *out_information);
+
+typedef struct {
+    bool loaded;
+    MPShimSecCodeCopySelf copy_self;
+    MPShimSecCodeCheckValidity check_validity;
+    MPShimSecCodeCopySigningInformation copy_signing_information;
+    CFStringRef flags_key;
+    CFStringRef identifier_key;
+} MPShimCodeSigningApi;
+
+static MPShimCodeSigningApi mp_shim_code_signing_api;
+static pthread_once_t mp_shim_code_signing_once = PTHREAD_ONCE_INIT;
+
+static void mp_shim_load_code_signing_api(void) {
+    void *handle = dlopen("/System/Library/Frameworks/Security.framework/Versions/A/Security",
+                          RTLD_LAZY | RTLD_LOCAL);
+    if (handle == NULL) {
+        handle = dlopen("/System/Library/Frameworks/Security.framework/Security",
+                        RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (handle == NULL) {
+        return;
+    }
+
+    MPShimCodeSigningApi loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    loaded.copy_self = (MPShimSecCodeCopySelf)dlsym(handle, "SecCodeCopySelf");
+    loaded.check_validity =
+        (MPShimSecCodeCheckValidity)dlsym(handle, "SecCodeCheckValidity");
+    loaded.copy_signing_information = (MPShimSecCodeCopySigningInformation)dlsym(
+        handle, "SecCodeCopySigningInformation");
+    loaded.flags_key = (CFStringRef)mp_shim_string_symbol(handle, "kSecCodeInfoFlags");
+    loaded.identifier_key =
+        (CFStringRef)mp_shim_string_symbol(handle, "kSecCodeInfoIdentifier");
+    loaded.loaded = loaded.copy_self != NULL && loaded.check_validity != NULL &&
+                    loaded.copy_signing_information != NULL && loaded.flags_key != NULL &&
+                    loaded.identifier_key != NULL;
+    if (loaded.loaded) {
+        mp_shim_code_signing_api = loaded;
+    }
+}
+
+static const MPShimCodeSigningApi *mp_shim_signing_api(void) {
+    pthread_once(&mp_shim_code_signing_once, mp_shim_load_code_signing_api);
+    return mp_shim_code_signing_api.loaded ? &mp_shim_code_signing_api : NULL;
+}
+
+/*
+ * Exact public Security.framework OSStatus values from CSCommon.h in the
+ * qualified SDK. Only statuses that affirmatively describe invalid code are
+ * classified as invalid; unreadable, internal, and unknown failures remain
+ * platform failures rather than overclaiming what Security established.
+ */
+static bool mp_shim_signature_status_is_invalid(OSStatus status) {
+    switch (status) {
+    case -67063: /* errSecCSGuestInvalid */
+    case -67061: /* errSecCSSignatureFailed */
+    case -67059: /* errSecCSSignatureUnsupported */
+    case -67058: /* errSecCSBadDictionaryFormat */
+    case -67057: /* errSecCSResourcesNotSealed */
+    case -67056: /* errSecCSResourcesNotFound */
+    case -67055: /* errSecCSResourcesInvalid */
+    case -67054: /* errSecCSBadResource */
+    case -67053: /* errSecCSResourceRulesInvalid */
+    case -67052: /* errSecCSReqInvalid */
+    case -67051: /* errSecCSReqUnsupported */
+    case -67050: /* errSecCSReqFailed */
+    case -67049: /* errSecCSBadObjectFormat */
+    case -67047: /* errSecCSHostReject */
+    case -67045: /* errSecCSSignatureInvalid */
+    case -67034: /* errSecCSStaticCodeChanged */
+    case -67030: /* errSecCSInfoPlistFailed */
+    case -67029: /* errSecCSNoMainExecutable */
+    case -67028: /* errSecCSBadBundleFormat */
+    case -67023: /* errSecCSResourceDirectoryFailed */
+    case -67022: /* errSecCSUnsignedNestedCode */
+    case -67021: /* errSecCSBadNestedCode */
+    case -67010: /* errSecCSBadMainExecutable */
+    case -67007: /* errSecCSWeakResourceEnvelope */
+    case -67003: /* errSecCSInvalidSymlink */
+    case -67000: /* errSecCSUnsupportedDigestAlgorithm */
+    case -66999: /* errSecCSInvalidAssociatedFileData */
+    case -66998: /* errSecCSInvalidTeamIdentifier */
+    case -66997: /* errSecCSBadTeamIdentifier */
+    case -66996: /* errSecCSSignatureUntrusted */
+    case -66994: /* errSecCSInvalidEntitlements */
+    case -66993: /* errSecCSInvalidRuntimeVersion */
+    case -66992: /* errSecCSRevokedNotarization */
+        return true;
+    default:
+        return false;
+    }
+}
+
+static uint32_t mp_shim_classify_signature(OSStatus signing_info_status,
+                                           OSStatus validity_status, bool has_identifier,
+                                           uint32_t signature_flags) {
+    if (validity_status != 0) {
+        /* errSecCSUnsigned is authoritative only when the signing-information
+         * dictionary independently agrees that no identifier exists. */
+        if (validity_status == -67062) {
+            if (signing_info_status != 0) {
+                return MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+            }
+            return has_identifier ? MP_SHIM_SIGNATURE_INVALID : MP_SHIM_SIGNATURE_UNSIGNED;
+        }
+        return mp_shim_signature_status_is_invalid(validity_status)
+                   ? MP_SHIM_SIGNATURE_INVALID
+                   : MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+    }
+    if (signing_info_status != 0 || !has_identifier) {
+        /* Successful validity with no identifier is contradictory, not proof
+         * that the code is unsigned. */
+        return MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+    }
+    return (signature_flags & 0x0002u) != 0 ? MP_SHIM_SIGNATURE_AD_HOC
+                                            : MP_SHIM_SIGNATURE_CERTIFICATE_BACKED;
+}
+
+static bool mp_shim_copy_signing_identifier(CFStringRef identifier, uint8_t *out_identifier,
+                                            size_t *out_identifier_len) {
+    if (identifier == NULL || CFGetTypeID(identifier) != CFStringGetTypeID()) {
+        return false;
+    }
+    CFIndex characters = CFStringGetLength(identifier);
+    CFIndex used = 0;
+    CFIndex converted = CFStringGetBytes(
+        identifier, CFRangeMake(0, characters), kCFStringEncodingUTF8, 0, false, out_identifier,
+        (CFIndex)MP_SHIM_MAX_SIGNING_IDENTIFIER, &used);
+    if (characters <= 0 || converted != characters || used <= 0 ||
+        used > (CFIndex)MP_SHIM_MAX_SIGNING_IDENTIFIER) {
+        return false;
+    }
+    out_identifier[used] = 0;
+    *out_identifier_len = (size_t)used;
+    return true;
+}
+
+static void mp_shim_read_signature_context(uint32_t *out_signature, uint8_t *out_identifier,
+                                           size_t *out_identifier_len) {
+    const MPShimCodeSigningApi *api = mp_shim_signing_api();
+    if (api == NULL) {
+        return;
+    }
+
+    CFTypeRef code = NULL;
+    CFDictionaryRef information = NULL;
+    @try {
+        OSStatus copy_self_status = api->copy_self(0, &code);
+        if (copy_self_status != 0 || code == NULL) {
+            return;
+        }
+
+        /* The qualified SDK requires successful validity before treating
+         * signing information as complete. An unsigned result is corroborated
+         * below by the documented absence of an identifier. */
+        OSStatus validity_status = api->check_validity(code, 0, NULL);
+        if (validity_status != 0 && validity_status != -67062) {
+            *out_signature = mp_shim_classify_signature(0, validity_status, false, 0);
+            return;
+        }
+        OSStatus information_status = api->copy_signing_information(code, 0, &information);
+        if (information_status != 0 || information == NULL) {
+            *out_signature =
+                mp_shim_classify_signature(information_status, validity_status, false, 0);
+            return;
+        }
+
+        CFTypeRef identifier_value =
+            CFDictionaryGetValue(information, api->identifier_key);
+        bool has_identifier = identifier_value != NULL;
+        if (validity_status != 0 || !has_identifier) {
+            *out_signature =
+                mp_shim_classify_signature(0, validity_status, has_identifier, 0);
+            return;
+        }
+
+        uint32_t signature_flags = 0;
+        CFTypeRef flags_value = CFDictionaryGetValue(information, api->flags_key);
+        int64_t flags = 0;
+        if (flags_value == NULL || CFGetTypeID(flags_value) != CFNumberGetTypeID() ||
+            !CFNumberGetValue((CFNumberRef)flags_value, kCFNumberSInt64Type, &flags) || flags < 0 ||
+            flags > UINT32_MAX) {
+            return;
+        }
+        signature_flags = (uint32_t)flags;
+
+        *out_signature =
+            mp_shim_classify_signature(0, validity_status, true, signature_flags);
+        if (*out_signature != MP_SHIM_SIGNATURE_AD_HOC &&
+            *out_signature != MP_SHIM_SIGNATURE_CERTIFICATE_BACKED) {
+            return;
+        }
+        if (!mp_shim_copy_signing_identifier((CFStringRef)identifier_value, out_identifier,
+                                             out_identifier_len)) {
+            *out_signature = MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+            *out_identifier_len = 0;
+            out_identifier[0] = 0;
+        }
+    } @finally {
+        if (information != NULL) {
+            CFRelease(information);
+        }
+        if (code != NULL) {
+            CFRelease(code);
+        }
+    }
+}
+
 #pragma mark - Selectors the shim sends, declared without a framework header
 
 /*
@@ -168,6 +393,8 @@ static void mp_shim_note_released(void) { atomic_fetch_sub(&mp_shim_owned_object
 @end
 
 @protocol MPShimContentFilterInit <NSObject>
+@property(nonnull, nonatomic, readonly) NSArray *includedDisplays;
+@property(nonnull, nonatomic, readonly) NSArray *includedWindows;
 - (instancetype)initWithDesktopIndependentWindow:(id)window;
 - (instancetype)initWithDisplay:(id)display excludingWindows:(NSArray *)excluded;
 @end
@@ -1112,15 +1339,37 @@ mp_shim_status mp_shim_probe_accessibility(uint32_t *out_state) {
     MP_SHIM_END
 }
 
-mp_shim_status mp_shim_launch_context(uint32_t *out_context) {
-    if (out_context == NULL) {
+mp_shim_status mp_shim_execution_context(uint32_t *out_launch, uint32_t *out_signature,
+                                         uint8_t *out_identifier, size_t identifier_capacity,
+                                         size_t *out_identifier_len) {
+    if (out_launch == NULL || out_signature == NULL || out_identifier == NULL ||
+        out_identifier_len == NULL ||
+        identifier_capacity < (size_t)MP_SHIM_MAX_SIGNING_IDENTIFIER + 1u) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
+    *out_launch = MP_SHIM_LAUNCH_UNKNOWN;
+    *out_signature = MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+    *out_identifier_len = 0;
+    out_identifier[0] = 0;
     MP_SHIM_BEGIN
     NSString *identifier = [NSBundle mainBundle].bundleIdentifier;
-    *out_context = identifier.length > 0 ? MP_SHIM_CONTEXT_BUNDLED : MP_SHIM_CONTEXT_UNBUNDLED;
+    *out_launch = identifier.length > 0 ? MP_SHIM_LAUNCH_BUNDLED : MP_SHIM_LAUNCH_UNBUNDLED;
+    mp_shim_read_signature_context(out_signature, out_identifier, out_identifier_len);
     return MP_SHIM_OK;
     MP_SHIM_END
+}
+
+mp_shim_status mp_shim_testing_classify_signature(int32_t signing_info_status,
+                                                  int32_t validity_status,
+                                                  bool has_identifier, uint32_t signature_flags,
+                                                  uint32_t *out_signature) {
+    if (out_signature == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_signature = mp_shim_classify_signature((OSStatus)signing_info_status,
+                                                (OSStatus)validity_status, has_identifier,
+                                                signature_flags);
+    return MP_SHIM_OK;
 }
 
 mp_shim_status mp_shim_classify_stream_error(int64_t code) {
@@ -2661,4 +2910,730 @@ mp_shim_status mp_shim_session_live_objects(const mp_shim_session *session, uint
     live += session->pool == NULL ? 0 : 1;
     *out_live = live;
     return MP_SHIM_OK;
+}
+
+#pragma mark - Input: the two frameworks it loads rather than links
+
+/*
+ * Neither AppKit nor HIToolbox is imported, for the reason at the top of this
+ * file: a header import creates a load command, and this Adapter is a headless
+ * library that must not depend on the desktop UI framework or on Carbon to load.
+ * Both are opened from an absolute system path on first use and their entry
+ * points resolved by symbol, so a host that cannot provide one reports
+ * MP_SHIM_UNSUPPORTED for exactly the operation that needed it.
+ */
+
+typedef struct MPShimOpaqueInputSource *MPShimInputSourceRef;
+typedef MPShimInputSourceRef (*MPShimCopyKeyboardLayoutSource)(void);
+typedef void *(*MPShimInputSourceProperty)(MPShimInputSourceRef source, CFStringRef key);
+typedef OSStatus (*MPShimKeyTranslate)(const void *layout, UInt16 key_code, UInt16 action,
+                                       UInt32 modifier_state, UInt32 keyboard_type,
+                                       OptionBits options, UInt32 *dead_key_state,
+                                       UniCharCount capacity, UniCharCount *out_length,
+                                       UniChar *out_units);
+
+/* UCKeyAction.kUCKeyActionDown and the no-dead-keys translate option. */
+static const UInt16 MPShimKeyActionDown = 0;
+static const OptionBits MPShimKeyTranslateNoDeadKeys = 1u << 0;
+/* How many UTF-16 units one key may legitimately produce on any layout. */
+#define MP_SHIM_LAYOUT_UNIT_CAPACITY 8u
+/* Hardware key codes are seven bits wide on every keyboard the layout describes. */
+#define MP_SHIM_LAYOUT_KEY_CODES 128u
+/* Upper bound for one active-display enumeration. Matches the geometry helper's. */
+#define MP_SHIM_MAX_ACTIVE_DISPLAYS 16u
+
+typedef struct MPShimKeyboardLayoutApi {
+    bool loaded;
+    MPShimCopyKeyboardLayoutSource copy_current;
+    MPShimCopyKeyboardLayoutSource copy_ascii_capable;
+    MPShimInputSourceProperty property;
+    MPShimKeyTranslate translate;
+    CFStringRef unicode_layout_key;
+} MPShimKeyboardLayoutApi;
+
+static MPShimKeyboardLayoutApi mp_shim_layout_api;
+static pthread_once_t mp_shim_layout_once = PTHREAD_ONCE_INIT;
+
+static void mp_shim_load_keyboard_layout_api(void) {
+    void *handle = dlopen("/System/Library/Frameworks/Carbon.framework/Frameworks/"
+                          "HIToolbox.framework/Versions/A/HIToolbox",
+                          RTLD_LAZY | RTLD_LOCAL);
+    if (handle == NULL) {
+        handle = dlopen("/System/Library/Frameworks/Carbon.framework/Frameworks/"
+                        "HIToolbox.framework/HIToolbox",
+                        RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (handle == NULL) {
+        return;
+    }
+
+    MPShimKeyboardLayoutApi loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    loaded.copy_current = (MPShimCopyKeyboardLayoutSource)dlsym(
+        handle, "TISCopyCurrentKeyboardLayoutInputSource");
+    loaded.copy_ascii_capable = (MPShimCopyKeyboardLayoutSource)dlsym(
+        handle, "TISCopyCurrentASCIICapableKeyboardLayoutInputSource");
+    loaded.property = (MPShimInputSourceProperty)dlsym(handle, "TISGetInputSourceProperty");
+    loaded.translate = (MPShimKeyTranslate)dlsym(handle, "UCKeyTranslate");
+    loaded.unicode_layout_key =
+        (CFStringRef)mp_shim_string_symbol(handle, "kTISPropertyUnicodeKeyLayoutData");
+
+    loaded.loaded = loaded.copy_current != NULL && loaded.property != NULL &&
+                    loaded.translate != NULL && loaded.unicode_layout_key != NULL;
+    if (loaded.loaded) {
+        mp_shim_layout_api = loaded;
+    }
+}
+
+static const MPShimKeyboardLayoutApi *mp_shim_keyboard_layout_api(void) {
+    pthread_once(&mp_shim_layout_once, mp_shim_load_keyboard_layout_api);
+    return mp_shim_layout_api.loaded ? &mp_shim_layout_api : NULL;
+}
+
+@protocol MPShimRunningApplicationClass <NSObject>
++ (id)runningApplicationWithProcessIdentifier:(pid_t)identifier;
+@end
+
+@protocol MPShimActivatableApplication <NSObject>
+- (BOOL)activateWithOptions:(NSUInteger)options;
+@end
+
+/*
+ * NSApplicationActivateAllWindows.
+ *
+ * NSApplicationActivateIgnoringOtherApps is deliberately absent: it asks macOS to
+ * take focus away from whatever the user is doing, and this Adapter reports a
+ * refusal instead of overriding the system's activation policy.
+ */
+static const NSUInteger MPShimActivateAllWindows = 1u << 0;
+
+static Class mp_shim_running_application_class = Nil;
+static pthread_once_t mp_shim_appkit_once = PTHREAD_ONCE_INIT;
+
+static void mp_shim_load_appkit(void) {
+    void *handle =
+        dlopen("/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit", RTLD_LAZY | RTLD_LOCAL);
+    if (handle == NULL) {
+        handle = dlopen("/System/Library/Frameworks/AppKit.framework/AppKit", RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (handle == NULL) {
+        return;
+    }
+    mp_shim_running_application_class = NSClassFromString(@"NSRunningApplication");
+}
+
+static Class mp_shim_activation_class(void) {
+    pthread_once(&mp_shim_appkit_once, mp_shim_load_appkit);
+    return mp_shim_running_application_class;
+}
+
+#pragma mark - Input: window-server observations
+
+/* Reads one numeric value out of a window-server dictionary without messaging. */
+static bool mp_shim_window_number(CFDictionaryRef entry, CFStringRef key, int64_t *out_value) {
+    CFTypeRef value = CFDictionaryGetValue(entry, key);
+    if (value == NULL || CFGetTypeID(value) != CFNumberGetTypeID()) {
+        return false;
+    }
+    return CFNumberGetValue((CFNumberRef)value, kCFNumberSInt64Type, out_value);
+}
+
+mp_shim_status mp_shim_input_frontmost_window(uint64_t *out_window_id, int64_t *out_owner_pid) {
+    if (out_window_id == NULL || out_owner_pid == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_window_id = 0;
+    *out_owner_pid = 0;
+    MP_SHIM_BEGIN
+    mp_shim_connect_window_server();
+    /* Onscreen order is front to back, and the name key is never read, so this
+     * observation needs no Screen Recording authorization. */
+    CFArrayRef windows = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (windows == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    mp_shim_status status = MP_SHIM_TARGET_LOST;
+    CFIndex count = CFArrayGetCount(windows);
+    for (CFIndex index = 0; index < count; index += 1) {
+        CFTypeRef element = CFArrayGetValueAtIndex(windows, index);
+        if (element == NULL || CFGetTypeID(element) != CFDictionaryGetTypeID()) {
+            continue;
+        }
+        CFDictionaryRef entry = (CFDictionaryRef)element;
+        int64_t layer = 0;
+        int64_t number = 0;
+        int64_t owner = 0;
+        /* Layer zero is the ordinary application window band. Menu bars, docks,
+         * and overlays sit above it and are not what "frontmost" means here. */
+        if (!mp_shim_window_number(entry, kCGWindowLayer, &layer) || layer != 0) {
+            continue;
+        }
+        if (!mp_shim_window_number(entry, kCGWindowNumber, &number) ||
+            !mp_shim_window_number(entry, kCGWindowOwnerPID, &owner) || number <= 0 || owner <= 0) {
+            continue;
+        }
+        *out_window_id = (uint64_t)number;
+        *out_owner_pid = owner;
+        status = MP_SHIM_OK;
+        break;
+    }
+    CFRelease(windows);
+    return status;
+    MP_SHIM_END
+}
+
+static mp_shim_status mp_shim_input_window_rect(const struct mp_shim_target *target,
+                                                CGRect *out_bounds) {
+    id<MPShimContentFilterInit> filter = (__bridge id<MPShimContentFilterInit>)target->filter;
+    NSArray *windows = filter.includedWindows;
+    if (windows.count != 1) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    id<MPShimWindow> window = (id<MPShimWindow>)windows.firstObject;
+    id<MPShimRunningApplication> owner = window.owningApplication;
+    if (window == nil || owner == nil || window.windowID != (CGWindowID)target->native_id ||
+        owner.processID != (pid_t)target->owner_process || !window.isOnScreen) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    CGRect bounds = window.frame;
+    if (CGRectIsNull(bounds) || bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    *out_bounds = bounds;
+    return MP_SHIM_OK;
+}
+
+static mp_shim_status mp_shim_input_display_rect(const struct mp_shim_target *target,
+                                                 CGRect *out_bounds) {
+    id<MPShimContentFilterInit> filter = (__bridge id<MPShimContentFilterInit>)target->filter;
+    NSArray *displays = filter.includedDisplays;
+    if (displays.count != 1) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    id<MPShimDisplay> selected = (id<MPShimDisplay>)displays.firstObject;
+    if (selected == nil || selected.displayID != (CGDirectDisplayID)target->native_id) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    mp_shim_connect_window_server();
+    CGDirectDisplayID display = selected.displayID;
+    uint32_t count = 0;
+    CGDirectDisplayID active[MP_SHIM_MAX_ACTIVE_DISPLAYS];
+    if (CGGetActiveDisplayList(MP_SHIM_MAX_ACTIVE_DISPLAYS, active, &count) != kCGErrorSuccess) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    for (uint32_t index = 0; index < count; index += 1) {
+        if (active[index] != display) {
+            continue;
+        }
+        CGRect bounds = CGDisplayBounds(display);
+        if (CGRectIsNull(bounds) || bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+            return MP_SHIM_TARGET_LOST;
+        }
+        *out_bounds = bounds;
+        return MP_SHIM_OK;
+    }
+    return MP_SHIM_TARGET_LOST;
+}
+
+mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target, double *out_x,
+                                           double *out_y, double *out_width, double *out_height,
+                                           double *out_scale) {
+    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || target->filter == NULL ||
+        out_x == NULL || out_y == NULL || out_width == NULL || out_height == NULL ||
+        out_scale == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_x = 0.0;
+    *out_y = 0.0;
+    *out_width = 0.0;
+    *out_height = 0.0;
+    *out_scale = 0.0;
+    MP_SHIM_BEGIN
+    CGRect bounds = CGRectNull;
+    mp_shim_status status;
+    double scale;
+    if (target->kind == MP_SHIM_TARGET_WINDOW) {
+        status = mp_shim_input_window_rect(target, &bounds);
+        scale = status == MP_SHIM_OK ? mp_shim_scale_for_frame(bounds) : 0.0;
+    } else if (target->kind == MP_SHIM_TARGET_DISPLAY) {
+        status = mp_shim_input_display_rect(target, &bounds);
+        scale = status == MP_SHIM_OK
+                    ? mp_shim_display_backing_scale((CGDirectDisplayID)target->native_id)
+                    : 0.0;
+    } else {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    if (!isfinite(bounds.origin.x) || !isfinite(bounds.origin.y) ||
+        !isfinite(bounds.size.width) || !isfinite(bounds.size.height) || !isfinite(scale) ||
+        scale <= 0.0 || fabs(bounds.origin.x) > MP_SHIM_MAX_DESKTOP_COORDINATE ||
+        fabs(bounds.origin.y) > MP_SHIM_MAX_DESKTOP_COORDINATE) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_x = bounds.origin.x;
+    *out_y = bounds.origin.y;
+    *out_width = bounds.size.width;
+    *out_height = bounds.size.height;
+    *out_scale = scale;
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_input_pointer_location(double *out_x, double *out_y) {
+    if (out_x == NULL || out_y == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_x = 0.0;
+    *out_y = 0.0;
+    MP_SHIM_BEGIN
+    CGEventRef reading = CGEventCreate(NULL);
+    if (reading == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    CGPoint location = CGEventGetLocation(reading);
+    CFRelease(reading);
+    if (!isfinite(location.x) || !isfinite(location.y)) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_x = location.x;
+    *out_y = location.y;
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_input_activate_owner(int64_t owner_process) {
+    if (owner_process <= 0 || owner_process > INT32_MAX) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    Class class = mp_shim_activation_class();
+    if (class == Nil) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    id<MPShimRunningApplicationClass> factory = (id<MPShimRunningApplicationClass>)class;
+    id running = [factory runningApplicationWithProcessIdentifier:(pid_t)owner_process];
+    if (running == nil) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    id<MPShimActivatableApplication> application = (id<MPShimActivatableApplication>)running;
+    /* macOS may decline under its own activation policy. A refusal is reported;
+     * nothing here retries, elevates, or overrides the user's foreground app. */
+    return [application activateWithOptions:MPShimActivateAllWindows] ? MP_SHIM_OK
+                                                                      : MP_SHIM_PLATFORM_FAILURE;
+    MP_SHIM_END
+}
+
+#pragma mark - Input: layout resolution
+
+static const void *mp_shim_unicode_layout(const MPShimKeyboardLayoutApi *api,
+                                          MPShimInputSourceRef *out_source) {
+    MPShimInputSourceRef source = api->copy_current();
+    void *data = source == NULL ? NULL : api->property(source, api->unicode_layout_key);
+    if (data == NULL) {
+        /* An input method rather than a keyboard layout is current, and it
+         * publishes no key layout. The ASCII-capable layout the system keeps
+         * beside it is what a key code actually means on this host. */
+        if (source != NULL) {
+            CFRelease(source);
+            source = NULL;
+        }
+        if (api->copy_ascii_capable != NULL) {
+            source = api->copy_ascii_capable();
+            data = source == NULL ? NULL : api->property(source, api->unicode_layout_key);
+        }
+    }
+    if (data == NULL || CFGetTypeID((CFTypeRef)data) != CFDataGetTypeID()) {
+        if (source != NULL) {
+            CFRelease(source);
+        }
+        return NULL;
+    }
+    *out_source = source;
+    return CFDataGetBytePtr((CFDataRef)data);
+}
+
+static uint32_t mp_shim_keyboard_type(void) {
+    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+    if (source == NULL) {
+        return 0;
+    }
+    uint32_t type = (uint32_t)CGEventSourceGetKeyboardType(source);
+    CFRelease(source);
+    return type;
+}
+
+mp_shim_status mp_shim_input_resolve_character(uint32_t scalar, uint16_t *out_key_code) {
+    if (out_key_code == NULL || scalar > 0x10FFFFu || (scalar >= 0xD800u && scalar <= 0xDFFFu)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_key_code = 0;
+    MP_SHIM_BEGIN
+    const MPShimKeyboardLayoutApi *api = mp_shim_keyboard_layout_api();
+    if (api == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+
+    UniChar wanted[2];
+    UniCharCount wanted_length;
+    if (scalar > 0xFFFFu) {
+        uint32_t offset = scalar - 0x10000u;
+        wanted[0] = (UniChar)(0xD800u + (offset >> 10));
+        wanted[1] = (UniChar)(0xDC00u + (offset & 0x3FFu));
+        wanted_length = 2;
+    } else {
+        wanted[0] = (UniChar)scalar;
+        wanted_length = 1;
+    }
+
+    MPShimInputSourceRef source = NULL;
+    const void *layout = mp_shim_unicode_layout(api, &source);
+    if (layout == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    uint32_t keyboard_type = mp_shim_keyboard_type();
+    mp_shim_status status = MP_SHIM_UNSUPPORTED;
+    for (uint32_t code = 0; code < MP_SHIM_LAYOUT_KEY_CODES; code += 1) {
+        UInt32 dead_key_state = 0;
+        UniCharCount produced = 0;
+        UniChar units[MP_SHIM_LAYOUT_UNIT_CAPACITY];
+        /* Modifier state zero is the whole rule: a character this layout produces
+         * only with a modifier is not a key the caller can press, and reporting it
+         * as one would deliver a different character. */
+        OSStatus translated =
+            api->translate(layout, (UInt16)code, MPShimKeyActionDown, 0, keyboard_type,
+                           MPShimKeyTranslateNoDeadKeys, &dead_key_state,
+                           MP_SHIM_LAYOUT_UNIT_CAPACITY, &produced, units);
+        if (translated != 0 || produced != wanted_length) {
+            continue;
+        }
+        if (memcmp(units, wanted, (size_t)wanted_length * sizeof(UniChar)) != 0) {
+            continue;
+        }
+        *out_key_code = (uint16_t)code;
+        status = MP_SHIM_OK;
+        break;
+    }
+    if (source != NULL) {
+        CFRelease(source);
+    }
+    return status;
+    MP_SHIM_END
+}
+
+#pragma mark - Input: posting
+
+static CGEventFlags mp_shim_input_event_flags(uint32_t flags) {
+    CGEventFlags result = 0;
+    if ((flags & MP_SHIM_INPUT_FLAG_SHIFT) != 0) {
+        result |= kCGEventFlagMaskShift;
+    }
+    if ((flags & MP_SHIM_INPUT_FLAG_CONTROL) != 0) {
+        result |= kCGEventFlagMaskControl;
+    }
+    if ((flags & MP_SHIM_INPUT_FLAG_ALT) != 0) {
+        result |= kCGEventFlagMaskAlternate;
+    }
+    if ((flags & MP_SHIM_INPUT_FLAG_META) != 0) {
+        result |= kCGEventFlagMaskCommand;
+    }
+    return result;
+}
+
+static bool mp_shim_input_mouse_button(uint32_t button, CGMouseButton *out_button) {
+    switch (button) {
+    case MP_SHIM_INPUT_BUTTON_PRIMARY:
+        *out_button = kCGMouseButtonLeft;
+        return true;
+    case MP_SHIM_INPUT_BUTTON_SECONDARY:
+        *out_button = kCGMouseButtonRight;
+        return true;
+    case MP_SHIM_INPUT_BUTTON_MIDDLE:
+        *out_button = kCGMouseButtonCenter;
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool mp_shim_input_pointer_type(uint32_t action, uint32_t button, CGEventType *out_type) {
+    if (action == MP_SHIM_INPUT_POINTER_MOVE) {
+        /* A move while this sequence holds a button is a drag. Reporting it as a
+         * plain move would leave every drag gesture inert. */
+        switch (button) {
+        case MP_SHIM_INPUT_BUTTON_NONE:
+            *out_type = kCGEventMouseMoved;
+            return true;
+        case MP_SHIM_INPUT_BUTTON_PRIMARY:
+            *out_type = kCGEventLeftMouseDragged;
+            return true;
+        case MP_SHIM_INPUT_BUTTON_SECONDARY:
+            *out_type = kCGEventRightMouseDragged;
+            return true;
+        case MP_SHIM_INPUT_BUTTON_MIDDLE:
+            *out_type = kCGEventOtherMouseDragged;
+            return true;
+        default:
+            return false;
+        }
+    }
+    bool pressed = action == MP_SHIM_INPUT_POINTER_PRESS;
+    if (!pressed && action != MP_SHIM_INPUT_POINTER_RELEASE) {
+        return false;
+    }
+    switch (button) {
+    case MP_SHIM_INPUT_BUTTON_PRIMARY:
+        *out_type = pressed ? kCGEventLeftMouseDown : kCGEventLeftMouseUp;
+        return true;
+    case MP_SHIM_INPUT_BUTTON_SECONDARY:
+        *out_type = pressed ? kCGEventRightMouseDown : kCGEventRightMouseUp;
+        return true;
+    case MP_SHIM_INPUT_BUTTON_MIDDLE:
+        *out_type = pressed ? kCGEventOtherMouseDown : kCGEventOtherMouseUp;
+        return true;
+    default:
+        return false;
+    }
+}
+
+mp_shim_status mp_shim_input_post_pointer(uint32_t action, uint32_t button, uint64_t click_state,
+                                          double x, double y, uint32_t flags) {
+    if (!isfinite(x) || !isfinite(y) || fabs(x) > MP_SHIM_MAX_DESKTOP_COORDINATE ||
+        fabs(y) > MP_SHIM_MAX_DESKTOP_COORDINATE || click_state > MP_SHIM_INPUT_MAX_CLICK_STATE) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    CGEventType type;
+    if (!mp_shim_input_pointer_type(action, button, &type)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    CGMouseButton mouse_button = kCGMouseButtonLeft;
+    if (button != MP_SHIM_INPUT_BUTTON_NONE && !mp_shim_input_mouse_button(button, &mouse_button)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    CGEventRef event = CGEventCreateMouseEvent(NULL, type, CGPointMake(x, y), mouse_button);
+    if (event == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    if (action != MP_SHIM_INPUT_POINTER_MOVE) {
+        CGEventSetIntegerValueField(event, kCGMouseEventClickState, (int64_t)click_state);
+    }
+    /* The flags are set rather than merged: a sequence delivers the modifiers it
+     * pressed, and inheriting whatever the user is holding would change the
+     * keystroke a caller asked for into a different one. */
+    CGEventSetFlags(event, mp_shim_input_event_flags(flags));
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_input_post_scroll(int32_t horizontal, int32_t vertical, uint32_t flags) {
+    if (horizontal == 0 && vertical == 0) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    if (horizontal < -MP_SHIM_INPUT_MAX_SCROLL_LINES ||
+        horizontal > MP_SHIM_INPUT_MAX_SCROLL_LINES || vertical < -MP_SHIM_INPUT_MAX_SCROLL_LINES ||
+        vertical > MP_SHIM_INPUT_MAX_SCROLL_LINES) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    /* Core Graphics counts a positive vertical wheel value as scrolling the
+     * content up and a positive horizontal value as scrolling it left. The
+     * platform-neutral contract counts positive as down and right, so both axes
+     * are negated exactly here rather than at each caller. */
+    CGEventRef event = CGEventCreateScrollWheelEvent2(NULL, kCGScrollEventUnitLine, 2, -vertical,
+                                                      -horizontal, 0);
+    if (event == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    CGEventSetFlags(event, mp_shim_input_event_flags(flags));
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+mp_shim_status mp_shim_input_post_key(uint16_t key_code, bool down, uint32_t flags) {
+    if (key_code >= MP_SHIM_LAYOUT_KEY_CODES) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    CGEventRef event = CGEventCreateKeyboardEvent(NULL, (CGKeyCode)key_code, down);
+    if (event == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    CGEventSetFlags(event, mp_shim_input_event_flags(flags));
+    CGEventPost(kCGHIDEventTap, event);
+    CFRelease(event);
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+typedef struct {
+    CGEventRef (*create)(bool down, void *context);
+    void (*configure)(CGEventRef event, const uint16_t *units, size_t count,
+                      CGEventFlags flags, void *context);
+    void (*post)(CGEventRef event, void *context);
+    void (*release)(CGEventRef event, void *context);
+    void *context;
+} mp_shim_text_event_ops;
+
+static CGEventRef mp_shim_text_event_create(bool down, void *context) {
+    (void)context;
+    return CGEventCreateKeyboardEvent(NULL, 0, down);
+}
+
+static void mp_shim_text_event_configure(CGEventRef event, const uint16_t *units, size_t count,
+                                         CGEventFlags flags, void *context) {
+    (void)context;
+    CGEventKeyboardSetUnicodeString(event, (UniCharCount)count, (const UniChar *)units);
+    CGEventSetFlags(event, flags);
+}
+
+static void mp_shim_text_event_post(CGEventRef event, void *context) {
+    (void)context;
+    CGEventPost(kCGHIDEventTap, event);
+}
+
+static void mp_shim_text_event_release(CGEventRef event, void *context) {
+    (void)context;
+    CFRelease(event);
+}
+
+static mp_shim_status mp_shim_input_post_text_with_ops(const uint16_t *units, size_t count,
+                                                       uint32_t flags, size_t *out_posted,
+                                                       const mp_shim_text_event_ops *ops) {
+    CGEventRef down = NULL;
+    CGEventRef up = NULL;
+    @try {
+        down = ops->create(true, ops->context);
+        if (down == NULL) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        up = ops->create(false, ops->context);
+        if (up == NULL) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+
+        CGEventFlags event_flags = mp_shim_input_event_flags(flags);
+        /* Prepare the whole balanced pair before either half can reach the
+         * system. A second allocation or either configuration failure therefore
+         * leaves `out_posted` at zero and posts nothing. */
+        ops->configure(down, units, count, event_flags, ops->context);
+        ops->configure(up, units, count, event_flags, ops->context);
+        ops->post(down, ops->context);
+        *out_posted = count;
+        ops->post(up, ops->context);
+        return MP_SHIM_OK;
+    } @finally {
+        /* `@finally` covers ordinary returns and a contained native exception;
+         * every successfully allocated Core Foundation object is released. */
+        if (up != NULL) {
+            ops->release(up, ops->context);
+        }
+        if (down != NULL) {
+            ops->release(down, ops->context);
+        }
+    }
+}
+
+mp_shim_status mp_shim_input_post_text(const uint16_t *units, size_t count, uint32_t flags,
+                                       size_t *out_posted) {
+    if (out_posted == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_posted = 0;
+    if (units == NULL || count == 0 || count > MP_SHIM_INPUT_MAX_TEXT_CHUNK) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    MP_SHIM_BEGIN
+    /* A key code of zero with an attached string is how Core Graphics delivers
+     * text rather than a key press, which is what the Text operation means. */
+    const mp_shim_text_event_ops ops = {
+        .create = mp_shim_text_event_create,
+        .configure = mp_shim_text_event_configure,
+        .post = mp_shim_text_event_post,
+        .release = mp_shim_text_event_release,
+        .context = NULL,
+    };
+    return mp_shim_input_post_text_with_ops(units, count, flags, out_posted, &ops);
+    MP_SHIM_END
+}
+
+typedef struct {
+    size_t allocations;
+    size_t configurations;
+    size_t posts;
+    size_t releases;
+} mp_shim_text_failure_probe;
+
+static CGEventRef mp_shim_testing_text_create(bool down, void *context) {
+    (void)down;
+    mp_shim_text_failure_probe *probe = context;
+    probe->allocations += 1;
+    if (probe->allocations == 2) {
+        return NULL;
+    }
+    return (CGEventRef)(uintptr_t)1;
+}
+
+static void mp_shim_testing_text_configure(CGEventRef event, const uint16_t *units, size_t count,
+                                           CGEventFlags flags, void *context) {
+    (void)event;
+    (void)units;
+    (void)count;
+    (void)flags;
+    mp_shim_text_failure_probe *probe = context;
+    probe->configurations += 1;
+}
+
+static void mp_shim_testing_text_post(CGEventRef event, void *context) {
+    (void)event;
+    mp_shim_text_failure_probe *probe = context;
+    probe->posts += 1;
+}
+
+static void mp_shim_testing_text_release(CGEventRef event, void *context) {
+    (void)event;
+    mp_shim_text_failure_probe *probe = context;
+    probe->releases += 1;
+}
+
+mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
+    mp_shim_status *out_delivery_status, size_t *out_allocations, size_t *out_configurations,
+    size_t *out_posts, size_t *out_releases, size_t *out_posted) {
+    if (out_delivery_status == NULL || out_allocations == NULL || out_configurations == NULL ||
+        out_posts == NULL || out_releases == NULL || out_posted == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
+    *out_allocations = 0;
+    *out_configurations = 0;
+    *out_posts = 0;
+    *out_releases = 0;
+    *out_posted = 0;
+    MP_SHIM_BEGIN
+    mp_shim_text_failure_probe probe = {0};
+    const mp_shim_text_event_ops ops = {
+        .create = mp_shim_testing_text_create,
+        .configure = mp_shim_testing_text_configure,
+        .post = mp_shim_testing_text_post,
+        .release = mp_shim_testing_text_release,
+        .context = &probe,
+    };
+    const uint16_t unit = (uint16_t)'x';
+    size_t posted = 0;
+    mp_shim_status delivery =
+        mp_shim_input_post_text_with_ops(&unit, 1, 0, &posted, &ops);
+    *out_delivery_status = delivery;
+    *out_allocations = probe.allocations;
+    *out_configurations = probe.configurations;
+    *out_posts = probe.posts;
+    *out_releases = probe.releases;
+    *out_posted = posted;
+    return MP_SHIM_OK;
+    MP_SHIM_END
 }
