@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 3u
+#define MP_SHIM_ABI_VERSION 4u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -113,12 +113,24 @@ typedef uint32_t mp_shim_status;
 #define MP_SHIM_PERMISSION_UNAVAILABLE 2u
 #define MP_SHIM_PERMISSION_UNKNOWN 3u
 
-/* The signing and launch context a permission answer was read in. */
-#define MP_SHIM_CONTEXT_UNKNOWN 0u
+/* The bundle-launch context a permission answer was read in. */
+#define MP_SHIM_LAUNCH_UNKNOWN 0u
 /* A main bundle with an identifier: the context Apple grants per application. */
-#define MP_SHIM_CONTEXT_BUNDLED 1u
+#define MP_SHIM_LAUNCH_BUNDLED 1u
 /* A bare executable, whose grant follows the launching process instead. */
-#define MP_SHIM_CONTEXT_UNBUNDLED 2u
+#define MP_SHIM_LAUNCH_UNBUNDLED 2u
+
+/* The independently verified signature mode of the running code. */
+#define MP_SHIM_SIGNATURE_PLATFORM_FAILURE 0u
+#define MP_SHIM_SIGNATURE_UNSIGNED 1u
+#define MP_SHIM_SIGNATURE_INVALID 2u
+/* A structurally valid signature sealed without a certificate identity. */
+#define MP_SHIM_SIGNATURE_AD_HOC 3u
+/* A structurally valid signature backed by a certificate identity. */
+#define MP_SHIM_SIGNATURE_CERTIFICATE_BACKED 4u
+
+/* Finite UTF-8 bound for a signing identifier returned to a deliberate reporter. */
+#define MP_SHIM_MAX_SIGNING_IDENTIFIER 255u
 
 /* What kind of desktop object a target is. */
 #define MP_SHIM_TARGET_WINDOW 0u
@@ -282,8 +294,22 @@ mp_shim_status mp_shim_probe_screen_capture(uint32_t *out_state);
 /* Reads the Accessibility authorization without requesting it. */
 mp_shim_status mp_shim_probe_accessibility(uint32_t *out_state);
 
-/* Reports the signing and launch context the probes above were read in. */
-mp_shim_status mp_shim_launch_context(uint32_t *out_context);
+/*
+ * Reports the separate bundle-launch and signature contexts the probes above
+ * were read in.
+ *
+ * Signature inspection dynamically loads the public Security.framework
+ * SecCode API. A missing API or an unreadable result is represented by
+ * MP_SHIM_SIGNATURE_PLATFORM_FAILURE while preserving the independently read
+ * launch axis. A signing identifier is returned only for a valid ad-hoc or
+ * certificate-backed signature. `identifier_capacity` must be at least
+ * MP_SHIM_MAX_SIGNING_IDENTIFIER + 1; the returned bytes are UTF-8 and are also
+ * NUL-terminated for native callers, while `out_identifier_len` excludes the
+ * terminator.
+ */
+mp_shim_status mp_shim_execution_context(uint32_t *out_launch, uint32_t *out_signature,
+                                         uint8_t *out_identifier, size_t identifier_capacity,
+                                         size_t *out_identifier_len);
 
 /*
  * Classifies one capture-framework error code as this shim maps it.
@@ -344,6 +370,21 @@ mp_shim_status mp_shim_testing_surface_recommendation(double logical_width,
                                                       double display_scale,
                                                       uint32_t *out_width,
                                                       uint32_t *out_height);
+
+/*
+ * Runs the production text-event preparation with the second native allocation
+ * forced to fail. The counters prove the first object was released and neither
+ * half of the text event was configured or posted.
+ */
+mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
+    mp_shim_status *out_delivery_status, size_t *out_allocations, size_t *out_configurations,
+    size_t *out_posts, size_t *out_releases, size_t *out_posted);
+
+/* Deterministically exercises the production signature-state classifier. */
+mp_shim_status mp_shim_testing_classify_signature(int32_t signing_info_status,
+                                                  int32_t validity_status,
+                                                  bool has_identifier, uint32_t signature_flags,
+                                                  uint32_t *out_signature);
 
 /*
  * Enumerates the currently shareable windows and displays.
@@ -529,16 +570,19 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 mp_shim_status mp_shim_input_frontmost_window(uint64_t *out_window_id, int64_t *out_owner_pid);
 
 /*
- * Reports one target's current on-screen rectangle in the global point space.
+ * Reports the retained selection's current on-screen rectangle in the global
+ * point space.
  *
- * `kind` is MP_SHIM_TARGET_WINDOW or MP_SHIM_TARGET_DISPLAY. `owner_process` is
- * validated for a window and ignored for a display. Returns MP_SHIM_TARGET_LOST
- * when the object is absent or no longer owned by that process, which is also how
- * a caller establishes liveness.
+ * `target` is the exact SCContentFilter retained from discovery. Its included
+ * SCWindow or SCDisplay is the incarnation authority; numeric ids and owning
+ * process remain validation metadata only. Returns MP_SHIM_TARGET_LOST when that
+ * retained object is absent, off screen, or no longer agrees with its recorded
+ * metadata. This prevents a same-process replacement that recycles a window
+ * number from satisfying an old public target identity.
  */
-mp_shim_status mp_shim_input_target_bounds(uint32_t kind, uint64_t native_id, int64_t owner_process,
-                                           double *out_x, double *out_y, double *out_width,
-                                           double *out_height, double *out_scale);
+mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target, double *out_x,
+                                           double *out_y, double *out_width, double *out_height,
+                                           double *out_scale);
 
 /* Reads the pointer location in the same global point space. */
 mp_shim_status mp_shim_input_pointer_location(double *out_x, double *out_y);
@@ -582,10 +626,11 @@ mp_shim_status mp_shim_input_post_key(uint16_t key_code, bool down, uint32_t fla
 /*
  * Posts `count` UTF-16 units as text rather than as key codes.
  *
- * `count` must not exceed MP_SHIM_INPUT_MAX_TEXT_CHUNK. `*out_posted` receives
- * how many units were posted, which is the whole chunk on success and the count
- * already delivered when a post could not be created. A caller reports a nonzero
- * partial count as native effect it cannot take back.
+ * `count` must not exceed MP_SHIM_INPUT_MAX_TEXT_CHUNK. Both balanced events are
+ * allocated and configured before either is posted. `*out_posted` receives how
+ * many units reached the key-down post: zero when pair preparation fails and the
+ * whole chunk on success. A caller reports a nonzero partial count as native
+ * effect it cannot take back.
  */
 mp_shim_status mp_shim_input_post_text(const uint16_t *units, size_t count, uint32_t flags,
                                        size_t *out_posted);

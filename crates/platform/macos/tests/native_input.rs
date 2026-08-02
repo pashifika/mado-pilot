@@ -13,13 +13,16 @@
 //! `docs/macos-input-verification.md`.
 
 use std::io::{BufRead, BufReader};
+use std::panic::{self, AssertUnwindSafe};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mado_pilot_capture::{CaptureProvider, TargetDescription};
+use mado_pilot_capture::{
+    CaptureProvider, FrameRequest, OpenRequest, PixelFormat, TargetDescription,
+};
 use mado_pilot_core::{
     IdentityIssuer, InputDelivery, InputOperationKind, OperationContext, PermissionKind,
     PermissionProbe, PermissionState, Status, TargetId, TargetKind,
@@ -29,13 +32,16 @@ use mado_pilot_input::{
     InputRequest, InputRequirement, InputSequence, Key, SequenceOutcome,
 };
 use mado_pilot_platform_macos::fixture_protocol::{
-    EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE, MAX_RECORDED_EVENTS, fixture_title,
-    parse_event_line, select_unique_fixture,
+    EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE, MAX_RECORDED_EVENTS,
+    fixture_ready_context_is_approved, fixture_title, parse_event_line, select_unique_fixture,
+    with_confirmed_fixture_content,
 };
 use mado_pilot_platform_macos::{MacosCaptureProvider, MacosPermissionProbe};
 
 /// How long the interactive check waits for a person to focus the fixture.
 const FOCUS_WAIT: Duration = Duration::from_secs(15);
+/// How long the fail-closed content gate waits for one authoritative frame.
+const CONTENT_WAIT: Duration = Duration::from_secs(5);
 /// How long the fixture is given to publish its ready line.
 const READY_WAIT: Duration = Duration::from_secs(10);
 
@@ -253,8 +259,18 @@ fn a_target_that_no_longer_exists_is_reported_lost_rather_than_delivered_to() {
 }
 
 /// A fixture child process, killed when the guard is dropped.
+struct FixtureChild(Child);
+
+impl Drop for FixtureChild {
+    fn drop(&mut self) {
+        let _killed = self.0.kill();
+        let _reaped = self.0.wait();
+    }
+}
+
+/// A running fixture and its bounded output channel.
 struct Fixture {
-    child: Child,
+    _child: FixtureChild,
     lines: Receiver<String>,
     process_id: u32,
 }
@@ -263,35 +279,45 @@ impl Fixture {
     /// Starts the fixture and waits for the line it prints once its window is up.
     fn start() -> Option<Self> {
         let executable = fixture_executable()?;
-        let mut child = Command::new(executable)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .ok()?;
-        let stdout = child.stdout.take()?;
-        let process_id = child.id();
+        let require_signed_bundle =
+            std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some();
+        let child = FixtureChild(
+            Command::new(executable)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .ok()?,
+        );
+        Self::from_child(child, require_signed_bundle, READY_WAIT)
+    }
+
+    fn from_child(
+        mut child: FixtureChild,
+        require_signed_bundle: bool,
+        ready_wait: Duration,
+    ) -> Option<Self> {
+        let stdout = child.0.stdout.take()?;
+        let process_id = child.0.id();
         let lines = spawn_reader(stdout);
 
-        let ready = wait_for(&lines, READY_WAIT, |line| line.starts_with("fixture-ready"));
-        match ready {
-            Some(line) => {
-                println!("{line}");
-                assert!(
-                    line.contains(&fixture_title(process_id)),
-                    "the fixture published a title this check did not expect: {line}"
-                );
-                Some(Self {
-                    child,
-                    lines,
-                    process_id,
-                })
-            }
-            None => {
-                let _killed = child.kill();
-                let _reaped = child.wait();
-                None
-            }
+        let line = wait_for(&lines, ready_wait, |line| line.starts_with("fixture-ready"))?;
+        println!("{line}");
+        assert!(
+            line.contains(&fixture_title(process_id)),
+            "the fixture published a title this check did not expect: {line}"
+        );
+        if require_signed_bundle {
+            assert!(
+                fixture_ready_context_is_approved(&line, process_id),
+                "a configured fixture must truthfully report the stable signed bundle \
+                 context before any input path opens: {line}"
+            );
         }
+        Some(Self {
+            _child: child,
+            lines,
+            process_id,
+        })
     }
 
     fn summaries(&self, wait: Duration) -> Vec<u32> {
@@ -312,13 +338,6 @@ impl Fixture {
     }
 }
 
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _killed = self.child.kill();
-        let _reaped = self.child.wait();
-    }
-}
-
 fn spawn_reader(stdout: ChildStdout) -> Receiver<String> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
@@ -330,6 +349,39 @@ fn spawn_reader(stdout: ChildStdout) -> Receiver<String> {
         }
     });
     receiver
+}
+
+#[test]
+fn invalid_execution_context_output_reaps_the_owned_child() {
+    let child = FixtureChild(
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(concat!(
+                "printf 'fixture-ready title=MadoPilot Input Fixture [%s] pid=%s window=17 ",
+                "launch=bundled signature=ad-hoc signing-identifier=wrong.identifier ",
+                "bundle=dev.mado-pilot.macos-input-fixture capacity=256\\n' \"$$\" \"$$\"; ",
+                "while :; do :; done"
+            ))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("the non-interactive child starts"),
+    );
+    let process_id = child.0.id();
+
+    let rejected = panic::catch_unwind(AssertUnwindSafe(|| {
+        Fixture::from_child(child, true, Duration::from_secs(2))
+    }));
+
+    assert!(rejected.is_err(), "invalid context must fail closed");
+    let still_exists = Command::new("/bin/kill")
+        .arg("-0")
+        .arg(process_id.to_string())
+        .output()
+        .expect("the process-liveness probe runs")
+        .status
+        .success();
+    assert!(!still_exists, "the rejected fixture child must be reaped");
 }
 
 fn wait_for(
@@ -351,6 +403,10 @@ fn wait_for(
 
 /// Locates the fixture beside the test binary that cargo just built.
 fn fixture_executable() -> Option<std::path::PathBuf> {
+    if let Some(configured) = std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE") {
+        let executable = std::path::PathBuf::from(configured);
+        return executable.is_file().then_some(executable);
+    }
     let mut directory = std::env::current_exe().ok()?;
     directory.pop();
     if directory.ends_with("deps") {
@@ -388,12 +444,17 @@ fn the_fixture_starts_publishes_its_title_and_is_selected_exactly_once() {
 
 /// Delivers real system input to the fixture after a person focuses it.
 ///
-/// Ignored by default. It moves the pointer, presses Enter, and types a fixed
-/// string into whatever is frontmost, so it runs only on an interactive desktop
-/// and only when the fixture is the frontmost window.
+/// Ignored by default. It presses Enter and types a fixed string into whatever is
+/// frontmost, so it runs only on an interactive desktop and only when the fixture
+/// is the frontmost window.
 #[test]
 #[ignore = "delivers real system input; run it deliberately on an interactive desktop"]
 fn interactive_system_delivery_targets_only_the_exact_fixture() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "real-input verification requires the explicitly configured, structurally verified \
+         signed fixture bundle from docs/macos-input-verification.md"
+    );
     assert!(
         accessibility_granted(),
         "this check needs Accessibility granted to the test process; macOS discards \
@@ -405,21 +466,48 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
     let chosen = select_unique_fixture(&targets, fixture.process_id)
         .expect("selection is fail-closed: zero or several matches stop here");
 
+    // Capture and map the exact selected target before obtaining anything that
+    // can post input. Every failure on this path aborts the ignored check here.
+    let capture = CaptureProvider::open(
+        &provider,
+        chosen.id(),
+        &OpenRequest::new().require_format(PixelFormat::Bgra8),
+        &context(),
+    )
+    .expect("the selected fixture opens for capture");
+    let frame_context = context()
+        .with_timeout(CONTENT_WAIT)
+        .expect("the content wait is positive");
+    let frame = capture
+        .frame(&FrameRequest::latest(), &frame_context)
+        .expect("the selected fixture publishes a frame before input");
+    let mapping = frame
+        .map(PixelFormat::Bgra8, &frame_context)
+        .expect("the selected fixture frame maps before input");
+    capture
+        .close(&context())
+        .expect("capture closes before input is opened");
+    let mapped = mapping.descriptor();
+
+    let controller =
+        with_confirmed_fixture_content(mapping.bytes(), mapped.stride(), mapped.extent(), || {
+            InputProvider::open(
+                &provider,
+                chosen.id(),
+                &InputOpenRequest::new()
+                    .with_requirement(InputRequirement::Required)
+                    .requiring(InputOperationKind::Keyboard, InputDelivery::System),
+                &context(),
+            )
+        })
+        .expect("the selected target must match the fixture's deterministic pixels")
+        .expect("input opens for the confirmed fixture");
+
     println!(
         "Click the window titled `{}` within {} seconds.",
         fixture_title(fixture.process_id),
         FOCUS_WAIT.as_secs()
     );
-    let controller = InputProvider::open(
-        &provider,
-        chosen.id(),
-        &InputOpenRequest::new()
-            .with_requirement(InputRequirement::Required)
-            .requiring(InputOperationKind::Keyboard, InputDelivery::System),
-        &context(),
-    )
-    .expect("input opens for the fixture");
-
     // `RequireFocused` never activates anything. Until a person focuses the
     // fixture, every attempt refuses and delivers nothing.
     let probe = InputRequest::new(

@@ -110,14 +110,35 @@ pub(crate) enum NativePost<'units> {
     Text(&'units [u16]),
 }
 
+/// Geometry validation required at the irreversible commit boundary.
+///
+/// Pointer resolution always retains the geometry policy explicitly. In
+/// particular, a frame snapshot remains deliverable after the target moves,
+/// while current and unchanged policies still require the resolved geometry to
+/// match the live target immediately before posting.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum CommitGeometry {
+    NotApplicable,
+    RequireCurrent(GeometryFingerprint),
+    UseFrameSnapshot,
+}
+
 /// The mutable native state consulted at the final commit boundary.
 pub(crate) trait SystemCommitSource {
     fn revalidate_system_commit(
         &self,
         focus: FocusPolicy,
-        expected_geometry: Option<GeometryFingerprint>,
+        geometry: CommitGeometry,
         operation: &OperationContext,
     ) -> Result<(), InputFault>;
+
+    /// Re-reads the non-prompting authorization needed for a cleanup release.
+    ///
+    /// Cleanup deliberately does not consult focus or geometry: a release must
+    /// still be attempted after either changes. Authorization is different
+    /// because macOS silently discards an untrusted post, so an absent grant
+    /// cannot truthfully be reported as a completed cleanup.
+    fn revalidate_cleanup_authorization(&self) -> Result<(), InputFault>;
 
     /// Posts one prepared event, reporting how many text units had reached the
     /// target when a text post could not finish.
@@ -152,6 +173,11 @@ impl NativeInputDriver {
         let NativeKey::Window(window) = self.record.key() else {
             return Ok(true);
         };
+        // The pair below describes window-server order but is not incarnation
+        // identity: macOS may recycle a window number inside the same process.
+        // Establish that the retained capture selection is still live before
+        // accepting the descriptive pair as focus evidence.
+        self.record.ensure_live()?;
         match shim::input_frontmost_window() {
             Ok((frontmost, owner)) => {
                 Ok(frontmost == u64::from(window) && owner == self.record.owner_process())
@@ -323,7 +349,7 @@ impl NativeInputDriver {
                 commit_prepared(
                     self,
                     focus,
-                    Some(resolved.geometry),
+                    commit_geometry(geometry.policy(), resolved.geometry)?,
                     operation,
                     NativePost::Pointer {
                         action: shim::INPUT_POINTER_MOVE,
@@ -342,7 +368,7 @@ impl NativeInputDriver {
                 commit_prepared(
                     self,
                     focus,
-                    Some(pointer.geometry),
+                    commit_geometry(geometry.policy(), pointer.geometry)?,
                     operation,
                     NativePost::Pointer {
                         action: shim::INPUT_POINTER_PRESS,
@@ -370,7 +396,7 @@ impl NativeInputDriver {
                 commit_prepared(
                     self,
                     focus,
-                    Some(pointer.geometry),
+                    commit_geometry(geometry.policy(), pointer.geometry)?,
                     operation,
                     NativePost::Pointer {
                         action: shim::INPUT_POINTER_RELEASE,
@@ -393,7 +419,7 @@ impl NativeInputDriver {
                 commit_prepared(
                     self,
                     focus,
-                    Some(pointer.geometry),
+                    commit_geometry(geometry.policy(), pointer.geometry)?,
                     operation,
                     NativePost::Scroll {
                         horizontal: i32::from(*horizontal),
@@ -410,7 +436,7 @@ impl NativeInputDriver {
                 commit_prepared(
                     self,
                     focus,
-                    None,
+                    CommitGeometry::NotApplicable,
                     operation,
                     NativePost::Key {
                         key_code,
@@ -438,7 +464,7 @@ impl NativeInputDriver {
                 commit_prepared(
                     self,
                     focus,
-                    None,
+                    CommitGeometry::NotApplicable,
                     operation,
                     NativePost::Key {
                         key_code,
@@ -483,7 +509,7 @@ impl NativeInputDriver {
             let result = commit_prepared(
                 self,
                 focus,
-                None,
+                CommitGeometry::NotApplicable,
                 operation,
                 NativePost::Text(&units[chunk.clone()]),
                 flags,
@@ -522,7 +548,7 @@ impl SystemCommitSource for NativeInputDriver {
     fn revalidate_system_commit(
         &self,
         focus: FocusPolicy,
-        expected_geometry: Option<GeometryFingerprint>,
+        geometry: CommitGeometry,
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
         self.record.ensure_live()?;
@@ -531,13 +557,17 @@ impl SystemCommitSource for NativeInputDriver {
         // follow without saying so.
         self.ensure_authorized()?;
         self.ensure_system_focus(focus, operation)?;
-        if let Some(expected) = expected_geometry {
+        if let CommitGeometry::RequireCurrent(expected) = geometry {
             let (_, current) = self.current_geometry()?;
             if current != expected {
                 return Err(InputFault::GeometryChanged);
             }
         }
         Ok(())
+    }
+
+    fn revalidate_cleanup_authorization(&self) -> Result<(), InputFault> {
+        self.ensure_authorized()
     }
 
     fn post(&self, post: NativePost<'_>, flags: u32) -> Result<(), (ShimStatus, usize)> {
@@ -709,13 +739,13 @@ fn operation_fault(operation: &OperationContext) -> Result<(), InputFault> {
 pub(crate) fn commit_prepared<S: SystemCommitSource + ?Sized>(
     source: &S,
     focus: FocusPolicy,
-    expected_geometry: Option<GeometryFingerprint>,
+    geometry: CommitGeometry,
     operation: &OperationContext,
     post: NativePost<'_>,
     flags: u32,
 ) -> DeliveryResult {
     operation_fault(operation)?;
-    source.revalidate_system_commit(focus, expected_geometry, operation)?;
+    source.revalidate_system_commit(focus, geometry, operation)?;
     // Revalidation performs target, authorization, focus, and geometry queries, so
     // arbitration is checked once more as the last operation before the post.
     operation_fault(operation)?;
@@ -735,9 +765,26 @@ fn commit_cleanup<S: SystemCommitSource + ?Sized>(
     flags: u32,
 ) -> Result<(), InputFault> {
     operation_fault(cleanup)?;
+    source.revalidate_cleanup_authorization()?;
+    // Keep cancellation/deadline arbitration adjacent to the release after the
+    // authorization probe, just as ordinary commits do after their full gate.
+    operation_fault(cleanup)?;
     source
         .post(post, flags)
         .map_err(|(status, _)| source.classify_post_failure(status))
+}
+
+fn commit_geometry(
+    policy: GeometryPolicy,
+    fingerprint: GeometryFingerprint,
+) -> Result<CommitGeometry, InputFault> {
+    match policy {
+        GeometryPolicy::ReprojectCurrent | GeometryPolicy::RequireUnchanged => {
+            Ok(CommitGeometry::RequireCurrent(fingerprint))
+        }
+        GeometryPolicy::UseFrameSnapshot => Ok(CommitGeometry::UseFrameSnapshot),
+        _ => Err(InputFault::UnsupportedCombination),
+    }
 }
 
 fn fingerprint(transform: &TransformSnapshot) -> Result<GeometryFingerprint, InputFault> {

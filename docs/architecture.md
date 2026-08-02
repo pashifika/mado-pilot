@@ -1059,11 +1059,16 @@ stops delivery with the count that had already gone out.
 
 Coordinates resolve into the global point plane `CGEvent` accepts, which is the
 same top-left-origin plane macOS capture publishes placement in, so a Retina or
-signed multi-display coordinate is posted without rounding. Focus is the frontmost
-window in the ordinary window layer with the owning process discovery recorded;
-`ActivateIfRequired` activates the owning *application* and reports `FocusRefused`
-when the intended window does not become frontmost, without passing
+signed multi-display coordinate is posted without rounding. Input first establishes
+liveness from the exact `SCWindow` included by the retained discovery filter. Only
+then may the window number and owning process describe front-to-back window-server
+order; those recyclable values never establish incarnation. Focus is the frontmost
+ordinary-layer window with that descriptive pair. `ActivateIfRequired` activates
+the owning *application* and reports `FocusRefused` when the intended retained
+window does not become frontmost, without passing
 `NSApplicationActivateIgnoringOtherApps` or moving another application's windows.
+A same-process replacement that recycles the number makes the old public
+`TargetId` report `TargetLost`.
 
 Pressed buttons and keys belong only to the sequence that pressed them, and a
 synthesized event carries exactly the modifiers that sequence holds rather than
@@ -1073,15 +1078,19 @@ that stopped being frontmost is when a held button matters most.
 
 The dedicated `mado-pilot-macos-input-fixture` publishes an exact
 process-qualified title, one flat fill colour, and a bounded report of event kinds
-and UTF-16 unit counts; it never retains characters. Because macOS cannot deliver
-without focusing, the automatic native test delivers nothing, and successful
-injection is the explicit user-focused check. The capability matrix, commands,
-privacy limits, bundling step, and manual procedure are in
-[macos-input-verification.md](macos-input-verification.md).
+and UTF-16 unit counts; it never retains characters. Its reproducible OSS bundle
+mode uses an ad-hoc signature with the stable signing identifier
+`dev.mado-pilot.macos-input-fixture` and no certificate identity. The generated
+bundle is structurally verified without a keychain. Because macOS cannot deliver
+without focusing, successful injection remains an explicit user-focused check;
+structural signature validity proves neither a TCC decision nor successful input.
+The capability matrix, commands, privacy limits, bundling/signing step, and manual
+procedure are in [macos-input-verification.md](macos-input-verification.md).
 
-Input adds no crate and no eager framework: AppKit and HIToolbox are opened from
-absolute system paths on first use, exactly as ScreenCaptureKit is, and the
-fixture's window is compiled into a separate archive no released artifact links.
+Input adds no crate and no eager framework: AppKit, HIToolbox, and the public
+Security.framework code-signing API are opened from absolute system paths on first
+use, exactly as ScreenCaptureKit is, and the fixture's window is compiled into a
+separate archive no released artifact links.
 
 The delivery surface, the per-event authorization rule, the activation authority,
 and the linkage arrangement are recorded together in
@@ -1286,11 +1295,16 @@ yet, so discovery and open preflight the capture authorization and refuse with a
 typed access-denied outcome before reaching it. An unauthorized host therefore gets
 a refusal rather than an empty target list, and the presence of this package never
 changes what the operating system asks the user. Each probe carries the signing and
-launch context it was read in — a bundled application or a bare executable — because
-macOS grants these per application and an unbundled executable inherits its
-launcher's grant. A held authorization carries no diagnostic category: neither
-native check returns an error code, so inventing one would make the report look as
-though it had consulted something it had not.
+launch context it was read in because macOS authorization evidence is specific to
+the executing code. Bundle launch (`Bundled`, `Unbundled`, or `Unknown`) and code
+signature (`Unsigned`, `Invalid`, structurally valid `AdHoc`, structurally valid
+`CertificateBacked`, or `PlatformFailure`) are reported as independent axes. The
+public Security.framework `SecCode` API supplies the signature classification and
+signing identifier through controlled loading. Only the dedicated fixture evidence
+reports that identifier; ordinary diagnostics use reviewed static text and cannot
+interpolate it. A held authorization carries no diagnostic category: neither
+native permission check returns an error code, so inventing one would make the
+report look as though it had consulted something it had not.
 
 Discovery is picker-free and deterministic: windows and displays are ordered by
 kind, then lowercased name, then native key. Determinism applies to snapshot order,
@@ -1299,8 +1313,9 @@ While that pass still owns the native inventory, each candidate is converted
 transactionally into an `SCContentFilter` for the selected `SCWindow` or `SCDisplay`.
 That retained filter, not the window number, display number, owner process, title,
 bounds, or an Objective-C wrapper address, is the selection authority carried into
-open. Open gives the retained filter directly to `SCStream` and performs no later
-inventory query or identifier lookup that could select a replacement.
+open and input liveness. Capture gives the retained filter directly to `SCStream`,
+and input reads the object included by that same filter; neither performs a later
+inventory or identifier lookup that could select a replacement.
 
 The provider keeps only the current and immediately previous discovery generations
 openable. This finite lease lets a caller discover and then open even if one newer

@@ -17,13 +17,15 @@ use std::ptr::NonNull;
 use std::slice;
 use std::str;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 3;
+pub(crate) const ABI_VERSION: u32 = 4;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -480,6 +482,8 @@ struct TargetTokenInner {
     handle: Option<NonNull<OpaqueTarget>>,
     #[cfg(test)]
     synthetic_identity: u64,
+    #[cfg(test)]
+    synthetic_live: AtomicBool,
 }
 
 // SAFETY: the native handle owns an immutable retained SCContentFilter and every
@@ -501,6 +505,8 @@ impl TargetToken {
                 handle: Some(handle),
                 #[cfg(test)]
                 synthetic_identity: 0,
+                #[cfg(test)]
+                synthetic_live: AtomicBool::new(true),
             }),
         })
     }
@@ -517,6 +523,7 @@ impl TargetToken {
             inner: Arc::new(TargetTokenInner {
                 handle: None,
                 synthetic_identity: identity,
+                synthetic_live: AtomicBool::new(true),
             }),
         }
     }
@@ -524,6 +531,18 @@ impl TargetToken {
     #[cfg(test)]
     pub(crate) fn synthetic_identity(&self) -> u64 {
         self.inner.synthetic_identity
+    }
+
+    /// Marks a synthetic retained selection as lost without changing its
+    /// descriptive process or native-window metadata.
+    #[cfg(test)]
+    pub(crate) fn mark_synthetic_lost(&self) {
+        self.inner.synthetic_live.store(false, Ordering::Release);
+    }
+
+    /// Reads bounds from the exact retained selection this token owns.
+    pub(crate) fn input_bounds(&self) -> Result<NativeBounds, ShimStatus> {
+        input_target_bounds(self)
     }
 }
 
@@ -781,7 +800,7 @@ fn probe(read: impl FnOnce(*mut u32) -> u32) -> Result<PermissionState, ShimStat
     })
 }
 
-/// The signing and launch context an authorization answer was read in.
+/// The bundle-launch context an authorization answer was read in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaunchContext {
     /// A main bundle with an identifier: the context authorization is granted to.
@@ -792,33 +811,183 @@ pub(crate) enum LaunchContext {
     Unknown,
 }
 
-impl LaunchContext {
-    /// Returns Adapter-authored diagnostic context naming this launch context.
-    ///
-    /// A literal rather than an owned string, because the redacted diagnostic
-    /// surface accepts only text that exists in reviewed source.
-    pub(crate) const fn as_context(self) -> &'static str {
-        match self {
-            LaunchContext::Bundled => "probed from a bundled application context",
-            LaunchContext::Unbundled => "probed from an unbundled executable context",
-            LaunchContext::Unknown => "probed from an unestablished launch context",
+/// What public Security.framework inspection established about this code's
+/// signature, independently of how it was launched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignatureMode {
+    /// Security.framework reported unsigned code and no signing identifier.
+    Unsigned,
+    /// Security.framework affirmatively rejected signed code as invalid.
+    Invalid,
+    /// The code is structurally valid and sealed without a certificate identity.
+    AdHoc,
+    /// The code is structurally valid and backed by a certificate identity.
+    CertificateBacked,
+    /// The public API was unavailable or could not establish a result.
+    PlatformFailure,
+}
+
+/// Two independent axes needed to interpret a macOS authorization answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecutionContext {
+    launch: LaunchContext,
+    signature: SignatureMode,
+    /// Kept separate from ordinary diagnostics: an identifier is reportable only
+    /// through a deliberate fixture evidence path, never ambient log context.
+    signing_identifier: Option<String>,
+}
+
+impl ExecutionContext {
+    fn from_raw(launch: u32, signature: u32, identifier: &[u8]) -> Self {
+        let launch = match launch {
+            1 => LaunchContext::Bundled,
+            2 => LaunchContext::Unbundled,
+            _ => LaunchContext::Unknown,
+        };
+        let mut signature = match signature {
+            1 => SignatureMode::Unsigned,
+            2 => SignatureMode::Invalid,
+            3 => SignatureMode::AdHoc,
+            4 => SignatureMode::CertificateBacked,
+            _ => SignatureMode::PlatformFailure,
+        };
+        let signing_identifier = if matches!(
+            signature,
+            SignatureMode::AdHoc | SignatureMode::CertificateBacked
+        ) {
+            match str::from_utf8(identifier) {
+                Ok(identifier) if !identifier.is_empty() => Some(identifier.to_owned()),
+                _ => {
+                    signature = SignatureMode::PlatformFailure;
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Self {
+            launch,
+            signature,
+            signing_identifier,
         }
+    }
+
+    /// Returns reviewed, static diagnostic context naming both independent axes.
+    ///
+    /// The dynamically read signing identifier is deliberately not interpolated:
+    /// [`RedactedDiagnostic`](mado_pilot_core::RedactedDiagnostic) accepts only
+    /// Adapter-authored literals so ambient diagnostics cannot leak host data.
+    pub(crate) fn as_context(&self) -> &'static str {
+        let _identifier_is_deliberately_redacted = self.signing_identifier.as_deref();
+        match (self.launch, self.signature) {
+            (LaunchContext::Bundled, SignatureMode::Unsigned) => {
+                "probed from a bundled application with unsigned code"
+            }
+            (LaunchContext::Bundled, SignatureMode::Invalid) => {
+                "probed from a bundled application with an invalid signature"
+            }
+            (LaunchContext::Bundled, SignatureMode::AdHoc) => {
+                "probed from a bundled application with a valid ad-hoc signature"
+            }
+            (LaunchContext::Bundled, SignatureMode::CertificateBacked) => {
+                "probed from a bundled application with a valid certificate-backed signature"
+            }
+            (LaunchContext::Bundled, SignatureMode::PlatformFailure) => {
+                "probed from a bundled application with signature inspection unavailable"
+            }
+            (LaunchContext::Unbundled, SignatureMode::Unsigned) => {
+                "probed from an unbundled executable with unsigned code"
+            }
+            (LaunchContext::Unbundled, SignatureMode::Invalid) => {
+                "probed from an unbundled executable with an invalid signature"
+            }
+            (LaunchContext::Unbundled, SignatureMode::AdHoc) => {
+                "probed from an unbundled executable with a valid ad-hoc signature"
+            }
+            (LaunchContext::Unbundled, SignatureMode::CertificateBacked) => {
+                "probed from an unbundled executable with a valid certificate-backed signature"
+            }
+            (LaunchContext::Unbundled, SignatureMode::PlatformFailure) => {
+                "probed from an unbundled executable with signature inspection unavailable"
+            }
+            (LaunchContext::Unknown, SignatureMode::Unsigned) => {
+                "probed from an unknown launch context with unsigned code"
+            }
+            (LaunchContext::Unknown, SignatureMode::Invalid) => {
+                "probed from an unknown launch context with an invalid signature"
+            }
+            (LaunchContext::Unknown, SignatureMode::AdHoc) => {
+                "probed from an unknown launch context with a valid ad-hoc signature"
+            }
+            (LaunchContext::Unknown, SignatureMode::CertificateBacked) => {
+                "probed from an unknown launch context with a valid certificate-backed signature"
+            }
+            (LaunchContext::Unknown, SignatureMode::PlatformFailure) => {
+                "probed from an unknown launch context with signature inspection unavailable"
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn signing_identifier(&self) -> Option<&str> {
+        self.signing_identifier.as_deref()
     }
 }
 
-/// Reports the signing and launch context the probes are read in.
-pub(crate) fn launch_context() -> LaunchContext {
-    let mut context = u32::MAX;
-    // SAFETY: `context` is a writable output for one u32.
-    let status = unsafe { mp_shim_launch_context(&raw mut context) };
+/// Reports the separate bundle-launch and signature contexts the probes use.
+pub(crate) fn execution_context() -> ExecutionContext {
+    const IDENTIFIER_CAPACITY: usize = 256;
+    let mut launch = u32::MAX;
+    let mut signature = u32::MAX;
+    let mut identifier = [0u8; IDENTIFIER_CAPACITY];
+    let mut identifier_len = usize::MAX;
+    // SAFETY: every scalar output is writable, and `identifier` supplies the
+    // capacity declared beside its pointer.
+    let status = unsafe {
+        mp_shim_execution_context(
+            &raw mut launch,
+            &raw mut signature,
+            identifier.as_mut_ptr(),
+            identifier.len(),
+            &raw mut identifier_len,
+        )
+    };
     if ShimStatus::from_raw(status) != ShimStatus::Ok {
-        return LaunchContext::Unknown;
+        return ExecutionContext::from_raw(0, 0, &[]);
     }
-    match context {
-        1 => LaunchContext::Bundled,
-        2 => LaunchContext::Unbundled,
-        _ => LaunchContext::Unknown,
-    }
+    let Some(identifier) = identifier.get(..identifier_len) else {
+        return ExecutionContext::from_raw(launch, 0, &[]);
+    };
+    ExecutionContext::from_raw(launch, signature, identifier)
+}
+
+#[cfg(test)]
+fn testing_classify_signature(
+    signing_info_status: i32,
+    validity_status: i32,
+    has_identifier: bool,
+    signature_flags: u32,
+) -> Result<SignatureMode, ShimStatus> {
+    let mut signature = u32::MAX;
+    // SAFETY: `signature` is writable for one u32 and every other value is a
+    // scalar consumed by the deterministic native classifier.
+    let status = unsafe {
+        mp_shim_testing_classify_signature(
+            signing_info_status,
+            validity_status,
+            has_identifier,
+            signature_flags,
+            &raw mut signature,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok(match signature {
+        1 => SignatureMode::Unsigned,
+        2 => SignatureMode::Invalid,
+        3 => SignatureMode::AdHoc,
+        4 => SignatureMode::CertificateBacked,
+        _ => SignatureMode::PlatformFailure,
+    })
 }
 
 /// Classifies one capture-framework error code as the shim maps it.
@@ -907,19 +1076,28 @@ pub(crate) fn input_frontmost_window() -> Result<(u64, i64), ShimStatus> {
 }
 
 /// Reports one target's current rectangle, and thereby whether it still exists.
-pub(crate) fn input_target_bounds(
-    kind: u32,
-    native_id: u64,
-    owner_process: i64,
-) -> Result<NativeBounds, ShimStatus> {
+fn input_target_bounds(target: &TargetToken) -> Result<NativeBounds, ShimStatus> {
+    let Some(handle) = target.inner.handle else {
+        #[cfg(test)]
+        {
+            if target.inner.synthetic_live.load(Ordering::Acquire) {
+                return Ok(NativeBounds {
+                    origin: (0.0, 0.0),
+                    size: (64.0, 48.0),
+                    scale: 1.0,
+                });
+            }
+            return Err(ShimStatus::TargetLost);
+        }
+        #[cfg(not(test))]
+        return Err(ShimStatus::InvalidArgument);
+    };
     let mut values = [0.0f64; 5];
     let [x, y, width, height, scale] = &mut values;
     // SAFETY: all five outputs are writable for one f64 each.
     let status = unsafe {
         mp_shim_input_target_bounds(
-            kind,
-            native_id,
-            owner_process,
+            handle.as_ptr(),
             &raw mut *x,
             &raw mut *y,
             &raw mut *width,
@@ -1336,6 +1514,27 @@ fn testing_surface_recommendation(
     (ShimStatus::from_raw(status) == ShimStatus::Ok).then(|| PixelExtent::new(width, height))
 }
 
+#[cfg(test)]
+fn testing_input_text_second_allocation_failure() -> Result<(ShimStatus, [usize; 5]), ShimStatus> {
+    let mut delivery = u32::MAX;
+    let mut observations = [usize::MAX; 5];
+    let [allocations, configurations, posts, releases, posted] = &mut observations;
+    // SAFETY: every output is writable for its declared scalar type. The native
+    // seam uses fake objects and never posts to the host system.
+    let status = unsafe {
+        mp_shim_testing_input_text_second_allocation_failure(
+            &raw mut delivery,
+            &raw mut *allocations,
+            &raw mut *configurations,
+            &raw mut *posts,
+            &raw mut *releases,
+            &raw mut *posted,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((ShimStatus::from_raw(delivery), observations))
+}
+
 #[repr(C)]
 #[derive(Debug)]
 struct NativeOpenRequest {
@@ -1369,7 +1568,21 @@ unsafe extern "C" {
     fn mp_shim_capture_available() -> u32;
     fn mp_shim_probe_screen_capture(out_state: *mut u32) -> u32;
     fn mp_shim_probe_accessibility(out_state: *mut u32) -> u32;
-    fn mp_shim_launch_context(out_context: *mut u32) -> u32;
+    fn mp_shim_execution_context(
+        out_launch: *mut u32,
+        out_signature: *mut u32,
+        out_identifier: *mut u8,
+        identifier_capacity: usize,
+        out_identifier_len: *mut usize,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_classify_signature(
+        signing_info_status: i32,
+        validity_status: i32,
+        has_identifier: bool,
+        signature_flags: u32,
+        out_signature: *mut u32,
+    ) -> u32;
     #[cfg(test)]
     fn mp_shim_classify_stream_error(code: i64) -> u32;
     fn mp_shim_monotonic_nanos(out_nanos: *mut u64) -> u32;
@@ -1404,6 +1617,15 @@ unsafe extern "C" {
         display_scale: f64,
         out_width: *mut u32,
         out_height: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_input_text_second_allocation_failure(
+        out_delivery_status: *mut u32,
+        out_allocations: *mut usize,
+        out_configurations: *mut usize,
+        out_posts: *mut usize,
+        out_releases: *mut usize,
+        out_posted: *mut usize,
     ) -> u32;
 
     fn mp_shim_inventory_acquire(timeout_nanos: u64, out: *mut *mut OpaqueInventory) -> u32;
@@ -1453,9 +1675,7 @@ unsafe extern "C" {
 
     fn mp_shim_input_frontmost_window(out_window_id: *mut u64, out_owner_pid: *mut i64) -> u32;
     fn mp_shim_input_target_bounds(
-        kind: u32,
-        native_id: u64,
-        owner_process: i64,
+        target: *const OpaqueTarget,
         out_x: *mut f64,
         out_y: *mut f64,
         out_width: *mut f64,
@@ -1496,12 +1716,14 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        ABI_VERSION, DEFAULT_NATIVE_WAIT, FrameInfo, KIND_DISPLAY, KIND_WINDOW, MAX_NATIVE_WAIT,
-        MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest, ShimStatus, TargetToken,
-        contained_frame_callback, contained_frame_commit_callback, contained_stopped_callback,
-        declared_layout, linked_layout, live_objects, monotonic_nanos, nanos, testing_gate_retries,
-        testing_stop_completion_exception, testing_surface_recommendation,
-        testing_terminalize_twice, validate_open_shape_and_metadata,
+        ABI_VERSION, DEFAULT_NATIVE_WAIT, ExecutionContext, FrameInfo, KIND_DISPLAY, KIND_WINDOW,
+        LaunchContext, MAX_NATIVE_WAIT, MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest, ShimStatus,
+        SignatureMode, TargetToken, contained_frame_callback, contained_frame_commit_callback,
+        contained_stopped_callback, declared_layout, execution_context, linked_layout,
+        live_objects, monotonic_nanos, nanos, testing_classify_signature, testing_gate_retries,
+        testing_input_text_second_allocation_failure, testing_stop_completion_exception,
+        testing_surface_recommendation, testing_terminalize_twice,
+        validate_open_shape_and_metadata,
     };
     use mado_pilot_capture::CaptureFault;
     use mado_pilot_core::PixelExtent;
@@ -1525,6 +1747,79 @@ mod tests {
     }
 
     #[test]
+    fn native_signature_classification_distinguishes_every_reported_state() {
+        let classify = |information, validity, identifier, flags| {
+            testing_classify_signature(information, validity, identifier, flags)
+                .expect("the deterministic native classifier runs")
+        };
+
+        assert_eq!(classify(0, -67062, false, 0), SignatureMode::Unsigned);
+        assert_eq!(
+            classify(0, -67061, false, 0),
+            SignatureMode::Invalid,
+            "missing partial metadata cannot override an invalid signature"
+        );
+        assert_eq!(
+            classify(0, 0, false, 0),
+            SignatureMode::PlatformFailure,
+            "successful validity without a signing identifier is contradictory"
+        );
+        assert_eq!(
+            classify(0, -67062, true, 0),
+            SignatureMode::Invalid,
+            "an unsigned validity status with signed metadata is contradictory"
+        );
+        assert_eq!(classify(0, -67061, true, 0), SignatureMode::Invalid);
+        assert_eq!(classify(0, 0, true, 0x0002), SignatureMode::AdHoc);
+        assert_eq!(classify(0, 0, true, 0), SignatureMode::CertificateBacked);
+        assert_eq!(classify(-4, 0, false, 0), SignatureMode::PlatformFailure);
+        assert_eq!(
+            classify(0, -4, true, 0),
+            SignatureMode::PlatformFailure,
+            "an unreadable platform result is not mislabeled as invalid code"
+        );
+    }
+
+    #[test]
+    fn bundle_launch_and_signature_mode_remain_independent_axes() {
+        let bundled = ExecutionContext::from_raw(1, 3, b"dev.mado-pilot.fixture");
+        let unbundled = ExecutionContext::from_raw(2, 3, b"dev.mado-pilot.fixture");
+
+        assert_eq!(bundled.launch, LaunchContext::Bundled);
+        assert_eq!(unbundled.launch, LaunchContext::Unbundled);
+        assert_eq!(bundled.signature, SignatureMode::AdHoc);
+        assert_eq!(unbundled.signature, SignatureMode::AdHoc);
+        assert_ne!(bundled.as_context(), unbundled.as_context());
+    }
+
+    #[test]
+    fn signing_identifier_is_explicitly_reportable_but_redacted_from_diagnostics() {
+        let identifier = "dev.mado-pilot.fixture.private-host-value";
+        let valid = ExecutionContext::from_raw(1, 4, identifier.as_bytes());
+        assert_eq!(valid.signing_identifier(), Some(identifier));
+        assert!(!valid.as_context().contains(identifier));
+
+        let invalid = ExecutionContext::from_raw(1, 2, identifier.as_bytes());
+        assert_eq!(invalid.signing_identifier(), None);
+        assert!(!invalid.as_context().contains(identifier));
+    }
+
+    #[test]
+    fn native_execution_context_preserves_identifier_invariants_without_permissions() {
+        let context = execution_context();
+        assert_eq!(
+            context.signing_identifier().is_some(),
+            matches!(
+                context.signature,
+                SignatureMode::AdHoc | SignatureMode::CertificateBacked
+            )
+        );
+        if let Some(identifier) = context.signing_identifier() {
+            assert!(!context.as_context().contains(identifier));
+        }
+    }
+
+    #[test]
     fn native_surface_recommendations_use_raw_display_scale_and_existing_limits() {
         assert_eq!(
             testing_surface_recommendation((1718.0, 1108.0), 2.0),
@@ -1537,6 +1832,22 @@ mod tests {
             None,
             "a recommendation over the 256 MiB pair limit is refused"
         );
+    }
+
+    #[test]
+    fn text_posts_nothing_when_the_release_event_cannot_be_allocated() {
+        let (delivery, [allocations, configurations, posts, releases, posted]) =
+            testing_input_text_second_allocation_failure().expect("native text failure seam runs");
+
+        assert_eq!(delivery, ShimStatus::PlatformFailure);
+        assert_eq!(
+            allocations, 2,
+            "the forced failure is the second allocation"
+        );
+        assert_eq!(configurations, 0, "no half-pair is configured alone");
+        assert_eq!(posts, 0, "the key-down never reaches the system");
+        assert_eq!(releases, 1, "the first native event is released on failure");
+        assert_eq!(posted, 0, "the caller observes no native effect");
     }
 
     #[test]

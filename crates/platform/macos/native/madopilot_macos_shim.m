@@ -127,6 +127,231 @@ static void mp_shim_note_owned(void) { atomic_fetch_add(&mp_shim_owned_objects, 
 
 static void mp_shim_note_released(void) { atomic_fetch_sub(&mp_shim_owned_objects, 1u); }
 
+static CFTypeRef mp_shim_string_symbol(void *handle, const char *name);
+
+#pragma mark - Public code-signing inspection loaded without an eager framework
+
+/*
+ * Security.framework is opened from an absolute system path for the same reason
+ * ScreenCaptureKit, AppKit, and HIToolbox are: reporting execution context must
+ * not add an eager load command to every binary that links this Adapter. These
+ * are the exact public SecCode signatures in the qualified SDK, expressed with
+ * opaque Core Foundation types so importing Security headers is unnecessary.
+ */
+typedef OSStatus (*MPShimSecCodeCopySelf)(uint32_t flags, CFTypeRef *out_code);
+typedef OSStatus (*MPShimSecCodeCheckValidity)(CFTypeRef code, uint32_t flags,
+                                               CFTypeRef requirement);
+typedef OSStatus (*MPShimSecCodeCopySigningInformation)(CFTypeRef code, uint32_t flags,
+                                                        CFDictionaryRef *out_information);
+
+typedef struct {
+    bool loaded;
+    MPShimSecCodeCopySelf copy_self;
+    MPShimSecCodeCheckValidity check_validity;
+    MPShimSecCodeCopySigningInformation copy_signing_information;
+    CFStringRef flags_key;
+    CFStringRef identifier_key;
+} MPShimCodeSigningApi;
+
+static MPShimCodeSigningApi mp_shim_code_signing_api;
+static pthread_once_t mp_shim_code_signing_once = PTHREAD_ONCE_INIT;
+
+static void mp_shim_load_code_signing_api(void) {
+    void *handle = dlopen("/System/Library/Frameworks/Security.framework/Versions/A/Security",
+                          RTLD_LAZY | RTLD_LOCAL);
+    if (handle == NULL) {
+        handle = dlopen("/System/Library/Frameworks/Security.framework/Security",
+                        RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (handle == NULL) {
+        return;
+    }
+
+    MPShimCodeSigningApi loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    loaded.copy_self = (MPShimSecCodeCopySelf)dlsym(handle, "SecCodeCopySelf");
+    loaded.check_validity =
+        (MPShimSecCodeCheckValidity)dlsym(handle, "SecCodeCheckValidity");
+    loaded.copy_signing_information = (MPShimSecCodeCopySigningInformation)dlsym(
+        handle, "SecCodeCopySigningInformation");
+    loaded.flags_key = (CFStringRef)mp_shim_string_symbol(handle, "kSecCodeInfoFlags");
+    loaded.identifier_key =
+        (CFStringRef)mp_shim_string_symbol(handle, "kSecCodeInfoIdentifier");
+    loaded.loaded = loaded.copy_self != NULL && loaded.check_validity != NULL &&
+                    loaded.copy_signing_information != NULL && loaded.flags_key != NULL &&
+                    loaded.identifier_key != NULL;
+    if (loaded.loaded) {
+        mp_shim_code_signing_api = loaded;
+    }
+}
+
+static const MPShimCodeSigningApi *mp_shim_signing_api(void) {
+    pthread_once(&mp_shim_code_signing_once, mp_shim_load_code_signing_api);
+    return mp_shim_code_signing_api.loaded ? &mp_shim_code_signing_api : NULL;
+}
+
+/*
+ * Exact public Security.framework OSStatus values from CSCommon.h in the
+ * qualified SDK. Only statuses that affirmatively describe invalid code are
+ * classified as invalid; unreadable, internal, and unknown failures remain
+ * platform failures rather than overclaiming what Security established.
+ */
+static bool mp_shim_signature_status_is_invalid(OSStatus status) {
+    switch (status) {
+    case -67063: /* errSecCSGuestInvalid */
+    case -67061: /* errSecCSSignatureFailed */
+    case -67059: /* errSecCSSignatureUnsupported */
+    case -67058: /* errSecCSBadDictionaryFormat */
+    case -67057: /* errSecCSResourcesNotSealed */
+    case -67056: /* errSecCSResourcesNotFound */
+    case -67055: /* errSecCSResourcesInvalid */
+    case -67054: /* errSecCSBadResource */
+    case -67053: /* errSecCSResourceRulesInvalid */
+    case -67052: /* errSecCSReqInvalid */
+    case -67051: /* errSecCSReqUnsupported */
+    case -67050: /* errSecCSReqFailed */
+    case -67049: /* errSecCSBadObjectFormat */
+    case -67047: /* errSecCSHostReject */
+    case -67045: /* errSecCSSignatureInvalid */
+    case -67034: /* errSecCSStaticCodeChanged */
+    case -67030: /* errSecCSInfoPlistFailed */
+    case -67029: /* errSecCSNoMainExecutable */
+    case -67028: /* errSecCSBadBundleFormat */
+    case -67023: /* errSecCSResourceDirectoryFailed */
+    case -67022: /* errSecCSUnsignedNestedCode */
+    case -67021: /* errSecCSBadNestedCode */
+    case -67010: /* errSecCSBadMainExecutable */
+    case -67007: /* errSecCSWeakResourceEnvelope */
+    case -67003: /* errSecCSInvalidSymlink */
+    case -67000: /* errSecCSUnsupportedDigestAlgorithm */
+    case -66999: /* errSecCSInvalidAssociatedFileData */
+    case -66998: /* errSecCSInvalidTeamIdentifier */
+    case -66997: /* errSecCSBadTeamIdentifier */
+    case -66996: /* errSecCSSignatureUntrusted */
+    case -66994: /* errSecCSInvalidEntitlements */
+    case -66993: /* errSecCSInvalidRuntimeVersion */
+    case -66992: /* errSecCSRevokedNotarization */
+        return true;
+    default:
+        return false;
+    }
+}
+
+static uint32_t mp_shim_classify_signature(OSStatus signing_info_status,
+                                           OSStatus validity_status, bool has_identifier,
+                                           uint32_t signature_flags) {
+    if (validity_status != 0) {
+        /* errSecCSUnsigned is authoritative only when the signing-information
+         * dictionary independently agrees that no identifier exists. */
+        if (validity_status == -67062) {
+            if (signing_info_status != 0) {
+                return MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+            }
+            return has_identifier ? MP_SHIM_SIGNATURE_INVALID : MP_SHIM_SIGNATURE_UNSIGNED;
+        }
+        return mp_shim_signature_status_is_invalid(validity_status)
+                   ? MP_SHIM_SIGNATURE_INVALID
+                   : MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+    }
+    if (signing_info_status != 0 || !has_identifier) {
+        /* Successful validity with no identifier is contradictory, not proof
+         * that the code is unsigned. */
+        return MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+    }
+    return (signature_flags & 0x0002u) != 0 ? MP_SHIM_SIGNATURE_AD_HOC
+                                            : MP_SHIM_SIGNATURE_CERTIFICATE_BACKED;
+}
+
+static bool mp_shim_copy_signing_identifier(CFStringRef identifier, uint8_t *out_identifier,
+                                            size_t *out_identifier_len) {
+    if (identifier == NULL || CFGetTypeID(identifier) != CFStringGetTypeID()) {
+        return false;
+    }
+    CFIndex characters = CFStringGetLength(identifier);
+    CFIndex used = 0;
+    CFIndex converted = CFStringGetBytes(
+        identifier, CFRangeMake(0, characters), kCFStringEncodingUTF8, 0, false, out_identifier,
+        (CFIndex)MP_SHIM_MAX_SIGNING_IDENTIFIER, &used);
+    if (characters <= 0 || converted != characters || used <= 0 ||
+        used > (CFIndex)MP_SHIM_MAX_SIGNING_IDENTIFIER) {
+        return false;
+    }
+    out_identifier[used] = 0;
+    *out_identifier_len = (size_t)used;
+    return true;
+}
+
+static void mp_shim_read_signature_context(uint32_t *out_signature, uint8_t *out_identifier,
+                                           size_t *out_identifier_len) {
+    const MPShimCodeSigningApi *api = mp_shim_signing_api();
+    if (api == NULL) {
+        return;
+    }
+
+    CFTypeRef code = NULL;
+    CFDictionaryRef information = NULL;
+    @try {
+        OSStatus copy_self_status = api->copy_self(0, &code);
+        if (copy_self_status != 0 || code == NULL) {
+            return;
+        }
+
+        /* The qualified SDK requires successful validity before treating
+         * signing information as complete. An unsigned result is corroborated
+         * below by the documented absence of an identifier. */
+        OSStatus validity_status = api->check_validity(code, 0, NULL);
+        if (validity_status != 0 && validity_status != -67062) {
+            *out_signature = mp_shim_classify_signature(0, validity_status, false, 0);
+            return;
+        }
+        OSStatus information_status = api->copy_signing_information(code, 0, &information);
+        if (information_status != 0 || information == NULL) {
+            *out_signature =
+                mp_shim_classify_signature(information_status, validity_status, false, 0);
+            return;
+        }
+
+        CFTypeRef identifier_value =
+            CFDictionaryGetValue(information, api->identifier_key);
+        bool has_identifier = identifier_value != NULL;
+        if (validity_status != 0 || !has_identifier) {
+            *out_signature =
+                mp_shim_classify_signature(0, validity_status, has_identifier, 0);
+            return;
+        }
+
+        uint32_t signature_flags = 0;
+        CFTypeRef flags_value = CFDictionaryGetValue(information, api->flags_key);
+        int64_t flags = 0;
+        if (flags_value == NULL || CFGetTypeID(flags_value) != CFNumberGetTypeID() ||
+            !CFNumberGetValue((CFNumberRef)flags_value, kCFNumberSInt64Type, &flags) || flags < 0 ||
+            flags > UINT32_MAX) {
+            return;
+        }
+        signature_flags = (uint32_t)flags;
+
+        *out_signature =
+            mp_shim_classify_signature(0, validity_status, true, signature_flags);
+        if (*out_signature != MP_SHIM_SIGNATURE_AD_HOC &&
+            *out_signature != MP_SHIM_SIGNATURE_CERTIFICATE_BACKED) {
+            return;
+        }
+        if (!mp_shim_copy_signing_identifier((CFStringRef)identifier_value, out_identifier,
+                                             out_identifier_len)) {
+            *out_signature = MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+            *out_identifier_len = 0;
+            out_identifier[0] = 0;
+        }
+    } @finally {
+        if (information != NULL) {
+            CFRelease(information);
+        }
+        if (code != NULL) {
+            CFRelease(code);
+        }
+    }
+}
+
 #pragma mark - Selectors the shim sends, declared without a framework header
 
 /*
@@ -168,6 +393,8 @@ static void mp_shim_note_released(void) { atomic_fetch_sub(&mp_shim_owned_object
 @end
 
 @protocol MPShimContentFilterInit <NSObject>
+@property(nonnull, nonatomic, readonly) NSArray *includedDisplays;
+@property(nonnull, nonatomic, readonly) NSArray *includedWindows;
 - (instancetype)initWithDesktopIndependentWindow:(id)window;
 - (instancetype)initWithDisplay:(id)display excludingWindows:(NSArray *)excluded;
 @end
@@ -1112,15 +1339,37 @@ mp_shim_status mp_shim_probe_accessibility(uint32_t *out_state) {
     MP_SHIM_END
 }
 
-mp_shim_status mp_shim_launch_context(uint32_t *out_context) {
-    if (out_context == NULL) {
+mp_shim_status mp_shim_execution_context(uint32_t *out_launch, uint32_t *out_signature,
+                                         uint8_t *out_identifier, size_t identifier_capacity,
+                                         size_t *out_identifier_len) {
+    if (out_launch == NULL || out_signature == NULL || out_identifier == NULL ||
+        out_identifier_len == NULL ||
+        identifier_capacity < (size_t)MP_SHIM_MAX_SIGNING_IDENTIFIER + 1u) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
+    *out_launch = MP_SHIM_LAUNCH_UNKNOWN;
+    *out_signature = MP_SHIM_SIGNATURE_PLATFORM_FAILURE;
+    *out_identifier_len = 0;
+    out_identifier[0] = 0;
     MP_SHIM_BEGIN
     NSString *identifier = [NSBundle mainBundle].bundleIdentifier;
-    *out_context = identifier.length > 0 ? MP_SHIM_CONTEXT_BUNDLED : MP_SHIM_CONTEXT_UNBUNDLED;
+    *out_launch = identifier.length > 0 ? MP_SHIM_LAUNCH_BUNDLED : MP_SHIM_LAUNCH_UNBUNDLED;
+    mp_shim_read_signature_context(out_signature, out_identifier, out_identifier_len);
     return MP_SHIM_OK;
     MP_SHIM_END
+}
+
+mp_shim_status mp_shim_testing_classify_signature(int32_t signing_info_status,
+                                                  int32_t validity_status,
+                                                  bool has_identifier, uint32_t signature_flags,
+                                                  uint32_t *out_signature) {
+    if (out_signature == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_signature = mp_shim_classify_signature((OSStatus)signing_info_status,
+                                                (OSStatus)validity_status, has_identifier,
+                                                signature_flags);
+    return MP_SHIM_OK;
 }
 
 mp_shim_status mp_shim_classify_stream_error(int64_t code) {
@@ -2789,14 +3038,6 @@ static bool mp_shim_window_number(CFDictionaryRef entry, CFStringRef key, int64_
     return CFNumberGetValue((CFNumberRef)value, kCFNumberSInt64Type, out_value);
 }
 
-static bool mp_shim_window_bounds(CFDictionaryRef entry, CGRect *out_bounds) {
-    CFTypeRef value = CFDictionaryGetValue(entry, kCGWindowBounds);
-    if (value == NULL || CFGetTypeID(value) != CFDictionaryGetTypeID()) {
-        return false;
-    }
-    return CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)value, out_bounds);
-}
-
 mp_shim_status mp_shim_input_frontmost_window(uint64_t *out_window_id, int64_t *out_owner_pid) {
     if (out_window_id == NULL || out_owner_pid == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
@@ -2842,61 +3083,40 @@ mp_shim_status mp_shim_input_frontmost_window(uint64_t *out_window_id, int64_t *
     MP_SHIM_END
 }
 
-static mp_shim_status mp_shim_input_window_rect(uint64_t native_id, int64_t owner_process,
+static mp_shim_status mp_shim_input_window_rect(const struct mp_shim_target *target,
                                                 CGRect *out_bounds) {
-    if (native_id == 0 || native_id > UINT32_MAX || owner_process <= 0) {
-        return MP_SHIM_INVALID_ARGUMENT;
+    id<MPShimContentFilterInit> filter = (__bridge id<MPShimContentFilterInit>)target->filter;
+    NSArray *windows = filter.includedWindows;
+    if (windows.count != 1) {
+        return MP_SHIM_TARGET_LOST;
     }
-    mp_shim_connect_window_server();
-    CFArrayRef windows = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow,
-                                                    (CGWindowID)native_id);
-    if (windows == NULL) {
-        return MP_SHIM_PLATFORM_FAILURE;
+    id<MPShimWindow> window = (id<MPShimWindow>)windows.firstObject;
+    id<MPShimRunningApplication> owner = window.owningApplication;
+    if (window == nil || owner == nil || window.windowID != (CGWindowID)target->native_id ||
+        owner.processID != (pid_t)target->owner_process || !window.isOnScreen) {
+        return MP_SHIM_TARGET_LOST;
     }
-    mp_shim_status status = MP_SHIM_TARGET_LOST;
-    CFIndex count = CFArrayGetCount(windows);
-    for (CFIndex index = 0; index < count; index += 1) {
-        CFTypeRef element = CFArrayGetValueAtIndex(windows, index);
-        if (element == NULL || CFGetTypeID(element) != CFDictionaryGetTypeID()) {
-            continue;
-        }
-        CFDictionaryRef entry = (CFDictionaryRef)element;
-        int64_t number = 0;
-        int64_t owner = 0;
-        if (!mp_shim_window_number(entry, kCGWindowNumber, &number) ||
-            (uint64_t)number != native_id) {
-            continue;
-        }
-        /* macOS recycles window numbers. The owning process the discovery pass
-         * recorded is repeated here so a recycled number belonging to another
-         * process reports loss rather than being delivered to. */
-        if (!mp_shim_window_number(entry, kCGWindowOwnerPID, &owner) || owner != owner_process) {
-            continue;
-        }
-        CFTypeRef onscreen = CFDictionaryGetValue(entry, kCGWindowIsOnscreen);
-        if (onscreen == NULL || CFGetTypeID(onscreen) != CFBooleanGetTypeID() ||
-            !CFBooleanGetValue((CFBooleanRef)onscreen)) {
-            break;
-        }
-        CGRect bounds = CGRectNull;
-        if (!mp_shim_window_bounds(entry, &bounds) || CGRectIsNull(bounds) ||
-            bounds.size.width < 1.0 || bounds.size.height < 1.0) {
-            break;
-        }
-        *out_bounds = bounds;
-        status = MP_SHIM_OK;
-        break;
+    CGRect bounds = window.frame;
+    if (CGRectIsNull(bounds) || bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+        return MP_SHIM_TARGET_LOST;
     }
-    CFRelease(windows);
-    return status;
+    *out_bounds = bounds;
+    return MP_SHIM_OK;
 }
 
-static mp_shim_status mp_shim_input_display_rect(uint64_t native_id, CGRect *out_bounds) {
-    if (native_id > UINT32_MAX) {
-        return MP_SHIM_INVALID_ARGUMENT;
+static mp_shim_status mp_shim_input_display_rect(const struct mp_shim_target *target,
+                                                 CGRect *out_bounds) {
+    id<MPShimContentFilterInit> filter = (__bridge id<MPShimContentFilterInit>)target->filter;
+    NSArray *displays = filter.includedDisplays;
+    if (displays.count != 1) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    id<MPShimDisplay> selected = (id<MPShimDisplay>)displays.firstObject;
+    if (selected == nil || selected.displayID != (CGDirectDisplayID)target->native_id) {
+        return MP_SHIM_TARGET_LOST;
     }
     mp_shim_connect_window_server();
-    CGDirectDisplayID display = (CGDirectDisplayID)native_id;
+    CGDirectDisplayID display = selected.displayID;
     uint32_t count = 0;
     CGDirectDisplayID active[MP_SHIM_MAX_ACTIVE_DISPLAYS];
     if (CGGetActiveDisplayList(MP_SHIM_MAX_ACTIVE_DISPLAYS, active, &count) != kCGErrorSuccess) {
@@ -2916,10 +3136,11 @@ static mp_shim_status mp_shim_input_display_rect(uint64_t native_id, CGRect *out
     return MP_SHIM_TARGET_LOST;
 }
 
-mp_shim_status mp_shim_input_target_bounds(uint32_t kind, uint64_t native_id, int64_t owner_process,
-                                           double *out_x, double *out_y, double *out_width,
-                                           double *out_height, double *out_scale) {
-    if (out_x == NULL || out_y == NULL || out_width == NULL || out_height == NULL ||
+mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target, double *out_x,
+                                           double *out_y, double *out_width, double *out_height,
+                                           double *out_scale) {
+    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || target->filter == NULL ||
+        out_x == NULL || out_y == NULL || out_width == NULL || out_height == NULL ||
         out_scale == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
@@ -2932,13 +3153,14 @@ mp_shim_status mp_shim_input_target_bounds(uint32_t kind, uint64_t native_id, in
     CGRect bounds = CGRectNull;
     mp_shim_status status;
     double scale;
-    if (kind == MP_SHIM_TARGET_WINDOW) {
-        status = mp_shim_input_window_rect(native_id, owner_process, &bounds);
+    if (target->kind == MP_SHIM_TARGET_WINDOW) {
+        status = mp_shim_input_window_rect(target, &bounds);
         scale = status == MP_SHIM_OK ? mp_shim_scale_for_frame(bounds) : 0.0;
-    } else if (kind == MP_SHIM_TARGET_DISPLAY) {
-        status = mp_shim_input_display_rect(native_id, &bounds);
-        scale = status == MP_SHIM_OK ? mp_shim_display_backing_scale((CGDirectDisplayID)native_id)
-                                     : 0.0;
+    } else if (target->kind == MP_SHIM_TARGET_DISPLAY) {
+        status = mp_shim_input_display_rect(target, &bounds);
+        scale = status == MP_SHIM_OK
+                    ? mp_shim_display_backing_scale((CGDirectDisplayID)target->native_id)
+                    : 0.0;
     } else {
         return MP_SHIM_INVALID_ARGUMENT;
     }
@@ -3250,6 +3472,74 @@ mp_shim_status mp_shim_input_post_key(uint16_t key_code, bool down, uint32_t fla
     MP_SHIM_END
 }
 
+typedef struct {
+    CGEventRef (*create)(bool down, void *context);
+    void (*configure)(CGEventRef event, const uint16_t *units, size_t count,
+                      CGEventFlags flags, void *context);
+    void (*post)(CGEventRef event, void *context);
+    void (*release)(CGEventRef event, void *context);
+    void *context;
+} mp_shim_text_event_ops;
+
+static CGEventRef mp_shim_text_event_create(bool down, void *context) {
+    (void)context;
+    return CGEventCreateKeyboardEvent(NULL, 0, down);
+}
+
+static void mp_shim_text_event_configure(CGEventRef event, const uint16_t *units, size_t count,
+                                         CGEventFlags flags, void *context) {
+    (void)context;
+    CGEventKeyboardSetUnicodeString(event, (UniCharCount)count, (const UniChar *)units);
+    CGEventSetFlags(event, flags);
+}
+
+static void mp_shim_text_event_post(CGEventRef event, void *context) {
+    (void)context;
+    CGEventPost(kCGHIDEventTap, event);
+}
+
+static void mp_shim_text_event_release(CGEventRef event, void *context) {
+    (void)context;
+    CFRelease(event);
+}
+
+static mp_shim_status mp_shim_input_post_text_with_ops(const uint16_t *units, size_t count,
+                                                       uint32_t flags, size_t *out_posted,
+                                                       const mp_shim_text_event_ops *ops) {
+    CGEventRef down = NULL;
+    CGEventRef up = NULL;
+    @try {
+        down = ops->create(true, ops->context);
+        if (down == NULL) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        up = ops->create(false, ops->context);
+        if (up == NULL) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+
+        CGEventFlags event_flags = mp_shim_input_event_flags(flags);
+        /* Prepare the whole balanced pair before either half can reach the
+         * system. A second allocation or either configuration failure therefore
+         * leaves `out_posted` at zero and posts nothing. */
+        ops->configure(down, units, count, event_flags, ops->context);
+        ops->configure(up, units, count, event_flags, ops->context);
+        ops->post(down, ops->context);
+        *out_posted = count;
+        ops->post(up, ops->context);
+        return MP_SHIM_OK;
+    } @finally {
+        /* `@finally` covers ordinary returns and a contained native exception;
+         * every successfully allocated Core Foundation object is released. */
+        if (up != NULL) {
+            ops->release(up, ops->context);
+        }
+        if (down != NULL) {
+            ops->release(down, ops->context);
+        }
+    }
+}
+
 mp_shim_status mp_shim_input_post_text(const uint16_t *units, size_t count, uint32_t flags,
                                        size_t *out_posted) {
     if (out_posted == NULL) {
@@ -3260,29 +3550,90 @@ mp_shim_status mp_shim_input_post_text(const uint16_t *units, size_t count, uint
         return MP_SHIM_INVALID_ARGUMENT;
     }
     MP_SHIM_BEGIN
-    CGEventFlags event_flags = mp_shim_input_event_flags(flags);
     /* A key code of zero with an attached string is how Core Graphics delivers
      * text rather than a key press, which is what the Text operation means. */
-    CGEventRef down = CGEventCreateKeyboardEvent(NULL, 0, true);
-    if (down == NULL) {
-        return MP_SHIM_PLATFORM_FAILURE;
-    }
-    CGEventKeyboardSetUnicodeString(down, (UniCharCount)count, (const UniChar *)units);
-    CGEventSetFlags(down, event_flags);
-    CGEventPost(kCGHIDEventTap, down);
-    CFRelease(down);
-    /* The chunk has reached the target. Everything after this reports how the
-     * matching release went, never that nothing happened. */
-    *out_posted = count;
+    const mp_shim_text_event_ops ops = {
+        .create = mp_shim_text_event_create,
+        .configure = mp_shim_text_event_configure,
+        .post = mp_shim_text_event_post,
+        .release = mp_shim_text_event_release,
+        .context = NULL,
+    };
+    return mp_shim_input_post_text_with_ops(units, count, flags, out_posted, &ops);
+    MP_SHIM_END
+}
 
-    CGEventRef up = CGEventCreateKeyboardEvent(NULL, 0, false);
-    if (up == NULL) {
-        return MP_SHIM_PLATFORM_FAILURE;
+typedef struct {
+    size_t allocations;
+    size_t configurations;
+    size_t posts;
+    size_t releases;
+} mp_shim_text_failure_probe;
+
+static CGEventRef mp_shim_testing_text_create(bool down, void *context) {
+    (void)down;
+    mp_shim_text_failure_probe *probe = context;
+    probe->allocations += 1;
+    if (probe->allocations == 2) {
+        return NULL;
     }
-    CGEventKeyboardSetUnicodeString(up, (UniCharCount)count, (const UniChar *)units);
-    CGEventSetFlags(up, event_flags);
-    CGEventPost(kCGHIDEventTap, up);
-    CFRelease(up);
+    return (CGEventRef)(uintptr_t)1;
+}
+
+static void mp_shim_testing_text_configure(CGEventRef event, const uint16_t *units, size_t count,
+                                           CGEventFlags flags, void *context) {
+    (void)event;
+    (void)units;
+    (void)count;
+    (void)flags;
+    mp_shim_text_failure_probe *probe = context;
+    probe->configurations += 1;
+}
+
+static void mp_shim_testing_text_post(CGEventRef event, void *context) {
+    (void)event;
+    mp_shim_text_failure_probe *probe = context;
+    probe->posts += 1;
+}
+
+static void mp_shim_testing_text_release(CGEventRef event, void *context) {
+    (void)event;
+    mp_shim_text_failure_probe *probe = context;
+    probe->releases += 1;
+}
+
+mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
+    mp_shim_status *out_delivery_status, size_t *out_allocations, size_t *out_configurations,
+    size_t *out_posts, size_t *out_releases, size_t *out_posted) {
+    if (out_delivery_status == NULL || out_allocations == NULL || out_configurations == NULL ||
+        out_posts == NULL || out_releases == NULL || out_posted == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
+    *out_allocations = 0;
+    *out_configurations = 0;
+    *out_posts = 0;
+    *out_releases = 0;
+    *out_posted = 0;
+    MP_SHIM_BEGIN
+    mp_shim_text_failure_probe probe = {0};
+    const mp_shim_text_event_ops ops = {
+        .create = mp_shim_testing_text_create,
+        .configure = mp_shim_testing_text_configure,
+        .post = mp_shim_testing_text_post,
+        .release = mp_shim_testing_text_release,
+        .context = &probe,
+    };
+    const uint16_t unit = (uint16_t)'x';
+    size_t posted = 0;
+    mp_shim_status delivery =
+        mp_shim_input_post_text_with_ops(&unit, 1, 0, &posted, &ops);
+    *out_delivery_status = delivery;
+    *out_allocations = probe.allocations;
+    *out_configurations = probe.configurations;
+    *out_posts = probe.posts;
+    *out_releases = probe.releases;
+    *out_posted = posted;
     return MP_SHIM_OK;
     MP_SHIM_END
 }

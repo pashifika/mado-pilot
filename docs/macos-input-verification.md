@@ -27,6 +27,15 @@ Every target names `PermissionKind::InputControl` — Accessibility — as the
 authorization input needs, separately from the Screen Recording that capture
 needs. Naming it is not a claim that it is held.
 
+Every refused or undetermined permission report names two independent execution
+axes. Bundle launch is `bundled`, `unbundled`, or `unknown`; signature mode is
+`unsigned`, `invalid`, structurally valid `ad-hoc`, structurally valid
+`certificate-backed`, or `platform-failure`. The Adapter reads signature state
+through dynamically loaded public Security.framework code-signing APIs. Ordinary
+diagnostics contain only reviewed static classifications. They never interpolate
+the signing identifier; the dedicated fixture prints that identifier only on its
+explicit evidence line.
+
 ## Coordinates
 
 All five shared pointer spaces are advertised, because macOS capture publishes an
@@ -60,10 +69,15 @@ calls a permission-request API, opens System Settings, or presents any interface
 an unavailable or unreadable state is treated as unauthorized rather than as
 permission.
 
-Focus is read from the window server's own front-to-back order: the target is
-focused when it is the frontmost window in the ordinary window layer and its
-owning process still matches the one discovery recorded. Window names are never
-read for this, so it needs no Screen Recording.
+Liveness first comes from the exact `SCWindow` included by the discovery-retained
+`SCContentFilter`, which is the same authority capture opens. Focus is then read
+from the window server's own front-to-back order: the target is focused when it is
+the frontmost window in the ordinary window layer and its window number and owning
+process match the retained selection's metadata. The pair validates focus only;
+it cannot re-resolve an incarnation, so a same-PID replacement that recycles the
+number makes the old `TargetId` report `TargetLost`. Window names are never read
+for focus, so it needs no Screen Recording beyond the retained selection already
+established by discovery.
 
 - `Preserve` cannot satisfy a focus-requiring system path, so a window request
   using it fails admission.
@@ -145,19 +159,37 @@ the window's own deterministic content — `frame_is_fixture_content` requires t
 sampled region to be one flat colour within tolerance of the declared fill —
 because an application window is not one flat colour.
 
-### Bundling the fixture
+### Bundling, ad-hoc signing, and structurally verifying the fixture
 
 Running the bare executable is supported and reports itself as unbundled, which is
-what the permission evidence should then say. To give it the stable application
-identity macOS records authorization against:
+what the evidence should then say. The reproducible OSS fixture mode below creates
+only a generated artifact under `target/`, supplies the stable code-signing
+identifier, and uses identity `-`. For `codesign`, `-` means ad-hoc signing: the
+seal has no certificate identity and does not consult a named identity in the
+user's keychain.
 
 ```sh
 cargo build --locked -p mado-pilot-platform-macos --bin mado-pilot-macos-input-fixture
-APP=target/debug/MadoPilotInputFixture.app
+APP=target/mado-pilot-fixtures/MadoPilotInputFixture.app
 mkdir -p "$APP/Contents/MacOS"
 cp crates/platform/macos/bundle/Info.plist "$APP/Contents/Info.plist"
 cp target/debug/mado-pilot-macos-input-fixture "$APP/Contents/MacOS/"
+/usr/bin/codesign --force --sign - \
+  --identifier dev.mado-pilot.macos-input-fixture \
+  --timestamp=none "$APP"
+/usr/bin/codesign --verify --strict --verbose=2 "$APP"
+"$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  --report-execution-context
 ```
+
+The last command must report `launch=bundled`, `signature=ad-hoc`, and
+`signing-identifier=dev.mado-pilot.macos-input-fixture`. This verification proves
+the generated bundle's structural code-signature validity and the running code's
+classification. It does not prove that Gatekeeper would accept a distributed
+artifact, that macOS made or reused any TCC decision, that the artifact is
+notarized, or that input was delivered. A certificate-backed build is a different
+signature mode and needs evidence from that exact artifact rather than inheriting
+the ad-hoc result.
 
 ## Automated macOS checks
 
@@ -168,13 +200,18 @@ cargo check --locked -p mado-pilot-platform-macos --all-targets
 cargo test --locked -p mado-pilot-input
 cargo test --locked -p mado-pilot-platform-macos --lib
 cargo test --locked -p mado-pilot-platform-macos --test native_input
+cargo test --locked -p mado-pilot-platform-macos --test fixture_signing
 ```
 
 Deterministic tests cover the capability matrix, focus outcomes, Retina and signed
 multi-display mapping, partial sequences, cleanup completeness and exhaustion,
-target loss, cancellation and deadline races, and close. They run against the
-driver seam rather than the desktop, because a live host cannot be made to revoke
-an authorization or refuse a release on cue.
+target loss, cancellation and deadline races, close, all five signature
+classifications, identifier redaction, and separation of bundle launch from
+signature mode. The fixture-signing integration check constructs and ad-hoc signs
+a generated temporary bundle, runs structural verification, and exercises only
+the fixture's metadata-reporting mode. The delivery cases run against the driver
+seam rather than the desktop, because a live host cannot be made to revoke an
+authorization or refuse a release on cue.
 
 The native integration test **delivers nothing**. It exercises discovery, the
 input provider surface, and the refusals that precede any event. Starting the
@@ -188,28 +225,41 @@ MADO_PILOT_MACOS_FIXTURE=1 cargo test --locked \
 ## Explicit system-input check
 
 Run this only on an interactive Apple Silicon desktop with Screen Recording and
-Accessibility granted to the process that launches `cargo test`:
+Accessibility granted to the process that launches `cargo test`. Build and verify
+the generated signed bundle above first, then deliberately select that exact
+executable:
 
 ```sh
-cargo test --locked -p mado-pilot-platform-macos --test native_input interactive_system_delivery_targets_only_the_exact_fixture -- --ignored --exact --nocapture --test-threads=1
+MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  cargo test --locked -p mado-pilot-platform-macos --test native_input \
+  interactive_system_delivery_targets_only_the_exact_fixture -- \
+  --ignored --exact --nocapture --test-threads=1
 ```
 
-The check starts the fixture, selects it exactly once, and waits 15 seconds. Click
-that exact fixture window when prompted; the check probes with `RequireFocused`,
-which activates nothing, and every probe before it is focused delivers zero
+The check starts the fixture and requires its ready line to report a bundled,
+structurally valid signature with the stable signing identifier before selecting
+it exactly once. Before it opens an input controller, it opens capture for that
+exact `TargetId`, waits for one frame, maps it to BGRA8, and passes the mapped bytes
+through `frame_is_fixture_content`. Launch/signature, capture, mapping, close, or
+predicate failure stops before the first `RequireFocused` probe.
+It then waits 15 seconds: click that exact fixture window when prompted. The probe
+activates nothing, and every attempt before the window is focused delivers zero
 events. Only after the fixture is frontmost does it send Enter down and up and the
 fixed text `system-probe`. It sends no click and no pointer movement.
 
-If the fixture is not focused in time, selection is ambiguous, or Accessibility is
-absent, the check stops before system input. Do not replace either failure with a
-permission request, a settings prompt, or an activation intended to take focus from
-the user.
+If the fixture is not focused in time, selection is ambiguous, deterministic
+content cannot be captured and mapped, the pixels do not match, or Accessibility
+is absent, the check stops before further system input. Do not replace any failure
+with a permission request, a settings prompt, or an activation intended to take
+focus from the user.
 
 ## Redaction review
 
-Production input code emits no event, key, text, window-title, or desktop-content
-log. The fixture prints only its own deterministic title, its process and window
-numbers, its launch context, and per-event kind and unit counts. The Objective-C
+Production input code emits no event, key, text, window-title, signing identifier,
+or desktop-content log. Its permission diagnostics select only reviewed static
+launch/signature classifications. The fixture prints only its own deterministic
+title, its process and window numbers, its separate launch/signature modes, its
+signing identifier, and per-event kind and unit counts. The Objective-C
 fixture reads an event's characters solely to take their length and never copies
 them out of that block. Interactive evidence may record capability, event counts,
 typed faults, and cleanup counts; it must not record input text or unrelated
@@ -219,10 +269,11 @@ desktop payload.
 
 Input adds no crate and no eager framework. `CGEvent`, `CGWindowList`, and the
 Accessibility trust check come from frameworks the build script already declares.
-AppKit — for application activation — and HIToolbox — for the keyboard-layout
-lookup — are opened from their absolute system paths on first use, exactly as
-ScreenCaptureKit is, so a headless library carries a load command for neither and
-the operation that needed one reports `Unsupported` where it is unavailable.
+AppKit — for application activation — HIToolbox — for the keyboard-layout lookup —
+and Security.framework — for public code-signature inspection — are opened from
+their absolute system paths on first use, exactly as ScreenCaptureKit is, so a
+headless library adds a load command for none and the operation that needed one
+reports an explicit unavailable/platform result where it cannot run.
 `crates/platform/macos/tests/linkage.rs` asserts the eager list is unchanged. The
 fixture's window is compiled into a separate archive that no released artifact
 links.

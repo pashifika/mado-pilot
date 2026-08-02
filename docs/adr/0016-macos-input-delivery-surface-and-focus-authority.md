@@ -27,8 +27,9 @@ create one. Three further macOS behaviors force decisions that Windows did not:
   API and a private identifier to correlate an `AXUIElement` with a `CGWindowID`.
   Activating the owning *application* needs neither.
 - The keyboard-layout lookup that maps a printable character to a key code lives
-  in HIToolbox, and the activation call lives in AppKit — two frameworks a
-  headless automation library should not carry a load command for.
+  in HIToolbox, the activation call lives in AppKit, and truthful signature
+  inspection lives in Security.framework — frameworks a headless automation
+  library should not add as new eager load commands for this feature.
 
 `docs/evidence/g-003/` and [ADR 0012](0012-macos-shim-language-and-containment.md)
 already settled that the macOS native boundary is one internal C-callable
@@ -43,7 +44,7 @@ display, or fixture — advertises `InputDelivery::BackgroundTarget` for any
 operation kind, and the Adapter never substitutes system input for it. A request
 that requires background delivery fails admission before any event.
 
-Three rules follow from that surface and are part of the platform contract:
+Four rules follow from that surface and are part of the platform contract:
 
 1. **Authorization is the receipt's truth-source.** The non-prompting
    Accessibility trust check is read again immediately before every irreversible
@@ -51,18 +52,34 @@ Three rules follow from that surface and are part of the platform contract:
    revocation observed mid-sequence stops delivery and the receipt reports the
    count already delivered. No permission-request API is called and no settings
    interface is presented.
-2. **`ActivateIfRequired` activates an application, never a window.** It sends
+2. **The retained capture selection establishes liveness before focus.** Input
+   reads the `SCWindow` included by the exact `SCContentFilter` retained from
+   discovery before it consults front-to-back window-server order. Window number
+   and owning PID validate observations but never re-resolve the target, so a
+   same-process replacement cannot satisfy an old public identity.
+   `ActivateIfRequired` then activates an application, never a window. It sends
    `NSRunningApplication.activateWithOptions:` with
    `NSApplicationActivateAllWindows` only, re-reads the frontmost ordinary-layer
    window for a bounded period, and reports `FocusRefused` when the intended
    window did not become frontmost.
    `NSApplicationActivateIgnoringOtherApps` is not passed and the Accessibility
    API is not used to move another application's windows.
-3. **AppKit and HIToolbox are loaded, not linked**, from absolute system paths on
-   first use, exactly as ScreenCaptureKit is. The operation that needed one
-   reports `Unsupported` where it is unavailable, and the Adapter's eager
-   framework list is unchanged. The interactive fixture's window is compiled into
-   a second native archive that no released artifact links.
+3. **AppKit, HIToolbox, and the code-signing Security API are loaded, not newly
+   linked**, from absolute system paths on first use, exactly as ScreenCaptureKit
+   is. The operation that needed one reports an explicit unavailable/platform
+   result where it cannot be loaded, and the Adapter's eager framework list is
+   unchanged. The interactive fixture's window is compiled into a second native
+   archive that no released artifact links.
+4. **Bundle launch and code signature are separate evidence axes.** The first is
+   `Bundled`, `Unbundled`, or `Unknown`; the second is `Unsigned`, `Invalid`,
+   structurally valid `AdHoc`, structurally valid `CertificateBacked`, or
+   `PlatformFailure`. The shim uses dynamically loaded public
+   `SecCodeCopySelf`, `SecCodeCheckValidity`, and
+   `SecCodeCopySigningInformation`, including `kSecCodeInfoFlags`,
+   `kSecCodeInfoIdentifier`, and `kSecCodeSignatureAdhoc`. A signing identifier
+   is exposed only to deliberate fixture evidence; ordinary diagnostics select a
+   reviewed static literal naming the two classifications and never interpolate
+   the identifier.
 
 ## Alternatives
 
@@ -91,11 +108,17 @@ Matching by title and rectangle instead would make focus depend on mutable windo
 metadata, which is exactly what target selection elsewhere in this project refuses
 to do. Application-level activation with a read-back is weaker but honest.
 
-**Link AppKit and Carbon eagerly.** Rejected because it would add load commands
-for the desktop UI framework and for Carbon to every binary that links the
-Adapter, including a headless one, and would change what `tests/linkage.rs`
-asserts. The controlled-loading arrangement was already in place for
-ScreenCaptureKit and costs one `dlopen` per process.
+**Link AppKit, Carbon, or Security.framework eagerly for this feature.** Rejected
+because it would add load commands to every binary that links the Adapter,
+including a headless one, and would change what `tests/linkage.rs` asserts. The
+controlled-loading arrangement was already in place for ScreenCaptureKit and
+costs one `dlopen` per process and framework used.
+
+**Require a named certificate identity for the OSS fixture.** Rejected because it
+would make the reproducible project check depend on a developer's keychain. The
+documented fixture mode uses `codesign --sign -`: an ad-hoc seal with a stable
+signing identifier and no certificate identity. Certificate-backed builds remain
+a distinct reported mode and need their own evidence.
 
 ## Consequences
 
@@ -109,12 +132,16 @@ ScreenCaptureKit and costs one `dlopen` per process.
   rule above can be relaxed with evidence.
 - `ActivateIfRequired` is best-effort by construction. A caller that needs
   certainty focuses the target itself and uses `RequireFocused`.
-- The internal shim surface version moves from 2 to 3 and gains an input section.
-  It is internal, is not the public C ABI, and is not covered by the ABI
-  compatibility policy; the layout test asserts both sides agree.
+- The internal shim surface first moved from 2 to 3 when it gained input. It moves
+  from 3 to 4 so the liveness query accepts the retained selection handle and the
+  authorization report carries separate launch/signature axes rather than one
+  conflated value. It is internal, is not the public C ABI, and is not covered by
+  the ABI compatibility policy; the layout test asserts both sides agree.
 - The fixture is verified interactively rather than automatically, because macOS
-  cannot deliver without focusing. `docs/architecture.md` states that gap rather
-  than averaging it away.
+  cannot deliver without focusing. Its ad-hoc bundle signature is assembled and
+  structurally verified automatically, but that does not prove a TCC decision,
+  Gatekeeper acceptance, or successful input. `docs/architecture.md` states that
+  gap rather than averaging it away.
 - Changed in the same Change: `crates/platform/macos/` (input, native input,
   fixture protocol, fixture binary, shim surface, build script, bundle metadata,
   tests), `docs/architecture.md`, `docs/macos-input-verification.md`,

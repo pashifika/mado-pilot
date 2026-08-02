@@ -6,21 +6,26 @@
 //! anyway — are reachable without a granted host and without moving the
 //! developer's pointer.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mado_pilot_core::{
-    CancellationToken, CoordinateSpace, GeometryRevision, OperationContext, Point,
-    TransformSnapshot,
+    CancellationToken, CoordinateSpace, GeometryRevision, IdentityIssuer, InputDelivery,
+    OperationContext, Point, ProviderId, TargetId, TargetKind, TransformSnapshot,
 };
-use mado_pilot_input::{FocusPolicy, InputFault, Key, Modifier, PointerButton, PressedState};
+use mado_pilot_input::{
+    CleanupState, DeliveryPlan, FocusPolicy, GeometryPolicy, InputController, InputDescriptor,
+    InputEvent, InputFault, InputRequest, InputSequence, Key, Modifier, PointerButton,
+    PointerGeometry, PressedState, SequenceOutcome,
+};
 
 use super::{
-    DriverState, FUNCTION_KEYS, GeometryFingerprint, NativePost, PointerState, SystemButtonState,
-    SystemCommitSource, SystemKeyState, commit_prepared, contains_desktop_point,
-    extent_from_points, key_flag, modifier_flag, native_button, placement_for, release_system,
-    resolve_key_code, text_chunks,
+    CommitGeometry, DriverState, FUNCTION_KEYS, GeometryFingerprint, NativePost, PointerState,
+    SystemButtonState, SystemCommitSource, SystemKeyState, commit_geometry, commit_prepared,
+    contains_desktop_point, extent_from_points, key_flag, modifier_flag, native_button,
+    placement_for, release_system, resolve_key_code, text_chunks,
 };
+use crate::input::{DeliveryFailure, InputDriver, MacosInputController, input_capability};
 use crate::shim::{self, ShimStatus};
 
 /// One recorded post, with the flags it would have carried.
@@ -35,8 +40,11 @@ struct Posted {
 struct FakeSource {
     posts: Mutex<Vec<Posted>>,
     revalidation: Mutex<Option<InputFault>>,
+    cleanup_authorization: Mutex<Option<InputFault>>,
+    current_geometry: Mutex<Option<GeometryFingerprint>>,
     post_failure: Mutex<Option<(ShimStatus, usize)>>,
     revalidations: Mutex<usize>,
+    cleanup_authorizations: Mutex<usize>,
 }
 
 impl FakeSource {
@@ -56,6 +64,16 @@ impl FakeSource {
         source
     }
 
+    fn with_current_geometry(geometry: GeometryFingerprint) -> Self {
+        let source = Self::default();
+        *source.current_geometry.lock().expect("uncontended") = Some(geometry);
+        source
+    }
+
+    fn revoke_cleanup_authorization(&self) {
+        *self.cleanup_authorization.lock().expect("uncontended") = Some(InputFault::NotAuthorized);
+    }
+
     fn posts(&self) -> Vec<Posted> {
         self.posts.lock().expect("uncontended").clone()
     }
@@ -63,17 +81,36 @@ impl FakeSource {
     fn revalidations(&self) -> usize {
         *self.revalidations.lock().expect("uncontended")
     }
+
+    fn cleanup_authorizations(&self) -> usize {
+        *self.cleanup_authorizations.lock().expect("uncontended")
+    }
 }
 
 impl SystemCommitSource for FakeSource {
     fn revalidate_system_commit(
         &self,
         _focus: FocusPolicy,
-        _expected_geometry: Option<GeometryFingerprint>,
+        geometry: CommitGeometry,
         _operation: &OperationContext,
     ) -> Result<(), InputFault> {
         *self.revalidations.lock().expect("uncontended") += 1;
-        match *self.revalidation.lock().expect("uncontended") {
+        if let Some(fault) = *self.revalidation.lock().expect("uncontended") {
+            return Err(fault);
+        }
+        if let (CommitGeometry::RequireCurrent(expected), Some(current)) = (
+            geometry,
+            *self.current_geometry.lock().expect("uncontended"),
+        ) && current != expected
+        {
+            return Err(InputFault::GeometryChanged);
+        }
+        Ok(())
+    }
+
+    fn revalidate_cleanup_authorization(&self) -> Result<(), InputFault> {
+        *self.cleanup_authorizations.lock().expect("uncontended") += 1;
+        match *self.cleanup_authorization.lock().expect("uncontended") {
             Some(fault) => Err(fault),
             None => Ok(()),
         }
@@ -106,6 +143,82 @@ fn fingerprint(origin: (f64, f64), size: (f64, f64), scale: f64) -> GeometryFing
 
 fn key_post(key_code: u16, down: bool) -> NativePost<'static> {
     NativePost::Key { key_code, down }
+}
+
+fn target() -> TargetId {
+    IdentityIssuer::new()
+        .issue_target(ProviderId::new("macos-native-input"))
+        .expect("issued")
+}
+
+/// Drives the production native commit and cleanup helpers while making an
+/// authorization revocation deterministic between them.
+#[derive(Debug, Default)]
+struct RevokingNativePathDriver {
+    source: FakeSource,
+    deliveries: Mutex<usize>,
+}
+
+impl InputDriver for RevokingNativePathDriver {
+    fn preflight(
+        &self,
+        delivery: InputDelivery,
+        _focus: FocusPolicy,
+        _operation: &OperationContext,
+    ) -> Result<(), InputFault> {
+        if delivery == InputDelivery::System {
+            Ok(())
+        } else {
+            Err(InputFault::UnsupportedCombination)
+        }
+    }
+
+    fn deliver(
+        &self,
+        _delivery: InputDelivery,
+        focus: FocusPolicy,
+        event: &InputEvent,
+        _geometry: PointerGeometry,
+        state: &mut DriverState,
+        operation: &OperationContext,
+    ) -> Result<(), DeliveryFailure> {
+        let mut deliveries = self.deliveries.lock().expect("uncontended");
+        let index = *deliveries;
+        *deliveries += 1;
+        drop(deliveries);
+
+        if index > 0 {
+            return Err(DeliveryFailure::before_event(InputFault::NotAuthorized));
+        }
+        assert_eq!(event, &InputEvent::KeyPress(Key::Modifier(Modifier::Meta)));
+        commit_prepared(
+            &self.source,
+            focus,
+            CommitGeometry::NotApplicable,
+            operation,
+            key_post(0x37, true),
+            shim::INPUT_FLAG_META,
+        )?;
+        state.keys.push(SystemKeyState {
+            logical: Key::Modifier(Modifier::Meta),
+            key_code: 0x37,
+        });
+        self.source.revoke_cleanup_authorization();
+        Ok(())
+    }
+
+    fn release(
+        &self,
+        delivery: InputDelivery,
+        pressed: PressedState,
+        state: &mut DriverState,
+        operation: &OperationContext,
+    ) -> Result<(), InputFault> {
+        if delivery != InputDelivery::System {
+            return Err(InputFault::UnsupportedCombination);
+        }
+        release_system(pressed, state, &self.source, operation)
+    }
 }
 
 #[test]
@@ -252,9 +365,52 @@ fn a_cleanup_release_is_posted_without_revalidating_focus() {
     assert_eq!(
         source.revalidations(),
         0,
-        "cleanup asks the platform for nothing before releasing"
+        "cleanup still skips the ordinary focus and geometry gate"
     );
+    assert_eq!(source.cleanup_authorizations(), 1);
     assert!(state.buttons.is_empty());
+}
+
+#[test]
+fn revoked_accessibility_after_a_delivered_press_leaves_cleanup_truthfully_incomplete() {
+    let target = target();
+    let driver = Arc::new(RevokingNativePathDriver::default());
+    let controller = MacosInputController::with_driver(
+        InputDescriptor::new(target, input_capability(TargetKind::Window)),
+        Arc::clone(&driver) as Arc<dyn InputDriver>,
+    );
+    let sequence = InputSequence::new(vec![
+        InputEvent::KeyPress(Key::Modifier(Modifier::Meta)),
+        InputEvent::KeyPress(Key::Enter),
+    ])
+    .expect("valid sequence");
+    let request = InputRequest::new(
+        target,
+        sequence,
+        DeliveryPlan::require(InputDelivery::System),
+    )
+    .with_focus(FocusPolicy::RequireFocused);
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("partial native delivery returns a receipt");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
+    assert_eq!(receipt.delivered(), 1);
+    assert_eq!(receipt.failure(), Some(InputFault::NotAuthorized));
+    assert_eq!(receipt.cleanup(), CleanupState::Incomplete);
+    assert_eq!(receipt.cleanup_released(), 0);
+    assert_eq!(
+        driver.source.posts().len(),
+        1,
+        "only the delivered press was posted"
+    );
+    assert_eq!(driver.source.cleanup_authorizations(), 1);
+    assert_eq!(
+        receipt.cleanup_owed(),
+        1,
+        "the unreleased owned modifier remains truthfully owed"
+    );
 }
 
 #[test]
@@ -308,7 +464,7 @@ fn a_revoked_authorization_at_the_commit_boundary_stops_before_the_event() {
     let failure = commit_prepared(
         &source,
         FocusPolicy::RequireFocused,
-        None,
+        CommitGeometry::NotApplicable,
         &OperationContext::new(),
         key_post(0x24, true),
         0,
@@ -325,12 +481,14 @@ fn a_revoked_authorization_at_the_commit_boundary_stops_before_the_event() {
 
 #[test]
 fn a_geometry_change_between_preparation_and_commit_refuses_the_post() {
-    let source = FakeSource::refusing_revalidation(InputFault::GeometryChanged);
+    let prepared = fingerprint((0.0, 0.0), (640.0, 420.0), 2.0);
+    let moved = fingerprint((50.0, 25.0), (640.0, 420.0), 2.0);
+    let source = FakeSource::with_current_geometry(moved);
 
     let failure = commit_prepared(
         &source,
         FocusPolicy::RequireFocused,
-        Some(fingerprint((0.0, 0.0), (640.0, 420.0), 2.0)),
+        commit_geometry(GeometryPolicy::RequireUnchanged, prepared).expect("supported policy"),
         &OperationContext::new(),
         NativePost::Pointer {
             action: shim::INPUT_POINTER_PRESS,
@@ -347,6 +505,44 @@ fn a_geometry_change_between_preparation_and_commit_refuses_the_post() {
 }
 
 #[test]
+fn a_move_after_resolution_distinguishes_snapshot_from_unchanged_geometry() {
+    let prepared = fingerprint((0.0, 0.0), (640.0, 420.0), 2.0);
+    let moved = fingerprint((50.0, 25.0), (640.0, 420.0), 2.0);
+    let post = NativePost::Pointer {
+        action: shim::INPUT_POINTER_MOVE,
+        button: shim::INPUT_BUTTON_NONE,
+        click_state: 0,
+        location: (10.0, 10.0),
+    };
+
+    let snapshot = FakeSource::with_current_geometry(moved);
+    commit_prepared(
+        &snapshot,
+        FocusPolicy::RequireFocused,
+        commit_geometry(GeometryPolicy::UseFrameSnapshot, prepared).expect("supported policy"),
+        &OperationContext::new(),
+        post,
+        0,
+    )
+    .expect("the retained snapshot remains deliverable after the target moves");
+    assert_eq!(snapshot.revalidations(), 1);
+    assert_eq!(snapshot.posts().len(), 1);
+
+    let unchanged = FakeSource::with_current_geometry(moved);
+    let failure = commit_prepared(
+        &unchanged,
+        FocusPolicy::RequireFocused,
+        commit_geometry(GeometryPolicy::RequireUnchanged, prepared).expect("supported policy"),
+        &OperationContext::new(),
+        post,
+        0,
+    )
+    .expect_err("the unchanged policy refuses the same move");
+    assert_eq!(failure.fault, InputFault::GeometryChanged);
+    assert!(unchanged.posts().is_empty());
+}
+
+#[test]
 fn a_deadline_that_passes_before_the_commit_posts_nothing() {
     let source = FakeSource::new();
     let expiring = OperationContext::new()
@@ -357,7 +553,7 @@ fn a_deadline_that_passes_before_the_commit_posts_nothing() {
     let failure = commit_prepared(
         &source,
         FocusPolicy::RequireFocused,
-        None,
+        CommitGeometry::NotApplicable,
         &expiring,
         key_post(0x24, true),
         0,
@@ -377,7 +573,7 @@ fn a_post_that_partly_reached_the_target_reports_effect_it_cannot_take_back() {
     let failure = commit_prepared(
         &partly,
         FocusPolicy::RequireFocused,
-        None,
+        CommitGeometry::NotApplicable,
         &OperationContext::new(),
         NativePost::Text(&units),
         0,
@@ -395,7 +591,7 @@ fn a_post_that_reached_nothing_is_classified_by_what_the_platform_said() {
     let failure = commit_prepared(
         &lost,
         FocusPolicy::RequireFocused,
-        None,
+        CommitGeometry::NotApplicable,
         &OperationContext::new(),
         key_post(0x24, true),
         0,

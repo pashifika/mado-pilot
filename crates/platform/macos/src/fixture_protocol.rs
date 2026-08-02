@@ -37,6 +37,9 @@ pub const WINDOW_POINTS: (f64, f64) = (640.0, 420.0);
 /// The most events the fixture reports before it stops reporting.
 pub const MAX_RECORDED_EVENTS: usize = 256;
 
+/// Largest ready record the fixture gate will parse.
+const MAX_READY_LINE_BYTES: usize = 1_024;
+
 /// What one observed event was. Mirrors `madopilot_macos_input_fixture.h`.
 pub const EVENT_POINTER_MOVE: u32 = 1;
 /// See [`EVENT_POINTER_MOVE`].
@@ -79,6 +82,19 @@ pub enum FixtureSelectionError {
     Ambiguous,
 }
 
+/// The selected window's captured pixels did not match the fixture contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FixtureContentMismatch;
+
+impl fmt::Display for FixtureContentMismatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .write_str("the selected macOS input fixture did not match its deterministic content")
+    }
+}
+
+impl std::error::Error for FixtureContentMismatch {}
+
 impl fmt::Display for FixtureSelectionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
@@ -110,6 +126,63 @@ pub fn parse_event_line(line: &str) -> Option<EventSummary> {
     Some(EventSummary {
         kind: kind.strip_prefix("kind=")?.parse().ok()?,
         text_units: units.strip_prefix("units=")?.parse().ok()?,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReadyExecutionContext<'a> {
+    launch: &'a str,
+    signature: &'a str,
+    signing_identifier: &'a str,
+}
+
+fn take_ready_field<'a>(fields: &mut impl Iterator<Item = &'a str>, name: &str) -> Option<&'a str> {
+    let (actual, value) = fields.next()?.split_once('=')?;
+    (actual == name && !value.is_empty()).then_some(value)
+}
+
+fn parse_ready_execution_context(line: &str, process_id: u32) -> Option<ReadyExecutionContext<'_>> {
+    if line.len() > MAX_READY_LINE_BYTES {
+        return None;
+    }
+    let prefix = format!("fixture-ready title={} ", fixture_title(process_id));
+    let mut fields = line.strip_prefix(&prefix)?.split(' ');
+    if take_ready_field(&mut fields, "pid")?.parse::<u32>().ok()? != process_id
+        || take_ready_field(&mut fields, "window")?
+            .parse::<u64>()
+            .ok()?
+            == 0
+    {
+        return None;
+    }
+    let context = ReadyExecutionContext {
+        launch: take_ready_field(&mut fields, "launch")?,
+        signature: take_ready_field(&mut fields, "signature")?,
+        signing_identifier: take_ready_field(&mut fields, "signing-identifier")?,
+    };
+    if take_ready_field(&mut fields, "bundle")? != BUNDLE_IDENTIFIER
+        || take_ready_field(&mut fields, "capacity")?
+            .parse::<usize>()
+            .ok()?
+            != MAX_RECORDED_EVENTS
+        || fields.next().is_some()
+    {
+        return None;
+    }
+    Some(context)
+}
+
+/// Returns whether a bounded ready record exactly reports the approved signed
+/// bundle context required before the interactive input path may open.
+///
+/// The parser accepts the two structurally valid signature modes and rejects
+/// missing, duplicated, reordered, or additional fields.
+#[must_use]
+pub fn fixture_ready_context_is_approved(line: &str, process_id: u32) -> bool {
+    parse_ready_execution_context(line, process_id).is_some_and(|context| {
+        context.launch == "bundled"
+            && matches!(context.signature, "ad-hoc" | "certificate-backed")
+            && context.signing_identifier == BUNDLE_IDENTIFIER
     })
 }
 
@@ -188,6 +261,31 @@ pub fn frame_is_fixture_content(pixels: &[u8], stride: usize, extent: PixelExten
         .all(|(seen, want)| seen.abs_diff(want) <= FILL_TOLERANCE)
 }
 
+/// Runs `confirmed` only after captured pixels prove the selected fixture's
+/// deterministic content.
+///
+/// The interactive harness places its input-controller open inside this gate,
+/// so a capture, mapping, or content mismatch cannot leak a controller that can
+/// post the first probe. Keeping the continuation inside the gate also gives the
+/// non-interactive regression a direct observable: mismatched pixels invoke no
+/// event-producing continuation.
+///
+/// # Errors
+///
+/// Returns [`FixtureContentMismatch`] without invoking `confirmed` when the
+/// mapped BGRA8 frame does not satisfy [`frame_is_fixture_content`].
+pub fn with_confirmed_fixture_content<T>(
+    pixels: &[u8],
+    stride: usize,
+    extent: PixelExtent,
+    confirmed: impl FnOnce() -> T,
+) -> Result<T, FixtureContentMismatch> {
+    if !frame_is_fixture_content(pixels, stride, extent) {
+        return Err(FixtureContentMismatch);
+    }
+    Ok(confirmed())
+}
+
 #[cfg(test)]
 mod tests {
     use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
@@ -197,8 +295,10 @@ mod tests {
     };
 
     use super::{
-        EventSummary, FILL_RGB, FixtureSelectionError, format_event_line, frame_is_fixture_content,
-        parse_event_line, select_unique_fixture,
+        BUNDLE_IDENTIFIER, EventSummary, FILL_RGB, FixtureContentMismatch, FixtureSelectionError,
+        MAX_RECORDED_EVENTS, fixture_ready_context_is_approved, format_event_line,
+        frame_is_fixture_content, parse_event_line, select_unique_fixture,
+        with_confirmed_fixture_content,
     };
     use crate::input::input_capability;
 
@@ -248,6 +348,15 @@ mod tests {
             ((FILL_RGB >> 8) & 0xFF) as u8,
             ((FILL_RGB >> 16) & 0xFF) as u8,
         ]
+    }
+
+    fn ready_line(identifier: &str) -> String {
+        format!(
+            "fixture-ready title={} pid={PROCESS} window=17 launch=bundled signature=ad-hoc \
+             signing-identifier={identifier} bundle={BUNDLE_IDENTIFIER} \
+             capacity={MAX_RECORDED_EVENTS}",
+            super::fixture_title(PROCESS),
+        )
     }
 
     #[test]
@@ -348,6 +457,28 @@ mod tests {
     }
 
     #[test]
+    fn a_title_and_capability_match_with_wrong_pixels_runs_zero_input_events() {
+        use std::cell::Cell;
+
+        let candidates = [fixture()];
+        select_unique_fixture(&candidates, PROCESS)
+            .expect("the title and capability matrix deliberately match");
+        let (wrong, stride, extent) = flat_frame([0x10, 0x20, 0x30]);
+        let posted = Cell::new(0usize);
+
+        let result = with_confirmed_fixture_content(&wrong, stride, extent, || {
+            posted.set(posted.get() + 1);
+        });
+
+        assert_eq!(result, Err(FixtureContentMismatch));
+        assert_eq!(
+            posted.get(),
+            0,
+            "a convincing title and capability match still cannot reach input"
+        );
+    }
+
+    #[test]
     fn a_colour_space_conversion_within_the_tolerance_still_matches() {
         let declared = declared_bgr();
         let converted = [
@@ -371,5 +502,35 @@ mod tests {
         assert_eq!(line, "event kind=5 units=3");
         assert_eq!(parse_event_line(&line), Some(summary));
         assert_eq!(parse_event_line("fixture-ready title=x"), None);
+    }
+
+    #[test]
+    fn a_configured_ready_record_requires_exact_structured_context_fields() {
+        let line = ready_line(BUNDLE_IDENTIFIER);
+        assert!(fixture_ready_context_is_approved(&line, PROCESS));
+        assert!(!fixture_ready_context_is_approved(
+            &line.replace("launch=bundled", "launch=bundled-debug"),
+            PROCESS
+        ));
+        assert!(!fixture_ready_context_is_approved(
+            &line.replace("signature=ad-hoc", "signature=ad-hoc-debug"),
+            PROCESS
+        ));
+        assert!(!fixture_ready_context_is_approved(
+            &format!("{line} extra=field"),
+            PROCESS
+        ));
+    }
+
+    #[test]
+    fn signing_identifier_prefixes_and_suffixes_are_rejected() {
+        assert!(!fixture_ready_context_is_approved(
+            &ready_line(&format!("prefix.{BUNDLE_IDENTIFIER}")),
+            PROCESS
+        ));
+        assert!(!fixture_ready_context_is_approved(
+            &ready_line(&format!("{BUNDLE_IDENTIFIER}.suffix")),
+            PROCESS
+        ));
     }
 }

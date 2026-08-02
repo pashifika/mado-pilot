@@ -46,11 +46,10 @@ impl PermissionProbe for MacosPermissionProbe {
         operation: &OperationContext,
     ) -> Result<PermissionOutcome> {
         let attempt = mado_pilot_core::Operation::admit(operation)?;
-        // The launch context is read first because it is what makes an answer
-        // interpretable: macOS grants these authorizations to a bundled
-        // application, and an unbundled executable inherits whatever its launcher
-        // was granted. A caller comparing two hosts needs to know which it asked.
-        let context = shim::launch_context();
+        // Launch and code signature are independent parts of the execution
+        // context that makes an answer interpretable. Neither is inferred from
+        // the other, and the native read never requests authorization.
+        let context = shim::execution_context();
         let state = match kind {
             PermissionKind::ScreenCapture => shim::probe_screen_capture(),
             PermissionKind::InputControl => shim::probe_accessibility(),
@@ -95,9 +94,9 @@ impl fmt::Display for MacosPermissionProbe {
 /// Returns what a caller has to act on, or `None` when nothing needs acting on.
 ///
 /// Neither native check returns an error code — both answer with a boolean — so a
-/// state-derived diagnostic carries a category and the launch context and nothing
-/// numeric. Inventing a code space for a boolean would make the report look like
-/// it had consulted something it had not.
+/// state-derived diagnostic carries a category and a static, redacted execution
+/// context and nothing numeric. Inventing a code space for a boolean would make
+/// the report look like it had consulted something it had not.
 fn category(state: PermissionState) -> Option<DiagnosticCategory> {
     match state {
         PermissionState::Granted => None,

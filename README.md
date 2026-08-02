@@ -8,7 +8,7 @@ conditions, inject input through explicit platform capabilities, and report
 structured diagnostics — without owning a GUI, tray, overlay, editor, updater,
 scheduler, or scripting language of its own.
 
-## Status: one deterministic workflow plus a direct capture adapter per target
+## Status: one deterministic workflow plus native adapters per target
 
 **MadoPilot is not usable for real automation yet.** What works end to end is a
 deterministic workflow over *replayed* frames: configure a replay source and
@@ -16,11 +16,12 @@ require the OpenCV CPU backend, discover and open a target, take a frame, map
 it, load an asset package, prepare a template, find it in that exact frame, and
 close. That runs on both release targets, from Rust, from C, and from C++, and
 the three examples answer the same questions with the same numbers. Both release
-targets also have a directly consumable Rust adapter implementing picker-free
-native window and display capture, but facade wiring and the release-acceptance
-matrix remain later work. On macOS those adapters need Screen Recording granted to
-the process, and report a skip naming that reason where it is not, so a green run
-on a host that has neither granted nor denied it is not evidence that capture ran:
+targets also have directly consumable Rust adapters implementing picker-free
+native window/display capture and platform-level input delivery. Runtime, facade,
+C ABI, and C++ input wiring remain later work, as does the native capture
+release-acceptance matrix. On macOS capture needs Screen Recording granted to the
+process, and reports a skip naming that reason where it is not, so a green run on a
+host that has neither granted nor denied it is not evidence that capture ran:
 
 ```text
 crates/mado-pilot/examples/deterministic-slice.rs
@@ -28,8 +29,10 @@ crates/bindings/capi/examples/c/deterministic-slice.c
 crates/bindings/capi/examples/cpp/deterministic-slice.cpp
 ```
 
-Nothing recognizes text, waits on a condition, or injects input. Adding a
-package here is not a claim that its behavior exists.
+The end-to-end public workflow still neither recognizes text, waits on a
+condition, nor injects input. Native input exists only at the direct platform Rust
+Adapter boundary today. Adding a package here is not a claim that its behavior
+exists.
 
 | Area | Status |
 |---|---|
@@ -43,7 +46,8 @@ package here is not a claim that its behavior exists.
 | Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
 | Native capture | Implemented in the direct Windows and macOS Rust adapters; facade wiring and release acceptance remain open |
-| OCR, watchers, input | Not implemented |
+| Native input | Implemented in the direct Windows and macOS Rust adapters; runtime, facade, C ABI, and C++ wiring remain open |
+| OCR, watchers | Not implemented |
 | C ABI, tracked C header, dynamic library | Implemented for the Phase 1 prefix |
 | Header-only C++ RAII wrapper and CMake targets | Implemented for the Phase 1 prefix |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |

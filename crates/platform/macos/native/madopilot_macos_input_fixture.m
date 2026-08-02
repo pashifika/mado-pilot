@@ -153,18 +153,18 @@ static bool mp_fixture_classify(NSUInteger type, uint32_t *out_kind) {
     return false;
 }
 
-static uint32_t mp_fixture_launch_context(void) {
-    NSString *identifier = [NSBundle mainBundle].bundleIdentifier;
-    return identifier.length > 0 ? MP_FIXTURE_CONTEXT_BUNDLED : MP_FIXTURE_CONTEXT_UNBUNDLED;
-}
-
 uint32_t mp_fixture_run(const char *title, uint32_t fill, double width, double height,
+                        uint32_t launch_context, uint32_t signature_mode,
+                        const uint8_t *signing_identifier, size_t signing_identifier_len,
                         void *context,
                         void (*ready)(void *context, uint64_t window_number,
-                                      uint32_t launch_context),
+                                      uint32_t launch_context, uint32_t signature_mode,
+                                      const uint8_t *signing_identifier,
+                                      size_t signing_identifier_len),
                         void (*sink)(void *context, uint32_t kind, uint32_t text_units)) {
     if (title == NULL || ready == NULL || sink == NULL || !(width >= 64.0) ||
-        !(height >= 64.0) || !(width <= 4096.0) || !(height <= 4096.0)) {
+        !(height >= 64.0) || !(width <= 4096.0) || !(height <= 4096.0) ||
+        (signing_identifier_len > 0 && signing_identifier == NULL)) {
         return MP_FIXTURE_INVALID_ARGUMENT;
     }
     MP_FIXTURE_BEGIN
@@ -241,7 +241,8 @@ uint32_t mp_fixture_run(const char *title, uint32_t fill, double width, double h
         return MP_FIXTURE_PLATFORM_FAILURE;
     }
 
-    ready(context, (uint64_t)[window windowNumber], mp_fixture_launch_context());
+    ready(context, (uint64_t)[window windowNumber], launch_context, signature_mode,
+          signing_identifier, signing_identifier_len);
     [application run];
     return MP_FIXTURE_OK;
     MP_FIXTURE_END

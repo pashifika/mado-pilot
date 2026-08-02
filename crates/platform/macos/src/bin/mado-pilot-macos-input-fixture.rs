@@ -17,6 +17,12 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn main() {
+    if std::env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new("--report-execution-context"))
+    {
+        fixture::report_execution_context();
+        return;
+    }
     match fixture::run() {
         Ok(()) => {}
         Err(status) => {
@@ -31,6 +37,8 @@ mod fixture {
     use std::ffi::{CString, c_char, c_void};
     use std::fmt;
     use std::io::{self, Write};
+    use std::slice;
+    use std::str;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use mado_pilot_platform_macos::fixture_protocol::{
@@ -41,19 +49,101 @@ mod fixture {
     /// How many events have been reported, so reporting stays bounded.
     static REPORTED: AtomicUsize = AtomicUsize::new(0);
 
+    #[derive(Debug)]
+    struct ExecutionContextReport {
+        launch: u32,
+        signature: u32,
+        signing_identifier: Option<String>,
+    }
+
+    impl ExecutionContextReport {
+        fn from_raw(launch: u32, mut signature: u32, identifier: &[u8]) -> Self {
+            let signing_identifier =
+                if matches!(signature, SIGNATURE_AD_HOC | SIGNATURE_CERTIFICATE) {
+                    match str::from_utf8(identifier) {
+                        Ok(identifier) if !identifier.is_empty() => Some(identifier.to_owned()),
+                        _ => {
+                            signature = SIGNATURE_PLATFORM_FAILURE;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+            Self {
+                launch,
+                signature,
+                signing_identifier,
+            }
+        }
+
+        fn signing_identifier(&self) -> &str {
+            self.signing_identifier.as_deref().unwrap_or("none")
+        }
+    }
+
+    fn execution_context() -> ExecutionContextReport {
+        let mut launch = LAUNCH_UNKNOWN;
+        let mut signature = SIGNATURE_PLATFORM_FAILURE;
+        let mut identifier = [0u8; SIGNING_IDENTIFIER_CAPACITY];
+        let mut identifier_len = 0usize;
+        // SAFETY: every output is writable and the byte buffer has the capacity
+        // passed beside it. This call inspects code metadata and presents no UI.
+        let status = unsafe {
+            mp_shim_execution_context(
+                &raw mut launch,
+                &raw mut signature,
+                identifier.as_mut_ptr(),
+                identifier.len(),
+                &raw mut identifier_len,
+            )
+        };
+        if status != OK {
+            return ExecutionContextReport::from_raw(
+                LAUNCH_UNKNOWN,
+                SIGNATURE_PLATFORM_FAILURE,
+                &[],
+            );
+        }
+        let Some(identifier) = identifier.get(..identifier_len) else {
+            return ExecutionContextReport::from_raw(launch, SIGNATURE_PLATFORM_FAILURE, &[]);
+        };
+        ExecutionContextReport::from_raw(launch, signature, identifier)
+    }
+
+    pub(super) fn report_execution_context() {
+        let report = execution_context();
+        println!(
+            "fixture-context launch={} signature={} signing-identifier={}",
+            launch_context_name(report.launch),
+            signature_mode_name(report.signature),
+            report.signing_identifier(),
+        );
+    }
+
     pub(super) fn run() -> Result<(), Status> {
         let title = fixture_title(std::process::id());
         let encoded = CString::new(title.clone()).map_err(|_| Status(INVALID_ARGUMENT))?;
+        let report = execution_context();
+        let signing_identifier = report
+            .signing_identifier
+            .as_deref()
+            .map_or(&[][..], str::as_bytes);
 
         // SAFETY: `encoded` outlives the call, the two callbacks are plain
-        // `extern "C"` functions that contain their own panics, and the context
-        // pointer is null because neither of them dereferences it.
+        // `extern "C"` functions that contain their own panics, the signing
+        // identifier bytes outlive the call, and the context pointer is null
+        // because neither callback dereferences it.
         let status = unsafe {
             mp_fixture_run(
                 encoded.as_ptr(),
                 FILL_RGB,
                 WINDOW_POINTS.0,
                 WINDOW_POINTS.1,
+                report.launch,
+                report.signature,
+                signing_identifier.as_ptr(),
+                signing_identifier.len(),
                 std::ptr::null_mut(),
                 on_ready,
                 on_event,
@@ -70,16 +160,37 @@ mod fixture {
     ///
     /// Contains its own panics: this runs on the fixture's main thread through an
     /// `extern "C"` boundary, where an escaping panic aborts the process.
-    unsafe extern "C" fn on_ready(_context: *mut c_void, window_number: u64, launch: u32) {
+    unsafe extern "C" fn on_ready(
+        _context: *mut c_void,
+        window_number: u64,
+        launch: u32,
+        signature: u32,
+        signing_identifier: *const u8,
+        signing_identifier_len: usize,
+    ) {
         let _contained = std::panic::catch_unwind(|| {
+            let identifier = if signing_identifier_len == 0
+                || signing_identifier.is_null()
+                || signing_identifier_len >= SIGNING_IDENTIFIER_CAPACITY
+            {
+                &[][..]
+            } else {
+                // SAFETY: the fixture native boundary promises this borrowed
+                // view for the duration of the callback and the bound above is
+                // the one the producer used.
+                unsafe { slice::from_raw_parts(signing_identifier, signing_identifier_len) }
+            };
+            let report = ExecutionContextReport::from_raw(launch, signature, identifier);
             let mut output = io::stdout().lock();
             let _written = writeln!(
                 output,
-                "fixture-ready title={} pid={} window={window_number} context={} bundle={} \
-                 capacity={MAX_RECORDED_EVENTS}",
+                "fixture-ready title={} pid={} window={window_number} launch={} signature={} \
+                 signing-identifier={} bundle={} capacity={MAX_RECORDED_EVENTS}",
                 fixture_title(std::process::id()),
                 std::process::id(),
-                launch_context_name(launch),
+                launch_context_name(report.launch),
+                signature_mode_name(report.signature),
+                report.signing_identifier(),
                 BUNDLE_IDENTIFIER,
             );
             let _flushed = output.flush();
@@ -110,14 +221,31 @@ mod fixture {
 
     const fn launch_context_name(launch: u32) -> &'static str {
         match launch {
-            1 => "bundled",
-            2 => "unbundled",
+            LAUNCH_BUNDLED => "bundled",
+            LAUNCH_UNBUNDLED => "unbundled",
             _ => "unknown",
+        }
+    }
+
+    const fn signature_mode_name(signature: u32) -> &'static str {
+        match signature {
+            1 => "unsigned",
+            2 => "invalid",
+            SIGNATURE_AD_HOC => "ad-hoc",
+            SIGNATURE_CERTIFICATE => "certificate-backed",
+            _ => "platform-failure",
         }
     }
 
     const OK: u32 = 0;
     const INVALID_ARGUMENT: u32 = 1;
+    const LAUNCH_UNKNOWN: u32 = 0;
+    const LAUNCH_BUNDLED: u32 = 1;
+    const LAUNCH_UNBUNDLED: u32 = 2;
+    const SIGNATURE_PLATFORM_FAILURE: u32 = 0;
+    const SIGNATURE_AD_HOC: u32 = 3;
+    const SIGNATURE_CERTIFICATE: u32 = 4;
+    const SIGNING_IDENTIFIER_CAPACITY: usize = 256;
 
     /// A native status the fixture could not start under.
     pub(super) struct Status(u32);
@@ -141,9 +269,20 @@ mod fixture {
             fill: u32,
             width: f64,
             height: f64,
+            launch_context: u32,
+            signature_mode: u32,
+            signing_identifier: *const u8,
+            signing_identifier_len: usize,
             context: *mut c_void,
-            ready: unsafe extern "C" fn(*mut c_void, u64, u32),
+            ready: unsafe extern "C" fn(*mut c_void, u64, u32, u32, *const u8, usize),
             sink: unsafe extern "C" fn(*mut c_void, u32, u32),
+        ) -> u32;
+        fn mp_shim_execution_context(
+            out_launch: *mut u32,
+            out_signature: *mut u32,
+            out_identifier: *mut u8,
+            identifier_capacity: usize,
+            out_identifier_len: *mut usize,
         ) -> u32;
     }
 }

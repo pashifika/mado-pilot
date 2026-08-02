@@ -45,11 +45,6 @@ extern "C" {
 #define MP_FIXTURE_EVENT_KEY_UP 6u
 #define MP_FIXTURE_EVENT_FLAGS_CHANGED 7u
 
-/* The signing and launch context the fixture window was created in. */
-#define MP_FIXTURE_CONTEXT_UNKNOWN 0u
-#define MP_FIXTURE_CONTEXT_BUNDLED 1u
-#define MP_FIXTURE_CONTEXT_UNBUNDLED 2u
-
 /*
  * Runs the fixture window until the process is terminated.
  *
@@ -60,8 +55,13 @@ extern "C" {
  * escape.
  */
 uint32_t mp_fixture_run(const char *title, uint32_t fill, double width, double height,
-                        void *context, void (*ready)(void *context, uint64_t window_number,
-                                                     uint32_t launch_context),
+                        uint32_t launch_context, uint32_t signature_mode,
+                        const uint8_t *signing_identifier, size_t signing_identifier_len,
+                        void *context,
+                        void (*ready)(void *context, uint64_t window_number,
+                                      uint32_t launch_context, uint32_t signature_mode,
+                                      const uint8_t *signing_identifier,
+                                      size_t signing_identifier_len),
                         void (*sink)(void *context, uint32_t kind, uint32_t text_units));
 
 #ifdef __cplusplus

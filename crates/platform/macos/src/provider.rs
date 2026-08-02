@@ -21,7 +21,7 @@ use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
 use crate::input::{GeometryLedger, MacosInputController};
 use crate::native::{NativeSession, SessionTarget};
-use crate::shim::{self, MAX_NATIVE_WAIT, NativeBounds, ShimStatus, TargetToken};
+use crate::shim::{MAX_NATIVE_WAIT, NativeBounds, ShimStatus, TargetToken};
 
 /// Provider name qualifying every native macOS target identity.
 pub const PROVIDER: ProviderId = ProviderId::new("macos");
@@ -333,9 +333,8 @@ impl TargetRecord {
 
     /// Returns the owning process this target's discovery pass recorded.
     ///
-    /// Zero for a display, which has none. macOS recycles window numbers, so the
-    /// owner is repeated at every native boundary that resolves this target: a
-    /// number now belonging to another process is loss rather than a target.
+    /// Zero for a display, which has none. This is descriptive validation
+    /// metadata only; the retained selection remains incarnation authority.
     pub(crate) fn owner_process(&self) -> i64 {
         self.fingerprint.native_owner()
     }
@@ -348,18 +347,20 @@ impl TargetRecord {
         InputDescriptor::new(self.id, self.description().capability().input())
     }
 
-    /// Reads the target's live rectangle, which is also how liveness is decided.
+    /// Reads the retained selection's live rectangle, which is also how liveness
+    /// is decided.
+    ///
+    /// The retained `SCContentFilter` is shared with capture and resolves its own
+    /// included object. PID and native number are checked inside that authority;
+    /// they never initiate a lookup that could select a replacement.
     pub(crate) fn current_bounds(&self) -> std::result::Result<NativeBounds, InputFault> {
-        shim::input_target_bounds(
-            self.key.native_kind(),
-            self.key.native_id(),
-            self.owner_process(),
-        )
-        .map_err(|status| match status {
-            ShimStatus::TargetLost => InputFault::TargetLost,
-            ShimStatus::InvalidArgument => InputFault::UnsupportedCoordinate,
-            _ => InputFault::DeliveryFailed,
-        })
+        self.selection
+            .input_bounds()
+            .map_err(|status| match status {
+                ShimStatus::TargetLost => InputFault::TargetLost,
+                ShimStatus::InvalidArgument => InputFault::UnsupportedCoordinate,
+                _ => InputFault::DeliveryFailed,
+            })
     }
 
     pub(crate) fn ensure_live(&self) -> std::result::Result<(), InputFault> {
@@ -646,6 +647,35 @@ mod tests {
             .expect("new lease retained");
         assert_eq!(old.selection.synthetic_identity(), 1);
         assert_eq!(new.selection.synthetic_identity(), 2);
+    }
+
+    #[test]
+    fn a_same_process_replacement_with_a_recycled_window_number_cannot_retarget_an_old_id() {
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let old_id = commit_candidates(&provider, vec![window_candidate(1)])[0].id();
+        let old_selection = provider
+            .registry()
+            .records
+            .get(&old_id)
+            .expect("old selection is retained")
+            .selection
+            .clone();
+
+        // The replacement deliberately has the same PID and native window
+        // number. Only the retained selection incarnation differs.
+        old_selection.mark_synthetic_lost();
+        let replacement_id = commit_candidates(&provider, vec![window_candidate(2)])[0].id();
+
+        let error =
+            mado_pilot_input::InputProvider::describe(&provider, old_id, &OperationContext::new())
+                .expect_err("the old public identity names the lost incarnation");
+        assert_eq!(error.status(), Status::TargetLost);
+        mado_pilot_input::InputProvider::describe(
+            &provider,
+            replacement_id,
+            &OperationContext::new(),
+        )
+        .expect("the replacement has its own fresh public identity");
     }
 
     #[test]
