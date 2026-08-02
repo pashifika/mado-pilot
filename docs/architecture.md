@@ -1897,10 +1897,12 @@ capture, input, vision, or asset type its public API exposes is re-exported by
 `mado-pilot-runtime`. The one exception a reader will notice is
 `mado_pilot::replay`, which re-exports the replay adapter's own configuration
 types: those describe a concrete adapter the facade is entitled to name. No
-platform-native type is re-exported at all, and the platform packages' own
-fixture-protocol modules stay internal to them: the native workflow is written
-once in platform-neutral vocabulary, and a host that compiles for both targets
-writes it once too.
+platform-native type is re-exported at all, and neither are the platform
+packages' documentation-hidden fixture-protocol modules — the facade names a
+platform package in exactly three places, all of them local adapter constructions
+inside the two target-gated constructors. The native workflow is therefore
+written once in platform-neutral vocabulary, and a host that compiles for both
+targets writes it once too.
 
 ### Phase 0 completion contract
 

@@ -255,6 +255,25 @@ is absent, the check stops before further system input. Do not replace any failu
 with a permission request, a settings prompt, or an activation intended to take
 focus from the user.
 
+## Explicit facade check
+
+The check above exercises the Adapter directly. The same delivery through the
+public Rust facade — engine construction, non-prompting authorization reads,
+discovery, capture, mapping, and a frame-bound sequence — is
+`crates/mado-pilot/examples/macos-native-input.rs`. Start the fixture, then name
+its exact window title:
+
+```sh
+cargo run --locked --package mado-pilot --example macos-native-input -- \
+  "MadoPilot Input Fixture [<pid>]"
+```
+
+It matches the title exactly, refuses zero or more than one match, and refuses
+before discovery when either authorization is missing, so it stops at an
+actionable message rather than sending input somewhere else. It focuses the
+window it selects and types into it, which is what system delivery on macOS
+means; point it only at a window you own.
+
 ## Redaction review
 
 Production input code emits no event, key, text, window-title, signing identifier,

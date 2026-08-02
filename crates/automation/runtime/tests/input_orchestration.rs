@@ -835,3 +835,133 @@ impl InputProvider for ForeignInput {
         self.inner.open(target, request, operation)
     }
 }
+
+#[test]
+fn an_engine_with_an_input_adapter_describes_what_that_adapter_reports() {
+    let harness = Harness::with_input();
+    let operation = OperationContext::new();
+
+    assert!(harness.engine.delivers_input());
+    let descriptor = harness
+        .engine
+        .describe_input(harness.capture.target(), &operation)
+        .expect("the input adapter describes its own target");
+
+    assert!(descriptor.is_available());
+    assert_eq!(
+        descriptor.capability(),
+        harness.input().capability(),
+        "the engine reports what the adapter reports rather than a summary of it"
+    );
+    assert_eq!(descriptor.target(), harness.capture.target());
+}
+
+#[test]
+fn a_target_this_engine_issued_but_the_input_adapter_does_not_drive_is_refused_by_it() {
+    let harness = Harness::with_input();
+    // Issued by this engine and this provider, so the engine-level identity check
+    // accepts it and the refusal has to come from the adapter itself.
+    let elsewhere = harness
+        .capture
+        .add_target(
+            "second",
+            mado_pilot_runtime::TargetCapability::unclassified(),
+        )
+        .expect("issued");
+
+    let error = harness
+        .engine
+        .describe_input(elsewhere, &OperationContext::new())
+        .expect_err("this adapter drives one target");
+
+    assert_eq!(error.status(), Status::InvalidArgument);
+}
+
+#[test]
+fn a_commit_that_refuses_after_both_adapters_opened_releases_both() {
+    let (issuer, capture) = support::controlled_capture();
+    let clock = Arc::new(ManualClock::new());
+    let counting = Arc::new(CountingCapture::new(Arc::clone(&capture)));
+    let capture_closes = counting.closes();
+    let input = Arc::new(support::OpenInputThenExpire::new(
+        Arc::new(ControlledInput::new(capture.target())),
+        Arc::clone(&clock),
+        Duration::from_millis(50),
+    ));
+    let controller_closes = input.closes();
+    let engine = support::wire(
+        &issuer,
+        counting as Arc<dyn CaptureProvider>,
+        Some(input as Arc<dyn InputProvider>),
+        None,
+    )
+    .expect("one provider");
+    let operation = OperationContext::new()
+        .with_clock(clock)
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(10)));
+
+    let error = engine
+        .open_session(
+            capture.target(),
+            &SessionRequest::new().requesting_input(InputOpenRequest::new()),
+            &operation,
+        )
+        .expect_err("the engine's own arbitration refuses after both adapters committed");
+
+    assert_eq!(error.status(), Status::DeadlineExceeded);
+    assert_eq!(
+        controller_closes.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "a controller that exists is closed rather than dropped, because dropping one does not close it"
+    );
+    assert_eq!(
+        capture_closes.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "and so is the capture session opened beside it"
+    );
+}
+
+#[test]
+fn an_operation_that_expires_during_open_releases_its_capture_and_yields_no_session() {
+    let (issuer, capture) = support::controlled_capture();
+    let clock = Arc::new(ManualClock::new());
+    // Capture opens and then the caller's operation loses, so everything after
+    // the capture commit runs under an operation that is already over.
+    let expiring = Arc::new(support::OpenThenExpire::new(
+        Arc::clone(&capture),
+        Arc::clone(&clock),
+        Duration::from_millis(50),
+    ));
+    let capture_closes = expiring.closes();
+    let input = Arc::new(ControlledInput::new(capture.target()));
+    let engine = support::wire(
+        &issuer,
+        expiring as Arc<dyn CaptureProvider>,
+        Some(input as Arc<dyn InputProvider>),
+        None,
+    )
+    .expect("one provider");
+    let operation = OperationContext::new()
+        .with_clock(clock)
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(10)));
+
+    let error = engine
+        .open_session(
+            capture.target(),
+            &SessionRequest::new().requesting_input(InputOpenRequest::new()),
+            &operation,
+        )
+        .expect_err("an operation that is over cannot be answered with a session at all");
+
+    // Deliberately an outcome assertion rather than a branch assertion: whether
+    // the input open observed the interruption first or the engine's own commit
+    // did, the caller must get the interruption and the capture must be closed.
+    // The two are indistinguishable from here, and that is the point — neither
+    // may quietly hand back a capture-only session instead.
+    assert_eq!(error.status(), Status::DeadlineExceeded);
+    assert_eq!(
+        capture_closes.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "optional input does not turn an expired operation into a capture-only success"
+    );
+}

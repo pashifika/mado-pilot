@@ -123,6 +123,24 @@ delivery, or a native record count is short, execution fails with the typed
 receipt. Do not replace either failure with `AttachThreadInput`, elevation, or
 input intended to defeat foreground policy.
 
+## Explicit facade check
+
+The check above exercises the Adapter directly. The same delivery through the
+public Rust facade — engine construction, discovery, capture, mapping, and a
+frame-bound sequence — is
+`crates/mado-pilot/examples/windows-native-input.rs`. Start the fixture, then name
+its exact window title:
+
+```sh
+cargo run --locked --package mado-pilot --example windows-native-input -- "MadoPilot Input Fixture [<pid>]"
+```
+
+Unlike the check above it needs no focus at all: it requires background delivery
+and permits no substitute, so it cannot reach a window that does not advertise
+that capability — which, by the capability table above, is every window but the
+dedicated fixture class. It matches the title exactly and refuses zero or more
+than one match.
+
 ## Redaction review
 
 Production input code emits no event, key, text, window-title, or desktop-content

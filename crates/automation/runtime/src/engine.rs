@@ -227,11 +227,21 @@ impl Engine {
     /// through this engine the target accepts no input, which is what the
     /// descriptor then says. A foreign identity is still refused.
     ///
+    /// How much is checked differs with the wiring, and the difference is
+    /// visible rather than hidden. An engine with an input adapter asks that
+    /// adapter, which knows whether the target is still there. A capture-only
+    /// engine has nothing to ask — the capture contract offers no liveness query
+    /// short of opening — so it checks only that the identity is one of its own
+    /// and answers "no input" for a target that may since have gone. That answer
+    /// stays true either way: a target this engine cannot deliver input to is
+    /// one it cannot deliver input to.
+    ///
     /// # Errors
     ///
     /// Returns an invalid-argument outcome for a target this engine did not
-    /// issue, a target-lost outcome for one that no longer exists, and the
-    /// operation's terminal outcome when cancellation or the deadline wins.
+    /// issue, a target-lost outcome from an input adapter for one that no longer
+    /// exists, and the operation's terminal outcome when cancellation or the
+    /// deadline wins.
     pub fn describe_input(
         &self,
         target: TargetId,
@@ -370,9 +380,19 @@ impl Engine {
     /// Establishes the input `request` asks for, or reports why it could not.
     ///
     /// `Ok(None)` is the optional case: nothing was established and the session
-    /// is truthfully capture-only. A required capability, and an interruption
-    /// under either requirement, are failures — an operation that is over cannot
-    /// be answered with a session it did not ask for.
+    /// is truthfully capture-only. Only a *required* capability turns a refusal
+    /// into an open failure.
+    ///
+    /// Optional means optional, including when the adapter's refusal is a
+    /// terminal one. Whether the caller's operation is over is not the adapter's
+    /// answer to give — it is decided by this engine's own final arbitration a
+    /// few lines above, which catches an expired operation whatever the adapter
+    /// said and releases the capture committed for it. Refusing here on a
+    /// terminal status would be that check with an extra step in every case it
+    /// can actually reach, and in the one case it could not — an adapter
+    /// reporting a terminal status of its own while the caller's operation is
+    /// still running — it would quietly make an explicitly optional capability
+    /// required.
     fn open_input(
         &self,
         target: TargetId,
@@ -389,12 +409,7 @@ impl Engine {
 
         match provider.open(target, request, operation) {
             Ok(controller) => Ok(Some(controller)),
-            Err(error)
-                if request.requirement().is_required()
-                    || matches!(error.status(), Status::Cancelled | Status::DeadlineExceeded) =>
-            {
-                Err(error)
-            }
+            Err(error) if request.requirement().is_required() => Err(error),
             Err(_) => Ok(None),
         }
     }

@@ -51,10 +51,10 @@ mod windows {
 
     use mado_pilot::{
         CoordinateSpace, DeliveryPlan, Engine, Error, FocusPolicy, Frame, FrameRequest,
-        InputDelivery, InputEvent, InputOpenRequest, InputOperationKind, InputRequest,
-        InputRequirement, InputSequence, Key, NativeEngineRequest, OpenRequest, OperationContext,
-        Point, PointerGeometry, SequenceOutcome, SessionRequest, TargetDescription, TargetId,
-        TargetKind,
+        InputDelivery, InputEvent, InputOpenRequest, InputOperationKind, InputReceipt,
+        InputRequest, InputRequirement, InputSequence, Key, NativeEngineRequest, OpenRequest,
+        OperationContext, Point, PointerGeometry, SequenceOutcome, Session, SessionRequest,
+        TargetDescription, TargetId, TargetKind,
     };
 
     /// How long a discovery pass may take.
@@ -67,7 +67,7 @@ mod windows {
     /// How long the whole input sequence may take.
     ///
     /// Each background event is one synchronous acknowledged packet, and the
-    /// sequence below is five events with one short delay in it. Two seconds
+    /// sequence below is six events with one short delay in it. Two seconds
     /// bounds a fixture that stops acknowledging.
     const INPUT_BUDGET: Duration = Duration::from_secs(2);
 
@@ -153,6 +153,25 @@ mod windows {
             session.accepts_input()
         );
 
+        // Everything from here holds a session that has to be closed. Dropping
+        // one does not close it, so the work is one fallible step and the close
+        // is unconditional: an example that returned early through `?` would be
+        // demonstrating a leak in a program whose whole job is to demonstrate
+        // the right shape.
+        let worked = deliver(&session);
+        let closed = shut_down(&session);
+        let receipt = worked?;
+        closed?;
+
+        if receipt.outcome() == SequenceOutcome::Complete {
+            Ok(())
+        } else {
+            Err(format!("the sequence did not complete: {receipt}").into())
+        }
+    }
+
+    /// Steps 6 and 7: capture, map, and deliver, all against one open session.
+    fn deliver(session: &Session) -> Result<InputReceipt, Box<dyn std::error::Error>> {
         // 6. Take one frame and map it. The pixels are never printed; what is
         //    reported is the identity that correlates this frame with anything
         //    searched in it, and with the input sent because of it.
@@ -200,20 +219,19 @@ mod windows {
             &bounded(INPUT_BUDGET)?,
         )?;
         report_receipt(&receipt);
+        Ok(receipt)
+    }
 
-        // 8. Close both lifecycles. Idempotent, and retryable if this one loses
-        //    its own race.
+    /// Step 8: close both lifecycles, whatever the work above did.
+    ///
+    /// Idempotent, and retryable if the first close loses its own race.
+    fn shut_down(session: &Session) -> Result<(), Box<dyn std::error::Error>> {
         if let Err(error) = session.close(&bounded(CLOSE_BUDGET)?) {
             println!("close did not finish: {} — retrying", error.status());
             session.close(&bounded(CLOSE_BUDGET)?)?;
         }
         println!("closed: {}", session.is_closed());
-
-        if receipt.outcome() == SequenceOutcome::Complete {
-            Ok(())
-        } else {
-            Err(format!("the sequence did not complete: {receipt}").into())
-        }
+        Ok(())
     }
 
     /// Returns an operation bounded by `budget`.
@@ -290,7 +308,7 @@ mod windows {
         Ok(())
     }
 
-    fn report_receipt(receipt: &mado_pilot::InputReceipt) {
+    fn report_receipt(receipt: &InputReceipt) {
         // The receipt prints as counts and categories. Which characters were
         // typed is not among them, here or in the receipt itself.
         println!("receipt: {receipt}");

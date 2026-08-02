@@ -448,3 +448,106 @@ impl InputController for LateController {
         self.admission.lifecycle()
     }
 }
+
+/// An input adapter whose open succeeds and then makes the caller's operation
+/// lose.
+///
+/// The capture twin of this is [`OpenThenExpire`], and it exists for the same
+/// reason: the only window in which the engine holds a *committed input
+/// controller* it is about to refuse is the one after the adapter's own open
+/// commits and before the engine's arbitration runs, and no prepared context
+/// reaches it — a context already over is refused before the adapter opens
+/// anything.
+///
+/// Every close reaching a controller it produced is counted, because closing one
+/// and dropping one are indistinguishable from outside.
+pub(crate) struct OpenInputThenExpire {
+    inner: Arc<ControlledInput>,
+    clock: Arc<ManualClock>,
+    step: Duration,
+    closes: Arc<AtomicUsize>,
+}
+
+impl OpenInputThenExpire {
+    pub(crate) fn new(
+        inner: Arc<ControlledInput>,
+        clock: Arc<ManualClock>,
+        step: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            clock,
+            step,
+            closes: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Returns a handle to the close counter, readable after the engine ran.
+    pub(crate) fn closes(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.closes)
+    }
+}
+
+impl fmt::Debug for OpenInputThenExpire {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenInputThenExpire")
+            .field("closes", &self.closes.load(Ordering::Relaxed))
+            .finish()
+    }
+}
+
+impl InputProvider for OpenInputThenExpire {
+    fn provider(&self) -> ProviderId {
+        self.inner.provider()
+    }
+
+    fn describe(&self, target: TargetId, operation: &OperationContext) -> Result<InputDescriptor> {
+        self.inner.describe(target, operation)
+    }
+
+    fn open(
+        &self,
+        target: TargetId,
+        request: &InputOpenRequest,
+        operation: &OperationContext,
+    ) -> Result<Arc<dyn InputController>> {
+        let controller = self.inner.open(target, request, operation)?;
+        // After the inner commit, before the outer one.
+        self.clock.advance(self.step);
+        Ok(Arc::new(CountedControllerClose {
+            inner: controller,
+            closes: Arc::clone(&self.closes),
+        }))
+    }
+}
+
+/// One controller that counts the closes it is asked for.
+#[derive(Debug)]
+struct CountedControllerClose {
+    inner: Arc<dyn InputController>,
+    closes: Arc<AtomicUsize>,
+}
+
+impl InputController for CountedControllerClose {
+    fn descriptor(&self) -> InputDescriptor {
+        self.inner.descriptor()
+    }
+
+    fn execute(
+        &self,
+        request: &InputRequest,
+        operation: &OperationContext,
+    ) -> Result<InputReceipt> {
+        self.inner.execute(request, operation)
+    }
+
+    fn close(&self, operation: &OperationContext) -> Result<()> {
+        self.closes.fetch_add(1, Ordering::Relaxed);
+        self.inner.close(operation)
+    }
+
+    fn lifecycle(&self) -> Lifecycle {
+        self.inner.lifecycle()
+    }
+}
