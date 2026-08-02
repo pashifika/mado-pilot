@@ -1,8 +1,10 @@
 # macOS Input Adapter and Verification
 
-The macOS platform package implements input at the Adapter boundary. Runtime,
-public-facade, C ABI, and C++ wiring remain later work, so this is an implemented
-Rust platform capability rather than a release-level product claim.
+The macOS platform package implements input at the Adapter boundary, and
+`mado_pilot::macos_engine` wires it into the runtime and the public Rust facade.
+C ABI and C++ wiring remain later work, and the release acceptance this document
+describes is still the user-focused check below, so this is an implemented Rust
+capability rather than a release-level product claim.
 
 ## Capability boundary
 

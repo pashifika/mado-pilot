@@ -223,6 +223,8 @@ version = "0.1.0"
 dependencies = [
  "mado-pilot-adapter-replay",
  "mado-pilot-backend-opencv",
+ "mado-pilot-platform-macos",
+ "mado-pilot-platform-windows",
  "mado-pilot-runtime",
  "mado-pilot-testkit",
 ]
@@ -331,6 +333,7 @@ dependencies = [
  "mado-pilot-assets",
  "mado-pilot-capture",
  "mado-pilot-core",
+ "mado-pilot-input",
  "mado-pilot-testkit",
  "mado-pilot-vision",
 ]

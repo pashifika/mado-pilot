@@ -21,8 +21,8 @@ use mado_pilot_core::{
     OperationContext, PermissionKind, ProviderId, Result, TargetId,
 };
 use mado_pilot_input::{
-    Admission, InputController, InputDescriptor, InputEvent, InputFault, InputOpenRequest,
-    InputProvider, InputReceipt, InputRequest, PressedState,
+    Admission, FocusPolicy, InputController, InputDescriptor, InputEvent, InputFault,
+    InputOpenRequest, InputProvider, InputReceipt, InputRequest, PointerGeometry, PressedState,
 };
 
 /// Provider name qualifying this double's target identities.
@@ -76,6 +76,26 @@ pub struct Delivered {
     pub event: InputEvent,
 }
 
+/// One sequence the controller admitted, with the policies it was handed.
+///
+/// A caller's policies are decisions a layer above the Adapter must pass through
+/// rather than interpret, and a layer that quietly substituted one would be
+/// indistinguishable from one that did not — every receipt would still look
+/// right. This records what actually arrived, so that is checkable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Admitted {
+    /// The mechanism admission selected out of the caller's own order.
+    pub selected: InputDelivery,
+    /// The delivery mechanisms the request permitted, in the caller's order.
+    pub permitted: Vec<InputDelivery>,
+    /// The focus policy the request carried.
+    pub focus: FocusPolicy,
+    /// The pointer geometry policy the request carried.
+    pub geometry: PointerGeometry,
+    /// How many events the sequence held.
+    pub events: usize,
+}
+
 /// An [`InputProvider`] whose behavior a test writes.
 pub struct ControlledInput {
     target: TargetId,
@@ -83,6 +103,7 @@ pub struct ControlledInput {
     behavior: Mutex<Behavior>,
     cleanup: Mutex<Cleanup>,
     log: Arc<Mutex<Vec<Delivered>>>,
+    admitted: Arc<Mutex<Vec<Admitted>>>,
     releases: Arc<Mutex<Vec<PressedState>>>,
     executing: Arc<AtomicUsize>,
 }
@@ -113,6 +134,7 @@ impl ControlledInput {
             behavior: Mutex::new(Behavior::Complete),
             cleanup: Mutex::new(Cleanup::Complete),
             log: Arc::new(Mutex::new(Vec::new())),
+            admitted: Arc::new(Mutex::new(Vec::new())),
             releases: Arc::new(Mutex::new(Vec::new())),
             executing: Arc::new(AtomicUsize::new(0)),
         }
@@ -132,6 +154,17 @@ impl ControlledInput {
     #[must_use]
     pub fn delivered(&self) -> Vec<Delivered> {
         self.log.lock().expect("uncontended").clone()
+    }
+
+    /// Returns every sequence the controller admitted, in order.
+    ///
+    /// One entry per admitted sequence, however far it then got. A layer that
+    /// retried a stopped sequence through another mechanism would appear here as
+    /// two entries, which is the only way that mistake is observable from
+    /// outside.
+    #[must_use]
+    pub fn admitted(&self) -> Vec<Admitted> {
+        self.admitted.lock().expect("uncontended").clone()
     }
 
     /// Returns every pressed state cleanup released, in the order it released them.
@@ -204,6 +237,7 @@ impl InputProvider for ControlledInput {
             behavior: Mutex::new(self.behavior.lock().expect("uncontended").clone()),
             cleanup: Mutex::new(*self.cleanup.lock().expect("uncontended")),
             log: Arc::clone(&self.log),
+            admitted: Arc::clone(&self.admitted),
             releases: Arc::clone(&self.releases),
             executing: Arc::clone(&self.executing),
             admission: Admission::new(),
@@ -218,6 +252,7 @@ struct ControlledController {
     behavior: Mutex<Behavior>,
     cleanup: Mutex<Cleanup>,
     log: Arc<Mutex<Vec<Delivered>>>,
+    admitted: Arc<Mutex<Vec<Admitted>>>,
     releases: Arc<Mutex<Vec<PressedState>>>,
     executing: Arc<AtomicUsize>,
     admission: Admission,
@@ -349,6 +384,13 @@ impl InputController for ControlledController {
         // Counted from here, so a test can wait for the controller to be held
         // instead of guessing how long admission takes.
         let _executing = ExecutingGuard::new(&self.executing);
+        self.admitted.lock().expect("uncontended").push(Admitted {
+            selected,
+            permitted: request.delivery().modes().to_vec(),
+            focus: request.focus(),
+            geometry: request.pointer_geometry(),
+            events: request.sequence().len(),
+        });
         let target = request.target();
         let events = request.sequence().events();
 

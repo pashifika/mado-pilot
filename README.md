@@ -8,20 +8,14 @@ conditions, inject input through explicit platform capabilities, and report
 structured diagnostics — without owning a GUI, tray, overlay, editor, updater,
 scheduler, or scripting language of its own.
 
-## Status: one deterministic workflow plus native adapters per target
+## Status: one deterministic workflow, plus a native one per target from Rust
 
 **MadoPilot is not usable for real automation yet.** What works end to end is a
 deterministic workflow over *replayed* frames: configure a replay source and
 require the OpenCV CPU backend, discover and open a target, take a frame, map
 it, load an asset package, prepare a template, find it in that exact frame, and
 close. That runs on both release targets, from Rust, from C, and from C++, and
-the three examples answer the same questions with the same numbers. Both release
-targets also have directly consumable Rust adapters implementing picker-free
-native window/display capture and platform-level input delivery. Runtime, facade,
-C ABI, and C++ input wiring remain later work, as does the native capture
-release-acceptance matrix. On macOS capture needs Screen Recording granted to the
-process, and reports a skip naming that reason where it is not, so a green run on a
-host that has neither granted nor denied it is not evidence that capture ran:
+the three examples answer the same questions with the same numbers:
 
 ```text
 crates/mado-pilot/examples/deterministic-slice.rs
@@ -29,10 +23,25 @@ crates/bindings/capi/examples/c/deterministic-slice.c
 crates/bindings/capi/examples/cpp/deterministic-slice.cpp
 ```
 
-The end-to-end public workflow still neither recognizes text, waits on a
-condition, nor injects input. Native input exists only at the direct platform Rust
-Adapter boundary today. Adding a package here is not a claim that its behavior
-exists.
+The same workflow over *real* windows and displays — including bounded input
+delivery with a receipt saying exactly what reached the target — is reachable
+from Rust, through one facade constructor per release target. Its two examples
+each require the operator to name one window exactly and refuse anything
+ambiguous, because the events they send are real:
+
+```text
+crates/mado-pilot/examples/windows-native-input.rs
+crates/mado-pilot/examples/macos-native-input.rs
+```
+
+The native capture release-acceptance matrix is still open, and the C ABI and the
+C++ wrapper do not reach input at all. On macOS capture needs Screen Recording
+granted to the process, and reports a skip naming that reason where it is not, so
+a green run on a host that has neither granted nor denied it is not evidence that
+capture ran.
+
+The public workflow still neither recognizes text nor waits on a condition.
+Adding a package here is not a claim that its behavior exists.
 
 | Area | Status |
 |---|---|
@@ -45,8 +54,8 @@ exists.
 | Template-matching contracts, ordering, suppression, source correlation | Implemented |
 | Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
-| Native capture | Implemented in the direct Windows and macOS Rust adapters; facade wiring and release acceptance remain open |
-| Native input | Implemented in the direct Windows and macOS Rust adapters; runtime, facade, C ABI, and C++ wiring remain open |
+| Native capture | Implemented in the Windows and macOS adapters and reachable from the Rust facade; release acceptance remains open |
+| Native input | Implemented in the Windows and macOS adapters, composed by the runtime, and reachable from the Rust facade; C ABI and C++ wiring remain open |
 | OCR, watchers | Not implemented |
 | C ABI, tracked C header, dynamic library | Implemented for the Phase 1 prefix |
 | Header-only C++ RAII wrapper and CMake targets | Implemented for the Phase 1 prefix |
@@ -198,13 +207,15 @@ and diagnostics that exclude captured images, recognized text, and credentials b
 default. On macOS, permission state will be probed and reported without presenting
 permission UI.
 
-The Phase 1 public workflow still requests no permission, captures only tracked
-replay sequences and files, and injects no input. The native platform packages
-now make part of these commitments testable below that facade: both implement
-capture and platform-level input with no elevation and redacted fixture evidence,
-and macOS implements non-prompting permission probes and reads the Accessibility
-decision again before every event it delivers rather than requesting it. Runtime
-and public-facade wiring remain later work.
+The deterministic replay workflow still requests no permission, captures only
+tracked replay sequences and files, and injects no input. The native workflow is
+now reachable from the public facade and keeps the same commitments: both
+platform packages capture and deliver input with no elevation and redacted
+fixture evidence, macOS reads its two authorizations without prompting and reads
+the Accessibility decision again before every event it delivers, and Windows
+reports that it reads no separate authorization rather than having one invented
+for it. The C ABI and the C++ wrapper do not reach input; that wiring remains
+later work.
 
 ## Contributing
 
