@@ -136,8 +136,10 @@
 //! version bump. The stability promise itself begins at 1.0; this package is
 //! at 0.1.
 //!
-//! The C ABI beneath this one is versioned separately and is already frozen at
-//! 1.0 — see `docs/adr/0007-phase-1-c-abi-freeze.md`. A Rust rename does not
+//! The C ABI beneath this one is versioned separately. Its complete 1.0 prefix
+//! is frozen by `docs/adr/0007-phase-1-c-abi-freeze.md`, and the additive native
+//! capability, permission, and input suffix is frozen at 1.1 by
+//! `docs/adr/0017-c-abi-1-1-native-input-prefix.md`. A Rust rename does not
 //! propagate to it.
 //!
 //! # Where to start

@@ -1941,11 +1941,13 @@ grew did so at their tails. Each released header is compiled as its own caller
 against the current library.
 
 The C boundary initializes outputs before reading inputs. Refusal before input
-admission returns an owned error and no receipt. Admission commits exactly one
-immutable receipt, so native partial effect, fallback, and bounded cleanup are
-successful result data rather than a second failure channel. A retained session
-outlives any receipt that needs its state, and concurrent sends through one
-controller are serialized below the boundary.
+admission returns an owned error and no receipt. An admission that returns
+normally commits exactly one immutable receipt, so native partial effect,
+fallback, and bounded cleanup are successful result data rather than a second
+failure channel. A contained boundary panic instead leaves outputs in their
+failure state and does not prove that no native input took effect. A retained
+session outlives any receipt that needs its state, and concurrent sends through
+one controller are serialized below the boundary.
 
 Every C entry contains Rust panic unwinding. The macOS shim contains selected
 Objective-C exceptions before returning to Rust. The C++ header owns and copies

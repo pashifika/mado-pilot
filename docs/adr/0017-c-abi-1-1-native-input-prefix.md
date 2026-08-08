@@ -34,8 +34,10 @@ The corrected prototype keeps `madopilot_open_request_t` exactly 16 bytes with
 and Rust both measure the unchanged table prefix at 424 bytes, the new open
 entry at offset 424, and the complete table at 480 bytes. The unchanged frozen
 header compiles, links, negotiates, and runs against that library. The exact
-numeric and per-field report is tracked with this Change in
-`rasen/changes/phase-2-c-abi-1-1-cpp/evidence/abi-1.1-freeze.md`.
+declarations remain in the
+[ABI 1.1 header fixture](../../crates/bindings/capi/tests/abi-compat/v1.1/madopilot/madopilot.h);
+the numeric and per-field report travels with Change
+`phase-2-c-abi-1-1-cpp` as `evidence/abi-1.1-freeze.md`.
 
 ## Decision
 

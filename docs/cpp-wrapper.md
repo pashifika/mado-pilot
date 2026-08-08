@@ -204,16 +204,17 @@ because none ran. See
 [ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
 
 **An admitted input outcome is a successful value.** `Session::send_input`
-returns a failed `Result<InputReceipt>` only when the request is refused before
-admission and no receipt exists. Once admitted, `Complete`, `Unexecuted`, and
-`Partial` are all successful `Result` values; the receipt carries delivered
-count, optional last-completed index, attempted deliveries, typed failure, and
-cleanup state.
+returns a failed `Result<InputReceipt>` when no receipt can be published:
+validation or table availability failed, the request was refused before
+admission, or the boundary contained an internal failure. Once admitted and
+returned normally, `Complete`, `Unexecuted`, and `Partial` are all successful
+`Result` values; the receipt carries delivered count, optional last-completed
+index, attempted deliveries, typed failure, and cleanup state.
 
 ```cpp
 const auto sent = session.send_input(request, operation);
 if (!sent) {
-    // Pre-admission refusal: inspect sent.error().
+    // No receipt is available; inspect the status before deciding what is safe.
     return sent.error();
 }
 const madopilot::InputReceipt& receipt = sent.value();
@@ -227,6 +228,8 @@ A zero delivered count does not make a `Partial` retry-safe: the current native
 event may have had an effect before it failed. The C receipt remains the
 authority; the wrapper neither turns it into an exception nor invents another
 error type.
+A failed result with `MADOPILOT_STATUS_INTERNAL_PANIC` is likewise not proof of
+zero effect and must not be retried automatically.
 
 **Zero matches is a success.** A search that qualified nothing returns a
 successful `Result` whose optional match is empty.
@@ -295,9 +298,9 @@ the text most likely to outlive the handle it came from.
 `Operation`, `Source`, `PackageSource`, `InputOpenRequest`, `InputEvent`,
 `OpenRequest`, `MapRequest`, `MatchOptions`, `FindRequest`, and `InputRequest`
 are values a caller composes. Each fills the C structure's `struct_size` itself,
-so no call site can write a stale one. Event text, event arrays, and delivery
-plans are owned by their C++ request value for as long as its `to_c()` view is
-in use.
+so no call site can write a stale one. `InputRequest` owns its typed events and
+delivery plan, while each `to_c()` call owns an independent event-record
+projection that borrows text and delivery storage from that request.
 
 ```cpp
 const madopilot::Result<std::uint64_t> now = api.clock_now();
@@ -398,8 +401,10 @@ distinguish it from a valid handle without racing the release it is trying to
 detect.
 
 Session close races an in-flight operation safely, and both sides observe the
-terminal outcomes the C ABI defines. Input sequences on one controller are
-serialized by the runtime; two caller threads cannot interleave their events.
+terminal outcomes the C ABI defines. Two threads may send the same immutable
+`InputRequest`: each call builds an independent C projection before the runtime
+serializes the sequences, so their events cannot interleave. Mutating that
+request concurrently remains invalid caller behavior.
 
 ## What ABI 1.1 does not wrap
 

@@ -838,7 +838,12 @@ void abi_1_1_requests_own_their_storage(Fixture& fixture)
         .cleanup_budget(4, 5);
     madopilot::InputRequest copied = original;
 
-    const auto request = copied.to_c();
+    const auto request_view = copied.to_c();
+    const auto second_view = copied.to_c();
+    const auto& request = request_view.value();
+    const auto& second_request = second_view.value();
+    check(request.events != second_request.events,
+          "each C projection owns an independent event-record array");
     check(request.event_count == 1 && request.events != nullptr,
           "the copied request owns one event");
     check(request.event_stride == sizeof(madopilot_input_event_t),
@@ -877,6 +882,10 @@ void abi_1_1_requests_own_their_storage(Fixture& fixture)
         fixture.engine.open_session(fixture.targets, 0, open_copy, fixture.operation);
     check(!refused && refused.status() == MADOPILOT_STATUS_UNSUPPORTED,
           "the copied open request keeps its required input policy");
+    if (!refused) {
+        check(refused.error().category() == MADOPILOT_ERROR_CATEGORY_INPUT,
+              "a required-input open refusal keeps the input error category");
+    }
 }
 
 /// Every owner remembers the negotiated table prefix. A full ABI 1.1 library

@@ -410,9 +410,9 @@ ceiling, so the boundary can reject a larger declared view before reading or
 allocating from it. Values at either exact ceiling remain valid.
 
 A refusal before admission returns `MADOPILOT_STATUS_INPUT_FAILED`, leaves the
-receipt in its failure state, and may return an owned error. After admission the
-entry returns `MADOPILOT_STATUS_OK` with exactly one immutable
-`madopilot_input_receipt_t`:
+receipt in its failure state, and may return an owned error. After admission, an
+entry that returns normally reports `MADOPILOT_STATUS_OK` with exactly one
+immutable `madopilot_input_receipt_t`:
 
 - `COMPLETE` means every logical event completed;
 - `UNEXECUTED` means no event produced a native effect;
@@ -427,6 +427,11 @@ only values that prove no owned input state remains held. `INCOMPLETE`,
 `EXHAUSTED`, and an unknown value from a later ABI minor must be treated
 conservatively.
 
+A contained boundary panic is outside those modeled outcomes and follows the
+failure-output rule below. A failure-state receipt after
+`MADOPILOT_STATUS_INTERNAL_PANIC` does not prove that no native input took
+effect, so the caller must not automatically retry the sequence.
+
 Windows exposes system delivery for ordinary targets and acknowledged
 background delivery only for the dedicated fixture class. macOS exposes system
 delivery only, re-reads Accessibility before every irreversible event, and does
@@ -438,10 +443,11 @@ platform guess in the caller, decide which request can be admitted.
 Every exported symbol and every table entry contains a Rust panic before it can
 cross into C. A contained panic returns `MADOPILOT_STATUS_INTERNAL_PANIC`, leaves
 every valid output in its failure state, releases whatever the unwinding call had
-allocated, and poisons nothing: handles unrelated to the failed call remain
-usable, and repeating the call is expected to work. Selected native macOS
-exceptions are contained inside the Objective-C shim before control returns to
-Rust; neither exception nor panic crosses the C boundary.
+allocated, and does not poison unrelated handles. A later call can therefore
+run, but repeating a side-effecting call is not necessarily safe: the panic may
+have happened after a native input effect. Selected native macOS exceptions are
+contained inside the Objective-C shim before control returns to Rust; neither
+exception nor panic crosses the C boundary.
 
 Containment requires an unwinding panic profile, and the crate refuses to build
 without one. `catch_unwind` catches nothing under an aborting profile: a panic

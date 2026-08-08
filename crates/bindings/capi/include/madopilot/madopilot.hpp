@@ -1696,7 +1696,9 @@ private:
 /// borrowed and must stay retained until `Session::send_input` returns.
 class InputRequest {
 public:
-    /// The ABI ceiling; a target descriptor may advertise a lower value.
+    class CView;
+
+    /// The ABI ceiling; an input descriptor may advertise a lower value.
     static constexpr std::size_t abi_max_events =
         MADOPILOT_INPUT_MAX_EVENTS;
     static constexpr std::uint32_t max_cleanup_events =
@@ -1751,33 +1753,11 @@ public:
         return *this;
     }
 
-    ::madopilot_input_request_t to_c() const {
-        event_records_.clear();
-        event_records_.reserve(events_.size());
-        for (const InputEvent& event : events_) {
-            event_records_.push_back(event.to_c());
-        }
-
-        auto value = detail::sized<::madopilot_input_request_t>();
-        value.flags =
-            has_cleanup_budget_ ? MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET : 0u;
-        value.events = event_records_.empty() ? nullptr : event_records_.data();
-        value.event_count = event_records_.size();
-        value.event_stride = sizeof(::madopilot_input_event_t);
-        value.deliveries = deliveries_.empty() ? nullptr : deliveries_.data();
-        value.delivery_count = deliveries_.size();
-        value.focus_policy = focus_;
-        value.geometry_policy = geometry_;
-        value.source_frame = source_frame_;
-        value.cleanup_max_events = cleanup_max_events_;
-        value.cleanup_timeout_nanos = cleanup_timeout_nanos_;
-        return value;
-    }
+    [[nodiscard]] CView to_c() const;
 
 private:
     std::vector<InputEvent> events_;
     std::vector<InputDelivery> deliveries_;
-    mutable std::vector<::madopilot_input_event_t> event_records_;
     FocusPolicy focus_ = MADOPILOT_FOCUS_PRESERVE;
     GeometryPolicy geometry_ = MADOPILOT_GEOMETRY_REPROJECT_CURRENT;
     const ::madopilot_frame_t* source_frame_ = nullptr;
@@ -1785,6 +1765,72 @@ private:
     std::uint32_t cleanup_max_events_ = 0;
     std::uint64_t cleanup_timeout_nanos_ = 0;
 };
+
+/// A call-local C projection of an input request.
+///
+/// The projection owns its event-record array. Event text and delivery order
+/// still borrow the `InputRequest`, which must outlive the C call.
+class InputRequest::CView {
+public:
+    explicit CView(const InputRequest& request) {
+        event_records_.reserve(request.events_.size());
+        for (const InputEvent& event : request.events_) {
+            event_records_.push_back(event.to_c());
+        }
+
+        value_ = detail::sized<::madopilot_input_request_t>();
+        value_.flags = request.has_cleanup_budget_
+                           ? MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET
+                           : 0u;
+        value_.events = event_records_.empty() ? nullptr : event_records_.data();
+        value_.event_count = event_records_.size();
+        value_.event_stride = sizeof(::madopilot_input_event_t);
+        value_.deliveries =
+            request.deliveries_.empty() ? nullptr : request.deliveries_.data();
+        value_.delivery_count = request.deliveries_.size();
+        value_.focus_policy = request.focus_;
+        value_.geometry_policy = request.geometry_;
+        value_.source_frame = request.source_frame_;
+        value_.cleanup_max_events = request.cleanup_max_events_;
+        value_.cleanup_timeout_nanos = request.cleanup_timeout_nanos_;
+    }
+
+    CView(const CView&) = delete;
+    CView& operator=(const CView&) = delete;
+
+    CView(CView&& other) noexcept
+        : event_records_(std::move(other.event_records_)), value_(other.value_) {
+        rebind_events();
+        other.rebind_events();
+    }
+
+    CView& operator=(CView&& other) noexcept {
+        if (this != &other) {
+            event_records_ = std::move(other.event_records_);
+            value_ = other.value_;
+            rebind_events();
+            other.rebind_events();
+        }
+        return *this;
+    }
+
+    const ::madopilot_input_request_t& value() const& noexcept { return value_; }
+    const ::madopilot_input_request_t& value() const&& = delete;
+
+    const ::madopilot_input_request_t* get() const& noexcept { return &value_; }
+    const ::madopilot_input_request_t* get() const&& = delete;
+
+private:
+    void rebind_events() noexcept {
+        value_.events = event_records_.empty() ? nullptr : event_records_.data();
+        value_.event_count = event_records_.size();
+    }
+
+    std::vector<::madopilot_input_event_t> event_records_;
+    ::madopilot_input_request_t value_{};
+};
+
+inline InputRequest::CView InputRequest::to_c() const { return CView(*this); }
 
 /// One template search.
 ///
@@ -2106,7 +2152,8 @@ public:
     }
 
     /// Sends one sequence. Partial and unexecuted outcomes are successful
-    /// receipts; only a refusal before admission is a failed `Result`.
+    /// receipts. Validation, an unavailable ABI entry, a pre-admission refusal,
+    /// or a contained boundary failure produces a failed `Result`.
     Result<InputReceipt> send_input(const InputRequest& request,
                                     const Operation& operation) const {
         if (api_ == nullptr) {
@@ -2122,7 +2169,7 @@ public:
         auto value = detail::sized<::madopilot_input_receipt_t>();
         ::madopilot_error_t* error = nullptr;
         const Status status = api_->session_send_input(
-            handle_, &request_c, &operation_c, &value, &error);
+            handle_, request_c.get(), &operation_c, &value, &error);
         if (!is_ok(status)) {
             return Result<InputReceipt>::failure(
                 detail::take_error(api_, status, error));

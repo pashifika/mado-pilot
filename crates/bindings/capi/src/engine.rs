@@ -94,27 +94,33 @@ impl TargetList {
 }
 
 /// Mints the next boundary stream identity.
-pub(crate) fn next_stream() -> u64 {
+pub(crate) fn next_stream() -> Result<u64, Fault> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
 
-    NEXT.fetch_add(1, Ordering::Relaxed)
+    next_identity(&NEXT, "the C stream identity space is exhausted")
 }
 
 fn next_target() -> Result<u64, Fault> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
 
-    NEXT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        current.checked_add(1)
-    })
-    .map_err(|_| {
-        Fault::from_error(
-            &mado_pilot::Error::new(
-                mado_pilot::Status::LimitExceeded,
-                "the C target identity space is exhausted",
-            ),
-            MADOPILOT_ERROR_CATEGORY_CAPTURE,
-        )
-    })
+    next_identity(&NEXT, "the C target identity space is exhausted")
+}
+
+fn next_identity(counter: &AtomicU64, exhausted: &'static str) -> Result<u64, Fault> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            if current == 0 {
+                None
+            } else {
+                Some(current.wrapping_add(1))
+            }
+        })
+        .map_err(|_| {
+            Fault::from_error(
+                &mado_pilot::Error::new(mado_pilot::Status::LimitExceeded, exhausted),
+                MADOPILOT_ERROR_CATEGORY_CAPTURE,
+            )
+        })
 }
 
 inputs! {
@@ -660,5 +666,24 @@ pub(crate) unsafe fn report(
         Ok(()) => MADOPILOT_STATUS_OK,
         // SAFETY: forwarded unchanged from this function's own contract.
         Err(fault) => unsafe { error::emit(out_error, fault) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use super::next_identity;
+
+    #[test]
+    fn the_last_nonzero_identity_is_minted_once_before_exhaustion() {
+        let counter = AtomicU64::new(u64::MAX);
+
+        assert_eq!(
+            next_identity(&counter, "exhausted").expect("the last identity remains available"),
+            u64::MAX
+        );
+        assert!(next_identity(&counter, "exhausted").is_err());
+        assert!(next_identity(&counter, "exhausted").is_err());
     }
 }

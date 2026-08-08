@@ -26,8 +26,8 @@ use crate::error::{self, Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
 use crate::status::{
-    MADOPILOT_ERROR_CATEGORY_CAPTURE, MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK,
-    madopilot_status_t,
+    MADOPILOT_ERROR_CATEGORY_CAPTURE, MADOPILOT_ERROR_CATEGORY_INPUT,
+    MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK, madopilot_status_t,
 };
 use crate::types::{
     MADOPILOT_MAP_HAS_REGION, MADOPILOT_OPEN_HAS_PREFERRED_FORMAT,
@@ -477,6 +477,10 @@ fn run_session_open(
     let target = &list.targets()[index];
     let facade_target = target.facade_id();
     let boundary_target = target.boundary_id();
+    facade_target.check_engine(engine.id()).map_err(|fault| {
+        let error: mado_pilot::Error = fault.into();
+        Fault::from_error(&error, MADOPILOT_ERROR_CATEGORY_CAPTURE)
+    })?;
 
     let mut open = OpenRequest::new();
     if declared!(
@@ -494,10 +498,24 @@ fn run_session_open(
         open = open.prefer_format(pixel_format(request.preferred_format)?);
     }
 
+    if let Some(required) = input
+        .as_ref()
+        .filter(|request| request.requirement().is_required())
+    {
+        let capability = target.description().capability().input();
+        required
+            .check(capability)
+            .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_INPUT))?;
+    }
+
     let mut session_request = SessionRequest::new().capturing(open);
     if let Some(input) = input {
         session_request = session_request.requesting_input(input);
     }
+
+    // Mint before opening native resources: exhaustion must not create an
+    // unreachable live session, and skipped identities are never reused.
+    let stream = next_stream()?;
 
     let session = engine
         .open_session(facade_target, &session_request, context.inner())
@@ -514,7 +532,7 @@ fn run_session_open(
     )?;
     let payload = SessionHandle {
         session,
-        stream: next_stream(),
+        stream,
         backend: engine.backend().id().to_owned(),
         target: facade_target,
         boundary_target,

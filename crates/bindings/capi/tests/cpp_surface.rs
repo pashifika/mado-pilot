@@ -12,8 +12,8 @@
 //!
 //! The complete 1.0 prefix is frozen by
 //! `docs/adr/0007-phase-1-c-abi-freeze.md`; the additive 1.1 suffix is frozen by
-//! `rasen/changes/phase-2-c-abi-1-1-cpp/evidence/abi-1.1-freeze.md`. The C++
-//! surface is not an ABI and is governed by the Rust-side policy in
+//! `docs/adr/0017-c-abi-1-1-native-input-prefix.md` and the old-header fixture
+//! under `tests/abi-compat/v1.1/`. The C++ surface is not an ABI and is governed by
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md`; what this
 //! file protects is that a change to it is deliberate.
 
@@ -230,7 +230,7 @@ fn without_comments(header: &str) -> String {
 
 /// No later-phase concept appears anywhere in the code the header declares.
 ///
-/// [`the_header_declares_no_later_phase_surface`] checks the same words against
+/// [`the_header_declares_no_deferred_surface`] checks the same words against
 /// declared TYPE names only, so a later-phase *method* on an existing type —
 /// `Session::register_frame_callback`, say — passed it, though the spec forbids
 /// types or methods alike. None of these words occurs anywhere in the header
