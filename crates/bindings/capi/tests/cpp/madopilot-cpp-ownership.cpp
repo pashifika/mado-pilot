@@ -184,6 +184,51 @@ static_assert(std::is_copy_constructible_v<madopilot::InputDescriptor>,
               "InputDescriptor contains no borrowed storage");
 static_assert(std::is_copy_constructible_v<madopilot::InputFailure>,
               "InputFailure is receipt data");
+static_assert(madopilot::InputEvent::max_text_chars ==
+                  MADOPILOT_INPUT_MAX_TEXT_CHARS &&
+                  madopilot::InputEvent::max_text_utf8_bytes ==
+                      MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES &&
+                  madopilot::InputEvent::max_delay_nanos ==
+                      MADOPILOT_INPUT_MAX_DELAY_NANOS &&
+                  madopilot::InputEvent::max_scroll_notches ==
+                      MADOPILOT_INPUT_MAX_SCROLL_NOTCHES &&
+                  madopilot::InputEvent::min_function_key ==
+                      MADOPILOT_INPUT_MIN_FUNCTION_KEY &&
+                  madopilot::InputEvent::max_function_key ==
+                      MADOPILOT_INPUT_MAX_FUNCTION_KEY,
+              "InputEvent exposes the C contract ceilings without restating them");
+static_assert(madopilot::InputRequest::abi_max_events ==
+                  MADOPILOT_INPUT_MAX_EVENTS &&
+                  madopilot::InputRequest::max_cleanup_events ==
+                      MADOPILOT_INPUT_MAX_CLEANUP_EVENTS &&
+                  madopilot::InputRequest::max_cleanup_timeout_nanos ==
+                      MADOPILOT_INPUT_MAX_CLEANUP_NANOS,
+              "InputRequest exposes the C sequence and cleanup ceilings");
+static_assert(!madopilot::InputFailure{
+                   MADOPILOT_INPUT_FAULT_NONE,
+                   MADOPILOT_CLEANUP_NOT_NEEDED,
+                   0,
+                   0,
+               }.may_leave_state_held());
+static_assert(!madopilot::InputFailure{
+                   MADOPILOT_INPUT_FAULT_NONE,
+                   MADOPILOT_CLEANUP_COMPLETE,
+                   0,
+                   0,
+               }.may_leave_state_held());
+static_assert(madopilot::InputFailure{
+                  MADOPILOT_INPUT_FAULT_NONE,
+                  MADOPILOT_CLEANUP_INCOMPLETE,
+                  0,
+                  0,
+              }.may_leave_state_held());
+static_assert(madopilot::InputFailure{
+                  MADOPILOT_INPUT_FAULT_NONE,
+                  static_cast<madopilot::CleanupState>(99),
+                  0,
+                  0,
+              }.may_leave_state_held(),
+              "an unknown cleanup value must conservatively warn about held state");
 static_assert(std::is_same_v<madopilot::PermissionState,
                              ::madopilot_permission_state_t> &&
                   std::is_same_v<madopilot::CapabilitySupport,

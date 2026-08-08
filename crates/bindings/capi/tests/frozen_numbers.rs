@@ -5,10 +5,10 @@
 //! cross-language mechanism covers only the first: `tests/c/madopilot-abi-layout.c`
 //! reports sizes, alignments, and offsets, so a header-versus-Rust renumbering
 //! of a status passes it. This file is the second half. It has no C toolchain
-//! to compare against, so it compares three things instead — what
-//! `docs/adr/0007-phase-1-c-abi-freeze.md` froze, what the Rust definitions say,
-//! and what the hand-written header declares — and requires all three to agree
-//! in both directions.
+//! to compare against, so it compares three things instead — what the accepted
+//! ABI freeze records fixed, what the Rust definitions say, and what the
+//! hand-written header declares — and requires all three to agree in both
+//! directions.
 //!
 //! A number here is permanent for ABI major 1. A caller that switches on `7`
 //! and later gets a different meaning has no way to detect it, which is the
@@ -255,6 +255,16 @@ frozen! {
     MADOPILOT_INPUT_EVENT_TEXT = 7,
     MADOPILOT_INPUT_EVENT_DELAY = 8,
 
+    MADOPILOT_INPUT_MAX_EVENTS = 256,
+    MADOPILOT_INPUT_MAX_TEXT_CHARS = 4096,
+    MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES = 16384,
+    MADOPILOT_INPUT_MAX_DELAY_NANOS = 5000000000,
+    MADOPILOT_INPUT_MAX_SCROLL_NOTCHES = 120,
+    MADOPILOT_INPUT_MIN_FUNCTION_KEY = 1,
+    MADOPILOT_INPUT_MAX_FUNCTION_KEY = 24,
+    MADOPILOT_INPUT_MAX_CLEANUP_EVENTS = 256,
+    MADOPILOT_INPUT_MAX_CLEANUP_NANOS = 250000000,
+
     MADOPILOT_SEQUENCE_UNEXECUTED = 0,
     MADOPILOT_SEQUENCE_COMPLETE = 1,
     MADOPILOT_SEQUENCE_PARTIAL = 2,
@@ -334,8 +344,8 @@ fn every_frozen_number_is_the_one_this_library_defines() {
     for (name, defined, frozen) in FROZEN {
         assert_eq!(
             defined, frozen,
-            "{name} is {defined} in this build; ADR 0007 froze it at {frozen}, and a number in \
-             that table is permanent for ABI major 1"
+            "{name} is {defined} in this build; the accepted ABI freeze fixed it at \
+             {frozen}, and a number in that table is permanent for ABI major 1"
         );
     }
 }

@@ -38,6 +38,11 @@
 //! ```text
 //! cargo build --locked --package mado-pilot-capi
 //! cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+//! # Windows fixture-backed mode additionally requires:
+//! cargo build --locked --package mado-pilot-platform-windows \
+//!   --bin mado-pilot-windows-input-fixture
+//! cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
+//!   --label "<host>" --windows-native-fixture
 //! ```
 //!
 //! The build step is separate on purpose: this program needs the `cdylib` that
@@ -64,10 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     check_layout(&paths)?;
     run_c_example(&paths, &label)?;
-    run_native_c_example(&paths)?;
+    let native_fixture = if windows_native_fixture_requested() {
+        Some(WindowsNativeFixture::spawn(&paths)?)
+    } else {
+        None
+    };
+    let native_target = native_fixture.as_ref().map(WindowsNativeFixture::title);
+    run_native_c_example(&paths, native_target)?;
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
-    run_native_cpp_example(&paths)?;
+    run_native_cpp_example(&paths, native_target)?;
     check_frozen_layout(&paths)?;
     check_frozen_headers(&paths)?;
     check_cmake_consumer(&paths)?;
@@ -89,6 +100,11 @@ fn label() -> String {
     }
 
     "unlabelled host".to_owned()
+}
+
+/// Whether this run must launch and exercise the dedicated Windows fixture.
+fn windows_native_fixture_requested() -> bool {
+    env::args().any(|argument| argument == "--windows-native-fixture")
 }
 
 /// Which compiler and which dialect a source is built with.
@@ -201,6 +217,85 @@ impl Paths {
         } else {
             name.to_owned()
         })
+    }
+}
+
+/// A dedicated Windows fixture kept alive across both native language examples.
+struct WindowsNativeFixture {
+    #[cfg(windows)]
+    child: std::process::Child,
+    title: String,
+}
+
+impl WindowsNativeFixture {
+    fn spawn(paths: &Paths) -> Result<Self, Box<dyn std::error::Error>> {
+        #[cfg(not(windows))]
+        {
+            let _ = paths;
+            Err("`--windows-native-fixture` requires a Windows host".into())
+        }
+
+        #[cfg(windows)]
+        {
+            use std::io::{BufRead, BufReader};
+            use std::process::Stdio;
+
+            let program = paths.artifacts.join(format!(
+                "mado-pilot-windows-input-fixture{}",
+                env::consts::EXE_SUFFIX
+            ));
+            if !program.is_file() {
+                return Err(format!(
+                    "{} does not exist.\nBuild it first:\n    cargo build --locked \
+                     --package mado-pilot-platform-windows --bin \
+                     mado-pilot-windows-input-fixture",
+                    program.display()
+                )
+                .into());
+            }
+
+            let child = Command::new(&program)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()?;
+            let mut fixture = Self {
+                child,
+                title: String::new(),
+            };
+            let process_id = fixture.child.id();
+            let output = fixture
+                .child
+                .stdout
+                .take()
+                .ok_or("the Windows fixture did not expose its readiness output")?;
+            let mut ready = String::new();
+            BufReader::new(output).read_line(&mut ready)?;
+            let title = ready
+                .strip_prefix("fixture-ready ")
+                .and_then(|line| line.split_once(" title="))
+                .and_then(|(_, rest)| rest.split_once(" capacity="))
+                .map(|(title, _)| title)
+                .ok_or("the Windows fixture returned malformed readiness output")?;
+            if !title.ends_with(&format!("[{process_id}]")) {
+                return Err("the Windows fixture title did not identify its process".into());
+            }
+            fixture.title = title.to_owned();
+            println!("windows fixture: ready for exact-title native checks");
+            Ok(fixture)
+        }
+    }
+
+    fn title(&self) -> &str {
+        &self.title
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsNativeFixture {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -634,12 +729,14 @@ fn run_c_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::E
     check_example("C", &output)
 }
 
-/// Compiles, links, and runs the current release target's safe native C probe.
+/// Compiles, links, and runs the current release target's native C probe.
 ///
-/// `--check` stops before discovery, so CI never selects a window or sends an
-/// event. It still constructs the real native engine and exercises the
-/// platform's non-prompting permission behavior through the released C table.
-fn run_native_c_example(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+/// Without `target`, `--check` stops before discovery and sends no input. A
+/// target is the exact title of the dedicated fixture this process owns.
+fn run_native_c_example(
+    paths: &Paths,
+    target: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let name = if cfg!(target_os = "windows") {
         "windows-native-input"
     } else if cfg!(target_os = "macos") {
@@ -652,16 +749,27 @@ fn run_native_c_example(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
         .join("crates/bindings/capi/examples/c")
         .join(format!("{name}.c"));
     let program = compile(paths, Language::C, name, &source, true)?;
-    let output = run(paths, &program, &["--check"])?;
+    let argument = target.unwrap_or("--check");
+    let output = run(paths, &program, &[argument])?;
     let stdout = String::from_utf8(output.stdout.clone())?;
     print!("{stdout}");
     report_output("native C example", &output);
 
+    let mode = if target.is_some() {
+        "fixture-backed flow"
+    } else {
+        "non-prompting check"
+    };
     if !output.status.success() {
-        return Err(format!("the {name} non-prompting check reported a failure").into());
+        return Err(format!("the {name} {mode} reported a failure").into());
     }
-    if !stdout.contains(&format!("{name} complete (non-prompting check)")) {
-        return Err(format!("the {name} check never reached the end").into());
+    let expected = if target.is_some() {
+        format!("{name} complete")
+    } else {
+        format!("{name} complete (non-prompting check)")
+    };
+    if !stdout.contains(&expected) {
+        return Err(format!("the {name} {mode} never reached the end").into());
     }
 
     Ok(())
@@ -686,8 +794,11 @@ fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error:
     check_example("C++", &output)
 }
 
-/// Compiles, links, and runs the safe native flow through the C++ wrapper.
-fn run_native_cpp_example(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+/// Compiles, links, and runs the native flow through the C++ wrapper.
+fn run_native_cpp_example(
+    paths: &Paths,
+    target: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let name = if cfg!(target_os = "windows") {
         "windows-native-input-cpp"
     } else if cfg!(target_os = "macos") {
@@ -699,16 +810,27 @@ fn run_native_cpp_example(paths: &Paths) -> Result<(), Box<dyn std::error::Error
         .root
         .join("crates/bindings/capi/examples/cpp/native-input.cpp");
     let program = compile(paths, Language::Cpp, name, &source, true)?;
-    let output = run(paths, &program, &["--check"])?;
+    let argument = target.unwrap_or("--check");
+    let output = run(paths, &program, &[argument])?;
     let stdout = String::from_utf8(output.stdout.clone())?;
     print!("{stdout}");
     report_output("native C++ example", &output);
 
+    let mode = if target.is_some() {
+        "fixture-backed flow"
+    } else {
+        "non-prompting check"
+    };
     if !output.status.success() {
-        return Err(format!("the {name} non-prompting check reported a failure").into());
+        return Err(format!("the {name} {mode} reported a failure").into());
     }
-    if !stdout.contains(&format!("{name} complete (non-prompting check)")) {
-        return Err(format!("the {name} check never reached the end").into());
+    let expected = if target.is_some() {
+        format!("{name} complete")
+    } else {
+        format!("{name} complete (non-prompting check)")
+    };
+    if !stdout.contains(&expected) {
+        return Err(format!("the {name} {mode} never reached the end").into());
     }
 
     Ok(())

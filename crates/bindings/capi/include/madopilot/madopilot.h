@@ -407,6 +407,20 @@ enum {
     MADOPILOT_INPUT_EVENT_DELAY = 8
 };
 
+/* Fixed ABI 1.1 input ceilings. A descriptor's max_events may be lower.
+ * Text counts Unicode scalar values; its byte ceiling is the largest valid
+ * UTF-8 representation of that many values. Each scroll component is in
+ * [-MAX_SCROLL_NOTCHES, MAX_SCROLL_NOTCHES], and both cannot be zero. */
+#define MADOPILOT_INPUT_MAX_EVENTS 256u
+#define MADOPILOT_INPUT_MAX_TEXT_CHARS 4096u
+#define MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES 16384u
+#define MADOPILOT_INPUT_MAX_DELAY_NANOS UINT64_C(5000000000)
+#define MADOPILOT_INPUT_MAX_SCROLL_NOTCHES 120
+#define MADOPILOT_INPUT_MIN_FUNCTION_KEY 1u
+#define MADOPILOT_INPUT_MAX_FUNCTION_KEY 24u
+#define MADOPILOT_INPUT_MAX_CLEANUP_EVENTS 256u
+#define MADOPILOT_INPUT_MAX_CLEANUP_NANOS UINT64_C(250000000)
+
 /* How far an admitted sequence got. */
 typedef int32_t madopilot_sequence_outcome_t;
 
@@ -696,8 +710,9 @@ typedef struct madopilot_input_descriptor_t {
     uint32_t max_events;
 } madopilot_input_descriptor_t;
 
-/* One event in an input sequence. The mandatory prefix varies by kind. Fields
- * not selected by kind are ignored. */
+/* One bounded input event. The mandatory prefix varies by kind. Fields not
+ * selected by kind are ignored. Character keys accept one non-control Unicode
+ * scalar in key_value; function keys use the published inclusive range. */
 typedef struct madopilot_input_event_t {
     uint32_t struct_size;
     madopilot_input_event_kind_t kind;
@@ -707,10 +722,10 @@ typedef struct madopilot_input_event_t {
     uint32_t key_value;
     double x;
     double y;
-    int32_t horizontal;
-    int32_t vertical;
-    madopilot_str_t text; /* Borrowed UTF-8 for the call. */
-    uint64_t delay_nanos;
+    int32_t horizontal; /* Absolute value <= MADOPILOT_INPUT_MAX_SCROLL_NOTCHES. */
+    int32_t vertical; /* Absolute value <= MADOPILOT_INPUT_MAX_SCROLL_NOTCHES. */
+    madopilot_str_t text; /* Borrowed UTF-8 for the call, under both text limits. */
+    uint64_t delay_nanos; /* <= MADOPILOT_INPUT_MAX_DELAY_NANOS. */
 } madopilot_input_event_t;
 
 /* One bounded input sequence and its delivery policy. Mandatory prefix:
@@ -719,16 +734,16 @@ typedef struct madopilot_input_request_t {
     uint32_t struct_size;
     uint32_t flags; /* MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET */
     const madopilot_input_event_t* events;
-    size_t event_count;
+    size_t event_count; /* At most descriptor.max_events and the ABI ceiling. */
     size_t event_stride;
     const madopilot_input_delivery_t* deliveries;
     size_t delivery_count;
     madopilot_focus_policy_t focus_policy;
     madopilot_geometry_policy_t geometry_policy;
     const madopilot_frame_t* source_frame; /* Borrowed and retained by caller. */
-    uint32_t cleanup_max_events;
+    uint32_t cleanup_max_events; /* Clamped to the published cleanup ceiling. */
     uint32_t reserved; /* The caller sets zero. */
-    uint64_t cleanup_timeout_nanos;
+    uint64_t cleanup_timeout_nanos; /* Clamped to the published cleanup ceiling. */
 } madopilot_input_request_t;
 
 /* The one terminal outcome of an admitted input sequence. Mandatory prefix:

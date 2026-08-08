@@ -26,7 +26,7 @@ use crate::status::{
     MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK, madopilot_status_t,
 };
 use crate::types::{space_code, *};
-use crate::view::madopilot_str_t;
+use crate::view::{madopilot_bytes_t, madopilot_str_t};
 use crate::{handle, hooks};
 
 inputs! {
@@ -907,8 +907,25 @@ unsafe fn input_event(event: madopilot_input_event_t, index: usize) -> Result<In
                 covers!(madopilot_input_event_t, text: madopilot_str_t),
                 index,
             )?;
-            // SAFETY: forwarded from this function's own contract.
+            let raw = madopilot_bytes_t {
+                data: event.text.data.cast(),
+                len: event.text.len,
+            };
+            let byte_len = crate::view::byte_len(raw, "event.text")?;
+            let max_bytes = usize::try_from(MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES)
+                .expect("the ABI text-byte ceiling fits usize");
+            if byte_len > max_bytes {
+                return Err(input_fault(InputFault::SequenceOutOfBounds));
+            }
+            // SAFETY: forwarded from this function's own contract. The declared
+            // range is now bounded, so validation cannot scan or own more than
+            // the public UTF-8 byte ceiling.
             let text = unsafe { crate::view::string(event.text, "event.text") }?;
+            let max_chars = usize::try_from(MADOPILOT_INPUT_MAX_TEXT_CHARS)
+                .expect("the ABI text-character ceiling fits usize");
+            if text.chars().count() > max_chars {
+                return Err(input_fault(InputFault::SequenceOutOfBounds));
+            }
             Ok(InputEvent::Text(text.to_owned()))
         }
         MADOPILOT_INPUT_EVENT_DELAY => {
@@ -1824,6 +1841,51 @@ mod tests {
     }
 
     #[test]
+    fn a_partial_receipt_outlives_request_session_and_engine_storage() {
+        let retained = {
+            let fixture = InputFixture::with_behavior(InputBehavior::FailAfter {
+                delivered: 1,
+                fault: InputFault::DeliveryFailed,
+            });
+            let receipt = {
+                let text = String::from("x");
+                let mut first = event(MADOPILOT_INPUT_EVENT_TEXT);
+                first.text = madopilot_str_t::borrowed(&text);
+                let second = first;
+                let events = [first, second];
+                let deliveries = [MADOPILOT_INPUT_DELIVERY_SYSTEM];
+                let request = InputFixture::request_events(&events, &deliveries);
+                let operation = operation();
+                let mut receipt = receipt();
+                let mut error = ptr::null_mut();
+
+                let status = session_send_input(
+                    fixture.session,
+                    &raw const request,
+                    &raw const operation,
+                    &raw mut receipt,
+                    &raw mut error,
+                );
+
+                assert_eq!(status, MADOPILOT_STATUS_OK);
+                assert!(error.is_null());
+                assert_eq!(receipt.outcome, MADOPILOT_SEQUENCE_PARTIAL);
+                receipt
+            };
+            // The request, event array, delivery array, and text have gone. The
+            // fixture now releases the session, target list, and engine handles.
+            receipt
+        };
+
+        assert_ne!(retained.flags & MADOPILOT_INPUT_RECEIPT_HAS_TARGET, 0);
+        assert_ne!(retained.flags & MADOPILOT_INPUT_RECEIPT_HAS_FAILURE, 0);
+        assert_eq!(retained.outcome, MADOPILOT_SEQUENCE_PARTIAL);
+        assert_eq!(retained.delivered, 1);
+        assert_eq!(retained.last_completed, 0);
+        assert_eq!(retained.failure, MADOPILOT_INPUT_FAULT_DELIVERY_FAILED);
+    }
+
+    #[test]
     fn an_unexecuted_sequence_is_successful_receipt_data() {
         let fixture =
             InputFixture::with_behavior(InputBehavior::Unexecuted(InputFault::PolicyRefused));
@@ -1923,6 +1985,86 @@ mod tests {
                 .expect_err("invalid UTF-8 is rejected");
 
         assert_invalid(fault);
+    }
+
+    #[test]
+    fn the_largest_multibyte_text_event_is_accepted_before_it_is_owned() {
+        let count = usize::try_from(MADOPILOT_INPUT_MAX_TEXT_CHARS)
+            .expect("the ABI text-character ceiling fits usize");
+        let text = "\u{1f600}".repeat(count);
+        assert_eq!(
+            text.len(),
+            usize::try_from(MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES)
+                .expect("the ABI text-byte ceiling fits usize")
+        );
+        let mut event = event(MADOPILOT_INPUT_EVENT_TEXT);
+        event.text = madopilot_str_t::borrowed(&text);
+
+        // SAFETY: the event and its bounded text remain readable for the call.
+        let converted = unsafe { input_event(event, 0) }.expect("the exact ceiling is valid");
+
+        let InputEvent::Text(converted) = converted else {
+            panic!("the text tag converted to another event kind");
+        };
+        assert_eq!(converted, text);
+    }
+
+    #[test]
+    fn text_above_the_character_ceiling_is_rejected_during_conversion() {
+        let count = usize::try_from(MADOPILOT_INPUT_MAX_TEXT_CHARS)
+            .expect("the ABI text-character ceiling fits usize")
+            + 1;
+        let text = "x".repeat(count);
+        let mut event = event(MADOPILOT_INPUT_EVENT_TEXT);
+        event.text = madopilot_str_t::borrowed(&text);
+
+        // SAFETY: the event and its text remain readable for the call.
+        let fault = unsafe { input_event(event, 0) }
+            .expect_err("one character above the ceiling is invalid");
+
+        assert_invalid(fault);
+    }
+
+    #[test]
+    fn published_input_limits_match_the_facade_contract() {
+        use mado_pilot::SequenceLimits;
+
+        assert_eq!(
+            MADOPILOT_INPUT_MAX_EVENTS,
+            u32::try_from(SequenceLimits::MAX_EVENTS).expect("the event ceiling fits uint32_t")
+        );
+        assert_eq!(
+            MADOPILOT_INPUT_MAX_TEXT_CHARS,
+            u32::try_from(InputEvent::MAX_TEXT_CHARS).expect("the text ceiling fits uint32_t")
+        );
+        assert_eq!(
+            MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES,
+            MADOPILOT_INPUT_MAX_TEXT_CHARS
+                * u32::try_from(char::MAX_LEN_UTF8).expect("the UTF-8 width fits uint32_t")
+        );
+        assert_eq!(
+            MADOPILOT_INPUT_MAX_DELAY_NANOS,
+            u64::try_from(InputEvent::MAX_DELAY.as_nanos())
+                .expect("the delay ceiling fits uint64_t")
+        );
+        assert_eq!(
+            MADOPILOT_INPUT_MAX_SCROLL_NOTCHES,
+            i32::from(InputEvent::MAX_SCROLL_NOTCHES)
+        );
+        assert_eq!(MADOPILOT_INPUT_MIN_FUNCTION_KEY, 1);
+        assert_eq!(
+            MADOPILOT_INPUT_MAX_FUNCTION_KEY,
+            u32::from(Key::MAX_FUNCTION)
+        );
+        assert_eq!(
+            MADOPILOT_INPUT_MAX_CLEANUP_EVENTS,
+            u32::try_from(CleanupBudget::MAX_EVENTS).expect("the cleanup ceiling fits uint32_t")
+        );
+        assert_eq!(
+            MADOPILOT_INPUT_MAX_CLEANUP_NANOS,
+            u64::try_from(CleanupBudget::MAX_DURATION.as_nanos())
+                .expect("the cleanup duration fits uint64_t")
+        );
     }
 
     #[test]

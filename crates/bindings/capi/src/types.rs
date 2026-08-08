@@ -405,6 +405,27 @@ pub const MADOPILOT_INPUT_EVENT_TEXT: madopilot_input_event_kind_t = 7;
 /// Wait before the next event.
 pub const MADOPILOT_INPUT_EVENT_DELAY: madopilot_input_event_kind_t = 8;
 
+/// The ABI 1.1 ceiling on events in one sequence.
+///
+/// A returned input descriptor may advertise a lower target-specific ceiling.
+pub const MADOPILOT_INPUT_MAX_EVENTS: u32 = 256;
+/// The most Unicode scalar values one text event may contain.
+pub const MADOPILOT_INPUT_MAX_TEXT_CHARS: u32 = 4_096;
+/// The most UTF-8 bytes a text event within the character ceiling can occupy.
+pub const MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES: u32 = 16_384;
+/// The longest delay event, in nanoseconds.
+pub const MADOPILOT_INPUT_MAX_DELAY_NANOS: u64 = 5_000_000_000;
+/// The maximum absolute value of either scroll component.
+pub const MADOPILOT_INPUT_MAX_SCROLL_NOTCHES: i32 = 120;
+/// The first accepted function-key number.
+pub const MADOPILOT_INPUT_MIN_FUNCTION_KEY: u32 = 1;
+/// The last accepted function-key number.
+pub const MADOPILOT_INPUT_MAX_FUNCTION_KEY: u32 = 24;
+/// The most release events an explicit cleanup budget may request.
+pub const MADOPILOT_INPUT_MAX_CLEANUP_EVENTS: u32 = 256;
+/// The longest explicit cleanup budget, in nanoseconds.
+pub const MADOPILOT_INPUT_MAX_CLEANUP_NANOS: u64 = 250_000_000;
+
 /// How far an admitted sequence got.
 pub type madopilot_sequence_outcome_t = i32;
 

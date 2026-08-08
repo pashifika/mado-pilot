@@ -262,7 +262,8 @@ jobs:
           call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cl 2>&1 | findstr /i "Microsoft" || exit /b 1
           cargo build --locked --package mado-pilot-capi || exit /b 1
-          cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" || exit /b 1
+          cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture || exit /b 1
+          cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift

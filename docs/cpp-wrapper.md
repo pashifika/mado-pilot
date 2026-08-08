@@ -219,7 +219,7 @@ if (!sent) {
 const madopilot::InputReceipt& receipt = sent.value();
 if (receipt.outcome == MADOPILOT_SEQUENCE_PARTIAL &&
     receipt.failure && receipt.failure->may_leave_state_held()) {
-    // Incomplete or exhausted bounded cleanup is explicit.
+    // Incomplete, exhausted, and unknown cleanup values are conservative.
 }
 ```
 
@@ -345,6 +345,15 @@ ABI 1.1 open entry without changing the frozen C open record. `InputEvent`
 factories expose only one active variant and copy text. `InputRequest` copies
 events and delivery order, and keeps focus, geometry, source-frame, and cleanup
 policies explicit.
+
+The wrapper aliases, rather than restates, the fixed C limits.
+`InputEvent::max_text_chars`, `max_text_utf8_bytes`, `max_delay_nanos`,
+`max_scroll_notches`, `min_function_key`, and `max_function_key` expose event
+ceilings. `InputRequest::abi_max_events`, `max_cleanup_events`, and
+`max_cleanup_timeout_nanos` expose sequence and cleanup ceilings. A returned
+`InputDescriptor::max_events` may be lower than the ABI-wide sequence ceiling.
+See the [C input-limit table](c-abi.md#input-admission-delivery-and-receipts) for
+units and inclusive-range rules.
 
 ```cpp
 madopilot::InputOpenRequest input;
@@ -478,18 +487,21 @@ half it:
    close reporting, and concurrent const access;
 2. compiles and runs `examples/cpp/deterministic-slice.cpp` and requires the
    same match rectangles and scores as the C example;
-3. compiles and runs `examples/cpp/native-input.cpp --check`, which creates the
-   real target Adapter and reads only non-prompting permission state before
-   stopping without discovery or input;
+3. compiles and runs `examples/cpp/native-input.cpp`. The default `--check`
+   creates the real target Adapter and reads only non-prompting permission state
+   before stopping without discovery or input. Windows CI instead asks
+   `c-abi-check --windows-native-fixture` to own the dedicated fixture and pass
+   its exact PID-qualified title to both native language examples; this exercises
+   discovery, capture, mapping, bounded background input, receipt inspection, and
+   explicit close without taking focus or permitting system fallback;
 4. configures, builds, and runs the independent CMake consumer project under
    CTest. That project also builds the native example through `MadoPilot::Cpp`
    alone and runs its safe `--check` mode.
 
-Passing the native example an exact full fixture title instead of `--check`
-enables discovery, capture, mapping, one bounded pointer/keyboard sequence,
-receipt inspection, and explicit close. That mode sends real input on macOS and
-fixture-gated background input on Windows; run it only against the dedicated
-fixture described in the platform verification document.
+Passing the native example an exact full fixture title directly enables the same
+common flow. That mode sends real input on macOS and fixture-gated background
+input on Windows; run it only against the dedicated fixture described in the
+platform verification document.
 
 The check needs a C++ compiler and **CMake 3.22 or later** in addition to the C
 compiler. Both are the release target's own on both hosts; set `CXX` or `CMAKE`

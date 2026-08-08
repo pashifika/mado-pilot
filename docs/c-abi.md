@@ -392,6 +392,23 @@ delivery unless the caller put that later mechanism in the plan. Event text,
 arrays, and the source-frame reference are borrowed for the call. The frame must
 stay retained through `session_send_input`.
 
+The ABI 1.1 header publishes every fixed input ceiling rather than requiring a
+caller to discover one by rejection:
+
+| Contract | Published ceiling |
+|---|---:|
+| Events in one sequence | `MADOPILOT_INPUT_MAX_EVENTS` = 256; `madopilot_input_descriptor_t.max_events` may be lower |
+| Text in one event | `MADOPILOT_INPUT_MAX_TEXT_CHARS` = 4,096 Unicode scalar values and `MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES` = 16,384 bytes |
+| One delay | `MADOPILOT_INPUT_MAX_DELAY_NANOS` = 5,000,000,000 ns |
+| Either scroll component | absolute value at most `MADOPILOT_INPUT_MAX_SCROLL_NOTCHES` = 120; both components cannot be zero |
+| Function-key number | inclusive `MADOPILOT_INPUT_MIN_FUNCTION_KEY` = 1 through `MADOPILOT_INPUT_MAX_FUNCTION_KEY` = 24 |
+| Explicit cleanup | at most `MADOPILOT_INPUT_MAX_CLEANUP_EVENTS` = 256 releases and `MADOPILOT_INPUT_MAX_CLEANUP_NANOS` = 250,000,000 ns |
+
+`MADOPILOT_KEY_CHARACTER` accepts one non-control Unicode scalar value.
+The text byte ceiling is the largest possible UTF-8 encoding of the character
+ceiling, so the boundary can reject a larger declared view before reading or
+allocating from it. Values at either exact ceiling remain valid.
+
 A refusal before admission returns `MADOPILOT_STATUS_INPUT_FAILED`, leaves the
 receipt in its failure state, and may return an owned error. After admission the
 entry returns `MADOPILOT_STATUS_OK` with exactly one immutable
@@ -403,11 +420,12 @@ entry returns `MADOPILOT_STATUS_OK` with exactly one immutable
   event produced a native partial effect before any logical event completed.
 
 Presence flags distinguish absent values from valid zeroes. The receipt records
-the selected and attempted deliveries, completed-event count, optional last
-completed index, typed fault, and bounded cleanup outcome. Cleanup may release
-only state pressed by that sequence. `INCOMPLETE` and `EXHAUSTED` warn that
-state may remain held; callers must not infer safety from a zero completed-event
-count.
+the selected and attempted deliveries, completed-event count, optional
+last-completed index, typed fault, and bounded cleanup outcome. Cleanup may
+release only state pressed by that sequence. `NOT_NEEDED` and `COMPLETE` are the
+only values that prove no owned input state remains held. `INCOMPLETE`,
+`EXHAUSTED`, and an unknown value from a later ABI minor must be treated
+conservatively.
 
 Windows exposes system delivery for ordinary targets and acknowledged
 background delivery only for the dedicated fixture class. macOS exposes system
@@ -533,20 +551,28 @@ CMake targets are available as well, and are what a C++ consumer uses; see
 
 The native C examples have two modes. `--check` creates the real platform
 engine, verifies capability reporting, and reads only non-prompting permission
-state; it stops before discovery and sends no input, so `c-abi-check` runs it in
-CI. Passing the exact full title of a dedicated input fixture enables discovery,
-capture, mapping, a bounded pointer/keyboard sequence, receipt inspection, and
-explicit session close:
+state; it stops before discovery and sends no input. That remains the default on
+macOS and for an ordinary local run:
 
 ```sh
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
-target/debug/c-abi-check/macos-native-input \
-  "MadoPilot Input Fixture [<pid>]"
 ```
 
-Use `windows-native-input.exe` on Windows. The full-title mode sends native
-input; run it only against the fixture you started. The corresponding C++ flow
-uses the same stem with `-cpp`.
+On Windows, `--windows-native-fixture` launches the already-built dedicated
+fixture, parses its PID-qualified title, runs both native C and C++ common flows
+against that exact title, and terminates the fixture:
+
+```bat
+cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture
+cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>" --windows-native-fixture
+```
+
+The fixture-backed flow covers discovery, capture, mapping, one bounded
+pointer/keyboard sequence, receipt inspection, and explicit session close. It
+uses acknowledged background delivery, preserves focus, permits no system-input
+fallback, and prints no title or typed text. Passing an exact full fixture title
+directly to `windows-native-input.exe` or its `-cpp` counterpart exercises the
+same flow when the caller owns the fixture lifecycle.
 
 ## How the header is verified
 

@@ -845,6 +845,19 @@ private:
 /// value, so the view produced by `to_c()` remains valid while this event does.
 class InputEvent {
 public:
+    static constexpr std::uint32_t max_text_chars =
+        MADOPILOT_INPUT_MAX_TEXT_CHARS;
+    static constexpr std::size_t max_text_utf8_bytes =
+        MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES;
+    static constexpr std::uint64_t max_delay_nanos =
+        MADOPILOT_INPUT_MAX_DELAY_NANOS;
+    static constexpr std::int32_t max_scroll_notches =
+        MADOPILOT_INPUT_MAX_SCROLL_NOTCHES;
+    static constexpr std::uint32_t min_function_key =
+        MADOPILOT_INPUT_MIN_FUNCTION_KEY;
+    static constexpr std::uint32_t max_function_key =
+        MADOPILOT_INPUT_MAX_FUNCTION_KEY;
+
     static InputEvent pointer_move(Space space, double x, double y) noexcept {
         InputEvent event;
         event.kind_ = MADOPILOT_INPUT_EVENT_POINTER_MOVE;
@@ -1146,9 +1159,11 @@ struct InputFailure {
     std::uint32_t cleanup_released = 0;
     std::uint32_t cleanup_owed = 0;
 
-    bool may_leave_state_held() const noexcept {
-        return cleanup == MADOPILOT_CLEANUP_INCOMPLETE ||
-               cleanup == MADOPILOT_CLEANUP_EXHAUSTED;
+    /// Only the two known safe values prove that no owned state remains held.
+    /// An unknown value from a later C minor is therefore conservative.
+    constexpr bool may_leave_state_held() const noexcept {
+        return cleanup != MADOPILOT_CLEANUP_NOT_NEEDED &&
+               cleanup != MADOPILOT_CLEANUP_COMPLETE;
     }
 };
 
@@ -1681,6 +1696,14 @@ private:
 /// borrowed and must stay retained until `Session::send_input` returns.
 class InputRequest {
 public:
+    /// The ABI ceiling; a target descriptor may advertise a lower value.
+    static constexpr std::size_t abi_max_events =
+        MADOPILOT_INPUT_MAX_EVENTS;
+    static constexpr std::uint32_t max_cleanup_events =
+        MADOPILOT_INPUT_MAX_CLEANUP_EVENTS;
+    static constexpr std::uint64_t max_cleanup_timeout_nanos =
+        MADOPILOT_INPUT_MAX_CLEANUP_NANOS;
+
     InputRequest() noexcept = default;
 
     InputRequest& event(InputEvent event) {
