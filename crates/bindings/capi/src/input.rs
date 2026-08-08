@@ -1706,6 +1706,43 @@ mod tests {
     }
 
     #[test]
+    fn repeated_oversized_text_views_fail_before_controller_admission() {
+        let fixture = InputFixture::new();
+        let character_count = usize::try_from(MADOPILOT_INPUT_MAX_TEXT_CHARS)
+            .expect("the ABI text-character ceiling fits usize")
+            + 1;
+        let text = "x".repeat(character_count);
+        let mut event = event(MADOPILOT_INPUT_EVENT_TEXT);
+        event.text = madopilot_str_t::borrowed(&text);
+        let event_count =
+            usize::try_from(MADOPILOT_INPUT_MAX_EVENTS).expect("the ABI event ceiling fits usize");
+        let events = vec![event; event_count];
+        let deliveries = [MADOPILOT_INPUT_DELIVERY_SYSTEM];
+        let request = InputFixture::request_events(&events, &deliveries);
+        let operation = operation();
+        let mut receipt = receipt();
+        receipt.flags = u32::MAX;
+        receipt.delivered = u32::MAX;
+        let mut error = ptr::null_mut();
+
+        let status = session_send_input(
+            fixture.session,
+            &raw const request,
+            &raw const operation,
+            &raw mut receipt,
+            &raw mut error,
+        );
+
+        assert_eq!(status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+        assert_eq!(receipt.flags, 0);
+        assert_eq!(receipt.delivered, 0);
+        assert!(!error.is_null());
+        assert!(fixture.input.admitted().is_empty());
+        assert!(fixture.input.delivered().is_empty());
+        assert_eq!(error::release(error), MADOPILOT_STATUS_OK);
+    }
+
+    #[test]
     fn a_complete_sequence_is_successful_receipt_data() {
         let fixture = InputFixture::new();
         let mut event = event(MADOPILOT_INPUT_EVENT_TEXT);
