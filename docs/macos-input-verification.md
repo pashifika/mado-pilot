@@ -281,6 +281,33 @@ actionable message rather than sending input somewhere else. It focuses the
 window it selects and types into it, which is what system delivery on macOS
 means; point it only at a window you own.
 
+## Explicit C and C++ boundary checks
+
+The ABI check compiles and runs both native common-flow examples in `--check`
+mode. That mode creates the real macOS engine, verifies the ABI 1.1 capability
+and permission records without prompting, and stops before discovery or input:
+
+```sh
+cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
+  --label "<host>"
+```
+
+After starting the dedicated fixture, the same binaries exercise engine
+construction, both permission reads, exact discovery, capture, mapping, a
+frame-bound system-input request, the immutable receipt, and explicit close
+through C and then through the header-only C++ wrapper:
+
+```sh
+target/debug/c-abi-check/macos-native-input \
+  "MadoPilot Input Fixture [<pid>]"
+target/debug/c-abi-check/macos-native-input-cpp \
+  "MadoPilot Input Fixture [<pid>]"
+```
+
+Full mode focuses and sends input. Apply the same Screen Recording,
+Accessibility, exact-title, and owned-window restrictions as the Rust facade
+check. `--check` remains the only mode run unattended.
+
 ## Redaction review
 
 Production input code emits no event, key, text, window-title, signing identifier,

@@ -96,8 +96,7 @@ enum {
     MADOPILOT_STATUS_INTERNAL = 11,
     /* A panic was contained at the boundary. No unwind crossed into C, every
      * valid output is in its failure state, and handles unrelated to the failed
-     * call remain usable. For a side-effecting call, the failure state does not
-     * prove that no native effect occurred. */
+     * call remain usable. */
     MADOPILOT_STATUS_INTERNAL_PANIC = 12,
     /* Input was refused before admission and no terminal receipt exists. */
     MADOPILOT_STATUS_INPUT_FAILED = 13
@@ -529,6 +528,7 @@ enum {
 /* madopilot_input_descriptor_t presence bits. */
 #define MADOPILOT_INPUT_DESCRIPTOR_HAS_PERMISSION 0x1u
 
+
 /* madopilot_input_request_t supplies explicit cleanup bounds. */
 #define MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET 0x1u
 
@@ -855,8 +855,8 @@ typedef struct madopilot_target_t {
     uint32_t reserved; /* Written as zero. */
 } madopilot_target_t;
 
-/* What an open session accepted. Mandatory prefix: through coordinate_spaces.
- * ABI 1.1 appends target, accepts_input, and reserved without moving that prefix. */
+/* What an open session accepted. Mandatory prefix: through coordinate_spaces
+ * for ABI 1.0 and through reserved for ABI 1.1. */
 typedef struct madopilot_session_info_t {
     uint32_t struct_size;
     uint32_t flags; /* No bits defined; the library writes zero. */

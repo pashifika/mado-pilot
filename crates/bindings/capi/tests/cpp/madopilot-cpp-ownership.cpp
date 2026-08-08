@@ -132,6 +132,15 @@ struct indexes : std::false_type {};
 template <class T>
 struct indexes<T, std::void_t<decltype(std::declval<T>().at(0))>> : std::true_type {};
 
+template <class T, class = void>
+struct probes_permission : std::false_type {};
+
+template <class T>
+struct probes_permission<
+    T, std::void_t<decltype(std::declval<T>().permission(
+           MADOPILOT_PERMISSION_KIND_SCREEN_CAPTURE, std::declval<madopilot::Operation>()))>>
+    : std::true_type {};
+
 } // namespace
 
 static_assert(describes<madopilot::Package&>::value, "a named package describes itself");
@@ -145,13 +154,90 @@ static_assert(describes<madopilot::MatchResult&>::value, "a named result describ
 static_assert(!describes<madopilot::MatchResult>::value, "a temporary result does not");
 static_assert(indexes<madopilot::TargetList&>::value, "a named target list is indexable");
 static_assert(!indexes<madopilot::TargetList>::value, "a temporary target list is not");
+static_assert(probes_permission<madopilot::Engine&>::value,
+              "a named engine may return a borrowed permission diagnostic");
+static_assert(!probes_permission<madopilot::Engine>::value,
+              "a temporary engine may not return borrowed permission views");
 
-/* Requests are values a caller composes and reuses. */
+/* Requests and projections are values a caller composes, copies, and reuses. */
 static_assert(std::is_copy_constructible_v<madopilot::Operation>, "Operation is a value");
 static_assert(std::is_copy_constructible_v<madopilot::FindRequest>,
               "FindRequest is a value");
 static_assert(std::is_copy_constructible_v<madopilot::Source>, "Source is a value");
-
+static_assert(std::is_copy_constructible_v<madopilot::InputOpenRequest>,
+              "InputOpenRequest is a value");
+static_assert(std::is_copy_constructible_v<madopilot::InputEvent>,
+              "InputEvent owns its variable data");
+static_assert(std::is_copy_constructible_v<madopilot::InputRequest>,
+              "InputRequest owns its event and delivery arrays");
+static_assert(std::is_copy_constructible_v<madopilot::EngineCapabilities>,
+              "EngineCapabilities is a value");
+static_assert(std::is_copy_constructible_v<madopilot::InputReceipt>,
+              "InputReceipt owns its terminal account");
+static_assert(std::is_copy_constructible_v<madopilot::OpenRequest>,
+              "OpenRequest owns its input policy");
+static_assert(std::is_copy_constructible_v<madopilot::Permission>,
+              "Permission is a value with explicitly borrowed diagnostic views");
+static_assert(std::is_copy_constructible_v<madopilot::TargetCapability>,
+              "TargetCapability contains no borrowed storage");
+static_assert(std::is_copy_constructible_v<madopilot::InputDescriptor>,
+              "InputDescriptor contains no borrowed storage");
+static_assert(std::is_copy_constructible_v<madopilot::InputFailure>,
+              "InputFailure is receipt data");
+static_assert(madopilot::InputEvent::max_text_chars ==
+                  MADOPILOT_INPUT_MAX_TEXT_CHARS &&
+                  madopilot::InputEvent::max_text_utf8_bytes ==
+                      MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES &&
+                  madopilot::InputEvent::max_delay_nanos ==
+                      MADOPILOT_INPUT_MAX_DELAY_NANOS &&
+                  madopilot::InputEvent::max_scroll_notches ==
+                      MADOPILOT_INPUT_MAX_SCROLL_NOTCHES &&
+                  madopilot::InputEvent::min_function_key ==
+                      MADOPILOT_INPUT_MIN_FUNCTION_KEY &&
+                  madopilot::InputEvent::max_function_key ==
+                      MADOPILOT_INPUT_MAX_FUNCTION_KEY,
+              "InputEvent exposes the C contract ceilings without restating them");
+static_assert(madopilot::InputRequest::abi_max_events ==
+                  MADOPILOT_INPUT_MAX_EVENTS &&
+                  madopilot::InputRequest::max_cleanup_events ==
+                      MADOPILOT_INPUT_MAX_CLEANUP_EVENTS &&
+                  madopilot::InputRequest::max_cleanup_timeout_nanos ==
+                      MADOPILOT_INPUT_MAX_CLEANUP_NANOS,
+              "InputRequest exposes the C sequence and cleanup ceilings");
+static_assert(!madopilot::InputFailure{
+                   MADOPILOT_INPUT_FAULT_NONE,
+                   MADOPILOT_CLEANUP_NOT_NEEDED,
+                   0,
+                   0,
+               }.may_leave_state_held());
+static_assert(!madopilot::InputFailure{
+                   MADOPILOT_INPUT_FAULT_NONE,
+                   MADOPILOT_CLEANUP_COMPLETE,
+                   0,
+                   0,
+               }.may_leave_state_held());
+static_assert(madopilot::InputFailure{
+                  MADOPILOT_INPUT_FAULT_NONE,
+                  MADOPILOT_CLEANUP_INCOMPLETE,
+                  0,
+                  0,
+              }.may_leave_state_held());
+static_assert(madopilot::InputFailure{
+                  MADOPILOT_INPUT_FAULT_NONE,
+                  static_cast<madopilot::CleanupState>(99),
+                  0,
+                  0,
+              }.may_leave_state_held(),
+              "an unknown cleanup value must conservatively warn about held state");
+static_assert(std::is_same_v<madopilot::PermissionState,
+                             ::madopilot_permission_state_t> &&
+                  std::is_same_v<madopilot::CapabilitySupport,
+                                 ::madopilot_capability_support_t> &&
+                  std::is_same_v<madopilot::SequenceOutcome,
+                                 ::madopilot_sequence_outcome_t> &&
+                  std::is_same_v<madopilot::InputFault,
+                                 ::madopilot_input_fault_t>,
+              "C++ preserves unknown C values instead of narrowing them");
 /* ---------------------------------------------------------------------------
  * Run-time: the ownership behaviour
  * ------------------------------------------------------------------------ */
@@ -637,8 +723,8 @@ void zero_matches_is_a_success(Fixture& fixture)
 /// A caller-supplied region must be in capture pixels. Any other space is the
 /// C ABI's own refusal, carried through unchanged and not converted.
 ///
-/// The status is asserted rather than merely checked for failure: the Phase 1
-/// prefix has no coordinate-conversion entry, so a region it does not read is
+/// The status is asserted rather than merely checked for failure: the C ABI has
+/// no general coordinate-conversion entry, so a region it does not read is
 /// invalid argument from the boundary, not `MADOPILOT_STATUS_UNSUPPORTED`. That
 /// distinction is what `docs/c-abi.md` documents, and a check that only asked
 /// "did it fail" would pass whichever status the boundary chose.
@@ -675,6 +761,215 @@ void an_unsupported_coordinate_space_is_refused(Fixture& fixture)
     check(!unsearched, "a search region in an unsupported space does not search");
     check(unsearched.status() == MADOPILOT_STATUS_INVALID_ARGUMENT,
           "with the same status the mapping entry gave");
+}
+
+/// ABI 1.1 projects capture-only wiring explicitly: supported capture, no
+/// permission probe, and no input delivery. Unsupported work is a failed
+/// `Result`; successful capability queries remain ordinary values.
+void abi_1_1_replay_capabilities_are_explicit(Fixture& fixture)
+{
+    const auto engine_capabilities = fixture.engine.capabilities();
+    if (check_ok(engine_capabilities, "engine capabilities")) {
+        check(!engine_capabilities.value().delivers_input(),
+              "the replay engine reports no input adapter");
+        check(!engine_capabilities.value().reads_permissions(),
+              "the replay engine reports no permission probe");
+    }
+
+    const auto target = fixture.targets.at(0);
+    const auto target_capability = fixture.targets.capability(0);
+    if (check_ok(target, "target") &&
+        check_ok(target_capability, "target capability")) {
+        check(target_capability.value().target == target.value().target,
+              "capability identity matches discovery");
+        check(target_capability.value().capture == MADOPILOT_CAPABILITY_SUPPORTED,
+              "replay capture is supported");
+        check(target_capability.value().input_pairs == 0,
+              "capture-only discovery accepts no input pair");
+        check(!target_capability.value().input_permission.has_value(),
+              "capture-only discovery names no input permission");
+    }
+
+    const auto engine_descriptor =
+        fixture.engine.input_descriptor(fixture.targets, 0, fixture.operation);
+    const auto session_descriptor = fixture.session.input_descriptor();
+    if (check_ok(engine_descriptor, "engine input descriptor") &&
+        check_ok(session_descriptor, "session input descriptor")) {
+        check(engine_descriptor.value().target == session_descriptor.value().target,
+              "pre-open and accepted descriptors name the same target");
+        check(engine_descriptor.value().pairs == 0 &&
+                  session_descriptor.value().pairs == 0,
+              "both descriptors report capture-only input");
+        check(!session_descriptor.value().permission.has_value(),
+              "the accepted descriptor names no input permission");
+    }
+
+    const auto permission = fixture.engine.permission(
+        MADOPILOT_PERMISSION_KIND_SCREEN_CAPTURE, fixture.operation);
+    check(!permission && permission.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "an absent permission probe is unsupported");
+    check(permission.error().category() == MADOPILOT_ERROR_CATEGORY_PERMISSION,
+          "the unsupported probe remains a permission failure");
+
+    madopilot::InputRequest request;
+    request.event(madopilot::InputEvent::delay(1))
+        .delivery(MADOPILOT_INPUT_DELIVERY_SYSTEM);
+    const auto refused = fixture.session.send_input(request, fixture.operation);
+    check(!refused && refused.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "a capture-only session refuses unavailable input before admission");
+    check(refused.error().category() == MADOPILOT_ERROR_CATEGORY_INPUT,
+          "the refusal carries an owned input error");
+}
+
+/// Variable-size request data belongs to the C++ values that expose it. Copies
+/// rebuild their C views from their own strings and arrays.
+void abi_1_1_requests_own_their_storage(Fixture& fixture)
+{
+    std::string source_text = "copied text";
+    const madopilot::InputEvent text = madopilot::InputEvent::text(source_text);
+    source_text.assign("changed");
+
+    madopilot::InputRequest original;
+    original.event(text)
+        .delivery(MADOPILOT_INPUT_DELIVERY_BACKGROUND_TARGET)
+        .delivery(MADOPILOT_INPUT_DELIVERY_SYSTEM)
+        .focus_policy(MADOPILOT_FOCUS_REQUIRE_FOCUSED)
+        .geometry_policy(MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED)
+        .cleanup_budget(4, 5);
+    madopilot::InputRequest copied = original;
+
+    const auto request_view = copied.to_c();
+    const auto second_view = copied.to_c();
+    const auto& request = request_view.value();
+    const auto& second_request = second_view.value();
+    check(request.events != second_request.events,
+          "each C projection owns an independent event-record array");
+    check(request.event_count == 1 && request.events != nullptr,
+          "the copied request owns one event");
+    check(request.event_stride == sizeof(madopilot_input_event_t),
+          "the request advertises the event stride it compiled with");
+    if (request.event_count == 1 && request.events != nullptr) {
+        const auto& event = request.events[0];
+        check(event.kind == MADOPILOT_INPUT_EVENT_TEXT,
+              "the copied event keeps its active variant");
+        check(std::string_view(event.text.data, event.text.len) == "copied text",
+              "the event copied text rather than borrowing its source");
+    }
+    check(request.delivery_count == 2 && request.deliveries != nullptr,
+          "the copied request owns its delivery order");
+    if (request.delivery_count == 2 && request.deliveries != nullptr) {
+        check(request.deliveries[0] == MADOPILOT_INPUT_DELIVERY_BACKGROUND_TARGET &&
+                  request.deliveries[1] == MADOPILOT_INPUT_DELIVERY_SYSTEM,
+              "delivery precedence survives the copy");
+    }
+    check(request.focus_policy == MADOPILOT_FOCUS_REQUIRE_FOCUSED &&
+              request.geometry_policy == MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED,
+          "typed policies survive the copy");
+    check((request.flags & MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET) != 0u &&
+              request.cleanup_max_events == 4 && request.cleanup_timeout_nanos == 5,
+          "the explicit cleanup budget survives the copy");
+
+    madopilot::InputOpenRequest policy;
+    policy.requirement(MADOPILOT_INPUT_REQUIRED)
+        .require_pairs(MADOPILOT_INPUT_PAIR_POINTER_SYSTEM)
+        .prefer_pairs(MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM);
+    madopilot::OpenRequest open;
+    open.input(policy);
+    policy.requirement(MADOPILOT_INPUT_OPTIONAL).require_pairs(0);
+
+    madopilot::OpenRequest open_copy = open;
+    const auto refused =
+        fixture.engine.open_session(fixture.targets, 0, open_copy, fixture.operation);
+    check(!refused && refused.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "the copied open request keeps its required input policy");
+    if (!refused) {
+        check(refused.error().category() == MADOPILOT_ERROR_CATEGORY_INPUT,
+              "a required-input open refusal keeps the input error category");
+    }
+}
+
+/// Every owner remembers the negotiated table prefix. A full ABI 1.1 library
+/// loaded through the frozen 1.0 extent must refuse every 1.1 wrapper method
+/// without reading the appended slots.
+void an_old_table_extent_hides_every_abi_1_1_entry(Fixture& fixture)
+{
+    auto loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, 0, MADOPILOT_API_SIZE_ABI_1_0);
+    if (!check_ok(loaded, "load the frozen 1.0 extent")) {
+        return;
+    }
+    madopilot::Api api = loaded.take();
+    check(api.extent() == MADOPILOT_API_SIZE_ABI_1_0,
+          "the wrapper records the caller-known extent");
+
+    madopilot::ReplayFrame supplied;
+    supplied.extent(SCENE_WIDTH, SCENE_HEIGHT)
+        .format(MADOPILOT_PIXEL_FORMAT_RGBA8)
+        .continuity(MADOPILOT_CONTINUITY_CONTINUOUS)
+        .pixels(fixture.scene.data(), fixture.scene.size());
+    auto source = madopilot::Source::replay_memory("old-prefix");
+    source.frame(supplied);
+
+    auto built = api.create_engine(source, fixture.operation);
+    if (!check_ok(built, "create an engine through the old prefix")) {
+        return;
+    }
+    madopilot::Engine engine = built.take();
+
+    const auto capabilities = engine.capabilities();
+    check(!capabilities && capabilities.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "an old-prefix engine cannot read engine_capabilities");
+    madopilot::Engine cloned = engine.clone();
+    check(cloned.extent() == MADOPILOT_API_SIZE_ABI_1_0,
+          "a clone preserves the negotiated extent");
+    const auto permission = cloned.permission(
+        MADOPILOT_PERMISSION_KIND_SCREEN_CAPTURE, fixture.operation);
+    check(!permission && permission.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "an old-prefix clone cannot read engine_permission");
+
+    auto discovered = engine.discover(fixture.operation);
+    if (!check_ok(discovered, "discover through the old prefix")) {
+        return;
+    }
+    madopilot::TargetList targets = discovered.take();
+    const auto target_capability = targets.capability(0);
+    check(!target_capability &&
+              target_capability.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "an old-prefix child cannot read target_list_capability");
+    const auto input_descriptor =
+        engine.input_descriptor(targets, 0, fixture.operation);
+    check(!input_descriptor &&
+              input_descriptor.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "an old-prefix engine cannot read engine_input_descriptor");
+
+    madopilot::InputOpenRequest required_input;
+    required_input.requirement(MADOPILOT_INPUT_REQUIRED)
+        .require_pairs(MADOPILOT_INPUT_PAIR_POINTER_SYSTEM);
+    madopilot::OpenRequest input_open;
+    input_open.input(required_input);
+    const auto input_session =
+        engine.open_session(targets, 0, input_open, fixture.operation);
+    check(!input_session &&
+              input_session.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "an old-prefix engine cannot call session_open_with_input");
+
+    madopilot::OpenRequest open;
+    open.require_format(MADOPILOT_PIXEL_FORMAT_RGBA8);
+    auto opened = engine.open_session(targets, 0, open, fixture.operation);
+    if (!check_ok(opened, "open through the old prefix")) {
+        return;
+    }
+    madopilot::Session session = opened.take();
+    const auto accepted = session.input_descriptor();
+    check(!accepted && accepted.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "an old-prefix session cannot read session_input_descriptor");
+
+    madopilot::InputRequest request;
+    request.event(madopilot::InputEvent::delay(1))
+        .delivery(MADOPILOT_INPUT_DELIVERY_SYSTEM);
+    const auto receipt = session.send_input(request, fixture.operation);
+    check(!receipt && receipt.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "an old-prefix session cannot call session_send_input");
 }
 
 /// Close is explicit, idempotent, and reports its outcome to the caller.
@@ -804,6 +1099,12 @@ int main(int argc, char** argv)
     run("zero matches is a success", zero_matches_is_a_success, fixture);
     run("an unsupported coordinate space is refused",
         an_unsupported_coordinate_space_is_refused, fixture);
+    run("ABI 1.1 replay capabilities are explicit",
+        abi_1_1_replay_capabilities_are_explicit, fixture);
+    run("ABI 1.1 requests own their storage",
+        abi_1_1_requests_own_their_storage, fixture);
+    run("an old table extent hides every ABI 1.1 entry",
+        an_old_table_extent_hides_every_abi_1_1_entry, fixture);
     run("close reports its outcome", close_reports_its_outcome, fixture);
     run("concurrent readers use explicit clones", concurrent_readers_use_explicit_clones,
         fixture);

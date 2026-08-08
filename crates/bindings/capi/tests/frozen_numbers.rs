@@ -5,10 +5,10 @@
 //! cross-language mechanism covers only the first: `tests/c/madopilot-abi-layout.c`
 //! reports sizes, alignments, and offsets, so a header-versus-Rust renumbering
 //! of a status passes it. This file is the second half. It has no C toolchain
-//! to compare against, so it compares three things instead — what
-//! `docs/adr/0007-phase-1-c-abi-freeze.md` froze, what the Rust definitions say,
-//! and what the hand-written header declares — and requires all three to agree
-//! in both directions.
+//! to compare against, so it compares three things instead — what the accepted
+//! ABI freeze records fixed, what the Rust definitions say, and what the
+//! hand-written header declares — and requires all three to agree in both
+//! directions.
 //!
 //! A number here is permanent for ABI major 1. A caller that switches on `7`
 //! and later gets a different meaning has no way to detect it, which is the
@@ -42,18 +42,26 @@ const NOT_A_NUMBER: &[&str] = &[
     // `tests/layout.rs::the_information_prefix_ends_at_status_text` against the
     // member it names, and by the frozen layout report.
     "MADOPILOT_API_SIZE_INFORMATION",
+    "MADOPILOT_API_SIZE_ABI_1_0",
+    "MADOPILOT_API_SIZE_SESSION_OPEN_WITH_INPUT",
+    "MADOPILOT_API_SIZE_ENGINE_CAPABILITIES",
+    "MADOPILOT_API_SIZE_ENGINE_PERMISSION",
+    "MADOPILOT_API_SIZE_TARGET_LIST_CAPABILITY",
+    "MADOPILOT_API_SIZE_ENGINE_INPUT_DESCRIPTOR",
+    "MADOPILOT_API_SIZE_SESSION_INPUT_DESCRIPTOR",
+    "MADOPILOT_API_SIZE_SESSION_SEND_INPUT",
 ];
 
 macro_rules! frozen {
     ($($name:ident = $value:literal,)*) => {
         /// Every frozen number: its name, what this library defines it as, and
-        /// what ADR 0007 froze it at.
+        /// what the accepted ABI freeze records fixed it at.
         ///
         /// The middle column is the Rust constant itself, so this table cannot
         /// be satisfied by editing it alone — the value has to be a literal
         /// copied from the ADR, and the constant has to still equal it.
-        const FROZEN: &[(&str, i64, i64)] = &[
-            $((stringify!($name), $name as i64, $value),)*
+        const FROZEN: &[(&str, i128, i128)] = &[
+            $((stringify!($name), $name as i128, $value),)*
         ];
     };
 }
@@ -61,7 +69,7 @@ macro_rules! frozen {
 frozen! {
     // The ABI this header and this library are.
     MADOPILOT_ABI_MAJOR = 1,
-    MADOPILOT_ABI_MINOR = 0,
+    MADOPILOT_ABI_MINOR = 1,
 
     // Statuses. Thirteen values, permanent for ABI major 1.
     MADOPILOT_STATUS_OK = 0,
@@ -77,6 +85,7 @@ frozen! {
     MADOPILOT_STATUS_VISION_FAILED = 10,
     MADOPILOT_STATUS_INTERNAL = 11,
     MADOPILOT_STATUS_INTERNAL_PANIC = 12,
+    MADOPILOT_STATUS_INPUT_FAILED = 13,
 
     // The subsystem a failure came from.
     MADOPILOT_ERROR_CATEGORY_UNSPECIFIED = 0,
@@ -87,6 +96,8 @@ frozen! {
     MADOPILOT_ERROR_CATEGORY_ASSET = 5,
     MADOPILOT_ERROR_CATEGORY_VISION = 6,
     MADOPILOT_ERROR_CATEGORY_GEOMETRY = 7,
+    MADOPILOT_ERROR_CATEGORY_PERMISSION = 8,
+    MADOPILOT_ERROR_CATEGORY_INPUT = 9,
 
     // Coordinate spaces. Every public rectangle names one.
     MADOPILOT_SPACE_CAPTURE_PIXELS = 0,
@@ -109,6 +120,8 @@ frozen! {
 
     MADOPILOT_SOURCE_REPLAY_MEMORY = 0,
     MADOPILOT_SOURCE_REPLAY_DIRECTORY = 1,
+    MADOPILOT_SOURCE_NATIVE_WINDOWS = 2,
+    MADOPILOT_SOURCE_NATIVE_MACOS = 3,
 
     MADOPILOT_PACKAGE_SOURCE_DIRECTORY = 0,
     MADOPILOT_PACKAGE_SOURCE_ARCHIVE_FILE = 1,
@@ -156,6 +169,144 @@ frozen! {
     MADOPILOT_ASSET_STAGE_EXPANSION = 7,
     MADOPILOT_ASSET_STAGE_COMMIT = 8,
 
+    // Phase 2 native capability, permission, and input values.
+    MADOPILOT_DIAGNOSTIC_UNSPECIFIED = 0,
+    MADOPILOT_DIAGNOSTIC_PERMISSION_DENIED = 1,
+    MADOPILOT_DIAGNOSTIC_PERMISSION_UNDETERMINED = 2,
+    MADOPILOT_DIAGNOSTIC_CAPABILITY_UNAVAILABLE = 3,
+    MADOPILOT_DIAGNOSTIC_TARGET_LOST = 4,
+    MADOPILOT_DIAGNOSTIC_PLATFORM_FAILURE = 5,
+    MADOPILOT_DIAGNOSTIC_CONFIGURATION = 6,
+
+    MADOPILOT_PERMISSION_KIND_UNSPECIFIED = 0,
+    MADOPILOT_PERMISSION_KIND_SCREEN_CAPTURE = 1,
+    MADOPILOT_PERMISSION_KIND_INPUT_CONTROL = 2,
+
+    MADOPILOT_PERMISSION_STATE_UNKNOWN = 0,
+    MADOPILOT_PERMISSION_STATE_GRANTED = 1,
+    MADOPILOT_PERMISSION_STATE_NOT_GRANTED = 2,
+    MADOPILOT_PERMISSION_STATE_UNAVAILABLE = 3,
+
+    MADOPILOT_TARGET_KIND_UNKNOWN = 0,
+    MADOPILOT_TARGET_KIND_WINDOW = 1,
+    MADOPILOT_TARGET_KIND_DISPLAY = 2,
+
+    MADOPILOT_CAPABILITY_UNKNOWN = 0,
+    MADOPILOT_CAPABILITY_SUPPORTED = 1,
+    MADOPILOT_CAPABILITY_UNSUPPORTED = 2,
+
+    MADOPILOT_INPUT_OPERATION_UNKNOWN = 0,
+    MADOPILOT_INPUT_OPERATION_POINTER = 1,
+    MADOPILOT_INPUT_OPERATION_KEYBOARD = 2,
+    MADOPILOT_INPUT_OPERATION_TEXT = 3,
+
+    MADOPILOT_INPUT_DELIVERY_NONE = 0,
+    MADOPILOT_INPUT_DELIVERY_SYSTEM = 1,
+    MADOPILOT_INPUT_DELIVERY_BACKGROUND_TARGET = 2,
+
+    MADOPILOT_INPUT_OPTIONAL = 0,
+    MADOPILOT_INPUT_REQUIRED = 1,
+
+    MADOPILOT_FOCUS_PRESERVE = 0,
+    MADOPILOT_FOCUS_REQUIRE_FOCUSED = 1,
+    MADOPILOT_FOCUS_ACTIVATE_IF_REQUIRED = 2,
+
+    MADOPILOT_GEOMETRY_REPROJECT_CURRENT = 0,
+    MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED = 1,
+    MADOPILOT_GEOMETRY_USE_FRAME_SNAPSHOT = 2,
+
+    MADOPILOT_POINTER_BUTTON_UNKNOWN = 0,
+    MADOPILOT_POINTER_BUTTON_PRIMARY = 1,
+    MADOPILOT_POINTER_BUTTON_SECONDARY = 2,
+    MADOPILOT_POINTER_BUTTON_MIDDLE = 3,
+
+    MADOPILOT_MODIFIER_UNKNOWN = 0,
+    MADOPILOT_MODIFIER_SHIFT = 1,
+    MADOPILOT_MODIFIER_CONTROL = 2,
+    MADOPILOT_MODIFIER_ALT = 3,
+    MADOPILOT_MODIFIER_META = 4,
+
+    MADOPILOT_KEY_UNKNOWN = 0,
+    MADOPILOT_KEY_CHARACTER = 1,
+    MADOPILOT_KEY_FUNCTION = 2,
+    MADOPILOT_KEY_MODIFIER = 3,
+    MADOPILOT_KEY_ENTER = 4,
+    MADOPILOT_KEY_TAB = 5,
+    MADOPILOT_KEY_BACKSPACE = 6,
+    MADOPILOT_KEY_DELETE = 7,
+    MADOPILOT_KEY_ESCAPE = 8,
+    MADOPILOT_KEY_SPACE = 9,
+    MADOPILOT_KEY_ARROW_UP = 10,
+    MADOPILOT_KEY_ARROW_DOWN = 11,
+    MADOPILOT_KEY_ARROW_LEFT = 12,
+    MADOPILOT_KEY_ARROW_RIGHT = 13,
+    MADOPILOT_KEY_HOME = 14,
+    MADOPILOT_KEY_END = 15,
+    MADOPILOT_KEY_PAGE_UP = 16,
+    MADOPILOT_KEY_PAGE_DOWN = 17,
+
+    MADOPILOT_INPUT_EVENT_UNKNOWN = 0,
+    MADOPILOT_INPUT_EVENT_POINTER_MOVE = 1,
+    MADOPILOT_INPUT_EVENT_POINTER_PRESS = 2,
+    MADOPILOT_INPUT_EVENT_POINTER_RELEASE = 3,
+    MADOPILOT_INPUT_EVENT_POINTER_SCROLL = 4,
+    MADOPILOT_INPUT_EVENT_KEY_PRESS = 5,
+    MADOPILOT_INPUT_EVENT_KEY_RELEASE = 6,
+    MADOPILOT_INPUT_EVENT_TEXT = 7,
+    MADOPILOT_INPUT_EVENT_DELAY = 8,
+
+    MADOPILOT_INPUT_MAX_EVENTS = 256,
+    MADOPILOT_INPUT_MAX_TEXT_CHARS = 4096,
+    MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES = 16384,
+    MADOPILOT_INPUT_MAX_DELAY_NANOS = 5000000000,
+    MADOPILOT_INPUT_MAX_SCROLL_NOTCHES = 120,
+    MADOPILOT_INPUT_MIN_FUNCTION_KEY = 1,
+    MADOPILOT_INPUT_MAX_FUNCTION_KEY = 24,
+    MADOPILOT_INPUT_MAX_CLEANUP_EVENTS = 256,
+    MADOPILOT_INPUT_MAX_CLEANUP_NANOS = 250000000,
+
+    MADOPILOT_SEQUENCE_UNEXECUTED = 0,
+    MADOPILOT_SEQUENCE_COMPLETE = 1,
+    MADOPILOT_SEQUENCE_PARTIAL = 2,
+
+    MADOPILOT_CLEANUP_NOT_NEEDED = 0,
+    MADOPILOT_CLEANUP_COMPLETE = 1,
+    MADOPILOT_CLEANUP_INCOMPLETE = 2,
+    MADOPILOT_CLEANUP_EXHAUSTED = 3,
+
+    MADOPILOT_INPUT_FAULT_NONE = 0,
+    MADOPILOT_INPUT_FAULT_FOREIGN_TARGET = 1,
+    MADOPILOT_INPUT_FAULT_UNKNOWN_TARGET = 2,
+    MADOPILOT_INPUT_FAULT_TARGET_LOST = 3,
+    MADOPILOT_INPUT_FAULT_PROVIDER_MISMATCH = 4,
+    MADOPILOT_INPUT_FAULT_UNSUPPORTED_COMBINATION = 5,
+    MADOPILOT_INPUT_FAULT_INVALID_DELIVERY_PLAN = 6,
+    MADOPILOT_INPUT_FAULT_DELIVERY_UNAVAILABLE = 7,
+    MADOPILOT_INPUT_FAULT_SEQUENCE_OUT_OF_BOUNDS = 8,
+    MADOPILOT_INPUT_FAULT_UNSUPPORTED_COORDINATE = 9,
+    MADOPILOT_INPUT_FAULT_MISSING_COORDINATE_SOURCE = 10,
+    MADOPILOT_INPUT_FAULT_GEOMETRY_CHANGED = 11,
+    MADOPILOT_INPUT_FAULT_FOCUS_REQUIRED = 12,
+    MADOPILOT_INPUT_FAULT_FOCUS_REFUSED = 13,
+    MADOPILOT_INPUT_FAULT_NOT_AUTHORIZED = 14,
+    MADOPILOT_INPUT_FAULT_POLICY_REFUSED = 15,
+    MADOPILOT_INPUT_FAULT_CONTROLLER_CLOSED = 16,
+    MADOPILOT_INPUT_FAULT_CANCELLED = 17,
+    MADOPILOT_INPUT_FAULT_DEADLINE_EXCEEDED = 18,
+    MADOPILOT_INPUT_FAULT_DELIVERY_FAILED = 19,
+
+    MADOPILOT_INPUT_PAIR_POINTER_SYSTEM = 0x1,
+    MADOPILOT_INPUT_PAIR_POINTER_BACKGROUND = 0x2,
+    MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM = 0x4,
+    MADOPILOT_INPUT_PAIR_KEYBOARD_BACKGROUND = 0x8,
+    MADOPILOT_INPUT_PAIR_TEXT_SYSTEM = 0x10,
+    MADOPILOT_INPUT_PAIR_TEXT_BACKGROUND = 0x20,
+    MADOPILOT_INPUT_PAIRS_ALL = 0x3f,
+
+    MADOPILOT_INPUT_FOCUS_SYSTEM = 0x1,
+    MADOPILOT_INPUT_FOCUS_BACKGROUND = 0x2,
+    MADOPILOT_INPUT_FOCUS_ALL = 0x3,
+
     // Flag bits. A caller masks with these, so a moved bit is as breaking as a
     // renumbered status.
     MADOPILOT_OPERATION_HAS_DEADLINE = 0x1,
@@ -168,6 +319,22 @@ frozen! {
     MADOPILOT_MATCH_HAS_SUPPRESSION = 0x4,
     MADOPILOT_IMAGE_SHARED = 0x1,
     MADOPILOT_TARGET_SUPPORTS_PLACEMENT = 0x1,
+    MADOPILOT_TARGET_HAS_KIND = 0x2,
+    MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION = 0x4,
+    MADOPILOT_ENGINE_DELIVERS_INPUT = 0x1,
+    MADOPILOT_ENGINE_READS_PERMISSIONS = 0x2,
+    MADOPILOT_PERMISSION_HAS_DIAGNOSTIC = 0x1,
+    MADOPILOT_PERMISSION_HAS_PLATFORM_CODE = 0x2,
+    MADOPILOT_TARGET_CAPABILITY_HAS_KIND = 0x1,
+    MADOPILOT_TARGET_CAPABILITY_HAS_CAPTURE_PERMISSION = 0x2,
+    MADOPILOT_TARGET_CAPABILITY_HAS_INPUT_PERMISSION = 0x4,
+    MADOPILOT_INPUT_DESCRIPTOR_HAS_PERMISSION = 0x1,
+    MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET = 0x1,
+    MADOPILOT_INPUT_RECEIPT_HAS_TARGET = 0x1,
+    MADOPILOT_INPUT_RECEIPT_HAS_DELIVERY = 0x2,
+    MADOPILOT_INPUT_RECEIPT_HAS_LAST_COMPLETED = 0x4,
+    MADOPILOT_INPUT_RECEIPT_HAS_FAILURE = 0x8,
+    MADOPILOT_INPUT_RECEIPT_USED_FALLBACK = 0x10,
     MADOPILOT_ERROR_HAS_ASSET_DETAIL = 0x1,
     MADOPILOT_ERROR_HAS_BACKEND = 0x2,
 }
@@ -177,8 +344,8 @@ fn every_frozen_number_is_the_one_this_library_defines() {
     for (name, defined, frozen) in FROZEN {
         assert_eq!(
             defined, frozen,
-            "{name} is {defined} in this build; ADR 0007 froze it at {frozen}, and a number in \
-             that table is permanent for ABI major 1"
+            "{name} is {defined} in this build; the accepted ABI freeze fixed it at \
+             {frozen}, and a number in that table is permanent for ABI major 1"
         );
     }
 }
@@ -255,7 +422,7 @@ fn every_frozen_number_is_declared_by_the_header() {
         assert_eq!(
             *value,
             Some(*frozen),
-            "the header declares `{name}` as {value:?}; ADR 0007 froze it at {frozen}"
+            "the header declares `{name}` as {value:?}; the ABI freeze records fixed it at {frozen}"
         );
     }
 }
@@ -283,7 +450,7 @@ enum Declaration {
 /// `None` means the declaration carries no integer literal, which the tests
 /// above require to be an accounted-for exception rather than something the
 /// parser stepped over.
-fn header_symbols() -> Vec<(String, Option<i64>, Declaration)> {
+fn header_symbols() -> Vec<(String, Option<i128>, Declaration)> {
     let mut declared = Vec::new();
     let mut in_comment = false;
     let mut in_enum = false;
@@ -395,15 +562,20 @@ fn uncommented(line: &str, in_comment: &mut bool) -> String {
     code
 }
 
-/// Reads a C integer literal, decimal or hexadecimal, with any width suffix.
-fn integer(token: &str) -> Option<i64> {
+/// Reads a C integer literal, decimal or hexadecimal, with any width suffix or
+/// the fixed-width `UINT64_C(...)` spelling used for semantic 64-bit masks.
+fn integer(token: &str) -> Option<i128> {
+    let token = token
+        .strip_prefix("UINT64_C(")
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(token);
     let token = token.trim_end_matches(['u', 'U', 'l', 'L']);
 
     match token
         .strip_prefix("0x")
         .or_else(|| token.strip_prefix("0X"))
     {
-        Some(hex) => i64::from_str_radix(hex, 16).ok(),
+        Some(hex) => i128::from_str_radix(hex, 16).ok(),
         None => token.parse().ok(),
     }
 }

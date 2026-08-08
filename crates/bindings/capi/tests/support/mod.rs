@@ -19,7 +19,7 @@ use mado_pilot_testkit::match_fixtures;
 use madopilot::layout::struct_size;
 use madopilot::*;
 
-/// Negotiates the complete Phase 1 table, as a C caller would.
+/// Negotiates the complete current table, as a C caller would.
 pub fn table() -> &'static madopilot_api_t {
     negotiate(
         MADOPILOT_ABI_MAJOR,

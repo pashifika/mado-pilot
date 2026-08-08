@@ -2,21 +2,19 @@
 //!
 //! An engine is the C caller's root handle: it owns the wired capture adapter
 //! and the required matching backend, and every other handle is reached through
-//! it. Phase 1 builds one over a deterministic replay source, because that is
-//! the only capture adapter the facade wires today.
+//! it. ABI 1.1 adds the native release-target wiring without changing replay.
 //!
-//! # The stream identity this module mints
+//! # Boundary identities
 //!
-//! A frame stamp has to carry a fixed-width stream identity, and the facade's
-//! own `StreamId` has no numeric projection to carry. So the boundary mints one
-//! per opened session from a process-wide counter that never reuses a value
-//! while the library is loaded. It correlates frames, results, and sessions with
-//! each other exactly as the Rust identity does; it is not the Rust identity,
-//! and a host that mixes both surfaces cannot compare them. Reviewed and kept
-//! that way by `docs/adr/0006-public-rust-names-and-compatibility-policy.md`:
-//! `StreamId` stays opaque, because the incomparability is unobservable while a
-//! C caller creates its own engine, and the right projection depends on whether
-//! engine identity has to travel with the ordinal.
+//! Facade target and stream identities are deliberately opaque. The C boundary
+//! therefore mints fixed-width nonzero identities from process-wide counters
+//! that never reuse a value while the library is loaded. A target identity is
+//! minted for one discovery snapshot and copied into every session descriptor
+//! and receipt opened from it. A stream identity is minted per open session.
+//! These values correlate C records exactly as their Rust counterparts do; they
+//! are not platform handles and cannot be compared with Rust API identities.
+//! ADR 0006 keeps the facade identities opaque, and ADR 0017 fixes these C
+//! projections.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -24,7 +22,7 @@ use std::time::Duration;
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription};
 
-use crate::boundary::{self, Input, Out, Versioned, inputs, prefixes};
+use crate::boundary::{self, Input, Out, Versioned, covers, inputs, prefixes};
 use crate::error::{self, Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
@@ -33,9 +31,12 @@ use crate::status::{
     madopilot_status_t,
 };
 use crate::types::{
-    MADOPILOT_PIXEL_FORMAT_RGBA8, MADOPILOT_SOURCE_REPLAY_DIRECTORY,
-    MADOPILOT_SOURCE_REPLAY_MEMORY, MADOPILOT_TARGET_SUPPORTS_PLACEMENT, madopilot_replay_frame_t,
-    madopilot_source_t, madopilot_target_t, pixel_format, pixel_format_code, space_code,
+    MADOPILOT_PIXEL_FORMAT_RGBA8, MADOPILOT_SOURCE_NATIVE_MACOS, MADOPILOT_SOURCE_NATIVE_WINDOWS,
+    MADOPILOT_SOURCE_REPLAY_DIRECTORY, MADOPILOT_SOURCE_REPLAY_MEMORY,
+    MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION, MADOPILOT_TARGET_HAS_KIND,
+    MADOPILOT_TARGET_SUPPORTS_PLACEMENT, madopilot_permission_kind_t, madopilot_replay_frame_t,
+    madopilot_source_t, madopilot_target_kind_t, madopilot_target_t, pixel_format,
+    pixel_format_code, space_code,
 };
 use crate::view::{self, madopilot_bytes_t, madopilot_str_t};
 use crate::{handle, hooks};
@@ -54,21 +55,72 @@ opaque! {
     madopilot_target_list_t => TargetList
 }
 
+/// One target and the fixed-width identity minted for its discovery snapshot.
+#[derive(Debug)]
+pub(crate) struct TargetRecord {
+    description: TargetDescription,
+    boundary_id: u64,
+}
+
+impl TargetRecord {
+    fn new(description: TargetDescription) -> Result<Self, Fault> {
+        Ok(Self {
+            description,
+            boundary_id: next_target()?,
+        })
+    }
+
+    pub(crate) const fn description(&self) -> &TargetDescription {
+        &self.description
+    }
+
+    pub(crate) const fn facade_id(&self) -> mado_pilot::TargetId {
+        self.description.id()
+    }
+
+    pub(crate) const fn boundary_id(&self) -> u64 {
+        self.boundary_id
+    }
+}
+
 /// The payload behind a target-list handle.
 #[derive(Debug)]
-pub(crate) struct TargetList(Vec<TargetDescription>);
+pub(crate) struct TargetList(Vec<TargetRecord>);
 
 impl TargetList {
-    pub(crate) fn targets(&self) -> &[TargetDescription] {
+    pub(crate) fn targets(&self) -> &[TargetRecord] {
         &self.0
     }
 }
 
 /// Mints the next boundary stream identity.
-pub(crate) fn next_stream() -> u64 {
+pub(crate) fn next_stream() -> Result<u64, Fault> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
 
-    NEXT.fetch_add(1, Ordering::Relaxed)
+    next_identity(&NEXT, "the C stream identity space is exhausted")
+}
+
+fn next_target() -> Result<u64, Fault> {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+
+    next_identity(&NEXT, "the C target identity space is exhausted")
+}
+
+fn next_identity(counter: &AtomicU64, exhausted: &'static str) -> Result<u64, Fault> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            if current == 0 {
+                None
+            } else {
+                Some(current.wrapping_add(1))
+            }
+        })
+        .map_err(|_| {
+            Fault::from_error(
+                &mado_pilot::Error::new(mado_pilot::Status::LimitExceeded, exhausted),
+                MADOPILOT_ERROR_CATEGORY_CAPTURE,
+            )
+        })
 }
 
 inputs! {
@@ -161,6 +213,11 @@ impl Versioned for madopilot_target_t {
         coordinate_spaces,
         name,
         provider,
+        target,
+        kind,
+        capture,
+        capture_permission,
+        reserved,
     );
 
     fn failure(struct_size: u32) -> Self {
@@ -173,6 +230,11 @@ impl Versioned for madopilot_target_t {
             coordinate_spaces: 0,
             name: madopilot_str_t::empty(),
             provider: madopilot_str_t::empty(),
+            target: 0,
+            kind: crate::types::MADOPILOT_TARGET_KIND_UNKNOWN,
+            capture: crate::types::MADOPILOT_CAPABILITY_UNKNOWN,
+            capture_permission: crate::types::MADOPILOT_PERMISSION_KIND_UNSPECIFIED,
+            reserved: 0,
         }
     }
 }
@@ -205,6 +267,40 @@ unsafe fn replay_source(source: &madopilot_source_t) -> Result<ReplaySource, Fau
         }
         other => Err(Fault::abi(format!("unrecognized source kind {other}"))),
     }
+}
+
+#[cfg(windows)]
+fn native_windows_engine() -> Result<Engine, Fault> {
+    mado_pilot::windows_engine(mado_pilot::NativeEngineRequest::new())
+        .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
+}
+
+#[cfg(not(windows))]
+fn native_windows_engine() -> Result<Engine, Fault> {
+    Err(Fault::from_error(
+        &mado_pilot::Error::new(
+            mado_pilot::Status::Unsupported,
+            "native Windows construction is unavailable in this build",
+        ),
+        MADOPILOT_ERROR_CATEGORY_ENGINE,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn native_macos_engine() -> Result<Engine, Fault> {
+    mado_pilot::macos_engine(mado_pilot::NativeEngineRequest::new())
+        .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_macos_engine() -> Result<Engine, Fault> {
+    Err(Fault::from_error(
+        &mado_pilot::Error::new(
+            mado_pilot::Status::Unsupported,
+            "native macOS construction is unavailable in this build",
+        ),
+        MADOPILOT_ERROR_CATEGORY_ENGINE,
+    ))
 }
 
 /// Reads the caller's frame array, one validated element at a time.
@@ -331,11 +427,20 @@ fn build_engine(
 
     // SAFETY: as above.
     let request = unsafe { boundary::read_input::<madopilot_source_t>(source) }?;
-    // SAFETY: as above.
-    let configured = unsafe { replay_source(&request) }?;
 
-    let engine = mado_pilot::replay_engine(configured)
-        .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?;
+    // SAFETY: as above. Fields not selected by the source tag remain unread.
+    let engine = match request.kind {
+        MADOPILOT_SOURCE_REPLAY_MEMORY | MADOPILOT_SOURCE_REPLAY_DIRECTORY => {
+            // SAFETY: the replay fields selected by the tag remain readable for
+            // the call under this function's boundary contract.
+            let configured = unsafe { replay_source(&request) }?;
+            mado_pilot::replay_engine(configured)
+                .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
+        }
+        MADOPILOT_SOURCE_NATIVE_WINDOWS => native_windows_engine()?,
+        MADOPILOT_SOURCE_NATIVE_MACOS => native_macos_engine()?,
+        other => return Err(Fault::abi(format!("unrecognized source kind {other}"))),
+    };
     hooks::reach(hooks::Site::AfterTemporary);
 
     // The engine exists but is not the caller's yet. An operation that ran out
@@ -398,6 +503,10 @@ fn run_discover(
     let targets = engine
         .discover(context.inner())
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
+    let targets = targets
+        .into_iter()
+        .map(TargetRecord::new)
+        .collect::<Result<Vec<_>, _>>()?;
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
 
@@ -466,7 +575,7 @@ pub(crate) fn target_list_get(
     match described {
         Ok(value) => {
             // SAFETY: `out` was validated above, and every view in `value`
-            // borrows from the list the caller keeps retained.
+            // borrows from `list`, whose handle stays retained for the call.
             unsafe { out.commit(value) };
             MADOPILOT_STATUS_OK
         }
@@ -474,10 +583,8 @@ pub(crate) fn target_list_get(
     }
 }
 
-fn describe_target(
-    target: &TargetDescription,
-    struct_size: u32,
-) -> Result<madopilot_target_t, Fault> {
+fn describe_target(target: &TargetRecord, struct_size: u32) -> Result<madopilot_target_t, Fault> {
+    let description = target.description();
     let mut coordinate_spaces = 0;
     for space in [
         mado_pilot::CoordinateSpace::CapturePixels,
@@ -486,12 +593,12 @@ fn describe_target(
         mado_pilot::CoordinateSpace::TargetLogical,
         mado_pilot::CoordinateSpace::DesktopLogical,
     ] {
-        if target.coordinates().supports(space) {
+        if description.coordinates().supports(space) {
             coordinate_spaces |= 1 << space_code(space);
         }
     }
 
-    let placement_bit = if target
+    let placement_bit = if description
         .coordinates()
         .supports(mado_pilot::CoordinateSpace::TargetLogical)
     {
@@ -500,15 +607,49 @@ fn describe_target(
         0
     };
 
+    let capability = description.capability();
+    let (kind_flag, kind) = match capability.kind() {
+        Some(kind)
+            if struct_size as usize
+                >= covers!(madopilot_target_t, kind: madopilot_target_kind_t) =>
+        {
+            (
+                MADOPILOT_TARGET_HAS_KIND,
+                crate::input::target_kind_code(kind),
+            )
+        }
+        _ => (0, crate::types::MADOPILOT_TARGET_KIND_UNKNOWN),
+    };
+    let (permission_flag, capture_permission) = match capability.capture_permission() {
+        Some(permission)
+            if struct_size as usize
+                >= covers!(
+                    madopilot_target_t,
+                    capture_permission: madopilot_permission_kind_t
+                ) =>
+        {
+            (
+                MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION,
+                crate::input::permission_kind_code(permission),
+            )
+        }
+        _ => (0, crate::types::MADOPILOT_PERMISSION_KIND_UNSPECIFIED),
+    };
+
     Ok(madopilot_target_t {
         struct_size,
-        flags: placement_bit,
-        width: target.extent().width(),
-        height: target.extent().height(),
-        format: pixel_format_code(target.format())?,
+        flags: placement_bit | kind_flag | permission_flag,
+        width: description.extent().width(),
+        height: description.extent().height(),
+        format: pixel_format_code(description.format())?,
         coordinate_spaces,
-        name: madopilot_str_t::borrowed(target.name()),
-        provider: madopilot_str_t::borrowed(target.provider().name()),
+        name: madopilot_str_t::borrowed(description.name()),
+        provider: madopilot_str_t::borrowed(description.provider().name()),
+        target: target.boundary_id(),
+        kind,
+        capture: crate::input::capability_support_code(capability.capture()),
+        capture_permission,
+        reserved: 0,
     })
 }
 
@@ -525,5 +666,24 @@ pub(crate) unsafe fn report(
         Ok(()) => MADOPILOT_STATUS_OK,
         // SAFETY: forwarded unchanged from this function's own contract.
         Err(fault) => unsafe { error::emit(out_error, fault) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU64;
+
+    use super::next_identity;
+
+    #[test]
+    fn the_last_nonzero_identity_is_minted_once_before_exhaustion() {
+        let counter = AtomicU64::new(u64::MAX);
+
+        assert_eq!(
+            next_identity(&counter, "exhausted").expect("the last identity remains available"),
+            u64::MAX
+        );
+        assert!(next_identity(&counter, "exhausted").is_err());
+        assert!(next_identity(&counter, "exhausted").is_err());
     }
 }

@@ -12,13 +12,13 @@
 //!
 //! Within an ABI major, a member's position is permanent. Later phases append;
 //! nothing is reordered, removed, repurposed, or reserved as a null slot for
-//! work that does not exist yet. The Phase 1 prefix below runs from information
-//! a caller needs before it has anything else, through the dependency order of
-//! everything it can then do.
+//! work that does not exist yet. The complete ABI 1.0 prefix runs from
+//! information a caller needs before it has anything else through the dependency
+//! order of everything it could then do; ABI 1.1 appends the native slice.
 //!
-//! **The order is frozen for ABI major 1** by
-//! `docs/adr/0007-phase-1-c-abi-freeze.md`. No entry moves and none is removed;
-//! a later minor appends to the end and raises `MADOPILOT_ABI_MINOR`.
+//! **The order is frozen for ABI major 1** by ADR 0007 for the complete 1.0
+//! prefix and ADR 0017 for the additive 1.1 suffix. No entry moves and none is
+//! removed; a later minor appends to the end and raises `MADOPILOT_ABI_MINOR`.
 //!
 //! # Where the unsafe boundary is
 //!
@@ -47,9 +47,9 @@ pub const MADOPILOT_ABI_MAJOR: u32 = 1;
 
 /// The ABI minor version this library implements.
 ///
-/// Zero at the freeze. A later minor only ever appends, so a caller that
-/// negotiates a minor it knows gets at least the entries it knows.
-pub const MADOPILOT_ABI_MINOR: u32 = 0;
+/// ABI 1.1 appends native capability, permission, and session-input entries
+/// after the complete frozen ABI 1.0 prefix.
+pub const MADOPILOT_ABI_MINOR: u32 = 1;
 
 /// The library package version, for [`madopilot_build_info_t::library_version`].
 const LIBRARY_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -59,7 +59,7 @@ macro_rules! table {
         $(#[$doc:meta])*
         $field:ident($($arg:ident: $ty:ty),* $(,)?) => $body:path;
     )*) => {
-        /// The immutable Phase 1 function table.
+        /// The immutable ABI-major-one function table.
         ///
         /// Owned by the library, valid for as long as it is loaded, and never
         /// released. Every member returns [`madopilot_status_t`] and reports
@@ -92,7 +92,7 @@ macro_rules! table {
         )*
 
         static TABLE: madopilot_api_t = madopilot_api_t {
-            struct_size: MADOPILOT_API_SIZE_PHASE1,
+            struct_size: MADOPILOT_API_SIZE_CURRENT,
             abi_major: MADOPILOT_ABI_MAJOR,
             abi_minor: MADOPILOT_ABI_MINOR,
             reserved: 0,
@@ -374,16 +374,82 @@ table! {
         index: usize,
         out_match: *mut crate::types::madopilot_match_t,
     ) => crate::matching::result_match;
+
+    /// Opens capture and input together without changing the frozen capture
+    /// request's size or alignment.
+    session_open_with_input(
+        engine: *const crate::engine::madopilot_engine_t,
+        targets: *const crate::engine::madopilot_target_list_t,
+        index: usize,
+        request: *const crate::types::madopilot_open_request_t,
+        input_request: *const crate::types::madopilot_input_open_request_t,
+        operation: *const crate::types::madopilot_operation_t,
+        out_session: *mut *mut crate::capture::madopilot_session_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::capture::session_open_with_input;
+    /// Reports engine-wide native input and permission-probe capabilities.
+    engine_capabilities(
+        engine: *const crate::engine::madopilot_engine_t,
+        out_capabilities: *mut crate::types::madopilot_engine_capabilities_t,
+    ) => crate::input::engine_capabilities;
+    /// Runs one non-prompting permission probe.
+    engine_permission(
+        engine: *const crate::engine::madopilot_engine_t,
+        kind: crate::types::madopilot_permission_kind_t,
+        operation: *const crate::types::madopilot_operation_t,
+        out_permission: *mut crate::types::madopilot_permission_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::input::engine_permission;
+    /// Reports the native capability of one target-list entry.
+    target_list_capability(
+        targets: *const crate::engine::madopilot_target_list_t,
+        index: usize,
+        out_capability: *mut crate::types::madopilot_target_capability_t,
+    ) => crate::input::target_list_capability;
+    /// Queries one target's input descriptor without opening it.
+    engine_input_descriptor(
+        engine: *const crate::engine::madopilot_engine_t,
+        targets: *const crate::engine::madopilot_target_list_t,
+        index: usize,
+        operation: *const crate::types::madopilot_operation_t,
+        out_descriptor: *mut crate::types::madopilot_input_descriptor_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::input::engine_input_descriptor;
+    /// Reports the immutable input descriptor accepted by an open session.
+    session_input_descriptor(
+        session: *const crate::capture::madopilot_session_t,
+        out_descriptor: *mut crate::types::madopilot_input_descriptor_t,
+    ) => crate::input::session_input_descriptor;
+    /// Sends one bounded input sequence and returns its direct receipt.
+    session_send_input(
+        session: *const crate::capture::madopilot_session_t,
+        request: *const crate::types::madopilot_input_request_t,
+        operation: *const crate::types::madopilot_operation_t,
+        out_receipt: *mut crate::types::madopilot_input_receipt_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::input::session_send_input;
 }
 
-/// `sizeof` the complete Phase 1 function table.
-// The table is a few hundred bytes; the guard is here so the conversion is a
-// fact rather than an assumption.
+/// `sizeof` the complete frozen ABI 1.0 function-table prefix.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "guarded against the only value that could truncate"
 )]
 pub const MADOPILOT_API_SIZE_PHASE1: u32 = {
+    let size = std::mem::offset_of!(madopilot_api_t, session_open_with_input);
+    assert!(
+        size <= u32::MAX as usize,
+        "the ABI 1.0 table prefix fits a u32 size"
+    );
+    size as u32
+};
+
+/// `sizeof` the complete function table this library implements.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded against the only value that could truncate"
+)]
+pub const MADOPILOT_API_SIZE_CURRENT: u32 = {
     let size = size_of::<madopilot_api_t>();
     assert!(size <= u32::MAX as usize, "the table fits a u32 size");
     size as u32
@@ -522,7 +588,7 @@ fn describe_build_impl(out_info: *mut madopilot_build_info_t) -> madopilot_statu
             flags: 0,
             abi_major: MADOPILOT_ABI_MAJOR,
             abi_minor: MADOPILOT_ABI_MINOR,
-            table_size: MADOPILOT_API_SIZE_PHASE1,
+            table_size: MADOPILOT_API_SIZE_CURRENT,
             reserved: 0,
             library_version: madopilot_str_t::borrowed(LIBRARY_VERSION),
             required_backend: madopilot_str_t::borrowed(mado_pilot::REQUIRED_BACKEND),
@@ -648,7 +714,7 @@ mod tests {
         let recovered = unsafe { (api.describe_build)(&raw mut info) };
         assert_eq!(recovered, MADOPILOT_STATUS_OK);
         assert_eq!(info.abi_major, MADOPILOT_ABI_MAJOR);
-        assert_eq!(info.table_size, MADOPILOT_API_SIZE_PHASE1);
+        assert_eq!(info.table_size, MADOPILOT_API_SIZE_CURRENT);
     }
 
     #[test]

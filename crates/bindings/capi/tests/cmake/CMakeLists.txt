@@ -49,10 +49,20 @@ set_target_properties(consumer-c PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON
 add_executable(consumer-cpp consumer.cpp)
 target_link_libraries(consumer-cpp PRIVATE MadoPilot::Cpp)
 
+# The tracked native example is also an ordinary consumer of the exported
+# wrapper target. Its `--check` mode creates the real platform adapter but stops
+# before discovery or input, so it is safe to run unattended.
+add_executable(
+  consumer-native-cpp
+  "${MADOPILOT_SOURCE_DIR}/examples/cpp/native-input.cpp"
+)
+target_link_libraries(consumer-native-cpp PRIVATE MadoPilot::Cpp)
+
 enable_testing()
 
 add_test(NAME consumer-c COMMAND consumer-c)
 add_test(NAME consumer-cpp COMMAND consumer-cpp)
+add_test(NAME consumer-native-cpp COMMAND consumer-native-cpp --check)
 
 if(WIN32)
   # Windows has no run path: the loader searches the executable's directory and
@@ -60,7 +70,7 @@ if(WIN32)
   # process only.
   file(TO_NATIVE_PATH "${MADOPILOT_ARTIFACT_DIR}" _madopilot_native_artifacts)
   set_tests_properties(
-    consumer-c consumer-cpp
+    consumer-c consumer-cpp consumer-native-cpp
     PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_madopilot_native_artifacts}"
   )

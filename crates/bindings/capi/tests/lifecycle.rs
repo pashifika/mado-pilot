@@ -1098,6 +1098,9 @@ fn session_info() -> madopilot_session_info_t {
         height: 0,
         format: MADOPILOT_PIXEL_FORMAT_RGBA8,
         coordinate_spaces: 0,
+        target: 0,
+        accepts_input: 0,
+        reserved: 0,
     }
 }
 

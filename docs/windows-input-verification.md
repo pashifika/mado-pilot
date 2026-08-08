@@ -1,10 +1,11 @@
 # Windows Input Adapter and Verification
 
-The Windows platform package implements input at the Adapter boundary, and
-`mado_pilot::windows_engine` wires it into the runtime and the public Rust facade.
-C ABI and C++ wiring remain later work, and the release acceptance this document
-describes is still the user-focused check below, so this is an implemented Rust
-capability rather than a release-level product claim.
+The Windows platform package implements input at the Adapter boundary.
+`mado_pilot::windows_engine` wires it into the public Rust facade, and C ABI 1.1
+plus the header-only C++ wrapper expose that same negotiated workflow. Release
+acceptance still includes the user-focused system-input check below; automated
+background verification uses only the dedicated fixture and makes no claim about
+ordinary applications accepting background input.
 
 ## Capability boundary
 
@@ -140,6 +141,34 @@ and permits no substitute, so it cannot reach a window that does not advertise
 that capability — which, by the capability table above, is every window but the
 dedicated fixture class. It matches the title exactly and refuses zero or more
 than one match.
+
+## Explicit C and C++ boundary checks
+
+The ABI check compiles and runs both native common-flow examples in `--check`
+mode by default. That mode creates the real Windows engine, verifies the ABI 1.1
+capability report, confirms that no permission-probe capability is advertised,
+and stops before discovery or input:
+
+```bat
+cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+```
+
+The unattended Windows CI matrix uses fixture-backed mode instead. Build the
+fixture binary, then let `c-abi-check` launch it, parse its exact PID-qualified
+title, keep it alive through both language flows, and terminate it afterward:
+
+```bat
+cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture
+cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>" --windows-native-fixture
+```
+
+Each C and C++ flow independently performs engine construction, exact discovery,
+capture, mapping, a frame-bound six-event acknowledged background-input request,
+immutable receipt inspection, and explicit close. The checker owns the fixture
+lifecycle; the examples receive only its exact title. Exact-title selection also
+requires the fixture class and permits no system fallback, so the check neither
+takes focus nor injects into another window. Output excludes the title, captured
+bytes, and typed text.
 
 ## Redaction review
 

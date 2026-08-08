@@ -20,6 +20,7 @@ itself.
 | Version | Frozen by | Header | Fixture |
 |---|---|---|---|
 | [`v1`](v1/) | [ADR 0007](../../../../../docs/adr/0007-phase-1-c-abi-freeze.md), resolving [`G-010`](../../../../../docs/validation-gates.md#g-010) | [`v1/madopilot/madopilot.h`](v1/madopilot/madopilot.h) | [`v1/old-prefix.c`](v1/old-prefix.c) |
+| [`v1.1`](v1.1/) | [ADR 0017](../../../../../docs/adr/0017-c-abi-1-1-native-input-prefix.md) | [`v1.1/madopilot/madopilot.h`](v1.1/madopilot/madopilot.h) | [`v1.1/old-prefix.c`](v1.1/old-prefix.c) |
 
 ## How a fixture is compiled
 
@@ -42,14 +43,14 @@ Task 9.9 names four verbs, and each is a step of the run:
   caller declaring forty bytes against a four-hundred-byte table, told the
   library's size rather than its own. It is also why the fixture is not a
   tautology while the frozen declarations and the working ones still agree.
-- **executes** — the whole Phase 1 flow, checking the same match rectangles and
-  scores both examples print.
+- **executes** — every entry that header declares, retaining the deterministic
+  match rectangles and scores and adding that header's contract assertions.
 
 ## Adding a fixture
 
 Freeze a header when an ADR freezes it, not when it changes. Copy the header
-into a new `v<major>/` directory, write a program against it, and add the
-version to `FROZEN_HEADERS` in
+into a new version directory, write a program against every entry it declares,
+and add the version to `FROZEN_HEADERS` in
 [`examples/c-abi-check.rs`](../../examples/c-abi-check.rs).
 
 **Do not edit a fixture that already exists.** Its value is that it is a

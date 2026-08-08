@@ -273,6 +273,7 @@ name = "mado-pilot-capi"
 version = "0.1.0"
 dependencies = [
  "mado-pilot",
+ "mado-pilot-runtime",
  "mado-pilot-testkit",
 ]
 

@@ -12,20 +12,24 @@
 //!    the Rust definitions;
 //! 3. compiles, links, and runs `examples/c/deterministic-slice.c` against the
 //!    built library and checks its outcome;
-//! 4. compiles, links, and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
+//! 4. compiles, links, and runs the current platform's native C example in its
+//!    unattended, non-prompting mode;
+//! 5. compiles, links, and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
 //!    static assertions prove the wrapper's ownership shape at compile time and
 //!    whose checks prove its behaviour at run time;
-//! 5. compiles, links, and runs `examples/cpp/deterministic-slice.cpp` and
+//! 6. compiles, links, and runs `examples/cpp/deterministic-slice.cpp` and
 //!    checks that it answers exactly what the C example answered;
-//! 6. compiles and runs the same layout probe a second time against each frozen
+//! 7. compiles, links, and runs `examples/cpp/native-input.cpp` in the same safe
+//!    native mode through the C++ wrapper;
+//! 8. compiles and runs the same layout probe a second time against each frozen
 //!    header under `tests/abi-compat/`, and checks that every structure, field,
 //!    and table entry that header declares is still where it said it was;
-//! 7. compiles every frozen header fixture under `tests/abi-compat/` against
+//! 9. compiles every frozen header fixture under `tests/abi-compat/` against
 //!    its own header rather than the working one, links it to this library, and
 //!    checks that it still negotiates and still gets the same answers;
-//! 8. configures, builds, and runs the CMake consumer project in
-//!    `tests/cmake/`, which reaches the library only through `MadoPilot::C` and
-//!    `MadoPilot::Cpp`.
+//! 10. configures, builds, and runs the CMake consumer project in
+//!     `tests/cmake/`, which reaches the library only through `MadoPilot::C` and
+//!     `MadoPilot::Cpp`.
 //!
 //! Two compilers, one comparison. A divergence names the structure and the
 //! field. See `docs/adr/0004-c-header-authorship-and-abi-verification.md` and
@@ -34,6 +38,11 @@
 //! ```text
 //! cargo build --locked --package mado-pilot-capi
 //! cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+//! # Windows fixture-backed mode additionally requires:
+//! cargo build --locked --package mado-pilot-platform-windows \
+//!   --bin mado-pilot-windows-input-fixture
+//! cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
+//!   --label "<host>" --windows-native-fixture
 //! ```
 //!
 //! The build step is separate on purpose: this program needs the `cdylib` that
@@ -60,8 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     check_layout(&paths)?;
     run_c_example(&paths, &label)?;
+    let native_fixture = if windows_native_fixture_requested() {
+        Some(WindowsNativeFixture::spawn(&paths)?)
+    } else {
+        None
+    };
+    let native_target = native_fixture.as_ref().map(WindowsNativeFixture::title);
+    run_native_c_example(&paths, native_target)?;
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
+    run_native_cpp_example(&paths, native_target)?;
     check_frozen_layout(&paths)?;
     check_frozen_headers(&paths)?;
     check_cmake_consumer(&paths)?;
@@ -83,6 +100,11 @@ fn label() -> String {
     }
 
     "unlabelled host".to_owned()
+}
+
+/// Whether this run must launch and exercise the dedicated Windows fixture.
+fn windows_native_fixture_requested() -> bool {
+    env::args().any(|argument| argument == "--windows-native-fixture")
 }
 
 /// Which compiler and which dialect a source is built with.
@@ -195,6 +217,85 @@ impl Paths {
         } else {
             name.to_owned()
         })
+    }
+}
+
+/// A dedicated Windows fixture kept alive across both native language examples.
+struct WindowsNativeFixture {
+    #[cfg(windows)]
+    child: std::process::Child,
+    title: String,
+}
+
+impl WindowsNativeFixture {
+    fn spawn(paths: &Paths) -> Result<Self, Box<dyn std::error::Error>> {
+        #[cfg(not(windows))]
+        {
+            let _ = paths;
+            Err("`--windows-native-fixture` requires a Windows host".into())
+        }
+
+        #[cfg(windows)]
+        {
+            use std::io::{BufRead, BufReader};
+            use std::process::Stdio;
+
+            let program = paths.artifacts.join(format!(
+                "mado-pilot-windows-input-fixture{}",
+                env::consts::EXE_SUFFIX
+            ));
+            if !program.is_file() {
+                return Err(format!(
+                    "{} does not exist.\nBuild it first:\n    cargo build --locked \
+                     --package mado-pilot-platform-windows --bin \
+                     mado-pilot-windows-input-fixture",
+                    program.display()
+                )
+                .into());
+            }
+
+            let child = Command::new(&program)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()?;
+            let mut fixture = Self {
+                child,
+                title: String::new(),
+            };
+            let process_id = fixture.child.id();
+            let output = fixture
+                .child
+                .stdout
+                .take()
+                .ok_or("the Windows fixture did not expose its readiness output")?;
+            let mut ready = String::new();
+            BufReader::new(output).read_line(&mut ready)?;
+            let title = ready
+                .strip_prefix("fixture-ready ")
+                .and_then(|line| line.split_once(" title="))
+                .and_then(|(_, rest)| rest.split_once(" capacity="))
+                .map(|(title, _)| title)
+                .ok_or("the Windows fixture returned malformed readiness output")?;
+            if !title.ends_with(&format!("[{process_id}]")) {
+                return Err("the Windows fixture title did not identify its process".into());
+            }
+            fixture.title = title.to_owned();
+            println!("windows fixture: ready for exact-title native checks");
+            Ok(fixture)
+        }
+    }
+
+    fn title(&self) -> &str {
+        &self.title
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsNativeFixture {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -628,6 +729,52 @@ fn run_c_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::E
     check_example("C", &output)
 }
 
+/// Compiles, links, and runs the current release target's native C probe.
+///
+/// Without `target`, `--check` stops before discovery and sends no input. A
+/// target is the exact title of the dedicated fixture this process owns.
+fn run_native_c_example(
+    paths: &Paths,
+    target: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = if cfg!(target_os = "windows") {
+        "windows-native-input"
+    } else if cfg!(target_os = "macos") {
+        "macos-native-input"
+    } else {
+        return Err("native C examples require a release-target host".into());
+    };
+    let source = paths
+        .root
+        .join("crates/bindings/capi/examples/c")
+        .join(format!("{name}.c"));
+    let program = compile(paths, Language::C, name, &source, true)?;
+    let argument = target.unwrap_or("--check");
+    let output = run(paths, &program, &[argument])?;
+    let stdout = String::from_utf8(output.stdout.clone())?;
+    print!("{stdout}");
+    report_output("native C example", &output);
+
+    let mode = if target.is_some() {
+        "fixture-backed flow"
+    } else {
+        "non-prompting check"
+    };
+    if !output.status.success() {
+        return Err(format!("the {name} {mode} reported a failure").into());
+    }
+    let expected = if target.is_some() {
+        format!("{name} complete")
+    } else {
+        format!("{name} complete (non-prompting check)")
+    };
+    if !stdout.contains(&expected) {
+        return Err(format!("the {name} {mode} never reached the end").into());
+    }
+
+    Ok(())
+}
+
 /// Compiles, links, and runs the C++ example, which answers the same questions.
 fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::Error>> {
     let source = paths
@@ -645,6 +792,48 @@ fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error:
     let output = run(paths, &program, &["--package", &package, "--label", label])?;
 
     check_example("C++", &output)
+}
+
+/// Compiles, links, and runs the native flow through the C++ wrapper.
+fn run_native_cpp_example(
+    paths: &Paths,
+    target: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = if cfg!(target_os = "windows") {
+        "windows-native-input-cpp"
+    } else if cfg!(target_os = "macos") {
+        "macos-native-input-cpp"
+    } else {
+        return Err("the native C++ example requires a release-target host".into());
+    };
+    let source = paths
+        .root
+        .join("crates/bindings/capi/examples/cpp/native-input.cpp");
+    let program = compile(paths, Language::Cpp, name, &source, true)?;
+    let argument = target.unwrap_or("--check");
+    let output = run(paths, &program, &[argument])?;
+    let stdout = String::from_utf8(output.stdout.clone())?;
+    print!("{stdout}");
+    report_output("native C++ example", &output);
+
+    let mode = if target.is_some() {
+        "fixture-backed flow"
+    } else {
+        "non-prompting check"
+    };
+    if !output.status.success() {
+        return Err(format!("the {name} {mode} reported a failure").into());
+    }
+    let expected = if target.is_some() {
+        format!("{name} complete")
+    } else {
+        format!("{name} complete (non-prompting check)")
+    };
+    if !stdout.contains(&expected) {
+        return Err(format!("the {name} {mode} never reached the end").into());
+    }
+
+    Ok(())
 }
 
 /// Checks an example's outcome, and that it reached the end.
@@ -712,10 +901,10 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
 
 /// Every released header this library still promises to serve.
 ///
-/// One entry per frozen ABI-major header. A later phase that adds entries adds
-/// a fixture beside the existing ones rather than editing them, so the list
-/// only ever grows and each entry keeps saying what one released header saw.
-const FROZEN_HEADERS: &[&str] = &["v1"];
+/// One entry per frozen released header. A later minor that appends entries
+/// adds a fixture beside the existing ones rather than editing them, so the
+/// list only ever grows and each entry keeps saying what one released header saw.
+const FROZEN_HEADERS: &[&str] = &["v1", "v1.1"];
 
 /// Runs the layout probe against each frozen header, and checks that what that
 /// header declares is still true of the library built now.
@@ -732,11 +921,18 @@ const FROZEN_HEADERS: &[&str] = &["v1"];
 /// include directory.
 ///
 /// The comparison is containment rather than the positional diff
-/// [`check_layout`] uses, because a later minor appends. The library may report
-/// lines the frozen header never declared; every line the frozen header does
-/// declare must still be reported, with the same name and the same offset. A
-/// field that moved, was renamed, or was removed drops a line and fails here,
-/// and so does a table entry that changed position.
+/// [`check_layout`] uses, because a later minor appends. Fields and unversioned
+/// type extents remain exact. A type whose released prefix begins with
+/// `struct_size` may grow, but its alignment may not change and its current size
+/// may not be smaller than the released one. A field that moved, was renamed, or
+/// was removed still fails here, and so does a table entry that changed position.
+fn reported_type_layout(line: &str) -> Option<(&str, usize, usize)> {
+    let rest = line.strip_prefix("type ")?;
+    let (name, rest) = rest.split_once(" size=")?;
+    let (size, align) = rest.split_once(" align=")?;
+    Some((name, size.parse().ok()?, align.parse().ok()?))
+}
+
 fn check_frozen_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
     let source = layout_probe(paths);
     let report = madopilot::layout::report();
@@ -760,22 +956,60 @@ fn check_frozen_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
             .map(str::trim_end)
             .filter(|line| !line.is_empty())
             .collect();
-        let missing: Vec<&str> = lines
+        let versioned: HashSet<&str> = lines
             .iter()
-            .copied()
-            .filter(|line| !declared.contains(line))
+            .filter_map(|line| {
+                line.strip_prefix("field ")?
+                    .strip_suffix(".struct_size offset=0")
+            })
+            .collect();
+        let mismatches: Vec<String> = lines
+            .iter()
+            .filter_map(|line| {
+                if declared.contains(line) {
+                    return None;
+                }
+                let Some((name, released_size, released_align)) = reported_type_layout(line)
+                else {
+                    return Some(format!(
+                        "the {version} header declares `{line}`, which this library no longer reports"
+                    ));
+                };
+                if !versioned.contains(name) {
+                    return Some(format!(
+                        "the {version} header declares unversioned `{line}`, which this library no longer reports"
+                    ));
+                }
+
+                let current = report
+                    .lines()
+                    .filter_map(reported_type_layout)
+                    .find(|(current_name, _, _)| *current_name == name);
+                match current {
+                    Some((_, current_size, current_align))
+                        if current_size >= released_size && current_align == released_align =>
+                    {
+                        None
+                    }
+                    Some((_, current_size, current_align)) => Some(format!(
+                        "the {version} header declares `{name}` size={released_size} \
+                         align={released_align}, but this library reports size={current_size} \
+                         align={current_align}"
+                    )),
+                    None => Some(format!(
+                        "the {version} header declares type `{name}`, which this library no longer reports"
+                    )),
+                }
+            })
             .collect();
 
-        if !missing.is_empty() {
-            for line in &missing {
-                println!(
-                    "FROZEN LAYOUT MISMATCH: the {version} header declares `{line}`, \
-                     which this library no longer reports"
-                );
+        if !mismatches.is_empty() {
+            for mismatch in &mismatches {
+                println!("FROZEN LAYOUT MISMATCH: {mismatch}");
             }
             return Err(format!(
                 "the frozen {version} header and this library disagree in {} place(s)",
-                missing.len()
+                mismatches.len()
             )
             .into());
         }
@@ -896,7 +1130,7 @@ fn check_cmake_consumer(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
         return Err("the CMake consumer tests failed".into());
     }
 
-    println!("cmake: the consumer project built and both consumers ran");
+    println!("cmake: the consumer project built and all consumers ran");
 
     Ok(())
 }
