@@ -37,9 +37,11 @@
 //! Phase 2 contracts, complete. The event, policy, sequence, descriptor, request,
 //! receipt, and provider/controller contracts below are implemented and tested,
 //! along with the shared admission rule, the per-controller serialization every
-//! Adapter uses, and the bounds cleanup runs under. No input is injected: neither
-//! platform Adapter exists yet, and no facade or C ABI entry reaches this package.
-//! See `docs/architecture.md`.
+//! Adapter uses, and the bounds cleanup runs under. Both platform Adapters
+//! implement them, `mado-pilot-runtime` composes one of them with a capture
+//! provider of the same identity, and the Rust facade's native constructors are
+//! what a caller reaches all of it through. No C ABI or C++ entry reaches this
+//! package. See `docs/architecture.md`.
 //!
 //! **The public names here are reviewed, not yet stable.**
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the

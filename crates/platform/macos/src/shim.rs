@@ -25,7 +25,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 4;
+pub(crate) const ABI_VERSION: u32 = 5;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -543,6 +543,11 @@ impl TargetToken {
     /// Reads bounds from the exact retained selection this token owns.
     pub(crate) fn input_bounds(&self) -> Result<NativeBounds, ShimStatus> {
         input_target_bounds(self)
+    }
+
+    /// Reads whether this exact retained window is focused within a bounded wait.
+    pub(crate) fn input_focused(&self, wait: Duration) -> Result<bool, ShimStatus> {
+        input_target_focused(self, wait)
     }
 }
 
@@ -1065,14 +1070,16 @@ pub(crate) struct NativeBounds {
     pub(crate) scale: f64,
 }
 
-/// Reports the frontmost ordinary window and the process that owns it.
-pub(crate) fn input_frontmost_window() -> Result<(u64, i64), ShimStatus> {
-    let mut window = 0u64;
-    let mut owner = 0i64;
-    // SAFETY: both outputs are writable for one value each.
-    let status = unsafe { mp_shim_input_frontmost_window(&raw mut window, &raw mut owner) };
+/// Reports whether the exact retained window is focused.
+fn input_target_focused(target: &TargetToken, wait: Duration) -> Result<bool, ShimStatus> {
+    let mut focused = false;
+    // SAFETY: the target pointer is either its retained native handle or null for
+    // a test-only synthetic token, the timeout is bounded, and the output is
+    // writable for one C boolean.
+    let status =
+        unsafe { mp_shim_input_target_focused(target.as_ptr(), nanos(wait), &raw mut focused) };
     ShimStatus::from_raw(status).into_result()?;
-    Ok((window, owner))
+    Ok(focused)
 }
 
 /// Reports one target's current rectangle, and thereby whether it still exists.
@@ -1673,7 +1680,11 @@ unsafe extern "C" {
         destination_stride: u64,
     ) -> u32;
 
-    fn mp_shim_input_frontmost_window(out_window_id: *mut u64, out_owner_pid: *mut i64) -> u32;
+    fn mp_shim_input_target_focused(
+        target: *const OpaqueTarget,
+        timeout_nanos: u64,
+        out_focused: *mut bool,
+    ) -> u32;
     fn mp_shim_input_target_bounds(
         target: *const OpaqueTarget,
         out_x: *mut f64,

@@ -2,8 +2,9 @@
 //!
 //! MadoPilot is a headless visual automation runtime for applications and
 //! agents. This package is the normal Rust dependency for a host application:
-//! it performs default adapter wiring for the deterministic Phase 1 workflow
-//! and re-exports the contract vocabulary that workflow speaks.
+//! it performs default adapter wiring for the deterministic replay workflow and
+//! for the native workflow of the release target it was built for, and it
+//! re-exports the contract vocabulary both workflows speak.
 //!
 //! # Responsibility
 //!
@@ -12,22 +13,45 @@
 //! package decides which concrete adapters those contracts are satisfied by,
 //! and it is the only package permitted to make that decision.
 //!
-//! # The Phase 1 workflow
+//! # The deterministic workflow
 //!
 //! Configure replay capture and require the OpenCV CPU matching backend,
 //! discover targets, open one, obtain a frame, view and map it, load an asset
 //! package, prepare a template, search that exact frame, read an immutable
 //! correlated outcome, and close. A complete program is in
-//! `examples/deterministic-slice.rs`.
+//! `examples/deterministic-slice.rs`. It needs no desktop, no permission, and no
+//! network, and it behaves identically on both release targets.
+//!
+//! # The native workflow
+//!
+//! Build the engine for the target this crate was compiled for, read the
+//! authorizations that platform grants, discover real windows and displays, open
+//! a session that also establishes input, capture and map frames, search them,
+//! deliver a bounded input sequence to the target the frames came from, read the
+//! receipt saying exactly what was delivered, and close. Every value in that flow
+//! is platform-neutral: no Windows or macOS type is re-exported here, and a host
+//! that compiles for both targets writes the flow once.
+//!
+//! The two constructors are separate because the platforms are. One is present
+//! per build, named for the target it wires: `windows_engine` on Windows and
+//! `macos_engine` on macOS. Complete programs are in
+//! `examples/windows-native-input.rs` and `examples/macos-native-input.rs`.
+//!
+//! What differs between them is what the platform actually offers, and the
+//! engine reports it rather than smoothing it over. `Engine::reads_permissions`
+//! is true only where an authorization can be read without prompting;
+//! [`Engine::describe_input`] says what one target accepts; and
+//! [`Session::input_descriptor`] says what a session actually established, which
+//! is how a caller tells "input is unavailable here" from "input failed".
 //!
 //! # The required backend
 //!
-//! [`replay_engine`] requires the OpenCV CPU backend and never substitutes
-//! another implementation for it. There is no backend-selection argument
-//! because Phase 1 has exactly one production matching backend: requiring it is
-//! the only choice available, so a selection type would name a decision no
-//! caller can make. A second backend arrives with its own constructor rather
-//! than by changing this one.
+//! Every constructor here requires the OpenCV CPU backend and never substitutes
+//! another implementation for it. There is no backend-selection argument because
+//! there is exactly one production matching backend: requiring it is the only
+//! choice available, so a selection type would name a decision no caller can
+//! make. A second backend arrives with its own constructor rather than by
+//! changing these.
 //!
 //! The backend is initialized before anything else is wired, so an unusable
 //! OpenCV fails engine construction with [`Status::VisionFailed`] and leaves no
@@ -49,16 +73,26 @@
 //!
 //! | Outcome | Status |
 //! |---|---|
-//! | Malformed request, unknown target, foreign identity, template identity a loaded package does not declare | [`Status::InvalidArgument`] |
+//! | Malformed request, unknown target, foreign identity, mismatched adapter pairing, template identity a loaded package does not declare | [`Status::InvalidArgument`] |
 //! | Capability or conversion the request needs is unavailable | [`Status::Unsupported`] |
 //! | Cancellation token set before the result committed | [`Status::Cancelled`] |
 //! | Deadline passed before the result committed | [`Status::DeadlineExceeded`] |
 //! | Session closed | [`Status::Closed`] |
+//! | The target a session or a sequence names no longer exists | [`Status::TargetLost`] |
 //! | Capture failed | [`Status::CaptureFailed`] |
 //! | Asset package refused | [`Status::AssetInvalid`] |
 //! | A documented capture-resource or asset ceiling would have been exceeded, or a counter reached its end: geometry revisions, stream epochs, frame sequence numbers, or the identity space | [`Status::LimitExceeded`] |
 //! | Matching backend unavailable or failed | [`Status::VisionFailed`] |
+//! | Input delivery was refused by the platform, its policy, or its authorization | [`Status::InputFailed`] |
 //! | An invariant this implementation is responsible for did not hold | [`Status::Internal`] |
+//!
+//! Input adds one shape the table cannot express, because it is not a failure.
+//! An admitted sequence answers with an [`InputReceipt`] rather than a status:
+//! an operating system cannot recall a delivered event, so a sequence that
+//! stopped part-way reports how far it got, which mechanism carried it, and what
+//! it managed to release. [`SequenceOutcome`] is what a caller branches on, and
+//! only a sequence that was never admitted — or one that delivered nothing under
+//! an operation that had already lost its race — reports a status instead.
 //!
 //! Package loading reports [`AssetFault`] instead, which carries the rule that
 //! was broken *and* the stage that caught it. It converts into [`Error`], and
@@ -78,10 +112,14 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1, complete. The deterministic replay workflow above is implemented on
-//! both release targets. Native window and display capture, OCR, watchers,
-//! input injection, diagnostics, and scheduling are **not implemented** and
-//! cannot be reached from here.
+//! Phase 1 complete on both release targets, and the Phase 2 native capture and
+//! input workflow with it: native discovery, capture, mapping, matching,
+//! non-prompting permission reads where the platform has them, bounded input
+//! delivery with receipts, and close are implemented and reachable from here.
+//!
+//! OCR, watchers, diagnostics, and scheduling are **not implemented** and cannot
+//! be reached from here. Neither can any platform-native type: a Windows or
+//! macOS handle is never returned, taken, or downcast to across this API.
 //!
 //! # Names, and what may change
 //!
@@ -143,7 +181,12 @@ use std::sync::Arc;
 
 use mado_pilot_adapter_replay::{ReplayProvider, ReplaySource};
 use mado_pilot_backend_opencv::OpenCvBackend;
-use mado_pilot_runtime::{EngineWiring, IdentityIssuer, Matcher, PackageLoader};
+use mado_pilot_runtime::{CaptureProvider, EngineWiring, IdentityIssuer, Matcher, PackageLoader};
+
+#[cfg(any(windows, target_os = "macos"))]
+use mado_pilot_runtime::InputProvider;
+#[cfg(target_os = "macos")]
+use mado_pilot_runtime::PermissionProbe;
 
 /// Replay capture configuration.
 ///
@@ -249,26 +292,181 @@ pub fn replay_engine(request: impl Into<ReplayEngineRequest>) -> Result<Engine> 
     let engine = issuer.engine();
     let capture = ReplayProvider::new(issuer, request.source)?;
 
-    Ok(Engine::new(EngineWiring {
+    Engine::new(EngineWiring {
         engine,
         capture: Arc::new(capture),
         matcher: Matcher::new(Arc::new(backend)),
         loader: PackageLoader::with_limits(request.limits),
-    }))
+        // Replay is a source of prepared frames, so there is no target for input
+        // to reach and no authorization behind one. A capture-only engine says
+        // exactly that, and a session opened on it reports input as unavailable
+        // rather than as something that failed.
+        input: None,
+        permission: None,
+    })
+}
+
+/// What a native engine is built from.
+///
+/// Which platform is not a field: an engine is built by the constructor for one
+/// release target, so a request cannot name a platform the build does not
+/// contain. What a caller can decide is the policy the engine then applies, and
+/// this is where that lives — every later option arrives as a method here rather
+/// than as another constructor per target.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeEngineRequest {
+    limits: AssetLimits,
+}
+
+impl NativeEngineRequest {
+    /// Requests a native engine with the default asset limits.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Applies `limits` to every package the engine loads.
+    ///
+    /// As [`ReplayEngineRequest::with_limits`]: this can tighten what an
+    /// untrusted package may allocate and cannot loosen it.
+    #[must_use]
+    pub const fn with_limits(mut self, limits: AssetLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Returns the limits the engine will apply.
+    #[must_use]
+    pub const fn limits(&self) -> AssetLimits {
+        self.limits
+    }
+}
+
+impl From<AssetLimits> for NativeEngineRequest {
+    fn from(limits: AssetLimits) -> Self {
+        Self::new().with_limits(limits)
+    }
+}
+
+/// Builds an engine over native Windows discovery, capture, and input.
+///
+/// Present on Windows builds only. Discovery is picker-free, capture is Windows
+/// Graphics Capture, and input is the platform's system and fixture-gated
+/// background delivery; none of those types reaches this API, which speaks the
+/// same platform-neutral vocabulary the replay engine does.
+///
+/// Construction touches no Windows API and asks for no authorization: it
+/// selects adapters, and every native call happens in the operation that needs
+/// it. Windows grants no separate capture or input authorization this adapter
+/// can read, so the engine reads none — `Engine::reads_permissions` reports
+/// `false` there, which is not a claim that an operation will be permitted.
+///
+/// # Atomic construction
+///
+/// The one step that can fail on its own is the matching backend, and it runs
+/// first, so a build whose OpenCV is unusable fails before an identity space or
+/// an adapter exists. Nothing constructed after it holds a native resource — the
+/// provider acquires those per operation — so a later refusal leaves nothing
+/// open, and a failed construction yields no engine at all rather than a
+/// half-configured one.
+///
+/// # Errors
+///
+/// Returns [`Status::VisionFailed`] when the required matching backend cannot be
+/// initialized.
+#[cfg(windows)]
+pub fn windows_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine> {
+    let request = request.into();
+
+    // Required, not preferred, and first: constructing the backend is what
+    // proves this host's OpenCV is usable, and a failure here leaves no adapter
+    // and no identity space behind.
+    let backend = OpenCvBackend::new()?;
+
+    let issuer = Arc::new(IdentityIssuer::new());
+    let engine = issuer.engine();
+    let provider = Arc::new(mado_pilot_platform_windows::WindowsCaptureProvider::new(
+        issuer,
+    ));
+
+    Engine::new(EngineWiring {
+        engine,
+        capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
+        matcher: Matcher::new(Arc::new(backend)),
+        loader: PackageLoader::with_limits(request.limits()),
+        // One object satisfies both contracts, which is what makes the target
+        // identity a session delivers input to the same identity it captures.
+        input: Some(provider as Arc<dyn InputProvider>),
+        permission: None,
+    })
+}
+
+/// Builds an engine over native macOS discovery, capture, permissions, and
+/// input.
+///
+/// Present on macOS builds only. Discovery is picker-free, capture is
+/// ScreenCaptureKit, input is `CGEvent` system delivery, and the two
+/// authorizations macOS grants separately are reported separately; none of those
+/// types reaches this API, which speaks the same platform-neutral vocabulary the
+/// replay engine does.
+///
+/// Construction touches no macOS API, requests no authorization, and presents
+/// nothing: it selects adapters. Every native call, including the two
+/// non-prompting authorization reads behind `Engine::permissions`, happens in
+/// the operation that needs it.
+///
+/// # Atomic construction
+///
+/// As the Windows constructor: the matching backend runs first and is the one
+/// step that can fail on its own, nothing constructed after it holds a native
+/// resource, and a failed construction yields no engine rather than a
+/// half-configured one.
+///
+/// # Errors
+///
+/// Returns [`Status::VisionFailed`] when the required matching backend cannot be
+/// initialized.
+#[cfg(target_os = "macos")]
+pub fn macos_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine> {
+    let request = request.into();
+
+    let backend = OpenCvBackend::new()?;
+
+    let issuer = Arc::new(IdentityIssuer::new());
+    let engine = issuer.engine();
+    let provider = Arc::new(mado_pilot_platform_macos::MacosCaptureProvider::new(issuer));
+
+    Engine::new(EngineWiring {
+        engine,
+        capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
+        matcher: Matcher::new(Arc::new(backend)),
+        loader: PackageLoader::with_limits(request.limits()),
+        input: Some(provider as Arc<dyn InputProvider>),
+        permission: Some(
+            Arc::new(mado_pilot_platform_macos::MacosPermissionProbe::new())
+                as Arc<dyn PermissionProbe>,
+        ),
+    })
 }
 
 pub use mado_pilot_runtime::{
     AssetFault, AssetFaultKind, AssetLimits, AssetPackage, BackendDescriptor, BackendId,
-    CancellationToken, CaptureFault, ClipPolicy, Clock, ContentDigest, Continuity, CoordinateSpace,
-    CoordinateSupport, CpuMapping, Engine, EngineId, Error, FindOutcome, FindRequest, Frame,
+    CancellationToken, CapabilitySupport, CaptureFault, CleanupBudget, CleanupState, ClipPolicy,
+    Clock, ContentDigest, Continuity, CoordinateSpace, CoordinateSupport, CpuMapping, DeliveryPlan,
+    DiagnosticCategory, Engine, EngineId, Error, FindOutcome, FindRequest, FocusPolicy, Frame,
     FrameDescriptor, FrameOrder, FrameRequest, FrameSelection, FrameSequence, FrameStamp,
-    FrameView, GeometryFault, GeometryRevision, IdentityFault, Interruption, LoadStage, Manifest,
-    Match, MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage, MonotonicInstant,
-    OpenRequest, OperationContext, OverflowPolicy, PackagePath, PackageSource, PixelExtent,
-    PixelFormat, PixelRect, Point, PreparedTemplate, Provenance, ProviderId, QueuePolicy, Rect,
-    RegionSelection, Result, RetainedStoragePolicy, Scale, SearchFrame, Session,
-    SessionDescription, Status, StreamEpoch, StreamId, Suppression, SystemClock, TargetDescription,
-    TargetId, TargetPlacement, TemplateDeclaration, TemplateEncoding, TemplateId, TemplateSource,
+    FrameView, GeometryFault, GeometryPolicy, GeometryRevision, IdentityFault, InputCapability,
+    InputDelivery, InputDescriptor, InputEvent, InputFault, InputOpenRequest, InputOperationKind,
+    InputReceipt, InputRequest, InputRequirement, InputSequence, Interruption, Key, Lifecycle,
+    LoadStage, Manifest, Match, MatchDefaults, MatchOptions, MatchResult, MemoryEntry,
+    MemoryPackage, Modifier, MonotonicInstant, OpenRequest, OperationContext, OverflowPolicy,
+    PackagePath, PackageSource, PermissionKind, PermissionOutcome, PermissionReport,
+    PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point, PointerButton,
+    PointerGeometry, PreparedTemplate, PressedState, Provenance, ProviderId, QueuePolicy, Rect,
+    RedactedDiagnostic, RegionSelection, Result, RetainedStoragePolicy, Scale, SearchFrame,
+    SequenceLimits, SequenceOutcome, Session, SessionDescription, SessionRequest, Status,
+    StreamEpoch, StreamId, Suppression, SystemClock, TargetCapability, TargetDescription, TargetId,
+    TargetKind, TargetPlacement, TemplateDeclaration, TemplateEncoding, TemplateId, TemplateSource,
     TemplateSourceRequest, TransformSnapshot, VisionFault,
 };
 

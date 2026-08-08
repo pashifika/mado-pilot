@@ -23,10 +23,13 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1, complete. Capture and vision doubles, a manual clock, a template-image
-//! writer, the matching fixture scene, the capture and vision contract suites,
-//! and the benchmark harness exist. Input and OCR doubles and target lifecycle
-//! scripts do not.
+//! Phase 1 complete, and the Phase 2 input support with it. Capture, storage,
+//! vision, permission, and input doubles, a manual clock, a template-image
+//! writer, the matching fixture scene, the capture, vision, and input contract
+//! suites, and the benchmark harness exist. The input double records the policies
+//! each admitted sequence carried, so a layer that substituted one is visible
+//! rather than merely improbable. OCR doubles and target lifecycle scripts do
+//! not exist.
 
 pub mod bench_harness;
 pub mod capture_contract;

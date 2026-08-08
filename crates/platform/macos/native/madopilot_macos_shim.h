@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 4u
+#define MP_SHIM_ABI_VERSION 5u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -560,14 +560,20 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 #define MP_SHIM_INPUT_MAX_TEXT_CHUNK 16u
 
 /*
- * Reports the frontmost on-screen window and the process that owns it.
+ * Reports whether the exact retained window is the active application's focused
+ * window.
  *
- * Reads the window server's own front-to-back order and returns the first entry
- * in the ordinary window layer. Window names are not read, so this needs no
- * Screen Recording authorization. Returns MP_SHIM_TARGET_LOST when the desktop
- * presents no ordinary window at all.
+ * The retained SCWindow establishes identity and current geometry first. Public
+ * Accessibility attributes then report the active application, its focused
+ * window, and its window list. Focus is true only when exactly one Accessibility
+ * window has the retained window's unchanged current position and size and that
+ * element is focused. Missing or ambiguous attributes write false. No title,
+ * private Accessibility identifier, or window-raising action is used.
+ *
+ * `timeout_nanos` bounds all Accessibility messaging in this observation.
  */
-mp_shim_status mp_shim_input_frontmost_window(uint64_t *out_window_id, int64_t *out_owner_pid);
+mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
+                                            uint64_t timeout_nanos, bool *out_focused);
 
 /*
  * Reports the retained selection's current on-screen rectangle in the global

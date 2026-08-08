@@ -1,8 +1,10 @@
 # Windows Input Adapter and Verification
 
-The Windows platform package implements input at the Adapter boundary. Runtime,
-public-facade, C ABI, and C++ wiring remain later work, so this is an implemented
-Rust platform capability rather than a release-level product claim.
+The Windows platform package implements input at the Adapter boundary, and
+`mado_pilot::windows_engine` wires it into the runtime and the public Rust facade.
+C ABI and C++ wiring remain later work, and the release acceptance this document
+describes is still the user-focused check below, so this is an implemented Rust
+capability rather than a release-level product claim.
 
 ## Capability boundary
 
@@ -120,6 +122,24 @@ before system input. If focus changes after that authorization, integrity blocks
 delivery, or a native record count is short, execution fails with the typed
 receipt. Do not replace either failure with `AttachThreadInput`, elevation, or
 input intended to defeat foreground policy.
+
+## Explicit facade check
+
+The check above exercises the Adapter directly. The same delivery through the
+public Rust facade — engine construction, discovery, capture, mapping, and a
+frame-bound sequence — is
+`crates/mado-pilot/examples/windows-native-input.rs`. Start the fixture, then name
+its exact window title:
+
+```sh
+cargo run --locked --package mado-pilot --example windows-native-input -- "MadoPilot Input Fixture [<pid>]"
+```
+
+Unlike the check above it needs no focus at all: it requires background delivery
+and permits no substitute, so it cannot reach a window that does not advertise
+that capability — which, by the capability table above, is every window but the
+dedicated fixture class. It matches the title exactly and refuses zero or more
+than one match.
 
 ## Redaction review
 

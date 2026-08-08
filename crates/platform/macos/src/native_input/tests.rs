@@ -22,7 +22,7 @@ use mado_pilot_input::{
 use super::{
     CommitGeometry, DriverState, FUNCTION_KEYS, GeometryFingerprint, NativePost, PointerState,
     SystemButtonState, SystemCommitSource, SystemKeyState, commit_geometry, commit_prepared,
-    contains_desktop_point, extent_from_points, key_flag, modifier_flag, native_button,
+    contains_desktop_point, extent_from_points, focus_wait, key_flag, modifier_flag, native_button,
     placement_for, release_system, resolve_key_code, text_chunks,
 };
 use crate::input::{DeliveryFailure, InputDriver, MacosInputController, input_capability};
@@ -219,6 +219,19 @@ impl InputDriver for RevokingNativePathDriver {
         }
         release_system(pressed, state, &self.source, operation)
     }
+}
+
+#[test]
+fn a_focus_observation_never_outlives_the_callers_budget() {
+    let bounded = OperationContext::new()
+        .with_timeout(Duration::from_millis(30))
+        .expect("positive timeout");
+
+    assert!(focus_wait(&bounded) <= Duration::from_millis(30));
+    assert_eq!(
+        focus_wait(&OperationContext::new()),
+        Duration::from_millis(250)
+    );
 }
 
 #[test]

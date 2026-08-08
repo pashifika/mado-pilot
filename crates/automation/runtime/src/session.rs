@@ -10,12 +10,16 @@
 use std::sync::Arc;
 
 use mado_pilot_capture::{CaptureFault, CaptureSession, Frame, FrameRequest, SessionDescription};
-use mado_pilot_core::{Operation, OperationContext, Result, StreamId, TargetId};
+use mado_pilot_core::{InputCapability, Operation, OperationContext, Result, StreamId, TargetId};
+use mado_pilot_input::{
+    InputController, InputDescriptor, InputFault, InputReceipt, InputRequest, SequenceOutcome,
+};
 use mado_pilot_vision::{MatchRequest, Matcher};
 
 use crate::find::{FindOutcome, FindRequest, SearchFrame};
 
-/// An open capture session that can search its own frames.
+/// An open capture session that can search its own frames, and deliver input to
+/// the target it captures when the open established any.
 ///
 /// Dropping a session does not close it. Close is explicit, because a caller
 /// that still holds frames, mappings, or results has to be able to say when the
@@ -25,17 +29,34 @@ pub struct Session {
     description: SessionDescription,
     capture: Arc<dyn CaptureSession>,
     matcher: Matcher,
+    input: Option<Arc<dyn InputController>>,
+    input_descriptor: InputDescriptor,
 }
 
 impl Session {
-    pub(crate) fn new(capture: Arc<dyn CaptureSession>, matcher: Matcher) -> Self {
+    pub(crate) fn new(
+        capture: Arc<dyn CaptureSession>,
+        matcher: Matcher,
+        input: Option<Arc<dyn InputController>>,
+    ) -> Self {
+        // Read once, for the reason the capture description is: an accepted
+        // descriptor cannot change, and re-reading it would report the adapter's
+        // current answer rather than the one the caller opened with.
+        let description = capture.description();
+        let input_descriptor = match input.as_ref() {
+            Some(controller) => controller.descriptor(),
+            // Truthful rather than absent: through this session the target
+            // accepts no input, which is what a caller has to be able to read
+            // without first knowing how the engine was wired.
+            None => InputDescriptor::new(description.target(), InputCapability::none()),
+        };
+
         Self {
-            // Read once: a session's accepted description cannot change, and a
-            // result envelope that re-read it would be reporting the adapter's
-            // current answer rather than the one the caller opened with.
-            description: capture.description(),
+            description,
             capture,
             matcher,
+            input,
+            input_descriptor,
         }
     }
 
@@ -149,19 +170,118 @@ impl Session {
         Ok(attempt.commit(outcome)?)
     }
 
-    /// Closes the session and drains in-flight frame waits.
+    /// Returns what input this session actually established.
     ///
-    /// Idempotent. Frames, views, mappings, prepared templates, packages, and
-    /// outcomes the caller already holds stay valid: they are owned by the
+    /// Always answers. A session opened without input, and one whose optional
+    /// input capability turned out to be unavailable, both report a descriptor
+    /// that accepts nothing, so a caller reads what it got rather than inferring
+    /// it from how the engine was wired.
+    #[must_use]
+    pub const fn input_descriptor(&self) -> &InputDescriptor {
+        &self.input_descriptor
+    }
+
+    /// Reports whether this session can deliver input to its target.
+    #[must_use]
+    pub fn accepts_input(&self) -> bool {
+        self.input.is_some() && self.input_descriptor.is_available()
+    }
+
+    /// Delivers one bounded sequence to this session's target.
+    ///
+    /// # One sequence at a time, and no queue
+    ///
+    /// The controller serializes its own sequences, so two callers cannot
+    /// interleave a modifier and a key into a keystroke neither asked for. A
+    /// sequence waits under the caller's own operation context and nothing
+    /// accumulates behind it: one whose deadline passes while waiting delivers
+    /// nothing and says so. Pressure is reported to callers rather than absorbed.
+    ///
+    /// # What the receipt is, and why a failure is usually not an error
+    ///
+    /// An operating system cannot recall a delivered event, so a sequence that
+    /// stopped part-way answers with how far it got. Once anything may have
+    /// reached the target, that account is this operation's terminal outcome and
+    /// is returned even when the caller's deadline passed while it ran —
+    /// replacing it with the interruption would discard the one fact the caller
+    /// has to act on. A receipt that delivered nothing carries no such fact, so
+    /// an operation that lost its race reports the interruption instead.
+    ///
+    /// Nothing here retries. A sequence that stopped part-way is not sent again
+    /// through another mechanism, whatever the request permitted: the events
+    /// already delivered cannot be taken back, and repeating them is not a
+    /// recovery a caller could have asked for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an unsupported outcome when this session established no input, an
+    /// invalid-argument outcome for a request addressed to another target or
+    /// carrying a source frame from another stream, a closed outcome once the
+    /// session or the controller is closing, the input contract's own refusal
+    /// for a request no permitted mechanism can satisfy, and the operation's
+    /// terminal outcome when cancellation or the deadline wins with nothing
+    /// delivered.
+    pub fn send_input(
+        &self,
+        request: &InputRequest,
+        operation: &OperationContext,
+    ) -> Result<InputReceipt> {
+        let mut attempt = Operation::admit(operation)?;
+
+        let Some(controller) = self.input.as_ref() else {
+            return Err(InputFault::DeliveryUnavailable.into());
+        };
+        if request.target() != self.description.target() {
+            return Err(InputFault::ForeignTarget.into());
+        }
+        // A source frame from another stream would resolve this target's
+        // coordinates against geometry it never published. Which frame identity
+        // is this session's is the session's rule, exactly as it is for a search.
+        if let Some(source) = request.pointer_geometry().source()
+            && source.stream() != self.description.stream()
+        {
+            return Err(CaptureFault::ForeignStream.into());
+        }
+        // A session that has begun closing delivers nothing, whatever the
+        // request asks for. Close means the caller is finished with this target.
+        if !self.capture.is_open() {
+            return Err(CaptureFault::SessionClosed.into());
+        }
+        attempt.checkpoint()?;
+
+        let receipt = controller.execute(request, operation)?;
+        if receipt.outcome() == SequenceOutcome::Unexecuted {
+            // Nothing reached the target, so a late answer is still late and the
+            // operation's own outcome is the truthful one.
+            return Ok(attempt.commit(receipt)?);
+        }
+        Ok(receipt)
+    }
+
+    /// Closes the session and drains in-flight frame waits and input sequences.
+    ///
+    /// Idempotent, and retryable: a close that loses its own race leaves both
+    /// sides closing, and a later close continues the drain rather than
+    /// restarting it or repeating an event. Input stops first, because it is the
+    /// side that can still change the target.
+    ///
+    /// Frames, views, mappings, prepared templates, packages, outcomes, and
+    /// receipts the caller already holds stay valid: they are owned by the
     /// caller, not by the session.
     ///
     /// # Errors
     ///
     /// Returns the operation's terminal outcome when cancellation or the
-    /// deadline wins before the drain finishes. The session then stays closing,
-    /// and a later close continues the lifecycle.
+    /// deadline wins before either drain finishes. Both drains are attempted
+    /// whatever the first one reports, so a retried close continues one lifecycle
+    /// rather than two that diverged.
     pub fn close(&self, operation: &OperationContext) -> Result<()> {
-        self.capture.close(operation)
+        let input = match self.input.as_ref() {
+            Some(controller) => controller.close(operation),
+            None => Ok(()),
+        };
+        let capture = self.capture.close(operation);
+        input.and(capture)
     }
 
     /// Reports whether the session has finished closing.
@@ -170,9 +290,16 @@ impl Session {
     /// `false` here and still refuses work: this answers "is the lifecycle over",
     /// which is what the C boundary's `session_is_closed` reports, and not "will
     /// this session accept a request".
+    ///
+    /// Both sides have to be over. A capture side that finished draining while a
+    /// sequence is still unwinding is a session whose target can still change.
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.capture.is_closed()
+            && self
+                .input
+                .as_ref()
+                .is_none_or(|controller| controller.is_closed())
     }
 }
 
@@ -219,7 +346,7 @@ mod tests {
             Self {
                 backend,
                 matcher: matcher.clone(),
-                session: Session::new(opened, matcher),
+                session: Session::new(opened, matcher, None),
             }
         }
 

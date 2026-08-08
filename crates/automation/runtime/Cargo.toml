@@ -12,6 +12,7 @@ publish = false
 mado-pilot-assets = { path = "../assets" }
 mado-pilot-capture = { path = "../capture" }
 mado-pilot-core = { path = "../core" }
+mado-pilot-input = { path = "../input" }
 mado-pilot-vision = { path = "../vision" }
 
 [dev-dependencies]

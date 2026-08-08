@@ -323,10 +323,6 @@ impl TargetRecord {
         self.id
     }
 
-    pub(crate) fn key(&self) -> NativeKey {
-        self.key
-    }
-
     pub(crate) fn kind(&self) -> TargetKind {
         self.key.kind()
     }
@@ -361,6 +357,11 @@ impl TargetRecord {
                 ShimStatus::InvalidArgument => InputFault::UnsupportedCoordinate,
                 _ => InputFault::DeliveryFailed,
             })
+    }
+
+    /// Reads focus for this exact retained selection within `wait`.
+    pub(crate) fn is_focused(&self, wait: Duration) -> std::result::Result<bool, ShimStatus> {
+        self.selection.input_focused(wait)
     }
 
     pub(crate) fn ensure_live(&self) -> std::result::Result<(), InputFault> {
