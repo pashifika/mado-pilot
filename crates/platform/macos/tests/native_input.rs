@@ -442,11 +442,12 @@ fn the_fixture_starts_publishes_its_title_and_is_selected_exactly_once() {
     assert_eq!(chosen.capability().kind(), Some(TargetKind::Window));
 }
 
-/// Delivers real system input to the fixture after a person focuses it.
+/// Delivers real system input to the exact focused fixture while capture remains
+/// open.
 ///
-/// Ignored by default. It presses Enter and types a fixed string into whatever is
-/// frontmost, so it runs only on an interactive desktop and only when the fixture
-/// is the frontmost window.
+/// Ignored by default. It presses Enter and types a fixed string into the
+/// selected fixture, so it runs only on an interactive desktop and only after
+/// the person focuses that window.
 #[test]
 #[ignore = "delivers real system input; run it deliberately on an interactive desktop"]
 fn interactive_system_delivery_targets_only_the_exact_fixture() {
@@ -467,7 +468,9 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
         .expect("selection is fail-closed: zero or several matches stop here");
 
     // Capture and map the exact selected target before obtaining anything that
-    // can post input. Every failure on this path aborts the ignored check here.
+    // can post input, then keep capture open through delivery. This is
+    // load-bearing: ScreenCaptureKit adds an auxiliary same-owner window while
+    // streaming, and focus authority must still identify the selected fixture.
     let capture = CaptureProvider::open(
         &provider,
         chosen.id(),
@@ -484,9 +487,6 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
     let mapping = frame
         .map(PixelFormat::Bgra8, &frame_context)
         .expect("the selected fixture frame maps before input");
-    capture
-        .close(&context())
-        .expect("capture closes before input is opened");
     let mapped = mapping.descriptor();
 
     let controller =
@@ -509,7 +509,7 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
         FOCUS_WAIT.as_secs()
     );
     // `RequireFocused` never activates anything. Until a person focuses the
-    // fixture, every attempt refuses and delivers nothing.
+    // exact fixture, every attempt refuses and delivers nothing.
     let probe = InputRequest::new(
         chosen.id(),
         InputSequence::new(vec![InputEvent::KeyPress(Key::Escape)]).expect("valid"),
@@ -580,5 +580,6 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
     );
 
     controller.close(&context()).expect("close");
+    capture.close(&context()).expect("capture close");
     assert!(controller.is_closed());
 }

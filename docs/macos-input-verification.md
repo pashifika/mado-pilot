@@ -73,23 +73,26 @@ permission.
 
 Liveness first comes from the exact `SCWindow` included by the discovery-retained
 `SCContentFilter`, which is the same authority capture opens. Focus is then read
-from the window server's own front-to-back order: the target is focused when it is
-the frontmost window in the ordinary window layer and its window number and owning
-process match the retained selection's metadata. The pair validates focus only;
-it cannot re-resolve an incarnation, so a same-PID replacement that recycles the
-number makes the old `TargetId` report `TargetLost`. Window names are never read
-for focus, so it needs no Screen Recording beyond the retained selection already
-established by discovery.
+through public, read-only Accessibility attributes. The owning application must
+be active, its focused window must appear in its public window list, and exactly
+one Accessibility window's top-left global position and size must equal the
+retained window's current frame. The retained frame is read again after that
+snapshot. Missing attributes, changed geometry, or zero or multiple matches
+establish no focus and deliver nothing. This geometry join never re-resolves
+identity: titles and private Accessibility window identifiers are not read, and a
+same-PID replacement that recycles a number still makes the old `TargetId` report
+`TargetLost`. Every Accessibility message is bounded by the caller's remaining
+operation budget.
 
 - `Preserve` cannot satisfy a focus-requiring system path, so a window request
   using it fails admission.
 - `RequireFocused` never activates anything.
 - `ActivateIfRequired` asks macOS to activate the *owning application* through
-  `NSRunningApplication`, then re-reads the frontmost window for a bounded period
-  and reports `FocusRefused` if the intended window did not become frontmost. It
-  never claims to have raised one particular window, never passes
-  `NSApplicationActivateIgnoringOtherApps`, and never uses the Accessibility API
-  to move another application's windows.
+  `NSRunningApplication`, then repeats the exact public focus read-back for a
+  bounded period and reports `FocusRefused` if the retained window cannot be
+  established as focused. It never claims to have raised one particular window,
+  never passes `NSApplicationActivateIgnoringOtherApps`, and never uses the
+  Accessibility API to move another application's windows.
 
 A display target has no focus requirement, because nothing about a display is
 focusable.
@@ -242,12 +245,16 @@ The check starts the fixture and requires its ready line to report a bundled,
 structurally valid signature with the stable signing identifier before selecting
 it exactly once. Before it opens an input controller, it opens capture for that
 exact `TargetId`, waits for one frame, maps it to BGRA8, and passes the mapped bytes
-through `frame_is_fixture_content`. Launch/signature, capture, mapping, close, or
-predicate failure stops before the first `RequireFocused` probe.
+through `frame_is_fixture_content`. It deliberately keeps capture open through
+the input sequence: ScreenCaptureKit adds a same-owner auxiliary window while
+streaming, and the regression proves that read-only focus authority still names
+the exact retained fixture. Launch/signature, capture, mapping, or predicate
+failure stops before the first `RequireFocused` probe.
 It then waits 15 seconds: click that exact fixture window when prompted. The probe
-activates nothing, and every attempt before the window is focused delivers zero
-events. Only after the fixture is frontmost does it send Enter down and up and the
-fixed text `system-probe`. It sends no click and no pointer movement.
+activates nothing, and every attempt before the exact retained window is focused
+delivers zero events. Only then does it send Enter down and up and the fixed text
+`system-probe`. It sends no click and no pointer movement, and closes capture
+after input verification.
 
 If the fixture is not focused in time, selection is ambiguous, deterministic
 content cannot be captured and mapped, the pixels do not match, or Accessibility

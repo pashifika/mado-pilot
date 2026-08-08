@@ -3029,58 +3029,128 @@ static Class mp_shim_activation_class(void) {
 
 #pragma mark - Input: window-server observations
 
-/* Reads one numeric value out of a window-server dictionary without messaging. */
-static bool mp_shim_window_number(CFDictionaryRef entry, CFStringRef key, int64_t *out_value) {
-    CFTypeRef value = CFDictionaryGetValue(entry, key);
-    if (value == NULL || CFGetTypeID(value) != CFNumberGetTypeID()) {
-        return false;
-    }
-    return CFNumberGetValue((CFNumberRef)value, kCFNumberSInt64Type, out_value);
-}
+/* Accessibility work is bounded even if a hostile application reports many windows. */
+#define MP_SHIM_MAX_ACCESSIBILITY_WINDOWS 256
 
-mp_shim_status mp_shim_input_frontmost_window(uint64_t *out_window_id, int64_t *out_owner_pid) {
-    if (out_window_id == NULL || out_owner_pid == NULL) {
-        return MP_SHIM_INVALID_ARGUMENT;
-    }
-    *out_window_id = 0;
-    *out_owner_pid = 0;
-    MP_SHIM_BEGIN
-    mp_shim_connect_window_server();
-    /* Onscreen order is front to back, and the name key is never read, so this
-     * observation needs no Screen Recording authorization. */
-    CFArrayRef windows = CGWindowListCopyWindowInfo(
-        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
-    if (windows == NULL) {
+static mp_shim_status mp_shim_ax_error_status(AXError error, uint64_t deadline,
+                                              bool *out_missing) {
+    *out_missing = false;
+    switch (error) {
+    case kAXErrorSuccess:
+        return MP_SHIM_OK;
+    case kAXErrorAPIDisabled:
+        return MP_SHIM_PERMISSION_DENIED;
+    case kAXErrorAttributeUnsupported:
+    case kAXErrorNoValue:
+    case kAXErrorNotImplemented:
+    case kAXErrorInvalidUIElement:
+        *out_missing = true;
+        return MP_SHIM_OK;
+    case kAXErrorCannotComplete:
+        return mp_shim_nanos_from_ticks(mach_absolute_time()) >= deadline ? MP_SHIM_TIMED_OUT
+                                                                         : MP_SHIM_PLATFORM_FAILURE;
+    default:
         return MP_SHIM_PLATFORM_FAILURE;
     }
-    mp_shim_status status = MP_SHIM_TARGET_LOST;
-    CFIndex count = CFArrayGetCount(windows);
-    for (CFIndex index = 0; index < count; index += 1) {
-        CFTypeRef element = CFArrayGetValueAtIndex(windows, index);
-        if (element == NULL || CFGetTypeID(element) != CFDictionaryGetTypeID()) {
-            continue;
-        }
-        CFDictionaryRef entry = (CFDictionaryRef)element;
-        int64_t layer = 0;
-        int64_t number = 0;
-        int64_t owner = 0;
-        /* Layer zero is the ordinary application window band. Menu bars, docks,
-         * and overlays sit above it and are not what "frontmost" means here. */
-        if (!mp_shim_window_number(entry, kCGWindowLayer, &layer) || layer != 0) {
-            continue;
-        }
-        if (!mp_shim_window_number(entry, kCGWindowNumber, &number) ||
-            !mp_shim_window_number(entry, kCGWindowOwnerPID, &owner) || number <= 0 || owner <= 0) {
-            continue;
-        }
-        *out_window_id = (uint64_t)number;
-        *out_owner_pid = owner;
-        status = MP_SHIM_OK;
-        break;
+}
+
+/* Gives one Accessibility object no more than the observation's remaining budget. */
+static mp_shim_status mp_shim_ax_prepare(AXUIElementRef element, uint64_t deadline) {
+    uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
+    if (element == NULL || now >= deadline) {
+        return MP_SHIM_TIMED_OUT;
     }
-    CFRelease(windows);
+    float seconds = (float)((double)(deadline - now) / 1000000000.0);
+    if (!(seconds > 0.0f)) {
+        return MP_SHIM_TIMED_OUT;
+    }
+    AXError error = AXUIElementSetMessagingTimeout(element, seconds);
+    if (error == kAXErrorSuccess) {
+        return MP_SHIM_OK;
+    }
+    if (error == kAXErrorAPIDisabled) {
+        return MP_SHIM_PERMISSION_DENIED;
+    }
+    if (error == kAXErrorCannotComplete &&
+        mp_shim_nanos_from_ticks(mach_absolute_time()) >= deadline) {
+        return MP_SHIM_TIMED_OUT;
+    }
+    return MP_SHIM_PLATFORM_FAILURE;
+}
+
+/* Copies one public attribute and distinguishes an absent value from a failed query. */
+static mp_shim_status mp_shim_ax_copy_attribute(AXUIElementRef element, CFStringRef attribute,
+                                                uint64_t deadline, CFTypeRef *out_value,
+                                                bool *out_available) {
+    *out_value = NULL;
+    *out_available = false;
+    mp_shim_status status = mp_shim_ax_prepare(element, deadline);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    AXError error = AXUIElementCopyAttributeValue(element, attribute, out_value);
+    bool missing = false;
+    status = mp_shim_ax_error_status(error, deadline, &missing);
+    if (status != MP_SHIM_OK || missing) {
+        if (*out_value != NULL) {
+            CFRelease(*out_value);
+            *out_value = NULL;
+        }
+        return status;
+    }
+    if (*out_value == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_available = true;
+    return MP_SHIM_OK;
+}
+
+/* Reads one Accessibility window rectangle in the same top-left global plane as SCWindow. */
+static mp_shim_status mp_shim_ax_window_rect(AXUIElementRef window, uint64_t deadline,
+                                             CGRect *out_bounds, bool *out_available) {
+    CFTypeRef position = NULL;
+    CFTypeRef size = NULL;
+    mp_shim_status status = MP_SHIM_OK;
+    *out_bounds = CGRectNull;
+    *out_available = false;
+    do {
+        bool position_available = false;
+        status = mp_shim_ax_copy_attribute(window, kAXPositionAttribute, deadline, &position,
+                                           &position_available);
+        if (status != MP_SHIM_OK || !position_available) {
+            break;
+        }
+        bool size_available = false;
+        status =
+            mp_shim_ax_copy_attribute(window, kAXSizeAttribute, deadline, &size, &size_available);
+        if (status != MP_SHIM_OK || !size_available) {
+            break;
+        }
+        if (CFGetTypeID(position) != AXValueGetTypeID() ||
+            CFGetTypeID(size) != AXValueGetTypeID() ||
+            AXValueGetType((AXValueRef)position) != kAXValueCGPointType ||
+            AXValueGetType((AXValueRef)size) != kAXValueCGSizeType) {
+            status = MP_SHIM_PLATFORM_FAILURE;
+            break;
+        }
+        CGPoint origin = CGPointZero;
+        CGSize extent = CGSizeZero;
+        if (!AXValueGetValue((AXValueRef)position, kAXValueCGPointType, &origin) ||
+            !AXValueGetValue((AXValueRef)size, kAXValueCGSizeType, &extent) ||
+            !isfinite(origin.x) || !isfinite(origin.y) || !isfinite(extent.width) ||
+            !isfinite(extent.height) || extent.width < 1.0 || extent.height < 1.0) {
+            break;
+        }
+        *out_bounds = CGRectMake(origin.x, origin.y, extent.width, extent.height);
+        *out_available = true;
+    } while (false);
+    if (size != NULL) {
+        CFRelease(size);
+    }
+    if (position != NULL) {
+        CFRelease(position);
+    }
     return status;
-    MP_SHIM_END
 }
 
 static mp_shim_status mp_shim_input_window_rect(const struct mp_shim_target *target,
@@ -3102,6 +3172,185 @@ static mp_shim_status mp_shim_input_window_rect(const struct mp_shim_target *tar
     }
     *out_bounds = bounds;
     return MP_SHIM_OK;
+}
+
+mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
+                                            uint64_t timeout_nanos, bool *out_focused) {
+    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || target->filter == NULL ||
+        target->kind != MP_SHIM_TARGET_WINDOW || target->owner_process <= 0 ||
+        timeout_nanos == 0 || out_focused == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_focused = false;
+    MP_SHIM_BEGIN
+    if (!AXIsProcessTrusted()) {
+        return MP_SHIM_PERMISSION_DENIED;
+    }
+    CGRect target_before = CGRectNull;
+    mp_shim_status status = mp_shim_input_window_rect(target, &target_before);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t deadline =
+        began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
+    AXUIElementRef application = NULL;
+    CFTypeRef frontmost = NULL;
+    CFTypeRef focused = NULL;
+    CFArrayRef windows = NULL;
+    CFTypeRef frontmost_after = NULL;
+    CFTypeRef focused_after = NULL;
+    @try {
+        do {
+            application = AXUIElementCreateApplication((pid_t)target->owner_process);
+            if (application == NULL) {
+                status = MP_SHIM_PLATFORM_FAILURE;
+                break;
+            }
+
+            bool available = false;
+            status = mp_shim_ax_copy_attribute(application, kAXFrontmostAttribute, deadline,
+                                               &frontmost, &available);
+            if (status != MP_SHIM_OK || !available) {
+                break;
+            }
+            if (CFGetTypeID(frontmost) != CFBooleanGetTypeID()) {
+                status = MP_SHIM_PLATFORM_FAILURE;
+                break;
+            }
+            if (!CFBooleanGetValue((CFBooleanRef)frontmost)) {
+                break;
+            }
+
+            available = false;
+            status = mp_shim_ax_copy_attribute(application, kAXFocusedWindowAttribute, deadline,
+                                               &focused, &available);
+            if (status != MP_SHIM_OK || !available) {
+                break;
+            }
+            if (CFGetTypeID(focused) != AXUIElementGetTypeID()) {
+                status = MP_SHIM_PLATFORM_FAILURE;
+                break;
+            }
+
+            status = mp_shim_ax_prepare(application, deadline);
+            if (status != MP_SHIM_OK) {
+                break;
+            }
+            CFIndex window_count = 0;
+            AXError count_error =
+                AXUIElementGetAttributeValueCount(application, kAXWindowsAttribute, &window_count);
+            bool missing = false;
+            status = mp_shim_ax_error_status(count_error, deadline, &missing);
+            if (status != MP_SHIM_OK || missing || window_count < 1 ||
+                window_count > MP_SHIM_MAX_ACCESSIBILITY_WINDOWS) {
+                break;
+            }
+
+            status = mp_shim_ax_prepare(application, deadline);
+            if (status != MP_SHIM_OK) {
+                break;
+            }
+            AXError windows_error = AXUIElementCopyAttributeValues(
+                application, kAXWindowsAttribute, 0, window_count, &windows);
+            missing = false;
+            status = mp_shim_ax_error_status(windows_error, deadline, &missing);
+            if (status != MP_SHIM_OK || missing || windows == NULL) {
+                break;
+            }
+            CFIndex actual_count = CFArrayGetCount(windows);
+            if (actual_count < 1 || actual_count > MP_SHIM_MAX_ACCESSIBILITY_WINDOWS) {
+                break;
+            }
+
+            CFIndex geometry_matches = 0;
+            bool matching_window_is_focused = false;
+            bool complete_snapshot = true;
+            for (CFIndex index = 0; index < actual_count; index += 1) {
+                CFTypeRef value = CFArrayGetValueAtIndex(windows, index);
+                if (value == NULL || CFGetTypeID(value) != AXUIElementGetTypeID()) {
+                    status = MP_SHIM_PLATFORM_FAILURE;
+                    complete_snapshot = false;
+                    break;
+                }
+                CGRect bounds = CGRectNull;
+                bool bounds_available = false;
+                status = mp_shim_ax_window_rect((AXUIElementRef)value, deadline, &bounds,
+                                                &bounds_available);
+                if (status != MP_SHIM_OK || !bounds_available) {
+                    complete_snapshot = false;
+                    break;
+                }
+                if (CGRectEqualToRect(bounds, target_before)) {
+                    geometry_matches += 1;
+                    matching_window_is_focused = CFEqual(value, focused);
+                }
+            }
+            if (status != MP_SHIM_OK || !complete_snapshot || geometry_matches != 1 ||
+                !matching_window_is_focused) {
+                break;
+            }
+
+            CGRect target_after = CGRectNull;
+            status = mp_shim_input_window_rect(target, &target_after);
+            if (status != MP_SHIM_OK) {
+                break;
+            }
+            if (!CGRectEqualToRect(target_before, target_after)) {
+                break;
+            }
+
+            available = false;
+            status = mp_shim_ax_copy_attribute(application, kAXFrontmostAttribute, deadline,
+                                               &frontmost_after, &available);
+            if (status != MP_SHIM_OK || !available) {
+                break;
+            }
+            if (CFGetTypeID(frontmost_after) != CFBooleanGetTypeID()) {
+                status = MP_SHIM_PLATFORM_FAILURE;
+                break;
+            }
+            if (!CFBooleanGetValue((CFBooleanRef)frontmost_after)) {
+                break;
+            }
+
+            available = false;
+            status = mp_shim_ax_copy_attribute(application, kAXFocusedWindowAttribute, deadline,
+                                               &focused_after, &available);
+            if (status != MP_SHIM_OK || !available) {
+                break;
+            }
+            if (CFGetTypeID(focused_after) != AXUIElementGetTypeID()) {
+                status = MP_SHIM_PLATFORM_FAILURE;
+                break;
+            }
+            if (!CFEqual(focused, focused_after)) {
+                break;
+            }
+            *out_focused = true;
+        } while (false);
+    } @finally {
+        if (focused_after != NULL) {
+            CFRelease(focused_after);
+        }
+        if (frontmost_after != NULL) {
+            CFRelease(frontmost_after);
+        }
+        if (windows != NULL) {
+            CFRelease(windows);
+        }
+        if (focused != NULL) {
+            CFRelease(focused);
+        }
+        if (frontmost != NULL) {
+            CFRelease(frontmost);
+        }
+        if (application != NULL) {
+            CFRelease(application);
+        }
+    }
+    return status;
+    MP_SHIM_END
 }
 
 static mp_shim_status mp_shim_input_display_rect(const struct mp_shim_target *target,

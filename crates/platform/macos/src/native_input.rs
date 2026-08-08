@@ -20,7 +20,7 @@ use mado_pilot_input::{
     PointerGeometry, PressedState,
 };
 
-use crate::discovery::{NativeKey, placement_from_points};
+use crate::discovery::placement_from_points;
 use crate::input::{
     DeliveryFailure, DriverState, GeometryFingerprint, InputDriver, PointerState,
     SystemButtonState, SystemKeyState,
@@ -30,13 +30,23 @@ use crate::shim::{self, ShimStatus};
 
 type DeliveryResult = Result<(), DeliveryFailure>;
 
-/// How long an activation is given to become observable, and how often it is read.
+/// How long activation and one read-only Accessibility focus observation may
+/// consume, and how often activation is polled.
 ///
-/// Activation crosses the window server, so the frontmost window does not change
-/// under the caller's own call. The ceiling is short enough that a refusal is
-/// reported promptly and is additionally bounded by the caller's operation.
+/// Both waits are additionally bounded by the caller's operation. The native
+/// focus observation carries the remaining slice into Accessibility messaging,
+/// so an unresponsive application cannot hold input past it.
 const ACTIVATION_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 const ACTIVATION_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+const FOCUS_OBSERVATION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+fn focus_wait(operation: &OperationContext) -> std::time::Duration {
+    operation
+        .remaining()
+        .map_or(FOCUS_OBSERVATION_WAIT, |remaining| {
+            remaining.min(FOCUS_OBSERVATION_WAIT)
+        })
+}
 
 /// Hardware key codes for the keys whose position does not vary with the layout.
 ///
@@ -169,21 +179,19 @@ impl NativeInputDriver {
         }
     }
 
-    fn is_frontmost(&self) -> Result<bool, InputFault> {
-        let NativeKey::Window(window) = self.record.key() else {
+    fn is_focused(&self, operation: &OperationContext) -> Result<bool, InputFault> {
+        if self.record.kind() == TargetKind::Display {
             return Ok(true);
-        };
-        // The pair below describes window-server order but is not incarnation
-        // identity: macOS may recycle a window number inside the same process.
-        // Establish that the retained capture selection is still live before
-        // accepting the descriptive pair as focus evidence.
-        self.record.ensure_live()?;
-        match shim::input_frontmost_window() {
-            Ok((frontmost, owner)) => {
-                Ok(frontmost == u64::from(window) && owner == self.record.owner_process())
+        }
+        match self.record.is_focused(focus_wait(operation)) {
+            Ok(focused) => Ok(focused),
+            Err(ShimStatus::PermissionDenied) => Err(InputFault::NotAuthorized),
+            Err(ShimStatus::TargetLost) => Err(InputFault::TargetLost),
+            Err(ShimStatus::TimedOut) => {
+                operation.interruption().map_or(Ok(false), |interruption| {
+                    Err(InputFault::from(interruption))
+                })
             }
-            // No ordinary window is frontmost, so this target is not.
-            Err(ShimStatus::TargetLost) => Ok(false),
             Err(_) => Err(InputFault::DeliveryFailed),
         }
     }
@@ -198,7 +206,7 @@ impl NativeInputDriver {
             // about it is focusable, so nothing about focus applies.
             return Ok(());
         }
-        if self.is_frontmost()? {
+        if self.is_focused(operation)? {
             return Ok(());
         }
         match policy {
@@ -208,11 +216,11 @@ impl NativeInputDriver {
         }
     }
 
-    /// Asks macOS to activate the owning application and reads the result.
+    /// Asks macOS to activate the owning application and reads exact focus back.
     ///
-    /// This activates an application; it never claims to have raised one
-    /// particular window. Whether the intended window ended up frontmost is read
-    /// back rather than assumed, and a refusal is reported as one.
+    /// This activates an application; it never raises one particular window.
+    /// The retained window must still match the active application's focused
+    /// Accessibility window one-to-one before delivery is accepted.
     fn activate(&self, operation: &OperationContext) -> Result<(), InputFault> {
         match shim::input_activate_owner(self.record.owner_process()) {
             Ok(()) => {}
@@ -222,11 +230,11 @@ impl NativeInputDriver {
         }
         let deadline = operation.now().checked_add(ACTIVATION_SETTLE);
         loop {
-            if self.is_frontmost()? {
-                return Ok(());
-            }
             if let Some(interruption) = operation.interruption() {
                 return Err(InputFault::from(interruption));
+            }
+            if self.is_focused(operation)? {
+                return Ok(());
             }
             match deadline {
                 Some(deadline) if operation.now() < deadline => {
