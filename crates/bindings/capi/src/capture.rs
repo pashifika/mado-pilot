@@ -13,9 +13,11 @@
 //! [`madopilot_image_t`]: it points into the mapping handle, and it dies with
 //! it.
 
+use std::mem::size_of;
+
 use mado_pilot::{
     ClipPolicy, CoordinateSpace, CpuMapping, Engine, Frame, FrameRequest, FrameStamp, OpenRequest,
-    PixelRect, Rect, Session,
+    PixelRect, Rect, Session, SessionRequest, TargetId,
 };
 
 use crate::boundary::{self, Out, Versioned, covers, declared, inputs, prefixes};
@@ -31,7 +33,8 @@ use crate::types::{
     MADOPILOT_MAP_HAS_REGION, MADOPILOT_OPEN_HAS_PREFERRED_FORMAT,
     MADOPILOT_OPEN_HAS_REQUIRED_FORMAT, MADOPILOT_PIXEL_FORMAT_RGBA8,
     MADOPILOT_SPACE_CAPTURE_PIXELS, clip_policy, madopilot_frame_info_t, madopilot_frame_stamp_t,
-    madopilot_image_t, madopilot_map_request_t, madopilot_open_request_t, madopilot_operation_t,
+    madopilot_image_t, madopilot_input_descriptor_t, madopilot_input_open_request_t,
+    madopilot_map_request_t, madopilot_open_request_t, madopilot_operation_t,
     madopilot_pixel_format_t, madopilot_pixel_rect_t, madopilot_session_info_t, pixel_format,
     pixel_format_code, space_code,
 };
@@ -64,6 +67,13 @@ pub(crate) struct SessionHandle {
     /// Copied at open, so a failed search can name the backend that failed
     /// without the caller having to still hold the engine.
     backend: String,
+    /// Facade identity copied from the discovery snapshot.
+    target: TargetId,
+    /// Boundary identity copied from the discovery snapshot.
+    boundary_target: u64,
+    /// Immutable C projection of what the session accepted.
+    input_descriptor: madopilot_input_descriptor_t,
+    input_available: bool,
 }
 
 impl SessionHandle {
@@ -77,6 +87,22 @@ impl SessionHandle {
 
     pub(crate) fn backend(&self) -> &str {
         &self.backend
+    }
+
+    pub(crate) const fn target(&self) -> TargetId {
+        self.target
+    }
+
+    pub(crate) const fn boundary_target(&self) -> u64 {
+        self.boundary_target
+    }
+
+    pub(crate) const fn input_descriptor(&self) -> &madopilot_input_descriptor_t {
+        &self.input_descriptor
+    }
+
+    pub(crate) const fn accepts_input(&self) -> bool {
+        self.input_available
     }
 }
 
@@ -271,6 +297,9 @@ impl Versioned for madopilot_session_info_t {
         height,
         format,
         coordinate_spaces,
+        target,
+        accepts_input,
+        reserved,
     );
 
     fn failure(struct_size: u32) -> Self {
@@ -282,6 +311,9 @@ impl Versioned for madopilot_session_info_t {
             height: 0,
             format: MADOPILOT_PIXEL_FORMAT_RGBA8,
             coordinate_spaces: 0,
+            target: 0,
+            accepts_input: 0,
+            reserved: 0,
         }
     }
 }
@@ -318,7 +350,7 @@ pub(crate) fn source_rect(value: madopilot_pixel_rect_t) -> Result<Rect, Fault> 
     let space = crate::types::space(value.space)?;
     if space != CoordinateSpace::CapturePixels {
         return Err(Fault::abi(
-            "Phase 1 accepts a region in capture pixels only",
+            "the C ABI accepts a region in capture pixels only",
         ));
     }
 
@@ -358,7 +390,54 @@ pub(crate) fn session_open(
     unsafe {
         report(
             out_error,
-            run_session_open(engine, targets, index, request, operation, out_session),
+            run_session_open(
+                engine,
+                targets,
+                index,
+                request,
+                None,
+                operation,
+                out_session,
+            ),
+        )
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the function signature is the frozen ABI 1.1 table entry"
+)]
+pub(crate) fn session_open_with_input(
+    engine: *const madopilot_engine_t,
+    targets: *const madopilot_target_list_t,
+    index: usize,
+    request: *const madopilot_open_request_t,
+    input_request: *const madopilot_input_open_request_t,
+    operation: *const madopilot_operation_t,
+    out_session: *mut *mut madopilot_session_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
+    if let Err(status) =
+        // SAFETY: the caller supplies writable, correctly aligned output addresses.
+        unsafe { boundary::begin_outputs(out_session, "out_session", out_error) }
+    {
+        return status;
+    }
+    hooks::reach(hooks::Site::Entry);
+
+    // SAFETY: `out_error` was validated above.
+    unsafe {
+        report(
+            out_error,
+            run_session_open(
+                engine,
+                targets,
+                index,
+                request,
+                Some(input_request),
+                operation,
+                out_session,
+            ),
         )
     }
 }
@@ -368,6 +447,7 @@ fn run_session_open(
     targets: *const madopilot_target_list_t,
     index: usize,
     request: *const madopilot_open_request_t,
+    input_request: Option<*const madopilot_input_open_request_t>,
     operation: *const madopilot_operation_t,
     out_session: *mut *mut madopilot_session_t,
 ) -> Result<(), Fault> {
@@ -379,15 +459,24 @@ fn run_session_open(
     let Some(list) = (unsafe { handle::borrow::<TargetList>(targets) }) else {
         return Err(Fault::abi("`targets` is null"));
     };
-    // SAFETY: the caller keeps both structures readable for the call.
+    // SAFETY: the caller keeps the capture request and, when selected, the
+    // separate input request readable for the call.
     let request = unsafe { boundary::read_input::<madopilot_open_request_t>(request) }?;
-    // SAFETY: as above.
+    let input = match input_request {
+        // SAFETY: `session_open_with_input` requires this pointer to remain
+        // readable for the call; `open_request` validates its prefix first.
+        Some(request) => Some(unsafe { crate::input::open_request(request) }?),
+        None => None,
+    };
+    // SAFETY: the caller keeps the operation readable for the call.
     let context = unsafe { operation::context(operation) }?;
     context.admit()?;
 
     let index = boundary::index_within(index, list.targets().len(), "target")?;
     // Copied here, so the target list may be released the moment this returns.
-    let target = list.targets()[index].id();
+    let target = &list.targets()[index];
+    let facade_target = target.facade_id();
+    let boundary_target = target.boundary_id();
 
     let mut open = OpenRequest::new();
     if declared!(
@@ -405,16 +494,32 @@ fn run_session_open(
         open = open.prefer_format(pixel_format(request.preferred_format)?);
     }
 
+    let mut session_request = SessionRequest::new().capturing(open);
+    if let Some(input) = input {
+        session_request = session_request.requesting_input(input);
+    }
+
     let session = engine
-        .open(target, &open, context.inner())
+        .open_session(facade_target, &session_request, context.inner())
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
 
+    let input_available = session.accepts_input();
+    let input_descriptor = crate::input::descriptor(
+        boundary_target,
+        session.input_descriptor(),
+        u32::try_from(size_of::<madopilot_input_descriptor_t>())
+            .expect("the C input descriptor is smaller than 4 GiB"),
+    )?;
     let payload = SessionHandle {
         session,
         stream: next_stream(),
         backend: engine.backend().id().to_owned(),
+        target: facade_target,
+        boundary_target,
+        input_descriptor,
+        input_available,
     };
     // SAFETY: `out_session` was validated by the entry before any work began.
     unsafe { out_session.write(handle::into_raw(payload)) };
@@ -483,6 +588,9 @@ pub(crate) fn session_describe(
             height: description.extent().height(),
             format,
             coordinate_spaces,
+            target: session.boundary_target(),
+            accepts_input: i32::from(session.accepts_input()),
+            reserved: 0,
         });
     }
 

@@ -148,11 +148,12 @@ impl Context {
     /// Refuses admission when the operation is already over.
     ///
     /// This is the boundary's own before-admission check. Each contract below
-    /// arbitrates its own terminal outcome as well, and in the Phase 1 pipeline
-    /// an inner one usually observes an interruption first. That is the intent
-    /// rather than redundancy: this check is correct in its own right, and it
-    /// is what makes an entry that never reaches a contract — because its own
-    /// validation failed first — still honor the deadline it was given.
+    /// arbitrates its own terminal outcome as well, and in the
+    /// capture/matching pipeline an inner one usually observes an interruption
+    /// first. That is the intent rather than redundancy: this check is correct
+    /// in its own right, and it is what makes an entry that never reaches a
+    /// contract — because its own validation failed first — still honor the
+    /// deadline it was given.
     ///
     /// # Errors
     ///

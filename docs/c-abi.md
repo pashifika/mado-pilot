@@ -7,36 +7,44 @@ direction, which status a caller can branch on, and how to build against the
 library on each release target.
 
 The declarations themselves live in
-[`crates/bindings/capi/include/madopilot/madopilot.h`](../crates/bindings/capi/include/madopilot/madopilot.h),
-and a complete working caller is
-[`crates/bindings/capi/examples/c/deterministic-slice.c`](../crates/bindings/capi/examples/c/deterministic-slice.c).
+[`crates/bindings/capi/include/madopilot/madopilot.h`](../crates/bindings/capi/include/madopilot/madopilot.h).
+The replay workflow is
+[`examples/c/deterministic-slice.c`](../crates/bindings/capi/examples/c/deterministic-slice.c);
+the native Windows and macOS common flows are under
+[`examples/c/`](../crates/bindings/capi/examples/c/).
 
 A C++ caller uses the header-only RAII wrapper over this contract rather than
 calling the table directly; see [cpp-wrapper.md](cpp-wrapper.md). Everything
 below still applies to it, because it is the same contract.
 
-## This ABI is frozen at 1.0
+## ABI 1.1, with the complete 1.0 prefix preserved
 
-Every status value, structure layout, field offset, and function-table position
-is **frozen for ABI major 1** by
+The current header declares ABI 1.1. Every 1.0 status value, structure prefix,
+field offset, function-table entry, ownership rule, and failure state remains
+frozen for ABI major 1 by
 [ADR 0007](adr/0007-phase-1-c-abi-freeze.md), which resolved gate
-[`G-010`](validation-gates.md#g-010). Within this major:
+[`G-010`](validation-gates.md#g-010). ABI 1.1 appends native capability,
+non-prompting permission, and input contracts under
+[ADR 0017](adr/0017-c-abi-1-1-native-input-prefix.md). Within this major:
 
-- no status, category, asset-fault, or asset-stage value changes its number;
+- no released numeric value changes its number;
 - no structure field moves, and none is removed;
 - no function-table entry moves, and none is removed;
 - a later minor appends — to the end of a structure or the end of the table —
   and raises `MADOPILOT_ABI_MINOR`.
 
 A different ABI major is a different library, and `madopilot_get_api` refuses it.
-Use the smaller of your `sizeof` and the returned table's `struct_size` to decide
-which members exist.
+Use the smaller of your `sizeof(madopilot_api_t)` and the returned table's
+`struct_size` to decide which members exist. An ABI 1.0 caller negotiates its
+424-byte table and cannot see the suffix. An ABI 1.1 caller negotiates 480 bytes
+and checks the `MADOPILOT_API_SIZE_*` macro for each appended entry before using
+it.
 
-The promise is checked rather than stated: `crates/bindings/capi/tests/abi-compat/`
-keeps this header as a compatibility fixture, and `c-abi-check` compiles a C
-program against that frozen copy — never the working one — links it to the
-library built now, negotiates at both the full size and the mandatory prefix, and
-runs the whole flow.
+The promise is checked rather than stated. `tests/abi-compat/v1/` and
+`tests/abi-compat/v1.1/` each keep the exact header released at that point.
+`c-abi-check` compiles each caller against its own frozen copy — never the
+working header — links it to the library built now, negotiates only the extent
+that caller declared, and runs its complete flow.
 
 ## One exported symbol
 
@@ -180,6 +188,20 @@ caller's header declares it. A caller built against an older header has smaller
 elements, and the library cannot guess the spacing of an array it did not
 declare.
 
+ABI 1.1 adds two more conditional-prefix cases:
+
+- `madopilot_input_event_t` reaches through `button` for pointer press/release,
+  `key_value` for key press/release, `x` and `y` for pointer move,
+  `horizontal` and `vertical` for scroll, `text` for text, and
+  `delay_nanos` for delay. Fields belonging to another event kind are ignored.
+- `madopilot_input_request_t` reaches through `source_frame` normally. Setting
+  `MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET` requires the complete structure
+  through `cleanup_timeout_nanos`.
+
+The event array carries both `event_count` and `event_stride`. Its elements may
+come from an older header, but every element must end on a prefix valid for its
+selected kind and fit within that stride.
+
 ## Validation, and what an output looks like on failure
 
 Before a request is validated, every independently valid output is set to its
@@ -196,21 +218,24 @@ zero length is accepted only where the declaration documents an empty view as
 meaningful.
 
 **Every pointer parameter is required unless its declaration says otherwise**,
-and a null one is `MADOPILOT_STATUS_INVALID_ARGUMENT`. The rule covers the
-request, source, and operation structures as well as the handles, so a null
+and a null one is `MADOPILOT_STATUS_INVALID_ARGUMENT`. The rule covers request,
+source, operation, and input-policy structures as well as handles, so a null
 `const madopilot_operation_t*` is refused rather than read as "no deadline" —
 the way to say that is an operation whose `flags` set no bit. The two are
 different requests: an absent structure declares nothing at all, while an empty
 one declares which header the caller was built against and how much of the
-structure it filled in. Nine entries take a required structure this way:
-`engine_create`, `package_load`, `template_prepare_from_package`,
-`engine_discover`, `session_open`, `session_close`, `session_acquire_frame`,
-`frame_map`, and `session_find`.
+structure it filled in. The rule applies equally to the 1.1 operations:
+`session_open_with_input` requires both request records, and
+`engine_permission`, `engine_input_descriptor`, and `session_send_input` each
+require an operation record.
 
 Beyond `*_retain` and `*_release`, which accept null as a no-op, and the
-empty-view rule above, null is accepted in four places: `out_error` on every
-entry that takes one, `madopilot_operation_t.cancellation`,
-`madopilot_find_request_t.frame`, and `madopilot_find_request_t.options`.
+empty-view rule above, null is accepted only where the declaration names an
+optional value: `out_error`, `madopilot_operation_t.cancellation`,
+`madopilot_find_request_t.frame`, `madopilot_find_request_t.options`, and
+`madopilot_input_request_t.source_frame` when its pointer geometry does not
+require a frame snapshot. Array pointers may be null only when their count is
+zero; semantic validation still rejects an empty delivery plan.
 
 The library does not probe arbitrary addresses. The caller remains responsible
 for the validity of the addresses it passes, for the declared duration of the
@@ -229,11 +254,12 @@ presented as one.
 
 The implementation checks cancellation and the deadline before admission and
 again before committing a successful result, so a value that loses the race is
-dropped rather than published. Each contract underneath does the same, and in
-the Phase 1 pipeline an inner one usually observes an interruption first — that
-is the intent rather than a redundancy.
+dropped rather than published. Each contract underneath does the same. An
+admitted input sequence is the exception to the second boundary check: its
+receipt is already the one terminal outcome, so a late cancellation cannot
+replace a `Partial` receipt with a second result.
 
-## Statuses, and the one place a status is not enough
+## Statuses, owned errors, and admitted receipts
 
 A caller branches on `madopilot_status_t`. The message an error handle carries is
 diagnostic and is never required for control flow.
@@ -253,9 +279,12 @@ diagnostic and is never required for control flow.
 | `MADOPILOT_STATUS_VISION_FAILED` | The backend was unavailable or could not finish |
 | `MADOPILOT_STATUS_INTERNAL` | An invariant the library owns did not hold |
 | `MADOPILOT_STATUS_INTERNAL_PANIC` | A Rust panic was contained at the boundary |
+| `MADOPILOT_STATUS_INPUT_FAILED` | Input was refused before admission; no terminal receipt exists |
 
 `MADOPILOT_STATUS_INTERNAL_PANIC` is the boundary's own status and has no Rust
-counterpart.
+counterpart. `MADOPILOT_STATUS_INPUT_FAILED` is intentionally pre-admission:
+once a sequence is admitted, its outcome is receipt data rather than a second
+fallible return channel.
 
 **Package loading carries more than a status.** Every other operation in the
 facade reports a status plus diagnostic text. Package loading reports which rule
@@ -282,7 +311,7 @@ it was and the fault pair says which one; see
 space is `MADOPILOT_STATUS_INVALID_ARGUMENT` with
 `MADOPILOT_ERROR_CATEGORY_ABI`. That applies to `madopilot_map_request_t.region`
 and `madopilot_find_request_t.region`, and it is a property of this table rather
-than of the runtime underneath: the Phase 1 prefix has no coordinate-conversion
+than of the runtime underneath: the ABI has no general coordinate-conversion
 entry, so a rectangle it accepts is one it can use without converting, and a
 caller converts before it asks. It is `MADOPILOT_STATUS_INVALID_ARGUMENT` rather
 than `MADOPILOT_STATUS_UNSUPPORTED` because the request names a space this table
@@ -298,7 +327,7 @@ rectangle the library writes, it names whichever space that rectangle was
 measured in.
 
 `MADOPILOT_SPACE_TARGET_NORMALIZED` and `MADOPILOT_SPACE_FRAME_NORMALIZED` are
-two bits over one set of numbers in Phase 1. A frame covers exactly its target
+two bits over one set of numbers in the capture prefix. A frame covers exactly
 here, so a target-normalized coordinate and a frame-normalized one address the
 same point; a session advertises the target-normalized bit when its source
 declares that its frames cover the target, and never as a claim that some other
@@ -318,13 +347,83 @@ entry then reports through it which output was null or misaligned. Only a call
 whose `out_error` is the rejected output gets the status alone, because there is
 then nowhere to put the message.
 
+## Native capabilities and non-prompting permissions
+
+ABI 1.1 makes capability checks explicit before a caller opens anything.
+`engine_capabilities` reports whether the configured source can deliver input
+and whether it can read permission state. `target_list_capability` reports the
+target kind, capture support, the exact input operation/delivery pairs,
+focus-requiring deliveries, accepted pointer spaces, and any associated
+permission kinds. `engine_input_descriptor` re-reads the live input capability
+before open; `session_input_descriptor` reports the immutable policy the session
+actually accepted.
+
+`engine_permission` is a probe, never a request. It presents no UI and calls no
+permission-request API. macOS reports Screen Recording and Accessibility
+separately. Only `MADOPILOT_PERMISSION_STATE_GRANTED` is authorization;
+`UNKNOWN`, `NOT_GRANTED`, and `UNAVAILABLE` promise no operation will succeed.
+The optional diagnostic is redacted, and its string views borrow from the
+retained engine. Windows advertises no readable permission mechanism:
+`MADOPILOT_ENGINE_READS_PERMISSIONS` is clear and `engine_permission` returns
+`MADOPILOT_STATUS_UNSUPPORTED` with an initialized output and an owned error
+when requested.
+
+The older `madopilot_target_t` and `madopilot_session_info_t` records grew only
+at their tails. A 1.0 caller still receives its old prefix. A 1.1 caller can read
+target kind, capture support and permission, the session's boundary target
+identity, and whether input was established.
+
+## Input admission, delivery, and receipts
+
+Input operation and delivery are separate axes. Pair masks such as
+`MADOPILOT_INPUT_PAIR_POINTER_SYSTEM` and
+`MADOPILOT_INPUT_PAIR_KEYBOARD_BACKGROUND` name exact combinations; capability
+for one combination never implies another. `session_open_with_input` keeps its
+input policy separate from the frozen `madopilot_open_request_t`. A required
+policy fails without opening when its pairs cannot be established. An optional
+policy may open capture-only, which is observable through
+`madopilot_session_info_t.accepts_input` and the session descriptor.
+
+`madopilot_input_request_t` supplies a bounded event array, an ordered delivery
+plan, an explicit focus policy, an explicit geometry policy, an optional source
+frame, and optional cleanup bounds. The delivery plan is the only authority for
+fallback: the library never substitutes system input for unsupported background
+delivery unless the caller put that later mechanism in the plan. Event text,
+arrays, and the source-frame reference are borrowed for the call. The frame must
+stay retained through `session_send_input`.
+
+A refusal before admission returns `MADOPILOT_STATUS_INPUT_FAILED`, leaves the
+receipt in its failure state, and may return an owned error. After admission the
+entry returns `MADOPILOT_STATUS_OK` with exactly one immutable
+`madopilot_input_receipt_t`:
+
+- `COMPLETE` means every logical event completed;
+- `UNEXECUTED` means no event produced a native effect;
+- `PARTIAL` records a stopped sequence, including the case where the current
+  event produced a native partial effect before any logical event completed.
+
+Presence flags distinguish absent values from valid zeroes. The receipt records
+the selected and attempted deliveries, completed-event count, optional last
+completed index, typed fault, and bounded cleanup outcome. Cleanup may release
+only state pressed by that sequence. `INCOMPLETE` and `EXHAUSTED` warn that
+state may remain held; callers must not infer safety from a zero completed-event
+count.
+
+Windows exposes system delivery for ordinary targets and acknowledged
+background delivery only for the dedicated fixture class. macOS exposes system
+delivery only, re-reads Accessibility before every irreversible event, and does
+not manufacture a background path. The platform capability reports, not a
+platform guess in the caller, decide which request can be admitted.
+
 ## Panic containment
 
 Every exported symbol and every table entry contains a Rust panic before it can
 cross into C. A contained panic returns `MADOPILOT_STATUS_INTERNAL_PANIC`, leaves
 every valid output in its failure state, releases whatever the unwinding call had
 allocated, and poisons nothing: handles unrelated to the failed call remain
-usable, and repeating the call is expected to work.
+usable, and repeating the call is expected to work. Selected native macOS
+exceptions are contained inside the Objective-C shim before control returns to
+Rust; neither exception nor panic crosses the C boundary.
 
 Containment requires an unwinding panic profile, and the crate refuses to build
 without one. `catch_unwind` catches nothing under an aborting profile: a panic
@@ -340,17 +439,19 @@ it. A build that enables it produces a library whose panic containment does not
 work, and nothing here will say so. Do not enable it for a build that advertises
 this ABI.
 
-## What Phase 1 does not contain
+## What ABI 1.1 does not contain
 
-The Phase 1 table ends at match-result access. There is no entry for input
-delivery, OCR model loading or recognition, watchers, query handles, callbacks,
-callback unregistration, or platform-native frame extensions, and none of them is
-reserved as a null slot. A later phase appends them.
+The 1.1 table ends at input delivery. There is no entry for OCR model loading or
+recognition, watchers, query handles, callbacks, callback unregistration,
+acceleration selection, release packaging, or platform-native frame extensions,
+and none is reserved as a null slot. A later minor appends only implemented
+contracts.
 
-There is also no coordinate-conversion entry, which is why a caller-supplied
-region must already be in capture pixels. The Rust facade does convert, so this
-is one place the C prefix is narrower than the surface beneath it rather than a
-thinner spelling of the same thing.
+There is also no standalone coordinate-conversion entry. Caller-supplied map and
+find regions must already be in capture pixels. Input is different: a pointer
+event carries its space and geometry policy into `session_send_input`, which
+delegates conversion to the retained frame and native Adapter rather than
+exposing a general conversion function.
 
 ## Building against the library
 
@@ -366,8 +467,8 @@ thinner spelling of the same thing.
 The ABI-major decorated names in the right column are what a release ships, so
 that an incompatible ABI is a different library rather than a silent breakage.
 Applying them is a release-packaging step — an install name on macOS, a linked
-file name and matching import library on Windows — and Phase 1 does not implement
-packaging. What is built today is the undecorated development artifact.
+file name and matching import library on Windows — and is not implemented yet.
+What is built today is the undecorated development artifact.
 
 No `staticlib` is produced. Gate [`G-008`](validation-gates.md#g-008) has not
 recorded which static dependency combinations are supported, and emitting the
@@ -430,6 +531,23 @@ program of your own needs only the first.
 CMake targets are available as well, and are what a C++ consumer uses; see
 [cpp-wrapper.md](cpp-wrapper.md#building-against-it).
 
+The native C examples have two modes. `--check` creates the real platform
+engine, verifies capability reporting, and reads only non-prompting permission
+state; it stops before discovery and sends no input, so `c-abi-check` runs it in
+CI. Passing the exact full title of a dedicated input fixture enables discovery,
+capture, mapping, a bounded pointer/keyboard sequence, receipt inspection, and
+explicit session close:
+
+```sh
+cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+target/debug/c-abi-check/macos-native-input \
+  "MadoPilot Input Fixture [<pid>]"
+```
+
+Use `windows-native-input.exe` on Windows. The full-title mode sends native
+input; run it only against the fixture you started. The corresponding C++ flow
+uses the same stem with `-cpp`.
+
 ## How the header is verified
 
 The header is hand-written and tracked, not generated; the reasoning is in
@@ -444,42 +562,47 @@ cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<
 That compiles and runs `tests/c/madopilot-abi-layout.c`, which reports every
 size, alignment, and field offset as the C compiler produced them; compares the
 report line by line against the same values measured from the Rust definitions;
-and then compiles, links, and runs the C example and checks its outcome. Two
-compilers, one comparison — a divergence names the structure and the field.
+and then compiles, links, and runs the replay and non-prompting native C
+examples. Two compilers, one comparison — a divergence names the structure and
+the field.
 
-It then runs that same probe once per frozen header under
-`tests/abi-compat/`, compiled against that header rather than the working one,
-and requires every structure, field, and table entry the released header
-declares to still be where it said. That is the check the freeze actually needs:
-swapping two same-width fields in the working header and in Rust together moves
-no offset, so the first comparison stays green while a caller built against the
-released header reads the wrong one. The library may report *more* than a frozen
-header declares, because a later minor appends — never less, and never
-differently.
+It runs that same probe once per frozen header under `tests/abi-compat/`,
+compiled against that header rather than the working one, and requires every
+structure, field, numeric value, and table entry the released header declares to
+retain its answer. ABI 1.0 and 1.1 callers then compile against their own frozen
+headers, link to the current library, negotiate only their declared extents, and
+run. This catches a coordinated Rust/header edit that a working-header
+comparison alone cannot: swapping two same-width fields moves no offset but
+makes an old caller read the wrong meaning.
 
-The same command continues into the C++ surface: the ownership probe, the C++
-example, and the CMake consumer project. See
+The same command continues into the C++ surface: compile-time and runtime
+ownership tests, the replay example, the safe native example, and the
+independent CMake consumer project. See
 [cpp-wrapper.md](cpp-wrapper.md#how-the-wrapper-is-verified).
 
-The invariants that hold without a C compiler — `struct_size` first, mandatory
-prefixes that land on field boundaries, thin handle pointers, and the
-function-table order — are checked by `cargo test` in
-`crates/bindings/capi/tests/layout.rs`.
+The invariants that need no C compiler — versioned prefixes, per-event required
+fields, fixed numeric values, thin handles, table order, invalid-input failure
+states, handle lifetimes, concurrent reads and input serialization, panic
+containment, and the absence of deferred surface — run under `cargo test`.
 
-Both native CI jobs run the C check on every pull request. The Ubuntu
-repository-policy job deliberately compiles nothing and does not.
+Both native CI jobs run the complete boundary check on every pull request. The
+Ubuntu repository-policy job deliberately compiles no product package.
 
-## What the freeze recorded
+## What the freezes recorded
 
-[ADR 0007](adr/0007-phase-1-c-abi-freeze.md) carries the thirteen status values
-with their numbers, the forty-byte mandatory table prefix, every structure's
-size, alignment, and mandatory prefix, the output-state and ownership rules, and
-the Rust-error-to-C-status mapping including why
-`MADOPILOT_STATUS_INTERNAL_PANIC` is the only C-only value and why a Rust status
-added later reports as `MADOPILOT_STATUS_INTERNAL` until an ABI minor gives it
-one. The per-field offsets are the tracked reports under
-[evidence/c-abi/](evidence/c-abi/), one per release target and byte-identical.
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md) records the complete ABI 1.0
+prefix: numeric values, the forty-byte mandatory table prefix, every structure's
+layout and required prefix, output-state and ownership rules, and the
+Rust-error-to-C-status mapping. Its per-field reports are under
+[evidence/c-abi/](evidence/c-abi/).
 
-Adding a fixture is how a later ABI major is released, and an existing fixture is
-never edited; the rule is in
+[ADR 0017](adr/0017-c-abi-1-1-native-input-prefix.md) records the
+additive ABI 1.1 suffix: the new numeric values and masks, eight new records, the
+tails appended to two existing records, all seven entry extents from 424 through
+480 bytes, input admission and terminal-receipt rules, and native exception
+containment. The exact 1.1 declarations and executable caller are frozen under
+[`tests/abi-compat/v1.1/`](../crates/bindings/capi/tests/abi-compat/v1.1/).
+
+Each released header gets its own immutable fixture. New coverage goes in the
+next fixture rather than editing an old caller; the rule is in
 [`tests/abi-compat/README.md`](../crates/bindings/capi/tests/abi-compat/README.md).

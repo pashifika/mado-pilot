@@ -514,6 +514,7 @@ enum {
 /* madopilot_input_descriptor_t presence bits. */
 #define MADOPILOT_INPUT_DESCRIPTOR_HAS_PERMISSION 0x1u
 
+
 /* madopilot_input_request_t supplies explicit cleanup bounds. */
 #define MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET 0x1u
 

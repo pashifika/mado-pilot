@@ -1,4 +1,4 @@
-//! What the Phase 1 C++ header declares, and what it must not.
+//! What the ABI 1.1 C++ header declares, and what it must not.
 //!
 //! The wrapper's ownership shape is proved by the `static_assert`s in
 //! `tests/cpp/madopilot-cpp-ownership.cpp`, which need a C++ compiler. This
@@ -6,20 +6,20 @@
 //! inventory, so a plain `cargo test` notices a type that appeared or
 //! disappeared.
 //!
-//! The point is the exclusion. The Phase 1 C table ends at match-result access,
-//! and the wrapper may wrap only what is in it. A `Watcher`, a `Query`, or an
-//! `Ocr` type here would be a promise the library underneath cannot keep, and
-//! it would compile perfectly.
+//! ABI 1.1 ends at native permission, capability, and session input. A
+//! `Watcher`, `Ocr`, or packaging type here would promise a deferred C entry
+//! that does not exist, and it would compile perfectly.
 //!
-//! The C contract beneath these names is frozen by
-//! `docs/adr/0007-phase-1-c-abi-freeze.md`. The C++ surface is not an ABI and
-//! is governed by the Rust-side policy in
+//! The complete 1.0 prefix is frozen by
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`; the additive 1.1 suffix is frozen by
+//! `rasen/changes/phase-2-c-abi-1-1-cpp/evidence/abi-1.1-freeze.md`. The C++
+//! surface is not an ABI and is governed by the Rust-side policy in
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md`; what this
 //! file protects is that a change to it is deliberate.
 
 use std::path::PathBuf;
 
-/// Every type the Phase 1 wrapper declares at namespace scope.
+/// Every type the ABI 1.1 wrapper declares at namespace scope.
 ///
 /// Written out rather than derived, because the point is to notice a change.
 const DECLARED: &[&str] = &[
@@ -35,11 +35,21 @@ const DECLARED: &[&str] = &[
     "ReplayFrame",
     "Source",
     "PackageSource",
+    "InputOpenRequest",
+    "InputEvent",
+    "InputRequest",
     "OpenRequest",
     "MapRequest",
     "MatchOptions",
     "FindRequest",
     // Projections of the C output structures that carry borrowed views.
+    "EngineCapabilities",
+    "PermissionDiagnostic",
+    "Permission",
+    "TargetCapability",
+    "InputDescriptor",
+    "InputFailure",
+    "InputReceipt",
     "BuildInfo",
     "TargetDescriptor",
     "Image",
@@ -61,14 +71,11 @@ const DECLARED: &[&str] = &[
     "Api",
 ];
 
-/// The concepts the Phase 1 prefix does not contain.
+/// The concepts the ABI 1.1 suffix still defers.
 ///
-/// Each is a word that would appear in a declared type name if a later phase's
-/// surface leaked into this one.
+/// Each is a word that would appear in a declared type name if a deferred
+/// surface leaked into this wrapper.
 const EXCLUDED: &[&str] = &[
-    "Input",
-    "Key",
-    "Pointer",
     "Ocr",
     "Recognition",
     "Model",
@@ -77,6 +84,8 @@ const EXCLUDED: &[&str] = &[
     "Query",
     "Callback",
     "Subscription",
+    "Acceleration",
+    "Packaging",
     "NativeFrame",
     "Extension",
 ];
@@ -139,7 +148,7 @@ fn declared_types(header: &str) -> Vec<String> {
 }
 
 #[test]
-fn the_header_declares_exactly_the_phase_one_surface() {
+fn the_header_declares_exactly_the_abi_1_1_surface() {
     let header = header();
     let mut found = declared_types(&header);
     // `Result` is declared once as a template and once as its void
@@ -153,22 +162,22 @@ fn the_header_declares_exactly_the_phase_one_surface() {
     assert_eq!(
         found, expected,
         "the C++ header's declared types changed. Update `DECLARED` in the same \
-         change, after checking that every new type wraps something the Phase 1 C \
+         change, after checking that every new type wraps something the ABI 1.1 C \
          table actually has."
     );
 }
 
 #[test]
-fn the_header_declares_no_later_phase_surface() {
+fn the_header_declares_no_deferred_surface() {
     let header = header();
 
     for name in declared_types(&header) {
         for excluded in EXCLUDED {
             assert!(
                 !name.contains(excluded),
-                "`{name}` names `{excluded}`, which the Phase 1 C prefix does not \
-                 contain. Input, OCR, watchers, queries, callbacks, and native-frame \
-                 extensions are appended by a later phase, in C first."
+                "`{name}` names `{excluded}`, which ABI 1.1 defers. OCR, \
+                 watchers, queries, callbacks, acceleration, packaging, and \
+                 native-frame extensions must appear in C first."
             );
         }
     }
@@ -236,16 +245,15 @@ fn without_comments(header: &str) -> String {
 /// introduces no false positive — none of these words occurs in the header's
 /// code under any spelling.
 #[test]
-fn no_later_phase_concept_appears_anywhere_in_the_header() {
+fn no_deferred_concept_appears_anywhere_in_the_header() {
     let header = without_comments(&header()).to_lowercase();
 
     for excluded in EXCLUDED {
         assert!(
             !header.contains(&excluded.to_lowercase()),
-            "the header names `{excluded}`, which the Phase 1 C prefix does not \
-             contain. Input, OCR, watchers, queries, callbacks, and native-frame \
-             extensions are appended by a later phase, in C first — as a type or \
-             as a method, either way."
+            "the header names `{excluded}`, which ABI 1.1 defers. OCR, watchers, \
+             queries, callbacks, acceleration, packaging, and native-frame \
+             extensions must appear in C first — as a type or method, either way."
         );
     }
 }
@@ -302,6 +310,23 @@ fn the_header_restates_no_status_value() {
         "using ClipPolicy = ::madopilot_clip_policy_t;",
         "using AssetFault = ::madopilot_asset_fault_t;",
         "using AssetStage = ::madopilot_asset_stage_t;",
+        "using PermissionKind = ::madopilot_permission_kind_t;",
+        "using PermissionState = ::madopilot_permission_state_t;",
+        "using DiagnosticCategory = ::madopilot_diagnostic_category_t;",
+        "using TargetKind = ::madopilot_target_kind_t;",
+        "using CapabilitySupport = ::madopilot_capability_support_t;",
+        "using InputOperationKind = ::madopilot_input_operation_kind_t;",
+        "using InputDelivery = ::madopilot_input_delivery_t;",
+        "using InputRequirement = ::madopilot_input_requirement_t;",
+        "using FocusPolicy = ::madopilot_focus_policy_t;",
+        "using GeometryPolicy = ::madopilot_geometry_policy_t;",
+        "using PointerButton = ::madopilot_pointer_button_t;",
+        "using Key = ::madopilot_key_t;",
+        "using Modifier = ::madopilot_modifier_t;",
+        "using InputEventKind = ::madopilot_input_event_kind_t;",
+        "using SequenceOutcome = ::madopilot_sequence_outcome_t;",
+        "using CleanupState = ::madopilot_cleanup_state_t;",
+        "using InputFault = ::madopilot_input_fault_t;",
     ] {
         assert!(
             header.contains(alias),

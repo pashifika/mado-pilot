@@ -9,11 +9,12 @@
 //! module-owned allocation and release, and panic containment at every entry.
 //!
 //! It also holds the artifacts that are not Rust: the tracked C header, the
-//! header-only C++ wrapper over it, both examples, the layout and ownership
-//! probes, and the CMake project that defines `MadoPilot::C` and
-//! `MadoPilot::Cpp`. None of those is a Cargo target — cargo ignores a directory
-//! under `examples/` or `tests/` with no `main.rs` — and the C++ wrapper is not
-//! a Cargo package. They live here because they are this boundary.
+//! header-only C++ wrapper over it, the deterministic and native examples, the
+//! layout, ownership, compatibility, and consumer probes, and the CMake project
+//! that defines `MadoPilot::C` and `MadoPilot::Cpp`. None of those is a Cargo
+//! target — Cargo ignores a directory under `examples/` or `tests/` with no
+//! `main.rs` — and the C++ wrapper is not a Cargo package. They live here
+//! because they are this boundary.
 //!
 //! # Allowed seam
 //!
@@ -38,34 +39,37 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1, complete. The table's Phase 1 prefix covers build and clock
-//! information, cancellation, structured errors, engine construction over a
-//! deterministic replay source, asset package loading, template preparation,
-//! target discovery, capture-session lifecycle, latest-frame access, CPU
-//! mapping, template matching, and immutable result access. It contains no
-//! input, OCR, watcher, query, callback, or native-frame entry, and none of
-//! those is reserved as a null table slot: a later phase appends them.
+//! ABI 1.1, with the complete ABI 1.0 prefix preserved. The 1.0 table covers
+//! build and clock information, cancellation, structured errors, replay engine
+//! construction, asset packages, prepared templates, discovery, capture,
+//! mapping, matching, and immutable results. ABI 1.1 appends native engine and
+//! target capability records, non-prompting permission reads, input-aware open,
+//! session input descriptors, bounded event delivery, immutable receipts, and
+//! owned pre-admission errors. It contains no OCR, watcher, query, callback, or
+//! native-frame entry, and none is reserved as a null table slot.
 //!
-//! The C++ wrapper covers exactly that prefix and declares no ABI of its own,
-//! so it adds no compatibility surface;
+//! The C++ wrapper covers exactly the negotiated table and declares no ABI of
+//! its own, so it adds no binary compatibility surface;
 //! `docs/adr/0005-cpp-wrapper-shape-and-cmake-surface.md` records why it is
 //! header-only.
 //!
-//! **Every status value, structure layout, field offset, and table position
-//! here is frozen for ABI major 1** by
-//! `docs/adr/0007-phase-1-c-abi-freeze.md`, which resolved gate `G-010`. Within
+//! **Every released numeric value, structure prefix, field offset, and table
+//! position is frozen for ABI major 1.** ADR 0007 froze the complete 1.0 prefix
+//! and resolved gate `G-010`; ADR 0017 freezes the additive 1.1 suffix. Within
 //! this major nothing changes its number and nothing moves; a later minor
-//! appends and raises `MADOPILOT_ABI_MINOR`. `tests/abi-compat/` keeps the
-//! frozen header and compiles it against every later build of this library.
+//! appends and raises `MADOPILOT_ABI_MINOR`. `tests/abi-compat/` keeps every
+//! released header and compiles each one against every later build.
 //!
 //! # Where to start
 //!
-//! `include/madopilot/madopilot.h` is the contract as a C caller reads it, and
-//! `examples/c/deterministic-slice.c` is the complete Phase 1 flow in C.
-//! `include/madopilot/madopilot.hpp` and `examples/cpp/deterministic-slice.cpp`
-//! are the same two in C++. `docs/c-abi.md` records the ownership,
-//! structure-prefix, status, and build rules all of those depend on, and
-//! `docs/cpp-wrapper.md` records what the C++ adapter adds on top.
+//! `include/madopilot/madopilot.h` is the contract as a C caller reads it.
+//! `examples/c/deterministic-slice.c` and `examples/c/native-input-common.h`
+//! are its replay and native common flows. The corresponding C++ surfaces are
+//! `include/madopilot/madopilot.hpp`,
+//! `examples/cpp/deterministic-slice.cpp`, and
+//! `examples/cpp/native-input.cpp`. `docs/c-abi.md` records the ownership,
+//! structure-prefix, status, and build rules, and `docs/cpp-wrapper.md` records
+//! what the C++ adapter adds on top.
 
 // The C surface is named the way C names it. Rust casing here would make the
 // header and the definitions it mirrors two vocabularies for one contract.
@@ -96,6 +100,7 @@ mod engine;
 mod error;
 mod handle;
 mod hooks;
+mod input;
 pub mod layout;
 mod matching;
 mod operation;

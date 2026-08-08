@@ -141,6 +141,31 @@ that capability — which, by the capability table above, is every window but th
 dedicated fixture class. It matches the title exactly and refuses zero or more
 than one match.
 
+## Explicit C and C++ boundary checks
+
+The ABI check compiles and runs both native common-flow examples in `--check`
+mode. That mode creates the real Windows engine, verifies the ABI 1.1 capability
+report, confirms that no permission-probe capability is advertised, and stops
+before discovery or input:
+
+```bat
+cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+```
+
+After starting the dedicated fixture, the same binaries exercise engine
+construction, exact discovery, capture, mapping, a frame-bound acknowledged
+background-input request, the immutable receipt, and explicit close through C
+and then through the header-only C++ wrapper:
+
+```bat
+target\debug\c-abi-check\windows-native-input.exe "MadoPilot Input Fixture [<pid>]"
+target\debug\c-abi-check\windows-native-input-cpp.exe "MadoPilot Input Fixture [<pid>]"
+```
+
+Exact-title mode accepts only the fixture class and permits no system fallback.
+It therefore neither takes focus nor injects into another window. `--check`
+remains the only mode run unattended.
+
 ## Redaction review
 
 Production input code emits no event, key, text, window-title, or desktop-content

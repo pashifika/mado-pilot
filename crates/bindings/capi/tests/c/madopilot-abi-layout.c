@@ -39,6 +39,16 @@
 #define FIRST_FIELD_IS_STRUCT_SIZE(T) \
     _Static_assert(offsetof(T, struct_size) == 0, #T " begins with struct_size")
 
+#if MADOPILOT_ABI_MINOR >= 1
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_engine_capabilities_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_permission_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_target_capability_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_input_open_request_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_input_descriptor_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_input_event_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_input_request_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_input_receipt_t);
+#endif
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_build_info_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_operation_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_frame_stamp_t);
@@ -88,6 +98,101 @@ int main(void)
     FIELD(madopilot_pixel_rect_t, top);
     FIELD(madopilot_pixel_rect_t, right);
     FIELD(madopilot_pixel_rect_t, bottom);
+
+#if MADOPILOT_ABI_MINOR >= 1
+    TYPE(madopilot_engine_capabilities_t);
+    FIELD(madopilot_engine_capabilities_t, struct_size);
+    FIELD(madopilot_engine_capabilities_t, flags);
+
+    TYPE(madopilot_permission_t);
+    FIELD(madopilot_permission_t, struct_size);
+    FIELD(madopilot_permission_t, flags);
+    FIELD(madopilot_permission_t, kind);
+    FIELD(madopilot_permission_t, state);
+    FIELD(madopilot_permission_t, diagnostic_category);
+    FIELD(madopilot_permission_t, reserved);
+    FIELD(madopilot_permission_t, platform_code);
+    FIELD(madopilot_permission_t, platform_namespace);
+    FIELD(madopilot_permission_t, context);
+
+    TYPE(madopilot_target_capability_t);
+    FIELD(madopilot_target_capability_t, struct_size);
+    FIELD(madopilot_target_capability_t, flags);
+    FIELD(madopilot_target_capability_t, target);
+    FIELD(madopilot_target_capability_t, kind);
+    FIELD(madopilot_target_capability_t, capture);
+    FIELD(madopilot_target_capability_t, capture_permission);
+    FIELD(madopilot_target_capability_t, reserved);
+    FIELD(madopilot_target_capability_t, input_pairs);
+    FIELD(madopilot_target_capability_t, focus_required);
+    FIELD(madopilot_target_capability_t, pointer_spaces);
+    FIELD(madopilot_target_capability_t, input_permission);
+    FIELD(madopilot_target_capability_t, reserved2);
+
+    TYPE(madopilot_input_open_request_t);
+    FIELD(madopilot_input_open_request_t, struct_size);
+    FIELD(madopilot_input_open_request_t, flags);
+    FIELD(madopilot_input_open_request_t, requirement);
+    FIELD(madopilot_input_open_request_t, reserved);
+    FIELD(madopilot_input_open_request_t, required_pairs);
+    FIELD(madopilot_input_open_request_t, preferred_pairs);
+
+    TYPE(madopilot_input_descriptor_t);
+    FIELD(madopilot_input_descriptor_t, struct_size);
+    FIELD(madopilot_input_descriptor_t, flags);
+    FIELD(madopilot_input_descriptor_t, target);
+    FIELD(madopilot_input_descriptor_t, pairs);
+    FIELD(madopilot_input_descriptor_t, focus_required);
+    FIELD(madopilot_input_descriptor_t, pointer_spaces);
+    FIELD(madopilot_input_descriptor_t, permission);
+    FIELD(madopilot_input_descriptor_t, max_events);
+
+    TYPE(madopilot_input_event_t);
+    FIELD(madopilot_input_event_t, struct_size);
+    FIELD(madopilot_input_event_t, kind);
+    FIELD(madopilot_input_event_t, space);
+    FIELD(madopilot_input_event_t, button);
+    FIELD(madopilot_input_event_t, key);
+    FIELD(madopilot_input_event_t, key_value);
+    FIELD(madopilot_input_event_t, x);
+    FIELD(madopilot_input_event_t, y);
+    FIELD(madopilot_input_event_t, horizontal);
+    FIELD(madopilot_input_event_t, vertical);
+    FIELD(madopilot_input_event_t, text);
+    FIELD(madopilot_input_event_t, delay_nanos);
+
+    TYPE(madopilot_input_request_t);
+    FIELD(madopilot_input_request_t, struct_size);
+    FIELD(madopilot_input_request_t, flags);
+    FIELD(madopilot_input_request_t, events);
+    FIELD(madopilot_input_request_t, event_count);
+    FIELD(madopilot_input_request_t, event_stride);
+    FIELD(madopilot_input_request_t, deliveries);
+    FIELD(madopilot_input_request_t, delivery_count);
+    FIELD(madopilot_input_request_t, focus_policy);
+    FIELD(madopilot_input_request_t, geometry_policy);
+    FIELD(madopilot_input_request_t, source_frame);
+    FIELD(madopilot_input_request_t, cleanup_max_events);
+    FIELD(madopilot_input_request_t, reserved);
+    FIELD(madopilot_input_request_t, cleanup_timeout_nanos);
+
+    TYPE(madopilot_input_receipt_t);
+    FIELD(madopilot_input_receipt_t, struct_size);
+    FIELD(madopilot_input_receipt_t, flags);
+    FIELD(madopilot_input_receipt_t, target);
+    FIELD(madopilot_input_receipt_t, outcome);
+    FIELD(madopilot_input_receipt_t, delivery);
+    FIELD(madopilot_input_receipt_t, attempted_count);
+    FIELD(madopilot_input_receipt_t, attempted_first);
+    FIELD(madopilot_input_receipt_t, attempted_second);
+    FIELD(madopilot_input_receipt_t, delivered);
+    FIELD(madopilot_input_receipt_t, last_completed);
+    FIELD(madopilot_input_receipt_t, failure);
+    FIELD(madopilot_input_receipt_t, cleanup);
+    FIELD(madopilot_input_receipt_t, cleanup_released);
+    FIELD(madopilot_input_receipt_t, cleanup_owed);
+    FIELD(madopilot_input_receipt_t, reserved);
+#endif
 
     TYPE(madopilot_build_info_t);
     FIELD(madopilot_build_info_t, struct_size);
@@ -143,6 +248,13 @@ int main(void)
     FIELD(madopilot_target_t, coordinate_spaces);
     FIELD(madopilot_target_t, name);
     FIELD(madopilot_target_t, provider);
+#if MADOPILOT_ABI_MINOR >= 1
+    FIELD(madopilot_target_t, target);
+    FIELD(madopilot_target_t, kind);
+    FIELD(madopilot_target_t, capture);
+    FIELD(madopilot_target_t, capture_permission);
+    FIELD(madopilot_target_t, reserved);
+#endif
 
     TYPE(madopilot_session_info_t);
     FIELD(madopilot_session_info_t, struct_size);
@@ -152,6 +264,11 @@ int main(void)
     FIELD(madopilot_session_info_t, height);
     FIELD(madopilot_session_info_t, format);
     FIELD(madopilot_session_info_t, coordinate_spaces);
+#if MADOPILOT_ABI_MINOR >= 1
+    FIELD(madopilot_session_info_t, target);
+    FIELD(madopilot_session_info_t, accepts_input);
+    FIELD(madopilot_session_info_t, reserved);
+#endif
 
     TYPE(madopilot_open_request_t);
     FIELD(madopilot_open_request_t, struct_size);
@@ -308,6 +425,15 @@ int main(void)
     FIELD(madopilot_api_t, result_stamp);
     FIELD(madopilot_api_t, result_options);
     FIELD(madopilot_api_t, result_match);
+#if MADOPILOT_ABI_MINOR >= 1
+    FIELD(madopilot_api_t, session_open_with_input);
+    FIELD(madopilot_api_t, engine_capabilities);
+    FIELD(madopilot_api_t, engine_permission);
+    FIELD(madopilot_api_t, target_list_capability);
+    FIELD(madopilot_api_t, engine_input_descriptor);
+    FIELD(madopilot_api_t, session_input_descriptor);
+    FIELD(madopilot_api_t, session_send_input);
+#endif
 
     HANDLE(madopilot_cancellation_t);
     HANDLE(madopilot_error_t);

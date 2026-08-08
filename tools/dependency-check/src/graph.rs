@@ -969,16 +969,23 @@ fn validate_dependencies(graph: &PackageGraph) -> Vec<Violation> {
         }
 
         let allowed = allowed_dependencies(&edge.from).unwrap_or(&[]);
-        // Test support is available to every product package, but only as a
-        // development dependency, because that is what testkit exists for.
-        let development_extra = edge.kind == DependencyKind::Development
+        // Test support is available to every product package as a development
+        // dependency. The C ABI additionally wires a controlled runtime engine
+        // in contract tests; ADR 0018 keeps that exception exact and test-only.
+        let test_support_extra = edge.kind == DependencyKind::Development
             && source.role.is_product()
             && edge.to == TESTKIT;
+        let capi_contract_test_extra =
+            edge.kind == DependencyKind::Development && edge.from == CAPI && edge.to == RUNTIME;
+        let development_extra = test_support_extra || capi_contract_test_extra;
 
         if !allowed.contains(&edge.to.as_str()) && !development_extra {
             let mut allowed: Vec<String> = allowed.iter().map(|name| (*name).to_owned()).collect();
             if source.role.is_product() {
                 allowed.push(format!("{TESTKIT} (development only)"));
+            }
+            if edge.from == CAPI {
+                allowed.push(format!("{RUNTIME} (development only; ABI contract tests)"));
             }
             violations.push(Violation::ForbiddenDependency {
                 from: edge.from.clone(),

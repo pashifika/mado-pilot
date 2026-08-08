@@ -43,8 +43,8 @@ use crate::layout::{LAYOUT, TypeLayout};
 use crate::madopilot_error_t;
 use crate::status::{MADOPILOT_STATUS_INTERNAL_PANIC, madopilot_status_t};
 use crate::types::{
-    madopilot_find_request_t, madopilot_map_request_t, madopilot_match_options_t,
-    madopilot_open_request_t, madopilot_operation_t,
+    madopilot_find_request_t, madopilot_input_request_t, madopilot_map_request_t,
+    madopilot_match_options_t, madopilot_open_request_t, madopilot_operation_t,
 };
 
 /// Runs one table entry with a panic containment fence around it.
@@ -578,6 +578,34 @@ pub(crate) unsafe fn begin_outputs<T>(
     }
 }
 
+/// Initializes a required direct-record output and an optional error output.
+///
+/// As [`begin_outputs`], both initializers run before either result is returned,
+/// so every valid output reaches its independent failure state even when the
+/// other output is invalid.
+///
+/// # Safety
+///
+/// `out_record` must satisfy [`Out::begin`]'s contract and `out_error` must
+/// independently satisfy [`begin_error_out`]'s contract.
+pub(crate) unsafe fn begin_record_outputs<S: Versioned>(
+    out_record: *mut S,
+    out_error: *mut *mut madopilot_error_t,
+) -> Result<Out<S>, madopilot_status_t> {
+    // SAFETY: forwarded unchanged from this function's own contract.
+    let record = unsafe { Out::begin(out_record) };
+    // SAFETY: as above.
+    let error = unsafe { begin_error_out(out_error) };
+
+    match (record, error) {
+        (Ok(out), Ok(())) => Ok(out),
+        // SAFETY: `begin_error_out` accepted and initialized `out_error`.
+        (Err(fault), Ok(())) => Err(unsafe { crate::error::emit(out_error, fault) }),
+        // The error output cannot carry a diagnostic in either remaining case.
+        (Err(fault), Err(_)) | (Ok(_), Err(fault)) => Err(fault.status()),
+    }
+}
+
 /// Validates a scalar output and sets it to `failure`.
 ///
 /// # Errors
@@ -702,6 +730,7 @@ const FAMILY_OWNERS: &[&str] = &[
     <madopilot_map_request_t as Input>::NAME,
     <madopilot_find_request_t as Input>::NAME,
     <madopilot_match_options_t as Input>::NAME,
+    <madopilot_input_request_t as Input>::NAME,
 ];
 
 /// Whether `list` holds `value`.
@@ -871,8 +900,9 @@ const fn owns_a_family(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FAMILY_OWNERS, Input, madopilot_find_request_t, madopilot_map_request_t,
-        madopilot_match_options_t, madopilot_open_request_t, madopilot_operation_t,
+        FAMILY_OWNERS, Input, madopilot_find_request_t, madopilot_input_request_t,
+        madopilot_map_request_t, madopilot_match_options_t, madopilot_open_request_t,
+        madopilot_operation_t,
     };
 
     /// The header, read as text rather than compiled.
@@ -929,6 +959,11 @@ mod tests {
             owner: <madopilot_match_options_t as Input>::NAME,
             table: <madopilot_match_options_t as Input>::PRESENCE,
         },
+        PresenceFamily {
+            prefix: "MADOPILOT_INPUT_REQUEST_HAS_",
+            owner: <madopilot_input_request_t as Input>::NAME,
+            table: <madopilot_input_request_t as Input>::PRESENCE,
+        },
     ];
 
     /// Flags on structures the library writes.
@@ -941,6 +976,21 @@ mod tests {
         "MADOPILOT_TARGET_SUPPORTS_PLACEMENT",
         "MADOPILOT_ERROR_HAS_ASSET_DETAIL",
         "MADOPILOT_ERROR_HAS_BACKEND",
+        "MADOPILOT_ENGINE_DELIVERS_INPUT",
+        "MADOPILOT_ENGINE_READS_PERMISSIONS",
+        "MADOPILOT_TARGET_HAS_KIND",
+        "MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION",
+        "MADOPILOT_PERMISSION_HAS_DIAGNOSTIC",
+        "MADOPILOT_PERMISSION_HAS_PLATFORM_CODE",
+        "MADOPILOT_TARGET_CAPABILITY_HAS_KIND",
+        "MADOPILOT_TARGET_CAPABILITY_HAS_CAPTURE_PERMISSION",
+        "MADOPILOT_TARGET_CAPABILITY_HAS_INPUT_PERMISSION",
+        "MADOPILOT_INPUT_DESCRIPTOR_HAS_PERMISSION",
+        "MADOPILOT_INPUT_RECEIPT_HAS_TARGET",
+        "MADOPILOT_INPUT_RECEIPT_HAS_DELIVERY",
+        "MADOPILOT_INPUT_RECEIPT_HAS_LAST_COMPLETED",
+        "MADOPILOT_INPUT_RECEIPT_HAS_FAILURE",
+        "MADOPILOT_INPUT_RECEIPT_USED_FALLBACK",
     ];
 
     /// The families this module compares are exactly the families the

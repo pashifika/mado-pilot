@@ -17,8 +17,8 @@ publish = false
 # advertise a claim the project has not made.
 #
 # The reserved ABI-major loader names `madopilot-1.dll` and
-# `libmadopilot.1.dylib` are applied by release packaging, which Phase 1 does not
-# implement. What is built here is the undecorated development artifact; see
+# `libmadopilot.1.dylib` are applied by release packaging, which is not
+# implemented. What is built here is the undecorated development artifact; see
 # `docs/c-abi.md`.
 [lib]
 name = "madopilot"
@@ -36,6 +36,7 @@ mado-pilot = { path = "../../mado-pilot" }
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../../support/testkit" }
+mado-pilot-runtime = { path = "../../automation/runtime" }
 
 [lints]
 workspace = true

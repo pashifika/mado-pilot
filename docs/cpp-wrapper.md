@@ -7,19 +7,23 @@ matching, coordinate, or status logic of its own: every answer it returns came
 from a C table entry.
 
 The declarations are in
-[`crates/bindings/capi/include/madopilot/madopilot.hpp`](../crates/bindings/capi/include/madopilot/madopilot.hpp),
-a complete working caller is
-[`crates/bindings/capi/examples/cpp/deterministic-slice.cpp`](../crates/bindings/capi/examples/cpp/deterministic-slice.cpp),
-and the contract underneath is [c-abi.md](c-abi.md). Read that one first: every
+[`crates/bindings/capi/include/madopilot/madopilot.hpp`](../crates/bindings/capi/include/madopilot/madopilot.hpp).
+The replay workflow is
+[`examples/cpp/deterministic-slice.cpp`](../crates/bindings/capi/examples/cpp/deterministic-slice.cpp);
+the cross-target native workflow is
+[`examples/cpp/native-input.cpp`](../crates/bindings/capi/examples/cpp/native-input.cpp).
+The contract underneath is [c-abi.md](c-abi.md). Read that one first: every
 rule here is a rule about how the C rules are expressed in C++, and none of them
 replaces one.
 
 ## This wrapper declares no ABI of its own
 
-The only ABI is the C one, frozen at 1.0 under gate
+The only ABI is the C one. Its complete 1.0 prefix is frozen under gate
 [`G-010`](validation-gates.md#g-010) by
-[ADR 0007](adr/0007-phase-1-c-abi-freeze.md). What this header adds is source
-compatibility, governed by the Rust-side policy in
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md), and its additive native
+capability, permission, and input suffix is frozen at ABI 1.1 by
+[ADR 0017](adr/0017-c-abi-1-1-native-input-prefix.md). What this header
+adds is source compatibility, governed by the Rust-side policy in
 [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md): reviewed
 names, not yet a stability promise.
 
@@ -174,8 +178,8 @@ one where a copy throws `std::bad_alloc`. The release is a scope guard rather
 than a final statement for exactly that reason. Nothing in an `Error` borrows,
 and there is no last-error slot to consult.
 
-**The asset detail survives.** Package loading is the one Phase 1 operation
-whose failures a caller may reasonably tell apart by more than a status, so
+**The asset detail survives.** Package loading can distinguish failures that
+share one status, so
 `Error::asset_detail()` carries the fault and the stage as
 `std::optional<AssetDetail>`. It is an accessor rather than a variant every
 caller must destructure: `status()` works without knowing package loading
@@ -199,6 +203,31 @@ says whose mistake it was; the fault pair says which one. No backend is named,
 because none ran. See
 [ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
 
+**An admitted input outcome is a successful value.** `Session::send_input`
+returns a failed `Result<InputReceipt>` only when the request is refused before
+admission and no receipt exists. Once admitted, `Complete`, `Unexecuted`, and
+`Partial` are all successful `Result` values; the receipt carries delivered
+count, optional last-completed index, attempted deliveries, typed failure, and
+cleanup state.
+
+```cpp
+const auto sent = session.send_input(request, operation);
+if (!sent) {
+    // Pre-admission refusal: inspect sent.error().
+    return sent.error();
+}
+const madopilot::InputReceipt& receipt = sent.value();
+if (receipt.outcome == MADOPILOT_SEQUENCE_PARTIAL &&
+    receipt.failure && receipt.failure->may_leave_state_held()) {
+    // Incomplete or exhausted bounded cleanup is explicit.
+}
+```
+
+A zero delivered count does not make a `Partial` retry-safe: the current native
+event may have had an effect before it failed. The C receipt remains the
+authority; the wrapper neither turns it into an exception nor invents another
+error type.
+
 **Zero matches is a success.** A search that qualified nothing returns a
 successful `Result` whose optional match is empty.
 
@@ -219,6 +248,7 @@ documents the owner that keeps them valid.
 |---|---|
 | `BuildInfo::library_version`, `required_backend` | the loaded library |
 | `TargetDescriptor::name`, `provider` | the `TargetList` |
+| `PermissionDiagnostic::platform_namespace`, `context` | the `Engine` |
 | `PackageInfo::package_id`, `package_version`, `license` | the `Package` |
 | `TemplateInfo::id`, `backend` | the `Template` |
 | `Package::template_id` | the `Package` |
@@ -262,11 +292,12 @@ the text most likely to outlive the handle it came from.
 
 ## Typed requests
 
-`Operation`, `Source`, `PackageSource`, `OpenRequest`, `MapRequest`,
-`MatchOptions`, and `FindRequest` are values a caller composes. Each fills the
-C structure's `struct_size` itself, so no call site can write a stale one, and
-each owns whatever its C structure points at for as long as the request object
-is alive.
+`Operation`, `Source`, `PackageSource`, `InputOpenRequest`, `InputEvent`,
+`OpenRequest`, `MapRequest`, `MatchOptions`, `FindRequest`, and `InputRequest`
+are values a caller composes. Each fills the C structure's `struct_size` itself,
+so no call site can write a stale one. Event text, event arrays, and delivery
+plans are owned by their C++ request value for as long as its `to_c()` view is
+in use.
 
 ```cpp
 const madopilot::Result<std::uint64_t> now = api.clock_now();
@@ -282,11 +313,13 @@ operation.deadline(now.value() + 30ull * 1000 * 1000 * 1000)
 The deadline is an **absolute instant** in the library's monotonic domain, read
 from `Api::clock_now()` and added to. It is not a duration and not a wall clock.
 
-Two of these borrow rather than own, and say so:
+Three request values borrow handles rather than owning them, and say so:
 
 - an `Operation` borrows its `Cancellation`, which must outlive every call the
   operation is passed to;
-- a `FindRequest` borrows its `Frame` and its `Template`.
+- a `FindRequest` borrows its `Frame` and its `Template`;
+- an `InputRequest` borrows its source `Frame`, which must stay retained until
+  `Session::send_input` returns.
 
 `FindRequest::search_for` names the prepared template. It is not called
 `template`, and cannot be: the word is a C++ keyword, so it cannot name a member
@@ -299,12 +332,43 @@ is measured in rather than reducing to an integer pair.
 
 A `Rect` the caller *supplies* is the other direction, and is narrower:
 `MapRequest::region` and `FindRequest::region` accept
-`MADOPILOT_SPACE_CAPTURE_PIXELS` only, because the Phase 1 C prefix has no
+`MADOPILOT_SPACE_CAPTURE_PIXELS` only, because the C ABI has no general
 coordinate-conversion entry for the wrapper to delegate one to. Any other space
 comes back as a failed `Result` carrying
 `MADOPILOT_STATUS_INVALID_ARGUMENT` — the C entry's own answer, unchanged and
 not thrown. Converting before asking is the caller's step; see
 [c-abi.md](c-abi.md).
+
+Input capability keeps operation and delivery separate. `InputOpenRequest`
+accepts exact `MADOPILOT_INPUT_PAIR_*` masks; `OpenRequest::input` selects the
+ABI 1.1 open entry without changing the frozen C open record. `InputEvent`
+factories expose only one active variant and copy text. `InputRequest` copies
+events and delivery order, and keeps focus, geometry, source-frame, and cleanup
+policies explicit.
+
+```cpp
+madopilot::InputOpenRequest input;
+input.requirement(MADOPILOT_INPUT_REQUIRED)
+    .require_pairs(MADOPILOT_INPUT_PAIR_POINTER_SYSTEM |
+                   MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM);
+
+madopilot::OpenRequest open;
+open.input(input);
+
+madopilot::InputRequest request;
+request.event(madopilot::InputEvent::pointer_move(
+                 MADOPILOT_SPACE_CAPTURE_PIXELS, x, y))
+    .delivery(MADOPILOT_INPUT_DELIVERY_SYSTEM)
+    .focus_policy(MADOPILOT_FOCUS_REQUIRE_FOCUSED)
+    .geometry_policy(MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED)
+    .source_frame(frame);
+```
+
+`Engine::capabilities`, `Engine::permission`, `TargetList::capability`,
+`Engine::input_descriptor`, and `Session::input_descriptor` project the 1.1
+records into value types. Optional fields remain `std::optional`; an unknown C
+numeric value stays in its fixed-width alias rather than being narrowed into a
+wrapper enum.
 
 ## Threads
 
@@ -325,17 +389,19 @@ distinguish it from a valid handle without racing the release it is trying to
 detect.
 
 Session close races an in-flight operation safely, and both sides observe the
-terminal outcomes the C ABI defines.
+terminal outcomes the C ABI defines. Input sequences on one controller are
+serialized by the runtime; two caller threads cannot interleave their events.
 
-## What Phase 1 does not wrap
+## What ABI 1.1 does not wrap
 
-The Phase 1 C table ends at match-result access, and the wrapper wraps only what
-is in it. There is no input, OCR, watcher, query, callback, callback-fence, or
-native-frame type. `crates/bindings/capi/tests/cpp_surface.rs` asserts that,
-so a later phase's surface cannot appear in C++ before it exists in C.
+The 1.1 C table ends at input delivery, and the wrapper wraps only what is in
+that negotiated extent. There is no OCR, watcher, query, callback,
+callback-fence, acceleration, packaging, or native-frame type.
+`crates/bindings/capi/tests/cpp_surface.rs` asserts that inventory and rejects
+close spellings, so a deferred surface cannot appear accidentally.
 
 `Api::table()` is the escape hatch: it returns the negotiated
-`const madopilot_api_t*` for a caller that needs an entry the wrapper does not
+`const madopilot_api_t*` for a caller that needs an entry this wrapper does not
 expose.
 
 ## Building against it
@@ -405,25 +471,31 @@ That one command covers the C surface and the C++ surface together. For the C++
 half it:
 
 1. compiles and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
-   `static_assert`s prove the move-only shape and the lvalue-only view accessors
-   at compile time, and whose checks prove clone independence, parent and child
-   lifetime, borrowed-view stability, error release under a throwing copy,
-   zero-match success, close reporting, and concurrent const access at run time;
-2. compiles and runs `examples/cpp/deterministic-slice.cpp` and requires it to
-   print the same match rectangles and scores as the C example, so a wrapper
-   that changed an answer fails rather than reporting a different one;
-3. configures, builds, and runs the CMake consumer project under CTest.
+   `static_assert`s prove the move-only shape, lvalue-only view accessors, owned
+   request storage, and preservation of unknown C values, while runtime checks
+   prove clone independence, parent/child lifetime, error release under a
+   throwing copy, zero-match success, ABI 1.0 extent gating, receipt behavior,
+   close reporting, and concurrent const access;
+2. compiles and runs `examples/cpp/deterministic-slice.cpp` and requires the
+   same match rectangles and scores as the C example;
+3. compiles and runs `examples/cpp/native-input.cpp --check`, which creates the
+   real target Adapter and reads only non-prompting permission state before
+   stopping without discovery or input;
+4. configures, builds, and runs the independent CMake consumer project under
+   CTest. That project also builds the native example through `MadoPilot::Cpp`
+   alone and runs its safe `--check` mode.
 
-It needs a C++ compiler and **CMake 3.22 or later** in addition to the C
+Passing the native example an exact full fixture title instead of `--check`
+enables discovery, capture, mapping, one bounded pointer/keyboard sequence,
+receipt inspection, and explicit close. That mode sends real input on macOS and
+fixture-gated background input on Windows; run it only against the dedicated
+fixture described in the platform verification document.
+
+The check needs a C++ compiler and **CMake 3.22 or later** in addition to the C
 compiler. Both are the release target's own on both hosts; set `CXX` or `CMAKE`
 to name a different one. On Windows, run it from a Developer Command Prompt: the
 same environment that puts `cl` on `PATH` also sets `VSINSTALLDIR`, through
 which the check finds the CMake that Visual Studio ships.
-
-It has been run against CMake 3.29.5 on the Windows verification host and CMake
-4.4.0 on the macOS one, which is a CMake 3 and a CMake 4 either side of the
-declared minimum; the versions are recorded with the layout evidence in
-[evidence/c-abi/](evidence/c-abi/).
 
 The checks that need no C++ compiler are in
 `crates/bindings/capi/tests/cpp_surface.rs` and run under plain `cargo test`:

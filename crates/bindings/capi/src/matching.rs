@@ -355,7 +355,7 @@ fn region_selection(request: &madopilot_find_request_t) -> Result<RegionSelectio
     let space = crate::types::space(request.region.space)?;
     if space != mado_pilot::CoordinateSpace::CapturePixels {
         return Err(Fault::abi(
-            "Phase 1 accepts a search region in capture pixels only",
+            "the C ABI accepts a search region in capture pixels only",
         ));
     }
 

@@ -165,6 +165,39 @@ fn c_abi_dependency_bypassing_the_facade_is_rejected() {
 }
 
 #[test]
+fn c_abi_runtime_wiring_is_development_only() {
+    assert_eq!(
+        validate(&graph_with(vec![ObservedEdge::development(CAPI, RUNTIME)])),
+        Vec::new()
+    );
+
+    let violations = validate(&graph_with(vec![ObservedEdge::production(CAPI, RUNTIME)]));
+    assert_eq!(forbidden_edges(&violations), vec![(CAPI, RUNTIME)]);
+}
+
+#[test]
+fn c_abi_other_development_bypasses_are_rejected() {
+    for destination in [
+        CORE,
+        CAPTURE,
+        INPUT,
+        VISION,
+        PLATFORM_WINDOWS,
+        BACKEND_OPENCV,
+    ] {
+        let violations = validate(&graph_with(vec![ObservedEdge::development(
+            CAPI,
+            destination,
+        )]));
+        assert_eq!(
+            forbidden_edges(&violations),
+            vec![(CAPI, destination)],
+            "the contract-test exception must not reach {destination}"
+        );
+    }
+}
+
+#[test]
 fn facade_dependency_on_the_c_abi_is_rejected() {
     let violations = validate(&graph_with(vec![ObservedEdge::production(FACADE, CAPI)]));
 
