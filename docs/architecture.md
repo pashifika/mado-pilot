@@ -17,10 +17,10 @@ OpenCV CPU matching, runtime orchestration, Rust facade, C ABI 1.1, and
 header-only C++ wrapper are implemented. The picker-free Windows Adapter
 implements window/display discovery, WGC/D3D11 capture, system input, and
 fixture-gated background input. The macOS Adapter implements discovery,
-ScreenCaptureKit capture, and `CGEvent` system input. The ABI 1.1 boundary and
-native common flow have passed local macOS verification; the Windows release
-matrix remains to be recorded. OCR, watchers, scheduling, release packaging, and
-the Windows capture release-acceptance matrix remain later work.
+ScreenCaptureKit capture, and `CGEvent` system input. The ABI 1.1 C/C++
+boundary matrices passed on both release targets; the dedicated macOS fixture
+also completed actual native delivery. OCR, watchers, scheduling, release
+packaging, and the Windows capture release-acceptance matrix remain later work.
 See [Implementation status](#implementation-status).
 
 ## Product definition
