@@ -56,7 +56,7 @@ sample evaluate the same public workflow from the same fixture state.
 
 ### Accept the measured macOS input profile
 
-The Apple M1 Pro run on macOS 26.5.2 (25F85) produced these measurements:
+The Apple M1 Pro run on macOS 26.5.2 (25F84) produced these measurements:
 
 | Workload | p95 | Mapped bytes | Peak live Rust heap | Child peak resident | Growth |
 |---|---:|---:|---:|---:|---:|
@@ -145,7 +145,7 @@ The accepted profile came from the release fixture and the full 5-warmup,
 cargo build --locked --release -p mado-pilot-platform-macos \
   --bin mado-pilot-macos-input-fixture
 cargo run --locked -p mado-pilot-capi --example c-abi-check -- \
-  --label "Apple M1 Pro macOS 26.5.2 (25F85)"
+  --label "Apple M1 Pro macOS 26.5.2 (25F84)"
 cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --workload-set input \
   --fixture-executable "$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
@@ -156,7 +156,7 @@ cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --toolchain "rustc 1.97.1 (8bab26f4f 2026-07-14); C/C++ Apple clang 21.0.0" \
   --gpu-driver "Apple integrated GPU; system driver stack" \
   --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
-  --os-version "macOS 26.5.2 (25F85)" \
+  --os-version "macOS 26.5.2 (25F84)" \
   --display-topology "one built-in 3024x1964 Retina display at scale 2" \
   --permissions-signing "Screen Recording granted; Accessibility granted; generated fixture bundle ad-hoc signed with approved identifier"
 ```

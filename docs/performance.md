@@ -420,7 +420,7 @@ enforce zero oracle failures and bounded allocation growth. A full profile is:
 cargo bench --locked --package mado-pilot-runtime \
     --bench diagnostic-overhead -- \
     --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
-    --os-version "macOS 26.5.2 (25F85)"
+    --os-version "macOS 26.5.2 (25F84)"
 ```
 
 [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the

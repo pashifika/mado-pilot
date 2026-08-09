@@ -24,7 +24,7 @@ fixture = "crates/platform/macos fixture Rust, protocol, header, and Objective-C
 fixture_sha256 = "c8a14353ebd3732ba82895b85b877b5f03f623925ffa0d8b1b9d48383d06fda1"
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
-os_version = "macOS 26.5.2 (25F85)"
+os_version = "macOS 26.5.2 (25F84)"
 build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release"
 warmup_iterations = 5
 sample_count = 50

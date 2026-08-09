@@ -62,7 +62,7 @@ owns and where they genuinely differ.
 | Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and Core Video frame lifetime (implemented) |
 | Input ownership | System pointer/keyboard/text and fixture-class acknowledged `WindowMessage` submission (implemented in the platform package) | `CGEvent` system pointer/keyboard/text and no `WindowMessage` or `ProcessDirected` route (implemented in the platform package) |
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and Accessibility reported separately without permission UI; input re-reads the Accessibility decision before every irreversible event (implemented) |
-| Native verification host | `windows-2025` | Apple Silicon macOS 26.5.2 (25F85), SDK 26.5 |
+| Native verification host | `windows-2025` | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | unresolved | macOS 26.5.2; older versions unsupported |
 | Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) Windows diagnostic timing and native profiles | [`G-013`](validation-gates.md#g-013) macOS capture/transition and Phase 2 regression profiles; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics and [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts native input/public-language costs |
 
