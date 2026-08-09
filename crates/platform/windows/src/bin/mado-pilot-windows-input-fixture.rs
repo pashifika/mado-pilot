@@ -12,7 +12,14 @@ fn main() {
 
 #[cfg(windows)]
 fn main() {
-    if let Err(error) = fixture::run() {
+    let options = match fixture::Options::from_args() {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("Windows input fixture failed: {error}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(error) = fixture::run(options) {
         eprintln!("Windows input fixture failed: {error}");
         std::process::exit(1);
     }
@@ -26,10 +33,12 @@ mod fixture {
     use std::mem::size_of;
     use std::slice;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     use mado_pilot_platform_windows::fixture_protocol::{
-        ACKNOWLEDGED, CLASS_NAME, COPYDATA_TAG, EventSummary, MAX_PACKET_BYTES,
-        MAX_RECORDED_EVENTS, fixture_title, is_query, summarize,
+        ACKNOWLEDGED, BENCHMARK_FILL_RGB, CLASS_NAME, COPYDATA_TAG, EVENT_KEY_DOWN,
+        EVENT_POINTER_MOVE, EventSummary, FILL_RGB, MAX_PACKET_BYTES, MAX_RECORDED_EVENTS,
+        fixture_title, format_event_line, is_query, summarize,
     };
     use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
@@ -38,12 +47,47 @@ mod fixture {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW, MSG,
-        PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE, ShowWindow, TranslateMessage,
-        WM_COPYDATA, WM_DESTROY, WM_PAINT, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOZORDER, SetWindowPos, ShowWindow, TranslateMessage, WM_COPYDATA, WM_DESTROY,
+        WM_PAINT, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
     use windows::core::{Error, PCWSTR, Result};
 
     static RECORDS: Mutex<VecDeque<EventSummary>> = Mutex::new(VecDeque::new());
+    static ANIMATE_ON_INPUT: AtomicBool = AtomicBool::new(false);
+    static RESIZE_ON_INPUT: AtomicBool = AtomicBool::new(false);
+    static LARGE_WINDOW: AtomicBool = AtomicBool::new(false);
+    static CURRENT_FILL_RGB: AtomicU32 = AtomicU32::new(FILL_RGB);
+    static REPORTED_EVENTS: AtomicU32 = AtomicU32::new(0);
+
+    #[derive(Debug, Clone, Copy, Default)]
+    pub(super) struct Options {
+        animate_on_input: bool,
+        resize_on_input: bool,
+    }
+
+    impl Options {
+        pub(super) fn from_args() -> std::result::Result<Self, String> {
+            let mut options = Self::default();
+            for argument in std::env::args().skip(1) {
+                match argument.as_str() {
+                    "--animate-on-input" => options.animate_on_input = true,
+                    "--resize-on-input" => options.resize_on_input = true,
+                    "--animate-and-resize-on-input" => {
+                        options.animate_on_input = true;
+                        options.resize_on_input = true;
+                    }
+                    _ => {
+                        return Err(format!(
+                            "unknown argument `{argument}`; expected --animate-on-input, \
+                             --resize-on-input, or --animate-and-resize-on-input"
+                        ));
+                    }
+                }
+            }
+            Ok(options)
+        }
+    }
 
     #[repr(C)]
     struct CopyData {
@@ -52,7 +96,12 @@ mod fixture {
         data: *const c_void,
     }
 
-    pub(super) fn run() -> Result<()> {
+    pub(super) fn run(options: Options) -> Result<()> {
+        ANIMATE_ON_INPUT.store(options.animate_on_input, Ordering::Release);
+        RESIZE_ON_INPUT.store(options.resize_on_input, Ordering::Release);
+        LARGE_WINDOW.store(false, Ordering::Release);
+        CURRENT_FILL_RGB.store(FILL_RGB, Ordering::Release);
+        REPORTED_EVENTS.store(0, Ordering::Release);
         let class_name = wide(CLASS_NAME);
         let title_text = fixture_title(std::process::id());
         let title = wide(&title_text);
@@ -174,6 +223,27 @@ mod fixture {
                 records.pop_front();
             }
             records.push_back(summary);
+            let animates = ANIMATE_ON_INPUT.load(Ordering::Acquire);
+            if animates && summary.kind == EVENT_KEY_DOWN {
+                apply_benchmark_animation();
+            }
+            let resize_event = RESIZE_ON_INPUT.load(Ordering::Acquire)
+                && if animates {
+                    summary.kind == EVENT_POINTER_MOVE
+                } else {
+                    summary.kind == EVENT_KEY_DOWN
+                };
+            if resize_event {
+                apply_benchmark_resize(hwnd);
+            }
+            if (ANIMATE_ON_INPUT.load(Ordering::Acquire) || RESIZE_ON_INPUT.load(Ordering::Acquire))
+                && REPORTED_EVENTS.fetch_add(1, Ordering::AcqRel)
+                    < u32::try_from(MAX_RECORDED_EVENTS).unwrap_or(u32::MAX)
+            {
+                let mut output = io::stdout().lock();
+                let _written = writeln!(output, "{}", format_event_line(summary));
+                let _flushed = output.flush();
+            }
             drop(records);
             // SAFETY: hwnd is live during message dispatch; invalidation only
             // schedules repaint of the fixture's controlled client surface.
@@ -191,10 +261,11 @@ mod fixture {
         // SAFETY: hwnd is live and client is writable for the current rectangle.
         let has_client = unsafe { GetClientRect(hwnd, &raw mut client) }.is_ok();
         if has_client {
-            // COLORREF is 0x00bbggrr. The fixed fill is deterministic and
-            // contains no desktop or input payload.
+            // COLORREF is 0x00bbggrr. The selected deterministic fill contains
+            // no desktop or input payload.
             // SAFETY: creating and deleting this process-owned brush is paired.
-            let brush = unsafe { CreateSolidBrush(COLORREF(0x0060_4020)) };
+            let brush =
+                unsafe { CreateSolidBrush(colorref(CURRENT_FILL_RGB.load(Ordering::Acquire))) };
             // SAFETY: device, rectangle, and brush are live for this paint call.
             let _filled = unsafe { FillRect(device, &raw const client, brush) };
             // SAFETY: the brush is no longer selected or needed after FillRect.
@@ -202,6 +273,41 @@ mod fixture {
         }
         // SAFETY: balances BeginPaint for this WM_PAINT dispatch.
         let _ended = unsafe { EndPaint(hwnd, &raw const paint) };
+    }
+
+    fn apply_benchmark_animation() {
+        let previous = CURRENT_FILL_RGB.load(Ordering::Acquire);
+        let next = if previous == FILL_RGB {
+            BENCHMARK_FILL_RGB
+        } else {
+            FILL_RGB
+        };
+        CURRENT_FILL_RGB.store(next, Ordering::Release);
+    }
+
+    fn apply_benchmark_resize(hwnd: HWND) {
+        let was_large = LARGE_WINDOW.fetch_xor(true, Ordering::AcqRel);
+        let (width, height) = if was_large { (640, 420) } else { (820, 540) };
+        // SAFETY: hwnd is the live fixture window. This changes only its
+        // size and deliberately preserves focus, position, and z-order.
+        let _resized = unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                width,
+                height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        };
+    }
+
+    fn colorref(rgb: u32) -> COLORREF {
+        let red = rgb & 0xff_0000;
+        let green = rgb & 0x00_ff00;
+        let blue = rgb & 0x00_00ff;
+        COLORREF((red >> 16) | green | (blue << 16))
     }
 
     fn wide(value: &str) -> Vec<u16> {

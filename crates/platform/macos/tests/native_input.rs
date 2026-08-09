@@ -33,7 +33,8 @@ use mado_pilot_input::{
 };
 use mado_pilot_platform_macos::fixture_protocol::{
     EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE, MAX_RECORDED_EVENTS,
-    fixture_ready_context_is_approved, fixture_title, parse_event_line, select_unique_fixture,
+    fixture_ready_context_is_approved, fixture_title, frame_is_fixture_content,
+    frame_is_replacement_content, parse_event_line, select_unique_fixture,
     with_confirmed_fixture_content,
 };
 use mado_pilot_platform_macos::{MacosCaptureProvider, MacosPermissionProbe};
@@ -44,6 +45,8 @@ const FOCUS_WAIT: Duration = Duration::from_secs(15);
 const CONTENT_WAIT: Duration = Duration::from_secs(5);
 /// How long the fixture is given to publish its ready line.
 const READY_WAIT: Duration = Duration::from_secs(10);
+/// How long the owned-window oracle allows the successor and terminal loss.
+const REPLACEMENT_WAIT: Duration = Duration::from_secs(10);
 
 /// Statuses a host without Screen Recording or without the capture framework
 /// legitimately reports, which every check below tolerates.
@@ -57,6 +60,12 @@ fn provider() -> MacosCaptureProvider {
 
 fn context() -> OperationContext {
     OperationContext::new()
+}
+
+fn bounded(duration: Duration) -> OperationContext {
+    context()
+        .with_timeout(duration)
+        .expect("the operation timeout is positive")
 }
 
 fn accessibility_granted() -> bool {
@@ -276,13 +285,23 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// Starts the fixture and waits for the line it prints once its window is up.
+    /// Starts the ordinary fixture and waits for its ready record.
     fn start() -> Option<Self> {
+        Self::start_with_arguments(&[])
+    }
+
+    /// Starts the fixture mode that destroys and replaces its own window.
+    fn start_replacing() -> Option<Self> {
+        Self::start_with_arguments(&["--replace-window-after-ready"])
+    }
+
+    fn start_with_arguments(arguments: &[&str]) -> Option<Self> {
         let executable = fixture_executable()?;
         let require_signed_bundle =
             std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some();
         let child = FixtureChild(
             Command::new(executable)
+                .args(arguments)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
                 .spawn()
@@ -318,6 +337,14 @@ impl Fixture {
             lines,
             process_id,
         })
+    }
+
+    fn replacement_result(&self, wait: Duration) -> Option<(u32, u64, u64)> {
+        let line = wait_for(&self.lines, wait, |line| {
+            line.starts_with("fixture-replaced ")
+        })?;
+        println!("{line}");
+        parse_replacement_line(&line)
     }
 
     fn summaries(&self, wait: Duration) -> Vec<u32> {
@@ -401,6 +428,41 @@ fn wait_for(
     None
 }
 
+fn parse_replacement_line(line: &str) -> Option<(u32, u64, u64)> {
+    if line.len() > 256 {
+        return None;
+    }
+    let mut fields = line.strip_prefix("fixture-replaced ")?.split_whitespace();
+    let status = fields.next()?.strip_prefix("status=")?.parse().ok()?;
+    let old_window = fields.next()?.strip_prefix("old-window=")?.parse().ok()?;
+    let new_window = fields.next()?.strip_prefix("new-window=")?.parse().ok()?;
+    fields
+        .next()
+        .is_none()
+        .then_some((status, old_window, new_window))
+}
+
+#[test]
+fn replacement_record_is_bounded_and_structurally_exact() {
+    let valid = "fixture-replaced status=0 old-window=17 new-window=18";
+    assert_eq!(parse_replacement_line(valid), Some((0, 17, 18)));
+    assert_eq!(
+        parse_replacement_line("fixture-replaced old-window=17 status=0 new-window=18"),
+        None
+    );
+    assert_eq!(
+        parse_replacement_line("fixture-replaced status=0 old-window=17 new-window=18 extra=1"),
+        None
+    );
+    assert_eq!(
+        parse_replacement_line(&format!(
+            "fixture-replaced status=0 old-window=17 new-window=18 {}",
+            "x".repeat(256)
+        )),
+        None
+    );
+}
+
 /// Locates the fixture beside the test binary that cargo just built.
 fn fixture_executable() -> Option<std::path::PathBuf> {
     if let Some(configured) = std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE") {
@@ -440,6 +502,133 @@ fn the_fixture_starts_publishes_its_title_and_is_selected_exactly_once() {
 
     assert_eq!(chosen.name(), fixture_title(fixture.process_id));
     assert_eq!(chosen.capability().kind(), Some(TargetKind::Window));
+}
+
+/// Proves a retained `SCContentFilter` never starts publishing a same-process,
+/// same-title successor after its exact owned window is destroyed. If
+/// ScreenCaptureKit reports an explicit terminal outcome, it must be target loss;
+/// a quiescent stream is not relabeled from frame-request timeouts.
+#[test]
+#[ignore = "opens and replaces a real fixture window on an interactive desktop"]
+fn owned_window_replacement_never_retargets_the_retained_filter() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "replacement verification requires the explicitly configured, structurally verified \
+         signed fixture bundle from docs/macos-input-verification.md"
+    );
+    let fixture =
+        Fixture::start_replacing().expect("the replacement fixture starts on this desktop");
+    let provider = provider();
+    let targets = discovered(&provider).expect("this check needs Screen Recording granted");
+    let original = select_unique_fixture(&targets, fixture.process_id)
+        .expect("the original fixture is selected exactly once");
+
+    let capture = CaptureProvider::open(
+        &provider,
+        original.id(),
+        &OpenRequest::new().require_format(PixelFormat::Bgra8),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("the original fixture opens before its scheduled replacement");
+    let first = capture
+        .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+        .expect("the original fixture publishes before replacement");
+    let original_mapping = first
+        .map(PixelFormat::Bgra8, &bounded(CONTENT_WAIT))
+        .expect("the original frame maps");
+    let original_descriptor = original_mapping.descriptor();
+    assert!(frame_is_fixture_content(
+        original_mapping.bytes(),
+        original_descriptor.stride(),
+        original_descriptor.extent(),
+    ));
+
+    let (replacement_status, old_window, new_window) = fixture
+        .replacement_result(REPLACEMENT_WAIT)
+        .expect("the fixture reports its bounded replacement result");
+    assert_eq!(replacement_status, 0, "native replacement failed");
+    assert_ne!(old_window, 0);
+    assert_ne!(new_window, 0);
+
+    let mut stamp = first.stamp();
+    let observation_deadline = Instant::now() + REPLACEMENT_WAIT;
+    let mut terminal = None;
+    while Instant::now() < observation_deadline {
+        match capture.frame(
+            &FrameRequest::newer_than(stamp),
+            &bounded(Duration::from_millis(500)),
+        ) {
+            Ok(frame) => {
+                stamp = frame.stamp();
+                let mapping = frame
+                    .map(PixelFormat::Bgra8, &bounded(CONTENT_WAIT))
+                    .expect("an admitted old-window frame maps");
+                let descriptor = mapping.descriptor();
+                assert!(
+                    !frame_is_replacement_content(
+                        mapping.bytes(),
+                        descriptor.stride(),
+                        descriptor.extent(),
+                    ),
+                    "the retained filter published the replacement window"
+                );
+            }
+            Err(error) if error.status() == Status::DeadlineExceeded => {}
+            Err(error) => {
+                terminal = Some(error.status());
+                break;
+            }
+        }
+    }
+    let original_close = capture.close(&bounded(CONTENT_WAIT));
+    assert!(
+        terminal.is_none() || terminal == Some(Status::TargetLost),
+        "window destruction produced an unexpected terminal status: {terminal:?}"
+    );
+    match terminal {
+        Some(status) => println!("retained-filter terminal={status}"),
+        None => println!(
+            "retained-filter quiescent for {} second(s); no terminal outcome inferred",
+            REPLACEMENT_WAIT.as_secs()
+        ),
+    }
+    original_close.expect("the observed original session closes");
+
+    let replacements =
+        discovered(&provider).expect("the successor remains discoverable after replacement");
+    let replacement = select_unique_fixture(&replacements, fixture.process_id)
+        .expect("the same-process successor is selected exactly once");
+    let replacement_capture = CaptureProvider::open(
+        &provider,
+        replacement.id(),
+        &OpenRequest::new().require_format(PixelFormat::Bgra8),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("the successor opens independently");
+    let replacement_frame = replacement_capture
+        .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+        .expect("the successor publishes its own frame");
+    let replacement_mapping = replacement_frame
+        .map(PixelFormat::Bgra8, &bounded(CONTENT_WAIT))
+        .expect("the successor frame maps");
+    let replacement_descriptor = replacement_mapping.descriptor();
+    assert!(frame_is_replacement_content(
+        replacement_mapping.bytes(),
+        replacement_descriptor.stride(),
+        replacement_descriptor.extent(),
+    ));
+    assert!(
+        frame_is_fixture_content(
+            original_mapping.bytes(),
+            original_descriptor.stride(),
+            original_descriptor.extent(),
+        ),
+        "the retained original mapping changed after replacement"
+    );
+    println!("replacement-content distinct; retained original mapping unchanged");
+    replacement_capture
+        .close(&bounded(CONTENT_WAIT))
+        .expect("the successor session closes");
 }
 
 /// Delivers real system input to the exact focused fixture while capture remains
@@ -536,6 +725,11 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
         "the fixture was not focused in time, so this check stopped before sending \
          anything else"
     );
+
+    // Showing and focusing the fixture can itself enqueue an ordinary mouse-enter
+    // or operator pointer event. End that observation interval before checking
+    // what the bounded delivery below adds.
+    let _focus_events = fixture.summaries(Duration::from_millis(250));
 
     let sequence = InputSequence::new(vec![
         InputEvent::KeyRelease(Key::Escape),

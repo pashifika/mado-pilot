@@ -7,12 +7,12 @@ an agreed cost before the phase exits.
 
 This document defines the format that evidence takes. Setting a numeric budget
 for a workload is gate [`G-013`](validation-gates.md#g-013), which is resolved
-per phase rather than once: Phase 1's workloads are resolved and every later
-phase's are still open. Phase 1 measures thirteen workloads, all thirteen are
-covered by the two file-level hard gates, eleven carry a per-measurement ceiling,
-and two are deliberate unbudgeted controls; the split is recorded in
-[ADR 0008](adr/0008-phase-1-performance-budgets.md) and reproduced under
-[Phase 1 status](#phase-1-status) below.
+per workload and target rather than once. Phase 1 is resolved. ADR 0020
+historically accepted partial macOS Phase 2 evidence, but
+[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+invalidates those profiles after source and correctness-oracle drift. Every
+Phase 2 native workload is open again; old measurements remain reviewable but
+are not current ceilings.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -21,9 +21,11 @@ on, and the example this document references records no measurement at all.
 ## Where benchmark files live
 
 A phase commits one file per **run** under `docs/benchmarks/`, named
-`<phase>-<workload-set>-<target>.toml`. A file holds exactly one `[profile]` and
-one `[[measurement]]` block per workload, each with its own budgets, so that a
-budget is never separated from the conditions under which it was measured.
+`<phase>-<workload-set>-<target>.toml`. A measured file holds exactly one
+`[profile]` and one `[[measurement]]` block per workload, each with its own
+budgets, so that a budget is never separated from the conditions under which it
+was measured. A run that could not be performed uses one explicit
+`[measurements]` gap record with `performed = false` and carries no budget.
 
 One file per run rather than one per workload, because the profile describes the
 run and not the workload: a set of eight workloads measured together on one host
@@ -93,6 +95,7 @@ A budget names one measure. The version-one vocabulary is:
 | `capture_to_result_latency_p50` | milliseconds | End-to-end latency percentile from frame capture to committed result. |
 | `capture_to_result_latency_p95` | milliseconds | As above, at the 95th percentile. |
 | `peak_memory` | bytes | Peak resident memory during the run. |
+| `peak_resident_bytes` | bytes | High-water resident set of a measured child process, reported by the native operating system after that owned child exits. Optional because in-process workloads do not create one. |
 | `steady_memory` | bytes | Resident memory in steady state. |
 | `mapped_bytes_per_result` | bytes | Frame bytes mapped into CPU memory per produced result, full-frame or region of interest. |
 | `stale_work_ratio` | ratio | Share of scheduled work that was dropped, coalesced, superseded, rejected, queue-expired, or discarded as stale. |
@@ -128,29 +131,30 @@ which is the one place a reader can be caught out:
 | `latency_p95` | `latency_p95_ms` |
 | `memory_growth` | `allocated_growth_bytes`, when the measure is live heap rather than resident memory |
 
-A budget's `measure` may name either form; the four committed profiles use the
-recorded key everywhere except `latency_p50` and `latency_p95`, where they use
-the vocabulary name. Renaming to one convention would move every committed
-profile, the harness that prints them, and the drift test that compares the two,
-so the mapping is documented instead.
+A budget's `measure` may name either form; committed profiles use the recorded
+key everywhere except `latency_p50` and `latency_p95`, where they use the
+vocabulary name. Renaming to one convention would move every committed profile,
+the harness that prints them, and the drift test that compares the two, so the
+mapping is documented instead.
 
 ### Live heap bytes and resident memory are different measures
 
-`peak_memory`, `steady_memory`, and `memory_growth` are resident memory.
+`peak_memory`, `steady_memory`, `memory_growth`, and
+`peak_resident_bytes` are resident-memory measures.
 `peak_allocated_bytes`, `steady_allocated_bytes`, and `allocated_growth_bytes`
 are live heap bytes, counted by a global allocator the benchmark installs. They
-are separate entries rather than a redefinition of the first three, because a
+are separate entries rather than a redefinition of the first group, because a
 budget written against one of them does not mean the same thing against the
 other and a reader must never have to guess which was measured.
 
 Phase 1 uses the heap measures. Resident memory is read through a different
 platform API on each release target, it moves with allocator and
 operating-system behaviour that no change to this project can affect, and on a
-workload of this size that noise is larger than the signal. Live heap bytes are
-the same computation on both targets and answer what a bounded-memory gate
-actually asks: does a repeated operation give back what it took. A later phase
-that holds native GPU textures or loads an OCR model will need resident memory
-as well, because those costs are not on the heap this counts.
+workload of that size the noise is larger than the signal. Phase 2 adds
+`peak_resident_bytes` only for fresh C and C++ child processes whose loaded
+native footprint is invisible to the Rust harness allocator; their
+`peak_allocated_bytes` remains explicitly harness-side. Live heap growth still
+answers whether a repeated in-process operation gives back what it took.
 
 ### When a per-iteration latency cannot be measured
 
@@ -396,6 +400,43 @@ That workload therefore has no latency budget on either target. It is bounded by
 `iteration_span_ms`, which recovers a number by reading the clock once across
 two hundred iterations. `negotiate_table` is bounded the same way for the same
 reason, and so is any later operation whose fast path is a pointer copy.
+
+## Phase 2 native performance status
+
+Phase 2's affected [`G-013`](validation-gates.md#g-013) workloads are open.
+[ADR 0020](adr/0020-phase-2-native-performance-budgets.md) recorded three
+revision-bound profiles from an Apple M1 Pro under macOS 26.5.2, but
+[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+supersedes their normative status:
+
+| Workload set | Historical profile | Current status |
+|---|---|---|
+| Capture | [aarch64](benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml) | non-normative after stimulus, latest-frame, source, and liveness repairs |
+| Transitions | [aarch64](benchmarks/phase-2-native-transitions-aarch64-apple-darwin.toml) | non-normative because it names the superseded benchmark tree |
+| Input and public languages | [aarch64](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml) | non-normative after source and input-liveness repairs |
+
+The files retain their old samples, environment metadata, and former budget
+blocks as historical evidence, with `normative = false`. They do not gate the
+current source. A corrected non-normative capture probe produced zero oracle
+failures and zero allocation growth, but also proved that the old
+stimulus-to-frame latency, mapped-byte, and stale-work ceilings no longer
+describe the repaired workload. No ceiling was widened from that uncommitted
+probe.
+
+The historical macOS input evidence also includes a rejected first run: one of
+fifty `c_common_flow` samples failed its correctness oracle and no cause was
+established. That run remains in the Change evidence directory. It remains a
+constraint on the future C/C++ rerun rather than an accepted current result.
+
+No approved bare-metal Windows host was available. The
+[Windows evidence-gap profile](benchmarks/phase-2-native-x86_64-pc-windows-msvc-evidence-gap.toml)
+records zero samples and no budgets; neither macOS numbers, hosted CI timings,
+nor the G-002 ownership prototype are substituted.
+
+The Phase 1 macOS deterministic and C-boundary profiles historically passed all
+55 applicable comparisons at the ADR 0020 source revision. Release acceptance
+requires rerunning them at the eventual final Phase 2 revision; their committed
+Phase 1 ceilings do not move.
 
 ## Phase 2 Windows ownership prototype
 

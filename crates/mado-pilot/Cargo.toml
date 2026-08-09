@@ -31,5 +31,9 @@ mado-pilot-testkit = { path = "../support/testkit" }
 name = "deterministic-slice"
 harness = false
 
+[[bench]]
+name = "native-phase2"
+harness = false
+
 [lints]
 workspace = true

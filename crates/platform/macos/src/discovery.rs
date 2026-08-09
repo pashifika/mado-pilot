@@ -72,14 +72,16 @@ impl NativeKey {
 
 /// Native metadata repeated to validate an originating snapshot selection.
 ///
-/// PID and window number can both be reused by one process, so these values are not
-/// an incarnation identity. [`Candidate::target`] retains the filter constructed
-/// from this snapshot; the owner here remains descriptive validation metadata.
+/// PID and window number can both be reused by one process, so these values are
+/// not an incarnation identity. [`Candidate::target`] retains the filter built
+/// from this snapshot. Capture consumes that filter directly; input uses the
+/// metadata only to narrow a fresh search whose logical `SCWindow` must equal the
+/// retained one.
 ///
 /// A display carries its captured extent rather than its placement because the
 /// extent supplies the opening producer size and frame placement is same-frame
-/// metadata. The extent is used rather than a vendor or serial number because those
-/// describe the user's hardware and cannot strengthen the retained filter.
+/// metadata. Vendor or serial values describe hardware and cannot strengthen
+/// either retained-filter capture or current-display validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Fingerprint {
     Window { owner_process: i64 },

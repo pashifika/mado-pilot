@@ -30,9 +30,8 @@ for running the matching tests.
 [docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
 exact versions, the Windows environment variables, why the discovery is restricted
 rather than ambient, and what fails when the library is absent. This is a
-development prerequisite only: the v0.1.0 source release bundles no native
-dependency and makes no installable deployment-profile claim, which remains gate
-`G-007`.
+development prerequisite only: source releases bundle no native dependency and
+make no installable deployment-profile claim, which remains gate `G-007`.
 
 The macOS implementation is qualified only on Apple Silicon macOS 26.5.2
 (25F84), SDK 26.5; earlier macOS versions are unsupported investigation targets,
@@ -105,6 +104,22 @@ activating another application to force focus. The capability matrix, typed
 outcomes, privacy bounds, and bundling step are in
 [docs/macos-input-verification.md](docs/macos-input-verification.md).
 
+The owned-window replacement acceptance probe sends no input, but it opens and
+replaces the signed fixture window and therefore remains explicit:
+
+```sh
+MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  cargo test --locked -p mado-pilot-platform-macos --test native_input \
+  owned_window_replacement_never_retargets_the_retained_filter -- \
+  --ignored --exact --nocapture --test-threads=1
+```
+
+The old retained filter may report explicit `TargetLost` or remain quiescent; a
+request timeout is not loss evidence. The gate fails if it publishes the
+distinct successor, if the successor cannot be captured independently, or if the
+retained original mapping changes. The accepted qualified-host record is
+[`docs/evidence/g-001/macos-owned-window-replacement.md`](docs/evidence/g-001/macos-owned-window-replacement.md).
+
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
 Capture, Direct3D 11, and DXGI, and needs no NuGet package, Windows App SDK,
@@ -137,6 +152,32 @@ or focus is unavailable. Do not make it pass through `AttachThreadInput`, elevat
 or another foreground-policy bypass. The capability matrix, typed outcomes,
 privacy bounds, and focused commands are in
 [docs/windows-input-verification.md](docs/windows-input-verification.md).
+
+## Phase 2 native release matrices
+
+Hosted CI is the first gate: open the topic pull request and let both native jobs
+validate compilation, contracts, ABI negotiation, and public examples before
+reserving interactive hardware. A passing hosted job is not permission, display,
+GPU/device, signing, input, target-loss, or minimum-system evidence.
+
+Bind every retained run to the candidate commit and tree, or add a review that
+covers the complete intervening diff. The scheduled release matrices are:
+
+- Windows routine single-display evidence on the approved Windows 11 desktop,
+  followed outside work hours by both shared 4K displays for mixed-DPI,
+  signed-origin, movement, capture, mapping, pointer-input, device-reset/removal,
+  target-loss, Rust, C, and C++ cases.
+- macOS routine current-display evidence on the qualified Apple Silicon macOS
+  26.5.2 host, followed by one shared external display for the signed-origin,
+  scale, movement, capture, mapping, pointer-input, target-loss, Rust, C, and C++
+  cases.
+
+Use dedicated fixtures. Evidence may retain approved host/toolchain metadata,
+typed outcomes, timings, counts, and source identities; it must not retain
+captured pixels, pixel hashes, input text, credentials, unrelated window titles,
+process paths, or desktop metadata. Record an unavailable host or topology as an
+explicit evidence gap. Never turn absence into a skip that passes the release
+claim.
 
 ## Verification
 
@@ -213,9 +254,10 @@ the qualified host's display inventory and checks that a fresh discovery does no
 terminate an already-open retained filter. A run that fails because Screen Recording
 is not granted is useful denial evidence, but passes neither that live gate nor the
 manual window move/resize/loss probe in
-`crates/platform/macos/tests/window_movement.rs`. Release acceptance additionally
-requires an owned-window replacement oracle proving that a retained filter never
-captures a replacement after its selected window is destroyed.
+`crates/platform/macos/tests/window_movement.rs`. The separate owned-window
+replacement command above is the release oracle that proves a retained filter
+never captures a successor after its selected window is destroyed; its accepted
+qualified-host result is retained with `G-001`.
 
 Every part of that command is load-bearing rather than a matter of taste:
 

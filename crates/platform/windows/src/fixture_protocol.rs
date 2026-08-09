@@ -17,8 +17,15 @@ pub const TITLE_PREFIX: &str = "MadoPilot Input Fixture";
 pub const COPYDATA_TAG: usize = 0x4d50_4946;
 pub const ACKNOWLEDGED: usize = 0x4d50_414b;
 pub const VERSION: u32 = 1;
-pub const MAX_RECORDED_EVENTS: usize = 256;
+pub const MAX_RECORDED_EVENTS: usize = 1_024;
 pub const MAX_PACKET_BYTES: usize = HEADER_BYTES + InputEvent::MAX_TEXT_CHARS * 4;
+
+/// The fixture's ordinary deterministic client-area fill, as `0xRRGGBB`.
+pub const FILL_RGB: u32 = 0x0020_4060;
+/// The alternate deterministic fill used only by the opt-in benchmark mode.
+pub const BENCHMARK_FILL_RGB: u32 = 0x00c4_5b2e;
+/// Per-channel tolerance used when a captured benchmark frame is checked.
+pub const FILL_TOLERANCE: u8 = 8;
 
 const HEADER_BYTES: usize = 24;
 const QUERY: u32 = 0;
@@ -30,11 +37,35 @@ const KEY_PRESS: u32 = 5;
 const KEY_RELEASE: u32 = 6;
 const TEXT: u32 = 7;
 
+/// The event kind a benchmark expects for one pointer-move stimulus.
+pub const EVENT_POINTER_MOVE: u32 = POINTER_MOVE;
+/// The event kind a benchmark expects for one key-down stimulus.
+pub const EVENT_KEY_DOWN: u32 = KEY_PRESS;
+/// The event kind a benchmark expects for the matching key release.
+pub const EVENT_KEY_UP: u32 = KEY_RELEASE;
+
 /// Non-sensitive information the fixture retains about one accepted event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventSummary {
     pub kind: u32,
     pub text_units: u32,
+}
+
+/// Formats one accepted event without exposing its key or text payload.
+#[must_use]
+pub fn format_event_line(summary: EventSummary) -> String {
+    format!("event kind={} units={}", summary.kind, summary.text_units)
+}
+
+/// Parses one redacted event line printed by the opt-in benchmark fixture.
+#[must_use]
+pub fn parse_event_line(line: &str) -> Option<EventSummary> {
+    let rest = line.trim().strip_prefix("event ")?;
+    let (kind, units) = rest.split_once(' ')?;
+    Some(EventSummary {
+        kind: kind.strip_prefix("kind=")?.parse().ok()?,
+        text_units: units.strip_prefix("units=")?.parse().ok()?,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,8 +334,9 @@ fn key_code(key: Key) -> Result<u32, InputFault> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FixtureSelectionError, HEADER_BYTES, encode_event, fixture_title, is_query, query_packet,
-        select_unique_fixture, summarize,
+        EventSummary, FixtureSelectionError, HEADER_BYTES, encode_event, fixture_title,
+        format_event_line, is_query, parse_event_line, query_packet, select_unique_fixture,
+        summarize,
     };
     use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
     use mado_pilot_core::{
@@ -329,6 +361,19 @@ mod tests {
             ),
             Err(InputFault::SequenceOutOfBounds)
         );
+    }
+
+    #[test]
+    fn redacted_event_lines_round_trip_without_payload_text() {
+        let summary = EventSummary {
+            kind: 7,
+            text_units: 3,
+        };
+        let line = format_event_line(summary);
+
+        assert_eq!(line, "event kind=7 units=3");
+        assert_eq!(parse_event_line(&line), Some(summary));
+        assert_eq!(parse_event_line("event kind=7 units=3 trailing"), None);
     }
 
     #[test]

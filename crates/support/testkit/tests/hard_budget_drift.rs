@@ -2,9 +2,9 @@
 //! profiles state.
 //!
 //! `bench_harness::HARD_BUDGET_PREDICATES` is a copy of two strings that live
-//! in four files under `docs/benchmarks/`. A copy is the right shape here —
-//! parsing the profiles would buy a TOML reader and a predicate evaluator for a
-//! set of two — but a copy that nothing compares is a copy that drifts. These
+//! in every measured profile under `docs/benchmarks/`. A copy is the right shape
+//! here — parsing the profiles would buy a TOML reader and a predicate evaluator
+//! for a set of two — but a copy that nothing compares is a copy that drifts. These
 //! tests are the comparison, in both directions: no profile may state a hard
 //! predicate the harness does not enforce, and the harness may not enforce one
 //! no profile states. What makes a predicate a hard budget's is the budget's
@@ -17,11 +17,11 @@
 
 use mado_pilot_testkit::bench_harness::{GROWTH_LIMIT_BYTES, HARD_BUDGET_PREDICATES};
 
-/// Every committed Phase 1 profile, by repository path and content.
+/// Every committed measured profile, by repository path and content.
 ///
-/// `example-synthetic.toml` is deliberately absent: it documents the format
-/// with invented numbers and is not a measured profile, so it gates nothing.
-const PROFILES: [(&str, &str); 4] = [
+/// `example-synthetic.toml` and the Phase 2 Windows evidence-gap profile are
+/// deliberately absent: neither records measurements, so neither gates a run.
+const PROFILES: [(&str, &str); 7] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -41,6 +41,22 @@ const PROFILES: [(&str, &str); 4] = [
     (
         "docs/benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml",
         include_str!("../../../../docs/benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml"),
+    ),
+    (
+        "docs/benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-native-transitions-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-native-transitions-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-native-input-aarch64-apple-darwin.toml",
+        include_str!("../../../../docs/benchmarks/phase-2-native-input-aarch64-apple-darwin.toml"),
     ),
 ];
 

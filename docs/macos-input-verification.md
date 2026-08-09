@@ -1,10 +1,10 @@
 # macOS Input Adapter and Verification
 
 The macOS platform package implements input at the Adapter boundary, and
-`mado_pilot::macos_engine` wires it into the runtime and the public Rust facade.
-C ABI and C++ wiring remain later work, and the release acceptance this document
-describes is still the user-focused check below, so this is an implemented Rust
-capability rather than a release-level product claim.
+`mado_pilot::macos_engine` wires it into the runtime and public Rust facade. The
+C ABI and header-only C++ wrapper consume that same facade-owned engine. Release
+acceptance consists of the explicit native checks below; ordinary test runs never
+send desktop input or open the opt-in replacement window.
 
 ## Capability boundary
 
@@ -71,18 +71,21 @@ calls a permission-request API, opens System Settings, or presents any interface
 an unavailable or unreadable state is treated as unauthorized rather than as
 permission.
 
-Liveness first comes from the exact `SCWindow` included by the discovery-retained
-`SCContentFilter`, which is the same authority capture opens. Focus is then read
-through public, read-only Accessibility attributes. The owning application must
-be active, its focused window must appear in its public window list, and exactly
-one Accessibility window's top-left global position and size must equal the
-retained window's current frame. The retained frame is read again after that
-snapshot. Missing attributes, changed geometry, or zero or multiple matches
-establish no focus and deliver nothing. This geometry join never re-resolves
-identity: titles and private Accessibility window identifiers are not read, and a
-same-PID replacement that recycles a number still makes the old `TargetId` report
-`TargetLost`. Every Accessibility message is bounded by the caller's remaining
-operation budget.
+Window liveness comes from a fresh, bounded shareable-content snapshot. PID and
+window number only narrow that snapshot; the resulting logical `SCWindow` must
+equal the object retained by the discovery `SCContentFilter`, and its current
+frame supplies the geometry. This matters because the retained object's
+`isOnScreen` and `frame` values remain unchanged after the source window closes.
+
+Focus is then read through public, read-only Accessibility attributes. The owning
+application must be active, its focused window must appear in its public window
+list, and exactly one Accessibility window's top-left global position and size
+must equal the freshly verified frame. The shareable-content and focus observations
+are repeated after that join. Missing attributes, changed geometry, or zero or
+multiple matches establish no focus and deliver nothing. Titles and private
+Accessibility window identifiers are not read, and a same-PID replacement that
+recycles numeric metadata still makes the old `TargetId` report `TargetLost`.
+Every native observation is bounded by the caller's remaining operation budget.
 
 - `Preserve` cannot satisfy a focus-requiring system path, so a window request
   using it fails admission.
@@ -149,7 +152,10 @@ never attempted, and the two leave a caller with different options.
 - the exact title `MadoPilot Input Fixture [<pid>]`;
 - one fixed fill colour and no other content, so a captured frame of it contains
   nothing from the user's desktop;
-- a bounded report of at most 256 observed events, each printed as its kind and
+- an opt-in replacement mode that destroys that exact window on AppKit's main
+  thread and creates a same-process, same-title successor with a deliberately
+  distinct flat colour;
+- a bounded report of at most 1,024 observed events, each printed as its kind and
   UTF-16 unit count and never its characters;
 - the stable bundle identifier `dev.mado-pilot.macos-input-fixture` when it is run
   from a bundle.
@@ -227,6 +233,27 @@ MADO_PILOT_MACOS_FIXTURE=1 cargo test --locked \
   -p mado-pilot-platform-macos --test native_input
 ```
 
+## Explicit owned-window replacement check
+
+Build and verify the generated signed bundle above, then run this on the
+permissioned qualified host. It sends no input and needs Screen Recording, but
+not Accessibility:
+
+```sh
+MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  cargo test --locked -p mado-pilot-platform-macos --test native_input \
+  owned_window_replacement_never_retargets_the_retained_filter -- \
+  --ignored --exact --nocapture --test-threads=1
+```
+
+The old retained filter may report explicit `TargetLost` or remain quiescent;
+individual frame-request timeouts do not establish loss. The check rejects any
+successor-colour frame from that filter, independently captures the successor as
+a negative control, and verifies that the retained original mapping did not
+change. The accepted result was rerun at commit
+`a1faf04505c8471deb4de8c136fddcc7f76105e7` and is retained in
+[`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md).
+
 ## Explicit system-input check
 
 Run this only on an interactive Apple Silicon desktop with Screen Recording and
@@ -255,6 +282,9 @@ activates nothing, and every attempt before the exact retained window is focused
 delivers zero events. Only then does it send Enter down and up and the fixed text
 `system-probe`. It sends no click and no pointer movement, and closes capture
 after input verification.
+The fixture event queue is deliberately delimited after focus is established, so
+ordinary mouse-enter or operator focus events are not attributed to that later
+delivery sequence.
 
 If the fixture is not focused in time, selection is ambiguous, deterministic
 content cannot be captured and mapped, the pixels do not match, or Accessibility
@@ -319,6 +349,17 @@ fixture reads an event's characters solely to take their length and never copies
 them out of that block. Interactive evidence may record capability, event counts,
 typed faults, and cleanup counts; it must not record input text or unrelated
 desktop payload.
+
+## Accepted Phase 2 evidence
+
+The one-display qualified-host matrix for commit
+`a1faf04505c8471deb4de8c136fddcc7f76105e7`, including the AddressSanitizer
+run and full Rust, C, and C++ flows, is retained in
+[`evidence/phase-2-native/macos-current-display.md`](evidence/phase-2-native/macos-current-display.md).
+The exact owned-window replacement oracle is retained separately in
+[`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md).
+Neither result substitutes for the release candidate's shared external-display
+matrix.
 
 ## Frameworks
 

@@ -133,6 +133,19 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Builds an explicit plan for a workload set whose contract uses a
+    /// different sample schedule from the Phase 1 default.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `samples` is zero, because a run with no retained sample
+    /// cannot produce a percentile or exercise a correctness oracle.
+    #[must_use]
+    pub fn new(warmup: usize, samples: usize) -> Self {
+        assert!(samples > 0, "a benchmark plan retains at least one sample");
+        Self { warmup, samples }
+    }
+
     /// Enough samples for the oracles, not enough for a percentile.
     #[must_use]
     pub const fn smoke() -> Self {
@@ -169,6 +182,12 @@ impl Plan {
     pub const fn samples(self) -> usize {
         self.samples
     }
+
+    /// How many iterations a run discards before retaining samples.
+    #[must_use]
+    pub const fn warmup(self) -> usize {
+        self.warmup
+    }
 }
 
 /// What one iteration of a workload reports.
@@ -177,6 +196,8 @@ pub struct Sample {
     elapsed: Duration,
     correct: bool,
     mapped: u64,
+    peak_resident: Option<u64>,
+    stale: Option<(u64, u64)>,
 }
 
 impl Sample {
@@ -187,6 +208,8 @@ impl Sample {
             elapsed,
             correct,
             mapped,
+            peak_resident: None,
+            stale: None,
         }
     }
 
@@ -194,6 +217,29 @@ impl Sample {
     #[must_use]
     pub const fn unmapped(elapsed: Duration, correct: bool) -> Self {
         Self::new(elapsed, correct, 0)
+    }
+
+    /// Associates an observable stale/drop count with this sample.
+    ///
+    /// `total` is the number of producer publications represented by the
+    /// sample, including the one returned to the consumer. The ratio is
+    /// therefore `stale / total`, never a count detached from its denominator.
+    #[must_use]
+    pub const fn with_stale_work(mut self, stale: u64, total: u64) -> Self {
+        self.stale = Some((stale, total));
+        self
+    }
+
+    /// Associates the measured child process's peak resident set with this sample.
+    ///
+    /// This is separate from the Rust global-allocator counters because a
+    /// separately linked C or C++ process has its own allocator and address
+    /// space. The child reports this value from its native process API after it
+    /// has released the flow's owned handles.
+    #[must_use]
+    pub const fn with_peak_resident_bytes(mut self, bytes: u64) -> Self {
+        self.peak_resident = Some(bytes);
+        self
     }
 }
 
@@ -204,10 +250,13 @@ pub struct Workload {
     oracle: &'static str,
     elapsed: Vec<Duration>,
     incorrect: usize,
+    stale: u64,
+    scheduled: u64,
     mapped: u64,
     iteration_span: Duration,
     peak_bytes: usize,
     steady_bytes: usize,
+    peak_resident_bytes: Option<u64>,
     growth_bytes: i64,
 }
 
@@ -261,6 +310,12 @@ impl Workload {
         self.growth_bytes
     }
 
+    /// Share of observed producer work skipped before a retained result.
+    #[must_use]
+    pub fn stale_work_ratio(&self) -> Option<f64> {
+        (self.scheduled > 0).then(|| self.stale as f64 / self.scheduled as f64)
+    }
+
     /// The workload's name, as the report files it under.
     #[must_use]
     pub const fn name(&self) -> &'static str {
@@ -277,13 +332,16 @@ impl Workload {
 /// what this workload's own footprint is measured against; the post-warmup one
 /// is what its growth is measured against, so a one-time cost the first
 /// iterations paid is not reported as a leak.
-pub fn measure<F>(
+pub fn measure<F, M>(
     name: &'static str,
     oracle: &'static str,
     plan: Plan,
-    make: fn() -> F,
+    make: M,
     workload: fn(&F) -> Sample,
-) -> Workload {
+) -> Workload
+where
+    M: FnOnce() -> F,
+{
     // Allocated before the baseline is taken and never grown afterwards, so the
     // harness's own record of the run does not appear as the workload's memory.
     let mut elapsed = Vec::with_capacity(plan.samples);
@@ -298,7 +356,10 @@ pub fn measure<F>(
     PEAK.store(after_warmup, Ordering::Relaxed);
 
     let mut incorrect = 0;
+    let mut stale = 0u64;
+    let mut scheduled = 0u64;
     let mut mapped = 0;
+    let mut peak_resident_bytes: Option<u64> = None;
     let span = Instant::now();
     for _ in 0..plan.samples {
         let sample = workload(&fixture);
@@ -308,7 +369,14 @@ pub fn measure<F>(
         // The largest of the retained samples, not the last one: a change that
         // maps twice on every sampled iteration except the final one would
         // otherwise report the low number and satisfy its budget.
+        if let Some((sample_stale, sample_total)) = sample.stale {
+            stale = stale.saturating_add(sample_stale);
+            scheduled = scheduled.saturating_add(sample_total);
+        }
         mapped = mapped.max(sample.mapped);
+        if let Some(sample_peak) = sample.peak_resident {
+            peak_resident_bytes = Some(peak_resident_bytes.unwrap_or_default().max(sample_peak));
+        }
         elapsed.push(sample.elapsed);
     }
     let span = span.elapsed();
@@ -323,6 +391,9 @@ pub fn measure<F>(
         iteration_span: span / u32::try_from(plan.samples).unwrap_or(u32::MAX),
         peak_bytes: PEAK.load(Ordering::Relaxed).saturating_sub(before_fixture),
         steady_bytes: ending.saturating_sub(before_fixture),
+        peak_resident_bytes,
+        stale,
+        scheduled,
         growth_bytes: i64::try_from(ending).unwrap_or(i64::MAX)
             - i64::try_from(after_warmup).unwrap_or(i64::MAX),
     }
@@ -356,10 +427,14 @@ pub struct Profile {
     pub hardware: String,
     /// Its operating-system version, as the operator stated it.
     pub os_version: String,
+    /// The command profile and feature selection that produced the executable.
+    pub build_profile: String,
     /// How every retained sample was checked.
     pub correctness_oracle: &'static str,
     /// The queue depth and drop policy in effect.
     pub queue_policy: &'static str,
+    /// Optional target-specific conditions not represented by another field.
+    pub notes: Option<String>,
 }
 
 impl Profile {
@@ -419,14 +494,14 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
     println!("release_target = \"{RELEASE_TARGET}\"");
     println!("hardware = \"{}\"", escape(&profile.hardware));
     println!("os_version = \"{}\"", escape(&profile.os_version));
-    println!(
-        "build_profile = \"cargo bench, default features, debug_assertions={}\"",
-        cfg!(debug_assertions)
-    );
+    println!("build_profile = \"{}\"", escape(&profile.build_profile));
     println!("warmup_iterations = {}", plan.warmup);
     println!("sample_count = {}", plan.samples);
     println!("correctness_oracle = \"{}\"", profile.correctness_oracle);
     println!("queue_policy = \"{}\"", profile.queue_policy);
+    if let Some(notes) = &profile.notes {
+        println!("notes = \"{}\"", escape(notes));
+    }
     println!();
 
     for workload in workloads {
@@ -438,9 +513,15 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
         println!("latency_p95_ms = {:.6}", workload.percentile(0.95));
         println!("iteration_span_ms = {:.6}", workload.iteration_span_ms());
         println!("mapped_bytes_per_result = {}", workload.mapped);
+        if let Some(ratio) = workload.stale_work_ratio() {
+            println!("stale_work_ratio = {ratio:.9}");
+        }
         println!("peak_allocated_bytes = {}", workload.peak_bytes);
         println!("steady_allocated_bytes = {}", workload.steady_bytes);
         println!("allocated_growth_bytes = {}", workload.growth_bytes);
+        if let Some(bytes) = workload.peak_resident_bytes {
+            println!("peak_resident_bytes = {bytes}");
+        }
         println!();
     }
 }
@@ -491,21 +572,8 @@ pub const GROWTH_LIMIT_BYTES: i64 = 4096;
 /// Panics naming the workload, the predicate it violated, and the measurement
 /// that violated it.
 pub fn enforce_hard_budgets(workloads: &[Workload]) {
-    let [correctness, growth] = HARD_BUDGET_PREDICATES;
-
-    // Correctness first: the memory a workload used to produce a wrong answer
-    // is not the interesting fact about that run.
-    for workload in workloads {
-        assert!(
-            workload.incorrect == 0,
-            "{}: {correctness} — {} of {} retained samples produced an output \
-             its oracle rejected ({})",
-            workload.name,
-            workload.incorrect,
-            workload.elapsed.len(),
-            workload.oracle,
-        );
-    }
+    let [_correctness, growth] = HARD_BUDGET_PREDICATES;
+    enforce_correctness(workloads);
 
     for workload in workloads {
         assert!(
@@ -515,6 +583,30 @@ pub fn enforce_hard_budgets(workloads: &[Workload]) {
             workload.name,
             workload.growth_bytes,
             workload.elapsed.len(),
+        );
+    }
+}
+
+/// Fails when any retained sample violates its workload oracle.
+///
+/// Native evidence uses this before its measured bounded-growth predicate has
+/// been set from both release targets. Phase 1 calls [`enforce_hard_budgets`],
+/// which applies this same rule and its established growth bound together.
+///
+/// # Panics
+///
+/// Panics naming the workload and oracle when a retained sample is incorrect.
+pub fn enforce_correctness(workloads: &[Workload]) {
+    let correctness = HARD_BUDGET_PREDICATES[0];
+    for workload in workloads {
+        assert!(
+            workload.incorrect == 0,
+            "{}: {correctness} — {} of {} retained samples produced an output \
+             its oracle rejected ({})",
+            workload.name,
+            workload.incorrect,
+            workload.elapsed.len(),
+            workload.oracle,
         );
     }
 }
@@ -538,4 +630,29 @@ pub fn argument(arguments: &[String], name: &str) -> Option<String> {
 
 fn escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Plan, Sample, measure};
+    use std::time::Duration;
+
+    fn fixture() {}
+
+    fn stale_sample(_: &()) -> Sample {
+        Sample::unmapped(Duration::from_micros(1), true).with_stale_work(1, 4)
+    }
+
+    #[test]
+    fn an_observable_stale_ratio_keeps_its_denominator() {
+        let workload = measure(
+            "stale",
+            "one of four publications is skipped",
+            Plan::new(0, 2),
+            fixture,
+            stale_sample,
+        );
+
+        assert_eq!(workload.stale_work_ratio(), Some(0.25));
+    }
 }

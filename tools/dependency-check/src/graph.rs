@@ -498,18 +498,18 @@ pub enum Violation {
         /// Path the dependency points at, as reported by Cargo.
         path: String,
     },
-    /// A Phase 0 package is publishable.
+    /// A required workspace package is publishable.
     PublishablePackage {
         /// Package name.
         name: String,
     },
-    /// The root `[workspace.package]` table disagrees with the Phase 0 contract.
+    /// The root `[workspace.package]` table disagrees with the repository contract.
     UnexpectedWorkspaceMetadata {
         /// Manifest field that disagrees.
         field: &'static str,
         /// Value the root workspace manifest declares, if any.
         value: Option<String>,
-        /// Value the Phase 0 contract requires.
+        /// Value the repository contract requires.
         expected: &'static str,
     },
     /// `rust-toolchain.toml` does not pin the tested minimum supported Rust
@@ -517,7 +517,7 @@ pub enum Violation {
     UnexpectedToolchainChannel {
         /// Channel the pin file declares, if the file is present and readable.
         channel: Option<String>,
-        /// Channel the Phase 0 contract requires.
+        /// Channel the repository contract requires.
         expected: &'static str,
     },
     /// A member's resolved metadata disagrees with the root workspace declaration.
@@ -631,14 +631,14 @@ impl fmt::Display for Violation {
                 let value = value.as_deref().unwrap_or("unset");
                 write!(
                     formatter,
-                    "the root workspace manifest declares `{field} = {value}` in `[workspace.package]` but the Phase 0 contract requires `{expected}`; changing it is an intentional release decision that updates this checker and `docs/architecture.md` in the same change"
+                    "the root workspace manifest declares `{field} = {value}` in `[workspace.package]` but the repository contract requires `{expected}`; changing it is an intentional release decision that updates this checker and `docs/architecture.md` in the same change"
                 )
             }
             Self::UnexpectedToolchainChannel { channel, expected } => {
                 let channel = channel.as_deref().unwrap_or("no channel");
                 write!(
                     formatter,
-                    "`rust-toolchain.toml` pins channel `{channel}` but the Phase 0 contract requires Rust `{expected}`; the pin is the tested minimum supported Rust version, so it moves together with `[workspace.package] rust-version`"
+                    "`rust-toolchain.toml` pins channel `{channel}` but the repository contract requires Rust `{expected}`; the pin is the tested minimum supported Rust version, so it moves together with `[workspace.package] rust-version`"
                 )
             }
             Self::InconsistentMetadata {
@@ -670,8 +670,8 @@ impl fmt::Display for Violation {
     }
 }
 
-/// Package version the Phase 0 contract fixes for the whole workspace.
-pub const REQUIRED_VERSION: &str = "0.1.0";
+/// Package version the repository contract fixes for the whole workspace.
+pub const REQUIRED_VERSION: &str = "0.2.0";
 /// Edition every workspace member must use.
 pub const REQUIRED_EDITION: &str = "2024";
 /// Tested minimum supported Rust version, which is also the pinned toolchain.
@@ -729,8 +729,8 @@ pub struct ObservedMetadata {
 /// toolchain.
 ///
 /// The root manifest is the single source for member values, and these values are
-/// themselves anchored to the Phase 0 contract, so shared metadata cannot drift by
-/// having every member change together.
+/// themselves anchored to the repository contract, so shared metadata cannot
+/// drift by having every member change together.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedWorkspaceMetadata {
     /// `version` in `[workspace.package]`, if declared and non-empty.
@@ -752,7 +752,7 @@ pub struct ObservedWorkspaceMetadata {
 /// The rules are layered so that neither one member nor the workspace as a whole
 /// can drift silently:
 ///
-/// 1. The root `[workspace.package]` values must match the Phase 0 contract
+/// 1. The root `[workspace.package]` values must match the repository contract
 ///    constants in this module, and `rust-toolchain.toml` must pin the same Rust
 ///    version. A release bump is therefore an intentional, reviewed edit to the
 ///    manifest, this checker, and `docs/architecture.md` together, rather than
