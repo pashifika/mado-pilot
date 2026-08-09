@@ -1,15 +1,15 @@
 //! Bounded, versioned messages accepted only by the Windows input fixture.
 //!
-//! Arbitrary window classes do not share one reliable background-input
-//! contract. The production adapter therefore advertises background delivery
-//! only for the dedicated fixture class, and every event uses one synchronous
-//! `WM_COPYDATA` packet with an explicit acknowledgement. The protocol carries
-//! no pointers of its own and caps text at the shared input-event limit.
+//! Arbitrary window classes do not share one reliable exact-window input
+//! contract. The production Adapter exposes `WindowMessage` only for this fixture
+//! class; every event uses one synchronous `WM_COPYDATA` packet with explicit
+//! acknowledgement. Packets contain no pointers and bound text at the shared
+//! input-event limit.
 
 use std::fmt;
 
 use mado_pilot_capture::TargetDescription;
-use mado_pilot_core::{InputDelivery, InputOperationKind, TargetKind};
+use mado_pilot_core::{CapabilitySupport, InputDelivery, InputOperationKind, TargetKind};
 use mado_pilot_input::{InputEvent, InputFault, Key, Modifier, PointerButton};
 
 pub const CLASS_NAME: &str = "MadoPilotInputFixture";
@@ -100,9 +100,12 @@ pub fn select_unique_fixture(
             return false;
         }
         let input = target.capability().input();
-        InputOperationKind::ALL
-            .iter()
-            .all(|operation| input.supports(*operation, InputDelivery::BackgroundTarget))
+        InputOperationKind::ALL.iter().all(|operation| {
+            input
+                .pair(*operation, InputDelivery::WindowMessage)
+                .support()
+                == CapabilitySupport::Supported
+        })
     });
     let first = matches.next().ok_or(FixtureSelectionError::NotFound)?;
     if matches.next().is_some() {
@@ -341,7 +344,7 @@ mod tests {
     use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
     use mado_pilot_core::{
         CapabilitySupport, IdentityIssuer, InputCapability, InputDelivery, InputOperationKind,
-        PixelExtent, ProviderId, TargetCapability, TargetKind,
+        PixelExtent, ProviderId, SubmissionEvidence, TargetCapability, TargetKind,
     };
     use mado_pilot_input::{InputEvent, InputFault, Key};
 
@@ -452,18 +455,27 @@ mod tests {
         );
     }
 
-    fn description(name: &str, background: bool) -> TargetDescription {
-        description_with_kind(name, background, TargetKind::Window)
+    fn description(name: &str, window_message: bool) -> TargetDescription {
+        description_with_kind(name, window_message, TargetKind::Window)
     }
 
-    fn description_with_kind(name: &str, background: bool, kind: TargetKind) -> TargetDescription {
+    fn description_with_kind(
+        name: &str,
+        window_message: bool,
+        kind: TargetKind,
+    ) -> TargetDescription {
         let target = IdentityIssuer::new()
             .issue_target(ProviderId::new("windows"))
             .expect("issued target");
         let mut input = InputCapability::none();
-        if background {
+        if window_message {
             for operation in InputOperationKind::ALL {
-                input = input.with_pair(operation, InputDelivery::BackgroundTarget);
+                input = input.with_pair(
+                    operation,
+                    InputDelivery::WindowMessage,
+                    CapabilitySupport::Supported,
+                    SubmissionEvidence::TargetProtocolAcknowledgement,
+                );
             }
         }
         TargetDescription::new(

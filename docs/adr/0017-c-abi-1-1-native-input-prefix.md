@@ -1,6 +1,6 @@
 # ADR 0017: Append the native-input C ABI 1.1 prefix
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR 0023
 - **Date:** 2026-08-08
 - **Resolves gate:** _none_
 - **Supersedes:** _none_

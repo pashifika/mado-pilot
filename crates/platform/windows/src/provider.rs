@@ -358,7 +358,7 @@ impl TargetRecord {
                     .ok()
                     .filter(|value| *value > 0)
                     .ok_or(InputFault::TargetLost)?;
-                validate_surface(width, height).map_err(|_| InputFault::DeliveryUnavailable)?;
+                validate_surface(width, height).map_err(|_| InputFault::RouteUnavailable)?;
                 Ok(mado_pilot_core::PixelExtent::new(width, height))
             }
             #[cfg(test)]

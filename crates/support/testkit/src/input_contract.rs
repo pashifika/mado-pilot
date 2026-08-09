@@ -7,32 +7,20 @@
 //!
 //! # What is here and what is not
 //!
-//! These are the rules an adapter can be held to without anyone telling it to
-//! fail: admission refuses what the descriptor does not advertise, two overlapping
-//! sequences each complete without interleaving, a sequence that cannot start
-//! delivers nothing, and close stops admission without repeating anything.
+//! These rules require no injected failure: descriptor honesty, immutable refusal
+//! attempts, serialized sequences, admission interruption, and idempotent close.
+//! Failure during a native event and cleanup refusal are exercised by
+//! [`ControlledInput`](crate::ControlledInput) and platform fault injection.
 //!
-//! No check here depends on which of two concurrent sequences the scheduler admits
-//! first. That is not a contract rule, and a check that assumed it would fail on a
-//! loaded host while naming a rule it never reached. Where a rule genuinely needs
-//! contention — a sequence whose deadline passes *while waiting* — it is verified
-//! against [`Admission`](mado_pilot_input::Admission) directly, where one thread
-//! holds the controller and the same thread observes the refusal.
+//! Scheduler order is deliberately unspecified. Contention checks assert only
+//! observable serialization and use [`Admission`](mado_pilot_input::Admission)
+//! when one thread must deterministically hold the gate.
 //!
-//! The rules about *failing* part-way — a mechanism that refuses after two events,
-//! cleanup that cannot release a modifier — cannot be checked this way, because
-//! nothing here can make a working adapter fail on cue. Those are exercised
-//! against [`ControlledInput`](crate::ControlledInput), whose behavior a test
-//! writes, and a platform adapter meets them through its own fault-injection
-//! cases. A suite that pretended to check them would report a pass for a rule it
-//! never reached.
+//! # Submission safety
 //!
-//! # Deliverability
-//!
-//! Every sequence here is bounded, releases whatever it presses, and uses the
-//! target the caller names. An adapter that delivers to a real desktop must be
-//! given a fixture target of its own: nothing in this suite is safe to point at an
-//! application a person is using.
+//! Every sequence is bounded, releases what it presses, and names the supplied
+//! fixture target. A native Adapter must be given a fixture application owned by
+//! the test; this suite is never safe to point at an application a person uses.
 
 use std::thread;
 use std::time::Duration;
@@ -41,8 +29,8 @@ use mado_pilot_core::{
     InputDelivery, InputOperationKind, Lifecycle, OperationContext, Status, TargetId,
 };
 use mado_pilot_input::{
-    DeliveryPlan, InputEvent, InputOpenRequest, InputProvider, InputRequest, InputSequence, Key,
-    SequenceOutcome,
+    DeliveryPlan, InputEvent, InputFault, InputOpenRequest, InputProvider, InputRequest,
+    InputSequence, Key, SequenceOutcome,
 };
 
 /// How long the sequence in the contention check occupies the controller.
@@ -60,9 +48,9 @@ pub fn run(provider: &dyn InputProvider, target: TargetId) {
     a_described_target_reports_its_own_identity(provider, target);
     a_foreign_target_is_refused(provider, target);
     admission_refuses_what_the_descriptor_does_not_advertise(provider, target);
-    an_advertised_sequence_is_delivered_completely(provider, target);
+    an_advertised_sequence_is_submitted_completely(provider, target);
     two_sequences_do_not_interleave_on_one_controller(provider, target);
-    a_sequence_that_cannot_start_delivers_nothing(provider, target);
+    a_sequence_that_cannot_start_submits_nothing(provider, target);
     close_stops_admission_and_is_idempotent(provider, target);
 }
 
@@ -90,22 +78,20 @@ fn occupying() -> InputSequence {
     .expect("a delay within the event bound")
 }
 
-/// Returns the first delivery mechanism the descriptor advertises for keystrokes.
-fn keyboard_mechanism(provider: &dyn InputProvider, target: TargetId) -> InputDelivery {
+/// Returns the first route the descriptor reports attemptable for keystrokes.
+fn keyboard_route(provider: &dyn InputProvider, target: TargetId) -> InputDelivery {
     let descriptor = provider
         .describe(target, &context())
         .expect("input contract: `describe` must report a target this provider issued");
     InputDelivery::ALL
         .into_iter()
-        .find(|delivery| {
+        .find(|route| {
             descriptor
                 .capability()
-                .supports(InputOperationKind::Keyboard, *delivery)
+                .pair(InputOperationKind::Keyboard, *route)
+                .may_attempt()
         })
-        .expect(
-            "input contract: this suite needs a target that accepts keyboard input \
-             through some mechanism; a capture-only target has no input contract to check",
-        )
+        .expect("input contract: this suite needs a target with an attemptable keyboard route")
 }
 
 /// The description names the target it was asked about.
@@ -150,12 +136,11 @@ pub fn a_foreign_target_is_refused(provider: &dyn InputProvider, target: TargetI
     );
 }
 
-/// A combination the descriptor does not advertise fails before any delivery.
+/// An unsupported pair produces one route-local refusal and no native effect.
 ///
 /// # Panics
 ///
-/// Panics when an unadvertised combination is admitted, or when the failure is not
-/// an unsupported outcome.
+/// Panics when the pair is submitted, substituted, or omitted from attempts.
 pub fn admission_refuses_what_the_descriptor_does_not_advertise(
     provider: &dyn InputProvider,
     target: TargetId,
@@ -163,48 +148,49 @@ pub fn admission_refuses_what_the_descriptor_does_not_advertise(
     let descriptor = provider
         .describe(target, &context())
         .expect("input contract: `describe` must report a target this provider issued");
-    let Some(unadvertised) = InputDelivery::ALL.into_iter().find(|delivery| {
+    let Some(unadvertised) = InputDelivery::ALL.into_iter().find(|route| {
         !descriptor
             .capability()
-            .supports(InputOperationKind::Keyboard, *delivery)
+            .pair(InputOperationKind::Keyboard, *route)
+            .may_attempt()
     }) else {
-        // Every mechanism accepts keystrokes, so there is no unadvertised
-        // combination to refuse. Nothing is wrong; the rule has no case here.
         return;
     };
     let controller = provider
         .open(target, &InputOpenRequest::new(), &context())
         .expect("input contract: opening an optional-input controller must succeed");
 
-    let error = controller
+    let receipt = controller
         .execute(
             &InputRequest::new(target, keystroke(), DeliveryPlan::require(unadvertised)),
             &context(),
         )
-        .expect_err(
-            "input contract: a required mechanism the descriptor does not advertise must be \
-             refused rather than substituted",
-        );
+        .expect("input contract: a well-formed unsupported route returns a receipt");
 
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.selected_route(), None);
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), unadvertised);
     assert_eq!(
-        error.status(),
-        Status::Unsupported,
-        "input contract: an unadvertised combination is unsupported"
+        receipt.attempts()[0].fault(),
+        Some(InputFault::UnsupportedCombination)
     );
+    assert!(!receipt.attempts()[0].possible_native_effect());
     controller.close(&context()).expect("close");
 }
 
-/// An advertised sequence produces a complete receipt naming its mechanism.
+/// An advertised sequence produces a complete receipt naming its route.
 ///
 /// # Panics
 ///
-/// Panics when the receipt is not complete, when it counts the wrong number of
-/// events, or when it names a mechanism the request did not permit.
-pub fn an_advertised_sequence_is_delivered_completely(
+/// Panics when the receipt is incomplete, counts the wrong number of logical
+/// events, or names a route the request did not permit.
+pub fn an_advertised_sequence_is_submitted_completely(
     provider: &dyn InputProvider,
     target: TargetId,
 ) {
-    let mechanism = keyboard_mechanism(provider, target);
+    let route = keyboard_route(provider, target);
     let controller = provider
         .open(target, &InputOpenRequest::new(), &context())
         .expect("input contract: opening an optional-input controller must succeed");
@@ -213,7 +199,7 @@ pub fn an_advertised_sequence_is_delivered_completely(
 
     let receipt = controller
         .execute(
-            &InputRequest::new(target, sequence, DeliveryPlan::require(mechanism)),
+            &InputRequest::new(target, sequence, DeliveryPlan::require(route)),
             &context(),
         )
         .expect("input contract: an advertised sequence must be admitted");
@@ -224,15 +210,18 @@ pub fn an_advertised_sequence_is_delivered_completely(
         "input contract: an advertised sequence with no injected failure must complete"
     );
     assert_eq!(
-        receipt.delivered(),
+        receipt.submitted(),
         expected,
-        "input contract: a complete receipt counts every event"
+        "input contract: a complete receipt counts every logical event"
     );
     assert_eq!(
-        receipt.delivery(),
-        Some(mechanism),
-        "input contract: the receipt names the mechanism the caller permitted"
+        receipt.selected_route(),
+        Some(route),
+        "input contract: the receipt names the route the caller permitted"
     );
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), route);
+    assert_eq!(receipt.attempts()[0].outcome(), SequenceOutcome::Complete);
     assert_eq!(
         receipt.target(),
         target,
@@ -257,7 +246,7 @@ pub fn two_sequences_do_not_interleave_on_one_controller(
     provider: &dyn InputProvider,
     target: TargetId,
 ) {
-    let mechanism = keyboard_mechanism(provider, target);
+    let route = keyboard_route(provider, target);
     let controller = provider
         .open(target, &InputOpenRequest::new(), &context())
         .expect("input contract: opening an optional-input controller must succeed");
@@ -274,12 +263,12 @@ pub fn two_sequences_do_not_interleave_on_one_controller(
     let (first, second) = thread::scope(|scope| {
         let occupier = scope.spawn(|| {
             controller.execute(
-                &InputRequest::new(target, occupying(), DeliveryPlan::require(mechanism)),
+                &InputRequest::new(target, occupying(), DeliveryPlan::require(route)),
                 &generous,
             )
         });
         let waiting = controller.execute(
-            &InputRequest::new(target, keystroke(), DeliveryPlan::require(mechanism)),
+            &InputRequest::new(target, keystroke(), DeliveryPlan::require(route)),
             &generous,
         );
         (
@@ -305,35 +294,32 @@ pub fn two_sequences_do_not_interleave_on_one_controller(
         "input contract: a sequence with a generous deadline must finish"
     );
     assert_eq!(
-        first.delivered(),
+        first.submitted(),
         occupying_events,
-        "input contract: each receipt counts its own sequence, not what overlapped it"
+        "input contract: each receipt counts its own sequence"
     );
     assert_eq!(
-        second.delivered(),
+        second.submitted(),
         keystroke_events,
-        "input contract: each receipt counts its own sequence, not what overlapped it"
+        "input contract: each receipt counts its own sequence"
     );
     controller.close(&context()).expect("close");
 }
 
-/// A sequence that cannot start delivers nothing.
+/// A sequence that cannot start submits nothing.
 ///
-/// The deterministic half of the rule about a sequence that never acquires the
-/// controller: an operation that is already past its deadline cannot start,
-/// whatever else is or is not running. The contended half is exercised where it can
-/// be made deterministic — against the admission gate itself, where one thread
-/// holds the controller and the same thread observes the refusal.
+/// The deterministic case uses an already-expired operation. An Adapter may
+/// return the interruption as an operation error or as an unexecuted receipt;
+/// neither shape may claim route selection or a submitted logical event.
 ///
 /// # Panics
 ///
-/// Panics when the sequence delivers an event, or reports anything but an
-/// unexecuted outcome or an expired operation.
-pub fn a_sequence_that_cannot_start_delivers_nothing(
+/// Panics when any logical event is submitted or the deadline is hidden.
+pub fn a_sequence_that_cannot_start_submits_nothing(
     provider: &dyn InputProvider,
     target: TargetId,
 ) {
-    let mechanism = keyboard_mechanism(provider, target);
+    let route = keyboard_route(provider, target);
     let controller = provider
         .open(target, &InputOpenRequest::new(), &context())
         .expect("input contract: opening an optional-input controller must succeed");
@@ -342,35 +328,21 @@ pub fn a_sequence_that_cannot_start_delivers_nothing(
         .expect("representable");
 
     let outcome = controller.execute(
-        &InputRequest::new(target, keystroke(), DeliveryPlan::require(mechanism)),
+        &InputRequest::new(target, keystroke(), DeliveryPlan::require(route)),
         &expired,
     );
 
     match outcome {
-        // Either shape is truthful: an adapter may report the interruption as the
-        // operation's error, or as an unexecuted receipt. What it may not do is
-        // deliver an event.
         Err(error) => assert_eq!(
             error.status(),
             Status::DeadlineExceeded,
             "input contract: a sequence that never ran reports why it did not"
         ),
         Ok(receipt) => {
-            assert_eq!(
-                receipt.outcome(),
-                SequenceOutcome::Unexecuted,
-                "input contract: a sequence that could not start delivered nothing"
-            );
-            assert_eq!(
-                receipt.delivered(),
-                0,
-                "input contract: an unexecuted receipt counts no events"
-            );
-            assert_eq!(
-                receipt.delivery(),
-                None,
-                "input contract: nothing was delivered, so no mechanism delivered it"
-            );
+            assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+            assert_eq!(receipt.submitted(), 0);
+            assert_eq!(receipt.selected_route(), None);
+            assert!(!receipt.possible_native_effect());
         }
     }
     controller.close(&context()).expect("close");
@@ -383,7 +355,7 @@ pub fn a_sequence_that_cannot_start_delivers_nothing(
 /// Panics when a closed controller admits a sequence, when close is not
 /// idempotent, or when the lifecycle does not reach closed.
 pub fn close_stops_admission_and_is_idempotent(provider: &dyn InputProvider, target: TargetId) {
-    let mechanism = keyboard_mechanism(provider, target);
+    let mechanism = keyboard_route(provider, target);
     let controller = provider
         .open(target, &InputOpenRequest::new(), &context())
         .expect("input contract: opening an optional-input controller must succeed");

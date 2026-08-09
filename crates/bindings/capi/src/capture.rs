@@ -16,12 +16,14 @@
 use std::mem::size_of;
 
 use mado_pilot::{
-    ClipPolicy, CoordinateSpace, CpuMapping, Engine, Frame, FrameRequest, FrameStamp, OpenRequest,
-    PixelRect, Rect, Session, SessionRequest, TargetId,
+    ClipPolicy, CoordinateSpace, CpuMapping, Frame, FrameRequest, FrameStamp, MappingObserver,
+    OpenRequest, PixelRect, Rect, Session, SessionRequest, TargetId,
 };
 
 use crate::boundary::{self, Out, Versioned, covers, declared, inputs, prefixes};
-use crate::engine::{TargetList, madopilot_engine_t, madopilot_target_list_t, next_stream, report};
+use crate::engine::{
+    EngineHandle, TargetList, madopilot_engine_t, madopilot_target_list_t, next_stream, report,
+};
 use crate::error::{self, Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
@@ -111,11 +113,16 @@ impl SessionHandle {
 pub(crate) struct FrameHandle {
     frame: Frame,
     stream: u64,
+    mapping_observer: MappingObserver,
 }
 
 impl FrameHandle {
-    pub(crate) const fn new(frame: Frame, stream: u64) -> Self {
-        Self { frame, stream }
+    pub(crate) const fn new(frame: Frame, stream: u64, mapping_observer: MappingObserver) -> Self {
+        Self {
+            frame,
+            stream,
+            mapping_observer,
+        }
     }
 
     pub(crate) const fn frame(&self) -> &Frame {
@@ -405,7 +412,7 @@ pub(crate) fn session_open(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the function signature is the frozen ABI 1.1 table entry"
+    reason = "the function signature is the accepted ABI 1.2 table entry"
 )]
 pub(crate) fn session_open_with_input(
     engine: *const madopilot_engine_t,
@@ -452,7 +459,7 @@ fn run_session_open(
     out_session: *mut *mut madopilot_session_t,
 ) -> Result<(), Fault> {
     // SAFETY: the caller keeps both handles retained for the call.
-    let Some(engine) = (unsafe { handle::borrow::<Engine>(engine) }) else {
+    let Some(engine) = (unsafe { handle::borrow::<EngineHandle>(engine) }) else {
         return Err(Fault::abi("`engine` is null"));
     };
     // SAFETY: as above.
@@ -522,6 +529,7 @@ fn run_session_open(
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
+    engine.register_stream(session.stream(), stream);
 
     let input_available = session.accepts_input();
     let input_descriptor = crate::input::descriptor(
@@ -712,7 +720,7 @@ fn run_session_frame(
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
 
-    let payload = FrameHandle::new(frame, session.stream);
+    let payload = FrameHandle::new(frame, session.stream, session.session.mapping_observer());
     // SAFETY: `out_frame` was validated by the entry before any work began.
     unsafe { out_frame.write(handle::into_raw(payload)) };
 
@@ -850,13 +858,13 @@ fn run_frame_map(
     let mapping = if declared!(request, madopilot_map_request_t, MADOPILOT_MAP_HAS_REGION) {
         let region = source_rect(request.region)?;
         let policy: ClipPolicy = clip_policy(request.clip_policy)?;
-        let view = frame
-            .frame
-            .view(region, policy)
-            .map_err(|fault| Fault::from_error(&fault.into(), MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
-        view.map(format, context.inner())
+        frame
+            .mapping_observer
+            .map_region(&frame.frame, region, policy, format, context.inner())
     } else {
-        frame.frame.map(format, context.inner())
+        frame
+            .mapping_observer
+            .map_frame(&frame.frame, format, context.inner())
     }
     .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
     hooks::reach(hooks::Site::AfterTemporary);

@@ -14,10 +14,11 @@
 //! nothing is reordered, removed, repurposed, or reserved as a null slot for
 //! work that does not exist yet. The complete ABI 1.0 prefix runs from
 //! information a caller needs before it has anything else through the dependency
-//! order of everything it could then do; ABI 1.1 appends the native slice.
+//! order of everything it could then do; ABI 1.2 replaces the unreleased 1.1
+//! draft with the native input and bounded diagnostic slice.
 //!
 //! **The order is frozen for ABI major 1** by ADR 0007 for the complete 1.0
-//! prefix and ADR 0017 for the additive 1.1 suffix. No entry moves and none is
+//! prefix and ADR 0023 for the additive 1.2 suffix. No entry moves and none is
 //! removed; a later minor appends to the end and raises `MADOPILOT_ABI_MINOR`.
 //!
 //! # Where the unsafe boundary is
@@ -47,9 +48,9 @@ pub const MADOPILOT_ABI_MAJOR: u32 = 1;
 
 /// The ABI minor version this library implements.
 ///
-/// ABI 1.1 appends native capability, permission, and session-input entries
-/// after the complete frozen ABI 1.0 prefix.
-pub const MADOPILOT_ABI_MINOR: u32 = 1;
+/// ABI 1.2 preserves the complete released 1.0 prefix and replaces the
+/// unreleased 1.1 draft with the native input and bounded diagnostic surface.
+pub const MADOPILOT_ABI_MINOR: u32 = 2;
 
 /// The library package version, for [`madopilot_build_info_t::library_version`].
 const LIBRARY_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -375,18 +376,14 @@ table! {
         out_match: *mut crate::types::madopilot_match_t,
     ) => crate::matching::result_match;
 
-    /// Opens capture and input together without changing the frozen capture
-    /// request's size or alignment.
-    session_open_with_input(
-        engine: *const crate::engine::madopilot_engine_t,
-        targets: *const crate::engine::madopilot_target_list_t,
-        index: usize,
-        request: *const crate::types::madopilot_open_request_t,
-        input_request: *const crate::types::madopilot_input_open_request_t,
+    /// Builds any source kind with explicit engine-wide options.
+    engine_create_with_options(
+        source: *const crate::types::madopilot_source_t,
+        options: *const crate::types::madopilot_engine_options_t,
         operation: *const crate::types::madopilot_operation_t,
-        out_session: *mut *mut crate::capture::madopilot_session_t,
+        out_engine: *mut *mut crate::engine::madopilot_engine_t,
         out_error: *mut *mut crate::error::madopilot_error_t,
-    ) => crate::capture::session_open_with_input;
+    ) => crate::engine::create_with_options;
     /// Reports engine-wide native input and permission-probe capabilities.
     engine_capabilities(
         engine: *const crate::engine::madopilot_engine_t,
@@ -400,12 +397,14 @@ table! {
         out_permission: *mut crate::types::madopilot_permission_t,
         out_error: *mut *mut crate::error::madopilot_error_t,
     ) => crate::input::engine_permission;
-    /// Reports the native capability of one target-list entry.
-    target_list_capability(
+    /// Reports one operation/route capability pair for a discovered target.
+    target_list_input_capability(
         targets: *const crate::engine::madopilot_target_list_t,
         index: usize,
-        out_capability: *mut crate::types::madopilot_target_capability_t,
-    ) => crate::input::target_list_capability;
+        operation: crate::types::madopilot_input_operation_kind_t,
+        delivery: crate::types::madopilot_input_delivery_t,
+        out_capability: *mut crate::types::madopilot_input_capability_t,
+    ) => crate::input::target_list_input_capability;
     /// Queries one target's input descriptor without opening it.
     engine_input_descriptor(
         engine: *const crate::engine::madopilot_engine_t,
@@ -415,19 +414,92 @@ table! {
         out_descriptor: *mut crate::types::madopilot_input_descriptor_t,
         out_error: *mut *mut crate::error::madopilot_error_t,
     ) => crate::input::engine_input_descriptor;
+    /// Opens capture and input together without changing the frozen capture request.
+    session_open_with_input(
+        engine: *const crate::engine::madopilot_engine_t,
+        targets: *const crate::engine::madopilot_target_list_t,
+        index: usize,
+        request: *const crate::types::madopilot_open_request_t,
+        input_request: *const crate::types::madopilot_input_open_request_t,
+        operation: *const crate::types::madopilot_operation_t,
+        out_session: *mut *mut crate::capture::madopilot_session_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::capture::session_open_with_input;
     /// Reports the immutable input descriptor accepted by an open session.
     session_input_descriptor(
         session: *const crate::capture::madopilot_session_t,
         out_descriptor: *mut crate::types::madopilot_input_descriptor_t,
     ) => crate::input::session_input_descriptor;
-    /// Sends one bounded input sequence and returns its direct receipt.
+    /// Sends one bounded sequence and returns an immutable owned receipt.
     session_send_input(
         session: *const crate::capture::madopilot_session_t,
         request: *const crate::types::madopilot_input_request_t,
         operation: *const crate::types::madopilot_operation_t,
-        out_receipt: *mut crate::types::madopilot_input_receipt_t,
+        out_receipt: *mut *mut crate::input::madopilot_input_receipt_t,
         out_error: *mut *mut crate::error::madopilot_error_t,
     ) => crate::input::session_send_input;
+    /// Adds one receipt reference. Null is a no-op.
+    input_receipt_retain(
+        receipt: *const crate::input::madopilot_input_receipt_t,
+    ) => crate::input::receipt_retain;
+    /// Drops one receipt reference. Null is a no-op.
+    input_receipt_release(
+        receipt: *mut crate::input::madopilot_input_receipt_t,
+    ) => crate::input::receipt_release;
+    /// Reports the fixed fields of an immutable receipt.
+    input_receipt_info(
+        receipt: *const crate::input::madopilot_input_receipt_t,
+        out_info: *mut crate::types::madopilot_input_receipt_info_t,
+    ) => crate::input::receipt_info;
+    /// Reports the number of immutable route attempts.
+    input_receipt_attempt_count(
+        receipt: *const crate::input::madopilot_input_receipt_t,
+        out_count: *mut usize,
+    ) => crate::input::receipt_attempt_count;
+    /// Reports one route attempt by index.
+    input_receipt_attempt_at(
+        receipt: *const crate::input::madopilot_input_receipt_t,
+        index: usize,
+        out_attempt: *mut crate::types::madopilot_input_attempt_t,
+    ) => crate::input::receipt_attempt_at;
+    /// Takes the one independent diagnostic reader; null means unavailable.
+    engine_take_diagnostic_reader(
+        engine: *const crate::engine::madopilot_engine_t,
+        out_reader: *mut *mut crate::diagnostic::madopilot_diagnostic_reader_t,
+    ) => crate::diagnostic::take_reader;
+    /// Adds one diagnostic-reader reference. Null is a no-op.
+    diagnostic_reader_retain(
+        reader: *const crate::diagnostic::madopilot_diagnostic_reader_t,
+    ) => crate::diagnostic::reader_retain;
+    /// Drops one diagnostic-reader reference. Null is a no-op.
+    diagnostic_reader_release(
+        reader: *mut crate::diagnostic::madopilot_diagnostic_reader_t,
+    ) => crate::diagnostic::reader_release;
+    /// Drains records and losses without producing a diagnostic record itself.
+    diagnostic_reader_drain(
+        reader: *const crate::diagnostic::madopilot_diagnostic_reader_t,
+        out_state: *mut crate::types::madopilot_diagnostic_drain_state_t,
+        out_batch: *mut *mut crate::diagnostic::madopilot_diagnostic_batch_t,
+    ) => crate::diagnostic::reader_drain;
+    /// Adds one diagnostic-batch reference. Null is a no-op.
+    diagnostic_batch_retain(
+        batch: *const crate::diagnostic::madopilot_diagnostic_batch_t,
+    ) => crate::diagnostic::batch_retain;
+    /// Drops one diagnostic-batch reference. Null is a no-op.
+    diagnostic_batch_release(
+        batch: *mut crate::diagnostic::madopilot_diagnostic_batch_t,
+    ) => crate::diagnostic::batch_release;
+    /// Reports one immutable batch's count and exact losses.
+    diagnostic_batch_info(
+        batch: *const crate::diagnostic::madopilot_diagnostic_batch_t,
+        out_info: *mut crate::types::madopilot_diagnostic_batch_info_t,
+    ) => crate::diagnostic::batch_info;
+    /// Reports one diagnostic record by index.
+    diagnostic_batch_record_at(
+        batch: *const crate::diagnostic::madopilot_diagnostic_batch_t,
+        index: usize,
+        out_record: *mut crate::types::madopilot_diagnostic_record_t,
+    ) => crate::diagnostic::batch_record_at;
 }
 
 /// `sizeof` the complete frozen ABI 1.0 function-table prefix.
@@ -436,7 +508,7 @@ table! {
     reason = "guarded against the only value that could truncate"
 )]
 pub const MADOPILOT_API_SIZE_PHASE1: u32 = {
-    let size = std::mem::offset_of!(madopilot_api_t, session_open_with_input);
+    let size = std::mem::offset_of!(madopilot_api_t, engine_create_with_options);
     assert!(
         size <= u32::MAX as usize,
         "the ABI 1.0 table prefix fits a u32 size"
@@ -523,7 +595,11 @@ pub unsafe extern "C" fn madopilot_get_api(
         unsafe { out_api.write(std::ptr::null()) };
         hooks::reach(hooks::Site::Entry);
 
-        if abi_major != MADOPILOT_ABI_MAJOR || min_abi_minor > MADOPILOT_ABI_MINOR {
+        if abi_major != MADOPILOT_ABI_MAJOR
+            || min_abi_minor > MADOPILOT_ABI_MINOR
+            || min_abi_minor == 1
+            || (min_abi_minor == 0 && caller_struct_size > MADOPILOT_API_SIZE_PHASE1 as usize)
+        {
             return MADOPILOT_STATUS_UNSUPPORTED;
         }
         if caller_struct_size < MADOPILOT_API_SIZE_INFORMATION as usize {
@@ -679,6 +755,7 @@ mod tests {
             flags: 0,
             deadline_nanos: 0,
             cancellation: ptr::null(),
+            activity_tag: 0,
         }
     }
 

@@ -18,7 +18,8 @@ use mado_pilot_capture::{
 use mado_pilot_core::{
     CapabilitySupport, DiagnosticCategory, IdentityIssuer, InputCapability, InputDelivery,
     InputOperationKind, Lifecycle, OperationContext, PermissionKind, PermissionProbe,
-    PermissionState, PixelExtent, ProviderId, Status, TargetCapability, TargetKind,
+    PermissionState, PixelExtent, ProviderId, Status, SubmissionEvidence, TargetCapability,
+    TargetKind,
 };
 use mado_pilot_testkit::{
     Answer, ControlledCapture, ControlledProducer, Conversion, ScriptedPermissionProbe,
@@ -53,9 +54,15 @@ fn a_caller_discovers_targets_with_provider_qualified_identities_and_capabilitie
         InputCapability::none()
             .with_pair(
                 InputOperationKind::Keyboard,
-                InputDelivery::BackgroundTarget,
+                InputDelivery::WindowMessage,
+                CapabilitySupport::Unknown,
+                SubmissionEvidence::TargetQueueAdmission,
             )
-            .with_permission(PermissionKind::InputControl),
+            .with_permission(
+                InputOperationKind::Keyboard,
+                InputDelivery::WindowMessage,
+                PermissionKind::InputControl,
+            ),
     ));
     let display = provider
         .add_target(
@@ -73,16 +80,29 @@ fn a_caller_discovers_targets_with_provider_qualified_identities_and_capabilitie
     }
     let window = &targets[0];
     assert_eq!(window.capability().kind(), Some(TargetKind::Window));
-    assert!(window.capability().input().supports(
-        InputOperationKind::Keyboard,
-        InputDelivery::BackgroundTarget
-    ));
-    assert!(
-        !window
+    assert_eq!(
+        window
             .capability()
             .input()
-            .supports(InputOperationKind::Keyboard, InputDelivery::System),
-        "the pair that was advertised is the pair that is claimed"
+            .pair(InputOperationKind::Keyboard, InputDelivery::WindowMessage)
+            .support(),
+        CapabilitySupport::Unknown
+    );
+    assert!(
+        window
+            .capability()
+            .input()
+            .pair(InputOperationKind::Keyboard, InputDelivery::WindowMessage)
+            .may_attempt()
+    );
+    assert_eq!(
+        window
+            .capability()
+            .input()
+            .pair(InputOperationKind::Keyboard, InputDelivery::System)
+            .support(),
+        CapabilitySupport::Unsupported,
+        "the pair that was advertised is the only attemptable pair"
     );
     assert!(
         !targets[1].capability().input().is_available(),

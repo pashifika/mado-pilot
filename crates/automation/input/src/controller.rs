@@ -76,20 +76,20 @@ impl InputOpenRequest {
         self
     }
 
-    /// Requires one operation and delivery combination.
+    /// Requires one operation and route combination.
     #[must_use]
-    pub fn requiring(mut self, kind: InputOperationKind, delivery: InputDelivery) -> Self {
-        let pair = (kind, delivery);
+    pub fn requiring(mut self, kind: InputOperationKind, route: InputDelivery) -> Self {
+        let pair = (kind, route);
         if !self.required.contains(&pair) {
             self.required.push(pair);
         }
         self
     }
 
-    /// Prefers one operation and delivery combination.
+    /// Prefers one operation and route combination.
     #[must_use]
-    pub fn preferring(mut self, kind: InputOperationKind, delivery: InputDelivery) -> Self {
-        let pair = (kind, delivery);
+    pub fn preferring(mut self, kind: InputOperationKind, route: InputDelivery) -> Self {
+        let pair = (kind, route);
         if !self.preferred.contains(&pair) {
             self.preferred.push(pair);
         }
@@ -118,16 +118,16 @@ impl InputOpenRequest {
     ///
     /// # Errors
     ///
-    /// Returns [`InputFault::UnsupportedCombination`] when a required combination is
-    /// absent, and when input is required at all and none is available. A preferred
-    /// combination that is absent is not an error: that is what preferring means,
-    /// and the accepted descriptor reports what is there.
+    /// Returns [`InputFault::UnsupportedCombination`] when a required pair cannot
+    /// be attempted, and when input is required at all and none is available. An
+    /// unknown pair is attemptable; a preferred pair that is absent is not an
+    /// error, and the accepted descriptor reports what is there.
     pub fn check(&self, capability: InputCapability) -> Result<()> {
         if self.requirement.is_required() && !capability.is_available() {
             return Err(InputFault::UnsupportedCombination.into());
         }
-        for (kind, delivery) in &self.required {
-            if !capability.supports(*kind, *delivery) {
+        for (kind, route) in &self.required {
+            if !capability.pair(*kind, *route).may_attempt() {
                 return Err(InputFault::UnsupportedCombination.into());
             }
         }
@@ -233,8 +233,8 @@ pub trait InputController: Debug + Send + Sync {
     /// Executes `request`, returning exactly one receipt.
     ///
     /// An admitted sequence always produces a receipt, including when it fails
-    /// part-way: the events already delivered cannot be taken back, so the
-    /// receipt is how far it got rather than whether it worked.
+    /// part-way: events that may already have native effect cannot be taken back,
+    /// so the receipt records how far the route got rather than application effect.
     ///
     /// The operation context bounds the sequence. It does **not** bound the
     /// releases that follow a partial failure: those run under the request's
@@ -248,15 +248,15 @@ pub trait InputController: Debug + Send + Sync {
     ///
     /// Returns an error only when no receipt can be produced — a request that
     /// fails admission, a closed controller, or an operation that was already
-    /// interrupted. Once a sequence is admitted, a delivery failure is reported
-    /// inside the receipt and not as an error, because an error would discard the
-    /// count of what was delivered.
+    /// interrupted. Once a sequence is admitted, a submission failure is reported
+    /// inside the receipt and not as an error, because an error would discard its
+    /// route-threshold accounting.
     fn execute(&self, request: &InputRequest, operation: &OperationContext)
     -> Result<InputReceipt>;
 
     /// Stops admitting sequences and drains the one in flight.
     ///
-    /// Idempotent. A retried close neither delivers an event nor repeats cleanup.
+    /// Idempotent. A retried close neither submits an event nor repeats cleanup.
     ///
     /// # Errors
     ///
@@ -459,8 +459,8 @@ mod tests {
 
     use super::{Admission, InputOpenRequest, InputRequirement, check_provider_pair};
     use mado_pilot_core::{
-        CancellationToken, InputCapability, InputDelivery, InputOperationKind, Lifecycle,
-        OperationContext, ProviderId, Status,
+        CancellationToken, CapabilitySupport, InputCapability, InputDelivery, InputOperationKind,
+        Lifecycle, OperationContext, ProviderId, Status, SubmissionEvidence,
     };
 
     const WINDOWS: ProviderId = ProviderId::new("windows");
@@ -500,18 +500,24 @@ mod tests {
 
     #[test]
     fn a_required_combination_must_be_present_and_a_preferred_one_need_not_be() {
-        let capability =
-            InputCapability::none().with_pair(InputOperationKind::Keyboard, InputDelivery::System);
+        let capability = InputCapability::none().with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            CapabilitySupport::Unknown,
+            SubmissionEvidence::SystemInputAdmission,
+        );
         let request = InputOpenRequest::new()
             .requiring(InputOperationKind::Keyboard, InputDelivery::System)
-            .preferring(InputOperationKind::Pointer, InputDelivery::BackgroundTarget);
+            .preferring(InputOperationKind::Pointer, InputDelivery::WindowMessage);
 
-        assert!(request.check(capability).is_ok());
+        assert!(
+            request.check(capability).is_ok(),
+            "unknown remains attemptable"
+        );
         assert_eq!(request.required().len(), 1);
         assert_eq!(request.preferred().len(), 1);
 
-        let stricter =
-            request.requiring(InputOperationKind::Pointer, InputDelivery::BackgroundTarget);
+        let stricter = request.requiring(InputOperationKind::Pointer, InputDelivery::WindowMessage);
         assert_eq!(
             stricter
                 .check(capability)

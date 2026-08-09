@@ -25,7 +25,7 @@ use super::{
     contains_desktop_point, extent_from_points, focus_wait, key_flag, modifier_flag, native_button,
     placement_for, release_system, resolve_key_code, text_chunks,
 };
-use crate::input::{DeliveryFailure, InputDriver, MacosInputController, input_capability};
+use crate::input::{InputDriver, MacosInputController, SubmissionFailure, input_capability};
 use crate::shim::{self, ShimStatus};
 
 /// One recorded post, with the flags it would have carried.
@@ -131,7 +131,7 @@ impl SystemCommitSource for FakeSource {
         match status {
             ShimStatus::TargetLost => InputFault::TargetLost,
             ShimStatus::PermissionDenied => InputFault::NotAuthorized,
-            _ => InputFault::DeliveryFailed,
+            _ => InputFault::SubmissionFailed,
         }
     }
 }
@@ -173,7 +173,7 @@ impl InputDriver for RevokingNativePathDriver {
         }
     }
 
-    fn deliver(
+    fn submit(
         &self,
         _delivery: InputDelivery,
         focus: FocusPolicy,
@@ -181,14 +181,14 @@ impl InputDriver for RevokingNativePathDriver {
         _geometry: PointerGeometry,
         state: &mut DriverState,
         operation: &OperationContext,
-    ) -> Result<(), DeliveryFailure> {
+    ) -> Result<(), SubmissionFailure> {
         let mut deliveries = self.deliveries.lock().expect("uncontended");
         let index = *deliveries;
         *deliveries += 1;
         drop(deliveries);
 
         if index > 0 {
-            return Err(DeliveryFailure::before_event(InputFault::NotAuthorized));
+            return Err(SubmissionFailure::before_event(InputFault::NotAuthorized));
         }
         assert_eq!(event, &InputEvent::KeyPress(Key::Modifier(Modifier::Meta)));
         commit_prepared(
@@ -385,7 +385,7 @@ fn a_cleanup_release_is_posted_without_revalidating_focus() {
 }
 
 #[test]
-fn revoked_accessibility_after_a_delivered_press_leaves_cleanup_truthfully_incomplete() {
+fn revoked_accessibility_after_a_submitted_press_leaves_cleanup_truthfully_incomplete() {
     let target = target();
     let driver = Arc::new(RevokingNativePathDriver::default());
     let controller = MacosInputController::with_driver(
@@ -406,17 +406,17 @@ fn revoked_accessibility_after_a_delivered_press_leaves_cleanup_truthfully_incom
 
     let receipt = controller
         .execute(&request, &OperationContext::new())
-        .expect("partial native delivery returns a receipt");
+        .expect("possible partial native effect returns a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 1);
-    assert_eq!(receipt.failure(), Some(InputFault::NotAuthorized));
+    assert_eq!(receipt.submitted(), 1);
+    assert_eq!(receipt.fault(), Some(InputFault::NotAuthorized));
     assert_eq!(receipt.cleanup(), CleanupState::Incomplete);
     assert_eq!(receipt.cleanup_released(), 0);
     assert_eq!(
         driver.source.posts().len(),
         1,
-        "only the delivered press was posted"
+        "only the submitted press was posted"
     );
     assert_eq!(driver.source.cleanup_authorizations(), 1);
     assert_eq!(
@@ -594,7 +594,7 @@ fn a_post_that_partly_reached_the_target_reports_effect_it_cannot_take_back() {
     .expect_err("the post failed");
 
     assert!(failure.current_event_may_have_effect);
-    assert_eq!(failure.fault, InputFault::DeliveryFailed);
+    assert_eq!(failure.fault, InputFault::SubmissionFailed);
 }
 
 #[test]

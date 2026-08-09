@@ -6,7 +6,7 @@
 //! an engine was built from is the facade's decision, and an engine cannot
 //! observe or change it.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mado_pilot_assets::{AssetFault, AssetLimits, AssetPackage, PackageLoader, PackageSource};
@@ -21,6 +21,10 @@ use mado_pilot_input::{
 };
 use mado_pilot_vision::{BackendDescriptor, Matcher, PreparedTemplate, TemplateSource};
 
+use crate::diagnostic::{
+    DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, DiagnosticReader,
+    DiagnosticSink, LifecycleDiagnostic, ObservedOperation, PermissionDiagnostic,
+};
 use crate::session::Session;
 
 /// How long the release of an already-opened capture session or input
@@ -127,6 +131,35 @@ impl From<OpenRequest> for SessionRequest {
     }
 }
 
+/// Engine-wide optional runtime behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EngineOptions {
+    diagnostics: DiagnosticOptions,
+}
+
+impl EngineOptions {
+    /// Returns the allocation-free default.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            diagnostics: DiagnosticOptions::off(),
+        }
+    }
+
+    /// Enables the validated diagnostic stream configuration.
+    #[must_use]
+    pub const fn with_diagnostics(mut self, diagnostics: DiagnosticOptions) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
+    /// Returns the selected diagnostic stream configuration.
+    #[must_use]
+    pub const fn diagnostics(self) -> DiagnosticOptions {
+        self.diagnostics
+    }
+}
+
 /// An engine over one capture adapter, one matching backend, and the optional
 /// input and permission adapters that belong to the same provider.
 #[derive(Debug)]
@@ -137,6 +170,8 @@ pub struct Engine {
     loader: PackageLoader,
     input: Option<Arc<dyn InputProvider>>,
     permission: Option<Arc<dyn PermissionProbe>>,
+    diagnostics: Option<DiagnosticSink>,
+    diagnostic_reader: Mutex<Option<DiagnosticReader>>,
 }
 
 impl Engine {
@@ -151,6 +186,17 @@ impl Engine {
     /// Returns [`Status::InvalidArgument`] when the input provider or the
     /// permission probe reports a different provider than the capture adapter.
     pub fn new(wiring: EngineWiring) -> Result<Self, Error> {
+        Self::new_with_options(wiring, EngineOptions::new())
+    }
+
+    /// Builds an engine with explicit engine-wide behavior.
+    ///
+    /// The default [`Engine::new`] path keeps diagnostics fully disabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Status::InvalidArgument`] for mismatched providers.
+    pub fn new_with_options(wiring: EngineWiring, options: EngineOptions) -> Result<Self, Error> {
         let capture = wiring.capture.provider();
         if let Some(input) = wiring.input.as_ref() {
             check_provider_pair(capture, input.provider())?;
@@ -158,6 +204,10 @@ impl Engine {
         if let Some(permission) = wiring.permission.as_ref() {
             check_provider_pair(capture, permission.provider())?;
         }
+        let (diagnostics, reader) = match DiagnosticSink::create(options.diagnostics()) {
+            Some((sink, reader)) => (Some(sink), Some(reader)),
+            None => (None, None),
+        };
 
         Ok(Self {
             engine: wiring.engine,
@@ -166,6 +216,8 @@ impl Engine {
             loader: wiring.loader,
             input: wiring.input,
             permission: wiring.permission,
+            diagnostics,
+            diagnostic_reader: Mutex::new(reader),
         })
     }
 
@@ -190,6 +242,38 @@ impl Engine {
     pub const fn limits(&self) -> AssetLimits {
         self.loader.limits()
     }
+    /// Takes the engine's one independently owned diagnostic reader.
+    ///
+    /// Returns `None` when diagnostics are off or a reader was already taken.
+    /// Releasing a reader never changes operation behavior.
+    #[must_use]
+    pub fn take_diagnostic_reader(&self) -> Option<DiagnosticReader> {
+        self.diagnostic_reader
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+    fn observe(
+        &self,
+        operation: &OperationContext,
+        kind: DiagnosticOperationKind,
+    ) -> Result<Option<ObservedOperation>, Error> {
+        self.diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.observe(operation, kind))
+            .transpose()
+    }
+
+    fn normal(
+        &self,
+        observed: Option<ObservedOperation>,
+        operation: &OperationContext,
+        payload: impl FnOnce() -> DiagnosticPayload,
+    ) {
+        if let (Some(diagnostics), Some(observed)) = (&self.diagnostics, observed) {
+            diagnostics.normal(observed, operation, payload);
+        }
+    }
 
     /// Lists the targets this engine's capture adapter can currently capture.
     ///
@@ -198,6 +282,7 @@ impl Engine {
     /// Returns a capture failure when the configured source cannot be read, and
     /// the operation's terminal outcome when cancellation or the deadline wins.
     pub fn discover(&self, operation: &OperationContext) -> Result<Vec<TargetDescription>, Error> {
+        let _observed = self.observe(operation, DiagnosticOperationKind::Discovery)?;
         self.capture.discover(operation)
     }
 
@@ -247,6 +332,7 @@ impl Engine {
         target: TargetId,
         operation: &OperationContext,
     ) -> Result<InputDescriptor, Error> {
+        let _observed = self.observe(operation, DiagnosticOperationKind::InputDescription)?;
         let attempt = Operation::admit(operation)?;
         let descriptor = match self.input.as_ref() {
             Some(input) => input.describe(target, operation)?,
@@ -266,7 +352,33 @@ impl Engine {
     /// state, the probe's own failure when the read could not run, and the
     /// operation's terminal outcome when cancellation or the deadline wins.
     pub fn permissions(&self, operation: &OperationContext) -> Result<PermissionReport, Error> {
-        self.probe()?.report(operation)
+        let observed = self.observe(operation, DiagnosticOperationKind::Permission)?;
+        let result = self.probe().and_then(|probe| probe.report(operation));
+        match &result {
+            Ok(report) => {
+                for outcome in [report.capture(), report.input()] {
+                    self.normal(observed, operation, || {
+                        DiagnosticPayload::Permission(PermissionDiagnostic {
+                            permission: outcome.kind(),
+                            state: Some(outcome.state()),
+                            fault: None,
+                        })
+                    });
+                }
+            }
+            Err(error) => {
+                for permission in PermissionKind::ALL {
+                    self.normal(observed, operation, || {
+                        DiagnosticPayload::Permission(PermissionDiagnostic {
+                            permission,
+                            state: None,
+                            fault: Some(error.status()),
+                        })
+                    });
+                }
+            }
+        }
+        result
     }
 
     /// Reads one authorization state without asking the user for anything.
@@ -279,7 +391,16 @@ impl Engine {
         kind: PermissionKind,
         operation: &OperationContext,
     ) -> Result<PermissionOutcome, Error> {
-        self.probe()?.probe(kind, operation)
+        let observed = self.observe(operation, DiagnosticOperationKind::Permission)?;
+        let result = self.probe().and_then(|probe| probe.probe(kind, operation));
+        self.normal(observed, operation, || {
+            DiagnosticPayload::Permission(PermissionDiagnostic {
+                permission: kind,
+                state: result.as_ref().ok().map(|outcome| outcome.state()),
+                fault: result.as_ref().err().map(|error| error.status()),
+            })
+        });
+        result
     }
 
     fn probe(&self) -> Result<&Arc<dyn PermissionProbe>, Error> {
@@ -349,32 +470,51 @@ impl Engine {
         request: &SessionRequest,
         operation: &OperationContext,
     ) -> Result<Session, Error> {
-        let attempt = Operation::admit(operation)?;
-        let capture = self.capture.open(target, request.capture(), operation)?;
+        let observed = self.observe(operation, DiagnosticOperationKind::SessionOpen)?;
+        let result = (|| {
+            let attempt = Operation::admit(operation)?;
+            let capture = self.capture.open(target, request.capture(), operation)?;
 
-        // Capture is committed from here, so every later refusal releases it.
-        let input = match request.input() {
-            None => None,
-            Some(open) => match self.open_input(target, open, operation) {
-                Ok(input) => input,
-                Err(error) => return Err(release_capture(&capture, error)),
-            },
-        };
+            // Capture is committed from here, so every later refusal releases it.
+            let input = match request.input() {
+                None => None,
+                Some(open) => match self.open_input(target, open, operation) {
+                    Ok(input) => input,
+                    Err(error) => return Err(release_capture(&capture, error)),
+                },
+            };
 
-        // Committed on the unit, with the session built afterwards. Building one
-        // is a pointer and a clone, so nothing is lost by doing it second, and
-        // this way the value the commit consumes is not the thing that needs
-        // closing if the commit refuses.
-        let interruption = match attempt.commit(()) {
-            Ok(()) => return Ok(Session::new(capture, self.matcher.clone(), input)),
-            Err(interruption) => interruption,
-        };
+            // Commit on the unit before building the cheap public session value.
+            let interruption = match attempt.commit(()) {
+                Ok(()) => {
+                    return Ok(Session::new(
+                        capture,
+                        self.matcher.clone(),
+                        input,
+                        self.diagnostics.clone(),
+                    ));
+                }
+                Err(interruption) => interruption,
+            };
 
-        let error = match input {
-            Some(controller) => release_controller(&controller, Error::from(interruption)),
-            None => Error::from(interruption),
-        };
-        Err(release_capture(&capture, error))
+            let error = match input {
+                Some(controller) => release_controller(&controller, Error::from(interruption)),
+                None => Error::from(interruption),
+            };
+            Err(release_capture(&capture, error))
+        })();
+        self.normal(observed, operation, || {
+            DiagnosticPayload::Lifecycle(LifecycleDiagnostic {
+                target: Some(target),
+                lifecycle: if result.is_ok() {
+                    mado_pilot_core::Lifecycle::Open
+                } else {
+                    mado_pilot_core::Lifecycle::Closed
+                },
+                fault: result.as_ref().err().map(|error| error.status()),
+            })
+        });
+        result
     }
 
     /// Establishes the input `request` asks for, or reports why it could not.
@@ -401,7 +541,7 @@ impl Engine {
     ) -> Result<Option<Arc<dyn InputController>>, Error> {
         let Some(provider) = self.input.as_ref() else {
             return if request.requirement().is_required() {
-                Err(InputFault::DeliveryUnavailable.into())
+                Err(InputFault::RouteUnavailable.into())
             } else {
                 Ok(None)
             };
@@ -471,7 +611,12 @@ impl Engine {
         source: &TemplateSource,
         operation: &OperationContext,
     ) -> Result<PreparedTemplate, Error> {
-        self.matcher.prepare(source, operation)
+        let _observed = self.observe(operation, DiagnosticOperationKind::TemplatePreparation)?;
+        let prepared = self.matcher.prepare(source, operation)?;
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.register_template(&prepared)?;
+        }
+        Ok(prepared)
     }
 
     /// Compiles the template `id` names in `package` for this engine's backend.
@@ -498,11 +643,15 @@ impl Engine {
         id: &str,
         operation: &OperationContext,
     ) -> Result<PreparedTemplate, Error> {
+        let _observed = self.observe(operation, DiagnosticOperationKind::TemplatePreparation)?;
         let mut attempt = Operation::admit(operation)?;
         let source = package.resolve_template(id)?;
         attempt.checkpoint()?;
 
         let prepared = self.matcher.prepare(&source, operation)?;
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.register_template(&prepared)?;
+        }
         Ok(attempt.commit(prepared)?)
     }
 }

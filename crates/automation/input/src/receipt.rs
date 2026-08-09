@@ -1,14 +1,13 @@
-//! What actually happened, for a sequence that was admitted.
+//! Immutable evidence of one input-submission sequence.
 //!
-//! Every admitted sequence produces exactly one receipt. That is the whole reason
-//! this type exists rather than a bare `Result`: an operating system cannot undo a
-//! delivered event, so "it failed" is not an answer a caller can act on. The
-//! receipt says which mechanism was used, how many events were delivered, which
-//! one was last, why it stopped, and what cleanup managed to release.
+//! Every admitted sequence produces exactly one receipt. Native submission and
+//! application effect are separate facts: a receipt records routes, submission
+//! thresholds, partial native effect, faults, and cleanup, but never claims that
+//! the target application consumed an event or changed visual state.
 
 use std::fmt;
 
-use mado_pilot_core::{InputDelivery, TargetId};
+use mado_pilot_core::{InputAddressScope, InputDelivery, SubmissionEvidence, TargetId};
 
 use crate::fault::InputFault;
 
@@ -16,24 +15,20 @@ use crate::fault::InputFault;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum SequenceOutcome {
-    /// Every event was delivered.
+    /// Every logical event reached the selected route's submission threshold.
     Complete,
-    /// Some input may have reached the target and then the sequence stopped.
+    /// Some input may have native effect and then the sequence stopped.
     ///
-    /// `delivered` still counts only complete logical events. This outcome may
-    /// therefore accompany zero completed events when a platform accepted part
-    /// of the first event and cannot undo or precisely observe that native work.
+    /// `submitted` counts only complete logical events. This outcome may accompany
+    /// zero submitted events when part of the first event's native representation
+    /// may have had an effect.
     Partial,
-    /// No event was delivered.
-    ///
-    /// The honest outcome for a sequence whose deadline passed while it waited for
-    /// the controller: nothing happened, and the caller may retry without
-    /// wondering what half-took effect.
+    /// No event or partial native representation may have had an effect.
     Unexecuted,
 }
 
 impl SequenceOutcome {
-    /// Returns a stable lowercase slug, for logs and the C ABI mapping.
+    /// Returns a stable lowercase slug, for diagnostics and the C ABI mapping.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -60,17 +55,13 @@ pub enum CleanupState {
     Complete,
     /// Cleanup ran and a release it attempted did not succeed.
     ///
-    /// A button or modifier may still be held, which the caller has to know: the
-    /// user's next click becomes a drag, and the next keystroke carries a modifier.
-    /// The platform refused what cleanup asked of it, so repeating the same release
-    /// is unlikely to do better.
+    /// A button or modifier may still be held. Repeating the same release is
+    /// unlikely to help because the platform refused it.
     Incomplete,
     /// Cleanup stopped at its own bound with state still held.
     ///
-    /// Distinct from [`CleanupState::Incomplete`], and the distinction is
-    /// actionable: nothing refused these releases, they were never attempted. A
-    /// caller that must not leave a modifier held can send them itself, which is
-    /// exactly the wrong conclusion to draw from a platform that said no.
+    /// Distinct from [`CleanupState::Incomplete`]: these releases were not
+    /// attempted, so a caller may choose to submit them itself.
     Exhausted,
 }
 
@@ -81,7 +72,7 @@ impl CleanupState {
         matches!(self, CleanupState::Incomplete | CleanupState::Exhausted)
     }
 
-    /// Returns a stable lowercase slug, for logs and the C ABI mapping.
+    /// Returns a stable lowercase slug, for diagnostics and the C ABI mapping.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -99,107 +90,232 @@ impl fmt::Display for CleanupState {
     }
 }
 
-/// The one truthful account of an admitted sequence.
+/// One immutable route attempt in caller order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InputAttempt {
+    route: InputDelivery,
+    address_scope: InputAddressScope,
+    outcome: SequenceOutcome,
+    submitted: usize,
+    last_submitted: Option<usize>,
+    evidence: Option<SubmissionEvidence>,
+    partial_native_effect: bool,
+    fault: Option<InputFault>,
+}
+
+impl InputAttempt {
+    /// Records a route refused before any native effect was possible.
+    #[must_use]
+    pub const fn refused(route: InputDelivery, fault: InputFault) -> Self {
+        Self {
+            route,
+            address_scope: route.address_scope(),
+            outcome: SequenceOutcome::Unexecuted,
+            submitted: 0,
+            last_submitted: None,
+            evidence: None,
+            partial_native_effect: false,
+            fault: Some(fault),
+        }
+    }
+
+    const fn complete(
+        route: InputDelivery,
+        evidence: SubmissionEvidence,
+        submitted: usize,
+    ) -> Self {
+        Self {
+            route,
+            address_scope: route.address_scope(),
+            outcome: SequenceOutcome::Complete,
+            submitted,
+            last_submitted: submitted.checked_sub(1),
+            evidence: Some(evidence),
+            partial_native_effect: false,
+            fault: None,
+        }
+    }
+
+    const fn partial(
+        route: InputDelivery,
+        evidence: SubmissionEvidence,
+        submitted: usize,
+        partial_native_effect: bool,
+        fault: InputFault,
+    ) -> Self {
+        Self {
+            route,
+            address_scope: route.address_scope(),
+            outcome: SequenceOutcome::Partial,
+            submitted,
+            last_submitted: submitted.checked_sub(1),
+            evidence: Some(evidence),
+            partial_native_effect,
+            fault: Some(fault),
+        }
+    }
+
+    /// Returns the attempted route.
+    #[must_use]
+    pub const fn route(self) -> InputDelivery {
+        self.route
+    }
+
+    /// Returns what the attempted route addresses.
+    #[must_use]
+    pub const fn address_scope(self) -> InputAddressScope {
+        self.address_scope
+    }
+
+    /// Returns the terminal state of this route attempt.
+    #[must_use]
+    pub const fn outcome(self) -> SequenceOutcome {
+        self.outcome
+    }
+
+    /// Returns how many complete logical events reached the route threshold.
+    #[must_use]
+    pub const fn submitted(self) -> usize {
+        self.submitted
+    }
+
+    /// Returns the last complete logical-event index submitted on this route.
+    #[must_use]
+    pub const fn last_submitted(self) -> Option<usize> {
+        self.last_submitted
+    }
+
+    /// Returns the strongest native evidence obtained by this attempt.
+    #[must_use]
+    pub const fn evidence(self) -> Option<SubmissionEvidence> {
+        self.evidence
+    }
+
+    /// Reports whether the current incomplete logical event may have native
+    /// effect.
+    #[must_use]
+    pub const fn partial_native_effect(self) -> bool {
+        self.partial_native_effect
+    }
+
+    /// Reports whether any part of this attempt may have had native effect.
+    #[must_use]
+    pub const fn possible_native_effect(self) -> bool {
+        self.submitted != 0 || self.partial_native_effect
+    }
+
+    /// Returns the route-local terminal fault.
+    #[must_use]
+    pub const fn fault(self) -> Option<InputFault> {
+        self.fault
+    }
+}
+
+/// The one truthful immutable account of an admitted sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputReceipt {
     target: TargetId,
     outcome: SequenceOutcome,
-    delivery: Option<InputDelivery>,
-    attempted: Vec<InputDelivery>,
-    delivered: usize,
-    last_completed: Option<usize>,
-    failure: Option<InputFault>,
+    selected_route: Option<InputDelivery>,
+    address_scope: Option<InputAddressScope>,
+    attempts: Vec<InputAttempt>,
+    submitted: usize,
+    last_submitted: Option<usize>,
+    evidence: Option<SubmissionEvidence>,
+    partial_native_effect: bool,
+    fault: Option<InputFault>,
     cleanup: CleanupState,
     cleanup_released: usize,
     cleanup_owed: usize,
 }
 
 impl InputReceipt {
-    /// Records a sequence that delivered every event through `delivery`.
+    /// Records a sequence whose every logical event reached `route`'s threshold.
     #[must_use]
-    pub fn complete(target: TargetId, delivery: InputDelivery, delivered: usize) -> Self {
-        Self {
-            target,
-            outcome: SequenceOutcome::Complete,
-            delivery: Some(delivery),
-            attempted: vec![delivery],
-            delivered,
-            last_completed: delivered.checked_sub(1),
-            failure: None,
-            cleanup: CleanupState::NotNeeded,
-            cleanup_released: 0,
-            cleanup_owed: 0,
-        }
+    pub fn complete(
+        target: TargetId,
+        route: InputDelivery,
+        evidence: SubmissionEvidence,
+        submitted: usize,
+    ) -> Self {
+        Self::from_terminal_attempt(target, InputAttempt::complete(route, evidence, submitted))
     }
 
-    /// Records a sequence for which some input may have reached the target before
-    /// it stopped.
+    /// Records a sequence that stopped after native effect was possible.
     ///
-    /// `delivered` counts only logical events known to have completed. It may be
-    /// zero when the platform reports that only part of the first event's native
-    /// representation took effect. `failure` is why delivery stopped. Cleanup is
-    /// recorded separately with
-    /// [`InputReceipt::with_cleanup`], because it happens after this outcome is
-    /// already decided.
+    /// `submitted` counts only complete logical events. `partial_native_effect`
+    /// describes the current incomplete logical event independently of that count.
     #[must_use]
     pub fn partial(
         target: TargetId,
-        delivery: InputDelivery,
-        delivered: usize,
-        failure: InputFault,
+        route: InputDelivery,
+        evidence: SubmissionEvidence,
+        submitted: usize,
+        partial_native_effect: bool,
+        fault: InputFault,
     ) -> Self {
-        Self {
+        Self::from_terminal_attempt(
             target,
-            outcome: SequenceOutcome::Partial,
-            delivery: Some(delivery),
-            attempted: vec![delivery],
-            delivered,
-            last_completed: delivered.checked_sub(1),
-            failure: Some(failure),
-            cleanup: CleanupState::NotNeeded,
-            cleanup_released: 0,
-            cleanup_owed: 0,
-        }
+            InputAttempt::partial(route, evidence, submitted, partial_native_effect, fault),
+        )
     }
 
-    /// Records a sequence that delivered nothing.
+    /// Records a sequence for which no native effect was possible.
     #[must_use]
-    pub fn unexecuted(target: TargetId, failure: InputFault) -> Self {
+    pub fn unexecuted(target: TargetId, fault: InputFault) -> Self {
         Self {
             target,
             outcome: SequenceOutcome::Unexecuted,
-            delivery: None,
-            attempted: Vec::new(),
-            delivered: 0,
-            last_completed: None,
-            failure: Some(failure),
+            selected_route: None,
+            address_scope: None,
+            attempts: Vec::new(),
+            submitted: 0,
+            last_submitted: None,
+            evidence: None,
+            partial_native_effect: false,
+            fault: Some(fault),
             cleanup: CleanupState::NotNeeded,
             cleanup_released: 0,
             cleanup_owed: 0,
         }
     }
 
-    /// Records every mechanism that was tried, in the order they were tried.
+    fn from_terminal_attempt(target: TargetId, attempt: InputAttempt) -> Self {
+        Self {
+            target,
+            outcome: attempt.outcome(),
+            selected_route: Some(attempt.route()),
+            address_scope: Some(attempt.address_scope()),
+            attempts: vec![attempt],
+            submitted: attempt.submitted(),
+            last_submitted: attempt.last_submitted(),
+            evidence: attempt.evidence(),
+            partial_native_effect: attempt.partial_native_effect(),
+            fault: attempt.fault(),
+            cleanup: CleanupState::NotNeeded,
+            cleanup_released: 0,
+            cleanup_owed: 0,
+        }
+    }
+
+    /// Prepends routes refused before this receipt's terminal attempt.
     ///
-    /// A caller that permitted fallback needs this to know whether its first
-    /// choice worked. The mechanism that succeeded, if any, is the last one here
-    /// and is also [`InputReceipt::delivery`].
+    /// A fallback is legal only while every preceding attempt proves no possible
+    /// native effect. Callers construct those records with [`InputAttempt::refused`].
     #[must_use]
-    pub fn with_attempted(mut self, attempted: Vec<InputDelivery>) -> Self {
-        self.attempted = attempted;
+    pub fn with_prior_attempts(mut self, mut attempts: Vec<InputAttempt>) -> Self {
+        debug_assert!(
+            attempts
+                .iter()
+                .all(|attempt| !attempt.possible_native_effect()),
+            "fallback cannot follow possible native effect"
+        );
+        attempts.append(&mut self.attempts);
+        self.attempts = attempts;
         self
     }
 
     /// Records what cleanup released out of what it owned.
-    ///
-    /// `owed` is how many pressed states the sequence held when it stopped and
-    /// `released` is how many of them cleanup managed to release. The state follows
-    /// from the two counts, so a receipt cannot claim complete cleanup while owing
-    /// a release.
-    ///
-    /// Use this when cleanup attempted every release it owed. A cleanup that
-    /// stopped at its own bound records [`InputReceipt::with_exhausted_cleanup`]
-    /// instead, because the two leave a caller with different options.
     #[must_use]
     pub fn with_cleanup(mut self, released: usize, owed: usize) -> Self {
         self.cleanup_released = released;
@@ -214,12 +330,7 @@ impl InputReceipt {
         self
     }
 
-    /// Records a cleanup that stopped at its own event or time bound.
-    ///
-    /// A cleanup that released everything it owed is complete however it got
-    /// there, so exhaustion is recorded only when a release is still outstanding:
-    /// a receipt cannot report state as possibly held while accounting for all of
-    /// it.
+    /// Records cleanup stopped by its own event or time bound.
     #[must_use]
     pub fn with_exhausted_cleanup(mut self, released: usize, owed: usize) -> Self {
         self.cleanup_released = released;
@@ -246,64 +357,91 @@ impl InputReceipt {
         self.outcome
     }
 
-    /// Returns the mechanism that delivered events, when any did.
+    /// Returns the route on which native effect became possible.
     #[must_use]
-    pub const fn delivery(&self) -> Option<InputDelivery> {
-        self.delivery
+    pub const fn selected_route(&self) -> Option<InputDelivery> {
+        self.selected_route
     }
 
-    /// Returns every mechanism that was tried, in order.
+    /// Returns what the selected route addressed.
     #[must_use]
-    pub fn attempted(&self) -> &[InputDelivery] {
-        &self.attempted
+    pub const fn address_scope(&self) -> Option<InputAddressScope> {
+        self.address_scope
     }
 
-    /// Reports whether delivery fell back from the caller's first choice.
+    /// Returns every visited route attempt in caller order.
+    #[must_use]
+    pub fn attempts(&self) -> &[InputAttempt] {
+        &self.attempts
+    }
+
+    /// Reports whether the sequence used a route after the caller's first visited
+    /// route.
     #[must_use]
     pub fn used_fallback(&self) -> bool {
-        match (self.attempted.first(), self.delivery) {
-            (Some(first), Some(used)) => *first != used,
+        match (self.attempts.first(), self.selected_route) {
+            (Some(first), Some(selected)) => first.route() != selected,
             _ => false,
         }
     }
 
-    /// Returns how many events reached the target.
+    /// Returns how many complete logical events reached the selected threshold.
     #[must_use]
-    pub const fn delivered(&self) -> usize {
-        self.delivered
+    pub const fn submitted(&self) -> usize {
+        self.submitted
     }
 
-    /// Returns the index of the last event that completed.
+    /// Returns the last complete logical-event index submitted.
     #[must_use]
-    pub const fn last_completed(&self) -> Option<usize> {
-        self.last_completed
+    pub const fn last_submitted(&self) -> Option<usize> {
+        self.last_submitted
+    }
+
+    /// Returns the strongest evidence obtained on the selected route.
+    #[must_use]
+    pub const fn evidence(&self) -> Option<SubmissionEvidence> {
+        self.evidence
+    }
+
+    /// Reports whether the current incomplete logical event may have native
+    /// effect.
+    #[must_use]
+    pub const fn partial_native_effect(&self) -> bool {
+        self.partial_native_effect
+    }
+
+    /// Reports whether any complete or partial logical event may have had native
+    /// effect.
+    #[must_use]
+    pub const fn possible_native_effect(&self) -> bool {
+        self.submitted != 0 || self.partial_native_effect
     }
 
     /// Returns why the sequence stopped, for anything but a complete one.
     #[must_use]
-    pub const fn failure(&self) -> Option<InputFault> {
-        self.failure
+    pub const fn fault(&self) -> Option<InputFault> {
+        self.fault
     }
 
-    /// Returns what became of the state the sequence had pressed.
+    /// Returns what became of state the sequence pressed.
     #[must_use]
     pub const fn cleanup(&self) -> CleanupState {
         self.cleanup
     }
 
-    /// Returns how many pressed states cleanup released.
+    /// Returns how many sequence-owned pressed states cleanup released.
     #[must_use]
     pub const fn cleanup_released(&self) -> usize {
         self.cleanup_released
     }
 
-    /// Returns how many pressed states cleanup was responsible for.
+    /// Returns how many sequence-owned pressed states cleanup was responsible for.
     #[must_use]
     pub const fn cleanup_owed(&self) -> usize {
         self.cleanup_owed
     }
 
-    /// Reports whether the sequence delivered everything it was asked to.
+    /// Reports whether every logical event reached the selected route threshold.
     #[must_use]
     pub const fn is_complete(&self) -> bool {
         matches!(self.outcome, SequenceOutcome::Complete)
@@ -312,12 +450,19 @@ impl InputReceipt {
 
 impl fmt::Display for InputReceipt {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} {} event(s)", self.outcome, self.delivered)?;
-        if let Some(delivery) = self.delivery {
-            write!(formatter, " via {delivery}")?;
+        write!(
+            formatter,
+            "{} {} submitted event(s)",
+            self.outcome, self.submitted
+        )?;
+        if let Some(route) = self.selected_route {
+            write!(formatter, " via {route}")?;
         }
-        if let Some(failure) = self.failure {
-            write!(formatter, ": {failure}")?;
+        if let Some(evidence) = self.evidence {
+            write!(formatter, " ({evidence})")?;
+        }
+        if let Some(fault) = self.fault {
+            write!(formatter, ": {fault}")?;
         }
         if self.cleanup != CleanupState::NotNeeded {
             write!(
@@ -332,9 +477,11 @@ impl fmt::Display for InputReceipt {
 
 #[cfg(test)]
 mod tests {
-    use super::{CleanupState, InputReceipt, SequenceOutcome};
+    use super::{CleanupState, InputAttempt, InputReceipt, SequenceOutcome};
     use crate::fault::InputFault;
-    use mado_pilot_core::{IdentityIssuer, InputDelivery, ProviderId, TargetId};
+    use mado_pilot_core::{
+        IdentityIssuer, InputAddressScope, InputDelivery, ProviderId, SubmissionEvidence, TargetId,
+    };
 
     fn target() -> TargetId {
         IdentityIssuer::new()
@@ -342,165 +489,146 @@ mod tests {
             .expect("issued")
     }
 
+    fn partial(submitted: usize, partial_native_effect: bool) -> InputReceipt {
+        InputReceipt::partial(
+            target(),
+            InputDelivery::System,
+            SubmissionEvidence::SystemInputAdmission,
+            submitted,
+            partial_native_effect,
+            InputFault::SubmissionFailed,
+        )
+    }
+
     #[test]
-    fn a_complete_receipt_names_the_mechanism_and_the_last_event() {
-        let receipt = InputReceipt::complete(target(), InputDelivery::System, 3);
+    fn complete_submission_records_route_scope_evidence_and_last_event() {
+        let receipt = InputReceipt::complete(
+            target(),
+            InputDelivery::System,
+            SubmissionEvidence::SystemInputAdmission,
+            3,
+        );
 
         assert!(receipt.is_complete());
         assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
-        assert_eq!(receipt.delivery(), Some(InputDelivery::System));
-        assert_eq!(receipt.delivered(), 3);
-        assert_eq!(receipt.last_completed(), Some(2));
-        assert_eq!(receipt.failure(), None);
+        assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+        assert_eq!(
+            receipt.address_scope(),
+            Some(InputAddressScope::FocusedSystem)
+        );
+        assert_eq!(receipt.submitted(), 3);
+        assert_eq!(receipt.last_submitted(), Some(2));
+        assert_eq!(
+            receipt.evidence(),
+            Some(SubmissionEvidence::SystemInputAdmission)
+        );
+        assert!(!receipt.partial_native_effect());
+        assert_eq!(receipt.fault(), None);
         assert_eq!(receipt.cleanup(), CleanupState::NotNeeded);
     }
 
     #[test]
-    fn a_partial_receipt_reports_how_far_it_got_and_why_it_stopped() {
-        let receipt = InputReceipt::partial(
-            target(),
-            InputDelivery::BackgroundTarget,
-            2,
-            InputFault::DeliveryFailed,
-        );
+    fn zero_count_partial_submission_preserves_possible_native_effect() {
+        let receipt = partial(0, true);
 
-        assert!(!receipt.is_complete());
         assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-        assert_eq!(receipt.delivered(), 2);
-        assert_eq!(receipt.last_completed(), Some(1));
-        assert_eq!(receipt.failure(), Some(InputFault::DeliveryFailed));
+        assert_eq!(receipt.submitted(), 0);
+        assert_eq!(receipt.last_submitted(), None);
+        assert!(receipt.partial_native_effect());
+        assert!(receipt.attempts()[0].possible_native_effect());
     }
 
     #[test]
-    fn a_partial_receipt_can_report_native_effect_before_any_event_completed() {
-        let receipt = InputReceipt::partial(
-            target(),
-            InputDelivery::System,
-            0,
-            InputFault::DeliveryFailed,
-        );
-
-        assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-        assert_eq!(receipt.delivered(), 0);
-        assert_eq!(receipt.last_completed(), None);
-        assert_eq!(receipt.delivery(), Some(InputDelivery::System));
-    }
-
-    #[test]
-    fn an_unexecuted_receipt_delivered_nothing() {
-        let receipt = InputReceipt::unexecuted(target(), InputFault::ControllerClosed);
+    fn unexecuted_refusal_has_no_selected_route_or_evidence() {
+        let receipt = InputReceipt::unexecuted(target(), InputFault::ControllerClosed)
+            .with_prior_attempts(vec![InputAttempt::refused(
+                InputDelivery::WindowMessage,
+                InputFault::ControllerClosed,
+            )]);
 
         assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-        assert_eq!(receipt.delivered(), 0);
-        assert_eq!(receipt.last_completed(), None);
-        assert_eq!(receipt.delivery(), None);
-        assert!(receipt.attempted().is_empty());
+        assert_eq!(receipt.submitted(), 0);
+        assert_eq!(receipt.last_submitted(), None);
+        assert_eq!(receipt.selected_route(), None);
+        assert_eq!(receipt.address_scope(), None);
+        assert_eq!(receipt.evidence(), None);
+        assert_eq!(receipt.attempts().len(), 1);
+        assert!(!receipt.attempts()[0].possible_native_effect());
         assert!(!receipt.used_fallback());
     }
 
     #[test]
-    fn fallback_is_visible_in_the_attempt_order() {
-        let receipt = InputReceipt::complete(target(), InputDelivery::System, 1)
-            .with_attempted(vec![InputDelivery::BackgroundTarget, InputDelivery::System]);
+    fn multi_route_preflight_is_immutable_and_ordered() {
+        let receipt = InputReceipt::complete(
+            target(),
+            InputDelivery::System,
+            SubmissionEvidence::SystemInputAdmission,
+            1,
+        )
+        .with_prior_attempts(vec![
+            InputAttempt::refused(InputDelivery::WindowMessage, InputFault::RouteUnavailable),
+            InputAttempt::refused(
+                InputDelivery::ProcessDirected,
+                InputFault::UnsupportedCombination,
+            ),
+        ]);
+        let retained = receipt.clone();
+        drop(receipt);
 
-        assert!(receipt.used_fallback());
+        assert!(retained.used_fallback());
         assert_eq!(
-            receipt.attempted(),
-            [InputDelivery::BackgroundTarget, InputDelivery::System]
+            retained
+                .attempts()
+                .iter()
+                .map(|attempt| attempt.route())
+                .collect::<Vec<_>>(),
+            [
+                InputDelivery::WindowMessage,
+                InputDelivery::ProcessDirected,
+                InputDelivery::System,
+            ]
         );
-
-        let no_fallback = InputReceipt::complete(target(), InputDelivery::System, 1);
-        assert!(!no_fallback.used_fallback());
+        assert_eq!(
+            retained.attempts()[2].evidence(),
+            Some(SubmissionEvidence::SystemInputAdmission)
+        );
     }
 
     #[test]
-    fn cleanup_state_follows_from_its_counts() {
-        let owed_nothing = InputReceipt::partial(
-            target(),
-            InputDelivery::System,
-            1,
-            InputFault::DeliveryFailed,
-        )
-        .with_cleanup(0, 0);
-        let released_all = InputReceipt::partial(
-            target(),
-            InputDelivery::System,
-            1,
-            InputFault::DeliveryFailed,
-        )
-        .with_cleanup(2, 2);
-        let stuck = InputReceipt::partial(
-            target(),
-            InputDelivery::System,
-            1,
-            InputFault::DeliveryFailed,
-        )
-        .with_cleanup(1, 2);
+    fn cleanup_state_follows_from_exact_counts() {
+        let owed_nothing = partial(1, false).with_cleanup(0, 0);
+        let released_all = partial(1, false).with_cleanup(2, 2);
+        let incomplete = partial(1, false).with_cleanup(1, 2);
+        let exhausted = partial(1, false).with_exhausted_cleanup(1, 2);
 
         assert_eq!(owed_nothing.cleanup(), CleanupState::NotNeeded);
         assert_eq!(released_all.cleanup(), CleanupState::Complete);
-        assert_eq!(stuck.cleanup(), CleanupState::Incomplete);
-        assert!(stuck.cleanup().may_leave_state_held());
-        assert!(!released_all.cleanup().may_leave_state_held());
-        assert_eq!(stuck.cleanup_released(), 1);
-        assert_eq!(stuck.cleanup_owed(), 2);
-    }
-
-    #[test]
-    fn an_exhausted_cleanup_is_distinguishable_from_a_refused_release() {
-        let refused = InputReceipt::partial(
-            target(),
-            InputDelivery::System,
-            1,
-            InputFault::DeliveryFailed,
-        )
-        .with_cleanup(1, 2);
-        let exhausted = InputReceipt::partial(
-            target(),
-            InputDelivery::System,
-            1,
-            InputFault::DeliveryFailed,
-        )
-        .with_exhausted_cleanup(1, 2);
-
-        assert_eq!(refused.cleanup(), CleanupState::Incomplete);
+        assert_eq!(incomplete.cleanup(), CleanupState::Incomplete);
         assert_eq!(exhausted.cleanup(), CleanupState::Exhausted);
-        assert!(refused.cleanup().may_leave_state_held());
+        assert!(incomplete.cleanup().may_leave_state_held());
         assert!(exhausted.cleanup().may_leave_state_held());
         assert_eq!(exhausted.cleanup_released(), 1);
         assert_eq!(exhausted.cleanup_owed(), 2);
     }
 
     #[test]
-    fn a_cleanup_that_released_everything_is_complete_however_it_stopped() {
-        let receipt = InputReceipt::partial(
-            target(),
-            InputDelivery::System,
-            1,
-            InputFault::DeliveryFailed,
-        )
-        .with_exhausted_cleanup(2, 2);
+    fn exhausted_cleanup_is_complete_when_every_release_finished() {
+        let receipt = partial(1, false).with_exhausted_cleanup(2, 2);
 
-        assert_eq!(
-            receipt.cleanup(),
-            CleanupState::Complete,
-            "nothing is held, so nothing is owed to a bound"
-        );
+        assert_eq!(receipt.cleanup(), CleanupState::Complete);
         assert!(!receipt.cleanup().may_leave_state_held());
     }
 
     #[test]
-    fn a_receipt_reads_as_one_account() {
-        let receipt = InputReceipt::partial(
-            target(),
-            InputDelivery::System,
-            2,
-            InputFault::PolicyRefused,
-        )
-        .with_cleanup(1, 2);
+    fn receipt_display_uses_submission_not_application_effect_language() {
+        let receipt = partial(2, false).with_cleanup(1, 2);
         let text = receipt.to_string();
 
-        assert!(text.contains("partial 2 event(s) via system"), "{text}");
+        assert!(
+            text.contains("partial 2 submitted event(s) via system (system_input_admission)"),
+            "{text}"
+        );
         assert!(text.contains("cleanup incomplete 1/2"), "{text}");
+        assert!(!text.contains("delivered"), "{text}");
     }
 }

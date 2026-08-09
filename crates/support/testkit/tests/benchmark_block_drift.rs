@@ -23,7 +23,7 @@ use mado_pilot_testkit::bench_harness::{Benchmark, benchmark_block};
 /// `example-synthetic.toml` is deliberately absent for the reason
 /// `hard_budget_drift.rs` states: it documents the format with invented numbers
 /// rather than recording either a measurement or an explicit native evidence gap.
-const PROFILES: [(&str, &str); 8] = [
+const PROFILES: [(&str, &str); 10] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -43,6 +43,18 @@ const PROFILES: [(&str, &str); 8] = [
     (
         "docs/benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml",
         include_str!("../../../../docs/benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml"),
+    ),
+    (
+        "docs/benchmarks/phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc-evidence-gap.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc-evidence-gap.toml"
+        ),
     ),
     (
         "docs/benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml",

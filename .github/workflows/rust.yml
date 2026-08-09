@@ -226,6 +226,13 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      # Hosted CI enforces only host-independent correctness and bounded-growth
+      # predicates. It never substitutes runner timing for a named hardware
+      # profile.
+      - name: Run the diagnostic benchmark smoke gate
+        shell: bash
+        run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
+
       # `--all-targets` deliberately excludes doctests, so they need their own run.
       - name: Test the documentation examples
         shell: bash
@@ -363,6 +370,13 @@ jobs:
       - name: Test the workspace
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      # Hosted CI enforces only host-independent correctness and bounded-growth
+      # predicates. It never substitutes runner timing for a named hardware
+      # profile.
+      - name: Run the diagnostic benchmark smoke gate
+        shell: bash
+        run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
 
       # `--all-targets` deliberately excludes doctests, so they need their own run.
       - name: Test the documentation examples

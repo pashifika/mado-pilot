@@ -1,9 +1,9 @@
 //! The native macOS workflow, end to end, against one window the operator names.
 //!
 //! Read both authorizations without prompting, discover targets, select exactly
-//! one window by its full title, open capture and input together, take and map a
-//! frame, deliver one bounded sequence whose pointer position is bound to that
-//! exact frame, read the receipt, and close.
+//! one window by its full title, open capture and input together, verify the
+//! source-frame condition, submit one bounded sequence, verify the expected
+//! condition on a strictly newer frame, drain correlated diagnostics, and close.
 //!
 //! ```text
 //! cargo run --locked --package mado-pilot --example macos-native-input -- "<window title>"
@@ -35,6 +35,10 @@
 //! demonstrates input control should not also demonstrate leaking what it saw
 //! and sent.
 
+#[cfg(target_os = "macos")]
+#[path = "support/native_observation.rs"]
+mod native_observation;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     {
@@ -48,14 +52,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    use super::native_observation;
+
     use std::time::Duration;
 
     use mado_pilot::{
-        CoordinateSpace, DeliveryPlan, Engine, Error, FocusPolicy, Frame, FrameRequest,
-        InputDelivery, InputEvent, InputOpenRequest, InputOperationKind, InputReceipt,
-        InputRequest, InputRequirement, InputSequence, Key, NativeEngineRequest, OpenRequest,
-        OperationContext, PermissionKind, PermissionReport, Point, PointerGeometry,
-        SequenceOutcome, Session, SessionRequest, TargetDescription, TargetId, TargetKind,
+        CapabilitySupport, CoordinateSpace, DeliveryPlan, DiagnosticOptions, Engine, Error,
+        FocusPolicy, Frame, FrameRequest, InputDelivery, InputEvent, InputOpenRequest,
+        InputOperationKind, InputReceipt, InputRequest, InputRequirement, InputSequence, Key,
+        NativeEngineRequest, OpenRequest, OperationContext, PermissionKind, PermissionReport,
+        PixelFormat, Point, PointerGeometry, SequenceOutcome, Session, SessionRequest,
+        TargetDescription, TargetId, TargetKind,
     };
 
     /// How long a discovery pass may take.
@@ -71,6 +78,12 @@ mod macos {
     /// leaves room for the activation the focus policy permits and still bounds a
     /// platform that stops answering.
     const INPUT_BUDGET: Duration = Duration::from_secs(2);
+
+    /// How long a strictly-newer frame may take to show the expected condition.
+    const OBSERVATION_BUDGET: Duration = Duration::from_secs(5);
+
+    /// Enough room for the complete example while keeping retention finite.
+    const DIAGNOSTIC_CAPACITY: usize = 256;
 
     /// How long the two-sided close may take.
     const CLOSE_BUDGET: Duration = Duration::from_secs(2);
@@ -88,10 +101,16 @@ mod macos {
             }
         };
 
-        // 1. Build the engine. This touches no macOS API and asks for no
-        //    authorization: an unusable OpenCV fails here, and nothing else is
-        //    substituted for it.
-        let engine = mado_pilot::macos_engine(NativeEngineRequest::new())?;
+        // 1. Build the engine with a bounded debug stream. This touches no macOS
+        //    API and asks for no authorization: an unusable OpenCV fails here,
+        //    and nothing else is substituted for it.
+        let engine = mado_pilot::macos_engine(
+            NativeEngineRequest::new()
+                .with_diagnostics(DiagnosticOptions::debug(DIAGNOSTIC_CAPACITY)?),
+        )?;
+        let diagnostics = engine
+            .take_diagnostic_reader()
+            .ok_or("an enabled engine exposes one diagnostic reader")?;
         println!("backend: {}", engine.backend());
 
         // 2. Read both authorizations. Neither read prompts, opens System
@@ -151,8 +170,12 @@ mod macos {
         // the right shape.
         let worked = deliver(&session);
         let closed = shut_down(&session);
+        drop(session);
+        drop(engine);
+        let diagnostics_drained = native_observation::drain_diagnostics(&diagnostics);
         let receipt = worked?;
         closed?;
+        diagnostics_drained?;
 
         if receipt.outcome() == SequenceOutcome::Complete {
             Ok(())
@@ -161,7 +184,8 @@ mod macos {
         }
     }
 
-    /// Steps 6 and 7: capture, map, and deliver, all against one open session.
+    /// Steps 6 through 8: capture and check the source frame, submit input, then
+    /// check the expected condition on a strictly newer frame.
     fn deliver(session: &Session) -> Result<InputReceipt, Box<dyn std::error::Error>> {
         // 6. Take one frame and map it. The pixels are never printed; what is
         //    reported is the identity that correlates this frame with anything
@@ -183,20 +207,25 @@ mod macos {
         // The mapping is CPU bytes the caller owns, and it outlives the session.
         // Only its size and its source identity are reported: the bytes
         // themselves are the contents of somebody's window.
-        let mapping = frame.map(frame.descriptor().format(), &bounded(DISCOVERY_BUDGET)?)?;
+        let mapping = session.map_frame(&frame, PixelFormat::Bgra8, &bounded(DISCOVERY_BUDGET)?)?;
         println!(
             "mapping: {} byte(s) of {}, from frame sequence {}",
             mapping.bytes().len(),
             mapping.descriptor(),
             mapping.stamp().sequence().value()
         );
+        if native_observation::expected_condition_matches(&mapping) {
+            return Err(
+                "the expected fixture condition is already present on the source frame".into(),
+            );
+        }
 
-        // 7. Deliver one bounded sequence, addressed to the exact frame above.
+        // 7. Submit one bounded sequence, addressed to the exact frame above.
         //    The pointer position is expressed in that frame's own capture
         //    pixels, and `RequireUnchanged` binds it to that frame's identity: if
         //    the window moved or resized since it was captured, the coordinate no
         //    longer names what was captured, and the sequence is refused rather
-        //    than delivered somewhere else. The delivery plan names exactly one
+        //    than submitted somewhere else. The delivery plan names exactly one
         //    mechanism, so nothing is substituted for it, and the focus policy is
         //    the one this platform's only mechanism needs.
         let receipt = session.send_input(
@@ -206,10 +235,15 @@ mod macos {
             &bounded(INPUT_BUDGET)?,
         )?;
         report_receipt(&receipt);
+        if receipt.outcome() == SequenceOutcome::Complete {
+            // 8. A complete receipt proves native submission only. Application
+            //    effect is a separate visual fact from a strictly newer frame.
+            native_observation::observe_expected_condition(session, stamp, OBSERVATION_BUDGET)?;
+        }
         Ok(receipt)
     }
 
-    /// Step 8: close both lifecycles, whatever the work above did.
+    /// Step 9: close both lifecycles, whatever the work above did.
     ///
     /// Idempotent, and retryable if the first close loses its own race.
     fn shut_down(session: &Session) -> Result<(), Box<dyn std::error::Error>> {
@@ -221,9 +255,9 @@ mod macos {
         Ok(())
     }
 
-    /// Returns an operation bounded by `budget`.
+    /// Returns an operation bounded by `budget` and correlated to this run.
     fn bounded(budget: Duration) -> Result<OperationContext, Error> {
-        OperationContext::new().with_timeout(budget)
+        native_observation::bounded(budget)
     }
 
     /// The mechanism this program permits, and the only one macOS implements.
@@ -231,7 +265,7 @@ mod macos {
         DeliveryPlan::require(InputDelivery::System)
     }
 
-    /// A move to the centre of `frame`, two keystrokes, and a short delay so the
+    /// A move to the centre of `frame`, one keystroke, and a short delay so the
     /// receipt has something to bound.
     ///
     /// A move rather than a click: it is the least a pointer event can do, and it
@@ -250,8 +284,6 @@ mod macos {
             InputEvent::KeyPress(Key::Character('m')),
             InputEvent::KeyRelease(Key::Character('m')),
             InputEvent::Delay(Duration::from_millis(20)),
-            InputEvent::KeyPress(Key::Character('p')),
-            InputEvent::KeyRelease(Key::Character('p')),
         ])?)
     }
 
@@ -311,14 +343,19 @@ mod macos {
         let descriptor = engine.describe_input(target, &bounded(DISCOVERY_BUDGET)?)?;
         let capability = descriptor.capability();
         for kind in [InputOperationKind::Pointer, InputOperationKind::Keyboard] {
-            if !capability.supports(kind, InputDelivery::System) {
+            if capability.pair(kind, InputDelivery::System).support()
+                != CapabilitySupport::Supported
+            {
                 return Err(format!(
                     "the selected window does not accept {kind} input through system delivery"
                 )
                 .into());
             }
         }
-        if !capability.accepts_pointer_space(CoordinateSpace::CapturePixels) {
+        if !capability
+            .pair(InputOperationKind::Pointer, InputDelivery::System)
+            .accepts_pointer_space(CoordinateSpace::CapturePixels)
+        {
             return Err(
                 "the selected window does not accept coordinates in a frame's own capture pixels"
                     .into(),
@@ -332,10 +369,12 @@ mod macos {
         // typed is not among them, here or in the receipt itself.
         println!("receipt: {receipt}");
         println!(
-            "  outcome {} delivered {} of the sequence, via {:?}",
+            "  outcome {} submitted {} event(s), via {:?}, scope {:?}, evidence {:?}",
             receipt.outcome(),
-            receipt.delivered(),
-            receipt.delivery()
+            receipt.submitted(),
+            receipt.selected_route(),
+            receipt.address_scope(),
+            receipt.evidence()
         );
         if receipt.cleanup().may_leave_state_held() {
             println!(
@@ -345,8 +384,8 @@ mod macos {
                 receipt.cleanup_owed()
             );
         }
-        if let Some(failure) = receipt.failure() {
-            println!("  stopped because: {failure} ({})", failure.status());
+        if let Some(fault) = receipt.fault() {
+            println!("  stopped because: {fault} ({})", fault.status());
         }
     }
 }

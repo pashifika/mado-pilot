@@ -27,10 +27,10 @@
 //! Build the engine for the target this crate was compiled for, read the
 //! authorizations that platform grants, discover real windows and displays, open
 //! a session that also establishes input, capture and map frames, search them,
-//! deliver a bounded input sequence to the target the frames came from, read the
-//! receipt saying exactly what was delivered, and close. Every value in that flow
-//! is platform-neutral: no Windows or macOS type is re-exported here, and a host
-//! that compiles for both targets writes the flow once.
+//! submit a bounded input sequence to the target the frames came from, inspect
+//! the receipt's route, threshold, and evidence, and close. Every value in that
+//! flow is platform-neutral: no Windows or macOS type is re-exported here, and a
+//! host that compiles for both targets writes the flow once.
 //!
 //! The two constructors are separate because the platforms are. One is present
 //! per build, named for the target it wires: `windows_engine` on Windows and
@@ -88,11 +88,12 @@
 //!
 //! Input adds one shape the table cannot express, because it is not a failure.
 //! An admitted sequence answers with an [`InputReceipt`] rather than a status:
-//! an operating system cannot recall a delivered event, so a sequence that
-//! stopped part-way reports how far it got, which mechanism carried it, and what
-//! it managed to release. [`SequenceOutcome`] is what a caller branches on, and
-//! only a sequence that was never admitted — or one that delivered nothing under
-//! an operation that had already lost its race — reports a status instead.
+//! an operating system cannot recall an event that may already have native
+//! effect, so a sequence that stopped part-way reports how far its route got,
+//! which mechanism carried it, what evidence that route established, and what
+//! it managed to release. [`SequenceOutcome`] is what a caller branches on; only
+//! a sequence that was never admitted, or that reached no route threshold and
+//! could have no native effect when its operation lost the race, reports a status.
 //!
 //! Package loading reports [`AssetFault`] instead, which carries the rule that
 //! was broken *and* the stage that caught it. It converts into [`Error`], and
@@ -134,13 +135,14 @@
 //! extend is already `#[non_exhaustive]`, so keep a fallback arm. Renaming or
 //! removing one of these names is a breaking change and needs an ADR and a
 //! version bump. The stability promise itself begins at 1.0; this package is
-//! at 0.1.
+//! at 0.2.1.
 //!
 //! The C ABI beneath this one is versioned separately. Its complete 1.0 prefix
-//! is frozen by `docs/adr/0007-phase-1-c-abi-freeze.md`, and the additive native
-//! capability, permission, and input suffix is frozen at 1.1 by
-//! `docs/adr/0017-c-abi-1-1-native-input-prefix.md`. A Rust rename does not
-//! propagate to it.
+//! is frozen by `docs/adr/0007-phase-1-c-abi-freeze.md`; ABI 1.2 replaces the
+//! unreleased 1.1 draft with explicit route, submission-evidence, owned-receipt,
+//! and bounded-diagnostic contracts under
+//! `docs/adr/0023-input-submission-observation-and-abi-1-2.md`. A Rust rename
+//! does not propagate to it.
 //!
 //! # Where to start
 //!
@@ -173,7 +175,7 @@
 //!
 //! // A mapping outlives the session it came from.
 //! let captured = session.acquire_frame(&FrameRequest::latest(), &operation)?;
-//! let mapping = captured.map(PixelFormat::Rgba8, &operation)?;
+//! let mapping = session.map_frame(&captured, PixelFormat::Rgba8, &operation)?;
 //! session.close(&operation)?;
 //! assert!(mapping.bytes().iter().all(|byte| *byte == 0x30));
 //! # Ok::<(), Box<dyn std::error::Error>>(())
@@ -183,7 +185,10 @@ use std::sync::Arc;
 
 use mado_pilot_adapter_replay::{ReplayProvider, ReplaySource};
 use mado_pilot_backend_opencv::OpenCvBackend;
-use mado_pilot_runtime::{CaptureProvider, EngineWiring, IdentityIssuer, Matcher, PackageLoader};
+use mado_pilot_runtime::{
+    CaptureProvider, EngineOptions as RuntimeEngineOptions, EngineWiring, IdentityIssuer, Matcher,
+    PackageLoader,
+};
 
 #[cfg(any(windows, target_os = "macos"))]
 use mado_pilot_runtime::InputProvider;
@@ -225,6 +230,7 @@ pub const REQUIRED_BACKEND: &str = mado_pilot_backend_opencv::BACKEND_ID;
 pub struct ReplayEngineRequest {
     source: ReplaySource,
     limits: AssetLimits,
+    diagnostics: DiagnosticOptions,
 }
 
 impl ReplayEngineRequest {
@@ -234,6 +240,7 @@ impl ReplayEngineRequest {
         Self {
             source,
             limits: AssetLimits::default(),
+            diagnostics: DiagnosticOptions::off(),
         }
     }
 
@@ -248,6 +255,13 @@ impl ReplayEngineRequest {
         self
     }
 
+    /// Enables the engine-scoped bounded diagnostic stream.
+    #[must_use]
+    pub const fn with_diagnostics(mut self, diagnostics: DiagnosticOptions) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
     /// Returns the replay source the engine captures from.
     #[must_use]
     pub const fn source(&self) -> &ReplaySource {
@@ -258,6 +272,12 @@ impl ReplayEngineRequest {
     #[must_use]
     pub const fn limits(&self) -> AssetLimits {
         self.limits
+    }
+
+    /// Returns the selected diagnostic configuration.
+    #[must_use]
+    pub const fn diagnostics(&self) -> DiagnosticOptions {
+        self.diagnostics
     }
 }
 
@@ -294,18 +314,20 @@ pub fn replay_engine(request: impl Into<ReplayEngineRequest>) -> Result<Engine> 
     let engine = issuer.engine();
     let capture = ReplayProvider::new(issuer, request.source)?;
 
-    Engine::new(EngineWiring {
-        engine,
-        capture: Arc::new(capture),
-        matcher: Matcher::new(Arc::new(backend)),
-        loader: PackageLoader::with_limits(request.limits),
-        // Replay is a source of prepared frames, so there is no target for input
-        // to reach and no authorization behind one. A capture-only engine says
-        // exactly that, and a session opened on it reports input as unavailable
-        // rather than as something that failed.
-        input: None,
-        permission: None,
-    })
+    Engine::new_with_options(
+        EngineWiring {
+            engine,
+            capture: Arc::new(capture),
+            matcher: Matcher::new(Arc::new(backend)),
+            loader: PackageLoader::with_limits(request.limits),
+            // Replay is a source of prepared frames, so there is no target for input
+            // to reach and no authorization behind one. A capture-only engine says
+            // exactly that.
+            input: None,
+            permission: None,
+        },
+        RuntimeEngineOptions::new().with_diagnostics(request.diagnostics),
+    )
 }
 
 /// What a native engine is built from.
@@ -318,13 +340,17 @@ pub fn replay_engine(request: impl Into<ReplayEngineRequest>) -> Result<Engine> 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeEngineRequest {
     limits: AssetLimits,
+    diagnostics: DiagnosticOptions,
 }
 
 impl NativeEngineRequest {
     /// Requests a native engine with the default asset limits.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            limits: AssetLimits::default(),
+            diagnostics: DiagnosticOptions::off(),
+        }
     }
 
     /// Applies `limits` to every package the engine loads.
@@ -337,10 +363,23 @@ impl NativeEngineRequest {
         self
     }
 
+    /// Enables the engine-scoped bounded diagnostic stream.
+    #[must_use]
+    pub const fn with_diagnostics(mut self, diagnostics: DiagnosticOptions) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
     /// Returns the limits the engine will apply.
     #[must_use]
     pub const fn limits(&self) -> AssetLimits {
         self.limits
+    }
+
+    /// Returns the selected diagnostic configuration.
+    #[must_use]
+    pub const fn diagnostics(self) -> DiagnosticOptions {
+        self.diagnostics
     }
 }
 
@@ -353,9 +392,9 @@ impl From<AssetLimits> for NativeEngineRequest {
 /// Builds an engine over native Windows discovery, capture, and input.
 ///
 /// Present on Windows builds only. Discovery is picker-free, capture is Windows
-/// Graphics Capture, and input is the platform's system and fixture-gated
-/// background delivery; none of those types reaches this API, which speaks the
-/// same platform-neutral vocabulary the replay engine does.
+/// Graphics Capture, and input exposes the platform's system route plus the
+/// fixture-gated `WindowMessage` route; none of those native types reaches this
+/// API, which speaks the same platform-neutral vocabulary the replay engine does.
 ///
 /// Construction touches no Windows API and asks for no authorization: it
 /// selects adapters, and every native call happens in the operation that needs
@@ -391,16 +430,17 @@ pub fn windows_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine>
         issuer,
     ));
 
-    Engine::new(EngineWiring {
-        engine,
-        capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
-        matcher: Matcher::new(Arc::new(backend)),
-        loader: PackageLoader::with_limits(request.limits()),
-        // One object satisfies both contracts, which is what makes the target
-        // identity a session delivers input to the same identity it captures.
-        input: Some(provider as Arc<dyn InputProvider>),
-        permission: None,
-    })
+    Engine::new_with_options(
+        EngineWiring {
+            engine,
+            capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
+            matcher: Matcher::new(Arc::new(backend)),
+            loader: PackageLoader::with_limits(request.limits()),
+            input: Some(provider as Arc<dyn InputProvider>),
+            permission: None,
+        },
+        RuntimeEngineOptions::new().with_diagnostics(request.diagnostics()),
+    )
 }
 
 /// Builds an engine over native macOS discovery, capture, permissions, and
@@ -438,37 +478,48 @@ pub fn macos_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine> {
     let engine = issuer.engine();
     let provider = Arc::new(mado_pilot_platform_macos::MacosCaptureProvider::new(issuer));
 
-    Engine::new(EngineWiring {
-        engine,
-        capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
-        matcher: Matcher::new(Arc::new(backend)),
-        loader: PackageLoader::with_limits(request.limits()),
-        input: Some(provider as Arc<dyn InputProvider>),
-        permission: Some(
-            Arc::new(mado_pilot_platform_macos::MacosPermissionProbe::new())
-                as Arc<dyn PermissionProbe>,
-        ),
-    })
+    Engine::new_with_options(
+        EngineWiring {
+            engine,
+            capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
+            matcher: Matcher::new(Arc::new(backend)),
+            loader: PackageLoader::with_limits(request.limits()),
+            input: Some(provider as Arc<dyn InputProvider>),
+            permission: Some(
+                Arc::new(mado_pilot_platform_macos::MacosPermissionProbe::new())
+                    as Arc<dyn PermissionProbe>,
+            ),
+        },
+        RuntimeEngineOptions::new().with_diagnostics(request.diagnostics()),
+    )
 }
 
 pub use mado_pilot_runtime::{
-    AssetFault, AssetFaultKind, AssetLimits, AssetPackage, BackendDescriptor, BackendId,
-    CancellationToken, CapabilitySupport, CaptureFault, CleanupBudget, CleanupState, ClipPolicy,
-    Clock, ContentDigest, Continuity, CoordinateSpace, CoordinateSupport, CpuMapping, DeliveryPlan,
-    DiagnosticCategory, Engine, EngineId, Error, FindOutcome, FindRequest, FocusPolicy, Frame,
-    FrameDescriptor, FrameOrder, FrameRequest, FrameSelection, FrameSequence, FrameStamp,
-    FrameView, GeometryFault, GeometryPolicy, GeometryRevision, IdentityFault, InputCapability,
-    InputDelivery, InputDescriptor, InputEvent, InputFault, InputOpenRequest, InputOperationKind,
-    InputReceipt, InputRequest, InputRequirement, InputSequence, Interruption, Key, Lifecycle,
-    LoadStage, Manifest, Match, MatchDefaults, MatchOptions, MatchResult, MemoryEntry,
-    MemoryPackage, Modifier, MonotonicInstant, OpenRequest, OperationContext, OverflowPolicy,
-    PackagePath, PackageSource, PermissionKind, PermissionOutcome, PermissionReport,
-    PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point, PointerButton,
-    PointerGeometry, PreparedTemplate, PressedState, Provenance, ProviderId, QueuePolicy, Rect,
-    RedactedDiagnostic, RegionSelection, Result, RetainedStoragePolicy, Scale, SearchFrame,
-    SequenceLimits, SequenceOutcome, Session, SessionDescription, SessionRequest, Status,
-    StreamEpoch, StreamId, Suppression, SystemClock, TargetCapability, TargetDescription, TargetId,
-    TargetKind, TargetPlacement, TemplateDeclaration, TemplateEncoding, TemplateId, TemplateSource,
+    ActivityTag, AssetFault, AssetFaultKind, AssetLimits, AssetPackage, BackendDescriptor,
+    BackendId, CancellationToken, CapabilitySupport, CaptureFault, CleanupBudget, CleanupState,
+    ClipPolicy, Clock, ContentDigest, Continuity, CoordinateSpace, CoordinateSupport, CpuMapping,
+    DeliveryPlan, DiagnosticBatch, DiagnosticCategory, DiagnosticDrain, DiagnosticKind,
+    DiagnosticLevel, DiagnosticLosses, DiagnosticOperationId, DiagnosticOperationKind,
+    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord,
+    DiagnosticRecordSequence, DiagnosticTemplateId, Engine, EngineId, EngineOptions, Error,
+    FindOutcome, FindRequest, FocusPolicy, Frame, FrameDescriptor, FrameDiagnostic, FrameOrder,
+    FrameRequest, FrameSelection, FrameSequence, FrameStamp, FrameView, GeometryFault,
+    GeometryPolicy, GeometryRevision, IdentityFault, InputAddressScope, InputAttempt,
+    InputCapability, InputDelivery, InputDescriptor, InputDiagnostic, InputEvent, InputFault,
+    InputOpenRequest, InputOperationKind, InputOperationSet, InputReceipt, InputRequest,
+    InputRequirement, InputRouteCapability, InputSequence, Interruption, Key, Lifecycle,
+    LifecycleDiagnostic, LoadStage, MAX_DIAGNOSTIC_CAPACITY, Manifest, MappingDiagnostic,
+    MappingObserver, Match, MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage,
+    Modifier, MonotonicInstant, OpenRequest, OperationContext, OperationStartedDiagnostic,
+    OverflowPolicy, PackagePath, PackageSource, PermissionDiagnostic, PermissionKind,
+    PermissionOutcome, PermissionReport, PermissionState, PixelExtent, PixelFormat, PixelRect,
+    PlatformCode, Point, PointerButton, PointerGeometry, PreparedTemplate, PressedState,
+    Provenance, ProviderId, QueuePolicy, Rect, RedactedDiagnostic, RegionSelection, Result,
+    RetainedStoragePolicy, RouteAttemptDiagnostic, Scale, SearchDiagnostic,
+    SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome, Session,
+    SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,
+    Suppression, SystemClock, TargetCapability, TargetDescription, TargetId, TargetKind,
+    TargetPlacement, TemplateDeclaration, TemplateEncoding, TemplateId, TemplateSource,
     TemplateSourceRequest, TransformSnapshot, VisionFault,
 };
 

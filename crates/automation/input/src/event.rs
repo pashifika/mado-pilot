@@ -2,8 +2,8 @@
 //!
 //! Every event here is one irreversible act, which is why the sequence that holds
 //! them is bounded and why a receipt counts them. An operating system cannot take
-//! a delivered keystroke back, so the contract does not pretend a sequence is
-//! atomic; it makes exactly how far one got observable instead.
+//! back an event that may already have native effect, so the contract does not
+//! pretend a sequence is atomic; it makes exactly how far one got observable.
 
 use std::fmt;
 use std::time::Duration;
@@ -25,7 +25,7 @@ pub enum PointerButton {
 }
 
 impl PointerButton {
-    /// Every button version one delivers.
+    /// Every button version one supports.
     pub const ALL: [Self; 3] = [
         PointerButton::Primary,
         PointerButton::Secondary,
@@ -54,7 +54,7 @@ impl fmt::Display for PointerButton {
 /// A modifier is pressed and released like any other key, because a sequence that
 /// declared modifier *state* alongside each keystroke could not express holding a
 /// modifier across several of them, and could not report which half of a press and
-/// release had been delivered when a sequence stopped.
+/// release reached the route threshold when a sequence stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum Modifier {
@@ -146,17 +146,17 @@ impl Key {
     ///
     /// Twenty-four is the extent of the function-key range both release targets
     /// define. A number above it names no key, so it is refused rather than
-    /// delivered as whatever the platform does with an out-of-range code.
+    /// submitted as whatever the platform does with an out-of-range code.
     pub const MAX_FUNCTION: u8 = 24;
 
-    /// Checks that the key names something deliverable.
+    /// Checks that the key names something a route can submit.
     ///
     /// # Errors
     ///
     /// Returns [`InputFault::SequenceOutOfBounds`] for a function-key number
     /// outside `1..=24`, and for a character that is a control code: a control
     /// character is the encoding of a key combination rather than a key, and
-    /// delivering one as a character would produce whatever the target made of the
+    /// submitting one as a character would produce whatever the target made of the
     /// byte.
     pub fn check(self) -> Result<(), InputFault> {
         match self {
@@ -222,7 +222,7 @@ pub enum InputEvent {
     ///
     /// A delay is an event because it is a point where the operation's deadline
     /// and cancellation are checked, and because a sequence that stopped during
-    /// one has delivered a countable number of events.
+    /// one has a countable number of prior events at the route threshold.
     Delay(Duration),
 }
 

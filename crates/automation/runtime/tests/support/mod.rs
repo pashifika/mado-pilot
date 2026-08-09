@@ -22,10 +22,10 @@ use mado_pilot_capture::{
 use mado_pilot_core::{OperationContext, ProviderId, Result, TargetId};
 use mado_pilot_input::Admission;
 use mado_pilot_runtime::{
-    CaptureProvider, Engine, EngineWiring, IdentityIssuer, InputCapability, InputController,
-    InputDelivery, InputDescriptor, InputFault, InputOpenRequest, InputOperationKind,
-    InputProvider, InputReceipt, InputRequest, Matcher, PackageLoader, PermissionProbe,
-    PixelExtent, PixelFormat, TargetDescription,
+    CapabilitySupport, CaptureProvider, Engine, EngineWiring, IdentityIssuer, InputCapability,
+    InputController, InputDelivery, InputDescriptor, InputFault, InputOpenRequest,
+    InputOperationKind, InputProvider, InputReceipt, InputRequest, Matcher, PackageLoader,
+    PermissionProbe, PixelExtent, PixelFormat, SubmissionEvidence, TargetDescription,
 };
 use mado_pilot_testkit::{ControlledCapture, ControlledInput, ControlledMatcher, ManualClock};
 use mado_pilot_vision::MatchBackend;
@@ -331,9 +331,9 @@ pub(crate) struct LateAnswer {
 /// What the late controller answers with once the clock has moved.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Answer {
-    /// Nothing reached the target.
+    /// No native effect was possible.
     Unexecuted,
-    /// This many events reached the target before it stopped.
+    /// This many complete logical events reached the route's threshold.
     Partial(usize),
 }
 
@@ -391,8 +391,18 @@ impl InputProvider for LateAnswer {
 
 fn late_capability() -> InputCapability {
     InputCapability::none()
-        .with_pair(InputOperationKind::Keyboard, InputDelivery::System)
-        .with_pair(InputOperationKind::Text, InputDelivery::System)
+        .with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::SystemInputAdmission,
+        )
+        .with_pair(
+            InputOperationKind::Text,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::SystemInputAdmission,
+        )
 }
 
 struct LateController {
@@ -430,11 +440,13 @@ impl InputController for LateController {
             Answer::Unexecuted => {
                 InputReceipt::unexecuted(request.target(), InputFault::PolicyRefused)
             }
-            Answer::Partial(delivered) => InputReceipt::partial(
+            Answer::Partial(submitted) => InputReceipt::partial(
                 request.target(),
                 InputDelivery::System,
-                delivered,
-                InputFault::DeliveryFailed,
+                SubmissionEvidence::SystemInputAdmission,
+                submitted,
+                false,
+                InputFault::SubmissionFailed,
             )
             .with_cleanup(0, 0),
         })

@@ -39,14 +39,15 @@
 //!
 //! # Implementation status
 //!
-//! ABI 1.1, with the complete ABI 1.0 prefix preserved. The 1.0 table covers
-//! build and clock information, cancellation, structured errors, replay engine
-//! construction, asset packages, prepared templates, discovery, capture,
-//! mapping, matching, and immutable results. ABI 1.1 appends native engine and
-//! target capability records, non-prompting permission reads, input-aware open,
-//! session input descriptors, bounded event delivery, immutable receipts, and
-//! owned pre-admission errors. It contains no OCR, watcher, query, callback, or
-//! native-frame entry, and none is reserved as a null table slot.
+//! ABI 1.2, with the complete released ABI 1.0 prefix preserved. The 1.0 table
+//! covers build and clock information, cancellation, structured errors, replay
+//! engine construction, asset packages, prepared templates, discovery, capture,
+//! mapping, matching, and immutable results. ABI 1.2 replaces the unreleased 1.1
+//! draft with native engine and route capability records, non-prompting
+//! permission reads, input-aware open, bounded input submission, owned receipts
+//! and attempts, operation activity tags, and bounded diagnostic readers and
+//! batches. It contains no OCR, watcher, query, callback, or native-frame entry,
+//! and none is reserved as a null table slot.
 //!
 //! The C++ wrapper covers exactly the negotiated table and declares no ABI of
 //! its own, so it adds no binary compatibility surface;
@@ -55,10 +56,11 @@
 //!
 //! **Every released numeric value, structure prefix, field offset, and table
 //! position is frozen for ABI major 1.** ADR 0007 froze the complete 1.0 prefix
-//! and resolved gate `G-010`; ADR 0017 freezes the additive 1.1 suffix. Within
-//! this major nothing changes its number and nothing moves; a later minor
+//! and resolved gate `G-010`; ADR 0023 defines the accepted additive 1.2 suffix.
+//! Within this major nothing changes its number and nothing moves; a later minor
 //! appends and raises `MADOPILOT_ABI_MINOR`. `tests/abi-compat/` keeps every
-//! released header and compiles each one against every later build.
+//! released header and compiles each one against every later build. The
+//! unreleased 1.1 fixture remains migration and rejection evidence only.
 //!
 //! # Where to start
 //!
@@ -96,6 +98,7 @@ compile_error!(
 mod assets;
 mod boundary;
 mod capture;
+mod diagnostic;
 mod engine;
 mod error;
 mod handle;
@@ -111,8 +114,10 @@ mod view;
 
 pub use assets::{madopilot_package_t, madopilot_template_t};
 pub use capture::{madopilot_frame_t, madopilot_mapping_t, madopilot_session_t};
+pub use diagnostic::{madopilot_diagnostic_batch_t, madopilot_diagnostic_reader_t};
 pub use engine::{madopilot_engine_t, madopilot_target_list_t};
 pub use error::madopilot_error_t;
+pub use input::madopilot_input_receipt_t;
 pub use matching::madopilot_result_t;
 pub use operation::madopilot_cancellation_t;
 pub use status::*;

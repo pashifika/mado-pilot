@@ -671,7 +671,7 @@ impl fmt::Display for Violation {
 }
 
 /// Package version the repository contract fixes for the whole workspace.
-pub const REQUIRED_VERSION: &str = "0.2.0";
+pub const REQUIRED_VERSION: &str = "0.2.1";
 /// Edition every workspace member must use.
 pub const REQUIRED_EDITION: &str = "2024";
 /// Tested minimum supported Rust version, which is also the pinned toolchain.

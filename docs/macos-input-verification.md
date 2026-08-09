@@ -8,22 +8,21 @@ send desktop input or open the opt-in replacement window.
 
 ## Capability boundary
 
-Capabilities are operation-and-delivery pairs. macOS publishes exactly one
-delivery mechanism, because it has exactly one: `CGEvent` posted at the HID tap,
-which reaches whatever is focused.
+Capabilities are operation-and-route pairs. macOS publishes exactly one current
+route, because it has exactly one: `CGEvent` posted at the HID tap, which reaches
+whatever is focused.
 
-| Discovered target | `System` | `BackgroundTarget` |
-|---|---|---|
-| Top-level window | Pointer, keyboard, text; focus required | None |
-| Display | Pointer only; no focusable target is implied | None |
+| Discovered target | `System` | `WindowMessage` | `ProcessDirected` |
+|---|---|---|---|
+| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Unsupported |
+| Display | Pointer only; no focusable target is implied; invocation-only evidence | Unsupported | Unsupported |
 
-There is no fixture class that earns a background capability, and no request may
-obtain one. A caller that requires `BackgroundTarget` fails admission with
-`UnsupportedCombination` before any event, and a caller that lists it first and
-system input second is delivered through system input with the receipt naming the
-mechanism that was actually tried. The Adapter never substitutes system input for
-background delivery on its own: doing so would focus a window the caller asked not
-to disturb.
+There is no exact-window or process-directed input channel, and no request may
+obtain one. A caller that requires either route fails admission with
+`UnsupportedCombination` before any event. A fallback plan may try `System` only
+after a preceding route was refused without possible native effect. The Adapter
+never substitutes system input on its own: doing so would focus a window the
+caller asked not to disturb.
 
 Every target names `PermissionKind::InputControl` — Accessibility — as the
 authorization input needs, separately from the Screen Recording that capture
@@ -33,10 +32,10 @@ Every refused or undetermined permission report names two independent execution
 axes. Bundle launch is `bundled`, `unbundled`, or `unknown`; signature mode is
 `unsigned`, `invalid`, structurally valid `ad-hoc`, structurally valid
 `certificate-backed`, or `platform-failure`. The Adapter reads signature state
-through dynamically loaded public Security.framework code-signing APIs. Ordinary
-diagnostics contain only reviewed static classifications. They never interpolate
-the signing identifier; the dedicated fixture prints that identifier only on its
-explicit evidence line.
+through dynamically loaded public Security.framework code-signing APIs.
+Structured diagnostic records contain only reviewed enums, numbers, identifiers,
+counts, and flags. They never carry the signing identifier; the dedicated
+fixture prints that identifier only on its explicit evidence line.
 
 ## Coordinates
 
@@ -60,15 +59,15 @@ Geometry is revalidated immediately before every irreversible pointer event, so 
 window that moved between resolution and delivery reports `GeometryChanged`
 instead of clicking what moved into its place.
 
-## Authorization, focus, and receipts
+## Authorization, focus, and submission evidence
 
 macOS does not fail a synthesized event from an untrusted process; it discards it
 and `CGEventPost` reports nothing either way. The Adapter therefore reads the
 Accessibility decision with the non-prompting trust check before every
 irreversible event, not once at open. A revocation observed mid-sequence stops
-delivery and the receipt carries the count that had already gone out. Nothing here
-calls a permission-request API, opens System Settings, or presents any interface;
-an unavailable or unreadable state is treated as unauthorized rather than as
+submission and the receipt carries the count already invoked. Nothing here calls
+a permission-request API, opens System Settings, or presents any interface; an
+unavailable or unreadable state is treated as unauthorized rather than as
 permission.
 
 Window liveness comes from a fresh, bounded shareable-content snapshot. PID and
@@ -100,12 +99,12 @@ Every native observation is bounded by the caller's remaining operation budget.
 A display target has no focus requirement, because nothing about a display is
 focusable.
 
-`delivered` counts complete logical events. A text event that reached the target
-in part before a later chunk could not be posted is `Partial` even when no logical
-event completed, never `Unexecuted`, and no fallback mechanism is tried.
-[ADR 0015](adr/0015-partial-native-input-effects-and-receipt-accounting.md)
-records why that zero-complete partial outcome is required for safe retry
-behavior.
+`submitted` counts complete logical events whose `CGEventPost` invocation
+returned. Their evidence is `InvocationOnly`: it proves neither operating-system
+admission nor application consumption. A text event that may have had partial
+native effect before a later chunk failed is `Partial` even when no logical event
+completed, never `Unexecuted`, and no fallback route is tried. ADR 0023 records
+why receipt evidence and a later visual observation remain separate.
 
 ## Keys, modifiers, and text
 
@@ -160,15 +159,18 @@ never attempted, and the two leave a caller with different options.
 - the stable bundle identifier `dev.mado-pilot.macos-input-fixture` when it is run
   from a bundle.
 
-macOS has no background input channel, so the fixture acknowledges nothing and
-there is no protocol to version: everything it observes arrived as ordinary system
-input. That makes selection the fail-closed step. `select_unique_fixture` requires
-a window target, the exact process-qualified title, all three operations over
-system delivery, no background delivery, and exactly one match. Zero matches and
-several matches both stop before input. A check then confirms the selection against
-the window's own deterministic content — `frame_is_fixture_content` requires the
-sampled region to be one flat colour within tolerance of the declared fill —
-because an application window is not one flat colour.
+macOS has no exact-window input channel, so the fixture acknowledges nothing and
+there is no protocol to version: everything it observes arrived as ordinary
+system input. That makes selection the fail-closed step.
+`select_unique_fixture` requires a window target, the exact process-qualified
+title, all three operations over `System`, no other route, and exactly one match.
+Zero matches and several matches both stop before input. A check then confirms
+selection against the window's deterministic content —
+`frame_is_fixture_content` requires the sampled region to be one flat colour
+within a per-platform tolerance of the declared fill — 24 channel values on
+macOS, where the current ScreenCaptureKit path was observed to convert the
+fixture's fill, and 8 on Windows — because an arbitrary application window is
+not one flat colour.
 
 ### Bundling, ad-hoc signing, and structurally verifying the fixture
 
@@ -197,10 +199,10 @@ The last command must report `launch=bundled`, `signature=ad-hoc`, and
 `signing-identifier=dev.mado-pilot.macos-input-fixture`. This verification proves
 the generated bundle's structural code-signature validity and the running code's
 classification. It does not prove that Gatekeeper would accept a distributed
-artifact, that macOS made or reused any TCC decision, that the artifact is
-notarized, or that input was delivered. A certificate-backed build is a different
-signature mode and needs evidence from that exact artifact rather than inheriting
-the ad-hoc result.
+artifact, that macOS made or reused any TCC decision, that a native input route
+accepted an event, or that the target application consumed one. A
+certificate-backed build is a different signature mode and needs evidence from
+that exact artifact rather than inheriting the ad-hoc result.
 
 ## Automated macOS checks
 
@@ -214,19 +216,20 @@ cargo test --locked -p mado-pilot-platform-macos --test native_input
 cargo test --locked -p mado-pilot-platform-macos --test fixture_signing
 ```
 
-Deterministic tests cover the capability matrix, focus outcomes, Retina and signed
-multi-display mapping, partial sequences, cleanup completeness and exhaustion,
-target loss, cancellation and deadline races, close, all five signature
+Deterministic tests cover the route capability matrix, focus outcomes, Retina and
+signed multi-display mapping, invocation-only evidence, partial sequences,
+cleanup completeness and exhaustion, target loss, cancellation and deadline
+races, close, bounded diagnostic loss/ordering/privacy, all five signature
 classifications, identifier redaction, and separation of bundle launch from
 signature mode. The fixture-signing integration check constructs and ad-hoc signs
 a generated temporary bundle, runs structural verification, and exercises only
-the fixture's metadata-reporting mode. The delivery cases run against the driver
-seam rather than the desktop, because a live host cannot be made to revoke an
-authorization or refuse a release on cue.
+the fixture's metadata-reporting mode. The submission cases run against the
+driver seam rather than the desktop, because a live host cannot be made to revoke
+an authorization or refuse a release on cue.
 
-The native integration test **delivers nothing**. It exercises discovery, the
-input provider surface, and the refusals that precede any event. Starting the
-fixture window takes focus and is therefore opt-in:
+The native integration test **submits nothing**. It exercises discovery, the
+input provider surface, and refusals that precede any event. Starting the fixture
+window takes focus and is therefore opt-in:
 
 ```sh
 MADO_PILOT_MACOS_FIXTURE=1 cargo test --locked \
@@ -279,12 +282,11 @@ the exact retained fixture. Launch/signature, capture, mapping, or predicate
 failure stops before the first `RequireFocused` probe.
 It then waits 15 seconds: click that exact fixture window when prompted. The probe
 activates nothing, and every attempt before the exact retained window is focused
-delivers zero events. Only then does it send Enter down and up and the fixed text
+submits zero events. Only then does it send Enter down and up and the fixed text
 `system-probe`. It sends no click and no pointer movement, and closes capture
-after input verification.
-The fixture event queue is deliberately delimited after focus is established, so
-ordinary mouse-enter or operator focus events are not attributed to that later
-delivery sequence.
+after input verification. The fixture event queue is deliberately delimited
+after focus is established, so ordinary mouse-enter or operator focus events are
+not attributed to that later submission sequence.
 
 If the fixture is not focused in time, selection is ambiguous, deterministic
 content cannot be captured and mapped, the pixels do not match, or Accessibility
@@ -294,38 +296,45 @@ focus from the user.
 
 ## Explicit facade check
 
-The check above exercises the Adapter directly. The same delivery through the
-public Rust facade — engine construction, non-prompting authorization reads,
-discovery, capture, mapping, and a frame-bound sequence — is
-`crates/mado-pilot/examples/macos-native-input.rs`. Start the fixture, then name
-its exact window title:
+The check above exercises the Adapter directly. The same route through the
+public Rust facade — engine construction with bounded `Debug` diagnostics,
+non-prompting authorization reads, discovery, capture, mapping, a frame-bound
+sequence under a shared activity tag, immutable invocation-only receipt
+inspection, a strictly newer expected-condition search, diagnostic drain, and
+explicit close — is `crates/mado-pilot/examples/macos-native-input.rs`. Start
+the fixture with its opt-in animation, then name its exact window title:
 
 ```sh
+cargo run --locked --package mado-pilot-platform-macos \
+  --bin mado-pilot-macos-input-fixture -- --animate-on-input
 cargo run --locked --package mado-pilot --example macos-native-input -- \
   "MadoPilot Input Fixture [<pid>]"
 ```
 
 It matches the title exactly, refuses zero or more than one match, and refuses
-before discovery when either authorization is missing, so it stops at an
-actionable message rather than sending input somewhere else. It focuses the
-window it selects and types into it, which is what system delivery on macOS
-means; point it only at a window you own.
+before discovery when either authorization is missing. It focuses the selected
+window and types into it, which is what system input on macOS means; point it only
+at a window you own. A complete receipt is not treated as success until an
+independent strictly newer frame has the expected changed fill. Drained records
+carry only the documented metadata for the shared activity tag.
 
 ## Explicit C and C++ boundary checks
 
 The ABI check compiles and runs both native common-flow examples in `--check`
-mode. That mode creates the real macOS engine, verifies the ABI 1.1 capability
-and permission records without prompting, and stops before discovery or input:
+mode. That mode creates the real macOS engine, verifies the ABI 1.2 route,
+permission, and diagnostic records without prompting, and stops before discovery
+or input:
 
 ```sh
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
   --label "<host>"
 ```
 
-After starting the dedicated fixture, the same binaries exercise engine
-construction, both permission reads, exact discovery, capture, mapping, a
-frame-bound system-input request, the immutable receipt, and explicit close
-through C and then through the header-only C++ wrapper:
+After starting the dedicated fixture in `--animate-on-input` mode, the same
+binaries exercise engine construction, both permission reads, exact discovery,
+capture, mapping, a frame-bound system-input request, immutable receipt and
+attempt inspection, a strictly newer expected-condition search, diagnostic
+drain, and explicit close through C and then through the header-only C++ wrapper:
 
 ```sh
 target/debug/c-abi-check/macos-native-input \
@@ -334,32 +343,37 @@ target/debug/c-abi-check/macos-native-input-cpp \
   "MadoPilot Input Fixture [<pid>]"
 ```
 
-Full mode focuses and sends input. Apply the same Screen Recording,
-Accessibility, exact-title, and owned-window restrictions as the Rust facade
-check. `--check` remains the only mode run unattended.
+Full mode focuses and sends input, then independently evaluates a newer frame.
+Apply the same Screen Recording, Accessibility, exact-title, and owned-window
+restrictions as the Rust facade check. `--check` remains the only mode run
+unattended.
 
 ## Redaction review
 
-Production input code emits no event, key, text, window-title, signing identifier,
-or desktop-content log. Its permission diagnostics select only reviewed static
-launch/signature classifications. The fixture prints only its own deterministic
-title, its process and window numbers, its separate launch/signature modes, its
-signing identifier, and per-event kind and unit counts. The Objective-C
-fixture reads an event's characters solely to take their length and never copies
-them out of that block. Interactive evidence may record capability, event counts,
-typed faults, and cleanup counts; it must not record input text or unrelated
-desktop payload.
+Production input and diagnostic code emits no event, key, text, window title,
+signing identifier, desktop content, captured bytes, native free-form message,
+platform namespace, or backend name. Permission records select only reviewed
+static launch/signature classifications. The fixture prints only its own
+deterministic title, its process and window numbers, its separate
+launch/signature modes, its signing identifier, and per-event kind and unit
+counts. The Objective-C fixture reads an event's characters solely to take their
+length and never copies them out of that block. Interactive evidence may record
+capability, route, submission counts and evidence, typed faults, cleanup counts,
+and diagnostic loss counts; it must not record input text or unrelated desktop
+payload.
 
-## Accepted Phase 2 evidence
+## Historical Phase 2 evidence
 
 The one-display qualified-host matrix for commit
 `a1faf04505c8471deb4de8c136fddcc7f76105e7`, including the AddressSanitizer
 run and full Rust, C, and C++ flows, is retained in
 [`evidence/phase-2-native/macos-current-display.md`](evidence/phase-2-native/macos-current-display.md).
-The exact owned-window replacement oracle is retained separately in
+ADR 0021 invalidated its former acceptance status after source, oracle, profile,
+and toolchain drift. It is historical evidence, not authorization for the
+current release candidate. The exact owned-window replacement oracle remains
+retained separately in
 [`evidence/g-001/macos-owned-window-replacement.md`](evidence/g-001/macos-owned-window-replacement.md).
-Neither result substitutes for the release candidate's shared external-display
-matrix.
+Revision-bound current-display and shared-display matrices remain release gaps.
 
 ## Frameworks
 

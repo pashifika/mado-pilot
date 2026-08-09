@@ -23,10 +23,12 @@
 #pragma comment(lib, "psapi.lib")
 #elif defined(__APPLE__)
 #include <sys/resource.h>
+#include <time.h>
 #endif
 
 
 #include "madopilot/madopilot.h"
+#include "../native-expected-condition.h"
 
 #ifndef MADOPILOT_EXAMPLE_NAME
 #error "the platform example must define MADOPILOT_EXAMPLE_NAME"
@@ -48,6 +50,9 @@
 #endif
 
 static int failures = 0;
+
+static const uint64_t diagnostic_activity_tag = UINT64_C(0x4d50494e505554a1);
+static const uint32_t diagnostic_capacity = UINT32_C(256);
 
 static int expect(int condition, const char* what)
 {
@@ -100,9 +105,107 @@ static int bounded_operation(const madopilot_api_t* api,
 
     memset(operation, 0, sizeof(*operation));
     operation->struct_size = (uint32_t)sizeof(*operation);
-    operation->flags = MADOPILOT_OPERATION_HAS_DEADLINE;
+    operation->flags = MADOPILOT_OPERATION_HAS_DEADLINE |
+                       MADOPILOT_OPERATION_HAS_ACTIVITY_TAG;
     operation->deadline_nanos = now + budget_nanos;
+    operation->activity_tag = diagnostic_activity_tag;
     return 1;
+}
+
+static int drain_diagnostics(const madopilot_api_t* api,
+                             madopilot_diagnostic_reader_t* reader,
+                             int require_mapping)
+{
+    uint64_t records = 0;
+    uint64_t normal = 0;
+    uint64_t debug = 0;
+    uint64_t mappings = 0;
+    uint64_t discarded_normal = 0;
+    uint64_t discarded_debug = 0;
+
+    for (;;) {
+        madopilot_diagnostic_drain_state_t state =
+            MADOPILOT_DIAGNOSTIC_DRAIN_OPEN_EMPTY;
+        madopilot_diagnostic_batch_t* batch = NULL;
+        madopilot_diagnostic_batch_info_t info;
+        uint64_t index;
+
+        if (!expect(api->diagnostic_reader_drain(reader, &state, &batch) ==
+                        MADOPILOT_STATUS_OK,
+                    "diagnostic_reader_drain")) {
+            return 0;
+        }
+        if (state == MADOPILOT_DIAGNOSTIC_DRAIN_END_OF_STREAM) {
+            if (!expect(batch == NULL, "end-of-stream has no diagnostic batch")) {
+                return 0;
+            }
+            break;
+        }
+        if (!expect(state == MADOPILOT_DIAGNOSTIC_DRAIN_BATCH && batch != NULL,
+                    "a sealed diagnostic reader yields batches then ends")) {
+            if (batch != NULL) {
+                api->diagnostic_batch_release(batch);
+            }
+            return 0;
+        }
+
+        memset(&info, 0, sizeof(info));
+        info.struct_size = (uint32_t)sizeof(info);
+        if (!expect(api->diagnostic_batch_info(batch, &info) ==
+                        MADOPILOT_STATUS_OK,
+                    "diagnostic_batch_info")) {
+            api->diagnostic_batch_release(batch);
+            return 0;
+        }
+        discarded_normal += info.discarded_normal;
+        discarded_debug += info.discarded_debug;
+        for (index = 0; index < info.record_count; ++index) {
+            madopilot_diagnostic_record_t record;
+            memset(&record, 0, sizeof(record));
+            record.struct_size = (uint32_t)sizeof(record);
+            if (!expect(api->diagnostic_batch_record_at(
+                            batch, (size_t)index, &record) ==
+                            MADOPILOT_STATUS_OK,
+                        "diagnostic_batch_record_at") ||
+                !expect((record.flags &
+                         MADOPILOT_DIAGNOSTIC_RECORD_HAS_ACTIVITY) != 0 &&
+                            record.activity_tag == diagnostic_activity_tag,
+                        "every diagnostic record retains the caller activity")) {
+                api->diagnostic_batch_release(batch);
+                return 0;
+            }
+            records += 1;
+            normal += record.level == MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL;
+            debug += record.level == MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG;
+            if (record.kind == MADOPILOT_DIAGNOSTIC_KIND_MAPPING) {
+                const uint32_t required =
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET |
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME |
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_SOURCE_SPACE |
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_DESTINATION_SPACE;
+                if (!expect((record.flags & required) == required &&
+                                record.source_space ==
+                                    MADOPILOT_SPACE_CAPTURE_PIXELS &&
+                                record.destination_space ==
+                                    MADOPILOT_SPACE_CAPTURE_PIXELS,
+                            "mapping diagnostics expose copied identity and spaces")) {
+                    api->diagnostic_batch_release(batch);
+                    return 0;
+                }
+                mappings += 1;
+            }
+        }
+        api->diagnostic_batch_release(batch);
+    }
+
+    printf("diagnostics: %llu record(s), normal %llu, debug %llu, "
+           "discarded-normal %llu, discarded-debug %llu\n",
+           (unsigned long long)records, (unsigned long long)normal,
+           (unsigned long long)debug, (unsigned long long)discarded_normal,
+           (unsigned long long)discarded_debug);
+    return expect(records != 0, "the enabled diagnostic stream retained records") &&
+           (!require_mapping ||
+            expect(mappings != 0, "the mapped frame emitted a debug mapping fact"));
 }
 
 static int same_text(madopilot_str_t view, const char* text)
@@ -110,6 +213,120 @@ static int same_text(madopilot_str_t view, const char* text)
     const size_t length = strlen(text);
     return view.len == length &&
            (length == 0 || (view.data != NULL && memcmp(view.data, text, length) == 0));
+}
+
+static void pause_for_new_frame(void)
+{
+#if defined(_WIN32)
+    Sleep(10u);
+#elif defined(__APPLE__)
+    const struct timespec delay = { 0, 10000000 };
+    (void)nanosleep(&delay, NULL);
+#endif
+}
+
+static int same_frame_stamp(const madopilot_frame_stamp_t* left,
+                            const madopilot_frame_stamp_t* right)
+{
+    return left->stream == right->stream &&
+           left->epoch == right->epoch &&
+           left->sequence == right->sequence &&
+           left->geometry == right->geometry;
+}
+
+static int strictly_newer_frame(const madopilot_frame_stamp_t* candidate,
+                                const madopilot_frame_stamp_t* before)
+{
+    return candidate->stream == before->stream &&
+           (candidate->epoch > before->epoch ||
+            (candidate->epoch == before->epoch &&
+             candidate->sequence > before->sequence));
+}
+
+static int observe_expected_condition(const madopilot_api_t* api,
+                                      madopilot_session_t* session,
+                                      const madopilot_frame_stamp_t* before)
+{
+    madopilot_operation_t operation;
+
+    if (!bounded_operation(api, UINT64_C(5000000000), &operation)) {
+        return 0;
+    }
+    for (;;) {
+        madopilot_frame_t* frame = NULL;
+        madopilot_mapping_t* mapping = NULL;
+        madopilot_frame_stamp_t frame_stamp;
+        madopilot_frame_stamp_t mapping_stamp;
+        madopilot_map_request_t map_request;
+        madopilot_image_t image;
+        madopilot_error_t* error = NULL;
+        int matched;
+
+        if (!require_ok(api,
+                        api->session_acquire_frame(
+                            session, &operation, &frame, &error),
+                        &error, "observe a newer frame")) {
+            return 0;
+        }
+        memset(&frame_stamp, 0, sizeof(frame_stamp));
+        frame_stamp.struct_size = (uint32_t)sizeof(frame_stamp);
+        if (!expect(api->frame_stamp(frame, &frame_stamp) == MADOPILOT_STATUS_OK,
+                    "read the observed frame identity")) {
+            api->frame_release(frame);
+            return 0;
+        }
+        if (!expect(frame_stamp.stream == before->stream,
+                    "the observation remains correlated to the source stream")) {
+            api->frame_release(frame);
+            return 0;
+        }
+        if (!strictly_newer_frame(&frame_stamp, before)) {
+            api->frame_release(frame);
+            pause_for_new_frame();
+            continue;
+        }
+
+        memset(&map_request, 0, sizeof(map_request));
+        map_request.struct_size = (uint32_t)sizeof(map_request);
+        map_request.format = MADOPILOT_PIXEL_FORMAT_BGRA8;
+        if (!require_ok(api,
+                        api->frame_map(
+                            frame, &map_request, &operation, &mapping, &error),
+                        &error, "map an observed frame")) {
+            api->frame_release(frame);
+            return 0;
+        }
+        memset(&mapping_stamp, 0, sizeof(mapping_stamp));
+        mapping_stamp.struct_size = (uint32_t)sizeof(mapping_stamp);
+        memset(&image, 0, sizeof(image));
+        image.struct_size = (uint32_t)sizeof(image);
+        if (!expect(api->mapping_stamp(mapping, &mapping_stamp) ==
+                        MADOPILOT_STATUS_OK,
+                    "read the observed mapping identity") ||
+            !expect(same_frame_stamp(&mapping_stamp, &frame_stamp),
+                    "the visual search remains correlated to the observed frame") ||
+            !expect(api->mapping_describe(mapping, &image) ==
+                        MADOPILOT_STATUS_OK,
+                    "describe the observed mapping")) {
+            api->mapping_release(mapping);
+            api->frame_release(frame);
+            return 0;
+        }
+        matched = image.format == MADOPILOT_PIXEL_FORMAT_BGRA8 &&
+                  madopilot_example_expected_condition_matches(
+                      image.bytes.data, image.bytes.len, image.stride,
+                      image.width, image.height);
+        api->mapping_release(mapping);
+        api->frame_release(frame);
+        if (matched) {
+            printf("expected condition: stream %llu epoch %llu sequence %llu\n",
+                   (unsigned long long)frame_stamp.stream,
+                   (unsigned long long)frame_stamp.epoch,
+                   (unsigned long long)frame_stamp.sequence);
+            return 1;
+        }
+        pause_for_new_frame();
+    }
 }
 
 static int probe_permissions(const madopilot_api_t* api,
@@ -164,8 +381,18 @@ static int select_target(const madopilot_api_t* api,
                          madopilot_target_list_t* targets,
                          const char* title,
                          size_t* selected,
-                         madopilot_target_capability_t* capability)
+                         uint64_t* target_id)
 {
+    const madopilot_input_operation_kind_t operations[3] = {
+        MADOPILOT_INPUT_OPERATION_POINTER,
+        MADOPILOT_INPUT_OPERATION_KEYBOARD,
+        MADOPILOT_INPUT_OPERATION_TEXT,
+    };
+    const madopilot_input_delivery_t routes[3] = {
+        MADOPILOT_INPUT_DELIVERY_SYSTEM,
+        MADOPILOT_INPUT_DELIVERY_WINDOW_MESSAGE,
+        MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED,
+    };
     size_t count = 0;
     size_t index;
     size_t matches = 0;
@@ -186,6 +413,7 @@ static int select_target(const madopilot_api_t* api,
         }
         if (target.kind == MADOPILOT_TARGET_KIND_WINDOW && same_text(target.name, title)) {
             *selected = index;
+            *target_id = target.target;
             matches += 1;
         }
     }
@@ -195,28 +423,32 @@ static int select_target(const madopilot_api_t* api,
         return 0;
     }
 
-    memset(capability, 0, sizeof(*capability));
-    capability->struct_size = (uint32_t)sizeof(*capability);
-    if (!expect(api->target_list_capability(targets, *selected, capability) ==
-                    MADOPILOT_STATUS_OK,
-                "target_list_capability")) {
-        return 0;
-    }
-    if (!expect(capability->kind == MADOPILOT_TARGET_KIND_WINDOW,
-                "the selected target remains a window") ||
-        !expect(capability->capture == MADOPILOT_CAPABILITY_SUPPORTED,
-                "the selected target supports capture") ||
-        !expect((capability->input_pairs & MADOPILOT_EXAMPLE_REQUIRED_PAIRS) ==
-                    MADOPILOT_EXAMPLE_REQUIRED_PAIRS,
-                "the selected target exposes every required input pair") ||
-        !expect((capability->pointer_spaces &
-                 (UINT32_C(1) << MADOPILOT_SPACE_CAPTURE_PIXELS)) != 0,
-                "the selected target accepts capture-pixel pointer coordinates")) {
-        return 0;
+    for (index = 0; index < 9; index += 1) {
+        const uint64_t bit = UINT64_C(1) << index;
+        madopilot_input_capability_t capability;
+        if ((MADOPILOT_EXAMPLE_REQUIRED_PAIRS & bit) == 0) {
+            continue;
+        }
+        memset(&capability, 0, sizeof(capability));
+        capability.struct_size = (uint32_t)sizeof(capability);
+        if (!expect(api->target_list_input_capability(
+                        targets, *selected, operations[index / 3], routes[index % 3],
+                        &capability) == MADOPILOT_STATUS_OK,
+                    "target_list_input_capability") ||
+            !expect(capability.support == MADOPILOT_CAPABILITY_SUPPORTED,
+                    "the selected target supports every required input pair")) {
+            return 0;
+        }
+        if (capability.operation == MADOPILOT_INPUT_OPERATION_POINTER &&
+            !expect((capability.pointer_spaces &
+                     (UINT32_C(1) << MADOPILOT_SPACE_CAPTURE_PIXELS)) != 0,
+                    "the target accepts capture-pixel pointer coordinates")) {
+            return 0;
+        }
     }
 
     printf("selected: index %zu target %llu\n", *selected,
-           (unsigned long long)capability->target);
+           (unsigned long long)*target_id);
     return 1;
 }
 
@@ -236,10 +468,11 @@ static int deliver(const madopilot_api_t* api,
                    madopilot_frame_t* frame,
                    const madopilot_frame_info_t* frame_info)
 {
-    madopilot_input_event_t events[6];
+    madopilot_input_event_t events[4];
     madopilot_input_delivery_t delivery = MADOPILOT_EXAMPLE_DELIVERY;
     madopilot_input_request_t request;
-    madopilot_input_receipt_t receipt;
+    madopilot_input_receipt_info_t info;
+    madopilot_input_receipt_t* receipt = NULL;
     madopilot_operation_t operation;
     madopilot_error_t* error = NULL;
 
@@ -254,8 +487,6 @@ static int deliver(const madopilot_api_t* api,
     events[3].struct_size = (uint32_t)sizeof(events[3]);
     events[3].kind = MADOPILOT_INPUT_EVENT_DELAY;
     events[3].delay_nanos = UINT64_C(20000000);
-    set_key_event(&events[4], MADOPILOT_INPUT_EVENT_KEY_PRESS, (uint32_t)'p');
-    set_key_event(&events[5], MADOPILOT_INPUT_EVENT_KEY_RELEASE, (uint32_t)'p');
 
     memset(&request, 0, sizeof(request));
     request.struct_size = (uint32_t)sizeof(request);
@@ -268,8 +499,6 @@ static int deliver(const madopilot_api_t* api,
     request.geometry_policy = MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED;
     request.source_frame = frame;
 
-    memset(&receipt, 0, sizeof(receipt));
-    receipt.struct_size = (uint32_t)sizeof(receipt);
     if (!bounded_operation(api, UINT64_C(2000000000), &operation) ||
         !require_ok(api,
                     api->session_send_input(session, &request, &operation,
@@ -277,12 +506,20 @@ static int deliver(const madopilot_api_t* api,
                     &error, "session_send_input")) {
         return 0;
     }
+    memset(&info, 0, sizeof(info));
+    info.struct_size = (uint32_t)sizeof(info);
+    if (!expect(api->input_receipt_info(receipt, &info) == MADOPILOT_STATUS_OK,
+                "input_receipt_info")) {
+        api->input_receipt_release(receipt);
+        return 0;
+    }
 
-    printf("receipt: outcome %d delivered %u failure %d cleanup %d\n",
-           (int)receipt.outcome, (unsigned)receipt.delivered,
-           (int)receipt.failure, (int)receipt.cleanup);
-    return expect(receipt.outcome == MADOPILOT_SEQUENCE_COMPLETE &&
-                      receipt.delivered ==
+    printf("receipt: outcome %d submitted %u fault %d cleanup %d\n",
+           (int)info.outcome, (unsigned)info.submitted,
+           (int)info.fault, (int)info.cleanup);
+    api->input_receipt_release(receipt);
+    return expect(info.outcome == MADOPILOT_SEQUENCE_COMPLETE &&
+                      info.submitted ==
                           (uint32_t)(sizeof(events) / sizeof(events[0])),
                   "the bounded native sequence completed exactly once");
 }
@@ -290,11 +527,11 @@ static int deliver(const madopilot_api_t* api,
 static int run_native(const madopilot_api_t* api, const char* title, int check_only)
 {
     madopilot_source_t source;
+    madopilot_engine_options_t engine_options;
     madopilot_engine_capabilities_t engine_capabilities;
     madopilot_operation_t operation;
     madopilot_open_request_t open_request;
     madopilot_input_open_request_t input_open_request;
-    madopilot_target_capability_t target_capability;
     madopilot_input_descriptor_t input_descriptor;
     madopilot_session_info_t session_info;
     madopilot_frame_info_t frame_info;
@@ -307,15 +544,29 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     madopilot_frame_t* frame = NULL;
     madopilot_mapping_t* mapping = NULL;
     madopilot_error_t* error = NULL;
+    madopilot_diagnostic_reader_t* diagnostic_reader = NULL;
+    uint64_t target_id = 0;
     size_t selected = 0;
     int worked = 0;
 
     memset(&source, 0, sizeof(source));
     source.struct_size = (uint32_t)sizeof(source);
     source.kind = MADOPILOT_EXAMPLE_SOURCE_KIND;
+    memset(&engine_options, 0, sizeof(engine_options));
+    engine_options.struct_size = (uint32_t)sizeof(engine_options);
+    engine_options.diagnostic_level = MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG;
+    engine_options.diagnostic_capacity = diagnostic_capacity;
     if (!bounded_operation(api, UINT64_C(5000000000), &operation) ||
-        !require_ok(api, api->engine_create(&source, &operation, &engine, &error),
-                    &error, "engine_create")) {
+        !require_ok(api,
+                    api->engine_create_with_options(
+                        &source, &engine_options, &operation, &engine, &error),
+                    &error, "engine_create_with_options")) {
+        goto cleanup;
+    }
+    if (!expect(api->engine_take_diagnostic_reader(
+                    engine, &diagnostic_reader) == MADOPILOT_STATUS_OK &&
+                    diagnostic_reader != NULL,
+                "an enabled engine exposes one diagnostic reader")) {
         goto cleanup;
     }
 
@@ -344,7 +595,7 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     if (!bounded_operation(api, UINT64_C(5000000000), &operation) ||
         !require_ok(api, api->engine_discover(engine, &operation, &targets, &error),
                     &error, "engine_discover") ||
-        !select_target(api, targets, title, &selected, &target_capability)) {
+        !select_target(api, targets, title, &selected, &target_id)) {
         goto cleanup;
     }
 
@@ -354,7 +605,8 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
                     api->engine_input_descriptor(engine, targets, selected, &operation,
                                                  &input_descriptor, &error),
                     &error, "engine_input_descriptor") ||
-        !expect((input_descriptor.pairs & MADOPILOT_EXAMPLE_REQUIRED_PAIRS) ==
+        !expect((input_descriptor.known_pairs & input_descriptor.supported_pairs &
+                 MADOPILOT_EXAMPLE_REQUIRED_PAIRS) ==
                     MADOPILOT_EXAMPLE_REQUIRED_PAIRS,
                 "the live input descriptor retains every required pair")) {
         goto cleanup;
@@ -414,7 +666,7 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
 
     memset(&map_request, 0, sizeof(map_request));
     map_request.struct_size = (uint32_t)sizeof(map_request);
-    map_request.format = frame_info.format;
+    map_request.format = MADOPILOT_PIXEL_FORMAT_BGRA8;
     if (!bounded_operation(api, UINT64_C(5000000000), &operation) ||
         !require_ok(api,
                     api->frame_map(frame, &map_request, &operation, &mapping, &error),
@@ -424,12 +676,24 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     memset(&image, 0, sizeof(image));
     image.struct_size = (uint32_t)sizeof(image);
     if (!expect(api->mapping_describe(mapping, &image) == MADOPILOT_STATUS_OK,
-                "mapping_describe")) {
+                "mapping_describe") ||
+        !expect(image.format == MADOPILOT_PIXEL_FORMAT_BGRA8 &&
+                    !madopilot_example_expected_condition_matches(
+                        image.bytes.data, image.bytes.len, image.stride,
+                        image.width, image.height),
+                "the expected visual condition is absent before input")) {
         goto cleanup;
     }
     printf("mapping: %zu byte(s)\n", image.bytes.len);
 
     worked = deliver(api, session, frame, &frame_info);
+    if (worked) {
+        api->mapping_release(mapping);
+        mapping = NULL;
+        api->frame_release(frame);
+        frame = NULL;
+        worked = observe_expected_condition(api, session, &frame_stamp);
+    }
 
 cleanup:
     if (mapping != NULL) {
@@ -450,6 +714,13 @@ cleanup:
     }
     if (engine != NULL) {
         api->engine_release(engine);
+        engine = NULL;
+    }
+    if (diagnostic_reader != NULL) {
+        (void)drain_diagnostics(api, diagnostic_reader, !check_only);
+        expect(api->diagnostic_reader_release(diagnostic_reader) ==
+                   MADOPILOT_STATUS_OK,
+               "diagnostic_reader_release");
     }
     if (error != NULL) {
         api->error_release(error);
@@ -506,13 +777,13 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    if (!expect(madopilot_get_api(MADOPILOT_ABI_MAJOR, 1,
+    if (!expect(madopilot_get_api(MADOPILOT_ABI_MAJOR, 2,
                                   sizeof(madopilot_api_t), &api) ==
                     MADOPILOT_STATUS_OK &&
                     api != NULL,
-                "negotiate ABI 1.1") ||
+                "negotiate ABI 1.2") ||
         !expect(api->struct_size >= MADOPILOT_API_SIZE_SESSION_SEND_INPUT,
-                "the negotiated table contains the complete ABI 1.1 suffix")) {
+                "the negotiated table contains the ABI 1.2 input suffix")) {
         return 1;
     }
 

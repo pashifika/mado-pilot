@@ -14,12 +14,13 @@ use std::thread;
 use std::time::Duration;
 
 use mado_pilot_runtime::{
-    CancellationToken, CaptureProvider, Continuity, DeliveryPlan, FocusPolicy, FrameRequest,
-    FrameStamp, GeometryPolicy, InputCapability, InputDelivery, InputEvent, InputFault,
-    InputOpenRequest, InputOperationKind, InputProvider, InputRequest, InputRequirement,
-    InputSequence, Key, Modifier, MonotonicInstant, OpenRequest, OperationContext, PermissionKind,
-    PermissionProbe, PermissionState, PointerGeometry, PressedState, ProviderId, SequenceOutcome,
-    Session, SessionRequest, Status, TargetId,
+    CancellationToken, CapabilitySupport, CaptureProvider, Continuity, DeliveryPlan, FocusPolicy,
+    FrameRequest, FrameStamp, GeometryPolicy, InputCapability, InputDelivery, InputEvent,
+    InputFault, InputOpenRequest, InputOperationKind, InputProvider, InputRequest,
+    InputRequirement, InputSequence, Key, Modifier, MonotonicInstant, OpenRequest,
+    OperationContext, PermissionKind, PermissionProbe, PermissionState, PointerGeometry,
+    PressedState, ProviderId, SequenceOutcome, Session, SessionRequest, Status, SubmissionEvidence,
+    TargetId,
 };
 use mado_pilot_testkit::controlled_input::{Behavior, Cleanup};
 use mado_pilot_testkit::{ControlledInput, ManualClock, ScriptedPermissionProbe};
@@ -216,7 +217,7 @@ fn a_session_opened_without_input_reports_none_and_delivers_none() {
         .expect_err("this session established no input");
 
     assert_eq!(error.status(), Status::Unsupported);
-    assert!(harness.input().delivered().is_empty());
+    assert!(harness.input().submitted_events().is_empty());
 }
 
 #[test]
@@ -346,7 +347,7 @@ fn a_sequence_reaches_the_controller_carrying_the_callers_own_policies() {
         Some(source),
         "the exact frame identity travels whole"
     );
-    assert_eq!(admitted[0].permitted, [InputDelivery::System]);
+    assert_eq!(admitted[0].routes, [InputDelivery::System]);
 }
 
 #[test]
@@ -396,11 +397,11 @@ fn a_source_frame_from_another_stream_is_refused_before_any_event() {
 }
 
 #[test]
-fn a_partially_delivered_sequence_is_never_retried_through_another_mechanism() {
+fn a_partially_submitted_sequence_is_never_retried_through_another_route() {
     let harness = Harness::with_input();
     harness.input().set_behavior(Behavior::FailAfter {
-        delivered: 2,
-        fault: InputFault::DeliveryFailed,
+        submitted: 2,
+        fault: InputFault::SubmissionFailed,
     });
     let operation = OperationContext::new();
     let session = opened_with_input(&harness, &operation);
@@ -410,7 +411,7 @@ fn a_partially_delivered_sequence_is_never_retried_through_another_mechanism() {
             &InputRequest::new(
                 session.target(),
                 chord(),
-                DeliveryPlan::ordered(vec![InputDelivery::System, InputDelivery::BackgroundTarget])
+                DeliveryPlan::ordered(vec![InputDelivery::System, InputDelivery::WindowMessage])
                     .expect("valid"),
             ),
             &operation,
@@ -418,13 +419,13 @@ fn a_partially_delivered_sequence_is_never_retried_through_another_mechanism() {
         .expect("an admitted sequence answers with a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 2);
+    assert_eq!(receipt.submitted(), 2);
     assert_eq!(
         harness.input().admitted().len(),
         1,
-        "the events already delivered cannot be taken back, so nothing is sent twice"
+        "native submission cannot be taken back, so nothing is sent twice"
     );
-    assert_eq!(harness.input().delivered().len(), 2);
+    assert_eq!(harness.input().submitted_events().len(), 2);
 }
 
 #[test]
@@ -433,21 +434,24 @@ fn a_mechanism_the_caller_did_not_permit_is_never_substituted() {
     let operation = OperationContext::new();
     let session = opened_with_input(&harness, &operation);
 
-    let error = session
+    let receipt = session
         .send_input(
             &InputRequest::new(
                 session.target(),
                 chord(),
-                DeliveryPlan::require(InputDelivery::BackgroundTarget),
+                DeliveryPlan::require(InputDelivery::WindowMessage),
             ),
             &operation,
         )
-        .expect_err("this target advertises no background delivery");
+        .expect("route refusal is receipt evidence");
 
-    assert_eq!(error.status(), Status::Unsupported);
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.fault(), Some(InputFault::UnsupportedCombination));
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::WindowMessage);
     assert!(
-        harness.input().delivered().is_empty(),
-        "system input is not quietly substituted for background delivery"
+        harness.input().submitted_events().is_empty(),
+        "system input is not substituted for target-directed window messages"
     );
 }
 
@@ -457,8 +461,13 @@ fn a_mechanism_that_needs_focus_is_refused_when_the_caller_preserves_it() {
     let input = Arc::new(ControlledInput::with_capability(
         capture.target(),
         InputCapability::none()
-            .with_pair(InputOperationKind::Keyboard, InputDelivery::System)
-            .with_focus_required(InputDelivery::System),
+            .with_pair(
+                InputOperationKind::Keyboard,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            )
+            .with_focus_required(InputOperationKind::Keyboard, InputDelivery::System),
     ));
     let engine = support::wire(
         &issuer,
@@ -478,8 +487,10 @@ fn a_mechanism_that_needs_focus_is_refused_when_the_caller_preserves_it() {
 
     let preserved = session
         .send_input(&typing(session.target()), &operation)
-        .expect_err("focusing the target is what the caller asked not to do");
-    assert_eq!(preserved.status(), Status::Unsupported);
+        .expect("focus-policy refusal is receipt evidence");
+    assert_eq!(preserved.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(preserved.fault(), Some(InputFault::FocusRequired));
+    assert_eq!(preserved.attempts().len(), 1);
 
     let permitted = session
         .send_input(
@@ -492,10 +503,10 @@ fn a_mechanism_that_needs_focus_is_refused_when_the_caller_preserves_it() {
 }
 
 #[test]
-fn a_geometry_change_stops_the_sequence_without_delivering_the_affected_event() {
+fn a_geometry_change_stops_the_sequence_without_submitting_the_affected_event() {
     let harness = Harness::with_input();
     harness.input().set_behavior(Behavior::FailAfter {
-        delivered: 1,
+        submitted: 1,
         fault: InputFault::GeometryChanged,
     });
     let operation = OperationContext::new();
@@ -515,12 +526,12 @@ fn a_geometry_change_stops_the_sequence_without_delivering_the_affected_event() 
         .expect("an admitted sequence answers with a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 1);
-    assert_eq!(receipt.failure(), Some(InputFault::GeometryChanged));
+    assert_eq!(receipt.submitted(), 1);
+    assert_eq!(receipt.fault(), Some(InputFault::GeometryChanged));
     assert_eq!(
-        harness.input().delivered().len(),
+        harness.input().submitted_events().len(),
         1,
-        "the event the changed geometry would have mislocated was not delivered"
+        "the event the changed geometry would have mislocated was not submitted"
     );
 }
 
@@ -528,8 +539,8 @@ fn a_geometry_change_stops_the_sequence_without_delivering_the_affected_event() 
 fn a_stopped_sequence_releases_only_what_it_pressed_and_reports_the_counts() {
     let harness = Harness::with_input();
     harness.input().set_behavior(Behavior::FailAfter {
-        delivered: 2,
-        fault: InputFault::DeliveryFailed,
+        submitted: 2,
+        fault: InputFault::SubmissionFailed,
     });
     harness.input().set_cleanup(Cleanup::Partial(1));
     let operation = OperationContext::new();
@@ -574,7 +585,7 @@ fn a_target_the_adapter_reports_as_lost_is_reported_as_lost() {
         SequenceOutcome::Unexecuted,
         "nothing reached a target that is gone"
     );
-    assert_eq!(receipt.failure(), Some(InputFault::TargetLost));
+    assert_eq!(receipt.fault(), Some(InputFault::TargetLost));
     assert_eq!(
         InputFault::TargetLost.status(),
         Status::TargetLost,
@@ -583,7 +594,7 @@ fn a_target_the_adapter_reports_as_lost_is_reported_as_lost() {
 }
 
 #[test]
-fn a_session_whose_capture_ended_delivers_nothing() {
+fn a_session_whose_capture_ended_submits_nothing() {
     let harness = Harness::with_input();
     let operation = OperationContext::new();
     let session = opened_with_input(&harness, &operation);
@@ -599,7 +610,7 @@ fn a_session_whose_capture_ended_delivers_nothing() {
 }
 
 #[test]
-fn a_receipt_that_delivered_events_survives_an_operation_that_lost_its_race() {
+fn a_receipt_with_native_effect_survives_an_operation_that_lost_its_race() {
     let (issuer, capture) = support::controlled_capture();
     let clock = Arc::new(ManualClock::new());
     let late = Arc::new(LateAnswer::new(
@@ -631,11 +642,11 @@ fn a_receipt_that_delivered_events_survives_an_operation_that_lost_its_race() {
         .expect("an account of what reached the target is never discarded");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 2);
+    assert_eq!(receipt.submitted(), 2);
 }
 
 #[test]
-fn a_receipt_that_delivered_nothing_loses_to_the_operation_that_expired() {
+fn a_receipt_without_native_effect_loses_to_the_operation_that_expired() {
     let (issuer, capture) = support::controlled_capture();
     let clock = Arc::new(ManualClock::new());
     let late = Arc::new(LateAnswer::new(
@@ -705,11 +716,11 @@ fn a_cancellation_that_races_the_final_event_publishes_one_consistent_receipt() 
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
     assert_eq!(
-        receipt.delivered(),
-        harness.input().delivered().len(),
-        "the receipt counts exactly the events that were delivered"
+        receipt.submitted(),
+        harness.input().submitted_events().len(),
+        "the receipt counts exactly the events submitted to the native route"
     );
-    assert_eq!(receipt.failure(), Some(InputFault::Cancelled));
+    assert_eq!(receipt.fault(), Some(InputFault::Cancelled));
     assert_eq!(
         receipt.cleanup_owed(),
         1,
@@ -782,7 +793,7 @@ fn one_close_finishes_both_lifecycles_and_repeats_neither() {
         .expect_err("a closed session delivers nothing");
 
     assert_eq!(error.status(), Status::Closed);
-    assert!(harness.input().delivered().is_empty());
+    assert!(harness.input().submitted_events().is_empty());
 }
 
 #[test]

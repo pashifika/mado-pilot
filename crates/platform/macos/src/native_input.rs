@@ -22,13 +22,13 @@ use mado_pilot_input::{
 
 use crate::discovery::placement_from_points;
 use crate::input::{
-    DeliveryFailure, DriverState, GeometryFingerprint, InputDriver, PointerState,
+    DriverState, GeometryFingerprint, InputDriver, PointerState, SubmissionFailure,
     SystemButtonState, SystemKeyState,
 };
 use crate::provider::TargetRecord;
 use crate::shim::{self, ShimStatus};
 
-type DeliveryResult = Result<(), DeliveryFailure>;
+type SubmissionResult = Result<(), SubmissionFailure>;
 
 /// How long activation and one read-only Accessibility focus observation may
 /// consume, and how often activation is polled.
@@ -75,7 +75,7 @@ const KEY_ARROW_UP: u16 = 0x7E;
 /// Function keys one through twenty, in order.
 ///
 /// macOS defines no key code for F21 to F24, which the shared contract still
-/// accepts as a number. Those are reported unsupported rather than delivered as
+/// accepts as a number. Those are reported unsupported rather than posted as
 /// whatever the window server makes of an undefined code.
 const FUNCTION_KEYS: [u16; 20] = [
     0x7A, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, 0x67, 0x6F, 0x69, 0x6B, 0x71, 0x6A,
@@ -150,11 +150,11 @@ pub(crate) trait SystemCommitSource {
     /// cannot truthfully be reported as a completed cleanup.
     fn revalidate_cleanup_authorization(&self) -> Result<(), InputFault>;
 
-    /// Posts one prepared event, reporting how many text units had reached the
-    /// target when a text post could not finish.
+    /// Posts one prepared event, reporting how many text units reached the native
+    /// posting threshold when a text post could not finish.
     fn post(&self, post: NativePost<'_>, flags: u32) -> Result<(), (ShimStatus, usize)>;
 
-    /// Classifies a post that failed with nothing yet delivered by that event.
+    /// Classifies a post that failed before this event could have native effect.
     fn classify_post_failure(&self, status: ShimStatus) -> InputFault;
 }
 
@@ -171,7 +171,8 @@ impl NativeInputDriver {
     ///
     /// Anything but a granted decision is refused. An unavailable or unreadable
     /// state is not authorization, and treating it as one would post events macOS
-    /// silently drops while the receipt claimed they were delivered.
+    /// silently drops while the receipt claimed a submission threshold had been
+    /// reached.
     fn ensure_authorized(&self) -> Result<(), InputFault> {
         match shim::probe_accessibility() {
             Ok(PermissionState::Granted) => Ok(()),
@@ -192,7 +193,7 @@ impl NativeInputDriver {
                     Err(InputFault::from(interruption))
                 })
             }
-            Err(_) => Err(InputFault::DeliveryFailed),
+            Err(_) => Err(InputFault::SubmissionFailed),
         }
     }
 
@@ -329,7 +330,7 @@ impl NativeInputDriver {
             return Ok(pointer);
         }
 
-        let location = shim::input_pointer_location().map_err(|_| InputFault::DeliveryFailed)?;
+        let location = shim::input_pointer_location().map_err(|_| InputFault::SubmissionFailed)?;
         if !contains_desktop_point(current, location) {
             return Err(InputFault::UnsupportedCoordinate);
         }
@@ -348,7 +349,7 @@ impl NativeInputDriver {
         geometry: PointerGeometry,
         state: &mut DriverState,
         operation: &OperationContext,
-    ) -> DeliveryResult {
+    ) -> SubmissionResult {
         self.record.ensure_live(focus_wait(operation))?;
         self.ensure_authorized()?;
         self.ensure_system_focus(focus, operation)?;
@@ -516,7 +517,7 @@ impl NativeInputDriver {
         focus: FocusPolicy,
         operation: &OperationContext,
         flags: u32,
-    ) -> DeliveryResult {
+    ) -> SubmissionResult {
         let units: Vec<u16> = text.encode_utf16().collect();
         let mut sent = 0usize;
         for chunk in text_chunks(&units) {
@@ -610,7 +611,7 @@ impl SystemCommitSource for NativeInputDriver {
             ShimStatus::PermissionDenied => InputFault::NotAuthorized,
             ShimStatus::Unsupported => InputFault::UnsupportedCombination,
             _ if self.ensure_authorized().is_err() => InputFault::NotAuthorized,
-            _ => InputFault::DeliveryFailed,
+            _ => InputFault::SubmissionFailed,
         }
     }
 }
@@ -639,14 +640,14 @@ impl InputDriver for NativeInputDriver {
                 self.ensure_authorized()?;
                 self.ensure_system_focus(focus, operation)
             }
-            // There is no macOS background channel, so this is refused rather than
-            // substituted: a caller that asked not to disturb the desktop did not
-            // ask for system input.
+            // macOS has no target-directed channel, so this is refused rather
+            // than substituted: a caller that asked not to disturb the desktop
+            // did not ask for system input.
             _ => Err(InputFault::UnsupportedCombination),
         }
     }
 
-    fn deliver(
+    fn submit(
         &self,
         delivery: InputDelivery,
         focus: FocusPolicy,
@@ -654,7 +655,7 @@ impl InputDriver for NativeInputDriver {
         geometry: PointerGeometry,
         state: &mut DriverState,
         operation: &OperationContext,
-    ) -> DeliveryResult {
+    ) -> SubmissionResult {
         operation_fault(operation)?;
         match delivery {
             InputDelivery::System => self.deliver_system(focus, event, geometry, state, operation),
@@ -756,7 +757,7 @@ pub(crate) fn commit_prepared<S: SystemCommitSource + ?Sized>(
     operation: &OperationContext,
     post: NativePost<'_>,
     flags: u32,
-) -> DeliveryResult {
+) -> SubmissionResult {
     operation_fault(operation)?;
     source.revalidate_system_commit(focus, geometry, operation)?;
     // Revalidation performs target, authorization, focus, and geometry queries, so
@@ -764,9 +765,9 @@ pub(crate) fn commit_prepared<S: SystemCommitSource + ?Sized>(
     operation_fault(operation)?;
     source.post(post, flags).map_err(|(status, posted)| {
         if posted > 0 {
-            DeliveryFailure::during_event(InputFault::DeliveryFailed)
+            SubmissionFailure::during_event(InputFault::SubmissionFailed)
         } else {
-            DeliveryFailure::before_event(source.classify_post_failure(status))
+            SubmissionFailure::before_event(source.classify_post_failure(status))
         }
     })
 }

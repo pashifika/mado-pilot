@@ -57,6 +57,7 @@ pub fn operation() -> madopilot_operation_t {
         flags: 0,
         deadline_nanos: 0,
         cancellation: ptr::null(),
+        activity_tag: 0,
     }
 }
 
@@ -69,6 +70,7 @@ pub fn expired_operation() -> madopilot_operation_t {
         flags: MADOPILOT_OPERATION_HAS_DEADLINE,
         deadline_nanos: 0,
         cancellation: ptr::null(),
+        activity_tag: 0,
     }
 }
 

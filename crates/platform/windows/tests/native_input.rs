@@ -1,6 +1,6 @@
 #![cfg_attr(not(windows), allow(missing_docs))]
 #![cfg(windows)]
-//! Native background-input coverage against the dedicated fixture process.
+//! Native target-directed input coverage against the dedicated fixture process.
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -94,7 +94,7 @@ impl Drop for DesktopState {
 }
 
 #[test]
-fn dedicated_fixture_acknowledges_background_pointer_keyboard_and_text() {
+fn dedicated_fixture_acknowledges_exact_window_pointer_keyboard_and_text() {
     let fixture = FixtureProcess::spawn();
     let provider = WindowsCaptureProvider::new(Arc::new(IdentityIssuer::new()));
     let title = fixture_title(fixture.process_id());
@@ -120,14 +120,11 @@ fn dedicated_fixture_acknowledges_background_pointer_keyboard_and_text() {
     let target = select_unique_fixture(&targets, fixture.process_id())
         .expect("exactly one approved fixture target");
     let open = InputOpenRequest::new()
-        .requiring(InputOperationKind::Pointer, InputDelivery::BackgroundTarget)
-        .requiring(
-            InputOperationKind::Keyboard,
-            InputDelivery::BackgroundTarget,
-        )
-        .requiring(InputOperationKind::Text, InputDelivery::BackgroundTarget);
+        .requiring(InputOperationKind::Pointer, InputDelivery::WindowMessage)
+        .requiring(InputOperationKind::Keyboard, InputDelivery::WindowMessage)
+        .requiring(InputOperationKind::Text, InputDelivery::WindowMessage);
     let controller = InputProvider::open(&provider, target.id(), &open, &timed())
-        .expect("opened background fixture controller");
+        .expect("opened exact-window fixture controller");
     let point =
         Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5).expect("normalized fixture point");
     let sequence = InputSequence::new(vec![
@@ -142,17 +139,18 @@ fn dedicated_fixture_acknowledges_background_pointer_keyboard_and_text() {
     let request = InputRequest::new(
         target.id(),
         sequence,
-        DeliveryPlan::require(InputDelivery::BackgroundTarget),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
     );
 
     let receipt = controller
         .execute(&request, &timed())
-        .expect("background sequence is receipted");
+        .expect("exact-window sequence is receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete, "{receipt:?}");
-    assert_eq!(receipt.delivery(), Some(InputDelivery::BackgroundTarget));
-    assert_eq!(receipt.delivered(), 6);
-    assert_eq!(receipt.attempted(), [InputDelivery::BackgroundTarget]);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::WindowMessage));
+    assert_eq!(receipt.submitted(), 6);
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::WindowMessage);
     controller.close(&timed()).expect("closed controller");
 }
 
@@ -209,9 +207,10 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
         .expect("system sequence is receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete, "{receipt:?}");
-    assert_eq!(receipt.delivery(), Some(InputDelivery::System));
-    assert_eq!(receipt.delivered(), 4);
-    assert_eq!(receipt.attempted(), [InputDelivery::System]);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+    assert_eq!(receipt.submitted(), 4);
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
     controller.close(&timed()).expect("closed controller");
 }
 

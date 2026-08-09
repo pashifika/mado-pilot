@@ -1,4 +1,4 @@
-//! What the ABI 1.1 C++ header declares, and what it must not.
+//! What the ABI 1.2 C++ header declares, and what it must not.
 //!
 //! The wrapper's ownership shape is proved by the `static_assert`s in
 //! `tests/cpp/madopilot-cpp-ownership.cpp`, which need a C++ compiler. This
@@ -6,20 +6,20 @@
 //! inventory, so a plain `cargo test` notices a type that appeared or
 //! disappeared.
 //!
-//! ABI 1.1 ends at native permission, capability, and session input. A
+//! ABI 1.2 ends at native input receipts and bounded pull diagnostics. A
 //! `Watcher`, `Ocr`, or packaging type here would promise a deferred C entry
 //! that does not exist, and it would compile perfectly.
 //!
 //! The complete 1.0 prefix is frozen by
-//! `docs/adr/0007-phase-1-c-abi-freeze.md`; the additive 1.1 suffix is frozen by
-//! `docs/adr/0017-c-abi-1-1-native-input-prefix.md` and the old-header fixture
-//! under `tests/abi-compat/v1.1/`. The C++ surface is not an ABI and is governed by
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`; ABI 1.2 replaces the unreleased
+//! ABI 1.1 suffix and retains its historical header only as rejection evidence.
+//! The C++ surface is not an ABI and is governed by
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md`; what this
 //! file protects is that a change to it is deliberate.
 
 use std::path::PathBuf;
 
-/// Every type the ABI 1.1 wrapper declares at namespace scope.
+/// Every type the ABI 1.2 wrapper declares at namespace scope.
 ///
 /// Written out rather than derived, because the point is to notice a change.
 const DECLARED: &[&str] = &[
@@ -35,6 +35,7 @@ const DECLARED: &[&str] = &[
     "ReplayFrame",
     "Source",
     "PackageSource",
+    "EngineOptions",
     "InputOpenRequest",
     "InputEvent",
     "InputRequest",
@@ -42,14 +43,17 @@ const DECLARED: &[&str] = &[
     "MapRequest",
     "MatchOptions",
     "FindRequest",
-    // Projections of the C output structures that carry borrowed views.
+    // Fixed-width value projections.
     "EngineCapabilities",
     "PermissionDiagnostic",
     "Permission",
-    "TargetCapability",
+    "InputCapability",
     "InputDescriptor",
-    "InputFailure",
-    "InputReceipt",
+    "InputReceiptInfo",
+    "InputAttempt",
+    "DiagnosticBatchInfo",
+    "DiagnosticRecord",
+    "DiagnosticDrain",
     "BuildInfo",
     "TargetDescriptor",
     "Image",
@@ -65,13 +69,16 @@ const DECLARED: &[&str] = &[
     "Mapping",
     "Frame",
     "MatchResult",
+    "InputReceipt",
+    "DiagnosticReader",
+    "DiagnosticBatch",
     "Session",
     "Engine",
     // The negotiated table.
     "Api",
 ];
 
-/// The concepts the ABI 1.1 suffix still defers.
+/// The concepts the ABI 1.2 suffix still defers.
 ///
 /// Each is a word that would appear in a declared type name if a deferred
 /// surface leaked into this wrapper.
@@ -148,7 +155,7 @@ fn declared_types(header: &str) -> Vec<String> {
 }
 
 #[test]
-fn the_header_declares_exactly_the_abi_1_1_surface() {
+fn the_header_declares_exactly_the_abi_1_2_surface() {
     let header = header();
     let mut found = declared_types(&header);
     // `Result` is declared once as a template and once as its void
@@ -162,7 +169,7 @@ fn the_header_declares_exactly_the_abi_1_1_surface() {
     assert_eq!(
         found, expected,
         "the C++ header's declared types changed. Update `DECLARED` in the same \
-         change, after checking that every new type wraps something the ABI 1.1 C \
+         change, after checking that every new type wraps something the ABI 1.2 C \
          table actually has."
     );
 }
@@ -175,7 +182,7 @@ fn the_header_declares_no_deferred_surface() {
         for excluded in EXCLUDED {
             assert!(
                 !name.contains(excluded),
-                "`{name}` names `{excluded}`, which ABI 1.1 defers. OCR, \
+                "`{name}` names `{excluded}`, which ABI 1.2 defers. OCR, \
                  watchers, queries, callbacks, acceleration, packaging, and \
                  native-frame extensions must appear in C first."
             );
@@ -251,7 +258,7 @@ fn no_deferred_concept_appears_anywhere_in_the_header() {
     for excluded in EXCLUDED {
         assert!(
             !header.contains(&excluded.to_lowercase()),
-            "the header names `{excluded}`, which ABI 1.1 defers. OCR, watchers, \
+            "the header names `{excluded}`, which ABI 1.2 defers. OCR, watchers, \
              queries, callbacks, acceleration, packaging, and native-frame \
              extensions must appear in C first — as a type or method, either way."
         );

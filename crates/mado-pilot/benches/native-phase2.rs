@@ -946,7 +946,7 @@ mod native {
         let receipt_present = stdout.as_deref().is_some_and(|stdout| {
             stdout
                 .lines()
-                .any(|line| line == "receipt: outcome 1 delivered 6 failure 0 cleanup 0")
+                .any(|line| line == "receipt: outcome 1 submitted 6 fault 0 cleanup 0")
         });
         let fixture_acknowledged = if process_succeeded || receipt_present {
             flow.fixture.next_common_flow()
@@ -979,7 +979,7 @@ mod native {
     }
 
     fn language_abi_line_is_present(stdout: &str, example_name: &str) -> bool {
-        let prefix = format!("{example_name}: abi 1.1 table ");
+        let prefix = format!("{example_name}: abi 1.2 table ");
         stdout.lines().any(|line| line.starts_with(&prefix))
     }
 
@@ -1082,7 +1082,7 @@ mod native {
         send_sequence(session, sequence, 2)
     }
 
-    fn send_sequence(session: &Session, sequence: InputSequence, delivered: usize) -> bool {
+    fn send_sequence(session: &Session, sequence: InputSequence, submitted: usize) -> bool {
         let receipt = session
             .send_input(
                 &InputRequest::new(
@@ -1095,8 +1095,8 @@ mod native {
             )
             .expect("the benchmark sequence returns a receipt");
         let complete = receipt.outcome() == SequenceOutcome::Complete
-            && receipt.delivered() == delivered
-            && receipt.failure().is_none()
+            && receipt.submitted() == submitted
+            && receipt.fault().is_none()
             && receipt.cleanup() == mado_pilot::CleanupState::NotNeeded;
         if !complete {
             eprintln!("benchmark stimulus receipt: {receipt:?}");
@@ -1281,7 +1281,7 @@ mod native {
 
     #[cfg(windows)]
     const fn input_delivery() -> InputDelivery {
-        InputDelivery::BackgroundTarget
+        InputDelivery::WindowMessage
     }
 
     #[cfg(target_os = "macos")]

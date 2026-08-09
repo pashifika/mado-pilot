@@ -1,0 +1,33 @@
+# Phase 2.2 diagnostic overhead Windows evidence gap.
+#
+# The deterministic smoke plan runs in release-target CI, but hosted CI timing
+# is not substituted for a regression profile. No approved x86_64 Windows
+# measurement host was available for this revision. The macOS measurements and
+# ceilings therefore make no Windows performance claim.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc-evidence-gap"
+workload = "capture/mapping, input submission, and close/drain with diagnostics off, enabled, and under bounded pressure not timed"
+phase = "2.2"
+status = "evidence-gap"
+normative = false
+measurements_recorded = false
+
+[profile]
+fixture = "source-defined controlled capture/input fixture in crates/automation/runtime/benches/diagnostic-overhead.rs"
+fixture_sha256 = "42e3133b63bcdc2f905eead2b52a4ac9ba97571da4580ef2c90feb9520398891"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "not measured; approved Windows timing host unavailable"
+os_version = "not measured"
+build_profile = "not measured; required command is cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead"
+warmup_iterations = 0
+sample_count = 0
+correctness_oracle = "the smoke plan is exercised by release-target CI; a full run checks exact frame/mapping and receipt outcomes, diagnostic categories, queue losses, and record sequences"
+queue_policy = "diagnostics Off has no queue; Normal and Debug use capacity 64; overflow uses capacity 4; producer emission is non-blocking and every sample drains"
+notes = "replace this gap with a measured profile from a named Windows host; do not copy macOS or hosted-CI timing values"
+
+[measurements]
+performed = false
+reason = "an approved x86_64-pc-windows-msvc timing host was unavailable"

@@ -401,6 +401,42 @@ That workload therefore has no latency budget on either target. It is bounded by
 two hundred iterations. `negotiate_table` is bounded the same way for the same
 reason, and so is any later operation whose fast path is a pointer copy.
 
+## Phase 2.2 diagnostic performance
+
+The common diagnostic hot paths have one benchmark at
+`crates/automation/runtime/benches/diagnostic-overhead.rs`. Its ten workloads
+measure one-event input submission, retained-frame acquisition/mapping, and
+explicit close/drain with diagnostics `Off`, `Normal`, and `Debug`, plus a
+four-slot debug queue under input pressure. Every sample proves its frame,
+mapping, receipt, or close result is unchanged, validates retained categories
+and order, checks exact loss counts, and records mapped bytes where applicable.
+
+The benchmark's smoke plan runs under
+`cargo test --locked --workspace --all-targets`, so both release-target CI jobs
+enforce zero oracle failures and bounded allocation growth. A full profile is:
+
+```sh
+cargo bench --locked --package mado-pilot-runtime \
+    --bench diagnostic-overhead -- \
+    --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
+    --os-version "macOS 26.5.2 (25F85)"
+```
+
+[ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the
+[aarch64 profile](benchmarks/phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml).
+At p95, `Normal` input diagnostics add `0.000042 ms` over `Off` and `Debug`
+adds `0.000125 ms`; debug capture/mapping adds `0.000126 ms` while preserving
+the exact 3,072-byte mapping, and debug close/drain costs `0.000292 ms`.
+Every workload records zero allocation growth. The capacity-64 enabled input
+fixture retains 9,496 bytes more live heap than `Off`. Four submissions against
+capacity four retain all four normal terminal records, report all eight
+discarded debug records, and still return four complete receipts.
+
+The corresponding
+[Windows profile](benchmarks/phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc-evidence-gap.toml)
+is an explicit timing gap. Hosted CI results are correctness evidence, not a
+stable timing ceiling; a named Windows measurement host must replace that gap.
+
 ## Phase 2 native performance status
 
 Phase 2's affected [`G-013`](validation-gates.md#g-013) workloads are open.

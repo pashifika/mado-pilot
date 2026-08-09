@@ -610,7 +610,8 @@ mod tests {
     use crate::fault::CaptureFault;
     use mado_pilot_core::{
         CapabilitySupport, CoordinateSpace, IdentityIssuer, InputCapability, InputDelivery,
-        InputOperationKind, PermissionKind, PixelExtent, ProviderId, TargetCapability, TargetKind,
+        InputOperationKind, PermissionKind, PixelExtent, ProviderId, SubmissionEvidence,
+        TargetCapability, TargetKind,
     };
 
     #[test]
@@ -726,9 +727,15 @@ mod tests {
             InputCapability::none()
                 .with_pair(
                     InputOperationKind::Keyboard,
-                    InputDelivery::BackgroundTarget,
+                    InputDelivery::WindowMessage,
+                    CapabilitySupport::Supported,
+                    SubmissionEvidence::TargetProtocolAcknowledgement,
                 )
-                .with_permission(PermissionKind::InputControl),
+                .with_permission(
+                    InputOperationKind::Keyboard,
+                    InputDelivery::WindowMessage,
+                    PermissionKind::InputControl,
+                ),
         );
 
         let description = TargetDescription::new(
@@ -776,8 +783,13 @@ mod tests {
             .expect("issued");
         let stream = issuer.issue_stream().expect("issued");
         let input = InputCapability::none()
-            .with_pair(InputOperationKind::Pointer, InputDelivery::System)
-            .with_focus_required(InputDelivery::System);
+            .with_pair(
+                InputOperationKind::Pointer,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            )
+            .with_focus_required(InputOperationKind::Pointer, InputDelivery::System);
         let queue = QueuePolicy::new(
             NonZeroU32::new(2).expect("non-zero"),
             OverflowPolicy::LatestWins,

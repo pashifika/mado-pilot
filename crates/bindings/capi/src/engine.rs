@@ -2,7 +2,7 @@
 //!
 //! An engine is the C caller's root handle: it owns the wired capture adapter
 //! and the required matching backend, and every other handle is reached through
-//! it. ABI 1.1 adds the native release-target wiring without changing replay.
+//! it. ABI 1.2 adds native release-target wiring without changing replay.
 //!
 //! # Boundary identities
 //!
@@ -13,14 +13,20 @@
 //! and receipt opened from it. A stream identity is minted per open session.
 //! These values correlate C records exactly as their Rust counterparts do; they
 //! are not platform handles and cannot be compared with Rust API identities.
-//! ADR 0006 keeps the facade identities opaque, and ADR 0017 fixes these C
+//! ADR 0006 keeps facade identities opaque, and ADR 0023 fixes these C
 //! projections.
 
+use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
-use mado_pilot::{Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription};
+use mado_pilot::{
+    DiagnosticOptions, Engine, FrameDescriptor, MonotonicInstant, PixelExtent, StreamId,
+    TargetDescription, TargetId,
+};
 
 use crate::boundary::{self, Input, Out, Versioned, covers, inputs, prefixes};
 use crate::error::{self, Fault, madopilot_error_t};
@@ -43,7 +49,62 @@ use crate::{handle, hooks};
 
 opaque! {
     /// A configured engine: one capture adapter and one matching backend.
-    madopilot_engine_t => Engine
+    madopilot_engine_t => EngineHandle
+}
+
+/// Fixed-width identities shared with diagnostic readers that may outlive the engine handle.
+#[derive(Debug, Default)]
+pub(crate) struct BoundaryIdentities {
+    pub(crate) targets: HashMap<TargetId, u64>,
+    pub(crate) streams: HashMap<StreamId, u64>,
+}
+
+/// The facade engine plus the boundary identities needed by independent readers.
+#[derive(Debug)]
+pub(crate) struct EngineHandle {
+    engine: Engine,
+    identities: Arc<Mutex<BoundaryIdentities>>,
+}
+
+impl EngineHandle {
+    fn new(engine: Engine) -> Self {
+        Self {
+            engine,
+            identities: Arc::new(Mutex::new(BoundaryIdentities::default())),
+        }
+    }
+
+    pub(crate) fn identities(&self) -> Arc<Mutex<BoundaryIdentities>> {
+        Arc::clone(&self.identities)
+    }
+
+    fn register_targets(&self, targets: &[TargetRecord]) {
+        let mut identities = self
+            .identities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for target in targets {
+            identities
+                .targets
+                .insert(target.facade_id(), target.boundary_id());
+        }
+    }
+
+    pub(crate) fn register_stream(&self, stream: StreamId, boundary_stream: u64) {
+        self.identities
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .streams
+            .insert(stream, boundary_stream);
+    }
+}
+
+impl Deref for EngineHandle {
+    type Target = Engine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
 }
 
 opaque! {
@@ -74,7 +135,7 @@ impl TargetRecord {
         &self.description
     }
 
-    pub(crate) const fn facade_id(&self) -> mado_pilot::TargetId {
+    pub(crate) const fn facade_id(&self) -> TargetId {
         self.description.id()
     }
 
@@ -270,13 +331,13 @@ unsafe fn replay_source(source: &madopilot_source_t) -> Result<ReplaySource, Fau
 }
 
 #[cfg(windows)]
-fn native_windows_engine() -> Result<Engine, Fault> {
-    mado_pilot::windows_engine(mado_pilot::NativeEngineRequest::new())
+fn native_windows_engine(diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+    mado_pilot::windows_engine(mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics))
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
 }
 
 #[cfg(not(windows))]
-fn native_windows_engine() -> Result<Engine, Fault> {
+fn native_windows_engine(_diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
     Err(Fault::from_error(
         &mado_pilot::Error::new(
             mado_pilot::Status::Unsupported,
@@ -287,13 +348,13 @@ fn native_windows_engine() -> Result<Engine, Fault> {
 }
 
 #[cfg(target_os = "macos")]
-fn native_macos_engine() -> Result<Engine, Fault> {
-    mado_pilot::macos_engine(mado_pilot::NativeEngineRequest::new())
+fn native_macos_engine(diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+    mado_pilot::macos_engine(mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics))
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn native_macos_engine() -> Result<Engine, Fault> {
+fn native_macos_engine(_diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
     Err(Fault::from_error(
         &mado_pilot::Error::new(
             mado_pilot::Status::Unsupported,
@@ -403,6 +464,26 @@ pub(crate) fn create(
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
+    create_inner(source, std::ptr::null(), operation, out_engine, out_error)
+}
+
+pub(crate) fn create_with_options(
+    source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
+    create_inner(source, options, operation, out_engine, out_error)
+}
+
+fn create_inner(
+    source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
     if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
         unsafe { boundary::begin_outputs(out_engine, "out_engine", out_error) }
@@ -412,11 +493,17 @@ pub(crate) fn create(
     hooks::reach(hooks::Site::Entry);
 
     // SAFETY: `out_error` was validated above.
-    unsafe { report(out_error, build_engine(source, operation, out_engine)) }
+    unsafe {
+        report(
+            out_error,
+            build_engine(source, options, operation, out_engine),
+        )
+    }
 }
 
 fn build_engine(
     source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
 ) -> Result<(), Fault> {
@@ -427,6 +514,8 @@ fn build_engine(
 
     // SAFETY: as above.
     let request = unsafe { boundary::read_input::<madopilot_source_t>(source) }?;
+    // SAFETY: null selects defaults; otherwise the caller keeps the options readable.
+    let diagnostics = unsafe { crate::diagnostic::options(options) }?;
 
     // SAFETY: as above. Fields not selected by the source tag remain unread.
     let engine = match request.kind {
@@ -434,13 +523,16 @@ fn build_engine(
             // SAFETY: the replay fields selected by the tag remain readable for
             // the call under this function's boundary contract.
             let configured = unsafe { replay_source(&request) }?;
-            mado_pilot::replay_engine(configured)
-                .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
+            mado_pilot::replay_engine(
+                mado_pilot::ReplayEngineRequest::new(configured).with_diagnostics(diagnostics),
+            )
+            .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
         }
-        MADOPILOT_SOURCE_NATIVE_WINDOWS => native_windows_engine()?,
-        MADOPILOT_SOURCE_NATIVE_MACOS => native_macos_engine()?,
+        MADOPILOT_SOURCE_NATIVE_WINDOWS => native_windows_engine(diagnostics)?,
+        MADOPILOT_SOURCE_NATIVE_MACOS => native_macos_engine(diagnostics)?,
         other => return Err(Fault::abi(format!("unrecognized source kind {other}"))),
     };
+    let engine = EngineHandle::new(engine);
     hooks::reach(hooks::Site::AfterTemporary);
 
     // The engine exists but is not the caller's yet. An operation that ran out
@@ -457,14 +549,14 @@ fn build_engine(
 pub(crate) fn retain(engine: *const madopilot_engine_t) -> madopilot_status_t {
     // SAFETY: the handle is null or one this module produced, and the caller
     // holds a live reference for the call.
-    unsafe { handle::retain::<Engine>(engine) }
+    unsafe { handle::retain::<EngineHandle>(engine) }
 
     MADOPILOT_STATUS_OK
 }
 
 pub(crate) fn release(engine: *mut madopilot_engine_t) -> madopilot_status_t {
     // SAFETY: as `retain`, and the caller is giving up the reference it owns.
-    unsafe { handle::release::<Engine>(engine) }
+    unsafe { handle::release::<EngineHandle>(engine) }
 
     MADOPILOT_STATUS_OK
 }
@@ -493,7 +585,7 @@ fn run_discover(
     out_targets: *mut *mut madopilot_target_list_t,
 ) -> Result<(), Fault> {
     // SAFETY: the caller keeps the engine retained for the call.
-    let Some(engine) = (unsafe { handle::borrow::<Engine>(engine) }) else {
+    let Some(engine) = (unsafe { handle::borrow::<EngineHandle>(engine) }) else {
         return Err(Fault::abi("`engine` is null"));
     };
     // SAFETY: the caller keeps the operation structure readable for the call.
@@ -509,6 +601,7 @@ fn run_discover(
         .collect::<Result<Vec<_>, _>>()?;
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
+    engine.register_targets(&targets);
 
     // SAFETY: `out_targets` was validated by the entry before any work began.
     unsafe { out_targets.write(handle::into_raw(TargetList(targets))) };

@@ -899,11 +899,10 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Every released header this library still promises to serve.
+/// Historical header profiles whose frozen declarations remain evidence.
 ///
-/// One entry per frozen released header. A later minor that appends entries
-/// adds a fixture beside the existing ones rather than editing them, so the
-/// list only ever grows and each entry keeps saying what one released header saw.
+/// `v1` is the released 1.0 contract. `v1.1` is the superseded draft retained
+/// specifically to prove that its noncontiguous minor is rejected.
 const FROZEN_HEADERS: &[&str] = &["v1", "v1.1"];
 
 /// Runs the layout probe against each frozen header, and checks that what that
@@ -1024,14 +1023,13 @@ fn check_frozen_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Compiles, links, negotiates, and runs each frozen header's fixture against
-/// the library built now.
+/// Compiles, links, and runs every historical header fixture against the
+/// library built now.
 ///
 /// The fixture is compiled with its own include directory *instead of* the
-/// working one, so it cannot reach the current header. That is the whole
-/// mechanism: the day the working header gains an entry, this program still
-/// compiles against the frozen declarations, and negotiation is what tells it
-/// how much of the table it may use.
+/// working one, so it cannot reach the current header. The released 1.0 fixture
+/// must still negotiate and run; the superseded 1.1 fixture succeeds only after
+/// observing the specified rejection.
 fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
     for version in FROZEN_HEADERS {
         let include = paths.frozen_include(version);
@@ -1047,15 +1045,15 @@ fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
         report_output(&name, &output);
 
         if !output.status.success() {
-            return Err(format!("the frozen {version} header no longer works").into());
+            return Err(format!("the historical {version} header fixture failed").into());
         }
         if !stdout.contains(&format!("{name} complete")) {
-            return Err(format!("the frozen {version} fixture never reached the end").into());
+            return Err(format!("the historical {version} fixture never reached the end").into());
         }
     }
 
     println!(
-        "abi compatibility: {} frozen header(s) still compile, link, negotiate, and run",
+        "abi history: {} frozen header fixture(s) passed their expected negotiation behavior",
         FROZEN_HEADERS.len()
     );
 

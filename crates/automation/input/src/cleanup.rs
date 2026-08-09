@@ -1,9 +1,9 @@
 //! The bounds the releases after a partial failure run under.
 //!
-//! Cleanup exists because an operating system cannot recall a delivered event: a
-//! sequence that pressed a modifier and then failed has left the modifier held,
-//! and the user's next keystroke carries it. So the releases have to run — and
-//! they have to run under bounds of their own.
+//! Cleanup exists because an operating system cannot recall an event that may
+//! already have native effect: a sequence that pressed a modifier and then failed
+//! has left the modifier held, and the user's next keystroke carries it. The
+//! releases therefore have to run under bounds of their own.
 //!
 //! # Why not the request's own context
 //!

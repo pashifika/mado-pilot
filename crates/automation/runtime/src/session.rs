@@ -9,14 +9,123 @@
 
 use std::sync::Arc;
 
-use mado_pilot_capture::{CaptureFault, CaptureSession, Frame, FrameRequest, SessionDescription};
-use mado_pilot_core::{InputCapability, Operation, OperationContext, Result, StreamId, TargetId};
+use mado_pilot_capture::{
+    CaptureFault, CaptureSession, CpuMapping, Frame, FrameRequest, FrameView, PixelFormat,
+    SessionDescription,
+};
+use mado_pilot_core::{
+    ClipPolicy, CoordinateSpace, InputCapability, Lifecycle, Operation, OperationContext, Rect,
+    Result, StreamId, TargetId,
+};
 use mado_pilot_input::{
     InputController, InputDescriptor, InputFault, InputReceipt, InputRequest, SequenceOutcome,
 };
-use mado_pilot_vision::{MatchRequest, Matcher};
+use mado_pilot_vision::{MatchRequest, Matcher, RegionSelection};
 
+use crate::diagnostic::{
+    DetachedObservation, DiagnosticEmitter, DiagnosticOperationKind, DiagnosticPayload,
+    DiagnosticSink, FrameDiagnostic, InputDiagnostic, LifecycleDiagnostic, MappingDiagnostic,
+    ObservedOperation, RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome,
+};
 use crate::find::{FindOutcome, FindRequest, SearchFrame};
+
+/// A non-owning diagnostic projection copied into retained frame handles.
+///
+/// This exists for foreign ownership boundaries whose frame can outlive its
+/// session. It retains only public identities and a weak diagnostic stream
+/// reference, so keeping a frame never keeps an engine or session open.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct MappingObserver {
+    target: TargetId,
+    stream: StreamId,
+    diagnostics: Option<DiagnosticEmitter>,
+}
+
+impl MappingObserver {
+    fn new(target: TargetId, stream: StreamId, diagnostics: Option<DiagnosticEmitter>) -> Self {
+        Self {
+            target,
+            stream,
+            diagnostics,
+        }
+    }
+
+    fn observe(&self, operation: &OperationContext) -> Result<Option<DetachedObservation>> {
+        self.diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.observe(operation, DiagnosticOperationKind::Mapping))
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    fn map(
+        &self,
+        frame: &Frame,
+        source: CoordinateSpace,
+        operation: &OperationContext,
+        map: impl FnOnce() -> Result<CpuMapping>,
+    ) -> Result<CpuMapping> {
+        let observed = self.observe(operation)?;
+        if frame.stamp().stream() != self.stream {
+            return Err(CaptureFault::ForeignStream.into());
+        }
+
+        let result = map();
+        if let (Some(observed), Ok(mapping)) = (&observed, &result) {
+            observed.debug(operation, || {
+                DiagnosticPayload::Mapping(MappingDiagnostic {
+                    target: self.target,
+                    frame: mapping.stamp(),
+                    source,
+                    destination: CoordinateSpace::CapturePixels,
+                })
+            });
+        }
+        result
+    }
+
+    /// Maps the whole retained frame while preserving runtime diagnostics.
+    pub fn map_frame(
+        &self,
+        frame: &Frame,
+        format: PixelFormat,
+        operation: &OperationContext,
+    ) -> Result<CpuMapping> {
+        self.map(frame, CoordinateSpace::CapturePixels, operation, || {
+            frame.map(format, operation)
+        })
+    }
+
+    /// Resolves and maps one retained frame region while preserving diagnostics.
+    pub fn map_region(
+        &self,
+        frame: &Frame,
+        region: Rect,
+        policy: ClipPolicy,
+        format: PixelFormat,
+        operation: &OperationContext,
+    ) -> Result<CpuMapping> {
+        self.map(frame, region.space(), operation, || {
+            frame.view(region, policy)?.map(format, operation)
+        })
+    }
+
+    /// Maps a validated retained frame view while preserving diagnostics.
+    pub fn map_view(
+        &self,
+        view: &FrameView,
+        format: PixelFormat,
+        operation: &OperationContext,
+    ) -> Result<CpuMapping> {
+        self.map(
+            view.frame(),
+            CoordinateSpace::CapturePixels,
+            operation,
+            || view.map(format, operation),
+        )
+    }
+}
 
 /// An open capture session that can search its own frames, and deliver input to
 /// the target it captures when the open established any.
@@ -31,6 +140,7 @@ pub struct Session {
     matcher: Matcher,
     input: Option<Arc<dyn InputController>>,
     input_descriptor: InputDescriptor,
+    diagnostics: Option<DiagnosticSink>,
 }
 
 impl Session {
@@ -38,6 +148,7 @@ impl Session {
         capture: Arc<dyn CaptureSession>,
         matcher: Matcher,
         input: Option<Arc<dyn InputController>>,
+        diagnostics: Option<DiagnosticSink>,
     ) -> Self {
         // Read once, for the reason the capture description is: an accepted
         // descriptor cannot change, and re-reading it would report the adapter's
@@ -57,6 +168,40 @@ impl Session {
             matcher,
             input,
             input_descriptor,
+            diagnostics,
+        }
+    }
+
+    fn observe(
+        &self,
+        operation: &OperationContext,
+        kind: DiagnosticOperationKind,
+    ) -> Result<Option<ObservedOperation>> {
+        self.diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.observe(operation, kind))
+            .transpose()
+    }
+
+    fn normal(
+        &self,
+        observed: Option<ObservedOperation>,
+        operation: &OperationContext,
+        payload: impl FnOnce() -> DiagnosticPayload,
+    ) {
+        if let (Some(diagnostics), Some(observed)) = (&self.diagnostics, observed) {
+            diagnostics.normal(observed, operation, payload);
+        }
+    }
+
+    fn debug(
+        &self,
+        observed: Option<ObservedOperation>,
+        operation: &OperationContext,
+        payload: impl FnOnce() -> DiagnosticPayload,
+    ) {
+        if let (Some(diagnostics), Some(observed)) = (&self.diagnostics, observed) {
+            diagnostics.debug(observed, operation, payload);
         }
     }
 
@@ -97,7 +242,65 @@ impl Session {
         request: &FrameRequest,
         operation: &OperationContext,
     ) -> Result<Frame> {
-        self.capture.frame(request, operation)
+        let observed = self.observe(operation, DiagnosticOperationKind::FrameAcquire)?;
+        let result = self.capture.frame(request, operation);
+        if let Ok(frame) = &result {
+            self.debug(observed, operation, || {
+                DiagnosticPayload::Frame(FrameDiagnostic {
+                    target: self.target(),
+                    frame: frame.stamp(),
+                })
+            });
+        }
+        result
+    }
+
+    /// Maps the whole frame and emits a debug mapping fact when enabled.
+    ///
+    /// The frame must belong to this session's stream. Mapping remains valid
+    /// after the session closes because it reads retained immutable frame state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-argument outcome for a frame from another stream, the
+    /// mapping fault for an unsupported descriptor, or the operation's terminal
+    /// deadline or cancellation outcome.
+    pub fn map_frame(
+        &self,
+        frame: &Frame,
+        format: PixelFormat,
+        operation: &OperationContext,
+    ) -> Result<CpuMapping> {
+        self.mapping_observer().map_frame(frame, format, operation)
+    }
+
+    /// Resolves and maps one frame region and emits a debug mapping fact.
+    ///
+    /// # Errors
+    ///
+    /// In addition to [`Session::map_frame`] errors, returns a coordinate or
+    /// bounds fault when `region` cannot be resolved under `policy`.
+    pub fn map_region(
+        &self,
+        frame: &Frame,
+        region: Rect,
+        policy: ClipPolicy,
+        format: PixelFormat,
+        operation: &OperationContext,
+    ) -> Result<CpuMapping> {
+        self.mapping_observer()
+            .map_region(frame, region, policy, format, operation)
+    }
+
+    /// Copies the non-owning observer used by retained foreign frame handles.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn mapping_observer(&self) -> MappingObserver {
+        MappingObserver::new(
+            self.target(),
+            self.stream(),
+            self.diagnostics.as_ref().map(DiagnosticSink::emitter),
+        )
     }
 
     /// Searches one of this session's frames for one prepared template.
@@ -137,37 +340,80 @@ impl Session {
         request: &FindRequest<'_>,
         operation: &OperationContext,
     ) -> Result<FindOutcome> {
-        let mut attempt = Operation::admit(operation)?;
-
-        if !self.capture.is_open() {
-            return Err(CaptureFault::SessionClosed.into());
-        }
-
-        let frame = match request.frame() {
-            SearchFrame::Latest => self.capture.frame(&FrameRequest::latest(), operation)?,
-            SearchFrame::Exact(frame) => {
-                // A frame from another stream would produce an envelope naming
-                // this session's target for content it never published.
-                if frame.stamp().stream() != self.description.stream() {
-                    return Err(CaptureFault::ForeignStream.into());
-                }
-                frame.clone()
-            }
+        let observed = self.observe(operation, DiagnosticOperationKind::Search)?;
+        let template = self
+            .diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.template(request.template()))
+            .transpose()?;
+        let requested_frame = match request.frame() {
+            SearchFrame::Latest => None,
+            SearchFrame::Exact(frame) => Some(frame.stamp()),
         };
-        attempt.checkpoint()?;
+        let region_space = match request.region() {
+            RegionSelection::FullFrame => Some(CoordinateSpace::CapturePixels),
+            RegionSelection::Region { rect, .. } => Some(rect.space()),
+            _ => None,
+        };
 
-        let result = self.matcher.find(
-            MatchRequest::new(
-                &frame,
-                request.region(),
-                request.template(),
-                request.options(),
-            ),
-            operation,
-        )?;
+        let result: Result<FindOutcome> = (|| {
+            let mut attempt = Operation::admit(operation)?;
+            if !self.capture.is_open() {
+                return Err(CaptureFault::SessionClosed.into());
+            }
 
-        let outcome = FindOutcome::new(self.description.target(), frame, result);
-        Ok(attempt.commit(outcome)?)
+            let frame = match request.frame() {
+                SearchFrame::Latest => self.capture.frame(&FrameRequest::latest(), operation)?,
+                SearchFrame::Exact(frame) => {
+                    if frame.stamp().stream() != self.description.stream() {
+                        return Err(CaptureFault::ForeignStream.into());
+                    }
+                    frame.clone()
+                }
+            };
+            attempt.checkpoint()?;
+            let result = self.matcher.find(
+                MatchRequest::new(
+                    &frame,
+                    request.region(),
+                    request.template(),
+                    request.options(),
+                ),
+                operation,
+            )?;
+            let outcome = FindOutcome::new(self.description.target(), frame, result);
+            Ok(attempt.commit(outcome)?)
+        })();
+
+        if let Some(template) = template {
+            let (frame, outcome, result_count) = match &result {
+                Ok(outcome) => (
+                    Some(outcome.frame().stamp()),
+                    if outcome.result().is_empty() {
+                        SearchDiagnosticOutcome::NoMatch
+                    } else {
+                        SearchDiagnosticOutcome::Matched
+                    },
+                    outcome.result().matches().len() as u64,
+                ),
+                Err(error) => (
+                    requested_frame,
+                    SearchDiagnosticOutcome::Failed(error.status()),
+                    0,
+                ),
+            };
+            self.normal(observed, operation, || {
+                DiagnosticPayload::Search(SearchDiagnostic {
+                    target: self.target(),
+                    frame,
+                    template,
+                    region_space,
+                    outcome,
+                    result_count,
+                })
+            });
+        }
+        result
     }
 
     /// Returns what input this session actually established.
@@ -187,30 +433,31 @@ impl Session {
         self.input.is_some() && self.input_descriptor.is_available()
     }
 
-    /// Delivers one bounded sequence to this session's target.
+    /// Submits one bounded sequence to this session's target.
     ///
     /// # One sequence at a time, and no queue
     ///
     /// The controller serializes its own sequences, so two callers cannot
     /// interleave a modifier and a key into a keystroke neither asked for. A
     /// sequence waits under the caller's own operation context and nothing
-    /// accumulates behind it: one whose deadline passes while waiting delivers
-    /// nothing and says so. Pressure is reported to callers rather than absorbed.
+    /// accumulates behind it: one whose deadline passes while waiting reaches no
+    /// route and says so. Pressure is reported to callers rather than absorbed.
     ///
     /// # What the receipt is, and why a failure is usually not an error
     ///
-    /// An operating system cannot recall a delivered event, so a sequence that
-    /// stopped part-way answers with how far it got. Once anything may have
-    /// reached the target, that account is this operation's terminal outcome and
-    /// is returned even when the caller's deadline passed while it ran —
-    /// replacing it with the interruption would discard the one fact the caller
-    /// has to act on. A receipt that delivered nothing carries no such fact, so
-    /// an operation that lost its race reports the interruption instead.
+    /// An operating system cannot recall an event that may already have native
+    /// effect, so a sequence that stopped part-way answers with how far its route
+    /// got. Once anything may have reached the target, that account is this
+    /// operation's terminal outcome and is returned even when the caller's
+    /// deadline passed while it ran — replacing it with the interruption would
+    /// discard the one fact the caller has to act on. A receipt with no possible
+    /// native effect carries no such fact, so an operation that lost its race
+    /// reports the interruption instead.
     ///
     /// Nothing here retries. A sequence that stopped part-way is not sent again
-    /// through another mechanism, whatever the request permitted: the events
-    /// already delivered cannot be taken back, and repeating them is not a
-    /// recovery a caller could have asked for.
+    /// through another mechanism, whatever the request permitted: possible native
+    /// effect cannot be taken back, and repeating it is not a recovery a caller
+    /// could have asked for.
     ///
     /// # Errors
     ///
@@ -219,43 +466,63 @@ impl Session {
     /// carrying a source frame from another stream, a closed outcome once the
     /// session or the controller is closing, the input contract's own refusal
     /// for a request no permitted mechanism can satisfy, and the operation's
-    /// terminal outcome when cancellation or the deadline wins with nothing
-    /// delivered.
+    /// terminal outcome when cancellation or the deadline wins before any
+    /// possible native effect.
     pub fn send_input(
         &self,
         request: &InputRequest,
         operation: &OperationContext,
     ) -> Result<InputReceipt> {
-        let mut attempt = Operation::admit(operation)?;
+        let observed = self.observe(operation, DiagnosticOperationKind::InputSubmission)?;
+        let result: Result<InputReceipt> = (|| {
+            let mut attempt = Operation::admit(operation)?;
+            let Some(controller) = self.input.as_ref() else {
+                return Err(InputFault::RouteUnavailable.into());
+            };
+            if request.target() != self.description.target() {
+                return Err(InputFault::ForeignTarget.into());
+            }
+            if let Some(source) = request.pointer_geometry().source()
+                && source.stream() != self.description.stream()
+            {
+                return Err(CaptureFault::ForeignStream.into());
+            }
+            if !self.capture.is_open() {
+                return Err(CaptureFault::SessionClosed.into());
+            }
+            attempt.checkpoint()?;
 
-        let Some(controller) = self.input.as_ref() else {
-            return Err(InputFault::DeliveryUnavailable.into());
-        };
-        if request.target() != self.description.target() {
-            return Err(InputFault::ForeignTarget.into());
-        }
-        // A source frame from another stream would resolve this target's
-        // coordinates against geometry it never published. Which frame identity
-        // is this session's is the session's rule, exactly as it is for a search.
-        if let Some(source) = request.pointer_geometry().source()
-            && source.stream() != self.description.stream()
-        {
-            return Err(CaptureFault::ForeignStream.into());
-        }
-        // A session that has begun closing delivers nothing, whatever the
-        // request asks for. Close means the caller is finished with this target.
-        if !self.capture.is_open() {
-            return Err(CaptureFault::SessionClosed.into());
-        }
-        attempt.checkpoint()?;
+            let receipt = controller.execute(request, operation)?;
+            if receipt.outcome() == SequenceOutcome::Unexecuted {
+                return Ok(attempt.commit(receipt)?);
+            }
+            Ok(receipt)
+        })();
 
-        let receipt = controller.execute(request, operation)?;
-        if receipt.outcome() == SequenceOutcome::Unexecuted {
-            // Nothing reached the target, so a late answer is still late and the
-            // operation's own outcome is the truthful one.
-            return Ok(attempt.commit(receipt)?);
+        if let Ok(receipt) = &result {
+            for attempt in receipt.attempts() {
+                let attempt = *attempt;
+                self.debug(observed, operation, || {
+                    DiagnosticPayload::RouteAttempt(RouteAttemptDiagnostic {
+                        target: receipt.target(),
+                        route: attempt.route(),
+                        address_scope: attempt.address_scope(),
+                        evidence: attempt.evidence(),
+                        outcome: attempt.outcome(),
+                        submitted: attempt.submitted() as u64,
+                        partial_native_effect: attempt.partial_native_effect(),
+                        fault: attempt.fault(),
+                    })
+                });
+            }
         }
-        Ok(receipt)
+        self.normal(observed, operation, || {
+            DiagnosticPayload::Input(match &result {
+                Ok(receipt) => InputDiagnostic::from_receipt(request, receipt),
+                Err(error) => InputDiagnostic::from_failure(request, error.status()),
+            })
+        });
+        result
     }
 
     /// Closes the session and drains in-flight frame waits and input sequences.
@@ -276,12 +543,25 @@ impl Session {
     /// whatever the first one reports, so a retried close continues one lifecycle
     /// rather than two that diverged.
     pub fn close(&self, operation: &OperationContext) -> Result<()> {
+        let observed = self.observe(operation, DiagnosticOperationKind::SessionClose)?;
         let input = match self.input.as_ref() {
             Some(controller) => controller.close(operation),
             None => Ok(()),
         };
         let capture = self.capture.close(operation);
-        input.and(capture)
+        let result = input.and(capture);
+        self.normal(observed, operation, || {
+            DiagnosticPayload::Lifecycle(LifecycleDiagnostic {
+                target: Some(self.target()),
+                lifecycle: if self.is_closed() {
+                    Lifecycle::Closed
+                } else {
+                    Lifecycle::Closing
+                },
+                fault: result.as_ref().err().map(|error| error.status()),
+            })
+        });
+        result
     }
 
     /// Reports whether the session has finished closing.
@@ -346,7 +626,7 @@ mod tests {
             Self {
                 backend,
                 matcher: matcher.clone(),
-                session: Session::new(opened, matcher, None),
+                session: Session::new(opened, matcher, None, None),
             }
         }
 

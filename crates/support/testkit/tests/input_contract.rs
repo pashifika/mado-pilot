@@ -12,8 +12,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use mado_pilot_core::{
-    CancellationToken, CoordinateSpace, IdentityIssuer, InputCapability, InputDelivery,
-    InputOperationKind, Lifecycle, OperationContext, Point, ProviderId, Status, TargetId,
+    CancellationToken, CapabilitySupport, CoordinateSpace, IdentityIssuer, InputCapability,
+    InputDelivery, InputOperationKind, Lifecycle, OperationContext, Point, ProviderId, Status,
+    SubmissionEvidence, TargetId,
 };
 use mado_pilot_input::{
     CleanupBudget, CleanupState, DeliveryPlan, InputEvent, InputFault, InputOpenRequest,
@@ -73,19 +74,26 @@ fn the_controlled_double_satisfies_the_input_contract() {
 }
 
 #[test]
-fn a_partially_executed_mode_returns_a_partial_receipt_and_does_not_retry_elsewhere() {
+fn a_partially_submitted_route_returns_a_partial_receipt_and_does_not_fallback() {
     let target = target();
     let provider = ControlledInput::with_capability(
         target,
         InputCapability::none()
-            .with_pair(InputOperationKind::Keyboard, InputDelivery::System)
             .with_pair(
                 InputOperationKind::Keyboard,
-                InputDelivery::BackgroundTarget,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            )
+            .with_pair(
+                InputOperationKind::Keyboard,
+                InputDelivery::WindowMessage,
+                CapabilitySupport::Unknown,
+                SubmissionEvidence::TargetQueueAdmission,
             ),
     );
     provider.set_behavior(Behavior::FailAfter {
-        delivered: 2,
+        submitted: 2,
         fault: InputFault::PolicyRefused,
     });
     let controller = provider
@@ -97,7 +105,7 @@ fn a_partially_executed_mode_returns_a_partial_receipt_and_does_not_retry_elsewh
             &InputRequest::new(
                 target,
                 chord(),
-                DeliveryPlan::ordered(vec![InputDelivery::System, InputDelivery::BackgroundTarget])
+                DeliveryPlan::ordered(vec![InputDelivery::System, InputDelivery::WindowMessage])
                     .expect("valid"),
             ),
             &context(),
@@ -105,24 +113,22 @@ fn a_partially_executed_mode_returns_a_partial_receipt_and_does_not_retry_elsewh
         .expect("an admitted sequence always produces a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 2);
-    assert_eq!(receipt.failure(), Some(InputFault::PolicyRefused));
+    assert_eq!(receipt.submitted(), 2);
+    assert_eq!(receipt.fault(), Some(InputFault::PolicyRefused));
     assert_eq!(
-        receipt.delivery(),
+        receipt.selected_route(),
         Some(InputDelivery::System),
-        "the mechanism that partially executed is the one reported"
+        "the partially submitted route is terminal"
     );
-    assert_eq!(
-        receipt.attempted(),
-        [InputDelivery::System],
-        "a mode that already delivered events is not retried through another"
-    );
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
+    assert_eq!(receipt.attempts()[0].submitted(), 2);
     assert!(
         provider
-            .delivered()
+            .submitted_events()
             .iter()
-            .all(|delivered| delivered.mechanism == InputDelivery::System),
-        "no event reached the target through the fallback"
+            .all(|submitted| submitted.route == InputDelivery::System),
+        "no event reached the caller's fallback route"
     );
 }
 
@@ -131,8 +137,8 @@ fn cleanup_that_cannot_release_everything_reports_its_exact_counts() {
     let target = target();
     let provider = ControlledInput::new(target);
     provider.set_behavior(Behavior::FailAfter {
-        delivered: 2,
-        fault: InputFault::DeliveryFailed,
+        submitted: 2,
+        fault: InputFault::SubmissionFailed,
     });
     provider.set_cleanup(Cleanup::Partial(1));
     let controller = provider
@@ -159,8 +165,8 @@ fn cleanup_releases_only_what_the_sequence_itself_pressed() {
     let target = target();
     let provider = ControlledInput::new(target);
     provider.set_behavior(Behavior::FailAfter {
-        delivered: 2,
-        fault: InputFault::DeliveryFailed,
+        submitted: 2,
+        fault: InputFault::SubmissionFailed,
     });
     let controller = provider
         .open(target, &InputOpenRequest::new(), &context())
@@ -191,8 +197,8 @@ fn a_cleanup_that_runs_out_of_events_is_not_a_refused_release() {
     let target = target();
     let provider = ControlledInput::new(target);
     provider.set_behavior(Behavior::FailAfter {
-        delivered: 2,
-        fault: InputFault::DeliveryFailed,
+        submitted: 2,
+        fault: InputFault::SubmissionFailed,
     });
     let controller = provider
         .open(target, &InputOpenRequest::new(), &context())
@@ -227,8 +233,8 @@ fn a_cleanup_whose_time_runs_out_stops_without_refusing_anything() {
     let target = target();
     let provider = ControlledInput::new(target);
     provider.set_behavior(Behavior::FailAfter {
-        delivered: 2,
-        fault: InputFault::DeliveryFailed,
+        submitted: 2,
+        fault: InputFault::SubmissionFailed,
     });
     let controller = provider
         .open(target, &InputOpenRequest::new(), &context())
@@ -276,7 +282,7 @@ fn cleanup_runs_even_though_the_cancellation_is_what_stopped_the_sequence() {
     let receipt = thread::scope(|scope| {
         let worker = scope.spawn(|| controller.execute(&system(target, sequence), &cancelled));
         wait_until("the modifier to be pressed", || {
-            !provider.delivered().is_empty()
+            !provider.submitted_events().is_empty()
         });
         token.cancel();
         worker.join().expect("the sequence finished")
@@ -288,7 +294,7 @@ fn cleanup_runs_even_though_the_cancellation_is_what_stopped_the_sequence() {
         SequenceOutcome::Partial,
         "the cancellation stopped it part-way"
     );
-    assert_eq!(receipt.failure(), Some(InputFault::Cancelled));
+    assert_eq!(receipt.fault(), Some(InputFault::Cancelled));
     assert_eq!(
         receipt.cleanup(),
         CleanupState::Complete,
@@ -306,7 +312,7 @@ fn a_failed_cleanup_still_reports_what_it_owed() {
     let target = target();
     let provider = ControlledInput::new(target);
     provider.set_behavior(Behavior::FailAfter {
-        delivered: 1,
+        submitted: 1,
         fault: InputFault::TargetLost,
     });
     provider.set_cleanup(Cleanup::Fails);
@@ -359,14 +365,14 @@ fn close_racing_a_sequence_leaves_one_truthful_receipt_and_no_later_event() {
     );
     assert_eq!(controller.lifecycle(), Lifecycle::Closed);
 
-    let delivered_before = provider.delivered().len();
+    let submitted_before = provider.submitted_events().len();
     let error = controller
         .execute(&system(target, chord()), &context())
         .expect_err("a closed controller admits nothing");
     assert_eq!(error.status(), Status::Closed);
     assert_eq!(
-        provider.delivered().len(),
-        delivered_before,
+        provider.submitted_events().len(),
+        submitted_before,
         "no ordinary event begins after close"
     );
 }
@@ -400,21 +406,24 @@ fn a_required_combination_absent_from_the_capability_refuses_the_open() {
     let target = target();
     let provider = ControlledInput::with_capability(
         target,
-        InputCapability::none().with_pair(InputOperationKind::Keyboard, InputDelivery::System),
+        InputCapability::none().with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::SystemInputAdmission,
+        ),
     );
 
     let refused = provider.open(
         target,
-        &InputOpenRequest::new().requiring(
-            InputOperationKind::Keyboard,
-            InputDelivery::BackgroundTarget,
-        ),
+        &InputOpenRequest::new()
+            .requiring(InputOperationKind::Keyboard, InputDelivery::WindowMessage),
         &context(),
     );
 
     assert_eq!(
         refused
-            .expect_err("background keyboard input was never advertised")
+            .expect_err("the exact-window keyboard route was never advertised")
             .status(),
         Status::Unsupported
     );
@@ -457,7 +466,7 @@ fn a_controller_survives_being_shared_across_threads() {
     });
 
     assert_eq!(
-        provider.delivered().len(),
+        provider.submitted_events().len(),
         16,
         "four sequences of four events each, none of them interleaved"
     );

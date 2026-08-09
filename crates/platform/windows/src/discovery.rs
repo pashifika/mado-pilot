@@ -303,7 +303,7 @@ fn window_title(hwnd: HWND) -> Option<String> {
 
 fn window_class(hwnd: HWND) -> Option<String> {
     // Win32 window class names are bounded to 256 UTF-16 code units including
-    // the terminator. A failed query disables class-specific background
+    // the terminator. A failed query disables class-specific `WindowMessage`
     // capability but does not make system input or capture disappear.
     let mut buffer = [0u16; 256];
     // SAFETY: buffer is writable for the duration of the call and hwnd came from
