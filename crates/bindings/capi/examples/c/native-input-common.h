@@ -16,6 +16,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#elif defined(__APPLE__)
+#include <sys/resource.h>
+#endif
+
 
 #include "madopilot/madopilot.h"
 
@@ -448,19 +457,52 @@ cleanup:
 
     return worked && failures == 0;
 }
+static uint64_t peak_resident_bytes(void)
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS counters;
+    memset(&counters, 0, sizeof(counters));
+    counters.cb = sizeof(counters);
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) {
+        return 0;
+    }
+    return (uint64_t)counters.PeakWorkingSetSize;
+#elif defined(__APPLE__)
+    struct rusage usage;
+    memset(&usage, 0, sizeof(usage));
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0;
+    }
+    return (uint64_t)usage.ru_maxrss;
+#else
+    return 0;
+#endif
+}
+
+static void report_peak_resident_bytes(void)
+{
+    printf("peak resident: %llu byte(s)\n",
+           (unsigned long long)peak_resident_bytes());
+}
+
 
 int main(int argc, char** argv)
 {
     const madopilot_api_t* api = NULL;
     const char* title = NULL;
     int check_only = 0;
+    int load_only = 0;
 
-    if (argc == 2 && strcmp(argv[1], "--check") == 0) {
+    if (argc == 2 && strcmp(argv[1], "--load-check") == 0) {
+        load_only = 1;
+    } else if (argc == 2 && strcmp(argv[1], "--check") == 0) {
         check_only = 1;
     } else if (argc == 2 && argv[1][0] != '\0') {
         title = argv[1];
     } else {
-        fprintf(stderr, "usage: %s --check | \"<full fixture window title>\"\n", argv[0]);
+        fprintf(stderr,
+                "usage: %s --load-check | --check | \"<full fixture window title>\"\n",
+                argv[0]);
         return 2;
     }
 
@@ -477,9 +519,15 @@ int main(int argc, char** argv)
     printf("%s: abi %u.%u table %u\n", MADOPILOT_EXAMPLE_NAME,
            (unsigned)api->abi_major, (unsigned)api->abi_minor,
            (unsigned)api->struct_size);
+    if (load_only) {
+        report_peak_resident_bytes();
+        printf("%s complete (load check)\n", MADOPILOT_EXAMPLE_NAME);
+        return 0;
+    }
     if (!run_native(api, title, check_only)) {
         return 1;
     }
+    report_peak_resident_bytes();
 
     printf("%s complete%s\n", MADOPILOT_EXAMPLE_NAME,
            check_only ? " (non-prompting check)" : "");

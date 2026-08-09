@@ -18,30 +18,35 @@ fn main() {
 #[cfg(target_os = "macos")]
 fn main() {
     let mut arguments = std::env::args_os().skip(1);
-    let mode = arguments.next();
+    let argument = arguments.next();
     if arguments.next().is_some() {
-        eprintln!(
-            "usage: mado-pilot-macos-input-fixture \
-             [--report-execution-context|--replace-window-after-ready]"
-        );
+        fixture::print_usage();
         std::process::exit(2);
     }
-    let replace = match mode.as_deref() {
-        None => false,
-        Some(mode) if mode == std::ffi::OsStr::new("--report-execution-context") => {
+    let mode = match argument.as_deref() {
+        None => fixture::Mode::Static,
+        Some(argument) if argument == std::ffi::OsStr::new("--report-execution-context") => {
             fixture::report_execution_context();
             return;
         }
-        Some(mode) if mode == std::ffi::OsStr::new("--replace-window-after-ready") => true,
+        Some(argument) if argument == std::ffi::OsStr::new("--replace-window-after-ready") => {
+            fixture::Mode::Replace
+        }
+        Some(argument) if argument == std::ffi::OsStr::new("--animate-on-input") => {
+            fixture::Mode::AnimateOnInput
+        }
+        Some(argument) if argument == std::ffi::OsStr::new("--resize-on-input") => {
+            fixture::Mode::ResizeOnInput
+        }
+        Some(argument) if argument == std::ffi::OsStr::new("--animate-and-resize-on-input") => {
+            fixture::Mode::AnimateAndResizeOnInput
+        }
         Some(_) => {
-            eprintln!(
-                "usage: mado-pilot-macos-input-fixture \
-                 [--report-execution-context|--replace-window-after-ready]"
-            );
+            fixture::print_usage();
             std::process::exit(2);
         }
     };
-    match fixture::run(replace) {
+    match fixture::run(mode) {
         Ok(()) => {}
         Err(status) => {
             eprintln!("macOS input fixture failed: {status}");
@@ -66,6 +71,23 @@ mod fixture {
 
     /// How many events have been reported, so reporting stays bounded.
     static REPORTED: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Mode {
+        Static,
+        Replace,
+        AnimateOnInput,
+        ResizeOnInput,
+        AnimateAndResizeOnInput,
+    }
+
+    pub(super) fn print_usage() {
+        eprintln!(
+            "usage: mado-pilot-macos-input-fixture \
+             [--report-execution-context|--replace-window-after-ready|\
+             --animate-on-input|--resize-on-input|--animate-and-resize-on-input]"
+        );
+    }
 
     #[derive(Debug)]
     struct ExecutionContextReport {
@@ -139,7 +161,7 @@ mod fixture {
         );
     }
 
-    pub(super) fn run(replace_window: bool) -> Result<(), Status> {
+    pub(super) fn run(mode: Mode) -> Result<(), Status> {
         let title = fixture_title(std::process::id());
         let encoded = CString::new(title.clone()).map_err(|_| Status(INVALID_ARGUMENT))?;
         let report = execution_context();
@@ -147,10 +169,16 @@ mod fixture {
             .signing_identifier
             .as_deref()
             .map_or(&[][..], str::as_bytes);
-        let replacement_delay_ms = if replace_window {
+        let replacement_delay_ms = if mode == Mode::Replace {
             REPLACEMENT_DELAY_MS
         } else {
             0
+        };
+        let behavior = match mode {
+            Mode::AnimateOnInput => BEHAVIOR_ANIMATE_ON_INPUT,
+            Mode::ResizeOnInput => BEHAVIOR_RESIZE_ON_INPUT,
+            Mode::AnimateAndResizeOnInput => BEHAVIOR_ANIMATE_ON_INPUT | BEHAVIOR_RESIZE_ON_INPUT,
+            Mode::Static | Mode::Replace => 0,
         };
 
         // SAFETY: `encoded` outlives the call, the three callbacks are plain
@@ -162,6 +190,7 @@ mod fixture {
                 encoded.as_ptr(),
                 FILL_RGB,
                 REPLACEMENT_FILL_RGB,
+                behavior,
                 replacement_delay_ms,
                 WINDOW_POINTS.0,
                 WINDOW_POINTS.1,
@@ -293,6 +322,8 @@ mod fixture {
     const SIGNATURE_CERTIFICATE: u32 = 4;
     const SIGNING_IDENTIFIER_CAPACITY: usize = 256;
     const REPLACEMENT_DELAY_MS: u32 = 5_000;
+    const BEHAVIOR_ANIMATE_ON_INPUT: u32 = 1;
+    const BEHAVIOR_RESIZE_ON_INPUT: u32 = 2;
 
     /// A native status the fixture could not start under.
     pub(super) struct Status(u32);
@@ -315,6 +346,7 @@ mod fixture {
             title: *const c_char,
             fill: u32,
             replacement_fill: u32,
+            behavior: u32,
             replacement_delay_ms: u32,
             width: f64,
             height: f64,

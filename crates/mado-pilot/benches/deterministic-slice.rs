@@ -132,10 +132,15 @@ fn main() {
                 fixture_sha256: fixture_digest().to_string(),
                 hardware,
                 os_version,
+                build_profile: format!(
+                    "cargo bench, default features, debug_assertions={}",
+                    cfg!(debug_assertions)
+                ),
                 correctness_oracle: "every retained sample is checked; \
                                      each measurement states its own oracle",
                 queue_policy: "none; every Phase 1 operation is synchronous \
                                and no work is queued",
+                notes: None,
             },
             plan,
             &workloads,

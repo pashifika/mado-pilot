@@ -41,7 +41,7 @@ pub const REPLACEMENT_FILL_RGB: u32 = 0x00C4_5B2E;
 pub const WINDOW_POINTS: (f64, f64) = (640.0, 420.0);
 
 /// The most events the fixture reports before it stops reporting.
-pub const MAX_RECORDED_EVENTS: usize = 256;
+pub const MAX_RECORDED_EVENTS: usize = 1_024;
 
 /// Largest ready record the fixture gate will parse.
 const MAX_READY_LINE_BYTES: usize = 1_024;

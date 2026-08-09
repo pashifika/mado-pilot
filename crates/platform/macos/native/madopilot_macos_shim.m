@@ -3153,8 +3153,7 @@ static mp_shim_status mp_shim_ax_window_rect(AXUIElementRef window, uint64_t dea
     return status;
 }
 
-static mp_shim_status mp_shim_input_window_rect(const struct mp_shim_target *target,
-                                                CGRect *out_bounds) {
+static mp_shim_status mp_shim_retained_window_is_live(const struct mp_shim_target *target) {
     id<MPShimContentFilterInit> filter = (__bridge id<MPShimContentFilterInit>)target->filter;
     NSArray *windows = filter.includedWindows;
     if (windows.count != 1) {
@@ -3166,9 +3165,57 @@ static mp_shim_status mp_shim_input_window_rect(const struct mp_shim_target *tar
         owner.processID != (pid_t)target->owner_process || !window.isOnScreen) {
         return MP_SHIM_TARGET_LOST;
     }
-    CGRect bounds = window.frame;
-    if (CGRectIsNull(bounds) || bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+    return MP_SHIM_OK;
+}
+
+/*
+ * `SCWindow.frame` belongs to the shareable-content snapshot that selected the
+ * target; it does not advance when that same live window moves or resizes.
+ * Keep the retained filter as incarnation authority, but read the exact
+ * PID-qualified window number from Core Graphics for its current rectangle.
+ */
+static mp_shim_status mp_shim_input_window_rect(const struct mp_shim_target *target,
+                                                CGRect *out_bounds) {
+    mp_shim_status status = mp_shim_retained_window_is_live(target);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+
+    CFArrayRef copied = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow,
+                                                   (CGWindowID)target->native_id);
+    NSArray *descriptions = CFBridgingRelease(copied);
+    if (descriptions == nil || descriptions.count != 1) {
         return MP_SHIM_TARGET_LOST;
+    }
+    NSDictionary *description = descriptions.firstObject;
+    NSNumber *window_number = description[(__bridge NSString *)kCGWindowNumber];
+    NSNumber *owner_process = description[(__bridge NSString *)kCGWindowOwnerPID];
+    NSNumber *on_screen = description[(__bridge NSString *)kCGWindowIsOnscreen];
+    NSDictionary *bounds_dictionary = description[(__bridge NSString *)kCGWindowBounds];
+    CGRect bounds = CGRectNull;
+    if (![window_number isKindOfClass:[NSNumber class]] ||
+        ![owner_process isKindOfClass:[NSNumber class]] ||
+        ![on_screen isKindOfClass:[NSNumber class]] ||
+        ![bounds_dictionary isKindOfClass:[NSDictionary class]]) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    if (window_number.unsignedIntValue != (CGWindowID)target->native_id ||
+        owner_process.longLongValue != target->owner_process || !on_screen.boolValue) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)bounds_dictionary,
+                                                &bounds) ||
+        CGRectIsNull(bounds) || bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+        return MP_SHIM_TARGET_LOST;
+    }
+
+    /*
+     * Close the lookup race: a destroyed retained window cannot authorize a
+     * recycled number that appeared while Core Graphics took its snapshot.
+     */
+    status = mp_shim_retained_window_is_live(target);
+    if (status != MP_SHIM_OK) {
+        return status;
     }
     *out_bounds = bounds;
     return MP_SHIM_OK;

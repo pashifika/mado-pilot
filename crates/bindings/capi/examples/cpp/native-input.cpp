@@ -10,6 +10,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <string_view>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#elif defined(__APPLE__)
+#include <sys/resource.h>
+#endif
+
 
 #include "madopilot/madopilot.hpp"
 
@@ -47,6 +56,32 @@ madopilot::Source native_source()
 #endif
 
 int failures = 0;
+std::uint64_t peak_resident_bytes()
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS counters{};
+    counters.cb = sizeof(counters);
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(counters.PeakWorkingSetSize);
+#elif defined(__APPLE__)
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(usage.ru_maxrss);
+#else
+    return 0;
+#endif
+}
+
+void report_peak_resident_bytes()
+{
+    std::printf("peak resident: %llu byte(s)\n",
+                static_cast<unsigned long long>(peak_resident_bytes()));
+}
+
 
 bool expect(bool condition, const char* message)
 {
@@ -362,13 +397,17 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
 int main(int argc, char** argv)
 {
     bool check_only = false;
+    bool load_only = false;
     std::string_view title;
-    if (argc == 2 && std::string_view(argv[1]) == "--check") {
+    if (argc == 2 && std::string_view(argv[1]) == "--load-check") {
+        load_only = true;
+    } else if (argc == 2 && std::string_view(argv[1]) == "--check") {
         check_only = true;
     } else if (argc == 2 && argv[1][0] != '\0') {
         title = argv[1];
     } else {
-        std::fprintf(stderr, "usage: %s --check | \"<full fixture window title>\"\n",
+        std::fprintf(stderr,
+                     "usage: %s --load-check | --check | \"<full fixture window title>\"\n",
                      argv[0]);
         return 2;
     }
@@ -393,6 +432,11 @@ int main(int argc, char** argv)
                 static_cast<unsigned>(build.value().abi_major),
                 static_cast<unsigned>(build.value().abi_minor),
                 static_cast<unsigned>(build.value().table_size));
+    if (load_only) {
+        report_peak_resident_bytes();
+        std::printf("%s complete (load check)\n", EXAMPLE_NAME);
+        return 0;
+    }
 
     madopilot::Operation operation;
     if (!bounded_operation(api, UINT64_C(5000000000), operation)) {
@@ -409,6 +453,7 @@ int main(int argc, char** argv)
     if (!run_native(api, engine, title, check_only) || failures != 0) {
         return 1;
     }
+    report_peak_resident_bytes();
 
     std::printf("%s complete%s\n", EXAMPLE_NAME,
                 check_only ? " (non-prompting check)" : "");
