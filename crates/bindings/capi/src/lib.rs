@@ -60,7 +60,7 @@
 //! Within this major nothing changes its number and nothing moves; a later minor
 //! appends and raises `MADOPILOT_ABI_MINOR`. `tests/abi-compat/` keeps every
 //! released header and compiles each one against every later build. The
-//! unreleased 1.1 fixture remains migration and rejection evidence only.
+//! unreleased 1.1 draft has no fixture or compatibility surface.
 //!
 //! # Where to start
 //!

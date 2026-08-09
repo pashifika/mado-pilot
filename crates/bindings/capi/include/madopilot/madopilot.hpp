@@ -216,7 +216,7 @@ inline ::madopilot_bytes_t as_bytes(const std::uint8_t* data, std::size_t len) n
 /// The library reports its own extent in the mandatory table prefix. The
 /// wrapper also retains the caller extent passed to negotiation: checking only
 /// the larger library table would let a caller that deliberately negotiated a
-/// 1.0 prefix invoke a 1.1 member it did not claim to understand.
+/// 1.0 prefix invoke a 1.2 member it did not claim to understand.
 inline bool has_entry(const ::madopilot_api_t* api, std::size_t negotiated_extent,
                       std::size_t required) noexcept {
     return api != nullptr && negotiated_extent >= required &&

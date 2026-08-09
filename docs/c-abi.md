@@ -48,8 +48,8 @@ The released promise is checked rather than stated.
 `tests/abi-compat/v1/` keeps the exact ABI 1.0 header and compiles its caller
 against that frozen copy — never the working header — then links it to the
 library built now, negotiates only the extent that caller declared, and runs its
-complete flow. `tests/abi-compat/v1.1/` remains historical superseded-draft and
-migration evidence; it is not a supported old-header fixture.
+complete flow. The unreleased 1.1 draft has no header fixture, executable caller,
+alias, or compatibility surface in the current tree.
 
 ## Migrating from the unreleased 1.1 draft
 
@@ -260,7 +260,7 @@ source, operation, and input-policy structures as well as handles, so a null
 the way to say that is an operation whose `flags` set no bit. The two are
 different requests: an absent structure declares nothing at all, while an empty
 one declares which header the caller was built against and how much of the
-structure it filled in. The rule applies equally to the 1.1 operations:
+structure it filled in. The rule applies equally to the ABI 1.2 operations:
 `session_open_with_input` requires both request records, and
 `engine_permission`, `engine_input_descriptor`, and `session_send_input` each
 require an operation record.
@@ -683,11 +683,11 @@ It runs the released ABI 1.0 probe under `tests/abi-compat/v1/`, compiled
 against that header rather than the working one, and requires every structure,
 field, numeric value, and table entry it declares to retain its answer. The 1.0
 caller links to the current library, negotiates only its 424-byte extent, and
-runs. `tests/abi-compat/v1.1/` is retained only to prove the superseded draft and
-migration boundary; negotiation rejects minimum minor 1. This catches a
-coordinated Rust/header edit that a working-header comparison alone cannot:
-swapping same-width fields moves no offset but makes an old caller read the
-wrong meaning.
+runs. This catches a coordinated Rust/header edit that a working-header
+comparison alone cannot: swapping same-width fields moves no offset but makes
+an old caller read the wrong meaning. Current-header C and Rust checks separately
+prove that minimum minor 1 and a minor-zero caller claiming suffix entries are
+both refused with a null table output.
 
 The same command continues into the C++ surface: compile-time and runtime
 ownership tests, the replay example, the safe native example, and the
@@ -712,10 +712,9 @@ Rust-error-to-C-status mapping. Its per-field reports are under
 [evidence/c-abi/](evidence/c-abi/).
 
 [ADR 0017](adr/0017-c-abi-1-1-native-input-prefix.md) records the
-superseded, unreleased ABI 1.1 draft. Its exact declarations and executable
-caller remain under
-[`tests/abi-compat/v1.1/`](../crates/bindings/capi/tests/abi-compat/v1.1/) as
-historical migration evidence, not as a compatibility promise.
+superseded, unreleased ABI 1.1 draft. ADR 0023 removed its declarations and
+executable caller from the current tree; repository history retains the
+development record without turning it into a compatibility target.
 
 [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md) records ABI 1.2:
 the native route capability and submission-evidence vocabulary, owned receipt

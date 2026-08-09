@@ -11,9 +11,8 @@
 //! that does not exist, and it would compile perfectly.
 //!
 //! The complete 1.0 prefix is frozen by
-//! `docs/adr/0007-phase-1-c-abi-freeze.md`; ABI 1.2 replaces the unreleased
-//! ABI 1.1 suffix and retains its historical header only as rejection evidence.
-//! The C++ surface is not an ABI and is governed by
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`; ABI 1.2 replaces and removes the
+//! unreleased ABI 1.1 suffix. The C++ surface is not an ABI and is governed by
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md`; what this
 //! file protects is that a change to it is deliberate.
 

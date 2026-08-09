@@ -760,6 +760,8 @@ static void report_peak_resident_bytes(void)
 int main(int argc, char** argv)
 {
     const madopilot_api_t* api = NULL;
+    const madopilot_api_t* rejected_api =
+        (const madopilot_api_t*)(uintptr_t)1;
     const char* title = NULL;
     int check_only = 0;
     int load_only = 0;
@@ -777,6 +779,22 @@ int main(int argc, char** argv)
         return 2;
     }
 
+    if (!expect(madopilot_get_api(MADOPILOT_ABI_MAJOR, 1,
+                                  sizeof(madopilot_api_t), &rejected_api) ==
+                    MADOPILOT_STATUS_UNSUPPORTED &&
+                    rejected_api == NULL,
+                "reject the unreleased ABI 1.1 profile")) {
+        return 1;
+    }
+    rejected_api = (const madopilot_api_t*)(uintptr_t)1;
+    if (!expect(madopilot_get_api(MADOPILOT_ABI_MAJOR, 0,
+                                  MADOPILOT_API_SIZE_ABI_1_0 + 1u,
+                                  &rejected_api) ==
+                    MADOPILOT_STATUS_UNSUPPORTED &&
+                    rejected_api == NULL,
+                "reject an ABI 1.0 caller claiming suffix entries")) {
+        return 1;
+    }
     if (!expect(madopilot_get_api(MADOPILOT_ABI_MAJOR, 2,
                                   sizeof(madopilot_api_t), &api) ==
                     MADOPILOT_STATUS_OK &&

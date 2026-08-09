@@ -899,11 +899,11 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Historical header profiles whose frozen declarations remain evidence.
+/// Released header profiles whose frozen declarations remain ABI obligations.
 ///
-/// `v1` is the released 1.0 contract. `v1.1` is the superseded draft retained
-/// specifically to prove that its noncontiguous minor is rejected.
-const FROZEN_HEADERS: &[&str] = &["v1", "v1.1"];
+/// ABI 1.0 is the only released profile older than the working ABI 1.2 header.
+/// The unreleased ABI 1.1 draft has no compatibility fixture.
+const FROZEN_HEADERS: &[&str] = &["v1"];
 
 /// Runs the layout probe against each frozen header, and checks that what that
 /// header declares is still true of the library built now.
@@ -1023,13 +1023,12 @@ fn check_frozen_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Compiles, links, and runs every historical header fixture against the
-/// library built now.
+/// Compiles, links, and runs every released historical header fixture against
+/// the library built now.
 ///
 /// The fixture is compiled with its own include directory *instead of* the
-/// working one, so it cannot reach the current header. The released 1.0 fixture
-/// must still negotiate and run; the superseded 1.1 fixture succeeds only after
-/// observing the specified rejection.
+/// working one, so it cannot reach the current header. Every released fixture
+/// must still negotiate and run.
 fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
     for version in FROZEN_HEADERS {
         let include = paths.frozen_include(version);
@@ -1045,10 +1044,10 @@ fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
         report_output(&name, &output);
 
         if !output.status.success() {
-            return Err(format!("the historical {version} header fixture failed").into());
+            return Err(format!("the released {version} header fixture failed").into());
         }
         if !stdout.contains(&format!("{name} complete")) {
-            return Err(format!("the historical {version} fixture never reached the end").into());
+            return Err(format!("the released {version} fixture never reached the end").into());
         }
     }
 

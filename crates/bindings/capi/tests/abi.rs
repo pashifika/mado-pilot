@@ -93,6 +93,29 @@ fn a_minimum_minor_newer_than_the_library_is_refused() {
 }
 
 #[test]
+fn the_unreleased_abi_1_1_profile_is_refused_at_every_extent() {
+    for extent in [
+        MADOPILOT_API_SIZE_INFORMATION as usize,
+        size_of::<madopilot_api_t>(),
+    ] {
+        let status = negotiate(MADOPILOT_ABI_MAJOR, 1, extent)
+            .expect_err("minimum minor 1 never names a supported profile");
+        assert_eq!(status, MADOPILOT_STATUS_UNSUPPORTED);
+    }
+}
+
+#[test]
+fn an_abi_1_0_caller_cannot_claim_the_abi_1_2_suffix() {
+    let status = negotiate(
+        MADOPILOT_ABI_MAJOR,
+        0,
+        MADOPILOT_API_SIZE_PHASE1 as usize + 1,
+    )
+    .expect_err("minor zero is bounded by the complete frozen ABI 1.0 table");
+    assert_eq!(status, MADOPILOT_STATUS_UNSUPPORTED);
+}
+
+#[test]
 fn a_table_size_below_the_mandatory_prefix_is_refused() {
     let status = negotiate(
         MADOPILOT_ABI_MAJOR,
