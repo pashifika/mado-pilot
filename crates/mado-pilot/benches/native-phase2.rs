@@ -242,7 +242,7 @@ mod native {
         }
 
         fn next_common_flow(&self) -> bool {
-            self.next_pointer_move() && self.next_key_pair() && self.next_key_pair()
+            self.next_pointer_move() && self.next_key_pair()
         }
 
         fn next_key_pair(&self) -> bool {
@@ -426,17 +426,7 @@ mod native {
     struct LanguageProgram {
         executable: PathBuf,
         example_name: &'static str,
-    }
-
-    struct LanguageFlow {
-        program: LanguageProgram,
-        fixture: Rc<FixtureProcess>,
-    }
-
-    impl LanguageFlow {
-        fn new(program: LanguageProgram, fixture: Rc<FixtureProcess>) -> Self {
-            Self { program, fixture }
-        }
+        receipt_line: &'static str,
     }
 
     pub(super) fn run() {
@@ -577,6 +567,7 @@ mod native {
                         .clone()
                         .expect("the input benchmark requires its C executable"),
                     example_name: c_example_name(),
+                    receipt_line: "receipt: outcome 1 submitted 4 fault 0 cleanup 0",
                 };
                 let cpp = LanguageProgram {
                     executable: args
@@ -584,6 +575,7 @@ mod native {
                         .clone()
                         .expect("the input benchmark requires its C++ executable"),
                     example_name: cpp_example_name(),
+                    receipt_line: "receipt: outcome 1 submitted 4 evidence 1 cleanup 0",
                 };
                 vec![
                     measure(
@@ -611,7 +603,7 @@ mod native {
                         "c_common_flow",
                         "the released C ABI performs the same bounded fixture flow in a fresh process",
                         plan,
-                        || LanguageFlow::new(c.clone(), Rc::clone(&fixture)),
+                        || c.clone(),
                         language_common_flow,
                     ),
                     measure(
@@ -625,7 +617,7 @@ mod native {
                         "cpp_common_flow",
                         "the released C++ wrapper performs the same bounded fixture flow in a fresh process",
                         plan,
-                        || LanguageFlow::new(cpp.clone(), Rc::clone(&fixture)),
+                        || cpp.clone(),
                         language_common_flow,
                     ),
                 ]
@@ -931,10 +923,11 @@ mod native {
         }
     }
 
-    fn language_common_flow(flow: &LanguageFlow) -> Sample {
-        let title = flow.fixture.title();
+    fn language_common_flow(program: &LanguageProgram) -> Sample {
+        let fixture = FixtureProcess::spawn(FixtureBehavior::Animate);
+        let title = fixture.title();
         let started = Instant::now();
-        let output = Command::new(&flow.program.executable).arg(title).output();
+        let output = Command::new(&program.executable).arg(title).output();
         let (process_succeeded, stderr_empty, stdout) = match output {
             Ok(output) => (
                 output.status.success(),
@@ -943,13 +936,11 @@ mod native {
             ),
             Err(_) => (false, false, None),
         };
-        let receipt_present = stdout.as_deref().is_some_and(|stdout| {
-            stdout
-                .lines()
-                .any(|line| line == "receipt: outcome 1 submitted 6 fault 0 cleanup 0")
-        });
+        let receipt_present = stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
         let fixture_acknowledged = if process_succeeded || receipt_present {
-            flow.fixture.next_common_flow()
+            fixture.next_common_flow()
         } else {
             false
         };
@@ -964,10 +955,10 @@ mod native {
             && fixture_acknowledged
             && receipt_present
             && stdout.as_deref().is_some_and(|stdout| {
-                language_abi_line_is_present(stdout, flow.program.example_name)
+                language_abi_line_is_present(stdout, program.example_name)
                     && stdout
                         .lines()
-                        .any(|line| line == format!("{} complete", flow.program.example_name))
+                        .any(|line| line == format!("{} complete", program.example_name))
             })
             && mapped > 0
             && peak_resident.is_some_and(|bytes| bytes > 0);
