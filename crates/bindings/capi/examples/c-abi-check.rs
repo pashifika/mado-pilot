@@ -1071,6 +1071,12 @@ fn check_cmake_consumer(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
     let source = paths.root.join("crates/bindings/capi/tests/cmake");
     let build = paths.scratch.join("cmake");
     let package = paths.root.join("crates/bindings/capi");
+    // CMake paths use forward slashes on every host. Passing `Path::display()`
+    // directly leaves Windows separators in an untyped `-D` value; older
+    // supported CMake releases then parse sequences such as `\W` as invalid
+    // escapes when the value is expanded into a source path.
+    let package = package.to_string_lossy().replace('\\', "/");
+    let artifacts = paths.artifacts.to_string_lossy().replace('\\', "/");
 
     // One configuration on both single-config and multi-config generators: the
     // former reads CMAKE_BUILD_TYPE, the latter ignores it and takes `--config`.
@@ -1084,11 +1090,8 @@ fn check_cmake_consumer(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
             source.clone().into_os_string(),
             OsString::from("-B"),
             build.clone().into_os_string(),
-            OsString::from(format!("-DMADOPILOT_SOURCE_DIR={}", package.display())),
-            OsString::from(format!(
-                "-DMADOPILOT_ARTIFACT_DIR={}",
-                paths.artifacts.display()
-            )),
+            OsString::from(format!("-DMADOPILOT_SOURCE_DIR={package}")),
+            OsString::from(format!("-DMADOPILOT_ARTIFACT_DIR={artifacts}")),
             OsString::from("-DCMAKE_BUILD_TYPE=Release"),
         ],
         "cmake configure",
