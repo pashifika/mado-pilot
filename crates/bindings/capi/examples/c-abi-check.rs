@@ -255,6 +255,7 @@ impl WindowsNativeFixture {
             }
 
             let child = Command::new(&program)
+                .arg("--animate-on-input")
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
