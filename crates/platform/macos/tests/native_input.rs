@@ -726,6 +726,11 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
          anything else"
     );
 
+    // Showing and focusing the fixture can itself enqueue an ordinary mouse-enter
+    // or operator pointer event. End that observation interval before checking
+    // what the bounded delivery below adds.
+    let _focus_events = fixture.summaries(Duration::from_millis(250));
+
     let sequence = InputSequence::new(vec![
         InputEvent::KeyRelease(Key::Escape),
         InputEvent::KeyPress(Key::Enter),
