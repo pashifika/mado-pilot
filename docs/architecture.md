@@ -62,7 +62,7 @@ owns and where they genuinely differ.
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at delivery | Screen Recording and Accessibility reported separately without permission UI; input re-reads the Accessibility decision before every irreversible event (implemented) |
 | Native verification host | `windows-2025` | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | unresolved | macOS 26.5.2; older versions unsupported |
-| Open gates | [`G-001`](validation-gates.md#g-001) minimum | [`G-001`](validation-gates.md#g-001) replacement acceptance |
+| Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) native profiles | [`G-013`](validation-gates.md#g-013) native profiles |
 
 Detailed capabilities, permission outcomes, coordinate transforms, native
 resource ownership, and unsupported-system behavior are added by the changes
@@ -1567,9 +1567,21 @@ the final frame agreed with the post-close placement reading. Cross-scale moveme
 acceptance is therefore closed on the qualified host. A fresh post-repair ASan build
 also passed all 101 library tests with live capture scenarios running and no
 sanitizer finding; the manual movement probe itself used the ordinary debug build.
-Exact replacement remains a release oracle: a qualified-host run must prove that
-replacing an owned window after discovery never retargets its retained filter to the
-replacement.
+The later qualified-host
+[owned-window replacement probe](evidence/g-001/macos-owned-window-replacement.md)
+destroyed the selected fixture window and created a same-process, same-title
+successor with distinct content. The retained filter published no successor
+content during the bounded observation, while a fresh session captured the
+successor and the retained original mapping stayed unchanged. ScreenCaptureKit
+reported no explicit loss event, so frame requests remained quiescent rather
+than being relabeled `TargetLost`. This closes the replacement release oracle
+while preserving the explicit-loss rule above.
+
+The complete one-display Phase 2 acceptance matrix at commit `9057154` is
+[retained separately](evidence/phase-2-native/macos-current-display.md). It
+includes permissioned Rust, C, and C++ native flows plus all 160 library cases
+under AddressSanitizer. Its single built-in Retina topology does not substitute
+for the shared external-display matrix.
 
 Two properties of that verification are worth stating, because they decide what a
 green run means. A scenario whose subject is what happens *as frames arrive*

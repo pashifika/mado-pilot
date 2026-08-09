@@ -15,7 +15,7 @@ captured content in a sample buffer's frame-information dictionary. That key giv
 the implementation same-frame placement authority. Screen Recording is not granted
 to the Codex test process, so that process can exercise only the refusal path. A
 permissioned terminal on the same qualified host ran the live sanitizer and manual
-matrix during review; the remaining replacement oracle is recorded separately below.
+matrix during review; the later owned-window replacement result is recorded below.
 
 The toolchain accepts `-mmacosx-version-min=26.5.2`; an object inspected with
 `otool -l` reports `minos 26.5.2` and `sdk 26.5`. This makes the exact qualified host
@@ -110,6 +110,13 @@ when the recommendation exceeds capacity and otherwise retain their high-water s
   capture scenarios running and no sanitizer finding. The manual cross-scale probe
   used the ordinary debug build, so these are complementary samples rather than one
   sanitizer-instrumented movement run.
-- The owned-window destroy/replacement oracle remains. It must prove that a retained
-  filter never captures a replacement after its selected window is destroyed; a
-  build on the qualified host does not substitute for that evidence.
+- On 2026-08-09 the
+  [owned-window replacement probe](../evidence/g-001/macos-owned-window-replacement.md)
+  passed on the same qualified host at commit `9057154`. The fixture destroyed
+  its selected window and created a same-process, same-title successor with
+  distinct pixels. During a bounded ten-second observation the retained filter
+  never published successor content; a fresh session captured the successor, and
+  the retained original mapping stayed unchanged. ScreenCaptureKit emitted no
+  explicit loss event, so the Adapter correctly left frame requests quiescent
+  rather than inventing `TargetLost`. This closes the replacement acceptance
+  item without weakening the explicit-loss rule in the decision.

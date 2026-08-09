@@ -40,7 +40,7 @@ registry is itself a Phase 0 deliverable.
 
 | ID | Unresolved decision | Due | Blocks | Status |
 |---|---|---|---|---|
-| [`G-001`](#g-001) | Minimum Windows version; macOS fixed by ADR 0014 | Before Phase 2 exit | Windows support claim and release; macOS replacement acceptance | Open for Windows and remaining macOS acceptance |
+| [`G-001`](#g-001) | Minimum Windows version; macOS fixed by ADR 0014 | Before Phase 2 exit | Windows support claim and release | Open for Windows; macOS resolved |
 | [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open |
@@ -74,25 +74,26 @@ permissioned probe then passed 2/2 over 4,097 frames: 3,371 same-scale moves pre
 their epoch and 30 cross-scale moves advanced exactly from epoch 0 through epoch 30,
 publishing both the 1x and 2x extents without a stall. Cross-scale acceptance is
 closed. A fresh post-repair ASan build then passed all 101 library tests with live
-capture scenarios running and no sanitizer finding. The owned-window
-destroy/replacement oracle remains and must show that destroying the selected window
-cannot retarget its retained `SCContentFilter` to a replacement. The host version
-and a successful build alone do not pass that capability.
+capture scenarios running and no sanitizer finding. On 2026-08-09 the
+[owned-window replacement probe](evidence/g-001/macos-owned-window-replacement.md)
+destroyed the selected fixture window, created a same-process successor with
+distinct content, and proved the retained filter published none of that content
+while a fresh session captured it and the retained original mapping stayed
+unchanged. ScreenCaptureKit remained quiescent rather than reporting explicit
+loss, so the Adapter correctly did not infer `TargetLost`. This closes the macOS
+replacement acceptance item.
 
 **Due.** Before Phase 2 exit.
 
-**Blocks.** A Windows support claim and release. On macOS, it blocks claiming that
-the permissioned Phase 2 live acceptance matrix passed, not the minimum-version
-decision itself.
+**Blocks.** The Windows support claim and release.
 
-**Status.** macOS minimum and cross-scale movement resolved by ADR 0014 and its
-qualified-host evidence; the Windows minimum and macOS replacement acceptance stay
-open.
+**Status.** The macOS minimum, cross-scale movement, and owned-window replacement
+acceptance are resolved by ADR 0014 and its qualified-host evidence. The Windows
+minimum remains open.
 
-**Resolution.** A Windows ADR must record its chosen minimum and probes. The macOS
-acceptance remainder closes when the replacement result named above is recorded
-against 26.5.2 (25F84); ADR 0014 already records its availability,
-controlled-linkage, and cross-scale movement evidence.
+**Resolution.** A Windows ADR must record its chosen minimum and build, process-load,
+SDK, API-availability, unsupported-capability, native Rust, C, and C++ probes on the
+approved oldest desktop host. ADR 0014 records the complete macOS resolution.
 
 ## G-002
 

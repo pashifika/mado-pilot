@@ -105,6 +105,22 @@ activating another application to force focus. The capability matrix, typed
 outcomes, privacy bounds, and bundling step are in
 [docs/macos-input-verification.md](docs/macos-input-verification.md).
 
+The owned-window replacement acceptance probe sends no input, but it opens and
+replaces the signed fixture window and therefore remains explicit:
+
+```sh
+MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  cargo test --locked -p mado-pilot-platform-macos --test native_input \
+  owned_window_replacement_never_retargets_the_retained_filter -- \
+  --ignored --exact --nocapture --test-threads=1
+```
+
+The old retained filter may report explicit `TargetLost` or remain quiescent; a
+request timeout is not loss evidence. The gate fails if it publishes the
+distinct successor, if the successor cannot be captured independently, or if the
+retained original mapping changes. The accepted qualified-host record is
+[`docs/evidence/g-001/macos-owned-window-replacement.md`](docs/evidence/g-001/macos-owned-window-replacement.md).
+
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
 Capture, Direct3D 11, and DXGI, and needs no NuGet package, Windows App SDK,
@@ -213,9 +229,10 @@ the qualified host's display inventory and checks that a fresh discovery does no
 terminate an already-open retained filter. A run that fails because Screen Recording
 is not granted is useful denial evidence, but passes neither that live gate nor the
 manual window move/resize/loss probe in
-`crates/platform/macos/tests/window_movement.rs`. Release acceptance additionally
-requires an owned-window replacement oracle proving that a retained filter never
-captures a replacement after its selected window is destroyed.
+`crates/platform/macos/tests/window_movement.rs`. The separate owned-window
+replacement command above is the release oracle that proves a retained filter
+never captures a successor after its selected window is destroyed; its accepted
+qualified-host result is retained with `G-001`.
 
 Every part of that command is load-bearing rather than a matter of taste:
 
