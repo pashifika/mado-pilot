@@ -56,9 +56,9 @@ rationale = "16 MiB is more than three times the 4635805-byte measured Rust inpu
 workload = "input_request_receipt"
 correctness_oracle = "the complete two-event receipt corresponds to exactly one fixture key-down and key-up summary"
 result_correctness = 0
-latency_p50_ms = 523.281750
-latency_p95_ms = 530.907167
-iteration_span_ms = 522.401281
+latency_p50_ms = 528.779375
+latency_p95_ms = 545.408792
+iteration_span_ms = 530.364596
 mapped_bytes_per_result = 0
 peak_allocated_bytes = 4635805
 steady_allocated_bytes = 4635319
@@ -69,16 +69,16 @@ allocated_growth_bytes = 0
   kind = "absolute"
   unit = "milliseconds"
   direction = "at_most"
-  limit = 1600.0
-  rationale = "three times the measured 530.907167 ms, rounded up"
+  limit = 1700.0
+  rationale = "three times the measured 545.408792 ms, rounded up"
 
 [[measurement]]
 workload = "rust_common_flow"
 correctness_oracle = "fresh open, frame, mapping, exact fixture input, receipt, and close all complete"
 result_correctness = 0
-latency_p50_ms = 509.394917
-latency_p95_ms = 521.442625
-iteration_span_ms = 510.600172
+latency_p50_ms = 509.194750
+latency_p95_ms = 518.689042
+iteration_span_ms = 509.084267
 mapped_bytes_per_result = 4628480
 peak_allocated_bytes = 4635665
 steady_allocated_bytes = 3610
@@ -90,7 +90,7 @@ allocated_growth_bytes = 0
   unit = "milliseconds"
   direction = "at_most"
   limit = 1600.0
-  rationale = "three times the measured 521.442625 ms, rounded up"
+  rationale = "three times the measured 518.689042 ms, rounded up"
 
   [[measurement.budget]]
   measure = "mapped_bytes_per_result"
@@ -104,14 +104,14 @@ allocated_growth_bytes = 0
 workload = "c_process_load"
 correctness_oracle = "a fresh C process loads and negotiates the released ABI without opening native capabilities"
 result_correctness = 0
-latency_p50_ms = 231.841000
-latency_p95_ms = 235.202625
-iteration_span_ms = 231.895358
+latency_p50_ms = 231.871583
+latency_p95_ms = 233.813625
+iteration_span_ms = 231.861554
 mapped_bytes_per_result = 0
 peak_allocated_bytes = 551
 steady_allocated_bytes = 104
 allocated_growth_bytes = 0
-peak_resident_bytes = 51757056
+peak_resident_bytes = 51707904
 
   [[measurement.budget]]
   measure = "latency_p95"
@@ -119,7 +119,7 @@ peak_resident_bytes = 51757056
   unit = "milliseconds"
   direction = "at_most"
   limit = 750.0
-  rationale = "three times the measured 235.202625 ms, rounded up"
+  rationale = "three times the measured 233.813625 ms, rounded up"
 
   [[measurement.budget]]
   measure = "peak_resident_bytes"
@@ -127,15 +127,15 @@ peak_resident_bytes = 51757056
   unit = "bytes"
   direction = "at_most"
   limit = 201326592
-  rationale = "192 MiB is more than three times the measured 51757056-byte child-process high-water mark"
+  rationale = "192 MiB is more than three times the measured 51707904-byte child-process high-water mark"
 
 [[measurement]]
 workload = "c_common_flow"
 correctness_oracle = "the released C ABI performs the same bounded fixture flow in a fresh process"
 result_correctness = 0
-latency_p50_ms = 1620.622500
-latency_p95_ms = 1652.798625
-iteration_span_ms = 1753.122097
+latency_p50_ms = 1631.164750
+latency_p95_ms = 1658.193250
+iteration_span_ms = 1762.144290
 mapped_bytes_per_result = 4628480
 peak_allocated_bytes = 27465
 steady_allocated_bytes = 104
@@ -148,7 +148,7 @@ peak_resident_bytes = 94437376
   unit = "milliseconds"
   direction = "at_most"
   limit = 5000.0
-  rationale = "three times the measured 1652.798625 ms, rounded up"
+  rationale = "three times the measured 1658.193250 ms, rounded up"
 
   [[measurement.budget]]
   measure = "mapped_bytes_per_result"
@@ -170,14 +170,14 @@ peak_resident_bytes = 94437376
 workload = "cpp_process_load"
 correctness_oracle = "a fresh C++ process loads its wrapper and negotiates the released ABI without opening native capabilities"
 result_correctness = 0
-latency_p50_ms = 233.330500
-latency_p95_ms = 235.216042
-iteration_span_ms = 233.349726
+latency_p50_ms = 233.757500
+latency_p95_ms = 241.062167
+iteration_span_ms = 234.673935
 mapped_bytes_per_result = 0
 peak_allocated_bytes = 563
 steady_allocated_bytes = 108
 allocated_growth_bytes = 0
-peak_resident_bytes = 51773440
+peak_resident_bytes = 51757056
 
   [[measurement.budget]]
   measure = "latency_p95"
@@ -185,7 +185,7 @@ peak_resident_bytes = 51773440
   unit = "milliseconds"
   direction = "at_most"
   limit = 750.0
-  rationale = "three times the measured 235.216042 ms, rounded up"
+  rationale = "three times the measured 241.062167 ms, rounded up"
 
   [[measurement.budget]]
   measure = "peak_resident_bytes"
@@ -193,20 +193,20 @@ peak_resident_bytes = 51773440
   unit = "bytes"
   direction = "at_most"
   limit = 201326592
-  rationale = "192 MiB is more than three times the measured 51773440-byte child-process high-water mark"
+  rationale = "192 MiB is more than three times the measured 51757056-byte child-process high-water mark"
 
 [[measurement]]
 workload = "cpp_common_flow"
 correctness_oracle = "the released C++ wrapper performs the same bounded fixture flow in a fresh process"
 result_correctness = 0
-latency_p50_ms = 1624.702167
-latency_p95_ms = 1651.887250
-iteration_span_ms = 1759.149655
+latency_p50_ms = 1633.213959
+latency_p95_ms = 1662.811333
+iteration_span_ms = 1768.973633
 mapped_bytes_per_result = 4628480
 peak_allocated_bytes = 27477
 steady_allocated_bytes = 108
 allocated_growth_bytes = 0
-peak_resident_bytes = 94650368
+peak_resident_bytes = 94568448
 
   [[measurement.budget]]
   measure = "latency_p95"
@@ -214,7 +214,7 @@ peak_resident_bytes = 94650368
   unit = "milliseconds"
   direction = "at_most"
   limit = 5000.0
-  rationale = "three times the measured 1651.887250 ms, rounded up"
+  rationale = "three times the measured 1662.811333 ms, rounded up"
 
   [[measurement.budget]]
   measure = "mapped_bytes_per_result"
@@ -230,4 +230,4 @@ peak_resident_bytes = 94650368
   unit = "bytes"
   direction = "at_most"
   limit = 301989888
-  rationale = "288 MiB is more than three times the measured 94650368-byte child-process high-water mark"
+  rationale = "288 MiB is more than three times the measured 94568448-byte child-process high-water mark"

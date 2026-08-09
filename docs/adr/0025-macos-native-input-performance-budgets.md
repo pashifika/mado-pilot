@@ -60,12 +60,12 @@ The Apple M1 Pro run on macOS 26.5.2 (25F84) produced these measurements:
 
 | Workload | p95 | Mapped bytes | Peak live Rust heap | Child peak resident | Growth |
 |---|---:|---:|---:|---:|---:|
-| `input_request_receipt` | 530.907167 ms | 0 B | 4,635,805 B | not applicable | 0 B |
-| `rust_common_flow` | 521.442625 ms | 4,628,480 B | 4,635,665 B | not applicable | 0 B |
-| `c_process_load` | 235.202625 ms | 0 B | 551 B | 51,757,056 B | 0 B |
-| `c_common_flow` | 1,652.798625 ms | 4,628,480 B | 27,465 B | 94,437,376 B | 0 B |
-| `cpp_process_load` | 235.216042 ms | 0 B | 563 B | 51,773,440 B | 0 B |
-| `cpp_common_flow` | 1,651.887250 ms | 4,628,480 B | 27,477 B | 94,650,368 B | 0 B |
+| `input_request_receipt` | 545.408792 ms | 0 B | 4,635,805 B | not applicable | 0 B |
+| `rust_common_flow` | 518.689042 ms | 4,628,480 B | 4,635,665 B | not applicable | 0 B |
+| `c_process_load` | 233.813625 ms | 0 B | 551 B | 51,707,904 B | 0 B |
+| `c_common_flow` | 1,658.193250 ms | 4,628,480 B | 27,465 B | 94,437,376 B | 0 B |
+| `cpp_process_load` | 241.062167 ms | 0 B | 563 B | 51,757,056 B | 0 B |
+| `cpp_common_flow` | 1,662.811333 ms | 4,628,480 B | 27,477 B | 94,568,448 B | 0 B |
 
 All 300 retained samples satisfied their workload oracle. Every workload
 reported zero allocation growth. The two common language flows each mapped one
@@ -79,7 +79,7 @@ latency promises:
 
 | Workload | p95 ceiling |
 |---|---:|
-| `input_request_receipt` | 1,600 ms |
+| `input_request_receipt` | 1,700 ms |
 | `rust_common_flow` | 1,600 ms |
 | `c_process_load` | 750 ms |
 | `c_common_flow` | 5,000 ms |
