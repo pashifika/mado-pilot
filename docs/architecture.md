@@ -64,7 +64,7 @@ owns and where they genuinely differ.
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and Accessibility reported separately without permission UI; input re-reads the Accessibility decision before every irreversible event (implemented) |
 | Native verification host | `windows-2025` | Apple Silicon macOS 26.5.2 (25F85), SDK 26.5 |
 | Deployment floor | unresolved | macOS 26.5.2; older versions unsupported |
-| Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) Windows diagnostic timing and remaining native profiles | [`G-013`](validation-gates.md#g-013) remaining Phase 2 native profiles; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the Phase 2.2 diagnostic slice |
+| Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) Windows diagnostic timing and native profiles | [`G-013`](validation-gates.md#g-013) macOS capture/transition and Phase 2 regression profiles; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics and [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts native input/public-language costs |
 
 Detailed capabilities, permission outcomes, coordinate transforms, native
 resource ownership, and unsupported-system behavior are added by the changes
@@ -836,7 +836,7 @@ responsibilities a later phase takes on.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.2 as a header-only adapter, including typed native capability, permission, input policy, owned receipt/attempt views, diagnostics, and partial-failure values; decided in [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) and extended without a second ABI |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Set for all Phase 1 workloads on both release targets by [ADR 0008](adr/0008-phase-1-performance-budgets.md). [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) keeps the three historical macOS profiles non-normative after source and oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the measured macOS Phase 2.2 diagnostic profile and both release-target CI jobs enforce its hard correctness and bounded-growth gates; named-host Windows timing and the remaining Phase 2 native profile acceptance stay open under [`G-013`](validation-gates.md#g-013) |
+| Numeric performance budgets | Set for all Phase 1 workloads on both release targets by [ADR 0008](adr/0008-phase-1-performance-budgets.md). [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) keeps the historical macOS capture and transition profiles non-normative after source and oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the measured macOS Phase 2.2 diagnostic profile, and [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the revision-bound macOS native input/public-language profile. Both release-target CI jobs enforce diagnostic hard correctness and bounded-growth gates; named-host Windows timing, the remaining native profiles, and final-source regression runs stay open under [`G-013`](validation-gates.md#g-013) |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for the frozen ABI 1.0 header and current ABI 1.2 surface. The ABI 1.0 caller compiles against its immutable header, negotiates only its declared table extent, and runs against the current library; the unreleased 1.1 fixture is retained only as superseded migration evidence and minimum minor 1 is refused |
@@ -1472,9 +1472,11 @@ set here. Eight buffers is a reviewed bound rather than a measured one —
 these are full-frame CPU allocations rather than the GPU textures the Windows
 Adapter budgets. ADR 0020 recorded macOS capture, mapping, lifecycle, and Rust
 input/common-flow costs for an earlier tree. Source drift and repaired liveness
-and benchmark oracles invalidate those numbers for the current implementation
-under [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md), so
-Phase 2 [`G-013`](validation-gates.md#g-013) is open for every native workload.
+and benchmark oracles invalidated those numbers under
+[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md).
+[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) requalifies the
+native input and public-language profile only; the macOS capture and transition
+workloads remain open under Phase 2 [`G-013`](validation-gates.md#g-013).
 
 CPU conversion is not part of the detach. The detached buffer keeps the native row
 padding, and a mapping produces the caller's bytes at exactly the packed stride the
@@ -2046,9 +2048,11 @@ the replacement and migration contract.
 The source-defined diagnostic benchmark measures capture/mapping, input
 submission, and explicit close/drain with diagnostics `Off`, `Normal`, `Debug`,
 and under four-slot pressure. ADR 0024 accepts the `aarch64-apple-darwin`
-regression ceilings; release-target CI runs the correctness and bounded-growth
-smoke plan. Windows timing remains an explicit evidence gap, so `G-013` is not
-resolved for that target.
+diagnostic regression ceilings; release-target CI runs the correctness and
+bounded-growth smoke plan. ADR 0025 separately accepts the revision-bound
+macOS native input and Rust/C/C++ public-language profile. Windows diagnostic
+timing, every Windows native profile, and the macOS capture and transition
+profiles remain explicit `G-013` gaps.
 
 ### Phase 0 completion contract
 
@@ -2080,7 +2084,7 @@ against.
 
 | Verification class | Status | Phase 0 |
 |---|---|---|
-| Numeric runtime performance budgets | Implemented for Phase 1 by [ADR 0008](adr/0008-phase-1-performance-budgets.md): four committed profiles carry both-target measurements and the two `kind = "hard"` predicates are enforced in-process on `cargo bench` and `cargo test`. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the measured macOS Phase 2.2 diagnostic profile, while the matching Windows timing artifact records an explicit gap and both release-target CI jobs run its hard-gate smoke plan. Three older macOS native profiles remain historical and non-normative under [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md), and the native Windows gap also remains open until revision-bound reruns replace it | Not applicable; no measurable workload existed |
+| Numeric runtime performance budgets | Implemented for Phase 1 by [ADR 0008](adr/0008-phase-1-performance-budgets.md): four committed profiles carry both-target measurements and the two `kind = "hard"` predicates are enforced in-process on `cargo bench` and `cargo test`. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the measured macOS Phase 2.2 diagnostic profile, while the matching Windows timing artifact records an explicit gap and both release-target CI jobs run its hard-gate smoke plan. [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the current macOS native input/public-language profile. The older macOS capture and transition profiles remain historical under [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md), and all native Windows profiles remain open until revision-bound measurements replace the gaps | Not applicable; no performance-sensitive implementation existed |
 | ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field; structure-prefix tests cover inputs and outputs in both directions; and the immutable `tests/abi-compat/v1/` caller compiles against its released header, negotiates only that table extent, and runs against the current ABI 1.2 library. The `v1.1` fixture remains historical superseded-draft evidence and minimum minor 1 is rejected. ABI 1.0 was resolved under [`G-010`](validation-gates.md#g-010) by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md); ABI 1.2 is recorded by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md) | Not applicable; no ABI existed |
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | OCR, watcher, input, and diagnostic contract suites | Input contracts, controlled input doubles, diagnostic concurrency/loss/privacy cases, and facade action-correlation tests are implemented. Both platform Adapters add deterministic controller cases and native integration procedures; OCR and watcher suites remain not applicable | Not applicable |

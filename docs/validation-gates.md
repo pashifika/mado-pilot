@@ -473,27 +473,33 @@ growth; exact mapped-byte accounting; and per-workload regression ceilings.
 The matching Windows artifact is an explicit timing gap; release-target CI
 still runs its deterministic correctness and bounded-growth smoke plan.
 
-The native workloads remain open. ADR 0020 historically accepted three macOS
-profiles at source `a1faf04505c8471deb4de8c136fddcc7f76105e7`, but
-[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) supersedes
-that acceptance. Release review found source drift and false-positive stimulus
-and latest-frame oracles; repaired macOS input liveness also changes the measured
-path. The profile files retain their old measurements with `normative = false`,
-so none supplies a current Phase 2 native ceiling.
+The native workloads are partially resolved. ADR 0020 historically accepted
+three macOS profiles at source
+`a1faf04505c8471deb4de8c136fddcc7f76105e7`, and
+[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+invalidated all three after source drift and false-positive stimulus and
+latest-frame oracles. The capture and transition profiles remain
+`normative = false`. A corrected capture probe reported zero oracle failures and
+zero allocation growth, but its repaired stimulus row did not satisfy the
+historical latency, mapped-byte, or stale-work ceilings, so those numbers were
+invalidated rather than widened from an uncommitted worktree.
 
-The harness now enforces both structural hard predicates in-process, and a
-non-normative corrected capture probe reported zero oracle failures and zero
-allocation growth. Its corrected stimulus row did not satisfy the historical
-latency, mapped-byte, or stale-work ceilings, so those numbers were invalidated
-rather than widened from an uncommitted worktree.
+[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) replaces the
+macOS input and public-language profile at source
+`dd0f38bc9dc209292ff946f277f442fba52b5d10`. Its six workloads retained 300
+correct samples with zero allocation growth, exact mapped-byte accounting, and
+measured Rust-heap and child-process resident bounds. The first requalification
+run exposed stale benchmark assumptions—six events, two key pairs, and a shared
+mutable visual precondition—rather than a native delivery failure. Standalone C
+and C++ runs proved the current four-event/one-key-pair flow, and the accepted
+profile gives every language sample a fresh fixture and exact receipt oracle.
 
 No approved bare-metal Windows host was available, so
 [`phase-2-native-x86_64-pc-windows-msvc-evidence-gap.toml`](benchmarks/phase-2-native-x86_64-pc-windows-msvc-evidence-gap.toml)
-continues to record zero native samples and no invented budgets. The unexplained
-historical C common-flow rejection also remains evidence the future synchronized
-C/C++ decision must address. All Phase 2 native workload profiles on both
-targets, the Windows diagnostic timing profile, and the final-source Phase 1
-regression reruns are required before Phase 2 exit.
+continues to record zero native samples and no invented budgets. The macOS
+capture and transition profiles, every Windows native workload, the Windows
+diagnostic timing profile, and the final-source Phase 1 regression reruns remain
+required before Phase 2 exit.
 
 OCR, watcher scheduling, and acceleration remain open for the phases that
 introduce them.

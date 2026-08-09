@@ -69,7 +69,7 @@ Adding a package here is not a claim that its behavior exists.
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.2 while preserving the released ABI 1.0 prefix; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.2 |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 is resolved on both targets. The Phase 2.2 input-diagnostic profile is accepted on macOS and its hard correctness and bounded-growth gates run in both release-target CI jobs; named-host Windows timing and the remaining Phase 2 native profiles stay open |
+| Numeric performance budgets | Phase 1 is resolved on both targets. The Phase 2.2 input-diagnostic and native input/public-language profiles are accepted on macOS, and diagnostic hard correctness and bounded-growth gates run in both release-target CI jobs; named-host Windows timing plus the remaining macOS capture/transition and Windows native profiles stay open |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled

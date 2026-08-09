@@ -362,6 +362,21 @@ capability, route, submission counts and evidence, typed faults, cleanup counts,
 and diagnostic loss counts; it must not record input text or unrelated desktop
 payload.
 
+## Current native input performance evidence
+
+The revision-bound native input and public-language profile at
+[`benchmarks/phase-2-native-input-aarch64-apple-darwin.toml`](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml)
+is measured and normative under
+[ADR 0025](adr/0025-macos-native-input-performance-budgets.md). Its six
+workloads retain 300 correct samples with zero allocation growth and exact
+frame-mapping and fixture-event oracles. Each C and C++ sample provisions a
+fresh approved fixture before its timed span so one sample cannot change the
+next sample's visual precondition.
+
+This profile requalifies input and public-language performance only. It does not
+replace the full current-display, shared-display, retained-frame, or
+AddressSanitizer acceptance matrices named below.
+
 ## Historical Phase 2 evidence
 
 The one-display qualified-host matrix for commit

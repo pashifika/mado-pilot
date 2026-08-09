@@ -7,12 +7,13 @@ an agreed cost before the phase exits.
 
 This document defines the format that evidence takes. Setting a numeric budget
 for a workload is gate [`G-013`](validation-gates.md#g-013), which is resolved
-per workload and target rather than once. Phase 1 is resolved. ADR 0020
-historically accepted partial macOS Phase 2 evidence, but
-[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
-invalidates those profiles after source and correctness-oracle drift. Every
-Phase 2 native workload is open again; old measurements remain reviewable but
-are not current ceilings.
+per workload and target rather than once. Phase 1 is resolved. ADR 0021
+invalidated the three historical macOS Phase 2 native profiles after source and
+correctness-oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
+now accepts the macOS diagnostic slice, and
+[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
+revision-bound macOS native input and public-language profile. The remaining
+native workload and target gaps stay open.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -439,30 +440,35 @@ stable timing ceiling; a named Windows measurement host must replace that gap.
 
 ## Phase 2 native performance status
 
-Phase 2's affected [`G-013`](validation-gates.md#g-013) workloads are open.
-[ADR 0020](adr/0020-phase-2-native-performance-budgets.md) recorded three
-revision-bound profiles from an Apple M1 Pro under macOS 26.5.2, but
-[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
-supersedes their normative status:
+Phase 2's affected [`G-013`](validation-gates.md#g-013) workloads are partially
+resolved. [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+invalidated the three profiles originally accepted by
+[ADR 0020](adr/0020-phase-2-native-performance-budgets.md). ADR 0025 now replaces
+the input profile with a current revision-bound measurement:
 
-| Workload set | Historical profile | Current status |
+| Workload set | Profile | Current status |
 |---|---|---|
 | Capture | [aarch64](benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml) | non-normative after stimulus, latest-frame, source, and liveness repairs |
 | Transitions | [aarch64](benchmarks/phase-2-native-transitions-aarch64-apple-darwin.toml) | non-normative because it names the superseded benchmark tree |
-| Input and public languages | [aarch64](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml) | non-normative after source and input-liveness repairs |
+| Input and public languages | [aarch64](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml) | measured and normative at source `dd0f38bc9dc209292ff946f277f442fba52b5d10` under ADR 0025 |
 
-The files retain their old samples, environment metadata, and former budget
-blocks as historical evidence, with `normative = false`. They do not gate the
-current source. A corrected non-normative capture probe produced zero oracle
-failures and zero allocation growth, but also proved that the old
-stimulus-to-frame latency, mapped-byte, and stale-work ceilings no longer
-describe the repaired workload. No ceiling was widened from that uncommitted
-probe.
+The capture and transition files retain their old samples, environment
+metadata, and former budget blocks as historical evidence, with
+`normative = false`. They do not gate the current source. A corrected
+non-normative capture probe produced zero oracle failures and zero allocation
+growth, but also proved that the old stimulus-to-frame latency, mapped-byte, and
+stale-work ceilings no longer describe the repaired workload. No ceiling was
+widened from that uncommitted probe.
 
-The historical macOS input evidence also includes a rejected first run: one of
-fifty `c_common_flow` samples failed its correctness oracle and no cause was
-established. That run remains in the Change evidence directory. It remains a
-constraint on the future C/C++ rerun rather than an accepted current result.
+The first input requalification attempt rejected every C and C++ common-flow
+sample. Direct fresh-fixture runs proved that both public-language examples
+completed with four submitted logical events, one pointer movement, one
+balanced key pair, and a newer matching frame. The benchmark still expected the
+superseded six-event/two-key-pair flow and reused a fixture whose visual
+precondition one iteration had already changed. ADR 0025 records the repair:
+each language sample now receives a fresh fixture outside its timed span and
+matches its exact C or C++ receipt summary. The retained 300-sample run has zero
+oracle failures and zero allocation growth.
 
 No approved bare-metal Windows host was available. The
 [Windows evidence-gap profile](benchmarks/phase-2-native-x86_64-pc-windows-msvc-evidence-gap.toml)
