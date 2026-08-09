@@ -65,9 +65,10 @@ ABI 1.1, ran the C and C++ consumers and both frozen-header callers, completed t
 non-prompting capability checks, and closed.
 
 This closes build, load, SDK, deployment-metadata, and controlled-linkage evidence
-for the accepted macOS floor. The later
-[owned-window replacement run](macos-owned-window-replacement.md) closed ADR
-0014's final live oracle on commit `9057154`: the retained filter published no
+for the accepted macOS floor. The
+[owned-window replacement run](macos-owned-window-replacement.md) was rerun with
+the complete one-display matrix at commit
+`a1faf04505c8471deb4de8c136fddcc7f76105e7`: the retained filter published no
 successor content, a fresh session captured the distinct successor, and the
 retained original mapping stayed unchanged. ScreenCaptureKit emitted no explicit
 loss event during the bounded observation, so the Adapter correctly did not

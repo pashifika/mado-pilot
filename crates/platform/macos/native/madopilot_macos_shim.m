@@ -3153,69 +3153,64 @@ static mp_shim_status mp_shim_ax_window_rect(AXUIElementRef window, uint64_t dea
     return status;
 }
 
-static mp_shim_status mp_shim_retained_window_is_live(const struct mp_shim_target *target) {
-    id<MPShimContentFilterInit> filter = (__bridge id<MPShimContentFilterInit>)target->filter;
-    NSArray *windows = filter.includedWindows;
-    if (windows.count != 1) {
-        return MP_SHIM_TARGET_LOST;
-    }
-    id<MPShimWindow> window = (id<MPShimWindow>)windows.firstObject;
-    id<MPShimRunningApplication> owner = window.owningApplication;
-    if (window == nil || owner == nil || window.windowID != (CGWindowID)target->native_id ||
-        owner.processID != (pid_t)target->owner_process || !window.isOnScreen) {
-        return MP_SHIM_TARGET_LOST;
-    }
-    return MP_SHIM_OK;
-}
-
 /*
- * `SCWindow.frame` belongs to the shareable-content snapshot that selected the
- * target; it does not advance when that same live window moves or resizes.
- * Keep the retained filter as incarnation authority, but read the exact
- * PID-qualified window number from Core Graphics for its current rectangle.
+ * A retained `SCWindow` is a discovery snapshot: its `isOnScreen` and `frame`
+ * properties do not change when the native window closes, moves, or resizes.
+ * Re-enumerate shareable content and require its logical window object to equal
+ * the retained selection. PID and window number narrow the search, while
+ * `isEqual:` is what rejects a same-process replacement that recycles both.
  */
 static mp_shim_status mp_shim_input_window_rect(const struct mp_shim_target *target,
-                                                CGRect *out_bounds) {
-    mp_shim_status status = mp_shim_retained_window_is_live(target);
-    if (status != MP_SHIM_OK) {
-        return status;
+                                                uint64_t deadline, CGRect *out_bounds) {
+    const MPShimFramework *framework = mp_shim_capture_framework();
+    if (framework == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
+    if (now >= deadline) {
+        return MP_SHIM_TIMED_OUT;
+    }
+    mp_shim_status queried = MP_SHIM_PLATFORM_FAILURE;
+    id content = mp_shim_shareable_content(framework, deadline - now, &queried);
+    if (content == nil) {
+        return queried;
     }
 
-    CFArrayRef copied = CGWindowListCopyWindowInfo(kCGWindowListOptionIncludingWindow,
-                                                   (CGWindowID)target->native_id);
-    NSArray *descriptions = CFBridgingRelease(copied);
-    if (descriptions == nil || descriptions.count != 1) {
+    id<MPShimContentFilterInit> filter = (__bridge id<MPShimContentFilterInit>)target->filter;
+    NSArray *retained_windows = filter.includedWindows;
+    if (retained_windows.count != 1) {
         return MP_SHIM_TARGET_LOST;
     }
-    NSDictionary *description = descriptions.firstObject;
-    NSNumber *window_number = description[(__bridge NSString *)kCGWindowNumber];
-    NSNumber *owner_process = description[(__bridge NSString *)kCGWindowOwnerPID];
-    NSNumber *on_screen = description[(__bridge NSString *)kCGWindowIsOnscreen];
-    NSDictionary *bounds_dictionary = description[(__bridge NSString *)kCGWindowBounds];
-    CGRect bounds = CGRectNull;
-    if (![window_number isKindOfClass:[NSNumber class]] ||
-        ![owner_process isKindOfClass:[NSNumber class]] ||
-        ![on_screen isKindOfClass:[NSNumber class]] ||
-        ![bounds_dictionary isKindOfClass:[NSDictionary class]]) {
-        return MP_SHIM_PLATFORM_FAILURE;
-    }
-    if (window_number.unsignedIntValue != (CGWindowID)target->native_id ||
-        owner_process.longLongValue != target->owner_process || !on_screen.boolValue) {
-        return MP_SHIM_TARGET_LOST;
-    }
-    if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)bounds_dictionary,
-                                                &bounds) ||
-        CGRectIsNull(bounds) || bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+    id<MPShimWindow> retained = (id<MPShimWindow>)retained_windows.firstObject;
+    id<MPShimRunningApplication> retained_owner = retained.owningApplication;
+    if (retained == nil || retained_owner == nil ||
+        retained.windowID != (CGWindowID)target->native_id ||
+        retained_owner.processID != (pid_t)target->owner_process) {
         return MP_SHIM_TARGET_LOST;
     }
 
-    /*
-     * Close the lookup race: a destroyed retained window cannot authorize a
-     * recycled number that appeared while Core Graphics took its snapshot.
-     */
-    status = mp_shim_retained_window_is_live(target);
-    if (status != MP_SHIM_OK) {
-        return status;
+    id<MPShimWindow> current = nil;
+    id<MPShimShareableContent> shareable = (id<MPShimShareableContent>)content;
+    for (id window in shareable.windows) {
+        id<MPShimWindow> candidate = (id<MPShimWindow>)window;
+        id<MPShimRunningApplication> owner = candidate.owningApplication;
+        if (owner == nil || candidate.windowID != (CGWindowID)target->native_id ||
+            owner.processID != (pid_t)target->owner_process) {
+            continue;
+        }
+        if (current != nil || ![(id)candidate isEqual:(id)retained]) {
+            return MP_SHIM_TARGET_LOST;
+        }
+        current = candidate;
+    }
+    if (current == nil || !current.isOnScreen || current.windowLayer != 0) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    CGRect bounds = current.frame;
+    if (CGRectIsNull(bounds) || !isfinite(bounds.origin.x) || !isfinite(bounds.origin.y) ||
+        !isfinite(bounds.size.width) || !isfinite(bounds.size.height) ||
+        bounds.size.width < 1.0 || bounds.size.height < 1.0) {
+        return MP_SHIM_TARGET_LOST;
     }
     *out_bounds = bounds;
     return MP_SHIM_OK;
@@ -3233,14 +3228,14 @@ mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
     if (!AXIsProcessTrusted()) {
         return MP_SHIM_PERMISSION_DENIED;
     }
-    CGRect target_before = CGRectNull;
-    mp_shim_status status = mp_shim_input_window_rect(target, &target_before);
-    if (status != MP_SHIM_OK) {
-        return status;
-    }
     uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
     uint64_t deadline =
         began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
+    CGRect target_before = CGRectNull;
+    mp_shim_status status = mp_shim_input_window_rect(target, deadline, &target_before);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
     AXUIElementRef application = NULL;
     CFTypeRef frontmost = NULL;
     CFTypeRef focused = NULL;
@@ -3339,7 +3334,7 @@ mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
             }
 
             CGRect target_after = CGRectNull;
-            status = mp_shim_input_window_rect(target, &target_after);
+            status = mp_shim_input_window_rect(target, deadline, &target_after);
             if (status != MP_SHIM_OK) {
                 break;
             }
@@ -3432,12 +3427,12 @@ static mp_shim_status mp_shim_input_display_rect(const struct mp_shim_target *ta
     return MP_SHIM_TARGET_LOST;
 }
 
-mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target, double *out_x,
-                                           double *out_y, double *out_width, double *out_height,
-                                           double *out_scale) {
+mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target, uint64_t timeout_nanos,
+                                           double *out_x, double *out_y, double *out_width,
+                                           double *out_height, double *out_scale) {
     if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || target->filter == NULL ||
-        out_x == NULL || out_y == NULL || out_width == NULL || out_height == NULL ||
-        out_scale == NULL) {
+        timeout_nanos == 0 || out_x == NULL || out_y == NULL || out_width == NULL ||
+        out_height == NULL || out_scale == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_x = 0.0;
@@ -3446,11 +3441,14 @@ mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target, double 
     *out_height = 0.0;
     *out_scale = 0.0;
     MP_SHIM_BEGIN
+    uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t deadline =
+        began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
     CGRect bounds = CGRectNull;
     mp_shim_status status;
     double scale;
     if (target->kind == MP_SHIM_TARGET_WINDOW) {
-        status = mp_shim_input_window_rect(target, &bounds);
+        status = mp_shim_input_window_rect(target, deadline, &bounds);
         scale = status == MP_SHIM_OK ? mp_shim_scale_for_frame(bounds) : 0.0;
     } else if (target->kind == MP_SHIM_TARGET_DISPLAY) {
         status = mp_shim_input_display_rect(target, &bounds);

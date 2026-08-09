@@ -1,0 +1,209 @@
+# Phase 2 native input and public-language common flows, measured on
+# aarch64-apple-darwin at source a1faf04505c8471deb4de8c136fddcc7f76105e7
+# and tree a6a3edd6e627eadc9da76785c861136d669e8b05.
+#
+# Produced by the historical `crates/mado-pilot/benches/native-phase2.rs`.
+# ADR 0020 records that run and its retained rejected attempt; ADR 0021
+# invalidates the profile for the current tree after source drift, input
+# liveness, and correctness-oracle repairs. The measurements and former budgets
+# remain reviewable evidence, not current regression ceilings.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-native-input-aarch64-apple-darwin"
+workload = "native input and the public Rust common flow"
+phase = "2"
+status = "historical-invalidated-source-and-oracle-drift"
+normative = false
+measurements_recorded = true
+
+[profile]
+fixture = "crates/platform/macos fixture Rust, protocol, header, and Objective-C sources"
+fixture_sha256 = "1140bae43512909daacc4f7f3ac83a70ff4cb39b7d45bafb17ae7f6518836932"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 CPU cores, 32 GiB"
+os_version = "macOS 26.5.2 build 25F84"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release"
+warmup_iterations = 5
+sample_count = 50
+correctness_oracle = "every retained sample checks frame identity/content, transition state, receipt/event sequence, or complete common-flow outcome as its measurement states"
+queue_policy = "session latest-wins queue depth 1; bounded input sequence executes serially"
+notes = "source commit a1faf04505c8471deb4de8c136fddcc7f76105e7, tree a6a3edd6e627eadc9da76785c861136d669e8b05; toolchain rustc 1.97.1 (8bab26f4f 2026-07-14); C/C++ Apple clang 21.0.0; GPU/driver Apple integrated GPU; system driver stack; display topology one built-in 3024x1964 Retina display at scale 2; permissions/signing Screen Recording granted; Accessibility granted; generated fixture bundle ad-hoc signed with approved identifier; fixture path deliberately omitted; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 16777216
+rationale = "16 MiB is more than three times the 4635854-byte measured Rust common-flow peak"
+
+[[measurement]]
+workload = "input_request_receipt"
+correctness_oracle = "the complete two-event receipt corresponds to exactly one fixture key-down and key-up summary"
+result_correctness = 0
+latency_p50_ms = 13.676500
+latency_p95_ms = 15.064084
+iteration_span_ms = 16.659377
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 7548
+steady_allocated_bytes = 7086
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 50.0
+  rationale = "three times the measured 15.064084 ms, rounded up"
+
+[[measurement]]
+workload = "rust_common_flow"
+correctness_oracle = "fresh open, frame, mapping, exact fixture input, receipt, and close all complete"
+result_correctness = 0
+latency_p50_ms = 136.318958
+latency_p95_ms = 144.568625
+iteration_span_ms = 136.401311
+mapped_bytes_per_result = 4628480
+peak_allocated_bytes = 4635854
+steady_allocated_bytes = 4097
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 450.0
+  rationale = "three times the measured 144.568625 ms, rounded up"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 4628480
+  rationale = "1280x904 fixture content at four bytes per pixel, exactly once"
+
+[[measurement]]
+workload = "c_process_load"
+correctness_oracle = "a fresh C process loads and negotiates the released ABI without opening native capabilities"
+result_correctness = 0
+latency_p50_ms = 234.751333
+latency_p95_ms = 238.341125
+iteration_span_ms = 234.822765
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 557
+steady_allocated_bytes = 106
+allocated_growth_bytes = 0
+peak_resident_bytes = 51773440
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 750.0
+  rationale = "three times the measured 238.341125 ms, rounded up"
+
+  [[measurement.budget]]
+  measure = "peak_resident_bytes"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 201326592
+  rationale = "192 MiB is more than three times the measured 51773440-byte child-process high-water mark"
+
+[[measurement]]
+workload = "c_common_flow"
+correctness_oracle = "the released C ABI performs the same bounded fixture flow in a fresh process"
+result_correctness = 0
+latency_p50_ms = 757.563666
+latency_p95_ms = 768.095417
+iteration_span_ms = 750.903288
+mapped_bytes_per_result = 4628480
+peak_allocated_bytes = 1257
+steady_allocated_bytes = 106
+allocated_growth_bytes = 0
+peak_resident_bytes = 93421568
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 4628480
+  rationale = "the released C flow maps one 1280x904 fixture frame exactly once"
+
+  # Latency and resident-memory ceilings are deliberately withheld. The first
+  # revision-bound run rejected one of fifty C common-flow samples. Focused and
+  # full-flow reruns did not reproduce it, but no cause was proved; ADR 0020
+  # keeps the gap open instead of normalizing the clean rerun into a claim.
+
+[[measurement]]
+workload = "cpp_process_load"
+correctness_oracle = "a fresh C++ process loads its wrapper and negotiates the released ABI without opening native capabilities"
+result_correctness = 0
+latency_p50_ms = 234.861250
+latency_p95_ms = 238.834875
+iteration_span_ms = 235.082992
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 569
+steady_allocated_bytes = 110
+allocated_growth_bytes = 0
+peak_resident_bytes = 51740672
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 750.0
+  rationale = "three times the measured 238.834875 ms, rounded up"
+
+  [[measurement.budget]]
+  measure = "peak_resident_bytes"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 201326592
+  rationale = "192 MiB is more than three times the measured 51740672-byte child-process high-water mark"
+
+[[measurement]]
+workload = "cpp_common_flow"
+correctness_oracle = "the released C++ wrapper performs the same bounded fixture flow in a fresh process"
+result_correctness = 0
+latency_p50_ms = 754.941459
+latency_p95_ms = 768.550417
+iteration_span_ms = 750.887115
+mapped_bytes_per_result = 4628480
+peak_allocated_bytes = 1269
+steady_allocated_bytes = 110
+allocated_growth_bytes = 0
+peak_resident_bytes = 93667328
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 4628480
+  rationale = "the released C++ flow maps one 1280x904 fixture frame exactly once"
+
+  # Kept in the same open-ceiling class as the C flow because both execute the
+  # same C ABI path and need one synchronized decision, even though this row did
+  # not reject a sample in the retained runs.

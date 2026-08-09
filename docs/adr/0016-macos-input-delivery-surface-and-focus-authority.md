@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-02
-- **Amended:** 2026-08-08
+- **Amended:** 2026-08-09
 - **Resolves gate:** _none_
 - **Supersedes:** _none_
 
@@ -60,23 +60,23 @@ Four rules follow from that surface and are part of the platform contract:
    revocation observed mid-sequence stops delivery and the receipt reports the
    count already delivered. No permission-request API is called and no settings
    interface is presented.
-2. **The retained capture selection establishes liveness before focus.** Input
-   reads the `SCWindow` included by the exact `SCContentFilter` retained from
-   discovery before it consults the read-only Accessibility model. Window number,
-   owning PID, title, and rectangle never re-resolve the target.
-   Focus requires all of the following public observations to agree:
+2. **A current logical-window match establishes liveness before focus.** Input
+   queries current shareable content within the caller's remaining budget.
+   Window number and owning PID narrow the result, but the current logical
+   `SCWindow` must equal the object included by the exact `SCContentFilter`
+   retained from discovery. Title and rectangle never re-resolve the target.
+   Focus then requires all of the following public observations to agree:
    [`kAXFrontmostAttribute`][ax-frontmost] reports that the owning application is
    active; [`kAXFocusedWindowAttribute`][ax-focused-window] names one of the
-   application's [`kAXWindowsAttribute`][ax-windows] elements; and the retained
-   window's current frame corresponds one-to-one with that element's
+   application's [`kAXWindowsAttribute`][ax-windows] elements; and the freshly
+   verified frame corresponds one-to-one with that element's
    [`kAXPositionAttribute`][ax-position] and
-   [`kAXSizeAttribute`][ax-size]. The retained frame is read again after the
-   Accessibility snapshot. A changed frame, missing attribute, or zero or
-   multiple geometry matches establishes no focus and delivers nothing.
-   Geometry is only a fail-closed join between two live public observations
-   after retained identity has been established; it never selects a
-   replacement. Accessibility messaging is bounded by the caller's remaining
-   operation budget.
+   [`kAXSizeAttribute`][ax-size]. Shareable content is read again after the
+   Accessibility snapshot. A changed frame, missing attribute, unequal logical
+   window, or zero or multiple geometry matches establishes no focus and delivers
+   nothing. Geometry is only a fail-closed join between live public observations
+   after retained logical identity has been established; it never selects a
+   replacement. Both native observations are caller-bounded.
    `ActivateIfRequired` activates an application, never a window, then
    repeats that read-back for a bounded period and reports `FocusRefused` when the
    exact retained window is not established as focused.
@@ -124,9 +124,10 @@ because correlating an `AXUIElement` with the `CGWindowID` this Adapter's
 identities are built on needs `_AXUIElementGetWindow`, which is not public API.
 Matching by mutable title and rectangle to *select or raise* a window would
 replace the retained target authority and remains rejected. The accepted
-read-only focus check is narrower: retained `SCWindow` identity and liveness come
-first, exact current geometry joins one bounded focus snapshot, and every
-ambiguous join refuses input.
+read-only focus check is narrower: a fresh shareable-content snapshot must
+contain a logical `SCWindow` equal to the retained object, its exact current
+geometry joins one bounded focus snapshot, and every ambiguous join refuses
+input.
 
 **Keep treating the first ordinary-layer Window Server entry as focused.**
 Rejected after the facade's simultaneous capture-and-input run showed a
@@ -163,15 +164,15 @@ a distinct reported mode and need their own evidence.
 - `ActivateIfRequired` is best-effort by construction. A caller that needs
   certainty focuses the target itself and uses `RequireFocused`; both policies
   use the same exact, read-only focus authority.
-- Focus observation now makes bounded Accessibility queries as well as the
-  per-event trust check. This adds no permission: system keyboard delivery
-  already requires Accessibility. An application that does not publish enough
-  public window geometry is refused rather than guessed.
+- Focus observation now makes bounded shareable-content and Accessibility
+  queries as well as the per-event trust check. This adds no permission: system
+  keyboard delivery already requires Accessibility. An application that does not
+  publish enough public window geometry is refused rather than guessed.
 - The internal shim surface first moved from 2 to 3 when it gained input and from
   3 to 4 when liveness accepted the retained selection and authorization split
   launch/signature axes. It moves from 4 to 5 for the retained-target focus query
-  and its caller-bounded Accessibility wait. It is internal, is not the public C
-  ABI, and is not covered by the ABI compatibility policy; the layout test
+  and its caller-bounded native waits. It is internal, is not the public C ABI,
+  and is not covered by the ABI compatibility policy; the layout test
   asserts both sides agree.
 - The fixture is verified interactively rather than automatically, because macOS
   cannot deliver without focusing. Its ad-hoc bundle signature is assembled and

@@ -2,20 +2,21 @@
 
 A headless visual automation runtime for applications and agents.
 
-When implemented, MadoPilot will discover windows and displays, capture frame
-streams, map coordinate spaces, match templates, recognize text, wait for visual
-conditions, inject input through explicit platform capabilities, and report
-structured diagnostics — without owning a GUI, tray, overlay, editor, updater,
-scheduler, or scripting language of its own.
+MadoPilot discovers windows and displays, captures frame streams, maps coordinate
+spaces, matches templates, and injects input through explicit platform
+capabilities while reporting structured outcomes. OCR, visual-condition
+watchers, and their scheduling remain future work. The runtime owns no GUI,
+tray, overlay, editor, updater, workflow catalog, scheduler, or scripting
+language.
 
-## Status: one deterministic workflow, plus a native one per target from Rust
+## Status: deterministic and native workflows from Rust, C, and C++
 
-**MadoPilot is not usable for real automation yet.** What works end to end is a
-deterministic workflow over *replayed* frames: configure a replay source and
-require the OpenCV CPU backend, discover and open a target, take a frame, map
-it, load an asset package, prepare a template, find it in that exact frame, and
-close. That runs on both release targets, from Rust, from C, and from C++, and
-the three examples answer the same questions with the same numbers:
+**MadoPilot is a developer-facing source runtime, not a packaged automation
+product.** One complete deterministic workflow runs over replayed frames:
+configure a replay source and require the OpenCV CPU backend, discover and open a
+target, take a frame, map it, load an asset package, prepare a template, find it
+in that exact frame, and close. That runs on both release targets from Rust, C,
+and C++, and the three examples answer the same questions with the same numbers:
 
 ```text
 crates/mado-pilot/examples/deterministic-slice.rs
@@ -23,22 +24,27 @@ crates/bindings/capi/examples/c/deterministic-slice.c
 crates/bindings/capi/examples/cpp/deterministic-slice.cpp
 ```
 
-The same workflow over *real* windows and displays — including bounded input
-delivery with a receipt saying exactly what reached the target — is reachable
-from Rust, through one facade constructor per release target. Its two examples
-each require the operator to name one window exactly and refuse anything
-ambiguous, because the events they send are real:
+The same ownership flow over *real* windows and displays — including bounded
+input delivery with a receipt saying exactly what reached the target — is
+implemented in the target adapters, composed by the runtime, and exposed through
+the Rust facade, C ABI 1.1, and header-only C++ wrapper. The Rust examples each
+require the operator to name one window exactly and refuse anything ambiguous,
+because the events they send are real:
 
 ```text
 crates/mado-pilot/examples/windows-native-input.rs
 crates/mado-pilot/examples/macos-native-input.rs
+crates/bindings/capi/examples/c/windows-native-input.c
+crates/bindings/capi/examples/c/macos-native-input.c
+crates/bindings/capi/examples/cpp/native-input.cpp
 ```
 
-The native capture release-acceptance matrix is still open, and the C ABI and the
-C++ wrapper do not reach input at all. On macOS capture needs Screen Recording
-granted to the process, and reports a skip naming that reason where it is not, so
-a green run on a host that has neither granted nor denied it is not evidence that
-capture ran.
+Release acceptance remains incomplete. The revision-bound macOS current-display
+matrix passes, but its shared external-display matrix and both Windows
+interactive matrices still require their approved physical topologies. macOS
+capture needs Screen Recording and input needs Accessibility; MadoPilot probes
+both without prompting. A green run that skipped a permissioned native scenario
+is not evidence that scenario ran.
 
 The public workflow still neither recognizes text nor waits on a condition.
 Adding a package here is not a claim that its behavior exists.
@@ -54,13 +60,13 @@ Adding a package here is not a claim that its behavior exists.
 | Template-matching contracts, ordering, suppression, source correlation | Implemented |
 | Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
-| Native capture | Implemented in the Windows and macOS adapters and reachable from the Rust facade; release acceptance remains open |
-| Native input | Implemented in the Windows and macOS adapters, composed by the runtime, and reachable from the Rust facade; C ABI and C++ wiring remain open |
+| Native capture | Implemented in both adapters and exposed through Rust, C ABI 1.1, and C++; the macOS current-display matrix passes while Windows and shared-display acceptance remain open |
+| Native input | Implemented in both adapters and exposed through Rust, C ABI 1.1, and C++; system delivery is explicit and fixture-scoped automatic checks send no desktop input |
 | OCR, watchers | Not implemented |
-| C ABI, tracked C header, dynamic library | Implemented for the Phase 1 prefix |
-| Header-only C++ RAII wrapper and CMake targets | Implemented for the Phase 1 prefix |
+| C ABI, tracked C header, dynamic library | Implemented through the frozen additive ABI 1.1 table |
+| Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.1 |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets for the Phase 1 workloads | Set on both release targets; see [ADR 0008](docs/adr/0008-phase-1-performance-budgets.md) |
+| Numeric performance budgets | Phase 1 is resolved on both targets; Phase 2 macOS capture, lifecycle, input, and process-load budgets are accepted, with Windows and C/C++ common-flow gaps still open |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled
@@ -68,38 +74,43 @@ The public Rust names have been reviewed and settled
 [ADR 0006](docs/adr/0006-public-rust-names-and-compatibility-policy.md)), but
 they are not yet a stability promise: that begins at 1.0, and until then a
 rename costs an ADR and a version bump rather than being impossible. The C ABI
-is separately versioned and **is** frozen, at ABI 1.0
-([`G-010`](docs/validation-gates.md#g-010), resolved by
-[ADR 0007](docs/adr/0007-phase-1-c-abi-freeze.md)): within ABI major 1 no value
-changes, no field moves, and no function-table entry moves. The C++ wrapper
-declares no ABI of its own and inherits the C one.
+is separately versioned and **is** frozen: ABI 1.0 is the permanent prefix, and
+ABI 1.1 appends native capability, permission, and input entries without moving
+that prefix ([ADR 0007](docs/adr/0007-phase-1-c-abi-freeze.md),
+[ADR 0017](docs/adr/0017-c-abi-1-1-native-input-prefix.md)). Within ABI major 1,
+no released value, field, or function-table entry moves. The C++ wrapper declares
+no ABI of its own and inherits the C one.
 
 [docs/architecture.md](docs/architecture.md) is the tracked baseline and records
 the full status table, the package inventory, and the dependency rules.
 
 ## Releases
 
-[`v0.1.0`](docs/releases/v0.1.0.md) is the first developer-facing source, Rust
-API, C ABI 1.0, and C++ API baseline for the deterministic workflow above. It
-does not publish crates to crates.io or provide prebuilt libraries, installers,
-CMake install/export metadata, pkg-config metadata, or bundled OpenCV. The
-release notes are the canonical public scope and are used verbatim as the
-release-provider body.
+[`v0.1.0`](docs/releases/v0.1.0.md) is the published developer-facing source,
+Rust API, C ABI 1.0, and C++ API baseline for the deterministic workflow.
+[`v0.2.0`](docs/releases/v0.2.0.md) is the in-progress native-capture/input
+source release; it is not released while the interactive Windows and
+shared-display evidence gaps remain.
+Neither version publishes crates to crates.io or provides prebuilt libraries,
+installers, CMake install/export metadata, pkg-config metadata, or bundled
+OpenCV. A tracked release-note file is the canonical release body.
 
 ## Release targets
 
-Version one targets `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`. Each is
-verified natively in continuous integration; a cross-compiled result never stands
-in for the other target. The exact minimum supported Windows and macOS versions
-are still unresolved, along with thirteen other version-one decisions recorded in
-[docs/validation-gates.md](docs/validation-gates.md).
+Version one targets `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`. Hosted
+CI builds and tests both natively, but it never substitutes for an interactive
+display, permission, input, device, or target-loss matrix. The qualified macOS
+floor is Apple Silicon macOS 26.5.2 build 25F84. The Windows 11 25H2 candidate
+remains a proposal until its approved desktop host runs the boundary plan; no
+minimum Windows support claim is active. Remaining version-one decisions are
+tracked in [docs/validation-gates.md](docs/validation-gates.md).
 
 ## Integration surfaces
 
-Three surfaces are planned: an idiomatic Rust API through the `mado-pilot` facade
-package, a separately versioned C ABI, and a thin C++ RAII wrapper that consumes
-only the released C ABI. The public names are reserved so that the language
-surfaces stay consistent.
+The integration surfaces are an idiomatic Rust API through the `mado-pilot`
+facade package, a separately versioned C ABI, and a thin C++ RAII wrapper that
+consumes only that C ABI. All three exist; packaging and registry publication do
+not.
 
 | Artifact | Name | State |
 |---|---|---|
@@ -189,7 +200,7 @@ cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<
 | [docs/c-abi.md](docs/c-abi.md) | The C boundary's contract: handles, structure prefixes, statuses, panic containment, building against it |
 | [docs/cpp-wrapper.md](docs/cpp-wrapper.md) | The C++ adapter's contract: move-only owners, `Result`, borrowed views, the CMake targets |
 | [docs/validation-gates.md](docs/validation-gates.md) | The `G-001`–`G-014` registry of unresolved version-one decisions |
-| [docs/performance.md](docs/performance.md) | Benchmark profile and budget format, the Phase 1 workloads, and their correctness oracles |
+| [docs/performance.md](docs/performance.md) | Benchmark profiles, budgets, Phase 1 resolution, and the partial Phase 2 native evidence |
 | [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |
 | [docs/windows-input-verification.md](docs/windows-input-verification.md) | Windows input capability matrix, focus/UIPI behavior, fixture privacy bounds, and native checks |
 | [docs/macos-input-verification.md](docs/macos-input-verification.md) | macOS input capability matrix, Accessibility and focus behavior, fixture privacy bounds, and native checks |
@@ -214,8 +225,8 @@ platform packages capture and deliver input with no elevation and redacted
 fixture evidence, macOS reads its two authorizations without prompting and reads
 the Accessibility decision again before every event it delivers, and Windows
 reports that it reads no separate authorization rather than having one invented
-for it. The C ABI and the C++ wrapper do not reach input; that wiring remains
-later work.
+for it. The C ABI and C++ wrapper preserve the same explicit capability,
+permission, delivery, receipt, and ownership contracts.
 
 ## Contributing
 

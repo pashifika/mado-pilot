@@ -9,8 +9,8 @@ window after the selected window is destroyed.
 
 | Fact | Value |
 |---|---|
-| Commit | `9057154dd762ba1599a7854c239cc3198414755e` |
-| Tree | `f579a36bb1615e698317e41d9346a8fb2430ff6c` |
+| Commit | `a1faf04505c8471deb4de8c136fddcc7f76105e7` |
+| Tree | `a6a3edd6e627eadc9da76785c861136d669e8b05` |
 | Target | `aarch64-apple-darwin` |
 | Host | Apple M1 Pro, 10 CPU cores, 32 GiB |
 | Operating system | macOS 26.5.2 (`25F84`) |
@@ -20,9 +20,10 @@ window after the selected window is destroyed.
 | Authorization | Screen Recording granted; the probe sends no input and requires no Accessibility decision |
 | Display topology | One built-in 3024×1964 Retina display |
 
-The next documentation-only commit does not affect the executable, native shim,
-fixture, test, toolchain input, or oracle. Any later product-code change requires
-an applicability review of the complete intervening diff or a rerun.
+The earlier accepted run was bound to `9057154`. This rerun follows the complete
+intervening-diff review recorded in
+[`../phase-2-native/macos-current-display.md`](../phase-2-native/macos-current-display.md)
+and binds the oracle to the performance-harness revision.
 
 ## Oracle
 
@@ -60,7 +61,7 @@ MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$ROOT/target/mado-pilot-fixtures/MadoPilotI
   --ignored --exact --nocapture --test-threads=1
 ```
 
-Observed result: one test passed in 15.74 seconds. The fixture reported a
+Observed result: one test passed in 15.89 seconds. The fixture reported a
 successful replacement with distinct non-zero window numbers. The retained
 filter returned only bounded frame-request timeouts for the full ten-second
 observation, so the Adapter correctly inferred no terminal outcome. It published
@@ -76,11 +77,11 @@ performance measurement.
 
 The same source passed these focused checks before the acceptance rerun:
 
+- `MADO_PILOT_MACOS_ASAN=1 cargo test --locked --package mado-pilot-platform-macos --target-dir target/asan --lib -- --nocapture --test-threads=1` — 160 passed with no sanitizer finding.
 - `cargo test --locked --package mado-pilot-platform-macos --lib -- --nocapture --test-threads=1` — 160 passed, including 27 live capture lifecycle scenarios.
 - `cargo test --locked --package mado-pilot-platform-macos --test native_input -- --nocapture --test-threads=1` — nine passed and two explicit interactive probes remained ignored.
 - `cargo test --locked --package mado-pilot-platform-macos --test fixture_signing --test linkage -- --nocapture` — four passed.
-- `cargo clippy --locked --package mado-pilot-platform-macos --all-targets -- -D warnings` — passed.
-- `cargo fmt --all --check` — passed.
+- The focused system-delivery probe — one passed in 5.29 seconds.
 
 ## Privacy
 

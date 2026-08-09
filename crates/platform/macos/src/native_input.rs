@@ -247,8 +247,11 @@ impl NativeInputDriver {
         }
     }
 
-    fn current_geometry(&self) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
-        let bounds = self.record.current_bounds()?;
+    fn current_geometry(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
+        let bounds = self.record.current_bounds(focus_wait(operation))?;
         let extent = extent_from_points(bounds.size, bounds.scale)?;
         let placement = placement_from_points(bounds.origin, bounds.size, bounds.scale, extent)
             .map_err(|_| InputFault::UnsupportedCoordinate)?;
@@ -260,13 +263,14 @@ impl NativeInputDriver {
     fn policy_geometry(
         &self,
         geometry: PointerGeometry,
+        operation: &OperationContext,
     ) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
         match geometry.policy() {
-            GeometryPolicy::ReprojectCurrent => self.current_geometry(),
+            GeometryPolicy::ReprojectCurrent => self.current_geometry(operation),
             GeometryPolicy::RequireUnchanged => {
                 let transform = self.source_transform(geometry)?;
                 let source_fingerprint = fingerprint(&transform)?;
-                let (_, current_fingerprint) = self.current_geometry()?;
+                let (_, current_fingerprint) = self.current_geometry(operation)?;
                 if source_fingerprint != current_fingerprint {
                     return Err(InputFault::GeometryChanged);
                 }
@@ -295,8 +299,9 @@ impl NativeInputDriver {
         &self,
         point: Point,
         geometry: PointerGeometry,
+        operation: &OperationContext,
     ) -> Result<PointerState, InputFault> {
-        let (transform, fingerprint) = self.policy_geometry(geometry)?;
+        let (transform, fingerprint) = self.policy_geometry(geometry, operation)?;
         let desktop = transform
             .convert_point(point, CoordinateSpace::DesktopLogical)
             .map_err(|_| InputFault::UnsupportedCoordinate)?;
@@ -314,8 +319,9 @@ impl NativeInputDriver {
         &self,
         geometry: PointerGeometry,
         state: &mut DriverState,
+        operation: &OperationContext,
     ) -> Result<PointerState, InputFault> {
-        let (_, current) = self.policy_geometry(geometry)?;
+        let (_, current) = self.policy_geometry(geometry, operation)?;
         if let Some(pointer) = state.pointer {
             if pointer.geometry != current {
                 return Err(InputFault::GeometryChanged);
@@ -343,14 +349,14 @@ impl NativeInputDriver {
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> DeliveryResult {
-        self.record.ensure_live()?;
+        self.record.ensure_live(focus_wait(operation))?;
         self.ensure_authorized()?;
         self.ensure_system_focus(focus, operation)?;
         let flags = state.held_flags();
 
         match event {
             InputEvent::PointerMove(point) => {
-                let resolved = self.resolve_pointer(*point, geometry)?;
+                let resolved = self.resolve_pointer(*point, geometry, operation)?;
                 let button = state
                     .dragging()
                     .map_or(Ok(shim::INPUT_BUTTON_NONE), native_button)?;
@@ -371,7 +377,7 @@ impl NativeInputDriver {
                 Ok(())
             }
             InputEvent::PointerPress(button) => {
-                let pointer = self.pointer_for_non_move(geometry, state)?;
+                let pointer = self.pointer_for_non_move(geometry, state, operation)?;
                 let native = native_button(*button)?;
                 commit_prepared(
                     self,
@@ -393,7 +399,7 @@ impl NativeInputDriver {
                 Ok(())
             }
             InputEvent::PointerRelease(button) => {
-                let pointer = self.pointer_for_non_move(geometry, state)?;
+                let pointer = self.pointer_for_non_move(geometry, state, operation)?;
                 let index = state
                     .buttons
                     .iter()
@@ -423,7 +429,7 @@ impl NativeInputDriver {
                 horizontal,
                 vertical,
             } => {
-                let pointer = self.pointer_for_non_move(geometry, state)?;
+                let pointer = self.pointer_for_non_move(geometry, state, operation)?;
                 commit_prepared(
                     self,
                     focus,
@@ -559,14 +565,14 @@ impl SystemCommitSource for NativeInputDriver {
         geometry: CommitGeometry,
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
-        self.record.ensure_live()?;
+        self.record.ensure_live(focus_wait(operation))?;
         // Authorization is re-read here and not only at preflight, because macOS
         // revokes it while a process is running and discards the events that
         // follow without saying so.
         self.ensure_authorized()?;
         self.ensure_system_focus(focus, operation)?;
         if let CommitGeometry::RequireCurrent(expected) = geometry {
-            let (_, current) = self.current_geometry()?;
+            let (_, current) = self.current_geometry(operation)?;
             if current != expected {
                 return Err(InputFault::GeometryChanged);
             }
@@ -604,7 +610,6 @@ impl SystemCommitSource for NativeInputDriver {
             ShimStatus::PermissionDenied => InputFault::NotAuthorized,
             ShimStatus::Unsupported => InputFault::UnsupportedCombination,
             _ if self.ensure_authorized().is_err() => InputFault::NotAuthorized,
-            _ if self.record.ensure_live().is_err() => InputFault::TargetLost,
             _ => InputFault::DeliveryFailed,
         }
     }
@@ -628,7 +633,7 @@ impl InputDriver for NativeInputDriver {
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
         operation_fault(operation)?;
-        self.record.ensure_live()?;
+        self.record.ensure_live(focus_wait(operation))?;
         match delivery {
             InputDelivery::System => {
                 self.ensure_authorized()?;

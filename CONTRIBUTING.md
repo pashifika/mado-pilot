@@ -30,9 +30,8 @@ for running the matching tests.
 [docs/third-party-dependencies.md](docs/third-party-dependencies.md) records the
 exact versions, the Windows environment variables, why the discovery is restricted
 rather than ambient, and what fails when the library is absent. This is a
-development prerequisite only: the v0.1.0 source release bundles no native
-dependency and makes no installable deployment-profile claim, which remains gate
-`G-007`.
+development prerequisite only: source releases bundle no native dependency and
+make no installable deployment-profile claim, which remains gate `G-007`.
 
 The macOS implementation is qualified only on Apple Silicon macOS 26.5.2
 (25F84), SDK 26.5; earlier macOS versions are unsupported investigation targets,
@@ -153,6 +152,32 @@ or focus is unavailable. Do not make it pass through `AttachThreadInput`, elevat
 or another foreground-policy bypass. The capability matrix, typed outcomes,
 privacy bounds, and focused commands are in
 [docs/windows-input-verification.md](docs/windows-input-verification.md).
+
+## Phase 2 native release matrices
+
+Hosted CI is the first gate: open the topic pull request and let both native jobs
+validate compilation, contracts, ABI negotiation, and public examples before
+reserving interactive hardware. A passing hosted job is not permission, display,
+GPU/device, signing, input, target-loss, or minimum-system evidence.
+
+Bind every retained run to the candidate commit and tree, or add a review that
+covers the complete intervening diff. The scheduled release matrices are:
+
+- Windows routine single-display evidence on the approved Windows 11 desktop,
+  followed outside work hours by both shared 4K displays for mixed-DPI,
+  signed-origin, movement, capture, mapping, pointer-input, device-reset/removal,
+  target-loss, Rust, C, and C++ cases.
+- macOS routine current-display evidence on the qualified Apple Silicon macOS
+  26.5.2 host, followed by one shared external display for the signed-origin,
+  scale, movement, capture, mapping, pointer-input, target-loss, Rust, C, and C++
+  cases.
+
+Use dedicated fixtures. Evidence may retain approved host/toolchain metadata,
+typed outcomes, timings, counts, and source identities; it must not retain
+captured pixels, pixel hashes, input text, credentials, unrelated window titles,
+process paths, or desktop metadata. Record an unavailable host or topology as an
+explicit evidence gap. Never turn absence into a skip that passes the release
+claim.
 
 ## Verification
 

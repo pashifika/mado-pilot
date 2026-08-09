@@ -1,0 +1,148 @@
+# Phase 2 native lifecycle transitions, measured on aarch64-apple-darwin at
+# source a1faf04505c8471deb4de8c136fddcc7f76105e7 and tree
+# a6a3edd6e627eadc9da76785c861136d669e8b05.
+#
+# Produced by the historical `crates/mado-pilot/benches/native-phase2.rs`.
+# ADR 0020 records that run; ADR 0021 invalidates it for the current tree after
+# source drift and correctness-oracle repairs. The measurements and former
+# budgets remain reviewable evidence, not current regression ceilings.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-native-transitions-aarch64-apple-darwin"
+workload = "native open, retained-pressure recovery, resize, and close transitions"
+phase = "2"
+status = "historical-invalidated-source-and-oracle-drift"
+normative = false
+measurements_recorded = true
+
+[profile]
+fixture = "crates/platform/macos fixture Rust, protocol, header, and Objective-C sources"
+fixture_sha256 = "1140bae43512909daacc4f7f3ac83a70ff4cb39b7d45bafb17ae7f6518836932"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 CPU cores, 32 GiB"
+os_version = "macOS 26.5.2 build 25F84"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release"
+warmup_iterations = 5
+sample_count = 20
+correctness_oracle = "every retained sample checks frame identity/content, transition state, receipt/event sequence, or complete common-flow outcome as its measurement states"
+queue_policy = "session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
+notes = "source commit a1faf04505c8471deb4de8c136fddcc7f76105e7, tree a6a3edd6e627eadc9da76785c861136d669e8b05; toolchain rustc 1.97.1 (8bab26f4f 2026-07-14); Apple clang 21.0.0; GPU/driver Apple integrated GPU; system driver stack; display topology one built-in 3024x1964 Retina display at scale 2; permissions/signing Screen Recording granted; Accessibility granted; generated fixture bundle ad-hoc signed with approved identifier; fixture path deliberately omitted"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 16777216
+rationale = "16 MiB allows one transient copy above the 7511710-byte measured peak but rejects accumulation of two more full resized frames"
+
+[[measurement]]
+workload = "resize_recreation"
+correctness_oracle = "one deterministic fixture resize advances epoch and geometry and returns the resized extent"
+result_correctness = 0
+latency_p50_ms = 51.935959
+latency_p95_ms = 54.554000
+iteration_span_ms = 52.407983
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 7102
+steady_allocated_bytes = 6782
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 170.0
+  rationale = "three times the measured 54.554000 ms, rounded up"
+
+[[measurement]]
+workload = "open_first_frame"
+correctness_oracle = "each fresh session returns a correctly identified deterministic first frame and closes"
+result_correctness = 0
+latency_p50_ms = 105.537625
+latency_p95_ms = 115.303667
+iteration_span_ms = 128.607464
+mapped_bytes_per_result = 7504640
+peak_allocated_bytes = 7511710
+steady_allocated_bytes = 4097
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 350.0
+  rationale = "three times the measured 115.303667 ms, rounded up"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 7504640
+  rationale = "the larger 1600x1172 resize fixture at four bytes per pixel, exactly once"
+
+[[measurement]]
+workload = "retained_pressure_resume"
+correctness_oracle = "filling the reported retained limit rejects publication, releasing one slot resumes with an observable sequence gap"
+result_correctness = 0
+latency_p50_ms = 13.104250
+latency_p95_ms = 16.222500
+iteration_span_ms = 367.506520
+mapped_bytes_per_result = 0
+stale_work_ratio = 0.859154930
+peak_allocated_bytes = 9040
+steady_allocated_bytes = 4097
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 50.0
+  rationale = "three times the measured 16.222500 ms, rounded up"
+
+  [[measurement.budget]]
+  measure = "stale_work_ratio"
+  kind = "absolute"
+  unit = "ratio"
+  direction = "at_most"
+  limit = 0.95
+  rationale = "the deliberate full-buffer pressure measured 0.859154930; the ceiling preserves bounded recovery while allowing host scheduling variation"
+
+[[measurement]]
+workload = "close_drain"
+correctness_oracle = "explicit close reaches the closed state and remains idempotent"
+result_correctness = 0
+latency_p50_ms = 23.670208
+latency_p95_ms = 31.378250
+iteration_span_ms = 132.274560
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 6910
+steady_allocated_bytes = 4097
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 100.0
+  rationale = "three times the measured 31.378250 ms, rounded up"

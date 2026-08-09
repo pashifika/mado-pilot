@@ -28,7 +28,8 @@ mod native {
     use std::io::{BufRead, BufReader};
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
-    use std::sync::{Arc, Mutex, OnceLock, mpsc};
+    use std::rc::Rc;
+    use std::sync::{Mutex, OnceLock, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -39,7 +40,7 @@ mod native {
         PixelFormat, SequenceOutcome, Session, SessionRequest, Status, TargetId,
     };
     use mado_pilot_testkit::bench_harness::{
-        self, Benchmark, Plan, Profile, Sample, Workload, argument, enforce_correctness, measure,
+        self, Benchmark, Plan, Profile, Sample, Workload, argument, enforce_hard_budgets, measure,
     };
 
     #[cfg(windows)]
@@ -302,11 +303,11 @@ mod native {
     struct Flow {
         engine: Engine,
         target: TargetId,
-        fixture: Arc<FixtureProcess>,
+        fixture: Rc<FixtureProcess>,
     }
 
     impl Flow {
-        fn from_fixture(fixture: Arc<FixtureProcess>) -> Self {
+        fn from_fixture(fixture: Rc<FixtureProcess>) -> Self {
             let process_id = fixture.child.id();
             let engine = native_engine();
             require_permissions(&engine);
@@ -386,18 +387,28 @@ mod native {
     struct ActiveState {
         session: Session,
         last: Frame,
+        fill: u32,
     }
 
     impl ActiveFlow {
-        fn from_fixture(fixture: Arc<FixtureProcess>) -> Self {
+        fn from_fixture(fixture: Rc<FixtureProcess>) -> Self {
             let flow = Flow::from_fixture(fixture);
             let session = flow.open_input_session();
             let last = session
                 .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
                 .expect("the active fixture publishes a seed frame");
+            let mapping = last
+                .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
+                .expect("the active fixture seed frame maps");
+            let fill = benchmark_mapping_fill(&mapping)
+                .expect("the active fixture seed carries one declared fill");
             Self {
                 flow,
-                state: Mutex::new(ActiveState { session, last }),
+                state: Mutex::new(ActiveState {
+                    session,
+                    last,
+                    fill,
+                }),
             }
         }
     }
@@ -419,11 +430,11 @@ mod native {
 
     struct LanguageFlow {
         program: LanguageProgram,
-        fixture: Arc<FixtureProcess>,
+        fixture: Rc<FixtureProcess>,
     }
 
     impl LanguageFlow {
-        fn new(program: LanguageProgram, fixture: Arc<FixtureProcess>) -> Self {
+        fn new(program: LanguageProgram, fixture: Rc<FixtureProcess>) -> Self {
             Self { program, fixture }
         }
     }
@@ -482,72 +493,83 @@ mod native {
             plan,
             &workloads,
         );
-        enforce_correctness(&workloads);
+        enforce_hard_budgets(&workloads);
     }
 
     fn workloads(set: WorkloadSet, plan: Plan) -> Vec<Workload> {
         match set {
             WorkloadSet::Capture => {
-                let fixture = Arc::new(FixtureProcess::spawn(FixtureBehavior::Animate));
                 vec![
                     measure(
                         "stimulus_to_frame",
-                        "one acknowledged deterministic fixture change produces a newer stamped frame whose centre is one declared fill",
+                        "one acknowledged deterministic fixture change produces a newer stamped frame carrying the opposite declared fill; intermediate publications are discarded and counted",
                         plan,
-                        || ActiveFlow::from_fixture(Arc::clone(&fixture)),
+                        || {
+                            ActiveFlow::from_fixture(Rc::new(FixtureProcess::spawn(
+                                FixtureBehavior::Animate,
+                            )))
+                        },
                         stimulus_to_frame,
                     ),
                     measure(
                         "latest_acquisition",
-                        "latest returns a frame from the same stream without regressing identity",
+                        "after an exact stimulated publication advances the producer, latest returns a same-stream frame no older than that publication and reports the observed sequence gap",
                         plan,
-                        || ActiveFlow::from_fixture(Arc::clone(&fixture)),
+                        || {
+                            ActiveFlow::from_fixture(Rc::new(FixtureProcess::spawn(
+                                FixtureBehavior::Animate,
+                            )))
+                        },
                         latest_acquisition,
                     ),
                     measure(
                         "cpu_map_bgra8",
                         "the newer frame maps once to exact-size BGRA8 bytes carrying one declared fixture fill",
                         plan,
-                        || ActiveFlow::from_fixture(Arc::clone(&fixture)),
+                        || {
+                            ActiveFlow::from_fixture(Rc::new(FixtureProcess::spawn(
+                                FixtureBehavior::Animate,
+                            )))
+                        },
                         cpu_map,
                     ),
                 ]
             }
             WorkloadSet::Transitions => {
-                let fixture = Arc::new(FixtureProcess::spawn(FixtureBehavior::AnimateAndResize));
+                let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::AnimateAndResize));
                 vec![
                     measure(
                         "resize_recreation",
                         "one deterministic fixture resize advances epoch and geometry and returns the resized extent",
                         plan,
-                        || ActiveFlow::from_fixture(Arc::clone(&fixture)),
+                        || ActiveFlow::from_fixture(Rc::clone(&fixture)),
                         resize_recreation,
                     ),
                     measure(
                         "open_first_frame",
                         "each fresh session returns a correctly identified deterministic first frame and closes",
                         plan,
-                        || Flow::from_fixture(Arc::clone(&fixture)),
+                        || Flow::from_fixture(Rc::clone(&fixture)),
                         open_first_frame,
                     ),
                     measure(
                         "retained_pressure_resume",
                         "filling the reported retained limit rejects publication, releasing one slot resumes with an observable sequence gap",
                         plan,
-                        || Flow::from_fixture(Arc::clone(&fixture)),
+                        || Flow::from_fixture(Rc::clone(&fixture)),
                         retained_pressure_resume,
                     ),
                     measure(
                         "close_drain",
                         "explicit close reaches the closed state and remains idempotent",
                         plan,
-                        || Flow::from_fixture(Arc::clone(&fixture)),
+                        || Flow::from_fixture(Rc::clone(&fixture)),
                         close_drain,
                     ),
                 ]
             }
             WorkloadSet::Input => {
-                let fixture = Arc::new(FixtureProcess::spawn(FixtureBehavior::Animate));
+                let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Animate));
                 let args = arguments();
                 let c = LanguageProgram {
                     executable: args
@@ -568,14 +590,14 @@ mod native {
                         "input_request_receipt",
                         "the complete two-event receipt corresponds to exactly one fixture key-down and key-up summary",
                         plan,
-                        || ActiveFlow::from_fixture(Arc::clone(&fixture)),
+                        || ActiveFlow::from_fixture(Rc::clone(&fixture)),
                         input_request_receipt,
                     ),
                     measure(
                         "rust_common_flow",
                         "fresh open, frame, mapping, exact fixture input, receipt, and close all complete",
                         plan,
-                        || Flow::from_fixture(Arc::clone(&fixture)),
+                        || Flow::from_fixture(Rc::clone(&fixture)),
                         rust_common_flow,
                     ),
                     measure(
@@ -589,7 +611,7 @@ mod native {
                         "c_common_flow",
                         "the released C ABI performs the same bounded fixture flow in a fresh process",
                         plan,
-                        || LanguageFlow::new(c.clone(), Arc::clone(&fixture)),
+                        || LanguageFlow::new(c.clone(), Rc::clone(&fixture)),
                         language_common_flow,
                     ),
                     measure(
@@ -603,7 +625,7 @@ mod native {
                         "cpp_common_flow",
                         "the released C++ wrapper performs the same bounded fixture flow in a fresh process",
                         plan,
-                        || LanguageFlow::new(cpp.clone(), Arc::clone(&fixture)),
+                        || LanguageFlow::new(cpp.clone(), Rc::clone(&fixture)),
                         language_common_flow,
                     ),
                 ]
@@ -611,74 +633,132 @@ mod native {
         }
     }
 
+    struct StimulatedFrame {
+        correct: bool,
+        mapped: u64,
+    }
+
+    fn advance_to_stimulated_frame(
+        active: &ActiveFlow,
+        state: &mut ActiveState,
+    ) -> StimulatedFrame {
+        let before = state.last.stamp();
+        let expected_fill = alternate_benchmark_fill(state.fill)
+            .expect("the retained fixture fill is one of the two declared states");
+        let receipt_ok = send_frame_stimulus(&state.session);
+        let operation = bounded(OPERATION_WAIT);
+        let mut cursor = before;
+        let mut mapped = 0u64;
+        let mut intermediate_content_ok = true;
+
+        loop {
+            let frame = state
+                .session
+                .acquire_frame(&FrameRequest::newer_than(cursor), &operation)
+                .expect("the deterministic stimulus produces another frame before the deadline");
+            let mapping = frame
+                .map(PixelFormat::Bgra8, &operation)
+                .expect("a candidate stimulated frame maps");
+            mapped = mapped.saturating_add(mapping.bytes().len() as u64);
+            let fill = benchmark_mapping_fill(&mapping);
+            if fill == Some(expected_fill) {
+                let event_ok = active.flow.fixture.next_key_pair();
+                let stamp = frame.stamp();
+                let correct = receipt_ok
+                    && event_ok
+                    && intermediate_content_ok
+                    && stamp.stream() == before.stream()
+                    && stamp.epoch() == before.epoch()
+                    && stamp.sequence() > before.sequence();
+                state.last = frame;
+                state.fill = expected_fill;
+                return StimulatedFrame { correct, mapped };
+            }
+            intermediate_content_ok &= fill.is_some();
+            cursor = frame.stamp();
+        }
+    }
+
     fn stimulus_to_frame(active: &ActiveFlow) -> Sample {
         let mut state = lock_state(active);
         let before = state.last.stamp();
         let started = Instant::now();
-        let receipt_ok = send_frame_stimulus(&state.session);
-        let frame = state
-            .session
-            .acquire_frame(&FrameRequest::newer_than(before), &bounded(OPERATION_WAIT))
-            .expect("the deterministic stimulus produces a newer frame");
+        let stimulated = advance_to_stimulated_frame(active, &mut state);
         let elapsed = started.elapsed();
-        let mapping = frame
-            .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
-            .expect("the stimulated frame maps");
-        let event_ok = active.flow.fixture.next_key_pair();
-        let delta = frame
-            .stamp()
+        let after = state.last.stamp();
+        let delta = after
             .sequence()
             .value()
             .saturating_sub(before.sequence().value());
-        let correct = receipt_ok
-            && event_ok
-            && frame.stamp().stream() == before.stream()
-            && delta > 0
-            && mapping_is_benchmark_content(&mapping);
-        state.last = frame;
-        Sample::new(elapsed, correct, mapping.bytes().len() as u64)
+        Sample::new(elapsed, stimulated.correct, stimulated.mapped)
             .with_stale_work(delta.saturating_sub(1), delta)
     }
 
     fn latest_acquisition(active: &ActiveFlow) -> Sample {
         let mut state = lock_state(active);
         let before = state.last.stamp();
+        let stimulated = advance_to_stimulated_frame(active, &mut state);
+        let published = state.last.stamp();
         let started = Instant::now();
         let frame = state
             .session
             .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .expect("latest acquisition returns a frame");
+            .expect("latest acquisition returns the maintained stimulated frame");
         let elapsed = started.elapsed();
-        let correct = frame.stamp().stream() == before.stream()
-            && frame.stamp().epoch() >= before.epoch()
-            && (frame.stamp().epoch() > before.epoch()
-                || frame.stamp().sequence() >= before.sequence());
+        let stamp = frame.stamp();
+        let delta = stamp
+            .sequence()
+            .value()
+            .saturating_sub(before.sequence().value());
+        let correct = stimulated.correct
+            && stamp.stream() == before.stream()
+            && stamp.epoch() == before.epoch()
+            && stamp.sequence() >= published.sequence()
+            && delta > 0;
         state.last = frame;
-        Sample::unmapped(elapsed, correct)
+        Sample::unmapped(elapsed, correct).with_stale_work(delta.saturating_sub(1), delta)
     }
 
     fn cpu_map(active: &ActiveFlow) -> Sample {
         let mut state = lock_state(active);
         let before = state.last.stamp();
+        let expected_fill = alternate_benchmark_fill(state.fill)
+            .expect("the retained fixture fill is one of the two declared states");
         assert!(
             send_confirmed_stimulus(&active.flow, &state.session),
             "mapping stimulus completes"
         );
-        let frame = state
-            .session
-            .acquire_frame(&FrameRequest::newer_than(before), &bounded(OPERATION_WAIT))
-            .expect("mapping stimulus produces a newer frame");
-        let started = Instant::now();
-        let mapping = frame
-            .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
-            .expect("the newer frame maps to BGRA8");
-        let elapsed = started.elapsed();
-        let correct = mapping.stamp() == frame.stamp()
-            && mapping.bytes().len() == mapping.descriptor().byte_len()
-            && mapping_is_benchmark_content(&mapping);
-        let mapped = mapping.bytes().len() as u64;
-        state.last = frame;
-        Sample::new(elapsed, correct, mapped)
+        let operation = bounded(OPERATION_WAIT);
+        let mut cursor = before;
+        let mut intermediate_content_ok = true;
+
+        loop {
+            let frame = state
+                .session
+                .acquire_frame(&FrameRequest::newer_than(cursor), &operation)
+                .expect("mapping stimulus produces another frame before the deadline");
+            let started = Instant::now();
+            let mapping = frame
+                .map(PixelFormat::Bgra8, &operation)
+                .expect("the newer frame maps to BGRA8");
+            let elapsed = started.elapsed();
+            let fill = benchmark_mapping_fill(&mapping);
+            if fill == Some(expected_fill) {
+                let stamp = frame.stamp();
+                let correct = intermediate_content_ok
+                    && stamp.stream() == before.stream()
+                    && stamp.epoch() == before.epoch()
+                    && stamp.sequence() > before.sequence()
+                    && mapping.stamp() == stamp
+                    && mapping.bytes().len() == mapping.descriptor().byte_len();
+                let mapped = mapping.bytes().len() as u64;
+                state.last = frame;
+                state.fill = expected_fill;
+                return Sample::new(elapsed, correct, mapped);
+            }
+            intermediate_content_ok &= fill.is_some();
+            cursor = frame.stamp();
+        }
     }
 
     fn open_first_frame(flow: &Flow) -> Sample {
@@ -1036,12 +1116,30 @@ mod native {
     }
 
     fn mapping_is_benchmark_content(mapping: &mado_pilot::CpuMapping) -> bool {
-        mapping_matches_fills(
-            mapping.bytes(),
-            mapping.descriptor().stride(),
-            mapping.descriptor().extent(),
-            &[protocol::FILL_RGB, benchmark_fill_rgb()],
-        )
+        benchmark_mapping_fill(mapping).is_some()
+    }
+
+    fn benchmark_mapping_fill(mapping: &mado_pilot::CpuMapping) -> Option<u32> {
+        [protocol::FILL_RGB, benchmark_fill_rgb()]
+            .into_iter()
+            .find(|fill| {
+                mapping_matches_fills(
+                    mapping.bytes(),
+                    mapping.descriptor().stride(),
+                    mapping.descriptor().extent(),
+                    &[*fill],
+                )
+            })
+    }
+
+    fn alternate_benchmark_fill(fill: u32) -> Option<u32> {
+        if fill == protocol::FILL_RGB {
+            Some(benchmark_fill_rgb())
+        } else if fill == benchmark_fill_rgb() {
+            Some(protocol::FILL_RGB)
+        } else {
+            None
+        }
     }
 
     fn mapping_matches_fills(
@@ -1070,26 +1168,21 @@ mod native {
             (width / 2, height * 3 / 4 - 1),
             (width * 3 / 4 - 1, height * 3 / 4 - 1),
         ];
-        let expected = fills
-            .iter()
-            .map(|fill| {
-                [
-                    (fill & 0xff) as u8,
-                    ((fill >> 8) & 0xff) as u8,
-                    ((fill >> 16) & 0xff) as u8,
-                ]
-            })
-            .collect::<Vec<_>>();
         let first_offset = points[0].1 * stride + points[0].0 * 4;
         let first = &pixels[first_offset..first_offset + 3];
         points.iter().all(|(column, row)| {
             let offset = row * stride + column * 4;
             pixels[offset..offset + 3] == *first
-        }) && expected.iter().any(|wanted| {
+        }) && fills.iter().any(|fill| {
+            let wanted = [
+                (fill & 0xff) as u8,
+                ((fill >> 8) & 0xff) as u8,
+                ((fill >> 16) & 0xff) as u8,
+            ];
             first
                 .iter()
                 .zip(wanted)
-                .all(|(seen, want)| seen.abs_diff(*want) <= protocol::FILL_TOLERANCE)
+                .all(|(seen, want)| seen.abs_diff(want) <= protocol::FILL_TOLERANCE)
         })
     }
 

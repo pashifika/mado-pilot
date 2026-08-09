@@ -65,7 +65,7 @@ impl Drop for TempWorkspace {
 fn root_manifest() -> String {
     format!(
         "[workspace]\nresolver = \"3\"\nmembers = [\"{CORE_DIRECTORY}\", \"{CAPTURE_DIRECTORY}\"]\n\n\
-         [workspace.package]\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97.1\"\n\
+         [workspace.package]\nversion = \"0.2.0\"\nedition = \"2024\"\nrust-version = \"1.97.1\"\n\
          license = \"Apache-2.0\"\nrepository = \"https://github.com/pashifika/mado-pilot\"\n"
     )
 }
@@ -93,7 +93,7 @@ fn package(root: &Path, name: &str, directory: &str, dependencies: Vec<Value>) -
     json!({
         "name": name,
         "manifest_path": root.join(directory).join("Cargo.toml"),
-        "version": "0.1.0",
+        "version": "0.2.0",
         "edition": "2024",
         "rust_version": "1.97.1",
         "license": "Apache-2.0",

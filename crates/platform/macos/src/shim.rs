@@ -470,9 +470,9 @@ impl Drop for Inventory {
 
 /// An exact capture selection constructed from one discovery snapshot.
 ///
-/// The native handle retains an `SCContentFilter`, not an `SCWindow` wrapper.
-/// Numeric ids and process ids remain descriptive metadata and are never used to
-/// re-resolve the selection at open.
+/// The native handle retains the original `SCContentFilter`. Window input
+/// compares its logical `SCWindow` with a fresh shareable-content snapshot;
+/// numeric ids and process ids only narrow and validate that comparison.
 #[derive(Clone)]
 pub(crate) struct TargetToken {
     inner: Arc<TargetTokenInner>,
@@ -486,8 +486,9 @@ struct TargetTokenInner {
     synthetic_live: AtomicBool,
 }
 
-// SAFETY: the native handle owns an immutable retained SCContentFilter and every
-// operation on it is read-only.
+// SAFETY: the native handle owns an immutable retained `SCContentFilter`.
+// ScreenCaptureKit shareable-content queries and the handle's read-only
+// operations may run from arbitrary caller threads.
 unsafe impl Send for TargetTokenInner {}
 // SAFETY: see the Send justification.
 unsafe impl Sync for TargetTokenInner {}
@@ -540,9 +541,9 @@ impl TargetToken {
         self.inner.synthetic_live.store(false, Ordering::Release);
     }
 
-    /// Reads bounds from the exact retained selection this token owns.
-    pub(crate) fn input_bounds(&self) -> Result<NativeBounds, ShimStatus> {
-        input_target_bounds(self)
+    /// Reads bounds from a fresh observation of this retained selection.
+    pub(crate) fn input_bounds(&self, wait: Duration) -> Result<NativeBounds, ShimStatus> {
+        input_target_bounds(self, wait)
     }
 
     /// Reads whether this exact retained window is focused within a bounded wait.
@@ -1083,7 +1084,7 @@ fn input_target_focused(target: &TargetToken, wait: Duration) -> Result<bool, Sh
 }
 
 /// Reports one target's current rectangle, and thereby whether it still exists.
-fn input_target_bounds(target: &TargetToken) -> Result<NativeBounds, ShimStatus> {
+fn input_target_bounds(target: &TargetToken, wait: Duration) -> Result<NativeBounds, ShimStatus> {
     let Some(handle) = target.inner.handle else {
         #[cfg(test)]
         {
@@ -1101,10 +1102,12 @@ fn input_target_bounds(target: &TargetToken) -> Result<NativeBounds, ShimStatus>
     };
     let mut values = [0.0f64; 5];
     let [x, y, width, height, scale] = &mut values;
-    // SAFETY: all five outputs are writable for one f64 each.
+    // SAFETY: the target is retained, the wait is bounded, and all five outputs
+    // are writable for one f64 each.
     let status = unsafe {
         mp_shim_input_target_bounds(
             handle.as_ptr(),
+            nanos(wait),
             &raw mut *x,
             &raw mut *y,
             &raw mut *width,
@@ -1687,6 +1690,7 @@ unsafe extern "C" {
     ) -> u32;
     fn mp_shim_input_target_bounds(
         target: *const OpaqueTarget,
+        timeout_nanos: u64,
         out_x: *mut f64,
         out_y: *mut f64,
         out_width: *mut f64,

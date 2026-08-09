@@ -224,15 +224,16 @@ typedef struct mp_shim_open_request {
     /*
      * The owning process recorded for this window, or zero for a display.
      *
-     * macOS recycles window numbers, so the number alone does not name an
-     * incarnation. The retained selection below is authoritative; this value is
-     * metadata that must agree with it. Zero is valid only for a display.
+     * macOS recycles window numbers, so neither number nor process names an
+     * incarnation. Capture consumes the retained selection below. Input uses
+     * these values only to narrow a fresh search whose logical SCWindow must
+     * equal the retained object. Zero is valid only for a display.
      */
     int64_t owner_process;
     /*
      * The retained SCContentFilter constructed transactionally from the candidate
-     * in its originating inventory snapshot. Open consumes it directly; numeric
-     * metadata is never used to resolve another object.
+     * in its originating inventory snapshot. Capture open consumes it directly;
+     * input compares its SCWindow with a fresh bounded shareable-content snapshot.
      */
     const mp_shim_target *target;
     uint32_t pixel_width;
@@ -563,14 +564,15 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
  * Reports whether the exact retained window is the active application's focused
  * window.
  *
- * The retained SCWindow establishes identity and current geometry first. Public
- * Accessibility attributes then report the active application, its focused
- * window, and its window list. Focus is true only when exactly one Accessibility
- * window has the retained window's unchanged current position and size and that
- * element is focused. Missing or ambiguous attributes write false. No title,
- * private Accessibility identifier, or window-raising action is used.
+ * A fresh shareable-content snapshot must contain a logical SCWindow equal to
+ * the retained object and supplies current geometry first. Public Accessibility
+ * attributes then report the active application, its focused window, and its
+ * window list. Focus is true only when exactly one Accessibility window has the
+ * freshly verified window's unchanged position and size and that element is
+ * focused. Missing or ambiguous attributes write false. No title, private
+ * Accessibility identifier, or window-raising action is used.
  *
- * `timeout_nanos` bounds all Accessibility messaging in this observation.
+ * `timeout_nanos` bounds the shareable-content and Accessibility observations.
  */
 mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
                                             uint64_t timeout_nanos, bool *out_focused);
@@ -579,15 +581,17 @@ mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
  * Reports the retained selection's current on-screen rectangle in the global
  * point space.
  *
- * `target` is the exact SCContentFilter retained from discovery. Its included
- * SCWindow or SCDisplay is the incarnation authority; numeric ids and owning
- * process remain validation metadata only. Returns MP_SHIM_TARGET_LOST when that
- * retained object is absent, off screen, or no longer agrees with its recorded
- * metadata. This prevents a same-process replacement that recycles a window
- * number from satisfying an old public target identity.
+ * Window bounds come from a fresh shareable-content snapshot whose logical
+ * `SCWindow` must equal the object retained by the discovery filter. PID and
+ * window number are validation metadata only, so a same-process replacement
+ * that recycles them cannot satisfy the old public target identity. Displays
+ * are checked against the active display list.
+ *
+ * `timeout_nanos` bounds the fresh window observation.
  */
-mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target, double *out_x,
-                                           double *out_y, double *out_width, double *out_height,
+mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target,
+                                           uint64_t timeout_nanos, double *out_x, double *out_y,
+                                           double *out_width, double *out_height,
                                            double *out_scale);
 
 /* Reads the pointer location in the same global point space. */

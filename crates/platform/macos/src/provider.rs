@@ -171,6 +171,7 @@ impl MacosCaptureProvider {
     fn select_input_record(
         &self,
         target: TargetId,
+        wait: Duration,
     ) -> std::result::Result<Arc<TargetRecord>, InputFault> {
         let record = self
             .registry()
@@ -178,7 +179,7 @@ impl MacosCaptureProvider {
             .get(&target)
             .cloned()
             .ok_or(InputFault::TargetLost)?;
-        record.ensure_live()?;
+        record.ensure_live(wait)?;
         Ok(record)
     }
 
@@ -279,7 +280,7 @@ impl InputProvider for MacosCaptureProvider {
     fn describe(&self, target: TargetId, operation: &OperationContext) -> Result<InputDescriptor> {
         let attempt = Operation::admit(operation)?;
         InputProvider::accepts_target(self, target, self.issuer.engine())?;
-        let record = self.select_input_record(target)?;
+        let record = self.select_input_record(target, inventory_wait(operation.remaining()))?;
         Ok(attempt.commit(record.input_descriptor())?)
     }
 
@@ -291,7 +292,7 @@ impl InputProvider for MacosCaptureProvider {
     ) -> Result<Arc<dyn InputController>> {
         let attempt = Operation::admit(operation)?;
         InputProvider::accepts_target(self, target, self.issuer.engine())?;
-        let record = self.select_input_record(target)?;
+        let record = self.select_input_record(target, inventory_wait(operation.remaining()))?;
         request.check(record.input_descriptor().capability())?;
         let controller = MacosInputController::new(record);
         Ok(attempt.commit(controller as Arc<dyn InputController>)?)
@@ -330,7 +331,8 @@ impl TargetRecord {
     /// Returns the owning process this target's discovery pass recorded.
     ///
     /// Zero for a display, which has none. This is descriptive validation
-    /// metadata only; the retained selection remains incarnation authority.
+    /// metadata only: input may use it to narrow a current-window search, but
+    /// only logical equality with the retained `SCWindow` authorizes that match.
     pub(crate) fn owner_process(&self) -> i64 {
         self.fingerprint.native_owner()
     }
@@ -343,15 +345,18 @@ impl TargetRecord {
         InputDescriptor::new(self.id, self.description().capability().input())
     }
 
-    /// Reads the retained selection's live rectangle, which is also how liveness
-    /// is decided.
+    /// Reads the retained selection's current rectangle from a fresh bounded
+    /// native observation, which is also how liveness is decided.
     ///
-    /// The retained `SCContentFilter` is shared with capture and resolves its own
-    /// included object. PID and native number are checked inside that authority;
-    /// they never initiate a lookup that could select a replacement.
-    pub(crate) fn current_bounds(&self) -> std::result::Result<NativeBounds, InputFault> {
+    /// For a window, the shim compares the current logical `SCWindow` with the
+    /// object retained by the discovery filter. PID and native number only
+    /// narrow that comparison and cannot select a replacement.
+    pub(crate) fn current_bounds(
+        &self,
+        wait: Duration,
+    ) -> std::result::Result<NativeBounds, InputFault> {
         self.selection
-            .input_bounds()
+            .input_bounds(wait)
             .map_err(|status| match status {
                 ShimStatus::TargetLost => InputFault::TargetLost,
                 ShimStatus::InvalidArgument => InputFault::UnsupportedCoordinate,
@@ -364,8 +369,8 @@ impl TargetRecord {
         self.selection.input_focused(wait)
     }
 
-    pub(crate) fn ensure_live(&self) -> std::result::Result<(), InputFault> {
-        self.current_bounds().map(|_bounds| ())
+    pub(crate) fn ensure_live(&self, wait: Duration) -> std::result::Result<(), InputFault> {
+        self.current_bounds(wait).map(|_bounds| ())
     }
 }
 

@@ -1,0 +1,136 @@
+# Phase 2 native capture, measured on aarch64-apple-darwin at source
+# a1faf04505c8471deb4de8c136fddcc7f76105e7 and tree
+# a6a3edd6e627eadc9da76785c861136d669e8b05.
+#
+# Produced by the historical `crates/mado-pilot/benches/native-phase2.rs`.
+# ADR 0020 records that run; ADR 0021 invalidates it for the current tree after
+# source drift and correctness-oracle repairs. The measurements and former
+# budgets remain reviewable evidence, not current regression ceilings.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-native-capture-aarch64-apple-darwin"
+workload = "native steady capture, latest acquisition, and explicit CPU mapping"
+phase = "2"
+status = "historical-invalidated-source-and-oracle-drift"
+normative = false
+measurements_recorded = true
+
+[profile]
+fixture = "crates/platform/macos fixture Rust, protocol, header, and Objective-C sources"
+fixture_sha256 = "1140bae43512909daacc4f7f3ac83a70ff4cb39b7d45bafb17ae7f6518836932"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 CPU cores, 32 GiB"
+os_version = "macOS 26.5.2 build 25F84"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release"
+warmup_iterations = 20
+sample_count = 200
+correctness_oracle = "every retained sample checks frame identity/content, transition state, receipt/event sequence, or complete common-flow outcome as its measurement states"
+queue_policy = "session latest-wins queue depth 1; adapter finite retained-storage limit"
+notes = "source commit a1faf04505c8471deb4de8c136fddcc7f76105e7, tree a6a3edd6e627eadc9da76785c861136d669e8b05; toolchain rustc 1.97.1 (8bab26f4f 2026-07-14); Apple clang 21.0.0; GPU/driver Apple integrated GPU; system driver stack; display topology one built-in 3024x1964 Retina display at scale 2; permissions/signing Screen Recording granted; Accessibility granted; generated fixture bundle ad-hoc signed with approved identifier; fixture path deliberately omitted"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 33554432
+rationale = "32 MiB is more than three times the 9264424-byte measured peak and still rejects an added full-frame accumulation"
+
+[[measurement]]
+workload = "stimulus_to_frame"
+correctness_oracle = "one acknowledged deterministic fixture change produces a newer stamped frame whose centre is one declared fill"
+result_correctness = 0
+latency_p50_ms = 17.079375
+latency_p95_ms = 21.914084
+iteration_span_ms = 17.559590
+mapped_bytes_per_result = 4628480
+stale_work_ratio = 0.004975124
+peak_allocated_bytes = 9264424
+steady_allocated_bytes = 4635422
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 70.0
+  rationale = "three times the measured 21.914084 ms, rounded up"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 4628480
+  rationale = "1280x904 fixture content at four bytes per pixel, exactly once"
+
+  [[measurement.budget]]
+  measure = "stale_work_ratio"
+  kind = "absolute"
+  unit = "ratio"
+  direction = "at_most"
+  limit = 0.02
+  rationale = "the measured latest-wins gap was one transition among 201 observed identities; four gaps remain a regression ceiling rather than a throughput target"
+
+[[measurement]]
+workload = "latest_acquisition"
+correctness_oracle = "latest returns a frame from the same stream without regressing identity"
+result_correctness = 0
+latency_p50_ms = 0.000125
+latency_p95_ms = 0.000167
+iteration_span_ms = 0.000171
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 6686
+steady_allocated_bytes = 6670
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "iteration_span_ms"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0006
+  rationale = "three times the measured 0.000171 ms batched span, rounded up; the percentile is near the host clock's resolution"
+
+[[measurement]]
+workload = "cpu_map_bgra8"
+correctness_oracle = "the newer frame maps once to exact-size BGRA8 bytes carrying one declared fixture fill"
+result_correctness = 0
+latency_p50_ms = 0.187708
+latency_p95_ms = 0.325500
+iteration_span_ms = 17.638235
+mapped_bytes_per_result = 4628480
+peak_allocated_bytes = 9264382
+steady_allocated_bytes = 4635422
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 1.0
+  rationale = "three times the measured 0.325500 ms, rounded up"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 4628480
+  rationale = "1280x904 fixture content at four bytes per pixel, exactly once"

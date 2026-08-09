@@ -3,11 +3,11 @@
 //! `cargo metadata` reports *resolved* values. It therefore cannot show whether a
 //! member inherited a shared field from `[workspace.package]` or hard-coded the
 //! same literal, and it does not expose the `[lints]` table at all. Those two
-//! facts are part of the Phase 0 contract, so the checker reads them out of the
-//! manifest text.
+//! facts are part of the repository contract, so the checker reads them out of
+//! the manifest text.
 //!
-//! The workspace has no TOML parser dependency, and Phase 0 adds none, so this
-//! reads the subset of TOML the repository's own manifests use:
+//! The workspace has no TOML parser dependency, so this reads the subset of TOML
+//! the repository's own manifests use:
 //!
 //! - table headers, with arrays of tables kept distinct from same-named tables;
 //! - dotted keys and single-line inline tables;
