@@ -19,6 +19,32 @@ input.
 | Class `MadoPilotInputFixture` | Pointer, keyboard, text; focus required | Pointer, keyboard, text through the acknowledged fixture protocol |
 | Display | Pointer only; no focusable target is implied | None |
 
+### Ordinary-window background qualification
+
+[ADR 0022](adr/0022-windows-ordinary-background-input-qualification.md)
+keeps the `None` cells above as a tested no-go boundary. A disposable probe on
+the approved Windows 11 Pro 25H2 host made 212 exact-`HWND` legacy-message calls
+while an unrelated owned fixture remained foreground. Instrumented ordinary and
+game-legacy consumers observed their messages; Raw Input and asynchronous
+state-polling consumers did not. No accepted row changed the foreground target,
+the real cursor, or any unintended-window counter.
+
+That transport result is insufficient for a product capability.
+`PostMessageW` success proved queue admission only, while
+`SendMessageTimeoutW` success proved only bounded window-procedure return. A
+hung-window row timed out before its message was observed, demonstrating why
+timeout is not proof of no effect. Only private fixture counters could establish
+observation, and arbitrary ordinary windows expose neither an application
+acknowledgement nor a stable public consumer-eligibility predicate.
+
+The frozen matrix therefore failed its receipt and eligibility gates; mandatory
+handle-reuse, higher-integrity/UIPI, single-display, mixed-DPI, and hosted-CI
+rows also remained unexecuted. The probe was removed after recording the
+revision-bound summary. Do not reintroduce it through an opt-in mode, target
+metadata whitelist, richer transport-only receipt, feature flag, focus bypass,
+hook, injected helper, or fallback. The evidence and rejected alternatives are
+recorded in ADR 0022 and its linked qualification report.
+
 All five shared pointer spaces are advertised because Windows capture publishes an
 authoritative target placement. A request still fails when its selected geometry
 policy cannot resolve the named frame:
@@ -76,7 +102,7 @@ cleanup bound: at most 256 releases and no new release after 250 milliseconds.
 - exact title `MadoPilot Input Fixture [<pid>]`;
 - a versioned and size-bounded `WM_COPYDATA` vocabulary;
 - synchronous acknowledgement for each accepted event;
-- at most 256 retained summaries containing only event kind and UTF-16 unit count.
+- at most 1,024 retained summaries containing only event kind and UTF-16 unit count.
 
 The fixture validates packet length, scalar fields, key and button codes, and UTF-16.
 It neither retains nor prints input text. Verification calls
