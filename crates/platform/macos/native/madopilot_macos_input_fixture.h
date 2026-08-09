@@ -50,11 +50,15 @@ extern "C" {
  *
  * `title` is a NUL-terminated UTF-8 string used verbatim as the window title.
  * `fill` is an 0xRRGGBB colour the window is filled with and nothing else.
- * `ready` is invoked once, after the window is on screen. `sink` is invoked for
- * each observed event on the main thread. Neither callback may let a Rust panic
- * escape.
+ * `ready` is invoked once, after the first window is on screen. When
+ * `replacement_delay_ms` is non-zero, that window is closed on the main thread
+ * after the delay and a same-process, same-title window using
+ * `replacement_fill` is created; `replaced` reports the asynchronous result.
+ * `sink` is invoked for each observed event on the main thread. No callback may
+ * let a Rust panic escape.
  */
-uint32_t mp_fixture_run(const char *title, uint32_t fill, double width, double height,
+uint32_t mp_fixture_run(const char *title, uint32_t fill, uint32_t replacement_fill,
+                        uint32_t replacement_delay_ms, double width, double height,
                         uint32_t launch_context, uint32_t signature_mode,
                         const uint8_t *signing_identifier, size_t signing_identifier_len,
                         void *context,
@@ -62,6 +66,9 @@ uint32_t mp_fixture_run(const char *title, uint32_t fill, double width, double h
                                       uint32_t launch_context, uint32_t signature_mode,
                                       const uint8_t *signing_identifier,
                                       size_t signing_identifier_len),
+                        void (*replaced)(void *context, uint32_t status,
+                                         uint64_t old_window_number,
+                                         uint64_t new_window_number),
                         void (*sink)(void *context, uint32_t kind, uint32_t text_units));
 
 #ifdef __cplusplus

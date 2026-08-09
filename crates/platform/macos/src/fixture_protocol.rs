@@ -31,6 +31,12 @@ pub const TITLE_PREFIX: &str = "MadoPilot Input Fixture";
 /// The one colour the fixture window is filled with, as 0xRRGGBB.
 pub const FILL_RGB: u32 = 0x002E_5FA3;
 
+/// The distinct 0xRRGGBB fill used by the opt-in replacement oracle.
+///
+/// It is deliberately farther than [`FILL_TOLERANCE`] from [`FILL_RGB`] in two
+/// channels, so an old retained filter publishing the successor is observable.
+pub const REPLACEMENT_FILL_RGB: u32 = 0x00C4_5B2E;
+
 /// The fixture window's content size, in points.
 pub const WINDOW_POINTS: (f64, f64) = (640.0, 420.0);
 
@@ -217,13 +223,26 @@ pub fn select_unique_fixture(
     Ok(first)
 }
 
-/// Confirms a captured frame is the fixture's own deterministic content.
+/// Confirms a captured frame is the fixture's original deterministic content.
 ///
 /// `pixels` is BGRA8 at `stride` bytes per row covering `extent`. The central
 /// quarter is sampled: every sampled pixel must be the same colour, and that
-/// colour must sit within [`FILL_TOLERANCE`] of the declared fill.
+/// colour must sit within [`FILL_TOLERANCE`] of [`FILL_RGB`].
 #[must_use]
 pub fn frame_is_fixture_content(pixels: &[u8], stride: usize, extent: PixelExtent) -> bool {
+    frame_matches_fill(pixels, stride, extent, FILL_RGB)
+}
+
+/// Confirms a captured frame is the replacement fixture's distinct content.
+///
+/// This is the negative oracle for a retained `SCContentFilter`: after the
+/// original window is destroyed, that filter must never publish this successor.
+#[must_use]
+pub fn frame_is_replacement_content(pixels: &[u8], stride: usize, extent: PixelExtent) -> bool {
+    frame_matches_fill(pixels, stride, extent, REPLACEMENT_FILL_RGB)
+}
+
+fn frame_matches_fill(pixels: &[u8], stride: usize, extent: PixelExtent, fill: u32) -> bool {
     let width = extent.width() as usize;
     let height = extent.height() as usize;
     if width < 8 || height < 8 || stride < width.saturating_mul(4) {
@@ -233,9 +252,9 @@ pub fn frame_is_fixture_content(pixels: &[u8], stride: usize, extent: PixelExten
         return false;
     }
     let expected = [
-        u8::try_from(FILL_RGB & 0xFF).unwrap_or(0),
-        u8::try_from((FILL_RGB >> 8) & 0xFF).unwrap_or(0),
-        u8::try_from((FILL_RGB >> 16) & 0xFF).unwrap_or(0),
+        u8::try_from(fill & 0xFF).unwrap_or(0),
+        u8::try_from((fill >> 8) & 0xFF).unwrap_or(0),
+        u8::try_from((fill >> 16) & 0xFF).unwrap_or(0),
     ];
 
     let mut sampled: Option<[u8; 3]> = None;
@@ -296,9 +315,9 @@ mod tests {
 
     use super::{
         BUNDLE_IDENTIFIER, EventSummary, FILL_RGB, FixtureContentMismatch, FixtureSelectionError,
-        MAX_RECORDED_EVENTS, fixture_ready_context_is_approved, format_event_line,
-        frame_is_fixture_content, parse_event_line, select_unique_fixture,
-        with_confirmed_fixture_content,
+        MAX_RECORDED_EVENTS, REPLACEMENT_FILL_RGB, fixture_ready_context_is_approved,
+        format_event_line, frame_is_fixture_content, frame_is_replacement_content,
+        parse_event_line, select_unique_fixture, with_confirmed_fixture_content,
     };
     use crate::input::input_capability;
 
@@ -342,11 +361,11 @@ mod tests {
         (pixels, stride, extent)
     }
 
-    fn declared_bgr() -> [u8; 3] {
+    fn declared_bgr(fill: u32) -> [u8; 3] {
         [
-            (FILL_RGB & 0xFF) as u8,
-            ((FILL_RGB >> 8) & 0xFF) as u8,
-            ((FILL_RGB >> 16) & 0xFF) as u8,
+            (fill & 0xFF) as u8,
+            ((fill >> 8) & 0xFF) as u8,
+            ((fill >> 16) & 0xFF) as u8,
         ]
     }
 
@@ -438,10 +457,15 @@ mod tests {
 
     #[test]
     fn deterministic_content_confirms_a_selection_and_a_mixed_frame_refuses_it() {
-        let (flat, stride, extent) = flat_frame(declared_bgr());
+        let (flat, stride, extent) = flat_frame(declared_bgr(FILL_RGB));
         assert!(frame_is_fixture_content(&flat, stride, extent));
+        assert!(!frame_is_replacement_content(&flat, stride, extent));
 
-        let (mut mixed, stride, extent) = flat_frame(declared_bgr());
+        let (replacement, stride, extent) = flat_frame(declared_bgr(REPLACEMENT_FILL_RGB));
+        assert!(frame_is_replacement_content(&replacement, stride, extent));
+        assert!(!frame_is_fixture_content(&replacement, stride, extent));
+
+        let (mut mixed, stride, extent) = flat_frame(declared_bgr(FILL_RGB));
         let centre = (extent.height() as usize / 2) * stride + (extent.width() as usize / 2) * 4;
         mixed[centre] = mixed[centre].wrapping_add(64);
         assert!(
@@ -480,7 +504,7 @@ mod tests {
 
     #[test]
     fn a_colour_space_conversion_within_the_tolerance_still_matches() {
-        let declared = declared_bgr();
+        let declared = declared_bgr(FILL_RGB);
         let converted = [
             declared[0].saturating_add(super::FILL_TOLERANCE),
             declared[1].saturating_sub(super::FILL_TOLERANCE),

@@ -24,6 +24,7 @@
 #import <Foundation/Foundation.h>
 
 #include <dlfcn.h>
+#include <dispatch/dispatch.h>
 
 #include "madopilot_macos_input_fixture.h"
 
@@ -91,6 +92,7 @@ static const NSUInteger MPFixtureOtherMouseDragged = 27;
 - (void)setReleasedWhenClosed:(BOOL)released;
 - (void)center;
 - (void)makeKeyAndOrderFront:(id)sender;
+- (void)close;
 - (NSInteger)windowNumber;
 @end
 
@@ -153,7 +155,44 @@ static bool mp_fixture_classify(NSUInteger type, uint32_t *out_kind) {
     return false;
 }
 
-uint32_t mp_fixture_run(const char *title, uint32_t fill, double width, double height,
+/*
+ * The process has one fixture window at a time. A strong process-owned slot is
+ * required for replacement mode: the delayed block must release the destroyed
+ * window before it creates the same-process successor, and the successor must
+ * remain alive after that block returns.
+ */
+static __strong id<MPFixtureWindow> mp_fixture_window = nil;
+
+static id<MPFixtureWindow> mp_fixture_create_window(Class window_class, Class color_class,
+                                                    NSString *title, uint32_t fill, double width,
+                                                    double height) {
+    id<MPFixtureWindow> window = [[(id)window_class alloc]
+        initWithContentRect:CGRectMake(0.0, 0.0, width, height)
+                  styleMask:MPFixtureWindowStyle
+                    backing:MPFixtureBackingBuffered
+                      defer:NO];
+    if (window == nil) {
+        return nil;
+    }
+
+    id color = [(id<MPFixtureColorClass>)color_class
+        colorWithSRGBRed:(CGFloat)((fill >> 16) & 0xFFu) / 255.0
+                   green:(CGFloat)((fill >> 8) & 0xFFu) / 255.0
+                    blue:(CGFloat)(fill & 0xFFu) / 255.0
+                   alpha:1.0];
+    if (color == nil) {
+        return nil;
+    }
+    [window setReleasedWhenClosed:NO];
+    [window setTitle:title];
+    [window setBackgroundColor:color];
+    [window center];
+    [window makeKeyAndOrderFront:nil];
+    return window;
+}
+
+uint32_t mp_fixture_run(const char *title, uint32_t fill, uint32_t replacement_fill,
+                        uint32_t replacement_delay_ms, double width, double height,
                         uint32_t launch_context, uint32_t signature_mode,
                         const uint8_t *signing_identifier, size_t signing_identifier_len,
                         void *context,
@@ -161,9 +200,13 @@ uint32_t mp_fixture_run(const char *title, uint32_t fill, double width, double h
                                       uint32_t launch_context, uint32_t signature_mode,
                                       const uint8_t *signing_identifier,
                                       size_t signing_identifier_len),
+                        void (*replaced)(void *context, uint32_t status,
+                                         uint64_t old_window_number,
+                                         uint64_t new_window_number),
                         void (*sink)(void *context, uint32_t kind, uint32_t text_units)) {
-    if (title == NULL || ready == NULL || sink == NULL || !(width >= 64.0) ||
+    if (title == NULL || ready == NULL || replaced == NULL || sink == NULL || !(width >= 64.0) ||
         !(height >= 64.0) || !(width <= 4096.0) || !(height <= 4096.0) ||
+        replacement_delay_ms > 60000u ||
         (signing_identifier_len > 0 && signing_identifier == NULL)) {
         return MP_FIXTURE_INVALID_ARGUMENT;
     }
@@ -192,26 +235,11 @@ uint32_t mp_fixture_run(const char *title, uint32_t fill, double width, double h
     }
     (void)[application setActivationPolicy:MPFixtureActivationRegular];
 
-    id<MPFixtureWindow> window = [[(id)window_class alloc]
-        initWithContentRect:CGRectMake(0.0, 0.0, width, height)
-                  styleMask:MPFixtureWindowStyle
-                    backing:MPFixtureBackingBuffered
-                      defer:NO];
-    if (window == nil) {
+    mp_fixture_window =
+        mp_fixture_create_window(window_class, color_class, window_title, fill, width, height);
+    if (mp_fixture_window == nil) {
         return MP_FIXTURE_PLATFORM_FAILURE;
     }
-    /* One fixed colour and nothing else, so a frame captured from this window
-     * carries no desktop content and is byte-comparable between runs. */
-    id color = [(id<MPFixtureColorClass>)color_class
-        colorWithSRGBRed:(CGFloat)((fill >> 16) & 0xFFu) / 255.0
-                   green:(CGFloat)((fill >> 8) & 0xFFu) / 255.0
-                    blue:(CGFloat)(fill & 0xFFu) / 255.0
-                   alpha:1.0];
-    [window setReleasedWhenClosed:NO];
-    [window setTitle:window_title];
-    [window setBackgroundColor:color];
-    [window center];
-    [window makeKeyAndOrderFront:nil];
     [application activateIgnoringOtherApps:YES];
 
     id monitor = [(id<MPFixtureEventClass>)event_class
@@ -238,12 +266,50 @@ uint32_t mp_fixture_run(const char *title, uint32_t fill, double width, double h
                                        return event;
                                      }];
     if (monitor == nil) {
+        mp_fixture_window = nil;
         return MP_FIXTURE_PLATFORM_FAILURE;
     }
 
-    ready(context, (uint64_t)[window windowNumber], launch_context, signature_mode,
+    ready(context, (uint64_t)[mp_fixture_window windowNumber], launch_context, signature_mode,
           signing_identifier, signing_identifier_len);
+
+    if (replacement_delay_ms > 0) {
+        dispatch_time_t replacement_time =
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)replacement_delay_ms * NSEC_PER_MSEC);
+        dispatch_after(replacement_time, dispatch_get_main_queue(), ^{
+          uint64_t old_window_number = 0;
+          @try {
+              id<MPFixtureWindow> old_window = mp_fixture_window;
+              if (old_window == nil) {
+                  replaced(context, MP_FIXTURE_PLATFORM_FAILURE, 0, 0);
+                  return;
+              }
+              old_window_number = (uint64_t)[old_window windowNumber];
+              [old_window close];
+              mp_fixture_window = nil;
+
+              id<MPFixtureWindow> replacement =
+                  mp_fixture_create_window(window_class, color_class, window_title,
+                                           replacement_fill, width, height);
+              if (replacement == nil) {
+                  replaced(context, MP_FIXTURE_PLATFORM_FAILURE, old_window_number, 0);
+                  return;
+              }
+              mp_fixture_window = replacement;
+              [application activateIgnoringOtherApps:YES];
+              replaced(context, MP_FIXTURE_OK, old_window_number,
+                       (uint64_t)[replacement windowNumber]);
+          } @catch (NSException *exception) {
+              (void)exception;
+              replaced(context, MP_FIXTURE_NATIVE_EXCEPTION, old_window_number, 0);
+          } @catch (...) {
+              replaced(context, MP_FIXTURE_NATIVE_EXCEPTION, old_window_number, 0);
+          }
+        });
+    }
+
     [application run];
+    mp_fixture_window = nil;
     return MP_FIXTURE_OK;
     MP_FIXTURE_END
 }

@@ -17,13 +17,31 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn main() {
-    if std::env::args_os().nth(1).as_deref()
-        == Some(std::ffi::OsStr::new("--report-execution-context"))
-    {
-        fixture::report_execution_context();
-        return;
+    let mut arguments = std::env::args_os().skip(1);
+    let mode = arguments.next();
+    if arguments.next().is_some() {
+        eprintln!(
+            "usage: mado-pilot-macos-input-fixture \
+             [--report-execution-context|--replace-window-after-ready]"
+        );
+        std::process::exit(2);
     }
-    match fixture::run() {
+    let replace = match mode.as_deref() {
+        None => false,
+        Some(mode) if mode == std::ffi::OsStr::new("--report-execution-context") => {
+            fixture::report_execution_context();
+            return;
+        }
+        Some(mode) if mode == std::ffi::OsStr::new("--replace-window-after-ready") => true,
+        Some(_) => {
+            eprintln!(
+                "usage: mado-pilot-macos-input-fixture \
+                 [--report-execution-context|--replace-window-after-ready]"
+            );
+            std::process::exit(2);
+        }
+    };
+    match fixture::run(replace) {
         Ok(()) => {}
         Err(status) => {
             eprintln!("macOS input fixture failed: {status}");
@@ -42,8 +60,8 @@ mod fixture {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use mado_pilot_platform_macos::fixture_protocol::{
-        BUNDLE_IDENTIFIER, EventSummary, FILL_RGB, MAX_RECORDED_EVENTS, WINDOW_POINTS,
-        fixture_title, format_event_line,
+        BUNDLE_IDENTIFIER, EventSummary, FILL_RGB, MAX_RECORDED_EVENTS, REPLACEMENT_FILL_RGB,
+        WINDOW_POINTS, fixture_title, format_event_line,
     };
 
     /// How many events have been reported, so reporting stays bounded.
@@ -121,7 +139,7 @@ mod fixture {
         );
     }
 
-    pub(super) fn run() -> Result<(), Status> {
+    pub(super) fn run(replace_window: bool) -> Result<(), Status> {
         let title = fixture_title(std::process::id());
         let encoded = CString::new(title.clone()).map_err(|_| Status(INVALID_ARGUMENT))?;
         let report = execution_context();
@@ -129,15 +147,22 @@ mod fixture {
             .signing_identifier
             .as_deref()
             .map_or(&[][..], str::as_bytes);
+        let replacement_delay_ms = if replace_window {
+            REPLACEMENT_DELAY_MS
+        } else {
+            0
+        };
 
-        // SAFETY: `encoded` outlives the call, the two callbacks are plain
+        // SAFETY: `encoded` outlives the call, the three callbacks are plain
         // `extern "C"` functions that contain their own panics, the signing
         // identifier bytes outlive the call, and the context pointer is null
-        // because neither callback dereferences it.
+        // because no callback dereferences it.
         let status = unsafe {
             mp_fixture_run(
                 encoded.as_ptr(),
                 FILL_RGB,
+                REPLACEMENT_FILL_RGB,
+                replacement_delay_ms,
                 WINDOW_POINTS.0,
                 WINDOW_POINTS.1,
                 report.launch,
@@ -146,6 +171,7 @@ mod fixture {
                 signing_identifier.len(),
                 std::ptr::null_mut(),
                 on_ready,
+                on_replaced,
                 on_event,
             )
         };
@@ -192,6 +218,26 @@ mod fixture {
                 signature_mode_name(report.signature),
                 report.signing_identifier(),
                 BUNDLE_IDENTIFIER,
+            );
+            let _flushed = output.flush();
+        });
+    }
+
+    /// Reports the result of the opt-in same-process window replacement.
+    ///
+    /// Contains its own panics for the same FFI reason as [`on_ready`].
+    unsafe extern "C" fn on_replaced(
+        _context: *mut c_void,
+        status: u32,
+        old_window_number: u64,
+        new_window_number: u64,
+    ) {
+        let _contained = std::panic::catch_unwind(|| {
+            let mut output = io::stdout().lock();
+            let _written = writeln!(
+                output,
+                "fixture-replaced status={status} old-window={old_window_number} \
+                 new-window={new_window_number}"
             );
             let _flushed = output.flush();
         });
@@ -246,6 +292,7 @@ mod fixture {
     const SIGNATURE_AD_HOC: u32 = 3;
     const SIGNATURE_CERTIFICATE: u32 = 4;
     const SIGNING_IDENTIFIER_CAPACITY: usize = 256;
+    const REPLACEMENT_DELAY_MS: u32 = 5_000;
 
     /// A native status the fixture could not start under.
     pub(super) struct Status(u32);
@@ -267,6 +314,8 @@ mod fixture {
         fn mp_fixture_run(
             title: *const c_char,
             fill: u32,
+            replacement_fill: u32,
+            replacement_delay_ms: u32,
             width: f64,
             height: f64,
             launch_context: u32,
@@ -275,6 +324,7 @@ mod fixture {
             signing_identifier_len: usize,
             context: *mut c_void,
             ready: unsafe extern "C" fn(*mut c_void, u64, u32, u32, *const u8, usize),
+            replaced: unsafe extern "C" fn(*mut c_void, u32, u64, u64),
             sink: unsafe extern "C" fn(*mut c_void, u32, u32),
         ) -> u32;
         fn mp_shim_execution_context(
