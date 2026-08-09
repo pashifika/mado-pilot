@@ -69,16 +69,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     check_layout(&paths)?;
     run_c_example(&paths, &label)?;
-    let native_fixture = if windows_native_fixture_requested() {
+    let run_windows_native_fixture = windows_native_fixture_requested();
+    let native_fixture = if run_windows_native_fixture {
         Some(WindowsNativeFixture::spawn(&paths)?)
     } else {
         None
     };
-    let native_target = native_fixture.as_ref().map(WindowsNativeFixture::title);
-    run_native_c_example(&paths, native_target)?;
+    run_native_c_example(
+        &paths,
+        native_fixture.as_ref().map(WindowsNativeFixture::title),
+    )?;
+    drop(native_fixture);
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
-    run_native_cpp_example(&paths, native_target)?;
+    let native_fixture = if run_windows_native_fixture {
+        Some(WindowsNativeFixture::spawn(&paths)?)
+    } else {
+        None
+    };
+    run_native_cpp_example(
+        &paths,
+        native_fixture.as_ref().map(WindowsNativeFixture::title),
+    )?;
     check_frozen_layout(&paths)?;
     check_frozen_headers(&paths)?;
     check_cmake_consumer(&paths)?;
