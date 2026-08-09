@@ -450,7 +450,7 @@ the input profile with a current revision-bound measurement:
 |---|---|---|
 | Capture | [aarch64](benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml) | non-normative after stimulus, latest-frame, source, and liveness repairs |
 | Transitions | [aarch64](benchmarks/phase-2-native-transitions-aarch64-apple-darwin.toml) | non-normative because it names the superseded benchmark tree |
-| Input and public languages | [aarch64](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml) | measured and normative at source `de0c8470ea08a1320a44ed15e348783a0abf7ab6` under ADR 0025 |
+| Input and public languages | [aarch64](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml) | measured and normative at source `c237071c3daed631fea27c6442dbc91794ecae15` under ADR 0025 |
 
 The capture and transition files retain their old samples, environment
 metadata, and former budget blocks as historical evidence, with

@@ -486,7 +486,7 @@ invalidated rather than widened from an uncommitted worktree.
 
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) replaces the
 macOS input and public-language profile at source
-`de0c8470ea08a1320a44ed15e348783a0abf7ab6`. Its six workloads retained 300
+`c237071c3daed631fea27c6442dbc91794ecae15`. Its six workloads retained 300
 correct samples with zero allocation growth, exact mapped-byte accounting, and
 measured Rust-heap and child-process resident bounds. The first requalification
 run exposed stale benchmark assumptions—six events, two key pairs, and a shared
