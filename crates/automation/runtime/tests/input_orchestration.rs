@@ -11,7 +11,7 @@ mod support;
 
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mado_pilot_runtime::{
     CancellationToken, CapabilitySupport, CaptureProvider, Continuity, DeliveryPlan, FocusPolicy,
@@ -78,6 +78,15 @@ fn expired() -> OperationContext {
     OperationContext::new()
         .with_clock(Arc::new(ManualClock::new()))
         .with_deadline(MonotonicInstant::ORIGIN)
+}
+
+/// Waits for a test-visible fact without guessing how quickly a runner schedules work.
+fn wait_until(what: &str, predicate: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !predicate() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::yield_now();
+    }
 }
 
 #[test]
@@ -686,8 +695,9 @@ fn a_cancellation_that_races_the_final_event_publishes_one_consistent_receipt() 
     let token = CancellationToken::new();
     let operation = OperationContext::new().with_cancellation(token.clone());
     let session = opened_with_input(&harness, &operation);
-    // The double waits out a delay event, so the cancellation lands between two
-    // irreversible events rather than at a moment a test has to guess.
+    // Wait until the first irreversible event has actually reached the double.
+    // Sleeping in a separate canceller thread can lose the intended race on a
+    // loaded runner and let the entire sequence complete before cancellation.
     let sequence = InputSequence::new(vec![
         InputEvent::KeyPress(Key::Modifier(Modifier::Control)),
         InputEvent::Delay(Duration::from_millis(60)),
@@ -696,22 +706,23 @@ fn a_cancellation_that_races_the_final_event_publishes_one_consistent_receipt() 
     .expect("valid");
 
     let receipt = thread::scope(|scope| {
-        let canceller = scope.spawn(move || {
-            thread::sleep(Duration::from_millis(20));
-            token.cancel();
+        let worker = scope.spawn(|| {
+            session
+                .send_input(
+                    &InputRequest::new(
+                        session.target(),
+                        sequence,
+                        DeliveryPlan::require(InputDelivery::System),
+                    ),
+                    &operation,
+                )
+                .expect("an admitted sequence answers with a receipt")
         });
-        let receipt = session
-            .send_input(
-                &InputRequest::new(
-                    session.target(),
-                    sequence,
-                    DeliveryPlan::require(InputDelivery::System),
-                ),
-                &operation,
-            )
-            .expect("an admitted sequence answers with a receipt");
-        canceller.join().expect("canceller finished");
-        receipt
+        wait_until("the modifier to reach the native route", || {
+            !harness.input().submitted_events().is_empty()
+        });
+        token.cancel();
+        worker.join().expect("the sequence finished")
     });
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
