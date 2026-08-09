@@ -32,8 +32,8 @@ example reported four submitted events, found the expected condition in a newer
 frame, emitted one pointer movement and one key-down/key-up pair at the fixture,
 and completed. The repaired benchmark then retained 50 correct samples for each
 of its six workloads at source
-`dd0f38bc9dc209292ff946f277f442fba52b5d10`, tree
-`99b26e9bc5bace43b5dc03e303ecc5c3f0f89f2a`. The tracked profile is
+`de0c8470ea08a1320a44ed15e348783a0abf7ab6`, tree
+`9da11c77b354ead0088055d01e40bfd1e62d80ba`. The tracked profile is
 [`phase-2-native-input-aarch64-apple-darwin.toml`](../benchmarks/phase-2-native-input-aarch64-apple-darwin.toml).
 
 ## Decision
@@ -60,12 +60,12 @@ The Apple M1 Pro run on macOS 26.5.2 (25F84) produced these measurements:
 
 | Workload | p95 | Mapped bytes | Peak live Rust heap | Child peak resident | Growth |
 |---|---:|---:|---:|---:|---:|
-| `input_request_receipt` | 545.408792 ms | 0 B | 4,635,805 B | not applicable | 0 B |
-| `rust_common_flow` | 518.689042 ms | 4,628,480 B | 4,635,665 B | not applicable | 0 B |
-| `c_process_load` | 233.813625 ms | 0 B | 551 B | 51,707,904 B | 0 B |
-| `c_common_flow` | 1,658.193250 ms | 4,628,480 B | 27,465 B | 94,437,376 B | 0 B |
-| `cpp_process_load` | 241.062167 ms | 0 B | 563 B | 51,757,056 B | 0 B |
-| `cpp_common_flow` | 1,662.811333 ms | 4,628,480 B | 27,477 B | 94,568,448 B | 0 B |
+| `input_request_receipt` | 540.342875 ms | 0 B | 4,635,805 B | not applicable | 0 B |
+| `rust_common_flow` | 516.651500 ms | 4,628,480 B | 4,635,665 B | not applicable | 0 B |
+| `c_process_load` | 224.385917 ms | 0 B | 551 B | 51,724,288 B | 0 B |
+| `c_common_flow` | 1,595.067916 ms | 4,628,480 B | 27,465 B | 94,240,768 B | 0 B |
+| `cpp_process_load` | 228.679416 ms | 0 B | 563 B | 51,724,288 B | 0 B |
+| `cpp_common_flow` | 1,598.973041 ms | 4,628,480 B | 27,477 B | 94,601,216 B | 0 B |
 
 All 300 retained samples satisfied their workload oracle. Every workload
 reported zero allocation growth. The two common language flows each mapped one
@@ -151,8 +151,8 @@ cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --fixture-executable "$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --c-executable "$PWD/target/debug/c-abi-check/macos-native-input" \
   --cpp-executable "$PWD/target/debug/c-abi-check/macos-native-input-cpp" \
-  --source-revision dd0f38bc9dc209292ff946f277f442fba52b5d10 \
-  --source-tree 99b26e9bc5bace43b5dc03e303ecc5c3f0f89f2a \
+  --source-revision de0c8470ea08a1320a44ed15e348783a0abf7ab6 \
+  --source-tree 9da11c77b354ead0088055d01e40bfd1e62d80ba \
   --toolchain "rustc 1.97.1 (8bab26f4f 2026-07-14); C/C++ Apple clang 21.0.0" \
   --gpu-driver "Apple integrated GPU; system driver stack" \
   --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
