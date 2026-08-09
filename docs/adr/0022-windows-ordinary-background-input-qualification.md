@@ -49,7 +49,7 @@ The frozen gate therefore failed its truthful-receipt and public-eligibility
 gates. Exact handle reuse, higher-integrity/UIPI, single-display, deliberately
 mixed-DPI, and hosted-CI rows also remained unexecuted and independently prevent
 a go result. The full source, executable, host, row, and raw-log bindings are in
-[the qualification evidence](../../rasen/changes/phase-2-1-windows-background-input-qualification/evidence/qualification.md).
+[the qualification evidence](../evidence/phase-2-native/windows-background-input-qualification.md).
 
 ## Decision
 
