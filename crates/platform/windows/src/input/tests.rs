@@ -439,10 +439,12 @@ fn system_focus_policy_is_explicit_before_any_delivery() {
         DeliveryPlan::require(InputDelivery::System),
     );
 
-    let error = preserving_controller
+    let receipt = preserving_controller
         .execute(&preserving, &OperationContext::new())
-        .expect_err("preserve cannot satisfy system focus");
-    assert_eq!(error.status(), mado_pilot_core::Status::Unsupported);
+        .expect("focus refusal is receipt evidence");
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.fault(), Some(InputFault::FocusRequired));
+    assert_eq!(attempted_routes(&receipt), [InputDelivery::System]);
     assert!(driver.preflights.lock().expect("uncontended").is_empty());
     assert!(driver.submitted.lock().expect("uncontended").is_empty());
 
