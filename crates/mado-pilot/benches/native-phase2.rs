@@ -1051,7 +1051,11 @@ mod native {
 
     #[cfg(windows)]
     fn send_resize_stimulus(session: &Session, geometry: u64) -> bool {
-        let coordinate = if geometry % 2 == 0 { 24.0 } else { 48.0 };
+        let coordinate = if geometry.is_multiple_of(2) {
+            24.0
+        } else {
+            48.0
+        };
         let point = Point::new(CoordinateSpace::TargetLogical, coordinate, coordinate)
             .expect("the resize stimulus point is finite");
         let sequence =
