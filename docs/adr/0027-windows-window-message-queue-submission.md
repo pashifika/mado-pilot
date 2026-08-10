@@ -65,6 +65,15 @@ Ordinary production delivery uses asynchronous `PostMessageW` only. It never use
 filter changes, broadcast, or thread messages. Ordered fallback is caller-owned
 and can advance only after a separately reported, retry-safe no-effect refusal.
 
+The accepted message profile is deliberately narrower than Win32. The public
+button vocabulary is primary, secondary, and middle only; it has no X-button
+event to translate. Every button event emits an unconditional positioning
+`WM_MOUSEMOVE` before its matching down/up message, rather than relying on
+driver-local pointer history that the target cannot observe. Wheel messages use
+the most recent explicit pointer position. All client and screen coordinate
+fields must fit their signed 16-bit message representation and are refused
+rather than truncated.
+
 ## Alternatives
 
 - **Keep ordinary targets system-only.** Rejected for the new contract. ADR 0023

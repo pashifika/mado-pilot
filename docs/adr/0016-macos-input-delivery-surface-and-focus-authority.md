@@ -2,19 +2,18 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-02
-- **Amended:** 2026-08-09
+- **Amended:** 2026-08-10
 - **Resolves gate:** _none_
 - **Supersedes:** _none_
 
 ## Context
 
-`mado-pilot-input` keeps the operation kind and the delivery mechanism as separate
-axes, and `mado-pilot-platform-windows` fills both: a target accepts pointer,
-keyboard, and text over `InputDelivery::System`, and the dedicated fixture class
-additionally accepts all three over `InputDelivery::BackgroundTarget` through an
-acknowledged window-message protocol. Reading that Adapter alone, the natural
-expectation is that each platform supplies some background mechanism and that a
-fixture earns it.
+`mado-pilot-input` keeps the operation kind and the delivery mechanism as
+separate axes. Windows currently exposes focus-dependent `System` delivery and
+exact-window `WindowMessage` delivery: ordinary retained windows advertise the
+latter as unknown-but-attemptable, while the dedicated fixture advertises it as
+supported through an acknowledged protocol. Reading that Adapter alone, the
+natural expectation is that each platform supplies some exact-window mechanism.
 
 macOS supplies neither. `CGEventPost` injects into the window server's own event
 stream and is delivered to whatever is focused; there is no supported per-window
@@ -48,9 +47,10 @@ window as focused and the auxiliary window as unfocused.
 ## Decision
 
 macOS input advertises **system delivery only**. No macOS target — window,
-display, or fixture — advertises `InputDelivery::BackgroundTarget` for any
-operation kind, and the Adapter never substitutes system input for it. A request
-that requires background delivery fails admission before any event.
+display, or fixture — advertises `InputDelivery::WindowMessage` or
+`InputDelivery::ProcessDirected` for any operation kind, and the Adapter never
+substitutes system input for either. A request that requires either route fails
+admission before any event.
 
 Four rules follow from that surface and are part of the platform contract:
 

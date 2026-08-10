@@ -2,16 +2,17 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-08
+- **Amended:** 2026-08-10
 - **Resolves gate:** _none_
 - **Supersedes:** _none_
 
 ## Context
 
 The production `mado-pilot-capi` package reaches orchestration only through the
-public `mado-pilot` facade. ABI 1.1 also needs deterministic boundary tests for
-post-admission receipts, partial native effects, cleanup, and serialization of
-concurrent `session_send_input` calls. Those states require a controlled capture
-and input provider wired into a runtime engine.
+public `mado-pilot` facade. The current ABI 1.2 surface also needs deterministic
+boundary tests for post-admission receipts, partial native effects, cleanup, and
+serialization of concurrent `session_send_input` calls. Those states require a
+controlled capture and input provider wired into a runtime engine.
 
 The facade deliberately exposes no adapter-injection or `EngineWiring` surface.
 Replacing a direct test import with facade imports produced Rust privacy errors

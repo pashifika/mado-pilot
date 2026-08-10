@@ -1,0 +1,34 @@
+   Compiling mado-pilot-platform-windows v0.2.1 (<repository source>)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+     Running tests\window_message_native.rs (<repository test executable>)
+
+running 1 test
+control reuse-stress=ready iterations=4096 observed=false
+performance row=deadline-cleanup elapsed_us=20421 ceiling_us=250000
+performance row=cancellation-cleanup elapsed_us=2913 ceiling_us=250000
+performance row=queue-full-refusal elapsed_us=214 ceiling_us=10000
+performance row=queue-partial-refusal elapsed_us=628 ceiling_us=10000
+performance row=hung-target-queue-admission elapsed_us=227 ceiling_us=10000
+topology monitors=2 dpi=[144x144,144x144] executed=same-dpi-multi-display unavailable=single-display,mixed-dpi-multi-display
+topology-monitor index=0 requested=(48,48 480x320) actual=(48,48 480x320)
+topology-monitor index=0 capture=ready
+topology-monitor index=0 frame-scale=1x1 source=correlated
+topology-monitor index=1 requested=(-3792,48 512x344) actual=(-3792,48 512x344)
+topology-monitor index=1 capture=ready
+topology-monitor index=1 frame-scale=1x1 source=correlated
+
+thread 'ordinary_window_message_native_matrix' (<redacted-thread>) panicked at crates\platform\windows\tests\window_message_native.rs:814:5:
+assertion `left == right` failed: only current source-frame geometry reached the target
+  left: 4
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test ordinary_window_message_native_matrix ... FAILED
+
+failures:
+
+failures:
+    ordinary_window_message_native_matrix
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.41s
+
+error: test failed, to rerun pass `-p mado-pilot-platform-windows --test window_message_native`
