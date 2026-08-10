@@ -1,34 +1,36 @@
-//! The native Windows workflow, end to end, against one window the operator names.
+//! The native Windows `WindowMessage` workflow with unrelated foreground, end to end.
 //!
 //! Report what authorization this platform grants, discover targets, select
-//! exactly one window by its full title, open capture and input together, verify
-//! the source-frame condition, submit one bounded sequence without touching
-//! focus, verify the expected condition on a strictly newer frame, drain
-//! correlated diagnostics, and close.
+//! exactly one ordinary window by its full title, open capture and input
+//! together, verify the source-frame condition, submit one bounded sequence
+//! without touching focus, verify the expected condition on a strictly newer
+//! frame, drain correlated diagnostics, and close.
+//!
+//! Start the ordinary evidence fixture, leave another application in the
+//! foreground, then pass the fixture's full title:
 //!
 //! ```text
-//! cargo run --locked --package mado-pilot --example windows-native-input -- "<window title>"
+//! cargo run --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-window-message-fixture -- --title-token=example
+//! cargo run --locked --package mado-pilot --example windows-native-input -- "MadoPilot Ordinary WindowMessage Fixture [example]"
 //! ```
 //!
-//! # Why this one cannot disturb an ordinary window
+//! # Why this does not disturb the foreground window
 //!
-//! It requires target-directed `WindowMessage` delivery and permits no
-//! substitute, and it preserves focus. The Windows Adapter advertises that route
-//! for its own dedicated fixture class alone, because arbitrary window classes
-//! share no reliable target-directed input contract. An ordinary application
-//! window therefore does not advertise it, the request is refused before any
-//! event exists, and system input is never quietly put in its place —
-//! substituting it would focus a window this program promised not to touch and
-//! type into whatever is focused instead.
+//! It requires exact-window `WindowMessage` delivery and permits no substitute,
+//! and it preserves focus. An ordinary target advertises this route as
+//! unknown-but-attemptable: successful submission proves target-queue admission,
+//! not that the application consumed the legacy message or changed state.
+//! `System` is never quietly substituted, so this example does not activate the
+//! target, move the real cursor, or type into whatever is foreground.
 //!
-//! The receiver this is meant for is `mado-pilot-windows-input-fixture` in
-//! `mado-pilot-platform-windows`, whose window title is
-//! `MadoPilot Input Fixture [<pid>]`. The title is a required argument rather
-//! than a search: nothing is guessed, a prefix is not accepted, and more than one
-//! match is refused rather than resolved.
+//! The full title is a required argument rather than a search heuristic:
+//! nothing is guessed, a prefix is not accepted, and more than one match is
+//! refused rather than resolved. The included ordinary fixture paints a
+//! deterministic post-input fill so the example can demonstrate that queue
+//! admission and a strictly newer visual observation are separate facts.
 //!
-//! Every prerequisite is checked before any event is sent, and a missing one ends
-//! the program with an actionable message and a non-zero status.
+//! Every prerequisite is checked before any event is sent, and a missing one
+//! ends the program with an actionable message and a non-zero status.
 //!
 //! # What it prints
 //!
@@ -57,11 +59,11 @@ mod windows {
     use std::time::Duration;
 
     use mado_pilot::{
-        CapabilitySupport, CoordinateSpace, DeliveryPlan, DiagnosticOptions, Engine, Error,
-        FocusPolicy, Frame, FrameRequest, InputDelivery, InputEvent, InputOpenRequest,
-        InputOperationKind, InputReceipt, InputRequest, InputRequirement, InputSequence, Key,
-        NativeEngineRequest, OpenRequest, OperationContext, PixelFormat, Point, PointerGeometry,
-        SequenceOutcome, Session, SessionRequest, TargetDescription, TargetId, TargetKind,
+        CoordinateSpace, DeliveryPlan, DiagnosticOptions, Engine, Error, FocusPolicy, Frame,
+        FrameRequest, InputDelivery, InputEvent, InputOpenRequest, InputOperationKind,
+        InputReceipt, InputRequest, InputRequirement, InputSequence, Key, NativeEngineRequest,
+        OpenRequest, OperationContext, PixelFormat, Point, PointerGeometry, SequenceOutcome,
+        Session, SessionRequest, TargetDescription, TargetId, TargetKind,
     };
 
     /// How long a discovery pass may take.
@@ -73,9 +75,8 @@ mod windows {
 
     /// How long the whole input sequence may take.
     ///
-    /// Each `WindowMessage` event is one synchronous acknowledged fixture packet,
-    /// and the sequence below is six events with one short delay in it. Two
-    /// seconds bounds a fixture that stops acknowledging.
+    /// The sequence below has four logical events and five asynchronous native
+    /// units. Two seconds bounds queue submission without claiming consumption.
     const INPUT_BUDGET: Duration = Duration::from_secs(2);
 
     /// How long a strictly-newer frame may take to show the expected condition.
@@ -145,9 +146,9 @@ mod windows {
         );
 
         // 4. Confirm the target advertises the mechanism this program permits,
-        //    before a session exists. This is what excludes every window but the
-        //    dedicated fixture class, and it happens while excluding one is still
-        //    free.
+        //    before a session exists. Ordinary windows expose it as
+        //    unknown-but-attemptable; unsupported targets are refused while
+        //    substitution is still free.
         require_window_message_pointer_and_keyboard(&engine, target.id())?;
 
         // 5. Open capture and input as one session. Input is required, so a
@@ -323,11 +324,10 @@ mod windows {
         let descriptor = engine.describe_input(target, &bounded(DISCOVERY_BUDGET)?)?;
         let capability = descriptor.capability();
         for kind in [InputOperationKind::Pointer, InputOperationKind::Keyboard] {
-            if capability.pair(kind, MECHANISM).support() != CapabilitySupport::Supported {
+            if !capability.pair(kind, MECHANISM).may_attempt() {
                 return Err(format!(
-                    "the selected window does not accept {kind} through the window-message route, \
-                     and system input is not substituted for it — point this at the dedicated \
-                     input fixture"
+                    "the selected window cannot attempt {kind} through the window-message route, \
+                     and system input is not substituted for it"
                 )
                 .into());
             }

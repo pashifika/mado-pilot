@@ -3,12 +3,13 @@
  *
  * `--check` is suitable for unattended CI: it creates the platform adapter and
  * reads only non-prompting permission/capability state. Passing one exact full
- * fixture-window title enables the end-to-end path: unique selection, capture,
- * mapping, one bounded input sequence under one activity tag, receipt inspection,
- * a newer-frame visual condition search, diagnostic drain, and explicit close.
+ * window title enables the end-to-end path: unique selection, capture, mapping,
+ * one bounded input sequence under one activity tag, receipt inspection, a
+ * newer-frame visual condition search, diagnostic drain, and explicit close.
  *
- * Full mode requires the repository's platform fixture launched with
- * `--animate-on-input`; a receipt alone is not the success oracle.
+ * On Windows, ordinary targets are unknown-but-attemptable and report queue
+ * admission; only the dedicated fixture reports protocol acknowledgement. A
+ * receipt alone is never the visual success oracle.
  */
 
 #include <chrono>
@@ -41,8 +42,7 @@ constexpr madopilot::InputDelivery DELIVERY =
     MADOPILOT_INPUT_DELIVERY_WINDOW_MESSAGE;
 constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
     MADOPILOT_INPUT_ADDRESS_EXACT_WINDOW;
-constexpr madopilot::SubmissionEvidence EVIDENCE =
-    MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT;
+constexpr bool ALLOWS_UNKNOWN = true;
 constexpr bool READS_PERMISSIONS = false;
 constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_PRESERVE;
 
@@ -58,8 +58,7 @@ constexpr std::uint64_t REQUIRED_PAIRS =
 constexpr madopilot::InputDelivery DELIVERY = MADOPILOT_INPUT_DELIVERY_SYSTEM;
 constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
     MADOPILOT_INPUT_ADDRESS_FOCUSED_SYSTEM;
-constexpr madopilot::SubmissionEvidence EVIDENCE =
-    MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY;
+constexpr bool ALLOWS_UNKNOWN = false;
 constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_ACTIVATE_IF_REQUIRED;
 constexpr bool READS_PERMISSIONS = true;
 
@@ -347,7 +346,8 @@ bool probe_permissions(madopilot::Engine& engine,
 }
 
 bool select_target(madopilot::TargetList& targets, std::string_view title,
-                   std::size_t& selected, std::uint64_t& target_id)
+                   std::size_t& selected, std::uint64_t& target_id,
+                   madopilot::SubmissionEvidence& evidence)
 {
     const auto count = targets.count();
     if (!count) {
@@ -396,14 +396,21 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
             return report_failure("TargetList::input_capability",
                                   capability.error());
         }
-        if (!expect(capability.value().target == target_id &&
-                        capability.value().support ==
-                            MADOPILOT_CAPABILITY_SUPPORTED,
-                    "the selected target supports the required input route") ||
+        const bool attemptable =
+            capability.value().support == MADOPILOT_CAPABILITY_SUPPORTED ||
+            (ALLOWS_UNKNOWN &&
+             capability.value().support == MADOPILOT_CAPABILITY_UNKNOWN);
+        if (!expect(capability.value().target == target_id && attemptable,
+                    "the selected target can attempt the required input route") ||
             !expect(capability.value().address_scope == ADDRESS_SCOPE &&
-                        capability.value().evidence.has_value() &&
-                        *capability.value().evidence == EVIDENCE,
+                        capability.value().evidence.has_value(),
                     "the route reports its scope and strongest evidence")) {
+            return false;
+        }
+        if (evidence == MADOPILOT_SUBMISSION_EVIDENCE_NONE) {
+            evidence = *capability.value().evidence;
+        } else if (!expect(evidence == *capability.value().evidence,
+                           "required pairs share one route evidence level")) {
             return false;
         }
         if (operation == MADOPILOT_INPUT_OPERATION_POINTER &&
@@ -420,7 +427,8 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
     return true;
 }
 
-bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
+bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
+                      madopilot::SubmissionEvidence evidence)
 {
     const auto session_info = session.describe();
     if (!session_info) {
@@ -439,9 +447,11 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
     if (!descriptor) {
         return report_failure("Session::input_descriptor", descriptor.error());
     }
-    if (!expect((descriptor.value().supported_pairs & REQUIRED_PAIRS) ==
-                    REQUIRED_PAIRS,
-                "the session retains every required input pair")) {
+    const auto attemptable_pairs =
+        descriptor.value().supported_pairs |
+        (ALLOWS_UNKNOWN ? descriptor.value().unknown_pairs : UINT64_C(0));
+    if (!expect((attemptable_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS,
+                "the session retains every attemptable required input pair")) {
         return false;
     }
 
@@ -536,7 +546,7 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
                     *info.value().selected_route == DELIVERY &&
                     info.value().address_scope == ADDRESS_SCOPE &&
                     info.value().evidence.has_value() &&
-                    *info.value().evidence == EVIDENCE,
+                    *info.value().evidence == evidence,
                 "the bounded sequence was submitted exactly once with "
                 "truthful route evidence")) {
         return false;
@@ -583,7 +593,9 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     madopilot::TargetList targets = discovered.take();
     std::size_t selected = 0;
     std::uint64_t target_id = 0;
-    if (!select_target(targets, title, selected, target_id)) {
+    madopilot::SubmissionEvidence evidence =
+        MADOPILOT_SUBMISSION_EVIDENCE_NONE;
+    if (!select_target(targets, title, selected, target_id, evidence)) {
         return false;
     }
 
@@ -591,9 +603,11 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     if (!live_descriptor) {
         return report_failure("Engine::input_descriptor", live_descriptor.error());
     }
-    if (!expect((live_descriptor.value().supported_pairs & REQUIRED_PAIRS) ==
-                    REQUIRED_PAIRS,
-                "the live input descriptor retains every required pair")) {
+    const auto attemptable_pairs =
+        live_descriptor.value().supported_pairs |
+        (ALLOWS_UNKNOWN ? live_descriptor.value().unknown_pairs : UINT64_C(0));
+    if (!expect((attemptable_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS,
+                "the live descriptor retains every attemptable required pair")) {
         return false;
     }
 
@@ -611,7 +625,7 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     targets.reset();
     madopilot::Session session = opened.take();
 
-    const bool exercised = exercise_session(api, session);
+    const bool exercised = exercise_session(api, session, evidence);
     bool closed = false;
     if (bounded_operation(api, UINT64_C(2000000000), operation)) {
         const auto close = session.close(operation);

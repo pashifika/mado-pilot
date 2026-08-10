@@ -131,22 +131,31 @@ impl GeometryLedger {
             .remove(&stream);
     }
 
+    #[cfg(test)]
     pub(crate) fn source_transform(&self, source: FrameStamp) -> Option<TransformSnapshot> {
+        self.resolve_source_transform(source).ok()
+    }
+
+    pub(crate) fn resolve_source_transform(
+        &self,
+        source: FrameStamp,
+    ) -> Result<TransformSnapshot, InputFault> {
         let entry = *self
             .streams
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&source.stream())?;
-        if entry.stamp.epoch() != source.epoch()
-            || entry.stamp.geometry() != source.geometry()
-            || !matches!(
-                source.order(&entry.stamp),
-                Ok(FrameOrder::Before | FrameOrder::Same)
-            )
-        {
-            return None;
+            .get(&source.stream())
+            .ok_or(InputFault::UnsupportedCoordinate)?;
+        if entry.stamp.epoch() != source.epoch() || entry.stamp.geometry() != source.geometry() {
+            return Err(InputFault::GeometryChanged);
         }
-        Some(entry.transform)
+        if !matches!(
+            source.order(&entry.stamp),
+            Ok(FrameOrder::Before | FrameOrder::Same)
+        ) {
+            return Err(InputFault::UnsupportedCoordinate);
+        }
+        Ok(entry.transform)
     }
 }
 

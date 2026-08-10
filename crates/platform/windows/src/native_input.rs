@@ -248,11 +248,7 @@ impl NativeInputDriver {
                 let source = geometry
                     .source()
                     .ok_or(InputFault::MissingCoordinateSource)?;
-                let transform = self
-                    .record
-                    .geometry()
-                    .source_transform(source)
-                    .ok_or(InputFault::UnsupportedCoordinate)?;
+                let transform = self.record.geometry().resolve_source_transform(source)?;
                 let source_fingerprint = fingerprint(&transform)?;
                 let (_, current_fingerprint) = self.current_geometry()?;
                 if source_fingerprint != current_fingerprint {
@@ -264,11 +260,7 @@ impl NativeInputDriver {
                 let source = geometry
                     .source()
                     .ok_or(InputFault::MissingCoordinateSource)?;
-                let transform = self
-                    .record
-                    .geometry()
-                    .source_transform(source)
-                    .ok_or(InputFault::UnsupportedCoordinate)?;
+                let transform = self.record.geometry().resolve_source_transform(source)?;
                 let fingerprint = fingerprint(&transform)?;
                 Ok((transform, fingerprint))
             }

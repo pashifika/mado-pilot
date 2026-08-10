@@ -49,6 +49,9 @@
 #ifndef MADOPILOT_EXAMPLE_READS_PERMISSIONS
 #error "the platform example must define MADOPILOT_EXAMPLE_READS_PERMISSIONS"
 #endif
+#ifndef MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN
+#error "the platform example must define MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN"
+#endif
 
 static int failures = 0;
 
@@ -382,7 +385,9 @@ static int select_target(const madopilot_api_t* api,
                          madopilot_target_list_t* targets,
                          const char* title,
                          size_t* selected,
-                         uint64_t* target_id)
+                         uint64_t* target_id,
+                         madopilot_input_address_scope_t* address_scope,
+                         madopilot_submission_evidence_t* evidence)
 {
     const madopilot_input_operation_kind_t operations[3] = {
         MADOPILOT_INPUT_OPERATION_POINTER,
@@ -397,6 +402,8 @@ static int select_target(const madopilot_api_t* api,
     size_t count = 0;
     size_t index;
     size_t matches = 0;
+    *address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
+    *evidence = MADOPILOT_SUBMISSION_EVIDENCE_NONE;
 
     if (!expect(api->target_list_count(targets, &count) == MADOPILOT_STATUS_OK,
                 "target_list_count")) {
@@ -436,8 +443,20 @@ static int select_target(const madopilot_api_t* api,
                         targets, *selected, operations[index / 3], routes[index % 3],
                         &capability) == MADOPILOT_STATUS_OK,
                     "target_list_input_capability") ||
-            !expect(capability.support == MADOPILOT_CAPABILITY_SUPPORTED,
-                    "the selected target supports every required input pair")) {
+            !expect(capability.support == MADOPILOT_CAPABILITY_SUPPORTED ||
+                        (MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN &&
+                         capability.support == MADOPILOT_CAPABILITY_UNKNOWN),
+                    "the selected target can attempt every required input pair") ||
+            !expect((capability.flags & MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE) != 0,
+                    "every attemptable pair reports its strongest evidence")) {
+            return 0;
+        }
+        if (*address_scope == MADOPILOT_INPUT_ADDRESS_NONE) {
+            *address_scope = capability.address_scope;
+            *evidence = capability.evidence;
+        } else if (!expect(*address_scope == capability.address_scope &&
+                               *evidence == capability.evidence,
+                           "required pairs share one route scope and evidence")) {
             return 0;
         }
         if (capability.operation == MADOPILOT_INPUT_OPERATION_POINTER &&
@@ -467,7 +486,9 @@ static void set_key_event(madopilot_input_event_t* event,
 static int deliver(const madopilot_api_t* api,
                    madopilot_session_t* session,
                    madopilot_frame_t* frame,
-                   const madopilot_frame_info_t* frame_info)
+                   const madopilot_frame_info_t* frame_info,
+                   madopilot_input_address_scope_t address_scope,
+                   madopilot_submission_evidence_t evidence)
 {
     madopilot_input_event_t events[4];
     madopilot_input_delivery_t delivery = MADOPILOT_EXAMPLE_DELIVERY;
@@ -521,8 +542,15 @@ static int deliver(const madopilot_api_t* api,
     api->input_receipt_release(receipt);
     return expect(info.outcome == MADOPILOT_SEQUENCE_COMPLETE &&
                       info.submitted ==
-                          (uint64_t)(sizeof(events) / sizeof(events[0])),
-                  "the bounded native sequence completed exactly once");
+                          (uint64_t)(sizeof(events) / sizeof(events[0])) &&
+                      (info.flags & (MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE |
+                                     MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE)) ==
+                          (MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE |
+                           MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE) &&
+                      info.selected_route == MADOPILOT_EXAMPLE_DELIVERY &&
+                      info.address_scope == address_scope &&
+                      info.evidence == evidence,
+                  "the bounded native sequence completed with truthful route evidence");
 }
 
 static int run_native(const madopilot_api_t* api, const char* title, int check_only)
@@ -548,6 +576,8 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     madopilot_diagnostic_reader_t* diagnostic_reader = NULL;
     uint64_t target_id = 0;
     size_t selected = 0;
+    madopilot_input_address_scope_t address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
+    madopilot_submission_evidence_t evidence = MADOPILOT_SUBMISSION_EVIDENCE_NONE;
     int worked = 0;
 
     memset(&source, 0, sizeof(source));
@@ -596,7 +626,8 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     if (!bounded_operation(api, UINT64_C(5000000000), &operation) ||
         !require_ok(api, api->engine_discover(engine, &operation, &targets, &error),
                     &error, "engine_discover") ||
-        !select_target(api, targets, title, &selected, &target_id)) {
+        !select_target(api, targets, title, &selected, &target_id, &address_scope,
+                       &evidence)) {
         goto cleanup;
     }
 
@@ -606,10 +637,14 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
                     api->engine_input_descriptor(engine, targets, selected, &operation,
                                                  &input_descriptor, &error),
                     &error, "engine_input_descriptor") ||
-        !expect((input_descriptor.known_pairs & input_descriptor.supported_pairs &
+        !expect((input_descriptor.known_pairs &
+                 (input_descriptor.supported_pairs |
+                  (MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN
+                       ? input_descriptor.unknown_pairs
+                       : UINT64_C(0))) &
                  MADOPILOT_EXAMPLE_REQUIRED_PAIRS) ==
                     MADOPILOT_EXAMPLE_REQUIRED_PAIRS,
-                "the live input descriptor retains every required pair")) {
+                "the live descriptor retains every attemptable required pair")) {
         goto cleanup;
     }
 
@@ -687,7 +722,7 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     }
     printf("mapping: %zu byte(s)\n", image.bytes.len);
 
-    worked = deliver(api, session, frame, &frame_info);
+    worked = deliver(api, session, frame, &frame_info, address_scope, evidence);
     if (worked) {
         api->mapping_release(mapping);
         mapping = NULL;

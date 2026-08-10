@@ -367,6 +367,10 @@ fn geometry_ledger_retains_only_the_live_streams_latest_revision() {
 
     assert_eq!(ledger.source_transform(first), Some(first_transform));
     assert_eq!(ledger.source_transform(later_same_revision), None);
+    assert_eq!(
+        ledger.resolve_source_transform(later_same_revision),
+        Err(InputFault::UnsupportedCoordinate)
+    );
     ledger.record(later_same_revision, first_transform);
     assert_eq!(ledger.source_transform(first), Some(first_transform));
     assert_eq!(
@@ -380,9 +384,17 @@ fn geometry_ledger_retains_only_the_live_streams_latest_revision() {
     ledger.record(moved, moved_transform);
 
     assert_eq!(ledger.source_transform(first), None);
+    assert_eq!(
+        ledger.resolve_source_transform(first),
+        Err(InputFault::GeometryChanged)
+    );
     assert_eq!(ledger.source_transform(moved), Some(moved_transform));
     ledger.remove(moved.stream());
     assert_eq!(ledger.source_transform(moved), None);
+    assert_eq!(
+        ledger.resolve_source_transform(moved),
+        Err(InputFault::UnsupportedCoordinate)
+    );
 }
 
 #[test]

@@ -1,10 +1,10 @@
-//! Bounded, versioned messages accepted only by the Windows input fixture.
+//! Bounded support contracts for the Windows native input fixtures.
 //!
-//! Arbitrary window classes do not share one reliable exact-window input
-//! contract. The production Adapter exposes `WindowMessage` only for this fixture
-//! class; every event uses one synchronous `WM_COPYDATA` packet with explicit
-//! acknowledgement. Packets contain no pointers and bound text at the shared
-//! input-event limit.
+//! The exact `MadoPilotInputFixture` class accepts only the versioned
+//! `WM_COPYDATA` protocol and acknowledges complete logical events. The
+//! ordinary fixture uses legacy scalar messages solely to observe the public
+//! best-effort `WindowMessage` route; its control messages are private test
+//! coordination and are never used by production delivery.
 
 use std::fmt;
 
@@ -14,6 +14,27 @@ use mado_pilot_input::{InputEvent, InputFault, Key, Modifier, PointerButton};
 
 pub const CLASS_NAME: &str = "MadoPilotInputFixture";
 pub const TITLE_PREFIX: &str = "MadoPilot Input Fixture";
+/// Window class used by the ordinary legacy-message evidence fixture.
+pub const ORDINARY_CLASS_NAME: &str = "MadoPilotOrdinaryWindowMessageFixture";
+/// Title prefix used by the ordinary legacy-message evidence fixture.
+pub const ORDINARY_TITLE_PREFIX: &str = "MadoPilot Ordinary WindowMessage Fixture";
+/// Requests one redacted observation-count report from the ordinary fixture.
+pub const CONTROL_REPORT: u32 = 0x8201;
+/// Makes the sibling fixture duplicate the retained target's descriptive title.
+pub const CONTROL_DUPLICATE_METADATA: u32 = 0x8202;
+/// Reparents the retained target under its same-process sibling.
+pub const CONTROL_REPARENT_TARGET: u32 = 0x8203;
+/// Replaces the retained target with a same-process window of the same class and title.
+pub const CONTROL_REPLACE_TARGET: u32 = 0x8204;
+/// Destroys the retained target while keeping adversarial fixtures alive.
+pub const CONTROL_DESTROY_TARGET: u32 = 0x8205;
+/// Blocks the fixture message pump for the duration carried in `wParam`.
+pub const CONTROL_BLOCK_QUEUE: u32 = 0x8206;
+/// Replaces a target repeatedly until its retained handle value recurs or the bound is exhausted.
+pub const CONTROL_REUSE_STRESS: u32 = 0x8207;
+/// Moves, resizes, and repaints the ordinary fixture on its owning GUI thread.
+pub const CONTROL_SET_GEOMETRY: u32 = 0x8208;
+
 pub const COPYDATA_TAG: usize = 0x4d50_4946;
 pub const ACKNOWLEDGED: usize = 0x4d50_414b;
 pub const VERSION: u32 = 1;
@@ -87,6 +108,11 @@ impl std::error::Error for FixtureSelectionError {}
 
 pub fn fixture_title(process_id: u32) -> String {
     format!("{TITLE_PREFIX} [{process_id}]")
+}
+/// Builds the exact title for an ordinary fixture instance.
+#[must_use]
+pub fn ordinary_fixture_title(token: &str) -> String {
+    format!("{ORDINARY_TITLE_PREFIX} [{token}]")
 }
 
 pub fn select_unique_fixture(
