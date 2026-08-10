@@ -1,5 +1,6 @@
 # Rasen data is managed in a dedicated nested repository.
 /rasen/
+/.rasen/
 
 # Agent configuration, which is each contributor's own: a settings file naming
 # local paths, a machine-local override beside it, and a symlink into it. Listed
