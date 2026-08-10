@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md), and the macOS Phase 2.2 diagnostic slice resolved by [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md); Windows diagnostic timing and Phase 2 native profiles remain open |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md), macOS diagnostics by [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md), macOS native input by [ADR 0025](adr/0025-macos-native-input-performance-budgets.md), and Windows diagnostics plus the `native-phase2` workload sets by [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md); Windows production-capture acceptance, macOS capture/transitions, and final-source Phase 1 reruns remain open |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -467,39 +467,42 @@ conclusion does not automatically transfer to a later phase's per-frame entry
 point.
 
 **Phase 2 remains open.** [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
-accepts the `aarch64-apple-darwin` diagnostic profile: ten capture/mapping,
-input, overflow, and close/drain workloads; zero oracle failures and allocation
-growth; exact mapped-byte accounting; and per-workload regression ceilings.
-The matching Windows artifact is an explicit timing gap; release-target CI
-still runs its deterministic correctness and bounded-growth smoke plan.
+accepts the `aarch64-apple-darwin` diagnostic profile. ADR 0026 replaces the
+matching Windows timing gap with a measured `x86_64-pc-windows-msvc` profile.
+Both targets retain 200 samples after 20 warmups for each of ten
+capture/mapping, input, overflow, and close/drain workloads, with zero oracle
+failures and allocation growth, exact mapped-byte accounting, and per-workload
+regression ceilings.
 
-The native workloads are partially resolved. ADR 0020 historically accepted
-three macOS profiles at source
-`a1faf04505c8471deb4de8c136fddcc7f76105e7`, and
-[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+The `native-phase2` workloads are resolved on Windows and partially resolved on
+macOS. ADR 0020 historically accepted three macOS profiles at source
+`a1faf04505c8471deb4de8c136fddcc7f76105e7`; [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
 invalidated all three after source drift and false-positive stimulus and
-latest-frame oracles. The capture and transition profiles remain
-`normative = false`. A corrected capture probe reported zero oracle failures and
-zero allocation growth, but its repaired stimulus row did not satisfy the
-historical latency, mapped-byte, or stale-work ceilings, so those numbers were
-invalidated rather than widened from an uncommitted worktree.
+latest-frame oracles. The macOS capture and transition profiles remain
+`normative = false`.
 
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) replaces the
 macOS input and public-language profile at source
 `c237071c3daed631fea27c6442dbc91794ecae15`. Its six workloads retained 300
 correct samples with zero allocation growth, exact mapped-byte accounting, and
-measured Rust-heap and child-process resident bounds. The first requalification
-run exposed stale benchmark assumptions—six events, two key pairs, and a shared
-mutable visual precondition—rather than a native delivery failure. Standalone C
-and C++ runs proved the current four-event/one-key-pair flow, and the accepted
-profile gives every language sample a fresh fixture and exact receipt oracle.
+measured Rust-heap and child-process resident bounds.
 
-No approved bare-metal Windows host was available, so
-[`phase-2-native-x86_64-pc-windows-msvc-evidence-gap.toml`](benchmarks/phase-2-native-x86_64-pc-windows-msvc-evidence-gap.toml)
-continues to record zero native samples and no invented budgets. The macOS
-capture and transition profiles, every Windows native workload, the Windows
-diagnostic timing profile, and the final-source Phase 1 regression reruns remain
-required before Phase 2 exit.
+[ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md)
+accepts the Windows capture, transition, and input/public-language profiles at
+implementation tree `f02c3e9bc3c08d6faca4f032e6c819376ce5e0db`. Their 980
+retained samples all satisfy their exact oracles and report zero allocation
+growth. The rejected precursor runs proved four apparatus defects rather than
+product failures: insufficient post-resize fixture publication, reuse of a
+1,024-event fixture for 2,050 redacted summaries, a missing child-only Cargo
+profile DLL path, and a C++ oracle that expected macOS submission evidence on
+Windows. The ADR records the bounded repairs and target-specific oracle.
+
+The Windows `native-phase2` capture profile does not substitute for the separate
+production-capture acceptance required by
+[windows-capture-contract-tests.md](windows-capture-contract-tests.md): callback
+copy/staging/resident measures and the named 1280×720/dual-4K matrix remain
+unmeasured. That profile, current macOS capture and transition profiles, and the
+final-source Phase 1 regression reruns remain required before Phase 2 exit.
 
 OCR, watcher scheduling, and acceleration remain open for the phases that
 introduce them.

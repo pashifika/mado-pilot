@@ -132,9 +132,11 @@ preconditions and leaves the measured product operation unchanged. No public API
 or integrator behavior changes because of the harness repair.
 
 ADR 0021 continues to invalidate the macOS native capture and transition
-profiles. No Windows native performance value is inferred, and the Windows
-diagnostic timing gap also remains. Phase 2 therefore cannot claim complete
-`G-013` resolution.
+profiles. This decision inferred no Windows value; ADR 0026 later supplied
+independent Windows diagnostic and `native-phase2` measurements. Phase 2 still
+cannot claim complete `G-013` resolution because current macOS
+capture/transitions, Windows production-capture acceptance, and final-source
+Phase 1 reruns remain open.
 
 ## Verification
 

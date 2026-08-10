@@ -425,8 +425,54 @@ mod native {
     #[derive(Clone)]
     struct LanguageProgram {
         executable: PathBuf,
+        #[cfg(windows)]
+        library_directory: PathBuf,
         example_name: &'static str,
         receipt_line: &'static str,
+    }
+
+    impl LanguageProgram {
+        fn new(
+            executable: PathBuf,
+            example_name: &'static str,
+            receipt_line: &'static str,
+        ) -> Self {
+            #[cfg(windows)]
+            let library_directory = executable
+                .parent()
+                .and_then(Path::parent)
+                .filter(|directory| directory.join("madopilot.dll").is_file())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} has no madopilot.dll in its cargo profile directory",
+                        executable.display()
+                    )
+                })
+                .to_path_buf();
+            Self {
+                executable,
+                #[cfg(windows)]
+                library_directory,
+                example_name,
+                receipt_line,
+            }
+        }
+
+        fn command(&self) -> Command {
+            let mut command = Command::new(&self.executable);
+            #[cfg(windows)]
+            {
+                let existing = std::env::var_os("PATH").unwrap_or_default();
+                let mut search = vec![self.library_directory.clone()];
+                search.extend(std::env::split_paths(&existing));
+                command.env(
+                    "PATH",
+                    std::env::join_paths(search)
+                        .expect("the Windows child library path is representable"),
+                );
+            }
+            command
+        }
     }
 
     pub(super) fn run() {
@@ -546,7 +592,7 @@ mod native {
                         "retained_pressure_resume",
                         "filling the reported retained limit rejects publication, releasing one slot resumes with an observable sequence gap",
                         plan,
-                        || Flow::from_fixture(Rc::clone(&fixture)),
+                        || (),
                         retained_pressure_resume,
                     ),
                     measure(
@@ -561,22 +607,20 @@ mod native {
             WorkloadSet::Input => {
                 let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Animate));
                 let args = arguments();
-                let c = LanguageProgram {
-                    executable: args
-                        .c_executable
+                let c = LanguageProgram::new(
+                    args.c_executable
                         .clone()
                         .expect("the input benchmark requires its C executable"),
-                    example_name: c_example_name(),
-                    receipt_line: "receipt: outcome 1 submitted 4 fault 0 cleanup 0",
-                };
-                let cpp = LanguageProgram {
-                    executable: args
-                        .cpp_executable
+                    c_example_name(),
+                    "receipt: outcome 1 submitted 4 fault 0 cleanup 0",
+                );
+                let cpp = LanguageProgram::new(
+                    args.cpp_executable
                         .clone()
                         .expect("the input benchmark requires its C++ executable"),
-                    example_name: cpp_example_name(),
-                    receipt_line: "receipt: outcome 1 submitted 4 evidence 1 cleanup 0",
-                };
+                    cpp_example_name(),
+                    cpp_receipt_line(),
+                );
                 vec![
                     measure(
                         "input_request_receipt",
@@ -769,7 +813,10 @@ mod native {
         Sample::new(elapsed, correct, mapping.bytes().len() as u64)
     }
 
-    fn retained_pressure_resume(flow: &Flow) -> Sample {
+    fn retained_pressure_resume(_: &()) -> Sample {
+        let flow = Flow::from_fixture(Rc::new(FixtureProcess::spawn(
+            FixtureBehavior::AnimateAndResize,
+        )));
         let session = flow.open_input_session();
         let capacity = session
             .description()
@@ -786,7 +833,7 @@ mod native {
         while retained.len() < capacity {
             let before = retained.last().expect("a retained frame").stamp();
             assert!(
-                send_confirmed_stimulus(flow, &session),
+                send_confirmed_stimulus(&flow, &session),
                 "retained pressure stimulus completes"
             );
             retained.push(
@@ -797,7 +844,7 @@ mod native {
         }
         let before = retained.last().expect("the last retained frame").stamp();
         assert!(
-            send_confirmed_stimulus(flow, &session),
+            send_confirmed_stimulus(&flow, &session),
             "blocked publication stimulus completes"
         );
         let blocked = session
@@ -806,7 +853,7 @@ mod native {
         retained.remove(0);
         let started = Instant::now();
         assert!(
-            send_confirmed_stimulus(flow, &session),
+            send_confirmed_stimulus(&flow, &session),
             "resume stimulus completes"
         );
         let resumed = session
@@ -898,9 +945,7 @@ mod native {
     }
     fn language_process_load(program: &LanguageProgram) -> Sample {
         let started = Instant::now();
-        let output = Command::new(&program.executable)
-            .arg("--load-check")
-            .output();
+        let output = program.command().arg("--load-check").output();
         let elapsed = started.elapsed();
         let (correct, peak_resident) = match output {
             Ok(output) if output.status.success() && output.stderr.is_empty() => {
@@ -927,7 +972,7 @@ mod native {
         let fixture = FixtureProcess::spawn(FixtureBehavior::Animate);
         let title = fixture.title();
         let started = Instant::now();
-        let output = Command::new(&program.executable).arg(title).output();
+        let output = program.command().arg(title).output();
         let (process_succeeded, stderr_empty, stdout) = match output {
             Ok(output) => (
                 output.status.success(),
@@ -1247,6 +1292,16 @@ mod native {
     #[cfg(windows)]
     const fn cpp_example_name() -> &'static str {
         "windows-native-input-cpp"
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn cpp_receipt_line() -> &'static str {
+        "receipt: outcome 1 submitted 4 evidence 1 cleanup 0"
+    }
+
+    #[cfg(windows)]
+    const fn cpp_receipt_line() -> &'static str {
+        "receipt: outcome 1 submitted 4 evidence 4 cleanup 0"
     }
 
     #[cfg(target_os = "macos")]

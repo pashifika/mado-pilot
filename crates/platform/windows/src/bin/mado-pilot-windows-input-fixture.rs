@@ -46,10 +46,10 @@ mod fixture {
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW, MSG,
-        PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOZORDER, SetWindowPos, ShowWindow, TranslateMessage, WM_COPYDATA, WM_DESTROY,
-        WM_PAINT, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW, KillTimer,
+        MSG, PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOZORDER, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WM_COPYDATA,
+        WM_DESTROY, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
     };
     use windows::core::{Error, PCWSTR, Result};
 
@@ -59,6 +59,10 @@ mod fixture {
     static LARGE_WINDOW: AtomicBool = AtomicBool::new(false);
     static CURRENT_FILL_RGB: AtomicU32 = AtomicU32::new(FILL_RGB);
     static REPORTED_EVENTS: AtomicU32 = AtomicU32::new(0);
+    const RESIZE_REPAINT_TIMER: usize = 1;
+    const RESIZE_REPAINT_INTERVAL_MS: u32 = 16;
+    const RESIZE_REPAINT_COUNT: u32 = 4;
+    static RESIZE_REPAINTS_REMAINING: AtomicU32 = AtomicU32::new(0);
 
     #[derive(Debug, Clone, Copy, Default)]
     pub(super) struct Options {
@@ -102,6 +106,7 @@ mod fixture {
         LARGE_WINDOW.store(false, Ordering::Release);
         CURRENT_FILL_RGB.store(FILL_RGB, Ordering::Release);
         REPORTED_EVENTS.store(0, Ordering::Release);
+        RESIZE_REPAINTS_REMAINING.store(0, Ordering::Release);
         let class_name = wide(CLASS_NAME);
         let title_text = fixture_title(std::process::id());
         let title = wide(&title_text);
@@ -179,6 +184,10 @@ mod fixture {
             WM_COPYDATA => receive_packet(hwnd, payload),
             WM_PAINT => {
                 paint(hwnd);
+                LRESULT(0)
+            }
+            WM_TIMER if sender.0 == RESIZE_REPAINT_TIMER => {
+                repaint_after_resize(hwnd);
                 LRESULT(0)
             }
             WM_DESTROY => {
@@ -290,7 +299,7 @@ mod fixture {
         let (width, height) = if was_large { (640, 420) } else { (820, 540) };
         // SAFETY: hwnd is the live fixture window. This changes only its
         // size and deliberately preserves focus, position, and z-order.
-        let _resized = unsafe {
+        let resized = unsafe {
             SetWindowPos(
                 hwnd,
                 None,
@@ -301,6 +310,46 @@ mod fixture {
                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
             )
         };
+        if resized.is_err() {
+            return;
+        }
+
+        RESIZE_REPAINTS_REMAINING.store(RESIZE_REPAINT_COUNT, Ordering::Release);
+        // SAFETY: hwnd is live on its owning GUI thread. A null callback posts
+        // bounded WM_TIMER messages back to this same window procedure.
+        if unsafe {
+            SetTimer(
+                Some(hwnd),
+                RESIZE_REPAINT_TIMER,
+                RESIZE_REPAINT_INTERVAL_MS,
+                None,
+            )
+        } == 0
+        {
+            RESIZE_REPAINTS_REMAINING.store(0, Ordering::Release);
+        }
+    }
+
+    fn repaint_after_resize(hwnd: HWND) {
+        let remaining = RESIZE_REPAINTS_REMAINING
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_sub(1)
+            })
+            .unwrap_or(0);
+        if remaining == 0 {
+            return;
+        }
+
+        apply_benchmark_animation();
+        // SAFETY: hwnd is live during message dispatch; invalidation schedules
+        // one controlled repaint without exposing unrelated desktop content.
+        let _invalidated =
+            unsafe { windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false) };
+        if remaining == 1 {
+            // SAFETY: this is the owning GUI thread and the timer identifier is
+            // the one created by apply_benchmark_resize for this window.
+            let _killed = unsafe { KillTimer(Some(hwnd), RESIZE_REPAINT_TIMER) };
+        }
     }
 
     fn colorref(rgb: u32) -> COLORREF {

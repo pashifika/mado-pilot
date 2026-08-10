@@ -94,7 +94,7 @@ the full status table, the package inventory, and the dependency rules.
 Rust API, C ABI 1.0, and C++ API baseline for the deterministic workflow.
 [`v0.2.1`](docs/releases/v0.2.1.md) is the in-progress native
 capture/input/observation source release; it is not released while the
-interactive Windows and shared-display evidence gaps remain.
+Windows production-capture and shared-display acceptance gaps remain.
 Neither version publishes crates to crates.io or provides prebuilt libraries,
 installers, CMake install/export metadata, pkg-config metadata, or bundled
 OpenCV. A tracked release-note file is the canonical release body.

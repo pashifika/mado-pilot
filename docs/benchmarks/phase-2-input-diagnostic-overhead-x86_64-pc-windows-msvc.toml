@@ -1,0 +1,257 @@
+# Phase 2.2 diagnostic overhead, measured on x86_64-pc-windows-msvc at
+# implementation tree f02c3e9bc3c08d6faca4f032e6c819376ce5e0db, based on source
+# commit 5c7c3b5434c4e5279e9dfc23568de5757914b641.
+#
+# Produced by `crates/automation/runtime/benches/diagnostic-overhead.rs`:
+#
+#   cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- \
+#       --hardware "Intel Core i7-12700KF, 12 cores/20 threads, 32 GiB" \
+#       --os-version "Windows 11 Pro 10.0.26200 (build 26200)"
+#
+# Measurement values are the harness output. ADR 0026 sets latency ceilings at
+# three times measured p95, rounded up, and caps this source-defined fixture at
+# 32 KiB of live Rust heap. These are target- and fixture-specific regression
+# ceilings, not user-facing latency promises.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc"
+workload = "capture/mapping, input submission, and close/drain with diagnostics off, enabled, and under bounded pressure"
+phase = "2.2"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "source-defined controlled capture/input fixture in crates/automation/runtime/benches/diagnostic-overhead.rs"
+fixture_sha256 = "42e3133b63bcdc2f905eead2b52a4ac9ba97571da4580ef2c90feb9520398891"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF, 12 cores/20 threads, 32 GiB"
+os_version = "Windows 11 Pro 10.0.26200 (build 26200)"
+build_profile = "cargo bench, default features, debug_assertions=false"
+warmup_iterations = 20
+sample_count = 200
+correctness_oracle = "every retained sample checks exact frame/mapping or receipt outcomes, exact diagnostic categories, queue losses, and increasing record sequences"
+queue_policy = "diagnostics Off has no queue; Normal and Debug use capacity 64; overflow uses capacity 4; producer emission is non-blocking and every sample drains"
+notes = "input spans time submission/emission; capture spans acquisition/mapping/emission; close spans explicit close plus one diagnostic drain. Oracle checks follow each span."
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained frame, mapping, receipt, and diagnostic batch satisfies its workload oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "repeated capture, mapping, submission, close, and drain return transient allocations"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 32768
+rationale = "the largest measured fixture peak was 15651 bytes; 32 KiB bounds queue and per-case storage while leaving structural headroom"
+
+[[measurement]]
+workload = "input_submission_diagnostics_off"
+correctness_oracle = "the complete receipt is unchanged and no diagnostic reader exists"
+result_correctness = 0
+latency_p50_ms = 0.000400
+latency_p95_ms = 0.000400
+iteration_span_ms = 0.000500
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 5244
+steady_allocated_bytes = 5179
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0012
+  rationale = "three times the measured 0.000400 ms p95"
+
+[[measurement]]
+workload = "input_submission_diagnostics_normal"
+correctness_oracle = "the complete receipt is unchanged and exactly its one normal record drains without loss"
+result_correctness = 0
+latency_p50_ms = 0.000500
+latency_p95_ms = 0.000600
+iteration_span_ms = 0.000891
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 15363
+steady_allocated_bytes = 14595
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0018
+  rationale = "three times the measured 0.000600 ms p95"
+
+[[measurement]]
+workload = "input_submission_diagnostics_debug"
+correctness_oracle = "the complete receipt is unchanged and its debug start, route attempt, and normal terminal record drain without loss"
+result_correctness = 0
+latency_p50_ms = 0.000600
+latency_p95_ms = 0.000600
+iteration_span_ms = 0.000987
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 15651
+steady_allocated_bytes = 14595
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0018
+  rationale = "three times the measured 0.000600 ms p95"
+
+[[measurement]]
+workload = "input_submission_diagnostic_overflow"
+correctness_oracle = "four complete receipts remain unchanged while the four-slot queue retains four normal records and reports eight debug losses"
+result_correctness = 0
+latency_p50_ms = 0.002400
+latency_p95_ms = 0.002400
+iteration_span_ms = 0.003036
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 7251
+steady_allocated_bytes = 5955
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0072
+  rationale = "three times the measured 0.002400 ms p95"
+
+[[measurement]]
+workload = "capture_mapping_diagnostics_off"
+correctness_oracle = "the exact retained frame maps to 3072 RGBA8 bytes and no diagnostic reader exists"
+result_correctness = 0
+latency_p50_ms = 0.000100
+latency_p95_ms = 0.000100
+iteration_span_ms = 0.000137
+mapped_bytes_per_result = 3072
+peak_allocated_bytes = 4667
+steady_allocated_bytes = 4667
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0003
+  rationale = "three times the measured 0.000100 ms p95"
+
+[[measurement]]
+workload = "capture_mapping_diagnostics_normal"
+correctness_oracle = "the exact retained frame maps unchanged while normal diagnostics retain no debug-only frame or mapping facts"
+result_correctness = 0
+latency_p50_ms = 0.000100
+latency_p95_ms = 0.000200
+iteration_span_ms = 0.000168
+mapped_bytes_per_result = 3072
+peak_allocated_bytes = 14083
+steady_allocated_bytes = 14083
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0006
+  rationale = "three times the measured 0.000200 ms p95"
+
+[[measurement]]
+workload = "capture_mapping_diagnostics_debug"
+correctness_oracle = "the exact retained frame maps unchanged with one frame fact, one mapping fact, and their two starts"
+result_correctness = 0
+latency_p50_ms = 0.000300
+latency_p95_ms = 0.000300
+iteration_span_ms = 0.000619
+mapped_bytes_per_result = 3072
+peak_allocated_bytes = 15251
+steady_allocated_bytes = 14083
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0009
+  rationale = "three times the measured 0.000300 ms p95"
+
+[[measurement]]
+workload = "session_close_drain_diagnostics_off"
+correctness_oracle = "explicit close succeeds with no diagnostic reader or drain allocation"
+result_correctness = 0
+latency_p50_ms = 0.000100
+latency_p95_ms = 0.000100
+iteration_span_ms = 0.000942
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 698
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0003
+  rationale = "three times the measured 0.000100 ms p95"
+
+[[measurement]]
+workload = "session_close_drain_diagnostics_normal"
+correctness_oracle = "explicit close and its one normal lifecycle record drain without loss"
+result_correctness = 0
+latency_p50_ms = 0.000300
+latency_p95_ms = 0.000500
+iteration_span_ms = 0.002139
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 10850
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0015
+  rationale = "three times the measured 0.000500 ms p95"
+
+[[measurement]]
+workload = "session_close_drain_diagnostics_debug"
+correctness_oracle = "explicit close and its debug start plus normal lifecycle record drain without loss"
+result_correctness = 0
+latency_p50_ms = 0.000400
+latency_p95_ms = 0.000400
+iteration_span_ms = 0.002007
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 10994
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 0.0012
+  rationale = "three times the measured 0.000400 ms p95"

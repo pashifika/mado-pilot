@@ -41,10 +41,10 @@ the measured plan uses 200 samples after 20 warmups.
 The `aarch64-apple-darwin` run used an Apple M1 Pro with 10 cores and 32 GiB on
 macOS 26.5.2 (25F84). Its tracked profile is
 [`phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml`](../benchmarks/phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml).
-No approved Windows timing host was available, so the matching tracked artifact
-is an explicit
-[evidence gap](../benchmarks/phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc-evidence-gap.toml),
-not a copy of macOS or hosted-CI timings.
+At the time, no approved Windows timing host was available, so the matching
+tracked artifact was an explicit evidence gap rather than a copy of macOS or
+hosted-CI timings. ADR 0026 later replaced it with the named-host
+[`x86_64-pc-windows-msvc` profile](../benchmarks/phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc.toml).
 
 ## Decision
 
@@ -113,12 +113,12 @@ while still bounding queue and per-case storage. Queue capacity itself remains
 validated at construction and capped by `MAX_DIAGNOSTIC_CAPACITY`; this budget
 measures the concrete fixture rather than replacing that contract ceiling.
 
-### Keep Windows timing explicitly unresolved
+### Keep Windows timing unresolved until a named-host run exists
 
-Release-target CI compiles and executes the benchmark's correctness and growth
-oracles on Windows, but hosted-runner timings do not set or evaluate a Windows
-latency ceiling. A named Windows host must run the full command and replace the
-gap artifact before the Windows `G-013` diagnostic workload is resolved.
+At this decision's source, release-target CI compiled and executed the
+benchmark's correctness and growth oracles on Windows, but hosted-runner timings
+set no Windows latency ceiling. ADR 0026 subsequently records the required full
+named-host run and resolves this workload with a measured Windows profile.
 
 ## Alternatives
 
@@ -138,9 +138,9 @@ gap artifact before the Windows `G-013` diagnostic workload is resolved.
 
 The common diagnostic contract now has a repeatable capture/mapping,
 input-submission, overflow, and close/drain benchmark; an accepted macOS
-profile; hard correctness and bounded-growth gates on both release-target CI
-jobs; and an explicit Windows timing gap. Future changes to diagnostic
-recording, runtime orchestration, or queue storage must run this benchmark and
-compare the matching target profile. Phase 2 cannot claim complete `G-013`
-resolution until the Windows gap and the other open native workload profiles
-are replaced with revision-bound measurements.
+profile; and hard correctness and bounded-growth gates on both release-target
+CI jobs. ADR 0026 subsequently accepts the matching named-host Windows profile.
+Future changes to diagnostic recording, runtime orchestration, or queue storage
+must run this benchmark and compare the matching target profile. Phase 2 still
+cannot claim complete `G-013` resolution until the other open native workload
+and final-source regression profiles are measured.
