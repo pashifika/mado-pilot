@@ -46,7 +46,7 @@ mod native {
     #[cfg(windows)]
     use mado_pilot::{
         CapabilitySupport, CoordinateSpace, InputAddressScope, InputReceipt, Point, PointerButton,
-        SubmissionEvidence, TargetKind,
+        SequenceLimits, SubmissionEvidence, TargetKind,
     };
     #[cfg(target_os = "macos")]
     use mado_pilot_platform_macos::fixture_protocol as protocol;
@@ -379,30 +379,42 @@ mod native {
                 "observation role=target family=button-down units=1",
             ])
         }
+        fn next_pointer_moves(&self, count: usize) -> bool {
+            let deadline = Instant::now() + OPERATION_WAIT;
+            (0..count).all(|_| {
+                self.next_target_observation(
+                    "observation role=target family=pointer-move units=1",
+                    deadline,
+                )
+            })
+        }
 
         fn next_target_observations(&self, expected: &[&str]) -> bool {
             let deadline = Instant::now() + OPERATION_WAIT;
-            for expected_line in expected {
-                loop {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
+            expected
+                .iter()
+                .all(|expected_line| self.next_target_observation(expected_line, deadline))
+        }
+
+        fn next_target_observation(&self, expected_line: &str, deadline: Instant) -> bool {
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return false;
+                }
+                let Ok(line) = self.lines.recv_timeout(remaining) else {
+                    return false;
+                };
+                if line.starts_with("observation role=target ") {
+                    if line != expected_line {
+                        eprintln!(
+                            "ordinary fixture observation mismatch: expected `{expected_line}`, observed `{line}`"
+                        );
                         return false;
                     }
-                    let Ok(line) = self.lines.recv_timeout(remaining) else {
-                        return false;
-                    };
-                    if line.starts_with("observation role=target ") {
-                        if line != *expected_line {
-                            eprintln!(
-                                "ordinary fixture observation mismatch: expected `{expected_line}`, observed `{line}`"
-                            );
-                            return false;
-                        }
-                        break;
-                    }
+                    return true;
                 }
             }
-            true
         }
     }
 
@@ -879,6 +891,17 @@ mod native {
                         ordinary_window_button_submission,
                     ),
                 );
+                #[cfg(windows)]
+                workloads.insert(
+                    3,
+                    measure(
+                        "ordinary_window_max_sequence",
+                        "the maximum accepted 256-event sequence crosses the ordinary production route, reports every submission, and reaches only the selected fixture",
+                        plan,
+                        OrdinaryInputFlow::spawn,
+                        ordinary_window_max_sequence,
+                    ),
+                );
                 workloads
             }
         }
@@ -1193,6 +1216,34 @@ mod native {
         let elapsed = started.elapsed();
         let correct = complete_ordinary_receipt(&receipt, flow.target, 2)
             && flow.fixture.next_pointer_button_press();
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(windows)]
+    fn ordinary_window_max_sequence(flow: &OrdinaryInputFlow) -> Sample {
+        let point = Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5)
+            .expect("the maximum-sequence benchmark point is normalized");
+        let sequence = InputSequence::new(
+            std::iter::repeat_n(InputEvent::PointerMove(point), SequenceLimits::MAX_EVENTS)
+                .collect(),
+        )
+        .expect("the maximum ordinary sequence is accepted");
+        let started = Instant::now();
+        let receipt = flow
+            .session
+            .send_input(
+                &InputRequest::new(
+                    flow.target,
+                    sequence,
+                    DeliveryPlan::require(InputDelivery::WindowMessage),
+                )
+                .with_focus(FocusPolicy::Preserve),
+                &bounded(OPERATION_WAIT),
+            )
+            .expect("maximum ordinary submission returns a receipt");
+        let elapsed = started.elapsed();
+        let correct = complete_ordinary_receipt(&receipt, flow.target, SequenceLimits::MAX_EVENTS)
+            && flow.fixture.next_pointer_moves(SequenceLimits::MAX_EVENTS);
         Sample::unmapped(elapsed, correct)
     }
 
