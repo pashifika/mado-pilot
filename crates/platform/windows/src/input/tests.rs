@@ -22,7 +22,7 @@ use mado_pilot_input::{
 
 use super::{
     DriverState, GeometryLedger, InputDriver, SubmissionContexts, SubmissionFailure,
-    WindowsInputController, input_capability,
+    WindowsInputController, input_capability, wait_delay,
 };
 
 #[derive(Debug, Default)]
@@ -40,6 +40,19 @@ impl ManualClock {
 impl Clock for ManualClock {
     fn now(&self) -> MonotonicInstant {
         MonotonicInstant::from_origin(*self.elapsed.lock().expect("uncontended"))
+    }
+}
+#[derive(Debug, Default)]
+struct StepClock {
+    milliseconds: AtomicUsize,
+}
+
+impl Clock for StepClock {
+    fn now(&self) -> MonotonicInstant {
+        let milliseconds = self.milliseconds.fetch_add(1, Ordering::AcqRel);
+        MonotonicInstant::from_origin(Duration::from_millis(
+            u64::try_from(milliseconds).expect("test tick fits u64"),
+        ))
     }
 }
 
@@ -217,9 +230,10 @@ fn attempted_routes(receipt: &InputReceipt) -> Vec<InputDelivery> {
 
 #[test]
 fn target_classes_advertise_only_the_verified_route_matrix() {
-    let ordinary = input_capability(TargetKind::Window, Some("OrdinaryWindow"));
-    let fixture = input_capability(TargetKind::Window, Some(CLASS_NAME));
-    let display = input_capability(TargetKind::Display, None);
+    let ordinary = input_capability(TargetKind::Window, Some("OrdinaryWindow"), true);
+    let fixture = input_capability(TargetKind::Window, Some(CLASS_NAME), true);
+    let unavailable = input_capability(TargetKind::Window, Some("OrdinaryWindow"), false);
+    let display = input_capability(TargetKind::Display, None, false);
 
     for operation in InputOperationKind::ALL {
         assert_eq!(
@@ -230,7 +244,13 @@ fn target_classes_advertise_only_the_verified_route_matrix() {
             ordinary
                 .pair(operation, InputDelivery::WindowMessage)
                 .support(),
-            CapabilitySupport::Unsupported
+            CapabilitySupport::Unknown
+        );
+        assert_eq!(
+            ordinary
+                .pair(operation, InputDelivery::WindowMessage)
+                .evidence(),
+            Some(SubmissionEvidence::TargetQueueAdmission)
         );
         assert_eq!(
             fixture.pair(operation, InputDelivery::System).support(),
@@ -241,6 +261,18 @@ fn target_classes_advertise_only_the_verified_route_matrix() {
                 .pair(operation, InputDelivery::WindowMessage)
                 .support(),
             CapabilitySupport::Supported
+        );
+        assert_eq!(
+            fixture
+                .pair(operation, InputDelivery::WindowMessage)
+                .evidence(),
+            Some(SubmissionEvidence::TargetProtocolAcknowledgement)
+        );
+        assert_eq!(
+            unavailable
+                .pair(operation, InputDelivery::WindowMessage)
+                .support(),
+            CapabilitySupport::Unsupported
         );
         assert_eq!(
             fixture
@@ -278,6 +310,11 @@ fn target_classes_advertise_only_the_verified_route_matrix() {
                 .pair(operation, InputDelivery::System)
                 .focus_required()
         );
+        assert!(
+            !ordinary
+                .pair(operation, InputDelivery::WindowMessage)
+                .focus_required()
+        );
     }
     assert!(
         !display
@@ -294,6 +331,11 @@ fn target_classes_advertise_only_the_verified_route_matrix() {
         assert!(
             ordinary
                 .pair(InputOperationKind::Pointer, InputDelivery::System)
+                .accepts_pointer_space(space)
+        );
+        assert!(
+            ordinary
+                .pair(InputOperationKind::Pointer, InputDelivery::WindowMessage)
                 .accepts_pointer_space(space)
         );
         assert!(
@@ -761,4 +803,26 @@ fn close_is_idempotent_and_stops_admission() {
         .execute(&request, &operation)
         .expect_err("closed controller");
     assert_eq!(error.status(), mado_pilot_core::Status::Closed);
+}
+
+#[test]
+fn delay_observes_cancellation_without_native_submission() {
+    let token = CancellationToken::new();
+    token.cancel();
+    let operation = OperationContext::new().with_cancellation(token);
+    assert_eq!(
+        wait_delay(Duration::from_millis(10), &operation),
+        Err(InputFault::Cancelled)
+    );
+}
+
+#[test]
+fn delay_observes_deadline_with_a_deterministic_clock() {
+    let operation = OperationContext::new()
+        .with_clock(Arc::new(StepClock::default()))
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(3)));
+    assert_eq!(
+        wait_delay(Duration::from_millis(10), &operation),
+        Err(InputFault::DeadlineExceeded)
+    );
 }

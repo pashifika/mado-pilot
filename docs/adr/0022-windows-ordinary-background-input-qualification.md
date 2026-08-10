@@ -1,6 +1,6 @@
 # ADR 0022: Keep Ordinary Windows Background Input System-Only
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR 0027 for the ordinary-window product decision; retained for the historical application-acknowledgement qualification
 - **Date:** 2026-08-09
 - **Resolves gate:** Phase 2.1 Windows ordinary background-input qualification
 - **Supersedes:** _none_

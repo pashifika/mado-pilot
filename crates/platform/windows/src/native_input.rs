@@ -14,9 +14,10 @@ use mado_pilot_input::{
     PointerGeometry, PressedState,
 };
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, GetLastError, HANDLE, HWND, LPARAM, POINT, SetLastError,
-    WIN32_ERROR, WPARAM,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_WINDOW_HANDLE, ERROR_NOT_ENOUGH_QUOTA,
+    GetLastError, HANDLE, HWND, LPARAM, POINT, SetLastError, WIN32_ERROR, WPARAM,
 };
+use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::Security::{
     GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, TOKEN_MANDATORY_LABEL,
     TOKEN_QUERY, TokenIntegrityLevel,
@@ -26,16 +27,16 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyboardLayout, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBD_EVENT_FLAGS, KEYBDINPUT,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSE_EVENT_FLAGS,
-    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
-    MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
-    VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_HOME,
-    VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB,
-    VK_UP, VkKeyScanExW,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MAPVK_VK_TO_VSC_EX,
+    MOUSE_EVENT_FLAGS, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
+    MOUSEINPUT, MapVirtualKeyExW, SendInput, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN,
+    VK_END, VK_ESCAPE, VK_F1, VK_HOME, VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN,
+    VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP, VkKeyScanExW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
+    GetCursorPos, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, PostMessageW,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_SWAPBUTTON, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
     SMTO_ABORTIFHUNG, SMTO_BLOCK, SendMessageTimeoutW, SetForegroundWindow, WM_COPYDATA,
 };
@@ -47,6 +48,8 @@ use crate::input::{
     SubmissionFailure, SystemButtonState, SystemKeyState,
 };
 use crate::provider::TargetRecord;
+use crate::window_authority::WindowAuthorityStatus;
+use crate::window_message::{self, MessageUnit, ResolvedWindowKey, WindowMessageSource};
 
 const WINDOW_MESSAGE_TIMEOUT: Duration = Duration::from_millis(100);
 type SubmissionResult = Result<(), SubmissionFailure>;
@@ -64,6 +67,16 @@ trait SystemCommitSource {
     ) -> Result<(), InputFault>;
 
     fn send_input(&self, inputs: &[INPUT]) -> usize;
+}
+
+trait WindowMessageCommitSource {
+    fn revalidate_window_message_commit(
+        &self,
+        focus: FocusPolicy,
+        expected_geometry: Option<GeometryFingerprint>,
+    ) -> Result<(), InputFault>;
+
+    fn post_message(&self, unit: MessageUnit) -> Result<(), InputFault>;
 }
 
 pub(crate) struct NativeInputDriver {
@@ -113,6 +126,106 @@ impl NativeInputDriver {
             }
             _ => Err(InputFault::UnsupportedCombination),
         }
+    }
+    fn ensure_window_message_focus(&self, policy: FocusPolicy) -> Result<(), InputFault> {
+        match policy {
+            FocusPolicy::Preserve | FocusPolicy::ActivateIfRequired => Ok(()),
+            FocusPolicy::RequireFocused => {
+                let hwnd = self.hwnd()?;
+                // SAFETY: GetForegroundWindow returns an opaque handle and
+                // performs no caller-memory access.
+                if unsafe { GetForegroundWindow() } == hwnd {
+                    Ok(())
+                } else {
+                    Err(InputFault::FocusRequired)
+                }
+            }
+            _ => Err(InputFault::UnsupportedCombination),
+        }
+    }
+
+    fn ensure_window_authority(&self) -> Result<(), InputFault> {
+        let authority = self
+            .record
+            .authority()
+            .ok_or(InputFault::RouteUnavailable)?;
+        match authority.status() {
+            WindowAuthorityStatus::SameTarget => Ok(()),
+            WindowAuthorityStatus::TargetLost
+            | WindowAuthorityStatus::ReplacementOrReuse
+            | WindowAuthorityStatus::RelationshipChanged => Err(InputFault::TargetLost),
+            WindowAuthorityStatus::Unavailable => Err(InputFault::RouteUnavailable),
+        }
+    }
+
+    fn revalidate_window_message_commit(
+        &self,
+        focus: FocusPolicy,
+        expected_geometry: Option<GeometryFingerprint>,
+    ) -> Result<(), InputFault> {
+        self.record.ensure_live()?;
+        self.ensure_window_authority()?;
+        self.ensure_window_message_focus(focus)?;
+        if target_has_higher_integrity(&self.record)? == Some(true) {
+            return Err(InputFault::PolicyRefused);
+        }
+        if let Some(expected) = expected_geometry {
+            let (_, current) = self.current_geometry()?;
+            if current != expected {
+                return Err(InputFault::GeometryChanged);
+            }
+        }
+        Ok(())
+    }
+
+    fn window_message_pointer(
+        &self,
+        geometry: PointerGeometry,
+        state: &DriverState,
+    ) -> Result<PointerState, InputFault> {
+        let pointer = state.pointer.ok_or(InputFault::UnsupportedCoordinate)?;
+        let (_, current) = self.policy_geometry(geometry)?;
+        if pointer.geometry != current {
+            return Err(InputFault::GeometryChanged);
+        }
+        Ok(pointer)
+    }
+
+    fn message_client_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault> {
+        self.record.ensure_live()?;
+        self.ensure_window_authority()?;
+        let hwnd = self.hwnd()?;
+        let mut point = POINT {
+            x: screen.0,
+            y: screen.1,
+        };
+        // SAFETY: `point` is a complete writable POINT and `hwnd` is the retained
+        // target. Final authority and geometry are checked again before posting.
+        if !unsafe { ScreenToClient(hwnd, &raw mut point) }.as_bool() {
+            return self
+                .ensure_window_authority()
+                .and(Err(InputFault::SubmissionFailed));
+        }
+        Ok((
+            i16::try_from(point.x).map_err(|_| InputFault::UnsupportedCoordinate)?,
+            i16::try_from(point.y).map_err(|_| InputFault::UnsupportedCoordinate)?,
+        ))
+    }
+
+    fn raw_post_window_message(&self, unit: MessageUnit) -> Result<(), InputFault> {
+        let hwnd = self.hwnd()?;
+        // SAFETY: the caller immediately revalidated `hwnd`. The scalar
+        // system-message parameters contain no borrowed pointer, and the
+        // generated wrapper captures the thread's last error before returning.
+        unsafe {
+            PostMessageW(
+                Some(hwnd),
+                unit.message,
+                WPARAM(unit.wparam),
+                LPARAM(unit.lparam),
+            )
+        }
+        .map_err(|error| map_post_message_error(&error))
     }
 
     fn current_geometry(&self) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
@@ -269,11 +382,20 @@ impl NativeInputDriver {
                 )
             }
             InputEvent::KeyPress(key) => {
-                let (virtual_key, extended) = resolve_virtual_key(*key, &self.record)?;
-                send_resolved_key(virtual_key, extended, true, self, focus, operation)?;
+                let (virtual_key, scan_code, extended) = resolve_virtual_key(*key, &self.record)?;
+                send_resolved_key(
+                    virtual_key,
+                    scan_code,
+                    extended,
+                    true,
+                    self,
+                    focus,
+                    operation,
+                )?;
                 state.keys.push(SystemKeyState {
                     logical: *key,
                     virtual_key: virtual_key.0,
+                    scan_code,
                     extended,
                 });
                 Ok(())
@@ -283,15 +405,24 @@ impl NativeInputDriver {
                     .keys
                     .iter()
                     .rposition(|pressed| pressed.logical == *key);
-                let (virtual_key, extended) = index
+                let (virtual_key, scan_code, extended) = index
                     .map(|index| {
                         (
                             VIRTUAL_KEY(state.keys[index].virtual_key),
+                            state.keys[index].scan_code,
                             state.keys[index].extended,
                         )
                     })
                     .map_or_else(|| resolve_virtual_key(*key, &self.record), Ok)?;
-                send_resolved_key(virtual_key, extended, false, self, focus, operation)?;
+                send_resolved_key(
+                    virtual_key,
+                    scan_code,
+                    extended,
+                    false,
+                    self,
+                    focus,
+                    operation,
+                )?;
                 if let Some(index) = index {
                     state.keys.remove(index);
                 }
@@ -305,7 +436,7 @@ impl NativeInputDriver {
         }
     }
 
-    fn submit_window_message(
+    fn submit_fixture_message(
         &self,
         event: &InputEvent,
         geometry: PointerGeometry,
@@ -333,6 +464,39 @@ impl NativeInputDriver {
             InputFault::SubmissionFailed,
         )
     }
+
+    fn submit_window_message(
+        &self,
+        focus: FocusPolicy,
+        event: &InputEvent,
+        geometry: PointerGeometry,
+        state: &mut DriverState,
+        operation: &OperationContext,
+    ) -> SubmissionResult {
+        self.ensure_window_message_focus(focus)?;
+        if self.record.class_name() == Some(CLASS_NAME) {
+            return self.submit_fixture_message(event, geometry, state, operation);
+        }
+        let pointer = match event {
+            InputEvent::PointerMove(point) => Some(self.resolve_pointer(*point, geometry)?),
+            InputEvent::PointerPress(_)
+            | InputEvent::PointerRelease(_)
+            | InputEvent::PointerScroll { .. } => {
+                Some(self.window_message_pointer(geometry, state)?)
+            }
+            _ => None,
+        };
+        window_message::submit(
+            &NativeWindowMessageSource {
+                driver: self,
+                focus,
+            },
+            event,
+            pointer,
+            state,
+            operation,
+        )
+    }
 }
 
 impl SystemCommitSource for NativeInputDriver {
@@ -357,6 +521,52 @@ impl SystemCommitSource for NativeInputDriver {
 
     fn send_input(&self, inputs: &[INPUT]) -> usize {
         raw_send(inputs)
+    }
+}
+impl WindowMessageCommitSource for NativeInputDriver {
+    fn revalidate_window_message_commit(
+        &self,
+        focus: FocusPolicy,
+        expected_geometry: Option<GeometryFingerprint>,
+    ) -> Result<(), InputFault> {
+        NativeInputDriver::revalidate_window_message_commit(self, focus, expected_geometry)
+    }
+
+    fn post_message(&self, unit: MessageUnit) -> Result<(), InputFault> {
+        self.raw_post_window_message(unit)
+    }
+}
+
+struct NativeWindowMessageSource<'driver> {
+    driver: &'driver NativeInputDriver,
+    focus: FocusPolicy,
+}
+
+impl WindowMessageSource for NativeWindowMessageSource<'_> {
+    fn client_point(&self, screen: (i32, i32)) -> Result<(i16, i16), InputFault> {
+        self.driver.message_client_point(screen)
+    }
+
+    fn resolve_button(&self, button: PointerButton) -> Result<u8, InputFault> {
+        physical_button(button)
+    }
+
+    fn resolve_key(&self, key: Key) -> Result<ResolvedWindowKey, InputFault> {
+        let (virtual_key, scan_code, extended) = resolve_virtual_key(key, &self.driver.record)?;
+        Ok(ResolvedWindowKey {
+            virtual_key: virtual_key.0,
+            scan_code,
+            extended,
+        })
+    }
+
+    fn post(
+        &self,
+        unit: MessageUnit,
+        expected_geometry: Option<GeometryFingerprint>,
+        operation: &OperationContext,
+    ) -> SubmissionResult {
+        commit_window_message(self.driver, self.focus, unit, expected_geometry, operation)
     }
 }
 
@@ -389,19 +599,21 @@ impl InputDriver for NativeInputDriver {
                 }
             }
             InputDelivery::WindowMessage => {
-                if self.record.class_name() != Some(CLASS_NAME) {
-                    return Err(InputFault::UnsupportedCombination);
-                }
+                self.ensure_window_message_focus(focus)?;
                 if target_has_higher_integrity(&self.record)? == Some(true) {
                     return Err(InputFault::PolicyRefused);
                 }
-                send_fixture_packet(
-                    &self.record,
-                    &query_packet(),
-                    operation,
-                    InputFault::RouteUnavailable,
-                )
-                .map_err(|failure| failure.fault)
+                if self.record.class_name() == Some(CLASS_NAME) {
+                    send_fixture_packet(
+                        &self.record,
+                        &query_packet(),
+                        operation,
+                        InputFault::RouteUnavailable,
+                    )
+                    .map_err(|failure| failure.fault)
+                } else {
+                    self.ensure_window_authority()
+                }
             }
             _ => Err(InputFault::UnsupportedCombination),
         }
@@ -426,7 +638,7 @@ impl InputDriver for NativeInputDriver {
                 self.submit_system(focus, event, geometry, state, operation, cleanup_budget)
             }
             InputDelivery::WindowMessage => {
-                self.submit_window_message(event, geometry, state, operation)
+                self.submit_window_message(focus, event, geometry, state, operation)
             }
             _ => Err(InputFault::UnsupportedCombination.into()),
         }
@@ -443,28 +655,39 @@ impl InputDriver for NativeInputDriver {
         match route {
             InputDelivery::System => send_system_release(pressed, state, self, operation),
             InputDelivery::WindowMessage => {
-                let event = match pressed {
-                    PressedState::Button(button) => InputEvent::PointerRelease(button),
-                    PressedState::Key(key) => InputEvent::KeyRelease(key),
-                    _ => return Err(InputFault::UnsupportedCombination),
-                };
-                let point = match event {
-                    InputEvent::PointerRelease(_) => Some(
-                        state
-                            .pointer
-                            .ok_or(InputFault::UnsupportedCoordinate)?
-                            .screen,
-                    ),
-                    _ => None,
-                };
-                let packet = encode_event(&event, point)?;
-                send_fixture_packet(
-                    &self.record,
-                    &packet,
+                if self.record.class_name() == Some(CLASS_NAME) {
+                    let event = match pressed {
+                        PressedState::Button(button) => InputEvent::PointerRelease(button),
+                        PressedState::Key(key) => InputEvent::KeyRelease(key),
+                        _ => return Err(InputFault::UnsupportedCombination),
+                    };
+                    let point = match event {
+                        InputEvent::PointerRelease(_) => Some(
+                            state
+                                .pointer
+                                .ok_or(InputFault::UnsupportedCoordinate)?
+                                .screen,
+                        ),
+                        _ => None,
+                    };
+                    let packet = encode_event(&event, point)?;
+                    return send_fixture_packet(
+                        &self.record,
+                        &packet,
+                        operation,
+                        InputFault::SubmissionFailed,
+                    )
+                    .map_err(|failure| failure.fault);
+                }
+                window_message::release(
+                    &NativeWindowMessageSource {
+                        driver: self,
+                        focus: FocusPolicy::Preserve,
+                    },
+                    pressed,
+                    state,
                     operation,
-                    InputFault::SubmissionFailed,
                 )
-                .map_err(|failure| failure.fault)
             }
             _ => Err(InputFault::UnsupportedCombination),
         }
@@ -475,6 +698,43 @@ fn operation_fault(operation: &OperationContext) -> Result<(), InputFault> {
     operation
         .interruption()
         .map_or(Ok(()), |interruption| Err(InputFault::from(interruption)))
+}
+fn map_post_message_error(error: &windows::core::Error) -> InputFault {
+    match WIN32_ERROR::from_error(error) {
+        Some(code) if code == ERROR_ACCESS_DENIED => InputFault::PolicyRefused,
+        Some(code) if code == ERROR_INVALID_WINDOW_HANDLE => InputFault::TargetLost,
+        Some(code) if code == ERROR_NOT_ENOUGH_QUOTA => InputFault::SubmissionFailed,
+        _ => InputFault::SubmissionFailed,
+    }
+}
+fn commit_window_message<S: WindowMessageCommitSource + ?Sized>(
+    source: &S,
+    focus: FocusPolicy,
+    unit: MessageUnit,
+    expected_geometry: Option<GeometryFingerprint>,
+    operation: &OperationContext,
+) -> SubmissionResult {
+    operation_fault(operation)?;
+    source.revalidate_window_message_commit(focus, expected_geometry)?;
+    operation_fault(operation)?;
+    match source.post_message(unit) {
+        Ok(()) => {
+            if let Err(fault) = source.revalidate_window_message_commit(focus, expected_geometry) {
+                return Err(SubmissionFailure::during_event(fault));
+            }
+            if let Err(fault) = operation_fault(operation) {
+                return Err(SubmissionFailure::during_event(fault));
+            }
+            Ok(())
+        }
+        Err(fault) => {
+            let fault = source
+                .revalidate_window_message_commit(focus, expected_geometry)
+                .err()
+                .unwrap_or(fault);
+            Err(SubmissionFailure::before_event(fault))
+        }
+    }
 }
 
 fn commit_prepared_system_input<S: SystemCommitSource + ?Sized>(
@@ -630,6 +890,7 @@ fn send_system_scroll(
 
 fn send_resolved_key(
     virtual_key: VIRTUAL_KEY,
+    scan_code: u8,
     extended: bool,
     pressed: bool,
     driver: &NativeInputDriver,
@@ -643,7 +904,7 @@ fn send_resolved_key(
     if !pressed {
         flags |= KEYEVENTF_KEYUP;
     }
-    let input = keyboard_input(virtual_key, 0, flags);
+    let input = keyboard_input(virtual_key, u16::from(scan_code), flags);
     send_exact(std::slice::from_ref(&input), driver, focus, None, operation)
 }
 
@@ -715,10 +976,11 @@ fn send_system_release(
                 .keys
                 .iter()
                 .rposition(|pressed| pressed.logical == key);
-            let (virtual_key, extended) = index
+            let (virtual_key, scan_code, extended) = index
                 .map(|index| {
                     (
                         VIRTUAL_KEY(state.keys[index].virtual_key),
+                        state.keys[index].scan_code,
                         state.keys[index].extended,
                     )
                 })
@@ -727,7 +989,7 @@ fn send_system_release(
             if extended {
                 flags |= KEYEVENTF_EXTENDEDKEY;
             }
-            let input = keyboard_input(virtual_key, 0, flags);
+            let input = keyboard_input(virtual_key, u16::from(scan_code), flags);
             send_cleanup_exact(std::slice::from_ref(&input), driver, cleanup)?;
             if let Some(index) = index {
                 state.keys.remove(index);
@@ -825,7 +1087,21 @@ fn send_failure(record: &TargetRecord, inserted: usize) -> SubmissionFailure {
     SubmissionFailure::before_event(fault)
 }
 
-fn resolve_virtual_key(key: Key, record: &TargetRecord) -> Result<(VIRTUAL_KEY, bool), InputFault> {
+fn resolve_virtual_key(
+    key: Key,
+    record: &TargetRecord,
+) -> Result<(VIRTUAL_KEY, u8, bool), InputFault> {
+    let hwnd = match record.key() {
+        NativeKey::Window(raw) => HWND(std::ptr::with_exposed_provenance_mut::<c_void>(raw)),
+        NativeKey::Display(_) => return Err(InputFault::UnsupportedCombination),
+    };
+    // SAFETY: hwnd is the retained target's current native handle.
+    let thread = unsafe { GetWindowThreadProcessId(hwnd, None) };
+    if thread == 0 {
+        return Err(InputFault::TargetLost);
+    }
+    // SAFETY: thread is the current owner returned for hwnd.
+    let layout = unsafe { GetKeyboardLayout(thread) };
     let value = match key {
         Key::Character(character) => {
             let mut encoded = [0u16; 2];
@@ -833,19 +1109,6 @@ fn resolve_virtual_key(key: Key, record: &TargetRecord) -> Result<(VIRTUAL_KEY, 
             if units.len() != 1 {
                 return Err(InputFault::UnsupportedCombination);
             }
-            let hwnd = match record.key() {
-                NativeKey::Window(raw) => {
-                    HWND(std::ptr::with_exposed_provenance_mut::<c_void>(raw))
-                }
-                NativeKey::Display(_) => return Err(InputFault::UnsupportedCombination),
-            };
-            // SAFETY: hwnd is the retained target's current native handle.
-            let thread = unsafe { GetWindowThreadProcessId(hwnd, None) };
-            if thread == 0 {
-                return Err(InputFault::TargetLost);
-            }
-            // SAFETY: thread is the current owner returned for hwnd.
-            let layout = unsafe { GetKeyboardLayout(thread) };
             // SAFETY: layout is the target thread's current keyboard layout.
             let mapped = unsafe { VkKeyScanExW(units[0], layout) };
             if mapped == -1 || ((mapped.cast_unsigned() >> 8) & 0xff) != 0 {
@@ -876,20 +1139,31 @@ fn resolve_virtual_key(key: Key, record: &TargetRecord) -> Result<(VIRTUAL_KEY, 
         Key::PageDown => VK_NEXT,
         _ => return Err(InputFault::UnsupportedCombination),
     };
-    let extended = matches!(
-        key,
-        Key::Modifier(mado_pilot_input::Modifier::Meta)
-            | Key::Delete
-            | Key::ArrowUp
-            | Key::ArrowDown
-            | Key::ArrowLeft
-            | Key::ArrowRight
-            | Key::Home
-            | Key::End
-            | Key::PageUp
-            | Key::PageDown
-    );
-    Ok((value, extended))
+    // SAFETY: `value` is a documented virtual-key code and `layout` belongs to
+    // the target thread observed above.
+    let mapped_scan =
+        unsafe { MapVirtualKeyExW(u32::from(value.0), MAPVK_VK_TO_VSC_EX, Some(layout)) };
+    let scan_code = u8::try_from(mapped_scan & 0xff)
+        .ok()
+        .filter(|scan| *scan != 0)
+        .ok_or(InputFault::UnsupportedCombination)?;
+    let prefix = (mapped_scan >> 8) & 0xff;
+    let extended = prefix == 0xe0
+        || prefix == 0xe1
+        || matches!(
+            key,
+            Key::Modifier(mado_pilot_input::Modifier::Meta)
+                | Key::Delete
+                | Key::ArrowUp
+                | Key::ArrowDown
+                | Key::ArrowLeft
+                | Key::ArrowRight
+                | Key::Home
+                | Key::End
+                | Key::PageUp
+                | Key::PageDown
+        );
+    Ok((value, scan_code, extended))
 }
 
 fn virtual_desktop() -> Result<(i32, i32, i32, i32), InputFault> {
@@ -1120,15 +1394,20 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        SystemCommitSource, commit_prepared_system_input, keyboard_input, normalize_absolute,
+        SystemCommitSource, WindowMessageCommitSource, commit_prepared_system_input,
+        commit_window_message, keyboard_input, map_post_message_error, normalize_absolute,
         point_to_screen,
     };
     use crate::input::GeometryFingerprint;
+    use crate::window_message::MessageUnit;
     use mado_pilot_core::{
         CancellationToken, Clock, CoordinateSpace, MonotonicInstant, OperationContext, PixelExtent,
         Point, Scale, TargetPlacement,
     };
     use mado_pilot_input::{FocusPolicy, InputFault};
+    use windows::Win32::Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_INVALID_WINDOW_HANDLE, ERROR_NOT_ENOUGH_QUOTA,
+    };
     use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, KEYBD_EVENT_FLAGS, VIRTUAL_KEY};
 
     #[derive(Debug, Clone, Copy)]
@@ -1238,6 +1517,178 @@ mod tests {
     impl Clock for ManualClock {
         fn now(&self) -> MonotonicInstant {
             MonotonicInstant::from_origin(*self.elapsed.lock().expect("uncontended"))
+        }
+    }
+    #[derive(Debug, Default)]
+    struct ScriptedWindowCommitSource {
+        validations: AtomicUsize,
+        posts: AtomicUsize,
+        validation_fault: Mutex<Option<(usize, InputFault)>>,
+        post_fault: Mutex<Option<InputFault>>,
+        cancel_after_post: Mutex<Option<CancellationToken>>,
+        advance_after_post: Mutex<Option<(Arc<ManualClock>, Duration)>>,
+    }
+
+    impl ScriptedWindowCommitSource {
+        fn fail_validation(&self, index: usize, fault: InputFault) {
+            *self.validation_fault.lock().expect("uncontended") = Some((index, fault));
+        }
+
+        fn fail_post(&self, fault: InputFault) {
+            *self.post_fault.lock().expect("uncontended") = Some(fault);
+        }
+
+        fn cancel_after_post(&self, token: CancellationToken) {
+            *self.cancel_after_post.lock().expect("uncontended") = Some(token);
+        }
+
+        fn advance_after_post(&self, clock: Arc<ManualClock>, step: Duration) {
+            *self.advance_after_post.lock().expect("uncontended") = Some((clock, step));
+        }
+
+        fn post_count(&self) -> usize {
+            self.posts.load(Ordering::Acquire)
+        }
+    }
+
+    impl WindowMessageCommitSource for ScriptedWindowCommitSource {
+        fn revalidate_window_message_commit(
+            &self,
+            _focus: FocusPolicy,
+            _expected_geometry: Option<GeometryFingerprint>,
+        ) -> Result<(), InputFault> {
+            let index = self.validations.fetch_add(1, Ordering::AcqRel);
+            if let Some((fail_at, fault)) = *self.validation_fault.lock().expect("uncontended")
+                && index == fail_at
+            {
+                return Err(fault);
+            }
+            Ok(())
+        }
+
+        fn post_message(&self, _unit: MessageUnit) -> Result<(), InputFault> {
+            self.posts.fetch_add(1, Ordering::AcqRel);
+            if let Some(token) = self.cancel_after_post.lock().expect("uncontended").take() {
+                token.cancel();
+            }
+            if let Some((clock, step)) = self.advance_after_post.lock().expect("uncontended").take()
+            {
+                clock.advance(step);
+            }
+            self.post_fault
+                .lock()
+                .expect("uncontended")
+                .take()
+                .map_or(Ok(()), Err)
+        }
+    }
+
+    fn message_unit() -> MessageUnit {
+        MessageUnit {
+            message: 1,
+            wparam: 2,
+            lparam: 3,
+        }
+    }
+
+    #[test]
+    fn window_message_preflight_refusal_makes_no_post() {
+        let source = ScriptedWindowCommitSource::default();
+        source.fail_validation(0, InputFault::TargetLost);
+        let failure = commit_window_message(
+            &source,
+            FocusPolicy::Preserve,
+            message_unit(),
+            None,
+            &OperationContext::new(),
+        )
+        .expect_err("preflight refuses");
+        assert_eq!(failure.fault, InputFault::TargetLost);
+        assert!(!failure.current_event_may_have_effect);
+        assert_eq!(source.post_count(), 0);
+    }
+
+    #[test]
+    fn accepted_post_with_failed_identity_fence_is_indeterminate() {
+        let source = ScriptedWindowCommitSource::default();
+        source.fail_validation(1, InputFault::TargetLost);
+        let failure = commit_window_message(
+            &source,
+            FocusPolicy::Preserve,
+            message_unit(),
+            None,
+            &OperationContext::new(),
+        )
+        .expect_err("post-fence refuses");
+        assert_eq!(failure.fault, InputFault::TargetLost);
+        assert!(failure.current_event_may_have_effect);
+        assert_eq!(source.post_count(), 1);
+    }
+
+    #[test]
+    fn refused_post_stays_retry_unsafe_at_the_selected_route_boundary() {
+        let source = ScriptedWindowCommitSource::default();
+        source.fail_post(InputFault::SubmissionFailed);
+        let failure = commit_window_message(
+            &source,
+            FocusPolicy::Preserve,
+            message_unit(),
+            None,
+            &OperationContext::new(),
+        )
+        .expect_err("native post refuses");
+        assert_eq!(failure.fault, InputFault::SubmissionFailed);
+        assert!(!failure.current_event_may_have_effect);
+        assert_eq!(source.post_count(), 1);
+    }
+
+    #[test]
+    fn cancellation_after_accepted_post_is_partial() {
+        let source = ScriptedWindowCommitSource::default();
+        let token = CancellationToken::new();
+        source.cancel_after_post(token.clone());
+        let operation = OperationContext::new().with_cancellation(token);
+        let failure = commit_window_message(
+            &source,
+            FocusPolicy::Preserve,
+            message_unit(),
+            None,
+            &operation,
+        )
+        .expect_err("terminal cancellation");
+        assert_eq!(failure.fault, InputFault::Cancelled);
+        assert!(failure.current_event_may_have_effect);
+    }
+
+    #[test]
+    fn deadline_after_accepted_post_is_partial() {
+        let source = ScriptedWindowCommitSource::default();
+        let clock = Arc::new(ManualClock::default());
+        source.advance_after_post(clock.clone(), Duration::from_millis(5));
+        let operation = OperationContext::new()
+            .with_clock(clock)
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(5)));
+        let failure = commit_window_message(
+            &source,
+            FocusPolicy::Preserve,
+            message_unit(),
+            None,
+            &operation,
+        )
+        .expect_err("terminal deadline");
+        assert_eq!(failure.fault, InputFault::DeadlineExceeded);
+        assert!(failure.current_event_may_have_effect);
+    }
+
+    #[test]
+    fn post_message_errors_map_without_consumer_inference() {
+        for (code, expected) in [
+            (ERROR_ACCESS_DENIED, InputFault::PolicyRefused),
+            (ERROR_INVALID_WINDOW_HANDLE, InputFault::TargetLost),
+            (ERROR_NOT_ENOUGH_QUOTA, InputFault::SubmissionFailed),
+        ] {
+            let error: windows::core::Error = code.into();
+            assert_eq!(map_post_message_error(&error), expected);
         }
     }
 

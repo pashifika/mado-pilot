@@ -24,7 +24,11 @@ use crate::provider::TargetRecord;
 
 const DELAY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
-pub(crate) fn input_capability(kind: TargetKind, class_name: Option<&str>) -> InputCapability {
+pub(crate) fn input_capability(
+    kind: TargetKind,
+    class_name: Option<&str>,
+    window_message_authority: bool,
+) -> InputCapability {
     let mut capability = InputCapability::none().with_pair(
         InputOperationKind::Pointer,
         InputDelivery::System,
@@ -58,13 +62,24 @@ pub(crate) fn input_capability(kind: TargetKind, class_name: Option<&str>) -> In
                 SubmissionEvidence::SystemInputAdmission,
             )
             .with_focus_required(InputOperationKind::Text, InputDelivery::System);
-        if class_name == Some(CLASS_NAME) {
+        if window_message_authority {
+            let (support, evidence) = if class_name == Some(CLASS_NAME) {
+                (
+                    CapabilitySupport::Supported,
+                    SubmissionEvidence::TargetProtocolAcknowledgement,
+                )
+            } else {
+                (
+                    CapabilitySupport::Unknown,
+                    SubmissionEvidence::TargetQueueAdmission,
+                )
+            };
             for operation in InputOperationKind::ALL {
                 capability = capability.with_pair(
                     operation,
                     InputDelivery::WindowMessage,
-                    CapabilitySupport::Supported,
-                    SubmissionEvidence::TargetProtocolAcknowledgement,
+                    support,
+                    evidence,
                 );
             }
             for space in [
@@ -158,6 +173,7 @@ pub(crate) struct DriverState {
 pub(crate) struct SystemKeyState {
     pub(crate) logical: Key,
     pub(crate) virtual_key: u16,
+    pub(crate) scan_code: u8,
     pub(crate) extended: bool,
 }
 

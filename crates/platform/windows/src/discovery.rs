@@ -70,7 +70,12 @@ pub(crate) struct TargetMetadata {
 }
 
 impl TargetMetadata {
-    pub(crate) fn describe(&self, id: TargetId, kind: TargetKind) -> TargetDescription {
+    pub(crate) fn describe(
+        &self,
+        id: TargetId,
+        kind: TargetKind,
+        window_message_authority: bool,
+    ) -> TargetDescription {
         TargetDescription::new(
             id,
             self.name.clone(),
@@ -81,7 +86,7 @@ impl TargetMetadata {
         .with_capability(TargetCapability::new(
             kind,
             CapabilitySupport::Supported,
-            input_capability(kind, self.class_name.as_deref()),
+            input_capability(kind, self.class_name.as_deref(), window_message_authority),
         ))
     }
 }

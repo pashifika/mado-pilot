@@ -23,6 +23,7 @@ use crate::discovery::{Candidate, CaptureItem, NativeKey, TargetMetadata, invent
 use crate::input::{GeometryLedger, WindowsInputController};
 use crate::native::{NativeSession, NativeSessionSource, native_target_fault};
 use crate::storage::validate_surface;
+use crate::window_authority::RetainedWindowAuthority;
 
 /// Provider name qualifying every native Windows target identity.
 pub const PROVIDER: ProviderId = ProviderId::new("windows");
@@ -56,6 +57,7 @@ pub(crate) struct TargetRecord {
     item: CaptureItem,
     lost: Arc<AtomicBool>,
     geometry: Arc<GeometryLedger>,
+    authority: Option<RetainedWindowAuthority>,
     _closed_token: Option<i64>,
 }
 
@@ -145,6 +147,10 @@ impl WindowsCaptureProvider {
 
     fn create_record(&self, candidate: Candidate) -> Result<Arc<TargetRecord>> {
         let id = self.issuer.issue_target(PROVIDER)?;
+        let authority = RetainedWindowAuthority::capture(
+            candidate.key,
+            candidate.metadata.class_name.as_deref(),
+        );
         let lost = Arc::new(AtomicBool::new(false));
         let closed_lost = Arc::clone(&lost);
         let closed_handler =
@@ -167,6 +173,7 @@ impl WindowsCaptureProvider {
             item: candidate.item,
             lost,
             geometry: Arc::new(GeometryLedger::default()),
+            authority,
             _closed_token: closed_token,
         }))
     }
@@ -317,7 +324,8 @@ fn lock_with_operation<'mutex>(
 
 impl TargetRecord {
     fn description(&self) -> TargetDescription {
-        self.metadata.describe(self.id, self.key.kind())
+        self.metadata
+            .describe(self.id, self.key.kind(), self.authority.is_some())
     }
 
     pub(crate) fn target(&self) -> TargetId {
@@ -338,6 +346,9 @@ impl TargetRecord {
 
     pub(crate) fn geometry(&self) -> &Arc<GeometryLedger> {
         &self.geometry
+    }
+    pub(crate) fn authority(&self) -> Option<&RetainedWindowAuthority> {
+        self.authority.as_ref()
     }
 
     pub(crate) fn input_descriptor(&self) -> InputDescriptor {
