@@ -459,9 +459,10 @@ mod native {
         }
 
         fn command(&self) -> Command {
-            let mut command = Command::new(&self.executable);
+            let command = Command::new(&self.executable);
             #[cfg(windows)]
-            {
+            let command = {
+                let mut command = command;
                 let existing = std::env::var_os("PATH").unwrap_or_default();
                 let mut search = vec![self.library_directory.clone()];
                 search.extend(std::env::split_paths(&existing));
@@ -470,7 +471,8 @@ mod native {
                     std::env::join_paths(search)
                         .expect("the Windows child library path is representable"),
                 );
-            }
+                command
+            };
             command
         }
     }
