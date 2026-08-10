@@ -729,7 +729,6 @@ fn topology_geometry_rows() {
         .frame(&FrameRequest::latest(), &timed(Duration::from_secs(5)))
         .expect("captured initial topology frame");
     let mut captures = vec![capture];
-    let mut accepted = 0u32;
 
     for (index, monitor) in monitors.iter().enumerate() {
         let previous = frame.stamp();
@@ -773,6 +772,16 @@ fn topology_geometry_rows() {
             .expect("captured destination-monitor frame");
         captures.push(next_capture);
         println!("topology-monitor index={index} capture=ready");
+        // An ordinary target may receive unrelated legacy messages. Seed one before
+        // the route boundary so this row proves deltas rather than misattributing an
+        // absolute process-lifetime counter to the request under test.
+        fixture.control(fixture.target(), WM_MOUSEMOVE, 0);
+        fixture.wait_for(
+            "observation role=target family=pointer-move units=1",
+            Duration::from_secs(5),
+        );
+        let before_route = fixture.report(fixture.target());
+        assert_wrong_targets_clear(before_route);
 
         let stale = controller
             .execute(
@@ -783,6 +792,12 @@ fn topology_geometry_rows() {
         assert_eq!(stale.outcome(), SequenceOutcome::Unexecuted, "{stale:?}");
         assert_eq!(stale.submitted(), 0);
         assert_eq!(stale.fault(), Some(InputFault::GeometryChanged));
+        let after_stale = fixture.report(fixture.target());
+        assert_eq!(
+            after_stale.target, before_route.target,
+            "stale source-frame geometry reached no target"
+        );
+        assert_wrong_targets_clear(after_stale);
 
         let current = controller
             .execute(
@@ -791,7 +806,13 @@ fn topology_geometry_rows() {
             )
             .expect("current source-frame pointer receipt");
         assert_complete_queue_receipt(&current, 1);
-        accepted += 1;
+        let after_current = fixture.report(fixture.target());
+        assert_eq!(
+            after_current.target,
+            before_route.target + 1,
+            "exactly one current source-frame event reached the target"
+        );
+        assert_wrong_targets_clear(after_current);
         let placement = frame
             .transform()
             .target()
@@ -811,11 +832,6 @@ fn topology_geometry_rows() {
         );
     }
 
-    assert_eq!(
-        fixture.report(fixture.target()).target,
-        accepted,
-        "only current source-frame geometry reached the target"
-    );
     controller
         .close(&timed(Duration::from_secs(5)))
         .expect("closed topology input");
