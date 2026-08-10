@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running tests\window_message_native.rs (target\debug\deps\window_message_native-0e41c587c64290cc.exe)
+
+running 1 test
+test ordinary_window_message_native_matrix ...
+thread 'ordinary_window_message_native_matrix' (<redacted-thread>) panicked at crates\platform\windows\tests\window_message_native.rs:438:9:
+assertion `left == right` failed: physical cursor remains at the controlled position
+  left: POINT { x: <redacted>, y: <redacted> }
+ right: POINT { x: <redacted>, y: <redacted> }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    ordinary_window_message_native_matrix
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `-p mado-pilot-platform-windows --test window_message_native`

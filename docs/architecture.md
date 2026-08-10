@@ -1306,10 +1306,17 @@ publication across an observable sequence gap.
 
 Resize discards the size-transition frame, recreates the two-frame producer
 pool, and lets detached old-revision frames complete from old-generation
-resources. The replacement producer reservation is acquired before
-`Recreate`; native failure keeps the old reservation, while success swaps and
-releases it only after native ownership changes. The producer reservation and
-frame pool live in one native-owner allocation. The core holds only a weak link,
+resources. A callback already queued against the old pool can still expose a
+surface smaller than its new `ContentSize`; that clipped transition frame is
+dropped until the recreated pool supplies a covering surface, while a different
+pixel format remains a terminal unsupported-format fault. This follows the
+[WGC surface-size contract](https://learn.microsoft.com/windows/apps/develop/media-authoring-processing/screen-capture):
+the surface has the pool size and content larger than it is clipped. The
+replacement producer reservation is acquired before `Recreate`; native failure
+keeps the old reservation, while success swaps and releases it only after native
+ownership changes.
+The producer reservation and frame pool live in one native-owner allocation. The
+core holds only a weak link,
 so queued teardown and process-lifetime quarantine remain charged, while native
 close releases the producer bytes even if a closed session handle remains.
 Both WinRT handlers capture lifetime-independent shared callback
