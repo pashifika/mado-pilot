@@ -249,10 +249,18 @@ mod fixture {
             CONTROL_SET_GEOMETRY => {
                 let position = u64::try_from(wparam.0).expect("WPARAM fits u64");
                 let size = u64::try_from(lparam.0.cast_unsigned()).expect("LPARAM fits u64");
-                let x = (position as u32).cast_signed();
-                let y = ((position >> 32) as u32).cast_signed();
-                let width = (size as u32).cast_signed();
-                let height = ((size >> 32) as u32).cast_signed();
+                let x = u32::try_from(position & u64::from(u32::MAX))
+                    .expect("masked position fits u32")
+                    .cast_signed();
+                let y = u32::try_from(position >> 32)
+                    .expect("shifted position fits u32")
+                    .cast_signed();
+                let width = u32::try_from(size & u64::from(u32::MAX))
+                    .expect("masked size fits u32")
+                    .cast_signed();
+                let height = u32::try_from(size >> 32)
+                    .expect("shifted size fits u32")
+                    .cast_signed();
                 // SAFETY: the retained target is live and this is its owning GUI thread.
                 let updated = unsafe {
                     SetWindowPos(
