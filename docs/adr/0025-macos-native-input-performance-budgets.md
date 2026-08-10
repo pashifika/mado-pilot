@@ -30,10 +30,10 @@ example names `fault`, while the C++ wrapper names `evidence`.
 A fresh signed fixture run proved the current behavior directly. Each language
 example reported four submitted events, found the expected condition in a newer
 frame, emitted one pointer movement and one key-down/key-up pair at the fixture,
-and completed. The repaired benchmark then retained 50 correct samples for each
-of its six workloads at source
-`c237071c3daed631fea27c6442dbc91794ecae15`, tree
-`7e0fe76f023af718046d81459501293d9923aacb`. The tracked profile is
+and completed. The post-review benchmark refresh retained 50 correct samples
+for each of its six workloads at source
+`c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848`, tree
+`f4ba20b5797e03cbea3582a750dd3f828e3d8fe4`. The tracked profile is
 [`phase-2-native-input-aarch64-apple-darwin.toml`](../benchmarks/phase-2-native-input-aarch64-apple-darwin.toml).
 
 ## Decision
@@ -60,12 +60,12 @@ The Apple M1 Pro run on macOS 26.5.2 (25F84) produced these measurements:
 
 | Workload | p95 | Mapped bytes | Peak live Rust heap | Child peak resident | Growth |
 |---|---:|---:|---:|---:|---:|
-| `input_request_receipt` | 534.395750 ms | 0 B | 4,635,805 B | not applicable | 0 B |
-| `rust_common_flow` | 520.347000 ms | 4,628,480 B | 4,635,665 B | not applicable | 0 B |
-| `c_process_load` | 234.280708 ms | 0 B | 551 B | 51,757,056 B | 0 B |
-| `c_common_flow` | 1,663.572708 ms | 4,628,480 B | 27,465 B | 94,322,688 B | 0 B |
-| `cpp_process_load` | 236.134084 ms | 0 B | 563 B | 51,789,824 B | 0 B |
-| `cpp_common_flow` | 1,674.100292 ms | 4,628,480 B | 27,477 B | 94,584,832 B | 0 B |
+| `input_request_receipt` | 508.658583 ms | 0 B | 4,635,847 B | not applicable | 0 B |
+| `rust_common_flow` | 509.486167 ms | 4,628,480 B | 4,635,707 B | not applicable | 0 B |
+| `c_process_load` | 233.150334 ms | 0 B | 551 B | 51,757,056 B | 0 B |
+| `c_common_flow` | 1,626.194959 ms | 4,628,480 B | 27,465 B | 94,437,376 B | 0 B |
+| `cpp_process_load` | 236.377875 ms | 0 B | 563 B | 51,773,440 B | 0 B |
+| `cpp_common_flow` | 1,676.453750 ms | 4,628,480 B | 27,477 B | 94,617,600 B | 0 B |
 
 All 300 retained samples satisfied their workload oracle. Every workload
 reported zero allocation growth. The two common language flows each mapped one
@@ -153,8 +153,8 @@ cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --fixture-executable "$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --c-executable "$PWD/target/debug/c-abi-check/macos-native-input" \
   --cpp-executable "$PWD/target/debug/c-abi-check/macos-native-input-cpp" \
-  --source-revision c237071c3daed631fea27c6442dbc91794ecae15 \
-  --source-tree 7e0fe76f023af718046d81459501293d9923aacb \
+  --source-revision c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848 \
+  --source-tree f4ba20b5797e03cbea3582a750dd3f828e3d8fe4 \
   --toolchain "rustc 1.97.1 (8bab26f4f 2026-07-14); C/C++ Apple clang 21.0.0" \
   --gpu-driver "Apple integrated GPU; system driver stack" \
   --hardware "Apple M1 Pro, 10 cores, 32 GiB" \

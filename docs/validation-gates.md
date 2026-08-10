@@ -482,10 +482,10 @@ latest-frame oracles. The macOS capture and transition profiles remain
 `normative = false`.
 
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) replaces the
-macOS input and public-language profile at source
-`c237071c3daed631fea27c6442dbc91794ecae15`. Its six workloads retained 300
-correct samples with zero allocation growth, exact mapped-byte accounting, and
-measured Rust-heap and child-process resident bounds.
+macOS input and public-language profile and records its post-review refresh at
+source `c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848`. Its six workloads retained
+300 correct samples with zero allocation growth, exact mapped-byte accounting,
+and measured Rust-heap and child-process resident bounds.
 
 [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md)
 accepts the Windows capture, transition, and input/public-language profiles at

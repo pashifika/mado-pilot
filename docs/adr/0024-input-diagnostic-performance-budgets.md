@@ -39,7 +39,9 @@ The smoke plan uses three retained samples in ordinary all-targets verification;
 the measured plan uses 200 samples after 20 warmups.
 
 The `aarch64-apple-darwin` run used an Apple M1 Pro with 10 cores and 32 GiB on
-macOS 26.5.2 (25F84). Its tracked profile is
+macOS 26.5.2 (25F84), at source
+`c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848`, tree
+`f4ba20b5797e03cbea3582a750dd3f828e3d8fe4`. Its tracked profile is
 [`phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml`](../benchmarks/phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml).
 At the time, no approved Windows timing host was available, so the matching
 tracked artifact was an explicit evidence gap rather than a copy of macOS or
@@ -58,22 +60,22 @@ The macOS measurements are:
 
 | Workload | p95 | Mapped bytes | Peak live heap | Steady live heap | Growth |
 |---|---:|---:|---:|---:|---:|
-| `input_submission_diagnostics_off` | 0.000333 ms | 0 B | 6,164 B | 6,099 B | 0 B |
-| `input_submission_diagnostics_normal` | 0.000375 ms | 0 B | 16,363 B | 15,595 B | 0 B |
-| `input_submission_diagnostics_debug` | 0.000458 ms | 0 B | 16,651 B | 15,595 B | 0 B |
-| `input_submission_diagnostic_overflow` | 0.001708 ms for four submissions | 0 B | 8,251 B | 6,955 B | 0 B |
+| `input_submission_diagnostics_off` | 0.000292 ms | 0 B | 6,164 B | 6,099 B | 0 B |
+| `input_submission_diagnostics_normal` | 0.000334 ms | 0 B | 17,467 B | 16,619 B | 0 B |
+| `input_submission_diagnostics_debug` | 0.000417 ms | 0 B | 17,787 B | 16,619 B | 0 B |
+| `input_submission_diagnostic_overflow` | 0.001584 ms for four submissions | 0 B | 8,443 B | 7,019 B | 0 B |
 | `capture_mapping_diagnostics_off` | 0.000083 ms | 3,072 B | 5,219 B | 5,219 B | 0 B |
-| `capture_mapping_diagnostics_normal` | 0.000084 ms | 3,072 B | 14,715 B | 14,715 B | 0 B |
-| `capture_mapping_diagnostics_debug` | 0.000250 ms | 3,072 B | 15,883 B | 14,715 B | 0 B |
+| `capture_mapping_diagnostics_normal` | 0.000084 ms | 3,072 B | 15,739 B | 15,739 B | 0 B |
+| `capture_mapping_diagnostics_debug` | 0.000209 ms | 3,072 B | 17,035 B | 15,739 B | 0 B |
 | `session_close_drain_diagnostics_off` | 0.000125 ms | 0 B | 1,050 B | 0 B | 0 B |
-| `session_close_drain_diagnostics_normal` | 0.000250 ms | 0 B | 11,282 B | 0 B | 0 B |
-| `session_close_drain_diagnostics_debug` | 0.000334 ms | 0 B | 11,426 B | 0 B | 0 B |
+| `session_close_drain_diagnostics_normal` | 0.000250 ms | 0 B | 12,386 B | 0 B | 0 B |
+| `session_close_drain_diagnostics_debug` | 0.000333 ms | 0 B | 12,546 B | 0 B | 0 B |
 
 Normal input diagnostics add 0.000042 ms at p95 over `Off`; Debug adds
-0.000125 ms. Debug capture/mapping adds 0.000167 ms while preserving the exact
+0.000125 ms. Debug capture/mapping adds 0.000126 ms while preserving the exact
 frame identity and mapped byte count. The separately timed close/drain path
-adds 0.000125 ms for `Normal` and 0.000209 ms for `Debug` over close with
-diagnostics disabled. A capacity-64 enabled input fixture retains 9,496 B more
+adds 0.000125 ms for `Normal` and 0.000208 ms for `Debug` over close with
+diagnostics disabled. A capacity-64 enabled input fixture retains 10,520 B more
 steady live heap than `Off`; `Off` exposes no reader and therefore allocates no
 diagnostic queue. Pressure preserves all four normal terminal records, reports
 all eight discarded debug records, and never changes the four complete
@@ -108,8 +110,8 @@ Three file-level budgets apply to every measured workload:
 - `peak_allocated_bytes <= 32768`.
 
 The first two are enforced by the benchmark harness in both smoke and full runs.
-The 32 KiB peak ceiling is nearly twice the largest observed 16,651 B fixture
-while still bounding queue and per-case storage. Queue capacity itself remains
+The 32 KiB peak ceiling is more than 1.8 times the largest observed 17,787 B
+fixture while still bounding queue and per-case storage. Queue capacity itself remains
 validated at construction and capped by `MAX_DIAGNOSTIC_CAPACITY`; this budget
 measures the concrete fixture rather than replacing that contract ceiling.
 
