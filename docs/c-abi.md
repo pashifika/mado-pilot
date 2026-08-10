@@ -200,13 +200,14 @@ Two structures carry no `struct_size`: `madopilot_str_t` and
 records — they appear inside other structures, so growing one would move every
 field after it. Semantic numeric fields and frozen version/report fields use
 fixed-width integer types: every structure size and reported table size is
-`uint32_t`, while row strides and semantic result, package, receipt, and
-diagnostic counts are `uint64_t`. `size_t` is limited to ABI-native
+`uint32_t`, while row strides and semantic result, package, receipt, attempt,
+and diagnostic counts are `uint64_t`. `size_t` is limited to ABI-native
 addressability quantities: pointer-view lengths, replay and input event counts
 and element strides, target-list counts, accessor indexes, and the caller-known
-table extent passed to `madopilot_get_api`. These choices are frozen by ADR 0007
-on the two 64-bit release targets. A later phase that needs a different
-representation introduces a different type or ABI major.
+table extent passed to `madopilot_get_api`. The 1.0 choices are frozen by
+ADR 0007 on the two 64-bit release targets, and the ABI 1.2 receipt, attempt,
+and diagnostic counts follow them under ADR 0023. A later phase that needs a
+different representation introduces a different type or ABI major.
 
 **One structure has two mandatory prefixes.** `madopilot_match_options_t` is the
 only one the table uses in both directions. As an *input* its mandatory prefix
@@ -413,6 +414,13 @@ at their tails. A 1.0 caller still receives its old prefix. A 1.2 caller can rea
 target kind, capture support and permission, session target identity, and
 whether input was established.
 
+Target and stream identities cross this boundary as `uint64_t` scalars that
+directly project the engine's own identity ordinals; the boundary keeps no
+second registry mapping them, so nothing grows with discovery or stream
+lifetime. They are engine-scoped, not globally comparable: two engines may
+hand out the same numbers, and a value correlates targets, sessions, frame
+stamps, receipts, and diagnostic records only within the engine that issued it.
+
 ## Input admission, submission evidence, and receipts
 
 Input operation and route are separate axes. Pair masks name the nine exact
@@ -443,6 +451,11 @@ substitutes a route the caller omitted. Event text, arrays, and source-frame
 reference are borrowed for the call; the frame remains retained through
 `session_send_input`.
 
+A delay-only sequence names no operation kind but still travels an explicit
+route: preflight derives its submission evidence from that route's actual
+first attemptable operation pair, and a route with no attemptable pair is
+refused rather than granted invented evidence.
+
 The ABI publishes every fixed input ceiling rather than requiring discovery by
 rejection:
 
@@ -472,7 +485,10 @@ return reports `MADOPILOT_STATUS_OK` with exactly one immutable owned receipt:
 address scope, submitted count, optional last-submitted index, evidence, typed
 fault, fallback, partial-native-effect flag, and cleanup accounting. Indexed
 `input_receipt_attempt_at` values preserve each refused or attempted route in
-order. Presence flags distinguish absent values from valid zeroes. `NOT_NEEDED`
+order. Semantic receipt and attempt counts — attempts, submitted, optional
+last-submitted, cleanup released and owed — are `uint64_t`; the attempt
+accessor's `size_t` index and output count are addressability, not semantics.
+Presence flags distinguish absent values from valid zeroes. `NOT_NEEDED`
 and `COMPLETE` are the only cleanup values proving no sequence-owned state
 remains held; treat `INCOMPLETE`, `EXHAUSTED`, and unknown later values
 conservatively.
@@ -510,12 +526,19 @@ operation kind, and one closed typed payload. Timestamp proximity is not
 causality; sequence is the total commit order.
 
 The record schema is privacy-reviewed and fixed-width. It can report public
-target/frame identities, coordinate spaces, statuses, permission/lifecycle
-state, route and submission evidence, result counts, cleanup counts, and opaque
-engine-local identities. It contains no pixels, recognized text, key or event
-payloads, window titles, platform namespaces, backend names, paths, signing
-identifiers, or native free-form messages. Draining is self-silent and never
-creates another record.
+target/frame identities, coordinate spaces, the exact searched rectangle
+after clipping — a full `madopilot_pixel_rect_t`, never a coordinate-space
+tag alone — statuses, permission/lifecycle state, route and submission
+evidence, result counts, cleanup counts, and opaque engine-local identities.
+It contains no pixels, recognized text, key or event payloads, window titles,
+platform namespaces, backend names, paths, signing identifiers, or native
+free-form messages. Draining is self-silent and never creates another record.
+
+Template metadata behind record template identities is bounded to 65,536
+entries per engine. Reaching that ceiling changes no preparation or search
+outcome: a terminal `NORMAL` record that cannot name its template is omitted
+and counted once in the normal loss count. Diagnostic bookkeeping never
+changes the status of an otherwise successful call.
 
 ## Panic containment
 

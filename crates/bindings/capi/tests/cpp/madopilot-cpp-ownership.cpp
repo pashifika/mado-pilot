@@ -195,6 +195,33 @@ static_assert(std::is_copy_constructible_v<madopilot::InputAttempt>,
               "InputAttempt is fixed-width route data");
 static_assert(std::is_copy_constructible_v<madopilot::DiagnosticRecord>,
               "DiagnosticRecord contains no sensitive borrowed payload");
+static_assert(
+    std::is_same_v<decltype(madopilot::InputReceiptInfo::attempt_count),
+                   std::uint64_t> &&
+        std::is_same_v<decltype(madopilot::InputReceiptInfo::submitted),
+                       std::uint64_t> &&
+        std::is_same_v<decltype(madopilot::InputReceiptInfo::last_submitted),
+                       std::optional<std::uint64_t>> &&
+        std::is_same_v<decltype(madopilot::InputReceiptInfo::cleanup_released),
+                       std::uint64_t> &&
+        std::is_same_v<decltype(madopilot::InputReceiptInfo::cleanup_owed),
+                       std::uint64_t> &&
+        std::is_same_v<decltype(madopilot::InputAttempt::submitted),
+                       std::uint64_t> &&
+        std::is_same_v<decltype(madopilot::InputAttempt::last_submitted),
+                       std::optional<std::uint64_t>>,
+    "receipt and route-attempt semantic counts stay 64-bit");
+static_assert(std::is_same_v<decltype(madopilot::DiagnosticRecord::region),
+                             madopilot::Rect>,
+              "search diagnostics expose the exact pixel rectangle");
+static_assert(
+    std::is_same_v<decltype(&madopilot::InputReceipt::attempt_count),
+                   madopilot::Result<std::size_t> (
+                       madopilot::InputReceipt::*)() const> &&
+        std::is_same_v<decltype(&madopilot::InputReceipt::attempt_at),
+                       madopilot::Result<madopilot::InputAttempt> (
+                           madopilot::InputReceipt::*)(std::size_t) const>,
+    "attempt access remains indexed by size_t");
 static_assert(madopilot::InputEvent::max_text_chars ==
                   MADOPILOT_INPUT_MAX_TEXT_CHARS &&
                   madopilot::InputEvent::max_text_utf8_bytes ==

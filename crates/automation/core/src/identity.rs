@@ -138,6 +138,12 @@ impl TargetId {
         self.provider
     }
 
+    /// Returns the checked nonzero ordinal within the issuing engine's target space.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.ordinal.get()
+    }
+
     /// Confirms that `engine` issued this identity.
     ///
     /// # Errors
@@ -214,6 +220,12 @@ impl StreamId {
     #[must_use]
     pub const fn engine(self) -> EngineId {
         self.engine
+    }
+
+    /// Returns the checked nonzero ordinal within the issuing engine's stream space.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.ordinal.get()
     }
 
     /// Confirms that `engine` issued this identity.
@@ -352,10 +364,10 @@ impl FrameStamp {
     ///
     /// Nothing outside this crate can call it. A stamp needs a [`StreamId`], and
     /// a `StreamId` is issued by an [`IdentityIssuer`] and carries no public
-    /// constructor and no ordinal accessor, so an adapter cannot rebuild one
-    /// from a boundary that dropped the type — the C ABI converts a stamp
-    /// outward and never back. That is deliberate: an identity a caller could
-    /// assemble is an identity that proves nothing about which engine issued it.
+    /// constructor, so its ordinal alone cannot rebuild one after a boundary
+    /// drops the engine-qualified type — the C ABI converts a stamp outward and
+    /// never back. That is deliberate: an identity a caller could assemble is
+    /// an identity that proves nothing about which engine issued it.
     /// A boundary that has to rebuild one needs a way to reconstruct the stream
     /// identity first, and that is the decision to take then rather than a use
     /// this constructor already serves.
@@ -647,6 +659,16 @@ mod tests {
     }
 
     #[test]
+    fn target_ordinals_are_nonzero_and_engine_local() {
+        let first_engine = IdentityIssuer::new();
+        let second_engine = IdentityIssuer::new();
+
+        assert_eq!(first_engine.issue_target(REPLAY).expect("issued").get(), 1);
+        assert_eq!(first_engine.issue_target(REPLAY).expect("issued").get(), 2);
+        assert_eq!(second_engine.issue_target(REPLAY).expect("issued").get(), 1);
+    }
+
+    #[test]
     fn a_target_identity_is_rejected_by_another_engine() {
         let issuing = IdentityIssuer::new();
         let other = IdentityIssuer::new();
@@ -701,6 +723,16 @@ mod tests {
             stream.check_engine(other.engine()),
             Err(IdentityFault::ForeignEngine)
         );
+    }
+
+    #[test]
+    fn stream_ordinals_are_nonzero_and_engine_local() {
+        let first_engine = IdentityIssuer::new();
+        let second_engine = IdentityIssuer::new();
+
+        assert_eq!(first_engine.issue_stream().expect("issued").get(), 1);
+        assert_eq!(first_engine.issue_stream().expect("issued").get(), 2);
+        assert_eq!(second_engine.issue_stream().expect("issued").get(), 1);
     }
 
     #[test]

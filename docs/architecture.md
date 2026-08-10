@@ -160,7 +160,7 @@ reporting, input submission, bounded diagnostic readers, build prerequisites,
 and verification on each release target. Semantic numeric values and frozen
 version/report fields use fixed-width C integer types: structure sizes and
 reported table sizes are `uint32_t`, while row strides and semantic
-result/package/diagnostic counts are `uint64_t`. `size_t` is limited to
+result/package/receipt/diagnostic counts are `uint64_t`. `size_t` is limited to
 ABI-native addressability quantities: pointer-view lengths, replay and input
 event counts and element strides, target-list counts, accessor indexes, and the
 caller-known table extent passed to negotiation. ABI 1.0 froze the complete
@@ -994,6 +994,10 @@ sequence past its bound, and a route whose focus requirement a `Preserve` policy
 withholds. Nothing substitutes a route the caller did not permit. A one-route
 `DeliveryPlan` permits no fallback, so a required window-message request that is
 unavailable fails without activating the target or sending system input.
+A delay-only sequence performs no input operation but still preflights the
+explicit route it selected: its submission evidence is derived from that
+route's actual first attemptable operation pair, and a selected route with no
+attemptable pair is refused rather than granted invented evidence.
 
 Sequences are bounded, and one controller executes one sequence at a time:
 `Admission` implements that serialization with the caller's operation context as
@@ -1034,6 +1038,9 @@ require a caller-selected capacity in `1..=65,536`. `Normal` retains terminal
 search, input, permission, and lifecycle summaries; `Debug` additionally retains
 operation admission, copied frame acquisition and mapping facts, and per-route
 attempt detail.
+Losing the capture target during a direct frame acquisition is a lifecycle
+fact rather than `Debug` acquisition detail: it emits a terminal `Normal`
+target-loss lifecycle record.
 
 Every record carries a strict engine-local commit sequence, a monotonic-domain
 timestamp, a checked engine-local operation identity, and the caller's optional
@@ -1048,13 +1055,20 @@ in the next committed immutable batch. Draining reports `Batch`, `OpenEmpty`, or
 producer release seals production, while an independently retained reader
 continues to drain already committed data before observing end of stream.
 
+Diagnostic template metadata is bounded to 65,536 entries per engine. At that
+ceiling template preparation and search succeed unchanged; a terminal `Normal`
+record that cannot name its template is omitted and counted once as `Normal`
+loss. Diagnostic bookkeeping never changes the outcome of an otherwise
+successful public operation.
+
 The payload vocabulary is closed and privacy-reviewed. It may carry public
-target/frame identities, coordinate spaces, statuses, permission states, route
-and submission evidence, result counts, cleanup counts, and opaque engine-local
-identities. It carries no pixels, OCR text, input event values, window titles,
-platform namespaces, backend names, paths, signing identifiers, or free-form
-native messages. Diagnostics observe independent capture, search, and input
-facts; they do not merge them into an action result.
+target/frame identities, coordinate spaces, the exact coordinate-qualified
+`PixelRect` a search covered after clipping, statuses, permission states,
+route and submission evidence, result counts, cleanup counts, and opaque
+engine-local identities. It carries no pixels, OCR text, input event values,
+window titles, platform namespaces, backend names, paths, signing identifiers,
+or free-form native messages. Diagnostics observe independent capture, search,
+and input facts; they do not merge them into an action result.
 
 Facade mapping is the observation seam: `Session::map_frame` emits the copied
 mapping fact, and public native workflows use it instead of calling `Frame::map`
@@ -2022,6 +2036,13 @@ submission, owned terminal receipts and attempts, and bounded diagnostic readers
 cross the boundary in the same platform-neutral vocabulary as Rust. The platform
 Adapter remains the authority for target liveness, focus, geometry, per-event
 authorization, native submission, and cleanup.
+
+C target and stream scalars are the engine-local Rust identity ordinals
+projected directly, so the boundary retains no second identity registry whose
+lifetime would grow with discovery and capture. The values are engine-scoped,
+not globally comparable: two engines may hand out the same numbers, and a
+scalar correlates targets, receipts, frame stamps, and diagnostic records only
+within the engine that issued it.
 
 Input-aware open remains a separate entry rather than a field inserted into the
 frozen `madopilot_open_request_t`. A caller that negotiates ABI 1.0 still sees its

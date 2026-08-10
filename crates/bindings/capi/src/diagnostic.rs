@@ -1,11 +1,10 @@
 //! Bounded, pull-based diagnostic projections for the C boundary.
 //!
-//! Readers and batches own no engine resources. They retain only the facade's
-//! immutable diagnostic storage and the fixed-width identity maps needed to
-//! project privacy-reviewed records after the engine handle is released.
+//! Readers and batches own no engine resources. Facade identities carry their
+//! own checked engine-local ordinals, so records remain projectable after the
+//! engine handle is released without retaining a boundary identity registry.
 
 use std::mem::size_of;
-use std::sync::{Arc, Mutex};
 
 use mado_pilot::{
     DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticOperationKind,
@@ -14,7 +13,7 @@ use mado_pilot::{
 };
 
 use crate::boundary::{self, Out, Versioned, inputs, prefixes};
-use crate::engine::{BoundaryIdentities, EngineHandle, madopilot_engine_t};
+use crate::engine::{EngineHandle, madopilot_engine_t};
 use crate::error::Fault;
 use crate::handle::opaque;
 use crate::input::{
@@ -42,13 +41,11 @@ opaque! {
 #[derive(Debug)]
 pub(crate) struct DiagnosticReaderHandle {
     reader: DiagnosticReader,
-    identities: Arc<Mutex<BoundaryIdentities>>,
 }
 
 #[derive(Debug)]
 pub(crate) struct DiagnosticBatchHandle {
     batch: DiagnosticBatch,
-    identities: Arc<Mutex<BoundaryIdentities>>,
 }
 
 inputs! {
@@ -122,7 +119,7 @@ impl Versioned for madopilot_diagnostic_record_t {
         template_identity,
         source_space,
         destination_space,
-        region_space,
+        region,
         route,
         address_scope,
         evidence,
@@ -164,7 +161,7 @@ impl Versioned for madopilot_diagnostic_record_t {
             template_identity: 0,
             source_space: MADOPILOT_SPACE_CAPTURE_PIXELS,
             destination_space: MADOPILOT_SPACE_CAPTURE_PIXELS,
-            region_space: MADOPILOT_SPACE_CAPTURE_PIXELS,
+            region: madopilot_pixel_rect_t::empty(),
             route: MADOPILOT_INPUT_DELIVERY_NONE,
             address_scope: MADOPILOT_INPUT_ADDRESS_NONE,
             evidence: MADOPILOT_SUBMISSION_EVIDENCE_NONE,
@@ -227,10 +224,7 @@ pub(crate) fn take_reader(
         return MADOPILOT_STATUS_INVALID_ARGUMENT;
     };
     if let Some(reader) = engine.take_diagnostic_reader() {
-        let reader = DiagnosticReaderHandle {
-            reader,
-            identities: engine.identities(),
-        };
+        let reader = DiagnosticReaderHandle { reader };
         // SAFETY: `out_reader` was validated above.
         unsafe { out_reader.write(handle::into_raw(reader)) };
     }
@@ -275,10 +269,7 @@ pub(crate) fn reader_drain(
     };
     let state = match reader.reader.drain() {
         DiagnosticDrain::Batch(batch) => {
-            let batch = DiagnosticBatchHandle {
-                batch,
-                identities: Arc::clone(&reader.identities),
-            };
+            let batch = DiagnosticBatchHandle { batch };
             // SAFETY: `out_batch` was validated above.
             unsafe { out_batch.write(handle::into_raw(batch)) };
             MADOPILOT_DIAGNOSTIC_DRAIN_BATCH
@@ -358,11 +349,7 @@ pub(crate) fn batch_record_at(
         Ok(index) => index,
         Err(fault) => return fault.status(),
     };
-    let value = match record(
-        &batch.batch.records()[index],
-        &batch.identities,
-        out.declared_size(),
-    ) {
+    let value = match record(&batch.batch.records()[index], out.declared_size()) {
         Ok(value) => value,
         Err(fault) => return fault.status(),
     };
@@ -373,7 +360,6 @@ pub(crate) fn batch_record_at(
 
 fn record(
     record: &DiagnosticRecord,
-    identities: &Arc<Mutex<BoundaryIdentities>>,
     struct_size: u32,
 ) -> Result<madopilot_diagnostic_record_t, Fault> {
     let mut value = madopilot_diagnostic_record_t::failure(struct_size);
@@ -393,14 +379,14 @@ fn record(
             value.operation = diagnostic_operation_code(payload.operation);
         }
         DiagnosticPayload::Frame(payload) => {
-            value.target = boundary_target(identities, payload.target)?;
-            value.frame = boundary_frame(identities, payload.frame)?;
+            value.target = payload.target.get();
+            value.frame = boundary_frame(payload.frame);
             value.flags |=
                 MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET | MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME;
         }
         DiagnosticPayload::Mapping(payload) => {
-            value.target = boundary_target(identities, payload.target)?;
-            value.frame = boundary_frame(identities, payload.frame)?;
+            value.target = payload.target.get();
+            value.frame = boundary_frame(payload.frame);
             value.source_space = space_code(payload.source);
             value.destination_space = space_code(payload.destination);
             value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET
@@ -409,17 +395,17 @@ fn record(
                 | MADOPILOT_DIAGNOSTIC_RECORD_HAS_DESTINATION_SPACE;
         }
         DiagnosticPayload::Search(payload) => {
-            value.target = boundary_target(identities, payload.target)?;
+            value.target = payload.target.get();
             value.flags |=
                 MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET | MADOPILOT_DIAGNOSTIC_RECORD_HAS_TEMPLATE;
             if let Some(frame) = payload.frame {
-                value.frame = boundary_frame(identities, frame)?;
+                value.frame = boundary_frame(frame);
                 value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME;
             }
             value.template_identity = payload.template.get();
-            if let Some(space) = payload.region_space {
-                value.region_space = space_code(space);
-                value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION_SPACE;
+            if let Some(region) = payload.region {
+                value.region = crate::capture::rect(region);
+                value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION;
             }
             value.result_count = payload.result_count;
             match payload.outcome {
@@ -442,7 +428,7 @@ fn record(
             }
         }
         DiagnosticPayload::Input(payload) => {
-            value.target = boundary_target(identities, payload.target)?;
+            value.target = payload.target.get();
             value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET;
             value.input_operations = payload.operations.bits() as u32;
             value.requested = payload.requested;
@@ -475,7 +461,7 @@ fn record(
             }
         }
         DiagnosticPayload::RouteAttempt(payload) => {
-            value.target = boundary_target(identities, payload.target)?;
+            value.target = payload.target.get();
             value.route = input_delivery_code(payload.route);
             value.address_scope = input_address_scope_code(payload.address_scope);
             value.input_outcome = sequence_outcome_code(payload.outcome);
@@ -496,7 +482,7 @@ fn record(
         DiagnosticPayload::Lifecycle(payload) => {
             value.lifecycle = lifecycle_code(payload.lifecycle);
             if let Some(target) = payload.target {
-                value.target = boundary_target(identities, target)?;
+                value.target = target.get();
                 value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET;
             }
             if let Some(status) = payload.fault {
@@ -524,36 +510,12 @@ fn record(
     Ok(value)
 }
 
-fn boundary_target(
-    identities: &Arc<Mutex<BoundaryIdentities>>,
-    target: mado_pilot::TargetId,
-) -> Result<u64, Fault> {
-    identities
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .targets
-        .get(&target)
-        .copied()
-        .ok_or_else(|| Fault::internal("a diagnostic target has no C boundary identity"))
-}
-
-fn boundary_frame(
-    identities: &Arc<Mutex<BoundaryIdentities>>,
-    frame: mado_pilot::FrameStamp,
-) -> Result<madopilot_frame_stamp_t, Fault> {
-    let stream = identities
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .streams
-        .get(&frame.stream())
-        .copied()
-        .ok_or_else(|| Fault::internal("a diagnostic stream has no C boundary identity"))?;
-    Ok(crate::capture::stamp(
+fn boundary_frame(frame: mado_pilot::FrameStamp) -> madopilot_frame_stamp_t {
+    crate::capture::stamp(
         frame,
-        stream,
         u32::try_from(size_of::<madopilot_frame_stamp_t>())
             .expect("the frame-stamp structure fits uint32_t"),
-    ))
+    )
 }
 
 const fn diagnostic_level_code(level: DiagnosticLevel) -> madopilot_diagnostic_level_t {

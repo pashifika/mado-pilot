@@ -523,9 +523,9 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
     if (!info) {
         return report_failure("InputReceipt::describe", info.error());
     }
-    std::printf("receipt: outcome %d submitted %u evidence %d cleanup %d\n",
+    std::printf("receipt: outcome %d submitted %llu evidence %d cleanup %d\n",
                 static_cast<int>(info.value().outcome),
-                static_cast<unsigned>(info.value().submitted),
+                static_cast<unsigned long long>(info.value().submitted),
                 info.value().evidence
                     ? static_cast<int>(*info.value().evidence)
                     : 0,

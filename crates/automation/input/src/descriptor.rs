@@ -102,9 +102,6 @@ impl InputDescriptor {
     ) -> Result<SubmissionEvidence, InputFault> {
         self.validate(request)?;
         let operations = request.sequence().operation_kinds();
-        if operations.is_empty() {
-            return Ok(SubmissionEvidence::InvocationOnly);
-        }
         let mut evidence = None;
         for operation in operations.iter().copied() {
             let pair = self.capability.pair(operation, route);
@@ -178,6 +175,7 @@ mod tests {
         InputCapability, InputDelivery, InputOperationKind, Point, ProviderId, StreamCursor,
         SubmissionEvidence, TargetId,
     };
+    use std::time::Duration;
 
     fn target() -> TargetId {
         IdentityIssuer::new()
@@ -217,6 +215,46 @@ mod tests {
 
     fn request(target: TargetId, sequence: InputSequence, route: InputDelivery) -> InputRequest {
         InputRequest::new(target, sequence, DeliveryPlan::require(route))
+    }
+
+    #[test]
+    fn delay_only_uses_selected_routes_first_attemptable_pair_evidence() {
+        let target = target();
+        let descriptor = InputDescriptor::new(
+            target,
+            InputCapability::none().with_pair(
+                InputOperationKind::Keyboard,
+                InputDelivery::WindowMessage,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::TargetProtocolAcknowledgement,
+            ),
+        );
+        let delay =
+            InputSequence::new(vec![InputEvent::Delay(Duration::from_millis(1))]).expect("valid");
+
+        assert_eq!(
+            descriptor.preflight_route(
+                &request(target, delay, InputDelivery::WindowMessage),
+                InputDelivery::WindowMessage,
+            ),
+            Ok(SubmissionEvidence::TargetProtocolAcknowledgement)
+        );
+    }
+
+    #[test]
+    fn delay_only_refuses_selected_route_without_an_attemptable_pair() {
+        let target = target();
+        let descriptor = InputDescriptor::new(target, pointer_capability());
+        let delay =
+            InputSequence::new(vec![InputEvent::Delay(Duration::from_millis(1))]).expect("valid");
+
+        assert_eq!(
+            descriptor.preflight_route(
+                &request(target, delay, InputDelivery::WindowMessage),
+                InputDelivery::WindowMessage,
+            ),
+            Err(InputFault::UnsupportedCombination)
+        );
     }
 
     #[test]

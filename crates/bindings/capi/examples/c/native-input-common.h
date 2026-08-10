@@ -12,6 +12,7 @@
 #ifndef MADOPILOT_NATIVE_INPUT_COMMON_H
 #define MADOPILOT_NATIVE_INPUT_COMMON_H
 
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -514,13 +515,13 @@ static int deliver(const madopilot_api_t* api,
         return 0;
     }
 
-    printf("receipt: outcome %d submitted %u fault %d cleanup %d\n",
-           (int)info.outcome, (unsigned)info.submitted,
+    printf("receipt: outcome %d submitted %" PRIu64 " fault %d cleanup %d\n",
+           (int)info.outcome, info.submitted,
            (int)info.fault, (int)info.cleanup);
     api->input_receipt_release(receipt);
     return expect(info.outcome == MADOPILOT_SEQUENCE_COMPLETE &&
                       info.submitted ==
-                          (uint32_t)(sizeof(events) / sizeof(events[0])),
+                          (uint64_t)(sizeof(events) / sizeof(events[0])),
                   "the bounded native sequence completed exactly once");
 }
 

@@ -114,7 +114,7 @@ pub const LAYOUT: &[TypeLayout] = &[
         template_identity,
         source_space,
         destination_space,
-        region_space,
+        region,
         route,
         address_scope,
         evidence,

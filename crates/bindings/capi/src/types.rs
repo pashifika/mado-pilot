@@ -709,8 +709,8 @@ pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_TEMPLATE: u32 = 1 << 3;
 pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_SOURCE_SPACE: u32 = 1 << 4;
 /// `madopilot_diagnostic_record_t.destination_space` is populated.
 pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_DESTINATION_SPACE: u32 = 1 << 5;
-/// `madopilot_diagnostic_record_t.region_space` is populated.
-pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION_SPACE: u32 = 1 << 6;
+/// `madopilot_diagnostic_record_t.region` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION: u32 = 1 << 6;
 /// `madopilot_diagnostic_record_t.route` is populated.
 pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_ROUTE: u32 = 1 << 7;
 /// `madopilot_diagnostic_record_t.address_scope` is populated.
@@ -967,11 +967,11 @@ pub struct madopilot_input_receipt_info_t {
     /// Address scope of `selected_route`, when present.
     pub address_scope: madopilot_input_address_scope_t,
     /// Number of immutable route attempts.
-    pub attempt_count: u32,
+    pub attempt_count: u64,
     /// Number of complete logical events submitted.
-    pub submitted: u32,
+    pub submitted: u64,
     /// Last complete event index submitted, when present.
-    pub last_submitted: u32,
+    pub last_submitted: u64,
     /// Strongest submission evidence for the selected route, when present.
     pub evidence: madopilot_submission_evidence_t,
     /// Typed terminal input fault, when present.
@@ -979,9 +979,9 @@ pub struct madopilot_input_receipt_info_t {
     /// Cleanup outcome.
     pub cleanup: madopilot_cleanup_state_t,
     /// Number of cleanup releases completed.
-    pub cleanup_released: u32,
+    pub cleanup_released: u64,
     /// Number of cleanup releases still owed.
-    pub cleanup_owed: u32,
+    pub cleanup_owed: u64,
 }
 
 /// One immutable route attempt borrowed from an input receipt.
@@ -999,9 +999,9 @@ pub struct madopilot_input_attempt_t {
     /// Complete, partial, or unexecuted.
     pub outcome: madopilot_sequence_outcome_t,
     /// Number of complete logical events submitted.
-    pub submitted: u32,
+    pub submitted: u64,
     /// Last complete event index submitted, when present.
-    pub last_submitted: u32,
+    pub last_submitted: u64,
     /// Strongest native submission evidence, when present.
     pub evidence: madopilot_submission_evidence_t,
     /// Typed route fault, when present.
@@ -1150,7 +1150,7 @@ pub struct madopilot_diagnostic_record_t {
     pub operation: madopilot_diagnostic_operation_kind_t,
     /// Public terminal status, when present.
     pub status: crate::status::madopilot_status_t,
-    /// Boundary target identity, when present.
+    /// Nonzero engine-local target ordinal, when present.
     pub target: u64,
     /// Complete frame identity, when present.
     pub frame: madopilot_frame_stamp_t,
@@ -1160,8 +1160,8 @@ pub struct madopilot_diagnostic_record_t {
     pub source_space: madopilot_space_t,
     /// Mapping destination coordinate space, when present.
     pub destination_space: madopilot_space_t,
-    /// Searched region coordinate space, when present.
-    pub region_space: madopilot_space_t,
+    /// Exact searched region in capture pixels, when present.
+    pub region: madopilot_pixel_rect_t,
     /// Route, when present.
     pub route: madopilot_input_delivery_t,
     /// Route address scope, when present.
@@ -1312,7 +1312,7 @@ pub struct madopilot_session_info_t {
     pub format: madopilot_pixel_format_t,
     /// A bit set: bit `1 << space` is set when that coordinate space converts.
     pub coordinate_spaces: i32,
-    /// A boundary identity copied from the discovery snapshot.
+    /// Nonzero engine-local target ordinal.
     pub target: u64,
     /// One when the session accepted input, zero for capture-only.
     pub accepts_input: i32,

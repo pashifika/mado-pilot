@@ -191,6 +191,14 @@ pub struct Flow {
 
 impl Flow {
     pub fn open() -> Self {
+        Self::open_with_engine_options(None)
+    }
+
+    pub fn open_with_diagnostics(options: &madopilot_engine_options_t) -> Self {
+        Self::open_with_engine_options(Some(options))
+    }
+
+    fn open_with_engine_options(options: Option<&madopilot_engine_options_t>) -> Self {
         let api = table();
         let scene = Scene::new();
         let operation = operation();
@@ -200,12 +208,21 @@ impl Flow {
         // SAFETY: every pointer is a live local or an owned box that outlives
         // the call.
         let status = unsafe {
-            (api.engine_create)(
-                scene.source(),
-                &raw const operation,
-                &raw mut engine,
-                ptr::null_mut(),
-            )
+            match options {
+                Some(options) => (api.engine_create_with_options)(
+                    scene.source(),
+                    options,
+                    &raw const operation,
+                    &raw mut engine,
+                    ptr::null_mut(),
+                ),
+                None => (api.engine_create)(
+                    scene.source(),
+                    &raw const operation,
+                    &raw mut engine,
+                    ptr::null_mut(),
+                ),
+            }
         };
         assert_eq!(status, MADOPILOT_STATUS_OK, "engine_create");
 

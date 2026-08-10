@@ -13,10 +13,10 @@ use std::sync::{Arc, Mutex, TryLockError, Weak};
 use mado_pilot_core::{
     ActivityTag, CoordinateSpace, Error, FrameStamp, InputAddressScope, InputDelivery,
     InputOperationKind, Lifecycle, MonotonicInstant, Operation, OperationContext, PermissionKind,
-    PermissionState, Status, SubmissionEvidence, TargetId,
+    PermissionState, PixelRect, Status, SubmissionEvidence, TargetId,
 };
 use mado_pilot_input::{CleanupState, InputFault, InputReceipt, InputRequest, SequenceOutcome};
-use mado_pilot_vision::PreparedTemplate;
+use mado_pilot_vision::prepared::{PreparedTemplate, PreparedTemplateInstance};
 
 /// Maximum number of retained diagnostic records per engine.
 pub const MAX_DIAGNOSTIC_CAPACITY: usize = 65_536;
@@ -287,8 +287,8 @@ pub struct SearchDiagnostic {
     pub frame: Option<FrameStamp>,
     /// The engine-issued template instance identity.
     pub template: DiagnosticTemplateId,
-    /// The searched region's coordinate space, when the selection exposes one.
-    pub region_space: Option<CoordinateSpace>,
+    /// The exact effective searched region in full-frame capture pixels.
+    pub region: Option<PixelRect>,
     /// The terminal search result.
     pub outcome: SearchDiagnosticOutcome,
     /// The semantic result count.
@@ -631,12 +631,12 @@ struct DiagnosticStream {
     level: DiagnosticLevel,
     capacity: usize,
     state: Mutex<StreamState>,
-    contended_normal: AtomicU64,
+    pending_normal: AtomicU64,
     producers: AtomicUsize,
-    contended_debug: AtomicU64,
+    pending_debug: AtomicU64,
     next_operation: AtomicU64,
     next_template: AtomicU64,
-    templates: Mutex<HashMap<usize, DiagnosticTemplateId>>,
+    templates: Mutex<HashMap<PreparedTemplateInstance, DiagnosticTemplateId>>,
 }
 
 impl DiagnosticStream {
@@ -650,8 +650,8 @@ impl DiagnosticStream {
                 next_record: 1,
                 sealed: false,
             }),
-            contended_normal: AtomicU64::new(0),
-            contended_debug: AtomicU64::new(0),
+            pending_normal: AtomicU64::new(0),
+            pending_debug: AtomicU64::new(0),
             producers: AtomicUsize::new(1),
             next_operation: AtomicU64::new(1),
             next_template: AtomicU64::new(1),
@@ -682,62 +682,40 @@ impl DiagnosticStream {
         .map(DiagnosticOperationId::new)
     }
 
-    fn template_key(template: &PreparedTemplate) -> usize {
-        std::ptr::from_ref(template.payload()).cast::<()>() as usize
-    }
-
-    fn issue_template(&self) -> Result<DiagnosticTemplateId, Error> {
+    fn issue_template(&self) -> Option<DiagnosticTemplateId> {
         Self::issue(
             &self.next_template,
             "diagnostic template identity space is exhausted",
         )
+        .ok()
         .map(DiagnosticTemplateId::new)
     }
 
-    fn register_template(
-        &self,
-        template: &PreparedTemplate,
-    ) -> Result<DiagnosticTemplateId, Error> {
-        let key = Self::template_key(template);
+    fn template(&self, template: &PreparedTemplate) -> Option<DiagnosticTemplateId> {
+        let instance = template.diagnostic_instance();
         let mut templates = self
             .templates
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !templates.contains_key(&key) && templates.len() == MAX_DIAGNOSTIC_CAPACITY {
-            return Err(Error::new(
-                Status::LimitExceeded,
-                "diagnostic template registry capacity is exhausted",
-            ));
+        if let Some(identity) = templates.get(&instance) {
+            return Some(*identity);
         }
+        if templates.len() >= MAX_DIAGNOSTIC_CAPACITY {
+            templates.retain(|instance, _| instance.is_live());
+            if templates.len() >= MAX_DIAGNOSTIC_CAPACITY {
+                return None;
+            }
+        }
+
         let identity = self.issue_template()?;
-        templates.insert(key, identity);
-        Ok(identity)
+        templates.insert(instance, identity);
+        Some(identity)
     }
 
-    fn template(&self, template: &PreparedTemplate) -> Result<DiagnosticTemplateId, Error> {
-        let key = Self::template_key(template);
-        let mut templates = self
-            .templates
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(identity) = templates.get(&key) {
-            return Ok(*identity);
-        }
-        if templates.len() == MAX_DIAGNOSTIC_CAPACITY {
-            return Err(Error::new(
-                Status::LimitExceeded,
-                "diagnostic template registry capacity is exhausted",
-            ));
-        }
-        let identity = self.issue_template()?;
-        templates.insert(key, identity);
-        Ok(identity)
-    }
-
-    fn count_contended(&self, level: DiagnosticLevel) {
+    fn count_loss(&self, level: DiagnosticLevel) {
         let counter = match level {
-            DiagnosticLevel::Normal => &self.contended_normal,
-            DiagnosticLevel::Debug => &self.contended_debug,
+            DiagnosticLevel::Normal => &self.pending_normal,
+            DiagnosticLevel::Debug => &self.pending_debug,
             DiagnosticLevel::Off => return,
         };
         let _ = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
@@ -758,7 +736,7 @@ impl DiagnosticStream {
         let mut state = match self.state.try_lock() {
             Ok(state) => state,
             Err(TryLockError::WouldBlock) => {
-                self.count_contended(level);
+                self.count_loss(level);
                 return;
             }
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
@@ -815,13 +793,13 @@ impl DiagnosticStream {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let contended = DiagnosticLosses {
-            normal: self.contended_normal.swap(0, Ordering::AcqRel),
-            debug: self.contended_debug.swap(0, Ordering::AcqRel),
+        let pending = DiagnosticLosses {
+            normal: self.pending_normal.swap(0, Ordering::AcqRel),
+            debug: self.pending_debug.swap(0, Ordering::AcqRel),
         };
         let losses = DiagnosticLosses {
-            normal: state.losses.normal.saturating_add(contended.normal),
-            debug: state.losses.debug.saturating_add(contended.debug),
+            normal: state.losses.normal.saturating_add(pending.normal),
+            debug: state.losses.debug.saturating_add(pending.debug),
         };
         if state.records.is_empty() && losses.is_empty() {
             return if state.sealed {
@@ -932,18 +910,16 @@ impl DiagnosticSink {
             .emit(DiagnosticLevel::Debug, operation, context.now(), payload());
     }
 
-    pub(crate) fn register_template(
-        &self,
-        template: &PreparedTemplate,
-    ) -> Result<DiagnosticTemplateId, Error> {
-        self.stream.register_template(template)
+    pub(crate) fn register_template(&self, template: &PreparedTemplate) {
+        let _ = self.stream.template(template);
     }
 
-    pub(crate) fn template(
-        &self,
-        template: &PreparedTemplate,
-    ) -> Result<DiagnosticTemplateId, Error> {
+    pub(crate) fn template(&self, template: &PreparedTemplate) -> Option<DiagnosticTemplateId> {
         self.stream.template(template)
+    }
+
+    pub(crate) fn normal_loss(&self) {
+        self.stream.count_loss(DiagnosticLevel::Normal);
     }
 
     #[cfg(test)]
@@ -1022,10 +998,17 @@ impl DetachedObservation {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Barrier, thread};
+    use std::{sync::Arc, sync::Barrier, thread};
+
+    use mado_pilot_capture::{CoordinateSupport, PixelFormat, TargetDescription};
+    use mado_pilot_core::{
+        FrameSequence, GeometryRevision, IdentityIssuer, PixelExtent, ProviderId, StreamEpoch,
+    };
+    use mado_pilot_input::{DeliveryPlan, InputEvent, InputSequence, Key};
+    use mado_pilot_testkit::{ControlledMatcher, match_fixtures};
+    use mado_pilot_vision::{MatchBackend, Matcher};
 
     use super::*;
-    use mado_pilot_core::{IdentityIssuer, ProviderId};
 
     fn target() -> TargetId {
         IdentityIssuer::new()
@@ -1059,42 +1042,251 @@ mod tests {
     }
 
     #[test]
-    fn payloads_are_fixed_width_and_text_is_reduced_to_a_typed_operation() {
+    fn every_payload_variant_excludes_caller_sensitive_material_from_public_fields_and_debug() {
         fn assert_copy<T: Copy>() {}
+
+        fn public_fields(payload: DiagnosticPayload) -> Vec<String> {
+            match payload {
+                DiagnosticPayload::OperationStarted(value) => {
+                    vec![format!("{:?}", value.operation)]
+                }
+                DiagnosticPayload::Frame(value) => {
+                    vec![format!("{:?}", value.target), format!("{:?}", value.frame)]
+                }
+                DiagnosticPayload::Mapping(value) => vec![
+                    format!("{:?}", value.target),
+                    format!("{:?}", value.frame),
+                    format!("{:?}", value.source),
+                    format!("{:?}", value.destination),
+                ],
+                DiagnosticPayload::Search(value) => vec![
+                    format!("{:?}", value.target),
+                    format!("{:?}", value.frame),
+                    format!("{:?}", value.template),
+                    format!("{:?}", value.region),
+                    format!("{:?}", value.outcome),
+                    format!("{:?}", value.result_count),
+                ],
+                DiagnosticPayload::Input(value) => vec![
+                    format!("{:?}", value.target),
+                    format!("{:?}", value.operations),
+                    format!("{:?}", value.requested),
+                    format!("{:?}", value.route),
+                    format!("{:?}", value.address_scope),
+                    format!("{:?}", value.evidence),
+                    format!("{:?}", value.outcome),
+                    format!("{:?}", value.submitted),
+                    format!("{:?}", value.partial_native_effect),
+                    format!("{:?}", value.fault),
+                    format!("{:?}", value.status),
+                    format!("{:?}", value.fallback),
+                    format!("{:?}", value.cleanup),
+                    format!("{:?}", value.cleanup_released),
+                    format!("{:?}", value.cleanup_owed),
+                ],
+                DiagnosticPayload::RouteAttempt(value) => vec![
+                    format!("{:?}", value.target),
+                    format!("{:?}", value.route),
+                    format!("{:?}", value.address_scope),
+                    format!("{:?}", value.evidence),
+                    format!("{:?}", value.outcome),
+                    format!("{:?}", value.submitted),
+                    format!("{:?}", value.partial_native_effect),
+                    format!("{:?}", value.fault),
+                ],
+                DiagnosticPayload::Lifecycle(value) => vec![
+                    format!("{:?}", value.target),
+                    format!("{:?}", value.lifecycle),
+                    format!("{:?}", value.fault),
+                ],
+                DiagnosticPayload::Permission(value) => vec![
+                    format!("{:?}", value.permission),
+                    format!("{:?}", value.state),
+                    format!("{:?}", value.fault),
+                ],
+            }
+        }
+
+        const TEMPLATE_NAME: &str = "private/assets/account-name-template.png";
+        const INPUT_TEXT: &str = "caller-secret-input-text";
+        const INPUT_KEY: char = '🔐';
+        const WINDOW_TITLE: &str = "Private Account — caller@example.invalid";
+        const PLATFORM_FAILURE: &str = "native failure mentioned caller-home/private.db";
 
         assert_copy::<DiagnosticPayload>();
         assert_copy::<DiagnosticRecord>();
 
-        let target = target();
-        let secret = "diagnostics-must-not-retain-this-text";
+        let issuer = IdentityIssuer::new();
+        let target = issuer
+            .issue_target(ProviderId::new("privacy-matrix"))
+            .expect("issued");
+        let window = TargetDescription::new(
+            target,
+            WINDOW_TITLE,
+            PixelExtent::new(32, 24),
+            PixelFormat::Rgba8,
+            CoordinateSupport::frame_only(),
+        );
+        let target = window.id();
+        let frame = FrameStamp::new(
+            issuer.issue_stream().expect("issued"),
+            StreamEpoch::FIRST,
+            FrameSequence::FIRST,
+            GeometryRevision::FIRST,
+        );
+
+        let backend = Arc::new(ControlledMatcher::new(PixelFormat::Rgba8));
+        let matcher = Matcher::new(Arc::clone(&backend) as Arc<dyn MatchBackend>);
+        let source = match_fixtures::planted_template(TEMPLATE_NAME);
+        let prepared = matcher
+            .prepare(&source, &OperationContext::new())
+            .expect("prepared");
+        let (sink, _reader) = enabled(DiagnosticLevel::Normal, 1);
+        let template = sink.template(&prepared).expect("template identity");
+
         let request = InputRequest::new(
             target,
-            mado_pilot_input::InputSequence::new(vec![mado_pilot_input::InputEvent::Text(
-                secret.to_owned(),
-            )])
-            .expect("one valid text event"),
-            mado_pilot_input::DeliveryPlan::require(InputDelivery::System),
+            InputSequence::new(vec![
+                InputEvent::Text(INPUT_TEXT.to_owned()),
+                InputEvent::KeyPress(Key::Character(INPUT_KEY)),
+            ])
+            .expect("valid caller-sensitive events"),
+            DeliveryPlan::require(InputDelivery::WindowMessage),
         );
         let receipt = InputReceipt::complete(
             target,
-            InputDelivery::System,
-            SubmissionEvidence::SystemInputAdmission,
-            1,
+            InputDelivery::WindowMessage,
+            SubmissionEvidence::TargetQueueAdmission,
+            2,
         );
-        let payload = DiagnosticPayload::Input(InputDiagnostic::from_receipt(&request, &receipt));
+        let input = InputDiagnostic::from_receipt(&request, &receipt);
+        assert!(input.operations.contains(InputOperationKind::Text));
+        assert!(input.operations.contains(InputOperationKind::Keyboard));
 
-        assert!(
-            matches!(
-                payload,
-                DiagnosticPayload::Input(input)
-                    if input.operations.contains(InputOperationKind::Text)
+        let platform_failure = Error::new(Status::CaptureFailed, PLATFORM_FAILURE);
+        let region = PixelRect::new(3, 4, 19, 20).expect("valid");
+        let matrix = [
+            (
+                DiagnosticKind::OperationStarted,
+                DiagnosticPayload::OperationStarted(OperationStartedDiagnostic {
+                    operation: DiagnosticOperationKind::Search,
+                }),
             ),
-            "the safe typed operation kind remains observable"
+            (
+                DiagnosticKind::Frame,
+                DiagnosticPayload::Frame(FrameDiagnostic { target, frame }),
+            ),
+            (
+                DiagnosticKind::Mapping,
+                DiagnosticPayload::Mapping(MappingDiagnostic {
+                    target,
+                    frame,
+                    source: CoordinateSpace::TargetLogical,
+                    destination: CoordinateSpace::CapturePixels,
+                }),
+            ),
+            (
+                DiagnosticKind::Search,
+                DiagnosticPayload::Search(SearchDiagnostic {
+                    target,
+                    frame: Some(frame),
+                    template,
+                    region: Some(region),
+                    outcome: SearchDiagnosticOutcome::NoMatch,
+                    result_count: 0,
+                }),
+            ),
+            (DiagnosticKind::Input, DiagnosticPayload::Input(input)),
+            (
+                DiagnosticKind::RouteAttempt,
+                DiagnosticPayload::RouteAttempt(RouteAttemptDiagnostic {
+                    target,
+                    route: InputDelivery::WindowMessage,
+                    address_scope: InputAddressScope::ExactWindow,
+                    evidence: Some(SubmissionEvidence::TargetQueueAdmission),
+                    outcome: SequenceOutcome::Complete,
+                    submitted: 2,
+                    partial_native_effect: false,
+                    fault: None,
+                }),
+            ),
+            (
+                DiagnosticKind::Lifecycle,
+                DiagnosticPayload::Lifecycle(LifecycleDiagnostic {
+                    target: Some(target),
+                    lifecycle: Lifecycle::Closed,
+                    fault: Some(platform_failure.status()),
+                }),
+            ),
+            (
+                DiagnosticKind::Permission,
+                DiagnosticPayload::Permission(PermissionDiagnostic {
+                    permission: PermissionKind::InputControl,
+                    state: None,
+                    fault: Some(platform_failure.status()),
+                }),
+            ),
+        ];
+
+        assert_eq!(matrix.len(), 8);
+        let input_key = INPUT_KEY.to_string();
+        let sensitive = [
+            TEMPLATE_NAME,
+            INPUT_TEXT,
+            input_key.as_str(),
+            WINDOW_TITLE,
+            PLATFORM_FAILURE,
+        ];
+        for (kind, payload) in matrix {
+            assert_eq!(payload.kind(), kind);
+            for surface in std::iter::once(format!("{payload:?}")).chain(public_fields(payload)) {
+                for secret in sensitive {
+                    assert!(
+                        !surface.contains(secret),
+                        "{kind:?} exposed caller-sensitive material `{secret}` in `{surface}`"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn expired_template_metadata_cannot_alias_a_later_preparation() {
+        let backend = Arc::new(ControlledMatcher::new(PixelFormat::Rgba8));
+        let matcher = Matcher::new(Arc::clone(&backend) as Arc<dyn MatchBackend>);
+        let source = match_fixtures::planted_template("reused-template-name");
+        let first = matcher
+            .prepare(&source, &OperationContext::new())
+            .expect("first prepared");
+        let first_instance = first.diagnostic_instance();
+        let (sink, _reader) = enabled(DiagnosticLevel::Normal, 1);
+        let first_identity = sink.template(&first).expect("first identity");
+        let clone = first.clone();
+        assert_eq!(sink.template(&clone), Some(first_identity));
+        drop(clone);
+        drop(first);
+        assert!(!first_instance.is_live());
+
+        let second = matcher
+            .prepare(&source, &OperationContext::new())
+            .expect("second prepared");
+        let second_instance = second.diagnostic_instance();
+        assert_ne!(
+            first_instance, second_instance,
+            "a retained weak token keeps the stale allocation distinct"
         );
-        assert!(
-            !format!("{payload:?}").contains(secret),
-            "caller text has no diagnostic field to enter"
-        );
+
+        let second_identity = sink
+            .template(&second)
+            .expect("a later preparation receives its own identity");
+        assert_ne!(second_identity, first_identity);
+        let templates = sink
+            .stream
+            .templates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(templates.len(), 2);
+        assert_eq!(templates.get(&second_instance), Some(&second_identity));
     }
 
     #[test]

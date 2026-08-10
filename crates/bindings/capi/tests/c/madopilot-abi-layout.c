@@ -52,7 +52,21 @@ FIRST_FIELD_IS_STRUCT_SIZE(madopilot_input_event_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_input_request_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_input_receipt_info_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_input_attempt_t);
+#define MADOPILOT_FIELD_HAS_TYPE(T, F, P) \
+    _Static_assert(_Generic(&((T*)0)->F, P: 1, default: 0), \
+                   #T "." #F " has the required public type")
+MADOPILOT_FIELD_HAS_TYPE(madopilot_input_receipt_info_t, attempt_count, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_input_receipt_info_t, submitted, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_input_receipt_info_t, last_submitted, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_input_receipt_info_t, cleanup_released, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_input_receipt_info_t, cleanup_owed, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_input_attempt_t, submitted, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_input_attempt_t, last_submitted, uint64_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_diagnostic_record_t, region,
+                         madopilot_pixel_rect_t*);
+#undef MADOPILOT_FIELD_HAS_TYPE
 #endif
+
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_build_info_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_operation_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_frame_stamp_t);
@@ -137,7 +151,7 @@ int main(void)
     FIELD(madopilot_diagnostic_record_t, template_identity);
     FIELD(madopilot_diagnostic_record_t, source_space);
     FIELD(madopilot_diagnostic_record_t, destination_space);
-    FIELD(madopilot_diagnostic_record_t, region_space);
+    FIELD(madopilot_diagnostic_record_t, region);
     FIELD(madopilot_diagnostic_record_t, route);
     FIELD(madopilot_diagnostic_record_t, address_scope);
     FIELD(madopilot_diagnostic_record_t, evidence);

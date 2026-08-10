@@ -22,7 +22,7 @@ use mado_pilot::{
 
 use crate::boundary::{self, Out, Versioned, covers, declared, inputs, prefixes};
 use crate::engine::{
-    EngineHandle, TargetList, madopilot_engine_t, madopilot_target_list_t, next_stream, report,
+    EngineHandle, TargetList, madopilot_engine_t, madopilot_target_list_t, report,
 };
 use crate::error::{self, Fault, madopilot_error_t};
 use crate::handle::opaque;
@@ -65,14 +65,11 @@ opaque! {
 #[derive(Debug)]
 pub(crate) struct SessionHandle {
     session: Session,
-    stream: u64,
     /// Copied at open, so a failed search can name the backend that failed
     /// without the caller having to still hold the engine.
     backend: String,
     /// Facade identity copied from the discovery snapshot.
     target: TargetId,
-    /// Boundary identity copied from the discovery snapshot.
-    boundary_target: u64,
     /// Immutable C projection of what the session accepted.
     input_descriptor: madopilot_input_descriptor_t,
     input_available: bool,
@@ -83,20 +80,12 @@ impl SessionHandle {
         &self.session
     }
 
-    pub(crate) const fn stream(&self) -> u64 {
-        self.stream
-    }
-
     pub(crate) fn backend(&self) -> &str {
         &self.backend
     }
 
     pub(crate) const fn target(&self) -> TargetId {
         self.target
-    }
-
-    pub(crate) const fn boundary_target(&self) -> u64 {
-        self.boundary_target
     }
 
     pub(crate) const fn input_descriptor(&self) -> &madopilot_input_descriptor_t {
@@ -112,15 +101,13 @@ impl SessionHandle {
 #[derive(Debug)]
 pub(crate) struct FrameHandle {
     frame: Frame,
-    stream: u64,
     mapping_observer: MappingObserver,
 }
 
 impl FrameHandle {
-    pub(crate) const fn new(frame: Frame, stream: u64, mapping_observer: MappingObserver) -> Self {
+    pub(crate) const fn new(frame: Frame, mapping_observer: MappingObserver) -> Self {
         Self {
             frame,
-            stream,
             mapping_observer,
         }
     }
@@ -128,17 +115,12 @@ impl FrameHandle {
     pub(crate) const fn frame(&self) -> &Frame {
         &self.frame
     }
-
-    pub(crate) const fn stream(&self) -> u64 {
-        self.stream
-    }
 }
 
 /// The payload behind a mapping handle.
 #[derive(Debug)]
 pub(crate) struct MappingHandle {
     mapping: CpuMapping,
-    stream: u64,
 }
 
 inputs! {
@@ -336,16 +318,12 @@ pub(crate) const fn rect(value: PixelRect) -> madopilot_pixel_rect_t {
     }
 }
 
-/// Projects a frame stamp onto its C form, under this boundary's stream number.
-pub(crate) const fn stamp(
-    value: FrameStamp,
-    stream: u64,
-    struct_size: u32,
-) -> madopilot_frame_stamp_t {
+/// Projects a frame stamp onto its C form using its engine-local stream ordinal.
+pub(crate) const fn stamp(value: FrameStamp, struct_size: u32) -> madopilot_frame_stamp_t {
     madopilot_frame_stamp_t {
         struct_size,
         flags: 0,
-        stream,
+        stream: value.stream().get(),
         epoch: value.epoch().value(),
         sequence: value.sequence().value(),
         geometry: value.geometry().value(),
@@ -483,7 +461,6 @@ fn run_session_open(
     // Copied here, so the target list may be released the moment this returns.
     let target = &list.targets()[index];
     let facade_target = target.facade_id();
-    let boundary_target = target.boundary_id();
     facade_target.check_engine(engine.id()).map_err(|fault| {
         let error: mado_pilot::Error = fault.into();
         Fault::from_error(&error, MADOPILOT_ERROR_CATEGORY_CAPTURE)
@@ -520,30 +497,23 @@ fn run_session_open(
         session_request = session_request.requesting_input(input);
     }
 
-    // Mint before opening native resources: exhaustion must not create an
-    // unreachable live session, and skipped identities are never reused.
-    let stream = next_stream()?;
-
     let session = engine
         .open_session(facade_target, &session_request, context.inner())
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
-    engine.register_stream(session.stream(), stream);
 
     let input_available = session.accepts_input();
     let input_descriptor = crate::input::descriptor(
-        boundary_target,
+        facade_target.get(),
         session.input_descriptor(),
         u32::try_from(size_of::<madopilot_input_descriptor_t>())
             .expect("the C input descriptor is smaller than 4 GiB"),
     )?;
     let payload = SessionHandle {
         session,
-        stream,
         backend: engine.backend().id().to_owned(),
         target: facade_target,
-        boundary_target,
         input_descriptor,
         input_available,
     };
@@ -609,12 +579,12 @@ pub(crate) fn session_describe(
         out.commit(madopilot_session_info_t {
             struct_size: out.declared_size(),
             flags: 0,
-            stream: session.stream,
+            stream: session.session.stream().get(),
             width: description.extent().width(),
             height: description.extent().height(),
             format,
             coordinate_spaces,
-            target: session.boundary_target(),
+            target: session.target().get(),
             accepts_input: i32::from(session.accepts_input()),
             reserved: 0,
         });
@@ -720,7 +690,7 @@ fn run_session_frame(
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
 
-    let payload = FrameHandle::new(frame, session.stream, session.session.mapping_observer());
+    let payload = FrameHandle::new(frame, session.session.mapping_observer());
     // SAFETY: `out_frame` was validated by the entry before any work began.
     unsafe { out_frame.write(handle::into_raw(payload)) };
 
@@ -759,13 +729,7 @@ pub(crate) fn frame_stamp(
         return MADOPILOT_STATUS_INVALID_ARGUMENT;
     };
     // SAFETY: `out` was validated above.
-    unsafe {
-        out.commit(stamp(
-            frame.frame.stamp(),
-            frame.stream,
-            out.declared_size(),
-        ));
-    }
+    unsafe { out.commit(stamp(frame.frame.stamp(), out.declared_size())) };
 
     MADOPILOT_STATUS_OK
 }
@@ -870,10 +834,7 @@ fn run_frame_map(
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
 
-    let payload = MappingHandle {
-        mapping,
-        stream: frame.stream,
-    };
+    let payload = MappingHandle { mapping };
     // SAFETY: `out_mapping` was validated by the entry before any work began.
     unsafe { out_mapping.write(handle::into_raw(payload)) };
 
@@ -961,13 +922,7 @@ pub(crate) fn mapping_stamp(
         return MADOPILOT_STATUS_INVALID_ARGUMENT;
     };
     // SAFETY: `out` was validated above.
-    unsafe {
-        out.commit(stamp(
-            mapping.mapping.stamp(),
-            mapping.stream,
-            out.declared_size(),
-        ));
-    }
+    unsafe { out.commit(stamp(mapping.mapping.stamp(), out.declared_size())) };
 
     MADOPILOT_STATUS_OK
 }

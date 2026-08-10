@@ -214,6 +214,9 @@ successful values. `InputReceipt::describe()` reports selected route and address
 scope, submitted count and optional last-submitted index, submission evidence,
 typed fault, fallback, possible partial native effect, and cleanup state;
 `attempt_at()` preserves each route attempt.
+Semantic counts in `InputReceiptInfo` and each attempt stay `std::uint64_t`,
+exactly as the C records declare them; `attempt_count()` returns the
+`std::size_t` index domain that `attempt_at()` consumes.
 
 ```cpp
 const auto sent = session.send_input(request, operation);
@@ -341,9 +344,10 @@ Three request values borrow handles rather than owning them, and say so:
 function any more than it can name the C structure field, which is `tmpl` for
 the same reason.
 
-Rectangles stay coordinate-qualified. `Match::bounds` and `ResultInfo::searched`
-are `madopilot_pixel_rect_t` under the alias `Rect`, and each names the space it
-is measured in rather than reducing to an integer pair.
+Rectangles stay coordinate-qualified. `Match::bounds`, `ResultInfo::searched`,
+and `DiagnosticRecord::region` are `madopilot_pixel_rect_t` under the alias
+`Rect`, and each names the space it is measured in rather than reducing to an
+integer pair.
 
 A `Rect` the caller *supplies* is the other direction, and is narrower:
 `MapRequest::region` and `FindRequest::region` accept
@@ -410,6 +414,10 @@ normal/debug loss counts, including loss-only batches, and provides indexed
 flags rather than inventing optional values. They contain no borrowed string,
 event payload, or captured-byte view, so they remain ordinary values after the
 batch is released.
+A search record's `region` is the exact coordinate-qualified rectangle the
+search covered after clipping, not a space tag alone. Identity scalars are
+engine-scoped projections of the engine's own ordinals; comparing them across
+engines proves nothing.
 
 The reader can outlive the engine and drain already retained records after
 production seals. Draining is self-silent. The wrapper performs no logging,

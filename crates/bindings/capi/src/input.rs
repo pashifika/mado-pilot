@@ -40,7 +40,6 @@ opaque! {
 #[derive(Debug)]
 pub(crate) struct InputReceiptHandle {
     receipt: InputReceipt,
-    boundary_target: u64,
 }
 
 inputs! {
@@ -276,7 +275,7 @@ impl Versioned for madopilot_input_descriptor_t {
 }
 
 impl Versioned for madopilot_input_receipt_info_t {
-    const MANDATORY: usize = 64;
+    const MANDATORY: usize = 88;
     const NAME: &'static str = "madopilot_input_receipt_info_t";
     const PREFIXES: &'static [usize] = prefixes!(
         madopilot_input_receipt_info_t,
@@ -317,7 +316,7 @@ impl Versioned for madopilot_input_receipt_info_t {
 }
 
 impl Versioned for madopilot_input_attempt_t {
-    const MANDATORY: usize = 40;
+    const MANDATORY: usize = 56;
     const NAME: &'static str = "madopilot_input_attempt_t";
     const PREFIXES: &'static [usize] = prefixes!(
         madopilot_input_attempt_t,
@@ -557,7 +556,7 @@ pub(crate) fn target_list_input_capability(
         .capability()
         .input()
         .pair(operation, delivery);
-    let value = capability_record(record.boundary_id(), pair, out.declared_size());
+    let value = capability_record(record.ordinal(), pair, out.declared_size());
     // SAFETY: `out` was validated above.
     unsafe { out.commit(value) };
     MADOPILOT_STATUS_OK
@@ -610,7 +609,7 @@ fn run_engine_input_descriptor(
         .describe_input(target.facade_id(), context.inner())
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_INPUT))?;
     context.commit()?;
-    let value = descriptor(target.boundary_id(), &described, out.declared_size())?;
+    let value = descriptor(target.ordinal(), &described, out.declared_size())?;
     // SAFETY: `out` was validated before this helper was called.
     unsafe { out.commit(value) };
     Ok(())
@@ -680,10 +679,7 @@ fn run_session_send_input(
         .send_input(&request, context.inner())
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_INPUT))?;
     hooks::reach(hooks::Site::AfterTemporary);
-    let receipt = InputReceiptHandle {
-        receipt,
-        boundary_target: session.boundary_target(),
-    };
+    let receipt = InputReceiptHandle { receipt };
     // SAFETY: `out_receipt` was validated before this helper was called.
     unsafe { out_receipt.write(handle::into_raw(receipt)) };
     Ok(())
@@ -1126,10 +1122,13 @@ fn receipt_record(
         .map_or(MADOPILOT_INPUT_ADDRESS_NONE, |scope| {
             input_address_scope_code(scope)
         });
-    let last_submitted = receipt.last_submitted().map_or(0, |index| {
-        flags |= MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED;
-        narrow_receipt(index, "last submitted input index").unwrap_or(u32::MAX)
-    });
+    let last_submitted = match receipt.last_submitted() {
+        Some(index) => {
+            flags |= MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED;
+            semantic_count(index, "last submitted input index")?
+        }
+        None => 0,
+    };
     let evidence = receipt
         .evidence()
         .map_or(MADOPILOT_SUBMISSION_EVIDENCE_NONE, |evidence| {
@@ -1149,18 +1148,18 @@ fn receipt_record(
     Ok(madopilot_input_receipt_info_t {
         struct_size,
         flags,
-        target: handle.boundary_target,
+        target: receipt.target().get(),
         outcome: sequence_outcome_code(receipt.outcome()),
         selected_route,
         address_scope,
-        attempt_count: narrow_receipt(receipt.attempts().len(), "input attempt count")?,
-        submitted: narrow_receipt(receipt.submitted(), "submitted input count")?,
+        attempt_count: semantic_count(receipt.attempts().len(), "input attempt count")?,
+        submitted: semantic_count(receipt.submitted(), "submitted input count")?,
         last_submitted,
         evidence,
         fault,
         cleanup: cleanup_state_code(receipt.cleanup()),
-        cleanup_released: narrow_receipt(receipt.cleanup_released(), "cleanup release count")?,
-        cleanup_owed: narrow_receipt(receipt.cleanup_owed(), "cleanup owed count")?,
+        cleanup_released: semantic_count(receipt.cleanup_released(), "cleanup release count")?,
+        cleanup_owed: semantic_count(receipt.cleanup_owed(), "cleanup owed count")?,
     })
 }
 
@@ -1169,10 +1168,13 @@ fn attempt_record(
     struct_size: u32,
 ) -> Result<madopilot_input_attempt_t, Fault> {
     let mut flags = 0;
-    let last_submitted = attempt.last_submitted().map_or(0, |index| {
-        flags |= MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED;
-        narrow_receipt(index, "last submitted input index").unwrap_or(u32::MAX)
-    });
+    let last_submitted = match attempt.last_submitted() {
+        Some(index) => {
+            flags |= MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED;
+            semantic_count(index, "last submitted input index")?
+        }
+        None => 0,
+    };
     let evidence = attempt
         .evidence()
         .map_or(MADOPILOT_SUBMISSION_EVIDENCE_NONE, |evidence| {
@@ -1192,7 +1194,7 @@ fn attempt_record(
         route: input_delivery_code(attempt.route()),
         address_scope: input_address_scope_code(attempt.address_scope()),
         outcome: sequence_outcome_code(attempt.outcome()),
-        submitted: narrow_receipt(attempt.submitted(), "attempt submitted count")?,
+        submitted: semantic_count(attempt.submitted(), "attempt submitted count")?,
         last_submitted,
         evidence,
         fault,
@@ -1205,9 +1207,9 @@ fn input_fault(fault: InputFault) -> Fault {
     Fault::from_error(&error, MADOPILOT_ERROR_CATEGORY_INPUT)
 }
 
-fn narrow_receipt(value: usize, field: &'static str) -> Result<u32, Fault> {
-    u32::try_from(value)
-        .map_err(|_| Fault::internal(format!("the facade {field} exceeds uint32_t")))
+fn semantic_count(value: usize, field: &'static str) -> Result<u64, Fault> {
+    u64::try_from(value)
+        .map_err(|_| Fault::internal(format!("the facade {field} exceeds uint64_t")))
 }
 
 fn permission_kind(value: madopilot_permission_kind_t) -> Result<PermissionKind, Fault> {
@@ -1522,4 +1524,50 @@ const fn pointer_spaces(pair: InputRouteCapability) -> u32 {
         index += 1;
     }
     bits
+}
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod tests {
+    use mado_pilot_runtime::{IdentityIssuer, ProviderId};
+
+    use super::*;
+
+    #[test]
+    fn receipt_projection_keeps_target_ordinal_and_counts_above_u32() {
+        let target = IdentityIssuer::new()
+            .issue_target(ProviderId::new("capi-test"))
+            .expect("issued");
+        let submitted = usize::try_from(u64::from(u32::MAX) + 7).expect("64-bit usize");
+        let submitted_u64 = u64::try_from(submitted).expect("64-bit count");
+        let receipt = InputReceipt::complete(
+            target,
+            InputDelivery::System,
+            SubmissionEvidence::SystemInputAdmission,
+            submitted,
+        )
+        .with_cleanup(submitted + 1, submitted + 2);
+        let handle = InputReceiptHandle { receipt };
+
+        let projected = receipt_record(
+            &handle,
+            u32::try_from(size_of::<madopilot_input_receipt_info_t>())
+                .expect("receipt structure fits u32"),
+        )
+        .expect("projected");
+        assert_eq!(projected.target, target.get());
+        assert_eq!(projected.attempt_count, 1);
+        assert_eq!(projected.submitted, submitted_u64);
+        assert_eq!(projected.last_submitted, submitted_u64 - 1);
+        assert_eq!(projected.cleanup_released, submitted_u64 + 1);
+        assert_eq!(projected.cleanup_owed, submitted_u64 + 2);
+
+        let attempt = attempt_record(
+            handle.receipt.attempts()[0],
+            u32::try_from(size_of::<madopilot_input_attempt_t>())
+                .expect("attempt structure fits u32"),
+        )
+        .expect("projected");
+        assert_eq!(attempt.submitted, submitted_u64);
+        assert_eq!(attempt.last_submitted, submitted_u64 - 1);
+    }
 }

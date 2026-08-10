@@ -1209,14 +1209,14 @@ struct InputReceiptInfo {
     SequenceOutcome outcome = MADOPILOT_SEQUENCE_UNEXECUTED;
     std::optional<InputDelivery> selected_route;
     InputAddressScope address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
-    std::size_t attempt_count = 0;
-    std::uint32_t submitted = 0;
-    std::optional<std::uint32_t> last_submitted;
+    std::uint64_t attempt_count = 0;
+    std::uint64_t submitted = 0;
+    std::optional<std::uint64_t> last_submitted;
     std::optional<SubmissionEvidence> evidence;
     std::optional<InputFault> fault;
     CleanupState cleanup = MADOPILOT_CLEANUP_NOT_NEEDED;
-    std::uint32_t cleanup_released = 0;
-    std::uint32_t cleanup_owed = 0;
+    std::uint64_t cleanup_released = 0;
+    std::uint64_t cleanup_owed = 0;
     bool partial_native_effect = false;
     bool used_fallback = false;
 
@@ -1232,8 +1232,8 @@ struct InputAttempt {
     InputDelivery route = MADOPILOT_INPUT_DELIVERY_NONE;
     InputAddressScope address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
     SequenceOutcome outcome = MADOPILOT_SEQUENCE_UNEXECUTED;
-    std::uint32_t submitted = 0;
-    std::optional<std::uint32_t> last_submitted;
+    std::uint64_t submitted = 0;
+    std::optional<std::uint64_t> last_submitted;
     std::optional<SubmissionEvidence> evidence;
     std::optional<InputFault> fault;
     bool partial_native_effect = false;
@@ -1270,7 +1270,7 @@ struct DiagnosticRecord {
     std::uint64_t template_identity = 0;
     Space source_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
     Space destination_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
-    Space region_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    Rect region{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
     InputDelivery route = MADOPILOT_INPUT_DELIVERY_NONE;
     InputAddressScope address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
     SubmissionEvidence evidence = MADOPILOT_SUBMISSION_EVIDENCE_NONE;
@@ -2311,7 +2311,7 @@ public:
         out.template_identity = value.template_identity;
         out.source_space = value.source_space;
         out.destination_space = value.destination_space;
-        out.region_space = value.region_space;
+        out.region = value.region;
         out.route = value.route;
         out.address_scope = value.address_scope;
         out.evidence = value.evidence;

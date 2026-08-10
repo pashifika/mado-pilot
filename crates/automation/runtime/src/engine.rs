@@ -614,7 +614,7 @@ impl Engine {
         let _observed = self.observe(operation, DiagnosticOperationKind::TemplatePreparation)?;
         let prepared = self.matcher.prepare(source, operation)?;
         if let Some(diagnostics) = &self.diagnostics {
-            diagnostics.register_template(&prepared)?;
+            diagnostics.register_template(&prepared);
         }
         Ok(prepared)
     }
@@ -650,7 +650,7 @@ impl Engine {
 
         let prepared = self.matcher.prepare(&source, operation)?;
         if let Some(diagnostics) = &self.diagnostics {
-            diagnostics.register_template(&prepared)?;
+            diagnostics.register_template(&prepared);
         }
         Ok(attempt.commit(prepared)?)
     }
@@ -697,5 +697,130 @@ fn release_controller(controller: &Arc<dyn InputController>, refusal: Error) -> 
                 error.detail()
             ),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::any::Any;
+    use std::sync::Arc;
+
+    use mado_pilot_capture::{CaptureProvider, Continuity, OpenRequest, PixelFormat};
+    use mado_pilot_core::{IdentityIssuer, OperationContext, PixelExtent};
+    use mado_pilot_testkit::{ControlledCapture, ControlledMatcher, match_fixtures};
+    use mado_pilot_vision::{
+        BackendId, MatchBackend, MatchOptions, PreparedTemplate, TemplatePayload,
+    };
+
+    use crate::diagnostic::{DiagnosticDrain, DiagnosticPayload, MAX_DIAGNOSTIC_CAPACITY};
+    use crate::find::FindRequest;
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct MetadataPayload;
+
+    impl TemplatePayload for MetadataPayload {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn template_metadata_ceiling_does_not_change_prepare_or_search_outcomes() {
+        let issuer = Arc::new(IdentityIssuer::new());
+        let capture = Arc::new(
+            ControlledCapture::new(
+                Arc::clone(&issuer),
+                PixelExtent::new(32, 24),
+                PixelFormat::Rgba8,
+            )
+            .expect("valid controlled capture"),
+        );
+        let backend = Arc::new(ControlledMatcher::new(PixelFormat::Rgba8));
+        let engine = Engine::new_with_options(
+            EngineWiring {
+                engine: issuer.engine(),
+                capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
+                matcher: Matcher::new(Arc::clone(&backend) as Arc<dyn MatchBackend>),
+                loader: PackageLoader::new(),
+                input: None,
+                permission: None,
+            },
+            EngineOptions::new()
+                .with_diagnostics(DiagnosticOptions::normal(4).expect("valid diagnostic capacity")),
+        )
+        .expect("valid engine");
+        let reader = engine
+            .take_diagnostic_reader()
+            .expect("enabled diagnostic reader");
+        let operation = OperationContext::new();
+        let target = engine
+            .discover(&operation)
+            .expect("discovered")
+            .remove(0)
+            .id();
+        let session = engine
+            .open(target, &OpenRequest::new(), &operation)
+            .expect("opened");
+        capture
+            .publish(0x11, Continuity::Continuous)
+            .expect("published");
+        assert!(
+            matches!(reader.drain(), DiagnosticDrain::Batch(_)),
+            "the open lifecycle is drained before the search assertion"
+        );
+
+        let source = match_fixtures::planted_template("metadata-ceiling-template");
+        let metadata_backend = BackendId::new("diagnostic-metadata");
+        let live_metadata: Vec<_> = (0..MAX_DIAGNOSTIC_CAPACITY)
+            .map(|_| {
+                PreparedTemplate::new(metadata_backend.clone(), &source, Arc::new(MetadataPayload))
+            })
+            .collect();
+        let diagnostics = engine.diagnostics.as_ref().expect("enabled diagnostics");
+        for template in &live_metadata {
+            diagnostics.register_template(template);
+        }
+
+        let prepared = engine
+            .prepare_template(&source, &operation)
+            .expect("diagnostic metadata cannot fail preparation");
+        assert_eq!(prepared.id(), source.id());
+        assert_eq!(backend.prepare_count(), 1);
+
+        let outcome = session
+            .find_template(
+                &FindRequest::latest(&prepared, MatchOptions::from_defaults(prepared.defaults())),
+                &operation,
+            )
+            .expect("diagnostic metadata cannot fail search");
+        assert!(outcome.result().is_empty());
+        assert_eq!(backend.find_count(), 1);
+
+        let DiagnosticDrain::Batch(batch) = reader.drain() else {
+            panic!("an omitted normal search record reports a loss-only batch");
+        };
+        assert!(batch.is_empty());
+        assert_eq!(batch.losses().normal(), 1);
+        assert_eq!(batch.losses().debug(), 0);
+
+        drop(live_metadata);
+        let reclaimed = session
+            .find_template(
+                &FindRequest::latest(&prepared, MatchOptions::from_defaults(prepared.defaults())),
+                &operation,
+            )
+            .expect("expired diagnostic metadata is reclaimed before the ceiling refuses");
+        assert!(reclaimed.result().is_empty());
+        let DiagnosticDrain::Batch(batch) = reader.drain() else {
+            panic!("the reclaimed search record is retained");
+        };
+        assert!(batch.losses().is_empty());
+        assert_eq!(batch.records().len(), 1);
+        assert!(matches!(
+            batch.records()[0].payload(),
+            DiagnosticPayload::Search(search) if search.region == Some(reclaimed.result().searched())
+        ));
     }
 }

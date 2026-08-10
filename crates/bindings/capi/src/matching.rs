@@ -53,7 +53,6 @@ opaque! {
 #[derive(Debug)]
 pub(crate) struct ResultHandle {
     outcome: FindOutcome,
-    stream: u64,
 }
 
 inputs! {
@@ -277,10 +276,7 @@ fn run_session_find(
     // dropped rather than published.
     context.commit()?;
 
-    let payload = ResultHandle {
-        outcome,
-        stream: frame.map_or_else(|| session.stream(), FrameHandle::stream),
-    };
+    let payload = ResultHandle { outcome };
     // SAFETY: `out_result` was validated by the entry before any work began.
     unsafe { out_result.write(handle::into_raw(payload)) };
 
@@ -445,11 +441,7 @@ pub(crate) fn result_stamp(
     };
     // SAFETY: `out` was validated above.
     unsafe {
-        out.commit(stamp(
-            result.outcome.result().stamp(),
-            result.stream,
-            out.declared_size(),
-        ));
+        out.commit(stamp(result.outcome.result().stamp(), out.declared_size()));
     }
 
     MADOPILOT_STATUS_OK

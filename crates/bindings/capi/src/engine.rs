@@ -6,26 +6,18 @@
 //!
 //! # Boundary identities
 //!
-//! Facade target and stream identities are deliberately opaque. The C boundary
-//! therefore mints fixed-width nonzero identities from process-wide counters
-//! that never reuse a value while the library is loaded. A target identity is
-//! minted for one discovery snapshot and copied into every session descriptor
-//! and receipt opened from it. A stream identity is minted per open session.
-//! These values correlate C records exactly as their Rust counterparts do; they
-//! are not platform handles and cannot be compared with Rust API identities.
-//! ADR 0006 keeps facade identities opaque, and ADR 0023 fixes these C
-//! projections.
+//! Facade target and stream identities expose checked nonzero ordinals scoped
+//! to their issuing engine. The C boundary projects those ordinals directly,
+//! so rediscovery and lazy diagnostic projection preserve correlation without
+//! retaining a second identity registry.
 
-use std::collections::HashMap;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
-    DiagnosticOptions, Engine, FrameDescriptor, MonotonicInstant, PixelExtent, StreamId,
-    TargetDescription, TargetId,
+    DiagnosticOptions, Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription,
+    TargetId,
 };
 
 use crate::boundary::{self, Input, Out, Versioned, covers, inputs, prefixes};
@@ -52,50 +44,15 @@ opaque! {
     madopilot_engine_t => EngineHandle
 }
 
-/// Fixed-width identities shared with diagnostic readers that may outlive the engine handle.
-#[derive(Debug, Default)]
-pub(crate) struct BoundaryIdentities {
-    pub(crate) targets: HashMap<TargetId, u64>,
-    pub(crate) streams: HashMap<StreamId, u64>,
-}
-
-/// The facade engine plus the boundary identities needed by independent readers.
+/// The facade engine behind the C handle.
 #[derive(Debug)]
 pub(crate) struct EngineHandle {
     engine: Engine,
-    identities: Arc<Mutex<BoundaryIdentities>>,
 }
 
 impl EngineHandle {
     fn new(engine: Engine) -> Self {
-        Self {
-            engine,
-            identities: Arc::new(Mutex::new(BoundaryIdentities::default())),
-        }
-    }
-
-    pub(crate) fn identities(&self) -> Arc<Mutex<BoundaryIdentities>> {
-        Arc::clone(&self.identities)
-    }
-
-    fn register_targets(&self, targets: &[TargetRecord]) {
-        let mut identities = self
-            .identities
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for target in targets {
-            identities
-                .targets
-                .insert(target.facade_id(), target.boundary_id());
-        }
-    }
-
-    pub(crate) fn register_stream(&self, stream: StreamId, boundary_stream: u64) {
-        self.identities
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .streams
-            .insert(stream, boundary_stream);
+        Self { engine }
     }
 }
 
@@ -116,19 +73,15 @@ opaque! {
     madopilot_target_list_t => TargetList
 }
 
-/// One target and the fixed-width identity minted for its discovery snapshot.
+/// One target in an immutable discovery snapshot.
 #[derive(Debug)]
 pub(crate) struct TargetRecord {
     description: TargetDescription,
-    boundary_id: u64,
 }
 
 impl TargetRecord {
-    fn new(description: TargetDescription) -> Result<Self, Fault> {
-        Ok(Self {
-            description,
-            boundary_id: next_target()?,
-        })
+    fn new(description: TargetDescription) -> Self {
+        Self { description }
     }
 
     pub(crate) const fn description(&self) -> &TargetDescription {
@@ -139,8 +92,8 @@ impl TargetRecord {
         self.description.id()
     }
 
-    pub(crate) const fn boundary_id(&self) -> u64 {
-        self.boundary_id
+    pub(crate) const fn ordinal(&self) -> u64 {
+        self.facade_id().get()
     }
 }
 
@@ -152,36 +105,6 @@ impl TargetList {
     pub(crate) fn targets(&self) -> &[TargetRecord] {
         &self.0
     }
-}
-
-/// Mints the next boundary stream identity.
-pub(crate) fn next_stream() -> Result<u64, Fault> {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-
-    next_identity(&NEXT, "the C stream identity space is exhausted")
-}
-
-fn next_target() -> Result<u64, Fault> {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-
-    next_identity(&NEXT, "the C target identity space is exhausted")
-}
-
-fn next_identity(counter: &AtomicU64, exhausted: &'static str) -> Result<u64, Fault> {
-    counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            if current == 0 {
-                None
-            } else {
-                Some(current.wrapping_add(1))
-            }
-        })
-        .map_err(|_| {
-            Fault::from_error(
-                &mado_pilot::Error::new(mado_pilot::Status::LimitExceeded, exhausted),
-                MADOPILOT_ERROR_CATEGORY_CAPTURE,
-            )
-        })
 }
 
 inputs! {
@@ -598,10 +521,9 @@ fn run_discover(
     let targets = targets
         .into_iter()
         .map(TargetRecord::new)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
-    engine.register_targets(&targets);
 
     // SAFETY: `out_targets` was validated by the entry before any work began.
     unsafe { out_targets.write(handle::into_raw(TargetList(targets))) };
@@ -738,7 +660,7 @@ fn describe_target(target: &TargetRecord, struct_size: u32) -> Result<madopilot_
         coordinate_spaces,
         name: madopilot_str_t::borrowed(description.name()),
         provider: madopilot_str_t::borrowed(description.provider().name()),
-        target: target.boundary_id(),
+        target: target.ordinal(),
         kind,
         capture: crate::input::capability_support_code(capability.capture()),
         capture_permission,
@@ -759,24 +681,5 @@ pub(crate) unsafe fn report(
         Ok(()) => MADOPILOT_STATUS_OK,
         // SAFETY: forwarded unchanged from this function's own contract.
         Err(fault) => unsafe { error::emit(out_error, fault) },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::atomic::AtomicU64;
-
-    use super::next_identity;
-
-    #[test]
-    fn the_last_nonzero_identity_is_minted_once_before_exhaustion() {
-        let counter = AtomicU64::new(u64::MAX);
-
-        assert_eq!(
-            next_identity(&counter, "exhausted").expect("the last identity remains available"),
-            u64::MAX
-        );
-        assert!(next_identity(&counter, "exhausted").is_err());
-        assert!(next_identity(&counter, "exhausted").is_err());
     }
 }

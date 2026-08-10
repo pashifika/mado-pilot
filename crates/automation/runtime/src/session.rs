@@ -15,12 +15,12 @@ use mado_pilot_capture::{
 };
 use mado_pilot_core::{
     ClipPolicy, CoordinateSpace, InputCapability, Lifecycle, Operation, OperationContext, Rect,
-    Result, StreamId, TargetId,
+    Result, Status, StreamId, TargetId,
 };
 use mado_pilot_input::{
     InputController, InputDescriptor, InputFault, InputReceipt, InputRequest, SequenceOutcome,
 };
-use mado_pilot_vision::{MatchRequest, Matcher, RegionSelection};
+use mado_pilot_vision::{MatchRequest, Matcher};
 
 use crate::diagnostic::{
     DetachedObservation, DiagnosticEmitter, DiagnosticOperationKind, DiagnosticPayload,
@@ -244,13 +244,25 @@ impl Session {
     ) -> Result<Frame> {
         let observed = self.observe(operation, DiagnosticOperationKind::FrameAcquire)?;
         let result = self.capture.frame(request, operation);
-        if let Ok(frame) = &result {
-            self.debug(observed, operation, || {
-                DiagnosticPayload::Frame(FrameDiagnostic {
-                    target: self.target(),
-                    frame: frame.stamp(),
-                })
-            });
+        match &result {
+            Ok(frame) => {
+                self.debug(observed, operation, || {
+                    DiagnosticPayload::Frame(FrameDiagnostic {
+                        target: self.target(),
+                        frame: frame.stamp(),
+                    })
+                });
+            }
+            Err(error) if error.status() == Status::TargetLost => {
+                self.normal(observed, operation, || {
+                    DiagnosticPayload::Lifecycle(LifecycleDiagnostic {
+                        target: Some(self.target()),
+                        lifecycle: Lifecycle::Closed,
+                        fault: Some(Status::TargetLost),
+                    })
+                });
+            }
+            Err(_) => {}
         }
         result
     }
@@ -344,16 +356,10 @@ impl Session {
         let template = self
             .diagnostics
             .as_ref()
-            .map(|diagnostics| diagnostics.template(request.template()))
-            .transpose()?;
+            .and_then(|diagnostics| diagnostics.template(request.template()));
         let requested_frame = match request.frame() {
             SearchFrame::Latest => None,
             SearchFrame::Exact(frame) => Some(frame.stamp()),
-        };
-        let region_space = match request.region() {
-            RegionSelection::FullFrame => Some(CoordinateSpace::CapturePixels),
-            RegionSelection::Region { rect, .. } => Some(rect.space()),
-            _ => None,
         };
 
         let result: Result<FindOutcome> = (|| {
@@ -386,9 +392,10 @@ impl Session {
         })();
 
         if let Some(template) = template {
-            let (frame, outcome, result_count) = match &result {
+            let (frame, region, outcome, result_count) = match &result {
                 Ok(outcome) => (
                     Some(outcome.frame().stamp()),
+                    Some(outcome.result().searched()),
                     if outcome.result().is_empty() {
                         SearchDiagnosticOutcome::NoMatch
                     } else {
@@ -398,6 +405,7 @@ impl Session {
                 ),
                 Err(error) => (
                     requested_frame,
+                    None,
                     SearchDiagnosticOutcome::Failed(error.status()),
                     0,
                 ),
@@ -407,11 +415,13 @@ impl Session {
                     target: self.target(),
                     frame,
                     template,
-                    region_space,
+                    region,
                     outcome,
                     result_count,
                 })
             });
+        } else if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.normal_loss();
         }
         result
     }
@@ -589,11 +599,18 @@ mod tests {
 
     use mado_pilot_capture::{CaptureProvider, Continuity, FrameRequest, OpenRequest, PixelFormat};
     use mado_pilot_core::{
-        IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, Status,
+        ClipPolicy, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, PixelRect,
+        Status,
     };
     use mado_pilot_testkit::{ControlledCapture, ControlledMatcher, ManualClock, match_fixtures};
-    use mado_pilot_vision::{MatchBackend, MatchOptions, Matcher, PreparedTemplate};
+    use mado_pilot_vision::{
+        MatchBackend, MatchOptions, Matcher, PreparedTemplate, RegionSelection,
+    };
 
+    use crate::diagnostic::{
+        DiagnosticBatch, DiagnosticDrain, DiagnosticLevel, DiagnosticOptions, DiagnosticPayload,
+        DiagnosticReader, DiagnosticSink, SearchDiagnosticOutcome,
+    };
     use crate::find::FindRequest;
 
     use super::Session;
@@ -602,16 +619,28 @@ mod tests {
 
     /// One session over controlled doubles, with the backend still reachable.
     struct Fixture {
+        capture: Arc<ControlledCapture>,
         backend: Arc<ControlledMatcher>,
         matcher: Matcher,
         session: Session,
+        reader: Option<DiagnosticReader>,
     }
 
     impl Fixture {
         fn new() -> Self {
+            Self::build(false)
+        }
+
+        fn with_diagnostics() -> Self {
+            Self::build(true)
+        }
+
+        fn build(with_diagnostics: bool) -> Self {
             let issuer = Arc::new(IdentityIssuer::new());
-            let capture = ControlledCapture::new(issuer, EXTENT, PixelFormat::Rgba8)
-                .expect("a valid controlled provider");
+            let capture = Arc::new(
+                ControlledCapture::new(issuer, EXTENT, PixelFormat::Rgba8)
+                    .expect("a valid controlled provider"),
+            );
             let backend = Arc::new(ControlledMatcher::new(PixelFormat::Rgba8));
             let matcher = Matcher::new(Arc::clone(&backend) as Arc<dyn MatchBackend>);
             let operation = OperationContext::new();
@@ -622,11 +651,22 @@ mod tests {
             capture
                 .publish(0x11, Continuity::Continuous)
                 .expect("published");
+            let (diagnostics, reader) = if with_diagnostics {
+                let (sink, reader) = DiagnosticSink::create(
+                    DiagnosticOptions::normal(8).expect("valid diagnostic capacity"),
+                )
+                .expect("enabled diagnostics");
+                (Some(sink), Some(reader))
+            } else {
+                (None, None)
+            };
 
             Self {
+                capture,
                 backend,
                 matcher: matcher.clone(),
-                session: Session::new(opened, matcher, None, None),
+                session: Session::new(opened, matcher, None, diagnostics),
+                reader,
             }
         }
 
@@ -637,6 +677,13 @@ mod tests {
                     &OperationContext::new(),
                 )
                 .expect("prepared")
+        }
+
+        fn diagnostic_batch(&self) -> DiagnosticBatch {
+            match self.reader.as_ref().expect("enabled reader").drain() {
+                DiagnosticDrain::Batch(batch) => batch,
+                other => panic!("expected diagnostic batch, got {other:?}"),
+            }
         }
     }
 
@@ -707,5 +754,116 @@ mod tests {
 
         assert_eq!(outcome.frame().stamp(), frame.stamp());
         assert_eq!(fixture.backend.find_count(), 1);
+    }
+
+    #[test]
+    fn successful_search_diagnostics_report_each_effective_clipped_region() {
+        let fixture = Fixture::with_diagnostics();
+        let operation = OperationContext::new();
+        let template = fixture.template();
+        let options = MatchOptions::from_defaults(template.defaults());
+        let frame = fixture
+            .session
+            .acquire_frame(&FrameRequest::latest(), &operation)
+            .expect("published frame");
+        let first_region = PixelRect::new(1, 2, 20, 20).expect("valid");
+        let clipped_request = PixelRect::new(16, 12, 40, 32).expect("valid");
+        let clipped_region = PixelRect::new(16, 12, 32, 24).expect("valid");
+
+        let first = fixture
+            .session
+            .find_template(
+                &FindRequest::exact(&frame, &template, options).in_region(
+                    RegionSelection::pixels(first_region, ClipPolicy::Reject)
+                        .expect("valid selection"),
+                ),
+                &operation,
+            )
+            .expect("first successful search");
+        let second = fixture
+            .session
+            .find_template(
+                &FindRequest::exact(&frame, &template, options).in_region(
+                    RegionSelection::pixels(clipped_request, ClipPolicy::Clip)
+                        .expect("valid selection"),
+                ),
+                &operation,
+            )
+            .expect("second successful search");
+
+        assert_eq!(first.result().searched(), first_region);
+        assert_eq!(second.result().searched(), clipped_region);
+        let batch = fixture.diagnostic_batch();
+        assert!(batch.losses().is_empty());
+        let searches: Vec<_> = batch
+            .records()
+            .iter()
+            .filter_map(|record| match record.payload() {
+                DiagnosticPayload::Search(search) => Some(search),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(searches.len(), 2);
+        assert_eq!(searches[0].region, Some(first_region));
+        assert_eq!(searches[1].region, Some(clipped_region));
+    }
+
+    #[test]
+    fn failed_search_diagnostic_has_no_completed_region() {
+        let fixture = Fixture::with_diagnostics();
+        let operation = OperationContext::new();
+        let template = fixture.template();
+        let requested = PixelRect::new(1, 2, 20, 20).expect("valid");
+        fixture.session.close(&operation).expect("closed");
+        let _ = fixture.diagnostic_batch();
+
+        let error = fixture
+            .session
+            .find_template(
+                &FindRequest::latest(&template, MatchOptions::from_defaults(template.defaults()))
+                    .in_region(
+                        RegionSelection::pixels(requested, ClipPolicy::Reject)
+                            .expect("valid selection"),
+                    ),
+                &operation,
+            )
+            .expect_err("a closed session cannot search");
+        assert_eq!(error.status(), Status::Closed);
+
+        let batch = fixture.diagnostic_batch();
+        assert_eq!(batch.records().len(), 1);
+        assert!(matches!(
+            batch.records()[0].payload(),
+            DiagnosticPayload::Search(search)
+                if search.region.is_none()
+                    && search.outcome == SearchDiagnosticOutcome::Failed(Status::Closed)
+        ));
+    }
+
+    #[test]
+    fn direct_target_loss_emits_one_normal_closed_lifecycle_record() {
+        let fixture = Fixture::with_diagnostics();
+        let operation = OperationContext::new();
+        let target = fixture.session.target();
+        fixture.capture.lose(target);
+
+        let error = fixture
+            .session
+            .acquire_frame(&FrameRequest::latest(), &operation)
+            .expect_err("the adapter reports its lost target");
+        assert_eq!(error.status(), Status::TargetLost);
+
+        let batch = fixture.diagnostic_batch();
+        assert!(batch.losses().is_empty());
+        assert_eq!(batch.records().len(), 1);
+        let record = batch.records()[0];
+        assert_eq!(record.level(), DiagnosticLevel::Normal);
+        assert!(matches!(
+            record.payload(),
+            DiagnosticPayload::Lifecycle(lifecycle)
+                if lifecycle.target == Some(target)
+                    && lifecycle.lifecycle == mado_pilot_core::Lifecycle::Closed
+                    && lifecycle.fault == Some(Status::TargetLost)
+        ));
     }
 }

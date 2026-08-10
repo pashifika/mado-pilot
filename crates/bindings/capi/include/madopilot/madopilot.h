@@ -617,7 +617,7 @@ enum {
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_TEMPLATE 0x008u
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_SOURCE_SPACE 0x010u
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_DESTINATION_SPACE 0x020u
-#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION_SPACE 0x040u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION 0x040u
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_ROUTE 0x080u
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_ADDRESS_SCOPE 0x100u
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_EVIDENCE 0x200u
@@ -860,14 +860,14 @@ typedef struct madopilot_input_receipt_info_t {
     madopilot_sequence_outcome_t outcome;
     madopilot_input_delivery_t selected_route;
     madopilot_input_address_scope_t address_scope;
-    uint32_t attempt_count;
-    uint32_t submitted;
-    uint32_t last_submitted;
+    uint64_t attempt_count;
+    uint64_t submitted;
+    uint64_t last_submitted;
     madopilot_submission_evidence_t evidence;
     madopilot_input_fault_t fault;
     madopilot_cleanup_state_t cleanup;
-    uint32_t cleanup_released;
-    uint32_t cleanup_owed;
+    uint64_t cleanup_released;
+    uint64_t cleanup_owed;
 } madopilot_input_receipt_info_t;
 
 /* One immutable route attempt borrowed from its receipt. */
@@ -877,8 +877,8 @@ typedef struct madopilot_input_attempt_t {
     madopilot_input_delivery_t route;
     madopilot_input_address_scope_t address_scope;
     madopilot_sequence_outcome_t outcome;
-    uint32_t submitted;
-    uint32_t last_submitted;
+    uint64_t submitted;
+    uint64_t last_submitted;
     madopilot_submission_evidence_t evidence;
     madopilot_input_fault_t fault;
     uint32_t reserved;
@@ -915,7 +915,7 @@ typedef struct madopilot_operation_t {
  * Mandatory prefix: the whole structure. Identity is not optional; a caller
  * that cannot store all four fields cannot correlate a result at all.
  *
- * `stream` is unique for the life of the loaded library and is never reused. */
+ * `stream` is a nonzero engine-local ordinal that is never reused by its engine. */
 typedef struct madopilot_frame_stamp_t {
     uint32_t struct_size;
     uint32_t flags; /* No bits defined; the library writes zero. */
@@ -942,7 +942,7 @@ typedef struct madopilot_diagnostic_record_t {
     uint64_t template_identity;
     madopilot_space_t source_space;
     madopilot_space_t destination_space;
-    madopilot_space_t region_space;
+    madopilot_pixel_rect_t region;
     madopilot_input_delivery_t route;
     madopilot_input_address_scope_t address_scope;
     madopilot_submission_evidence_t evidence;
@@ -1006,7 +1006,7 @@ typedef struct madopilot_target_t {
     int32_t coordinate_spaces;
     madopilot_str_t name;
     madopilot_str_t provider;
-    uint64_t target; /* Engine-local target identity. */
+    uint64_t target; /* Nonzero engine-local target ordinal. */
     madopilot_target_kind_t kind;
     madopilot_capability_support_t capture;
     madopilot_permission_kind_t capture_permission;
@@ -1026,7 +1026,7 @@ typedef struct madopilot_session_info_t {
      * Read as a madopilot_space_t it gives a plausible wrong answer: the value
      * 1 is both "capture pixels converts" and SPACE_FRAME_NORMALIZED. */
     int32_t coordinate_spaces;
-    uint64_t target; /* Boundary identity copied from discovery. */
+    uint64_t target; /* Nonzero engine-local target ordinal. */
     int32_t accepts_input; /* One when input was established, otherwise zero. */
     uint32_t reserved; /* Written as zero. */
 } madopilot_session_info_t;
