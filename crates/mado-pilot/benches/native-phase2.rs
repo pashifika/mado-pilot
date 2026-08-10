@@ -378,7 +378,7 @@ mod native {
                 let Ok(line) = self.lines.recv_timeout(remaining) else {
                     return false;
                 };
-                if line == "observation role=target family=legacy-mouse units=1" {
+                if line == "observation role=target family=pointer-move units=1" {
                     return true;
                 }
             }
