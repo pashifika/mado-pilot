@@ -40,7 +40,8 @@ mod native {
         PixelFormat, SequenceOutcome, Session, SessionRequest, Status, TargetId,
     };
     use mado_pilot_testkit::bench_harness::{
-        self, Benchmark, Plan, Profile, Sample, Workload, argument, enforce_hard_budgets, measure,
+        self, Benchmark, Plan, PrefixedLineMatch, Profile, Sample, Workload, argument,
+        classify_prefixed_line, enforce_hard_budgets, measure,
     };
 
     #[cfg(windows)]
@@ -57,6 +58,88 @@ mod native {
     const CLOSE_WAIT: Duration = Duration::from_secs(5);
     const PRESSURE_WAIT: Duration = Duration::from_millis(100);
     const FIXTURE_WAIT: Duration = Duration::from_secs(10);
+
+    const COMMON_LANGUAGE_EVENTS: [protocol::EventSummary; 3] = [
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_MOVE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_DOWN,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_UP,
+            text_units: expected_key_units(),
+        },
+    ];
+
+    #[cfg(windows)]
+    const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 15] = [
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_MOVE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_PRESS,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_RELEASE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_PRESS,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_RELEASE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_PRESS,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_RELEASE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_SCROLL,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_DOWN,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_UP,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_DOWN,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_DOWN,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_UP,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_UP,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_TEXT,
+            text_units: 3,
+        },
+    ];
+
+    #[cfg(target_os = "macos")]
+    const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 3] = COMMON_LANGUAGE_EVENTS;
 
     static ARGUMENTS: OnceLock<Arguments> = OnceLock::new();
 
@@ -211,6 +294,7 @@ mod native {
     struct FixtureProcess {
         child: Child,
         lines: mpsc::Receiver<String>,
+        reader: Option<thread::JoinHandle<()>>,
     }
 
     impl FixtureProcess {
@@ -229,7 +313,7 @@ mod native {
                 .take()
                 .expect("the benchmark fixture exposes readiness output");
             let (sender, lines) = mpsc::sync_channel(512);
-            thread::spawn(move || {
+            let reader = thread::spawn(move || {
                 for line in BufReader::new(output).lines() {
                     let Ok(line) = line else {
                         break;
@@ -239,7 +323,11 @@ mod native {
                     }
                 }
             });
-            let fixture = Self { child, lines };
+            let fixture = Self {
+                child,
+                lines,
+                reader: Some(reader),
+            };
             let ready = fixture
                 .lines
                 .recv_timeout(FIXTURE_WAIT)
@@ -254,8 +342,65 @@ mod native {
             protocol::fixture_title(self.child.id())
         }
 
-        fn next_common_flow(&self) -> bool {
-            self.next_pointer_move() && self.next_key_pair()
+        fn next_flow(&self, expected: &[protocol::EventSummary]) -> bool {
+            expected.iter().all(|expected| {
+                let deadline = Instant::now() + OPERATION_WAIT;
+                loop {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return false;
+                    }
+                    let Ok(line) = self.lines.recv_timeout(remaining) else {
+                        return false;
+                    };
+                    let Some(observed) = protocol::parse_event_line(&line) else {
+                        continue;
+                    };
+                    if observed != *expected {
+                        eprintln!(
+                            "benchmark fixture event mismatch: expected {expected:?}, observed {observed:?}"
+                        );
+                        return false;
+                    }
+                    return true;
+                }
+            })
+        }
+
+        fn finish_observation(mut self) -> bool {
+            let _killed = self.child.kill();
+            let _waited = self.child.wait();
+            let deadline = Instant::now() + OPERATION_WAIT;
+            let mut complete = true;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    eprintln!("benchmark fixture output reader did not terminate");
+                    return false;
+                }
+                match self.lines.recv_timeout(remaining) {
+                    Ok(line) => {
+                        if let Some(event) = protocol::parse_event_line(&line) {
+                            eprintln!("benchmark fixture emitted a trailing event: {event:?}");
+                            complete = false;
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        eprintln!("benchmark fixture output reader did not terminate");
+                        return false;
+                    }
+                }
+            }
+            if self
+                .reader
+                .take()
+                .is_some_and(|reader| reader.join().is_err())
+            {
+                eprintln!("benchmark fixture output reader panicked");
+                complete = false;
+            }
+            complete
         }
 
         fn next_key_pair(&self) -> bool {
@@ -405,14 +550,15 @@ mod native {
                 let Ok(line) = self.lines.recv_timeout(remaining) else {
                     return false;
                 };
-                if line.starts_with("observation role=target ") {
-                    if line != expected_line {
+                match classify_prefixed_line(&line, "observation role=", expected_line) {
+                    PrefixedLineMatch::Irrelevant => {}
+                    PrefixedLineMatch::Expected => return true,
+                    PrefixedLineMatch::Unexpected => {
                         eprintln!(
                             "ordinary fixture observation mismatch: expected `{expected_line}`, observed `{line}`"
                         );
                         return false;
                     }
-                    return true;
                 }
             }
         }
@@ -676,6 +822,14 @@ mod native {
             };
             command
         }
+
+        fn expected_fixture_events(&self) -> &'static [protocol::EventSummary] {
+            if self.example_name == cpp_example_name() {
+                &CPP_LANGUAGE_EVENTS
+            } else {
+                &COMMON_LANGUAGE_EVENTS
+            }
+        }
     }
 
     pub(super) fn run() {
@@ -863,7 +1017,7 @@ mod native {
                     ),
                     measure(
                         "cpp_common_flow",
-                        "the released C++ wrapper performs the same bounded fixture flow in a fresh process",
+                        cpp_correctness_oracle(),
                         plan,
                         || cpp.clone(),
                         language_common_flow,
@@ -1324,11 +1478,12 @@ mod native {
             .as_deref()
             .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
         let fixture_acknowledged = if process_succeeded || receipt_present {
-            fixture.next_common_flow()
+            fixture.next_flow(program.expected_fixture_events())
         } else {
             false
         };
         let elapsed = started.elapsed();
+        let fixture_sequence_complete = fixture.finish_observation();
         let mapped = stdout
             .as_deref()
             .and_then(language_mapping_bytes)
@@ -1337,6 +1492,7 @@ mod native {
         let correct = process_succeeded
             && stderr_empty
             && fixture_acknowledged
+            && fixture_sequence_complete
             && receipt_present
             && stdout.as_deref().is_some_and(|stdout| {
                 language_abi_line_is_present(stdout, program.example_name)
@@ -1642,13 +1798,23 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
+    const fn cpp_correctness_oracle() -> &'static str {
+        "the released C++ wrapper performs the same bounded fixture flow in a fresh process"
+    }
+
+    #[cfg(windows)]
+    const fn cpp_correctness_oracle() -> &'static str {
+        "the released C++ wrapper submits the full bounded pointer, button, wheel, key, modifier, text, and delay flow through a fresh process"
+    }
+
+    #[cfg(target_os = "macos")]
     const fn cpp_receipt_line() -> &'static str {
         "receipt: outcome 1 submitted 4 evidence 1 cleanup 0"
     }
 
     #[cfg(windows)]
     const fn cpp_receipt_line() -> &'static str {
-        "receipt: outcome 1 submitted 4 evidence 4 cleanup 0"
+        "receipt: outcome 1 submitted 16 evidence 4 cleanup 0"
     }
 
     #[cfg(target_os = "macos")]

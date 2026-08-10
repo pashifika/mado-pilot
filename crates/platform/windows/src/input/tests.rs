@@ -16,8 +16,8 @@ use mado_pilot_core::{
 };
 use mado_pilot_input::{
     CleanupState, DeliveryPlan, FocusPolicy, InputController, InputDescriptor, InputEvent,
-    InputFault, InputReceipt, InputRequest, InputSequence, Key, Modifier, PointerGeometry,
-    PressedState, SequenceOutcome,
+    InputFault, InputReceipt, InputRequest, InputSequence, Key, Modifier, PointerButton,
+    PointerGeometry, PressedState, SequenceOutcome,
 };
 
 use super::{
@@ -59,7 +59,7 @@ impl Clock for StepClock {
 #[derive(Debug, Default)]
 struct ScriptedDriver {
     unavailable: Mutex<Option<(InputDelivery, InputFault)>>,
-    fail_at: Mutex<Option<(usize, InputFault, bool)>>,
+    fail_at: Mutex<Option<(usize, InputFault, bool, bool)>>,
     cancel_after: Mutex<Option<(usize, CancellationToken)>>,
     advance_after: Mutex<Option<(usize, Arc<ManualClock>, Duration)>>,
     attempts: AtomicUsize,
@@ -75,12 +75,17 @@ impl ScriptedDriver {
     }
 
     fn fail_at(self, index: usize, fault: InputFault) -> Self {
-        *self.fail_at.lock().expect("uncontended") = Some((index, fault, false));
+        *self.fail_at.lock().expect("uncontended") = Some((index, fault, false, false));
         self
     }
 
     fn fail_during(self, index: usize, fault: InputFault) -> Self {
-        *self.fail_at.lock().expect("uncontended") = Some((index, fault, true));
+        *self.fail_at.lock().expect("uncontended") = Some((index, fault, true, true));
+        self
+    }
+
+    fn fail_during_without_pressed_state(self, index: usize, fault: InputFault) -> Self {
+        *self.fail_at.lock().expect("uncontended") = Some((index, fault, true, false));
         self
     }
 
@@ -121,14 +126,19 @@ impl InputDriver for ScriptedDriver {
         _contexts: SubmissionContexts<'_>,
     ) -> Result<(), SubmissionFailure> {
         let index = self.attempts.fetch_add(1, Ordering::AcqRel);
-        if let Some((failure_index, fault, during_event)) =
+        if let Some((failure_index, fault, during_event, may_leave_pressed_state)) =
             *self.fail_at.lock().expect("uncontended")
             && failure_index == index
         {
-            return Err(if during_event {
+            let failure = if during_event {
                 SubmissionFailure::during_event(fault)
             } else {
                 SubmissionFailure::before_event(fault)
+            };
+            return Err(if may_leave_pressed_state {
+                failure
+            } else {
+                failure.without_pressed_state()
             });
         }
         self.submitted
@@ -664,6 +674,32 @@ fn a_partial_native_event_is_not_misreported_as_unexecuted() {
     assert_eq!(attempted_routes(&receipt), [InputDelivery::WindowMessage]);
     assert!(receipt.partial_native_effect());
     assert!(driver.submitted.lock().expect("uncontended").is_empty());
+}
+
+#[test]
+fn a_partial_positioning_effect_does_not_release_an_unpressed_button() {
+    let target = target();
+    let driver = Arc::new(
+        ScriptedDriver::default()
+            .fail_during_without_pressed_state(0, InputFault::SubmissionFailed),
+    );
+    let controller = controller(target, Arc::clone(&driver));
+    let request = InputRequest::new(
+        target,
+        InputSequence::new(vec![InputEvent::PointerPress(PointerButton::Primary)])
+            .expect("valid pointer press"),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
+    );
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("receipted");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
+    assert!(receipt.partial_native_effect());
+    assert_eq!(receipt.cleanup(), CleanupState::NotNeeded);
+    assert_eq!(receipt.cleanup_owed(), 0);
+    assert!(driver.released.lock().expect("uncontended").is_empty());
 }
 
 #[test]

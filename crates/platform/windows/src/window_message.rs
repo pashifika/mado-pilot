@@ -110,11 +110,19 @@ pub(crate) fn release<S: WindowMessageSource + ?Sized>(
             let physical = index
                 .map(|index| state.buttons[index].physical)
                 .map_or_else(|| source.resolve_button(button), Ok)?;
+            let local = source.client_point(pointer.screen)?;
+            source
+                .post(
+                    mouse_move(local, mouse_state(state)),
+                    Some(pointer.geometry),
+                    operation,
+                )
+                .map_err(|failure| failure.fault)?;
             let unit = button_unit(
                 physical,
                 false,
                 mouse_state_after_button(state, physical, false),
-                source.client_point(pointer.screen)?,
+                local,
             )?;
             source
                 .post(unit, Some(pointer.geometry), operation)
@@ -162,16 +170,37 @@ fn submit_button<S: WindowMessageSource + ?Sized>(
         .rfind(|current| current.logical == button)
         .map(|current| current.physical)
         .map_or_else(|| source.resolve_button(button), Ok)?;
-    let units = [
-        mouse_move(local, mouse_state(state)),
-        button_unit(
-            physical,
-            pressed,
-            mouse_state_after_button(state, physical, pressed),
-            local,
-        )?,
-    ];
-    post_units(source, &units, Some(pointer.geometry), operation)?;
+    let move_unit = mouse_move(local, mouse_state(state));
+    if let Err(failure) = source.post(move_unit, Some(pointer.geometry), operation) {
+        return Err(failure.without_pressed_state());
+    }
+
+    let transition = button_unit(
+        physical,
+        pressed,
+        mouse_state_after_button(state, physical, pressed),
+        local,
+    )?;
+    if let Err(failure) = source.post(transition, Some(pointer.geometry), operation) {
+        let transition_may_have_effect = failure.current_event_may_have_effect;
+        if pressed && transition_may_have_effect {
+            state.buttons.push(SystemButtonState {
+                logical: button,
+                physical,
+            });
+        }
+        let failure = if transition_may_have_effect {
+            failure
+        } else {
+            SubmissionFailure::during_event(failure.fault)
+        };
+        return Err(if pressed && transition_may_have_effect {
+            failure
+        } else {
+            failure.without_pressed_state()
+        });
+    }
+
     if pressed {
         state.buttons.push(SystemButtonState {
             logical: button,
@@ -233,7 +262,21 @@ fn submit_key<S: WindowMessageSource + ?Sized>(
         |index| Ok(resolved_from_state(state.keys[index])),
     )?;
     let unit = key_unit(resolved, pressed, index.is_some());
-    post_units(source, std::slice::from_ref(&unit), None, operation)?;
+    if let Err(failure) = post_units(source, std::slice::from_ref(&unit), None, operation) {
+        if pressed && failure.current_event_may_have_effect {
+            state.keys.push(SystemKeyState {
+                logical: key,
+                virtual_key: resolved.virtual_key,
+                scan_code: resolved.scan_code,
+                extended: resolved.extended,
+            });
+        }
+        return Err(if pressed {
+            failure
+        } else {
+            failure.without_pressed_state()
+        });
+    }
     if pressed {
         state.keys.push(SystemKeyState {
             logical: key,
@@ -343,7 +386,12 @@ fn key_unit(resolved: ResolvedWindowKey, pressed: bool, previous: bool) -> Messa
     MessageUnit {
         message: if pressed { WM_KEYDOWN } else { WM_KEYUP },
         wparam: usize::from(resolved.virtual_key),
-        lparam: key_lparam(resolved.scan_code, resolved.extended, previous, !pressed),
+        lparam: key_lparam(
+            resolved.scan_code,
+            resolved.extended,
+            previous || !pressed,
+            !pressed,
+        ),
     }
 }
 
@@ -482,6 +530,8 @@ mod tests {
         posts: Mutex<Vec<MessageUnit>>,
         fail_at: Mutex<Option<(usize, SubmissionFailure)>>,
         client: Mutex<(i16, i16)>,
+        button: Mutex<Option<u8>>,
+        key: Mutex<Option<ResolvedWindowKey>>,
     }
 
     impl FakeSource {
@@ -496,6 +546,18 @@ mod tests {
             *self.fail_at.lock().expect("uncontended") = Some((index, failure));
         }
 
+        fn clear_failure(&self) {
+            *self.fail_at.lock().expect("uncontended") = None;
+        }
+
+        fn resolve_button_as(&self, physical: u8) {
+            *self.button.lock().expect("uncontended") = Some(physical);
+        }
+
+        fn resolve_key_as(&self, resolved: ResolvedWindowKey) {
+            *self.key.lock().expect("uncontended") = Some(resolved);
+        }
+
         fn posts(&self) -> Vec<MessageUnit> {
             self.posts.lock().expect("uncontended").clone()
         }
@@ -507,6 +569,9 @@ mod tests {
         }
 
         fn resolve_button(&self, button: PointerButton) -> Result<u8, InputFault> {
+            if let Some(physical) = *self.button.lock().expect("uncontended") {
+                return Ok(physical);
+            }
             match button {
                 PointerButton::Primary => Ok(1),
                 PointerButton::Secondary => Ok(2),
@@ -516,6 +581,9 @@ mod tests {
         }
 
         fn resolve_key(&self, key: Key) -> Result<ResolvedWindowKey, InputFault> {
+            if let Some(resolved) = *self.key.lock().expect("uncontended") {
+                return Ok(resolved);
+            }
             Ok(match key {
                 Key::Modifier(Modifier::Shift) => ResolvedWindowKey {
                     virtual_key: 0x10,
@@ -654,7 +722,42 @@ mod tests {
         .expect_err("second unit refused");
 
         assert!(failure.current_event_may_have_effect);
+        assert!(!failure.current_event_may_leave_pressed_state);
         assert_eq!(source.posts().len(), 1);
+        assert!(state.buttons.is_empty());
+    }
+
+    #[test]
+    fn indeterminate_button_press_retains_its_original_physical_mapping() {
+        let source = FakeSource::with_client((5, 6));
+        source.resolve_button_as(1);
+        source.fail_at(1, SubmissionFailure::during_event(InputFault::TargetLost));
+        let mut state = DriverState {
+            pointer: Some(pointer()),
+            ..DriverState::default()
+        };
+        let failure = submit(
+            &source,
+            &InputEvent::PointerPress(PointerButton::Primary),
+            state.pointer,
+            &mut state,
+            &operation(),
+        )
+        .expect_err("button post has indeterminate effect");
+
+        assert!(failure.current_event_may_leave_pressed_state);
+        assert_eq!(state.buttons[0].physical, 1);
+        source.clear_failure();
+        source.resolve_button_as(2);
+        release(
+            &source,
+            PressedState::Button(PointerButton::Primary),
+            &mut state,
+            &operation(),
+        )
+        .expect("cleanup uses retained mapping");
+        assert_eq!(source.posts()[1].message, WM_MOUSEMOVE);
+        assert_eq!(source.posts()[2].message, WM_LBUTTONUP);
         assert!(state.buttons.is_empty());
     }
 
@@ -749,6 +852,66 @@ mod tests {
         let up = lparam_bits(posts[1].lparam);
         assert_eq!((up >> 30) & 1, 1);
         assert_eq!((up >> 31) & 1, 1);
+    }
+
+    #[test]
+    fn standalone_key_release_sets_previous_and_transition_bits() {
+        let source = FakeSource::default();
+        let mut state = DriverState::default();
+        submit(
+            &source,
+            &InputEvent::KeyRelease(Key::Delete),
+            None,
+            &mut state,
+            &operation(),
+        )
+        .expect("standalone key release");
+
+        let up = lparam_bits(source.posts()[0].lparam);
+        assert_eq!((up >> 30) & 1, 1);
+        assert_eq!((up >> 31) & 1, 1);
+    }
+
+    #[test]
+    fn indeterminate_key_press_retains_its_original_layout_mapping() {
+        let source = FakeSource::default();
+        source.resolve_key_as(ResolvedWindowKey {
+            virtual_key: 0x2e,
+            scan_code: 0x53,
+            extended: true,
+        });
+        source.fail_at(0, SubmissionFailure::during_event(InputFault::TargetLost));
+        let mut state = DriverState::default();
+        submit(
+            &source,
+            &InputEvent::KeyPress(Key::Delete),
+            None,
+            &mut state,
+            &operation(),
+        )
+        .expect_err("key post has indeterminate effect");
+
+        assert_eq!(state.keys[0].scan_code, 0x53);
+        source.clear_failure();
+        source.resolve_key_as(ResolvedWindowKey {
+            virtual_key: 0x41,
+            scan_code: 0x1e,
+            extended: false,
+        });
+        release(
+            &source,
+            PressedState::Key(Key::Delete),
+            &mut state,
+            &operation(),
+        )
+        .expect("cleanup uses retained mapping");
+
+        let up = source.posts()[0];
+        assert_eq!(up.wparam, 0x2e);
+        assert_eq!((lparam_bits(up.lparam) >> 16) & 0xff, 0x53);
+        assert_eq!((lparam_bits(up.lparam) >> 24) & 1, 1);
+        assert_eq!((lparam_bits(up.lparam) >> 30) & 1, 1);
+        assert!(state.keys.is_empty());
     }
 
     #[test]

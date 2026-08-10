@@ -37,7 +37,8 @@ namespace {
 constexpr const char* EXAMPLE_NAME = "windows-native-input-cpp";
 constexpr std::uint64_t REQUIRED_PAIRS =
     MADOPILOT_INPUT_PAIR_POINTER_WINDOW_MESSAGE |
-    MADOPILOT_INPUT_PAIR_KEYBOARD_WINDOW_MESSAGE;
+    MADOPILOT_INPUT_PAIR_KEYBOARD_WINDOW_MESSAGE |
+    MADOPILOT_INPUT_PAIR_TEXT_WINDOW_MESSAGE;
 constexpr madopilot::InputDelivery DELIVERY =
     MADOPILOT_INPUT_DELIVERY_WINDOW_MESSAGE;
 constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
@@ -45,6 +46,7 @@ constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
 constexpr bool ALLOWS_UNKNOWN = true;
 constexpr bool READS_PERMISSIONS = false;
 constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_PRESERVE;
+constexpr std::uint64_t EXPECTED_SUBMITTED = 16;
 
 madopilot::Source native_source()
 {
@@ -61,6 +63,7 @@ constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
 constexpr bool ALLOWS_UNKNOWN = false;
 constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_ACTIVATE_IF_REQUIRED;
 constexpr bool READS_PERMISSIONS = true;
+constexpr std::uint64_t EXPECTED_SUBMITTED = 4;
 
 madopilot::Source native_source()
 {
@@ -445,6 +448,9 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
     constexpr madopilot::InputOperationKind OPERATIONS[] = {
         MADOPILOT_INPUT_OPERATION_POINTER,
         MADOPILOT_INPUT_OPERATION_KEYBOARD,
+#if defined(_WIN32)
+        MADOPILOT_INPUT_OPERATION_TEXT,
+#endif
     };
     for (const auto operation : OPERATIONS) {
         const auto capability =
@@ -480,6 +486,71 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
                 static_cast<unsigned long long>(target_id));
     return true;
 }
+
+#if defined(_WIN32)
+bool request_projection_matches(const madopilot::InputRequest& request,
+                                double centre_x, double centre_y)
+{
+    const auto projected = request.to_c();
+    const auto& value = projected.value();
+    if (!expect(value.event_count == EXPECTED_SUBMITTED &&
+                    value.events != nullptr &&
+                    value.event_stride == sizeof(madopilot_input_event_t),
+                "the C++ request projects all Windows event records")) {
+        return false;
+    }
+    const auto& events = value.events;
+    if (!expect(events[0].kind == MADOPILOT_INPUT_EVENT_POINTER_MOVE &&
+                    events[0].space == MADOPILOT_SPACE_CAPTURE_PIXELS &&
+                    events[0].x == centre_x && events[0].y == centre_y &&
+                    events[1].kind == MADOPILOT_INPUT_EVENT_POINTER_PRESS &&
+                    events[1].button == MADOPILOT_POINTER_BUTTON_PRIMARY &&
+                    events[2].kind == MADOPILOT_INPUT_EVENT_POINTER_RELEASE &&
+                    events[2].button == MADOPILOT_POINTER_BUTTON_PRIMARY &&
+                    events[3].kind == MADOPILOT_INPUT_EVENT_POINTER_PRESS &&
+                    events[3].button == MADOPILOT_POINTER_BUTTON_SECONDARY &&
+                    events[4].kind == MADOPILOT_INPUT_EVENT_POINTER_RELEASE &&
+                    events[4].button == MADOPILOT_POINTER_BUTTON_SECONDARY &&
+                    events[5].kind == MADOPILOT_INPUT_EVENT_POINTER_PRESS &&
+                    events[5].button == MADOPILOT_POINTER_BUTTON_MIDDLE &&
+                    events[6].kind == MADOPILOT_INPUT_EVENT_POINTER_RELEASE &&
+                    events[6].button == MADOPILOT_POINTER_BUTTON_MIDDLE &&
+                    events[7].kind == MADOPILOT_INPUT_EVENT_POINTER_SCROLL &&
+                    events[7].horizontal == -1 && events[7].vertical == 2,
+                "the C++ request preserves every pointer and wheel variant")) {
+        return false;
+    }
+    if (!expect(events[8].kind == MADOPILOT_INPUT_EVENT_KEY_PRESS &&
+                    events[8].key == MADOPILOT_KEY_FUNCTION &&
+                    events[8].key_value == 6 &&
+                    events[9].kind == MADOPILOT_INPUT_EVENT_KEY_RELEASE &&
+                    events[9].key == MADOPILOT_KEY_FUNCTION &&
+                    events[9].key_value == 6 &&
+                    events[10].kind == MADOPILOT_INPUT_EVENT_KEY_PRESS &&
+                    events[10].key == MADOPILOT_KEY_MODIFIER &&
+                    events[10].key_value == MADOPILOT_MODIFIER_CONTROL &&
+                    events[11].kind == MADOPILOT_INPUT_EVENT_KEY_PRESS &&
+                    events[11].key == MADOPILOT_KEY_CHARACTER &&
+                    events[11].key_value == static_cast<std::uint32_t>('m') &&
+                    events[12].kind == MADOPILOT_INPUT_EVENT_KEY_RELEASE &&
+                    events[12].key == MADOPILOT_KEY_CHARACTER &&
+                    events[12].key_value == static_cast<std::uint32_t>('m') &&
+                    events[13].kind == MADOPILOT_INPUT_EVENT_KEY_RELEASE &&
+                    events[13].key == MADOPILOT_KEY_MODIFIER &&
+                    events[13].key_value == MADOPILOT_MODIFIER_CONTROL,
+                "the C++ request preserves the function key and ordered chord")) {
+        return false;
+    }
+    const std::string_view expected_text{"A\xF0\x9F\x98\x80"};
+    return expect(events[14].kind == MADOPILOT_INPUT_EVENT_TEXT &&
+                      events[14].text.data != nullptr &&
+                      std::string_view(events[14].text.data,
+                                       events[14].text.len) == expected_text &&
+                      events[15].kind == MADOPILOT_INPUT_EVENT_DELAY &&
+                      events[15].delay_nanos == UINT64_C(20000000),
+                  "the C++ request preserves Unicode text and bounded delay");
+}
+#endif
 
 bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
                       madopilot::SubmissionEvidence evidence,
@@ -561,24 +632,65 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
     const double centre_x = static_cast<double>(frame_info.value().width) / 2.0;
     const double centre_y = static_cast<double>(frame_info.value().height) / 2.0;
     madopilot::InputRequest request;
+#if defined(_WIN32)
+    request.event(madopilot::InputEvent::pointer_move(
+                      MADOPILOT_SPACE_CAPTURE_PIXELS, centre_x, centre_y))
+        .event(madopilot::InputEvent::pointer_press(
+            MADOPILOT_POINTER_BUTTON_PRIMARY))
+        .event(madopilot::InputEvent::pointer_release(
+            MADOPILOT_POINTER_BUTTON_PRIMARY))
+        .event(madopilot::InputEvent::pointer_press(
+            MADOPILOT_POINTER_BUTTON_SECONDARY))
+        .event(madopilot::InputEvent::pointer_release(
+            MADOPILOT_POINTER_BUTTON_SECONDARY))
+        .event(madopilot::InputEvent::pointer_press(
+            MADOPILOT_POINTER_BUTTON_MIDDLE))
+        .event(madopilot::InputEvent::pointer_release(
+            MADOPILOT_POINTER_BUTTON_MIDDLE))
+        .event(madopilot::InputEvent::pointer_scroll(-1, 2))
+        .event(madopilot::InputEvent::key_press(MADOPILOT_KEY_FUNCTION, 6))
+        .event(madopilot::InputEvent::key_release(MADOPILOT_KEY_FUNCTION, 6))
+        .event(madopilot::InputEvent::key_press(
+            MADOPILOT_KEY_MODIFIER, MADOPILOT_MODIFIER_CONTROL))
+        .event(madopilot::InputEvent::key_press(
+            MADOPILOT_KEY_CHARACTER, static_cast<std::uint32_t>('m')))
+        .event(madopilot::InputEvent::key_release(
+            MADOPILOT_KEY_CHARACTER, static_cast<std::uint32_t>('m')))
+        .event(madopilot::InputEvent::key_release(
+            MADOPILOT_KEY_MODIFIER, MADOPILOT_MODIFIER_CONTROL))
+        .event(madopilot::InputEvent::text("A\xF0\x9F\x98\x80"))
+        .event(madopilot::InputEvent::delay(UINT64_C(20000000)));
+#else
     request.event(madopilot::InputEvent::pointer_move(
                       MADOPILOT_SPACE_CAPTURE_PIXELS, centre_x, centre_y))
         .event(madopilot::InputEvent::key_press(MADOPILOT_KEY_CHARACTER,
                                                 static_cast<std::uint32_t>('m')))
         .event(madopilot::InputEvent::key_release(MADOPILOT_KEY_CHARACTER,
                                                   static_cast<std::uint32_t>('m')))
-        .event(madopilot::InputEvent::delay(UINT64_C(20000000)))
-        .delivery(DELIVERY)
+        .event(madopilot::InputEvent::delay(UINT64_C(20000000)));
+#endif
+    request.delivery(DELIVERY)
         .focus_policy(FOCUS)
         .geometry_policy(MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED)
         .source_frame(frame);
+#if defined(_WIN32)
+    if (!request_projection_matches(request, centre_x, centre_y)) {
+        return false;
+    }
+#endif
 
     if (!bounded_operation(api, UINT64_C(2000000000), operation)) {
         return false;
     }
+    const auto send_started = std::chrono::steady_clock::now();
     auto sent = session.send_input(request, operation);
     if (!sent) {
         return report_failure("Session::send_input", sent.error());
+    }
+    if (!expect(std::chrono::steady_clock::now() - send_started >=
+                    std::chrono::milliseconds(20),
+                "the native C++ flow observes its bounded delay event")) {
+        return false;
     }
     madopilot::InputReceipt receipt = sent.take();
     const auto info = receipt.describe();
@@ -593,7 +705,7 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
                     : 0,
                 static_cast<int>(info.value().cleanup));
     if (!expect(info.value().outcome == MADOPILOT_SEQUENCE_COMPLETE &&
-                    info.value().submitted == 4 &&
+                    info.value().submitted == EXPECTED_SUBMITTED &&
                     info.value().selected_route.has_value() &&
                     *info.value().selected_route == DELIVERY &&
                     info.value().address_scope == ADDRESS_SCOPE &&

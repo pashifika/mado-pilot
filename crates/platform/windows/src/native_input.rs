@@ -163,8 +163,6 @@ impl NativeInputDriver {
         focus: FocusPolicy,
         expected_geometry: Option<GeometryFingerprint>,
     ) -> Result<(), InputFault> {
-        self.record.ensure_live()?;
-        self.ensure_window_authority()?;
         self.ensure_window_message_focus(focus)?;
         if target_has_higher_integrity(&self.record)? == Some(true) {
             return Err(InputFault::PolicyRefused);
@@ -175,7 +173,11 @@ impl NativeInputDriver {
                 return Err(InputFault::GeometryChanged);
             }
         }
-        Ok(())
+        // Mutable focus, integrity, and geometry queries deliberately precede
+        // the final retained-identity fence so only the unavoidable Win32
+        // check-to-post interval remains after this method returns.
+        self.record.ensure_live()?;
+        self.ensure_window_authority()
     }
 
     fn window_message_pointer(
@@ -449,12 +451,7 @@ impl NativeInputDriver {
             _ => None,
         };
         let packet = encode_event(event, point)?;
-        send_fixture_packet(
-            &self.record,
-            &packet,
-            operation,
-            InputFault::SubmissionFailed,
-        )
+        send_fixture_packet(self, &packet, operation, InputFault::SubmissionFailed)
     }
 
     fn submit_window_message(
@@ -465,6 +462,7 @@ impl NativeInputDriver {
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> SubmissionResult {
+        self.ensure_window_authority()?;
         self.ensure_window_message_focus(focus)?;
         if self.record.class_name() == Some(CLASS_NAME) {
             return self.submit_fixture_message(event, geometry, state, operation);
@@ -591,20 +589,21 @@ impl InputDriver for NativeInputDriver {
                 }
             }
             InputDelivery::WindowMessage => {
+                self.ensure_window_authority()?;
                 self.ensure_window_message_focus(focus)?;
                 if target_has_higher_integrity(&self.record)? == Some(true) {
                     return Err(InputFault::PolicyRefused);
                 }
                 if self.record.class_name() == Some(CLASS_NAME) {
                     send_fixture_packet(
-                        &self.record,
+                        self,
                         &query_packet(),
                         operation,
                         InputFault::RouteUnavailable,
                     )
                     .map_err(|failure| failure.fault)
                 } else {
-                    self.ensure_window_authority()
+                    Ok(())
                 }
             }
             _ => Err(InputFault::UnsupportedCombination),
@@ -664,7 +663,7 @@ impl InputDriver for NativeInputDriver {
                     };
                     let packet = encode_event(&event, point)?;
                     return send_fixture_packet(
-                        &self.record,
+                        self,
                         &packet,
                         operation,
                         InputFault::SubmissionFailed,
@@ -1196,13 +1195,15 @@ struct CopyData {
 }
 
 fn send_fixture_packet(
-    record: &TargetRecord,
+    driver: &NativeInputDriver,
     packet: &[u8],
     operation: &OperationContext,
     ordinary_failure: InputFault,
 ) -> SubmissionResult {
+    let record = &driver.record;
     operation_fault(operation)?;
     record.ensure_live()?;
+    driver.ensure_window_authority()?;
     if record.class_name() != Some(CLASS_NAME) {
         return Err(InputFault::UnsupportedCombination.into());
     }
@@ -1216,6 +1217,8 @@ fn send_fixture_packet(
         bytes,
         data: packet.as_ptr().cast_mut().cast::<c_void>(),
     };
+    driver.ensure_window_authority()?;
+    record.ensure_live()?;
     let timeout = timeout_millis(operation)?;
     let mut acknowledged = 0usize;
 
@@ -1235,13 +1238,39 @@ fn send_fixture_packet(
             Some(&raw mut acknowledged),
         )
     };
-    if sent.0 == 0 {
-        // SAFETY: immediately follows the failing Win32 call on this thread.
-        let error = unsafe { GetLastError() };
+    // SAFETY: immediately follows the Win32 call on this thread.
+    let error = unsafe { GetLastError() };
+    let authority = record
+        .ensure_live()
+        .and_then(|()| driver.ensure_window_authority());
+    let terminal_fault = operation.interruption().map(InputFault::from);
+    finish_fixture_send(
+        sent.0 != 0,
+        error,
+        authority,
+        terminal_fault,
+        acknowledged,
+        ordinary_failure,
+    )
+}
+
+fn finish_fixture_send(
+    sent: bool,
+    error: WIN32_ERROR,
+    authority: Result<(), InputFault>,
+    terminal_fault: Option<InputFault>,
+    acknowledged: usize,
+    ordinary_failure: InputFault,
+) -> SubmissionResult {
+    if let Err(fault) = authority {
+        return Err(SubmissionFailure::during_event(fault));
+    }
+    if let Some(fault) = terminal_fault {
+        return Err(SubmissionFailure::during_event(fault));
+    }
+    if !sent {
         return if error == ERROR_ACCESS_DENIED {
             Err(SubmissionFailure::before_event(InputFault::PolicyRefused))
-        } else if record.ensure_live().is_err() {
-            Err(SubmissionFailure::during_event(InputFault::TargetLost))
         } else {
             Err(SubmissionFailure::during_event(ordinary_failure))
         };
@@ -1387,8 +1416,8 @@ mod tests {
 
     use super::{
         SystemCommitSource, WindowMessageCommitSource, commit_prepared_system_input,
-        commit_window_message, keyboard_input, map_post_message_error, normalize_absolute,
-        point_to_screen,
+        commit_window_message, finish_fixture_send, keyboard_input, map_post_message_error,
+        normalize_absolute, point_to_screen,
     };
     use crate::input::GeometryFingerprint;
     use crate::window_message::MessageUnit;
@@ -1398,7 +1427,7 @@ mod tests {
     };
     use mado_pilot_input::{FocusPolicy, InputFault};
     use windows::Win32::Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_INVALID_WINDOW_HANDLE, ERROR_NOT_ENOUGH_QUOTA,
+        ERROR_ACCESS_DENIED, ERROR_INVALID_WINDOW_HANDLE, ERROR_NOT_ENOUGH_QUOTA, WIN32_ERROR,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, KEYBD_EVENT_FLAGS, VIRTUAL_KEY};
 
@@ -1670,6 +1699,24 @@ mod tests {
         .expect_err("terminal deadline");
         assert_eq!(failure.fault, InputFault::DeadlineExceeded);
         assert!(failure.current_event_may_have_effect);
+    }
+
+    #[test]
+    fn fixture_acknowledgement_loses_to_terminal_operation_state() {
+        for fault in [InputFault::Cancelled, InputFault::DeadlineExceeded] {
+            let failure = finish_fixture_send(
+                true,
+                WIN32_ERROR(0),
+                Ok(()),
+                Some(fault),
+                super::ACKNOWLEDGED,
+                InputFault::SubmissionFailed,
+            )
+            .expect_err("terminal operation state wins after fixture dispatch");
+            assert_eq!(failure.fault, fault);
+            assert!(failure.current_event_may_have_effect);
+            assert!(failure.current_event_may_leave_pressed_state);
+        }
     }
 
     #[test]

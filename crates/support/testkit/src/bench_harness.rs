@@ -610,6 +610,36 @@ pub fn enforce_correctness(workloads: &[Workload]) {
     }
 }
 
+/// Classification of one line emitted by a native benchmark fixture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrefixedLineMatch {
+    /// The line is unrelated to the observation family and may be skipped.
+    Irrelevant,
+    /// The line is the exact observation the current sample expects.
+    Expected,
+    /// The line belongs to the observation family but names a different outcome.
+    Unexpected,
+}
+
+/// Classifies an exact fixture observation without discarding sibling outcomes.
+///
+/// Native benchmark readers may ignore readiness and control records, but once a
+/// line belongs to the supplied observation family, any non-exact value is an
+/// oracle failure rather than noise.
+#[must_use]
+pub fn classify_prefixed_line(
+    line: &str,
+    observation_prefix: &str,
+    expected: &str,
+) -> PrefixedLineMatch {
+    if !line.starts_with(observation_prefix) {
+        PrefixedLineMatch::Irrelevant
+    } else if line == expected {
+        PrefixedLineMatch::Expected
+    } else {
+        PrefixedLineMatch::Unexpected
+    }
+}
 /// Returns the value of a `--name value` or `--name=value` argument.
 #[must_use]
 pub fn argument(arguments: &[String], name: &str) -> Option<String> {
@@ -633,7 +663,7 @@ fn escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Plan, Sample, measure};
+    use super::{Plan, PrefixedLineMatch, Sample, classify_prefixed_line, measure};
     use std::time::Duration;
 
     fn fixture() {}
@@ -653,5 +683,33 @@ mod tests {
         );
 
         assert_eq!(workload.stale_work_ratio(), Some(0.25));
+    }
+
+    #[test]
+    fn a_wrong_role_observation_is_not_skipped_before_the_expected_target() {
+        assert_eq!(
+            classify_prefixed_line(
+                "control queue-block=ready",
+                "observation role=",
+                "observation role=target family=pointer-move units=1",
+            ),
+            PrefixedLineMatch::Irrelevant
+        );
+        assert_eq!(
+            classify_prefixed_line(
+                "observation role=sibling family=pointer-move units=1",
+                "observation role=",
+                "observation role=target family=pointer-move units=1",
+            ),
+            PrefixedLineMatch::Unexpected
+        );
+        assert_eq!(
+            classify_prefixed_line(
+                "observation role=target family=pointer-move units=1",
+                "observation role=",
+                "observation role=target family=pointer-move units=1",
+            ),
+            PrefixedLineMatch::Expected
+        );
     }
 }

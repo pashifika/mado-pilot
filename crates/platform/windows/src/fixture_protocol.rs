@@ -34,6 +34,8 @@ pub const CONTROL_BLOCK_QUEUE: u32 = 0x8206;
 pub const CONTROL_REUSE_STRESS: u32 = 0x8207;
 /// Moves, resizes, and repaints the ordinary fixture on its owning GUI thread.
 pub const CONTROL_SET_GEOMETRY: u32 = 0x8208;
+/// Allows the test host in `wParam` to restore the owned foreground fixture.
+pub const CONTROL_ALLOW_FOREGROUND: u32 = 0x8209;
 
 pub const COPYDATA_TAG: usize = 0x4d50_4946;
 pub const ACKNOWLEDGED: usize = 0x4d50_414b;
@@ -60,10 +62,18 @@ const TEXT: u32 = 7;
 
 /// The event kind a benchmark expects for one pointer-move stimulus.
 pub const EVENT_POINTER_MOVE: u32 = POINTER_MOVE;
+/// The event kind a benchmark expects for one pointer-button press stimulus.
+pub const EVENT_POINTER_PRESS: u32 = POINTER_PRESS;
+/// The event kind a benchmark expects for one pointer-button release stimulus.
+pub const EVENT_POINTER_RELEASE: u32 = POINTER_RELEASE;
+/// The event kind a benchmark expects for one pointer-wheel stimulus.
+pub const EVENT_POINTER_SCROLL: u32 = POINTER_SCROLL;
 /// The event kind a benchmark expects for one key-down stimulus.
 pub const EVENT_KEY_DOWN: u32 = KEY_PRESS;
 /// The event kind a benchmark expects for the matching key release.
 pub const EVENT_KEY_UP: u32 = KEY_RELEASE;
+/// The event kind a benchmark expects for one direct-text stimulus.
+pub const EVENT_TEXT: u32 = TEXT;
 
 /// Non-sensitive information the fixture retains about one accepted event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

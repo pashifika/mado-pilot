@@ -103,8 +103,11 @@ Window `System` input revalidates focus before every irreversible event.
 activates a window. `ActivateIfRequired` makes one ordinary
 [`SetForegroundWindow`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)
 attempt and then re-reads the foreground window; Windows may refuse it under its
-foreground-lock rules. `WindowMessage` instead preserves the existing
-foreground and physical cursor.
+foreground-lock rules. `WindowMessage` instead invokes neither focus activation
+nor physical-cursor mutation APIs. External input or the target's own message
+handling can still change global state, so a receipt does not certify immutable
+foreground/cursor values; controlled native rows assert unchanged observations
+as a separate fixture oracle.
 
 Before either route submits input, the Adapter compares the caller and selected
 window process integrity levels. A proven higher target reports
@@ -213,18 +216,22 @@ one frame-bound sequence with focus preservation, inspects queue-admission
 evidence, evaluates an expected condition only on a strictly newer frame, drains
 diagnostics, and closes.
 
-Start the ordinary fixture, leave an unrelated application window foreground,
-then pass the fixture's exact full title:
+Start the ordinary target fixture, then pass its exact full title. The example
+launches, activates, and monitors a second repository-owned fixture as the
+unrelated foreground application:
 
 ```sh
 cargo run --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-window-message-fixture -- --title-token=example
 cargo run --locked --package mado-pilot --example windows-native-input -- "MadoPilot Ordinary WindowMessage Fixture [example]"
 ```
 
-The example never requests `System`, activation, elevation, a helper, or a
-privileged identity. It refuses zero or multiple title matches. Its receipt and
-newer-frame result are printed as independent facts; neither titles, pixels, nor
-typed payloads enter diagnostics.
+The explicit foreground-fixture setup can use one balanced temporary input-queue
+attachment before readiness when an unattended host's foreground lock rejects a
+direct request. That setup ends before discovery or delivery and never activates
+the input target. The input request never selects `System`, activation, elevation,
+a helper, or a privileged identity. It refuses zero or multiple title matches.
+Its receipt and newer-frame result are printed as independent facts; neither
+titles, pixels, nor typed payloads enter diagnostics.
 
 ## Explicit C and C++ boundary checks
 
@@ -247,14 +254,17 @@ cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>" --windows-native-fixture
 ```
 
-Each language independently performs engine construction, discovery, capture,
+The C flow independently performs engine construction, discovery, capture,
 mapping, a bounded four-event request, immutable receipt/attempt inspection, a
 strictly newer expected-condition search, diagnostic drain, and explicit close
-for both contracts. The ordinary flow requires `Unknown` capability and
-`TargetQueueAdmission`; the dedicated flow requires `Supported` and
-`TargetProtocolAcknowledgement`. Both preserve focus and permit no system
-fallback. Frozen ABI 1.0 layout and negotiation, ABI 1.2 wrapper ownership, and
-the independent CMake consumer run in the same check.
+for both contracts. The Windows C++ flow performs the same lifecycle with a
+16-event request covering pointer movement, every button, both wheel axes, a
+function key, an ordered modifier chord, Unicode text, and an observed delay;
+the harness also checks the complete redacted fixture-event order. The ordinary
+flow requires `Unknown` capability and `TargetQueueAdmission`; the dedicated
+flow requires `Supported` and `TargetProtocolAcknowledgement`. Both preserve
+focus and permit no system fallback. Frozen ABI 1.0 layout and negotiation, ABI
+1.2 wrapper ownership, and the independent CMake consumer run in the same check.
 
 When the caller owns a fixture lifecycle, pass `--ordinary "<full title>"` or
 `--acknowledged "<full title>"` directly to `windows-native-input.exe` or

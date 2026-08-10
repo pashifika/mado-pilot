@@ -5,6 +5,7 @@
 use std::collections::VecDeque;
 use std::mem::size_of;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,15 +20,15 @@ use mado_pilot_core::{
     SubmissionEvidence, TargetId, TargetKind,
 };
 use mado_pilot_input::{
-    CleanupState, DeliveryPlan, FocusPolicy, InputController, InputEvent, InputFault,
-    InputOpenRequest, InputProvider, InputRequest, InputSequence, Key, Modifier, PointerButton,
-    PointerGeometry, SequenceOutcome,
+    CleanupBudget, CleanupState, DeliveryPlan, FocusPolicy, InputController, InputEvent,
+    InputFault, InputOpenRequest, InputProvider, InputRequest, InputSequence, Key, Modifier,
+    PointerButton, PointerGeometry, SequenceOutcome,
 };
 use mado_pilot_platform_windows::WindowsCaptureProvider;
 use mado_pilot_platform_windows::fixture_protocol::{
-    CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET, CONTROL_DUPLICATE_METADATA,
-    CONTROL_REPARENT_TARGET, CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY,
-    ORDINARY_CLASS_NAME, ordinary_fixture_title,
+    CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
+    CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPORT, CONTROL_REUSE_STRESS,
+    CONTROL_SET_GEOMETRY, ORDINARY_CLASS_NAME, ordinary_fixture_title,
 };
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -38,8 +39,8 @@ use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetCursorPos, GetForegroundWindow, GetWindowRect, PostMessageW, WM_MOUSEMOVE,
-    WM_NULL,
+    FindWindowW, GetCursorPos, GetForegroundWindow, GetWindowRect, PostMessageW, SetCursorPos,
+    SetForegroundWindow, WM_MOUSEMOVE, WM_NULL,
 };
 use windows::core::{BOOL, PCWSTR};
 
@@ -70,15 +71,26 @@ struct FixtureProcess {
 
 impl FixtureProcess {
     fn spawn(token: impl Into<String>) -> Self {
-        let token = token.into();
-        let mut child = Command::new(env!(
+        Self::spawn_with_activation(token.into(), false)
+    }
+
+    fn spawn_activated(token: impl Into<String>) -> Self {
+        Self::spawn_with_activation(token.into(), true)
+    }
+
+    fn spawn_with_activation(token: String, activate: bool) -> Self {
+        let mut command = Command::new(env!(
             "CARGO_BIN_EXE_mado-pilot-windows-window-message-fixture"
-        ))
-        .arg(format!("--title-token={token}"))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("spawned ordinary WindowMessage fixture");
+        ));
+        command.arg(format!("--title-token={token}"));
+        if activate {
+            command.arg("--activate");
+        }
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawned ordinary WindowMessage fixture");
         let output = child.stdout.take().expect("captured fixture output");
         let (sender, lines) = mpsc::channel();
         let reader = thread::spawn(move || {
@@ -163,6 +175,38 @@ impl FixtureProcess {
             self.pending.push_back(line);
         }
     }
+
+    fn wait_for_observation(&mut self, prefix: &str, timeout: Duration) -> String {
+        assert!(prefix.starts_with("observation "));
+        if let Some(index) = self
+            .pending
+            .iter()
+            .position(|line| line.starts_with("observation "))
+        {
+            let line = self.pending.remove(index).expect("indexed observation");
+            assert!(
+                line.starts_with(prefix),
+                "fixture emitted unexpected observation `{line}` while waiting for `{prefix}`"
+            );
+            return line;
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = self
+                .lines
+                .recv_timeout(remaining)
+                .unwrap_or_else(|error| panic!("fixture did not emit `{prefix}`: {error}"));
+            if line.starts_with("observation ") {
+                assert!(
+                    line.starts_with(prefix),
+                    "fixture emitted unexpected observation `{line}` while waiting for `{prefix}`"
+                );
+                return line;
+            }
+            self.pending.push_back(line);
+        }
+    }
     fn assert_no_line(&mut self, prefix: &str, timeout: Duration) {
         assert!(
             self.pending.iter().all(|line| !line.starts_with(prefix)),
@@ -239,20 +283,214 @@ impl DesktopState {
     }
 }
 
+#[derive(Debug)]
+struct OwnedForeground {
+    fixture: FixtureProcess,
+    original: DesktopState,
+    cursor: POINT,
+    stop: Arc<AtomicBool>,
+    violation: Arc<AtomicUsize>,
+    active: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
+    monitor: Option<thread::JoinHandle<()>>,
+}
+
+impl OwnedForeground {
+    fn establish() -> Self {
+        let original = DesktopState::capture();
+        let mut fixture = FixtureProcess::spawn_activated("owned-unrelated-foreground");
+        let foreground = fixture.target();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: foreground is a live, repository-owned top-level fixture window.
+            let _requested = unsafe { SetForegroundWindow(foreground) };
+            // SAFETY: the return is an opaque handle and is not dereferenced.
+            if unsafe { GetForegroundWindow() } == foreground {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the owned unrelated fixture could not become foreground"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        fixture.control(
+            foreground,
+            CONTROL_ALLOW_FOREGROUND,
+            usize::try_from(std::process::id()).expect("process identifier fits usize"),
+        );
+        fixture.wait_for("control foreground-delegate=ready", Duration::from_secs(5));
+
+        let cursor = original.cursor;
+        let stop = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(AtomicBool::new(false));
+        let violation = Arc::new(AtomicUsize::new(0));
+        let monitor_stop = Arc::clone(&stop);
+        let monitor_active = Arc::clone(&active);
+        let monitor_ready = Arc::clone(&ready);
+        let monitor_violation = Arc::clone(&violation);
+        let expected_foreground = foreground.0.addr();
+        let monitor = thread::spawn(move || {
+            while !monitor_stop.load(Ordering::Acquire) {
+                if !monitor_active.load(Ordering::Acquire) {
+                    monitor_ready.store(false, Ordering::Release);
+                    thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                // SAFETY: the return is an opaque handle and is not dereferenced.
+                if unsafe { GetForegroundWindow() }.0.addr() != expected_foreground {
+                    monitor_violation.store(1, Ordering::Release);
+                    return;
+                }
+                let mut current = POINT::default();
+                // SAFETY: current is a complete writable POINT.
+                if unsafe { GetCursorPos(&raw mut current) }.is_err() {
+                    monitor_violation.store(3, Ordering::Release);
+                    return;
+                }
+                if current != cursor {
+                    monitor_violation.store(2, Ordering::Release);
+                    return;
+                }
+                monitor_ready.store(true, Ordering::Release);
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+        let guard = Self {
+            fixture,
+            original,
+            cursor,
+            stop,
+            violation,
+            active,
+            ready,
+            monitor: Some(monitor),
+        };
+        guard.assert_stable();
+        guard
+    }
+
+    fn fixture_mut(&mut self) -> &mut FixtureProcess {
+        &mut self.fixture
+    }
+
+    fn observe<T>(&self, operation: impl FnOnce() -> T) -> T {
+        self.begin_observation();
+        let result = operation();
+        self.end_observation();
+        result
+    }
+
+    fn begin_observation(&self) {
+        self.active.store(false, Ordering::Release);
+        self.ready.store(false, Ordering::Release);
+        self.violation.store(0, Ordering::Release);
+        let foreground = self.fixture.target();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: foreground is a live, repository-owned top-level fixture window.
+            let _requested = unsafe { SetForegroundWindow(foreground) };
+            // SAFETY: the return is an opaque handle and is not dereferenced.
+            if unsafe { GetForegroundWindow() } == foreground {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the owned unrelated fixture could not become foreground"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        self.assert_stable();
+        self.active.store(true, Ordering::Release);
+        while !self.ready.load(Ordering::Acquire) {
+            assert_eq!(
+                self.violation.load(Ordering::Acquire),
+                0,
+                "owned foreground monitor failed before adapter activity"
+            );
+            assert!(
+                Instant::now() < deadline,
+                "owned foreground monitor did not become ready"
+            );
+            thread::yield_now();
+        }
+    }
+
+    fn end_observation(&self) {
+        self.active.store(false, Ordering::Release);
+        thread::sleep(Duration::from_millis(2));
+        self.assert_stable();
+    }
+
+    fn assert_stable(&self) {
+        assert_eq!(
+            self.violation.load(Ordering::Acquire),
+            0,
+            "adapter activity changed owned foreground/cursor authority"
+        );
+        let current = DesktopState::capture();
+        assert_eq!(
+            current.foreground,
+            self.fixture.target(),
+            "owned unrelated fixture remains foreground"
+        );
+        assert_eq!(
+            current.cursor, self.cursor,
+            "physical cursor remains at the controlled position"
+        );
+    }
+
+    fn stop_monitor(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(monitor) = self.monitor.take() {
+            monitor.join().expect("foreground monitor joined");
+        }
+    }
+
+    fn finish(mut self) {
+        self.assert_stable();
+        self.stop_monitor();
+        assert_eq!(
+            self.violation.load(Ordering::Acquire),
+            0,
+            "owned foreground monitor observed no transient mutation"
+        );
+    }
+}
+
+impl Drop for OwnedForeground {
+    fn drop(&mut self) {
+        self.stop_monitor();
+        // SAFETY: the saved coordinates came from GetCursorPos.
+        let _restored = unsafe { SetCursorPos(self.original.cursor.x, self.original.cursor.y) };
+        if self.original.foreground != HWND::default() {
+            // SAFETY: this is the opaque foreground handle captured before the test.
+            let _restored = unsafe { SetForegroundWindow(self.original.foreground) };
+        }
+    }
+}
+
 #[test]
 fn ordinary_window_message_native_matrix() {
     let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
     // SAFETY: DPI awareness is fixed before this test calls USER32.
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) }
         .expect("selected per-monitor-v2 DPI awareness");
+    let mut foreground = OwnedForeground::establish();
 
     let mut delivery = FixtureProcess::spawn("delivery");
     let (target, controller) = open_ordinary(&delivery);
     let desktop = DesktopState::capture();
+    assert_eq!(
+        desktop.foreground,
+        foreground.fixture.target(),
+        "the owned unrelated fixture is foreground before delivery"
+    );
     assert_ne!(
         desktop.foreground,
         delivery.target(),
-        "the no-activation fixture unexpectedly became foreground"
+        "the no-activation delivery target remains in the background"
     );
     let request = InputRequest::new(
         target,
@@ -260,9 +498,13 @@ fn ordinary_window_message_native_matrix() {
         DeliveryPlan::require(InputDelivery::WindowMessage),
     )
     .with_focus(FocusPolicy::Preserve);
-    let receipt = controller
-        .execute(&request, &timed(Duration::from_secs(10)))
-        .expect("ordinary sequence receipted");
+    let receipt = execute_observed(
+        &foreground,
+        &controller,
+        &request,
+        &timed(Duration::from_secs(10)),
+    )
+    .expect("ordinary sequence receipted");
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete, "{receipt:?}");
     assert_eq!(receipt.selected_route(), Some(InputDelivery::WindowMessage));
     assert_eq!(receipt.submitted(), request.sequence().len());
@@ -280,9 +522,13 @@ fn ordinary_window_message_native_matrix() {
     delivery.wait_for("control duplicate-metadata=ready", Duration::from_secs(5));
     let duplicate = key_pair_request(target);
     let desktop = DesktopState::capture();
-    let receipt = controller
-        .execute(&duplicate, &timed(Duration::from_secs(5)))
-        .expect("duplicate metadata request receipted");
+    let receipt = execute_observed(
+        &foreground,
+        &controller,
+        &duplicate,
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("duplicate metadata request receipted");
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
     let report = delivery.report(delivery.target());
     assert_eq!(report.target, 24);
@@ -305,13 +551,14 @@ fn ordinary_window_message_native_matrix() {
         "repeated close submitted no second release"
     );
     drop(delivery);
+    foreground.assert_stable();
 
     let mut reparented = FixtureProcess::spawn("reparent");
     let (target, controller) = open_ordinary(&reparented);
     let retained = reparented.target();
     reparented.control(retained, CONTROL_REPARENT_TARGET, 0);
     reparented.wait_for("control reparent=ready", Duration::from_secs(5));
-    assert_unexecuted_target_loss(&controller, one_key_request(target));
+    assert_unexecuted_target_loss(&foreground, &controller, one_key_request(target));
     assert_wrong_targets_clear(reparented.report(retained));
     drop(reparented);
 
@@ -320,7 +567,7 @@ fn ordinary_window_message_native_matrix() {
     let retained = replaced.target();
     replaced.control(retained, CONTROL_REUSE_STRESS, 4_096);
     let stress = replaced.wait_for("control reuse-stress=ready", Duration::from_secs(15));
-    assert_unexecuted_target_loss(&controller, one_key_request(target));
+    assert_unexecuted_target_loss(&foreground, &controller, one_key_request(target));
     let replacement = replaced.target();
     assert_wrong_targets_clear(replaced.report(replacement));
     println!("{stress}");
@@ -331,7 +578,7 @@ fn ordinary_window_message_native_matrix() {
     let retained = lost.target();
     lost.control(retained, CONTROL_DESTROY_TARGET, 0);
     lost.wait_for("control target-loss=ready", Duration::from_secs(5));
-    assert_unexecuted_target_loss(&controller, one_key_request(target));
+    assert_unexecuted_target_loss(&foreground, &controller, one_key_request(target));
     drop(lost);
 
     let restart_token = "owner-restart";
@@ -339,18 +586,22 @@ fn ordinary_window_message_native_matrix() {
     let (target, controller) = open_ordinary(&first_owner);
     drop(first_owner);
     let mut restarted_owner = FixtureProcess::spawn(restart_token);
-    assert_unexecuted_target_loss(&controller, one_key_request(target));
+    assert_unexecuted_target_loss(&foreground, &controller, one_key_request(target));
     assert_wrong_targets_clear(restarted_owner.report(restarted_owner.target()));
     drop(restarted_owner);
+    foreground.assert_stable();
 
     let desktop = DesktopState::capture();
-    consumer_compatibility_rows();
-    terminal_and_cleanup_rows();
-    queue_pressure_rows();
-    late_effect_row();
+    operation_profile_rows(&foreground);
+    consumer_compatibility_rows(&foreground);
+    terminal_and_cleanup_rows(&foreground);
+    queue_pressure_rows(&foreground);
+    late_effect_row(&foreground);
     desktop.assert_unchanged();
-    topology_geometry_rows();
-    controlled_unrelated_activity_row();
+    foreground.assert_stable();
+    topology_geometry_rows(&foreground);
+    controlled_unrelated_activity_row(&mut foreground);
+    foreground.finish();
 }
 
 fn complete_sequence() -> InputSequence {
@@ -376,6 +627,100 @@ fn complete_sequence() -> InputSequence {
         InputEvent::Delay(Duration::from_millis(1)),
     ])
     .expect("bounded ordinary sequence")
+}
+
+fn operation_profile_rows(foreground: &OwnedForeground) {
+    let mut drag = FixtureProcess::spawn("drag");
+    let (target, controller) = open_ordinary(&drag);
+    let start =
+        Point::new(CoordinateSpace::TargetNormalized, 0.25, 0.25).expect("normalized drag start");
+    let end =
+        Point::new(CoordinateSpace::TargetNormalized, 0.75, 0.75).expect("normalized drag end");
+    let request = InputRequest::new(
+        target,
+        InputSequence::new(vec![
+            InputEvent::PointerMove(start),
+            InputEvent::PointerPress(PointerButton::Primary),
+            InputEvent::PointerMove(end),
+            InputEvent::PointerRelease(PointerButton::Primary),
+        ])
+        .expect("bounded drag sequence"),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
+    )
+    .with_focus(FocusPolicy::Preserve);
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &request,
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("drag row receipted");
+    assert_complete_queue_receipt(&receipt, request.sequence().len());
+    let report = drag.report(drag.target());
+    assert_eq!(
+        report.target, 6,
+        "drag produced move, positioned down, held move, and positioned up"
+    );
+    assert_wrong_targets_clear(report);
+    controller
+        .close(&timed(Duration::from_secs(5)))
+        .expect("closed drag row");
+    println!("native-operation-row drag=passed accepted-units=6");
+
+    let mut keys = vec![Key::Character('m')];
+    keys.extend((1..=Key::MAX_FUNCTION).map(Key::Function));
+    keys.extend(Modifier::ALL.map(Key::Modifier));
+    keys.extend([
+        Key::Enter,
+        Key::Tab,
+        Key::Backspace,
+        Key::Delete,
+        Key::Escape,
+        Key::Space,
+        Key::ArrowUp,
+        Key::ArrowDown,
+        Key::ArrowLeft,
+        Key::ArrowRight,
+        Key::Home,
+        Key::End,
+        Key::PageUp,
+        Key::PageDown,
+    ]);
+    let mut events = Vec::with_capacity(keys.len() * 2);
+    for key in keys {
+        events.push(InputEvent::KeyPress(key));
+        events.push(InputEvent::KeyRelease(key));
+    }
+    let mut keyboard = FixtureProcess::spawn("bounded-key-vocabulary");
+    let (target, controller) = open_ordinary(&keyboard);
+    let request = InputRequest::new(
+        target,
+        InputSequence::new(events).expect("bounded complete key vocabulary"),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
+    )
+    .with_focus(FocusPolicy::Preserve);
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &request,
+        &timed(Duration::from_secs(10)),
+    )
+    .expect("bounded key vocabulary receipted");
+    assert_complete_queue_receipt(&receipt, request.sequence().len());
+    let report = keyboard.report(keyboard.target());
+    assert_eq!(
+        usize::try_from(report.target).expect("observation count fits usize"),
+        request.sequence().len(),
+        "every bounded key down/up reached only the retained target"
+    );
+    assert_wrong_targets_clear(report);
+    controller
+        .close(&timed(Duration::from_secs(5)))
+        .expect("closed bounded key row");
+    println!(
+        "native-operation-row bounded-key-vocabulary=passed logical-events={}",
+        request.sequence().len()
+    );
 }
 
 fn one_key_request(target: TargetId) -> InputRequest {
@@ -446,10 +791,27 @@ fn open_ordinary_title(
     (target_id, controller)
 }
 
-fn assert_unexecuted_target_loss(controller: &Arc<dyn InputController>, request: InputRequest) {
-    let receipt = controller
-        .execute(&request, &timed(Duration::from_secs(5)))
-        .expect("authority refusal receipted");
+fn execute_observed(
+    foreground: &OwnedForeground,
+    controller: &Arc<dyn InputController>,
+    request: &InputRequest,
+    operation: &OperationContext,
+) -> mado_pilot_core::Result<mado_pilot_input::InputReceipt> {
+    foreground.observe(|| controller.execute(request, operation))
+}
+
+fn assert_unexecuted_target_loss(
+    foreground: &OwnedForeground,
+    controller: &Arc<dyn InputController>,
+    request: InputRequest,
+) {
+    let receipt = execute_observed(
+        foreground,
+        controller,
+        &request,
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("authority refusal receipted");
     assert_eq!(
         receipt.outcome(),
         SequenceOutcome::Unexecuted,
@@ -486,6 +848,23 @@ fn pressed_delay_request(target: TargetId) -> InputRequest {
     .with_focus(FocusPolicy::Preserve)
 }
 
+fn two_pressed_delay_request(target: TargetId) -> InputRequest {
+    InputRequest::new(
+        target,
+        InputSequence::new(vec![
+            InputEvent::KeyPress(Key::Modifier(Modifier::Control)),
+            InputEvent::KeyPress(Key::Modifier(Modifier::Shift)),
+            InputEvent::Delay(Duration::from_millis(500)),
+            InputEvent::KeyRelease(Key::Modifier(Modifier::Shift)),
+            InputEvent::KeyRelease(Key::Modifier(Modifier::Control)),
+        ])
+        .expect("bounded two-key cleanup sequence"),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
+    )
+    .with_focus(FocusPolicy::Preserve)
+    .with_cleanup_budget(CleanupBudget::at_most(1, Duration::from_secs(1)))
+}
+
 fn assert_complete_queue_receipt(receipt: &mado_pilot_input::InputReceipt, submitted: usize) {
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete, "{receipt:?}");
     assert_eq!(receipt.submitted(), submitted);
@@ -497,21 +876,26 @@ fn assert_complete_queue_receipt(receipt: &mado_pilot_input::InputReceipt, submi
     assert!(!receipt.used_fallback());
 }
 
-fn consumer_compatibility_rows() {
+fn consumer_compatibility_rows(foreground: &OwnedForeground) {
     let mut game = FixtureProcess::spawn("game-consumer");
     let (target, controller) = open_role(&game, "Game");
-    let receipt = controller
-        .execute(&key_pair_request(target), &timed(Duration::from_secs(5)))
-        .expect("game-like legacy receipt");
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &key_pair_request(target),
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("game-like legacy receipt");
     assert_complete_queue_receipt(&receipt, 2);
     let report = game.report(game.role_window("Game"));
     assert_eq!(
-        report.game, 2,
-        "game-like window observed both legacy units"
+        report,
+        ObservationReport {
+            game: 2,
+            ..empty_report()
+        },
+        "only the game-like consumer observed the two legacy units"
     );
-    assert_eq!(report.raw, 0);
-    assert_eq!(report.state, 0);
-    assert_eq!(report.target, 0);
     controller
         .close(&timed(Duration::from_secs(5)))
         .expect("closed game row");
@@ -519,17 +903,23 @@ fn consumer_compatibility_rows() {
 
     let mut raw = FixtureProcess::spawn("raw-consumer");
     let (target, controller) = open_role(&raw, "Raw");
-    let receipt = controller
-        .execute(&key_pair_request(target), &timed(Duration::from_secs(5)))
-        .expect("Raw Input consumer receipt");
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &key_pair_request(target),
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("Raw Input consumer receipt");
     assert_complete_queue_receipt(&receipt, 2);
     let report = raw.report(raw.role_window("Raw"));
     assert_eq!(
-        report.raw_legacy, 2,
-        "the raw window received legacy messages"
+        report,
+        ObservationReport {
+            raw_legacy: 2,
+            ..empty_report()
+        },
+        "only the selected Raw Input consumer observed legacy units"
     );
-    assert_eq!(report.raw, 0, "legacy messages synthesized no Raw Input");
-    assert_eq!(report.state, 0);
     controller
         .close(&timed(Duration::from_secs(5)))
         .expect("closed raw row");
@@ -538,38 +928,49 @@ fn consumer_compatibility_rows() {
     let mut state = FixtureProcess::spawn("state-consumer");
     let (target, controller) = open_role(&state, "State");
     let before = state.report(state.role_window("State"));
-    let receipt = controller
-        .execute(&key_pair_request(target), &timed(Duration::from_secs(5)))
-        .expect("state-polling consumer receipt");
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &key_pair_request(target),
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("state-polling consumer receipt");
     assert_complete_queue_receipt(&receipt, 2);
     let report = state.report(state.role_window("State"));
     assert_eq!(
-        report.state_legacy,
-        before.state_legacy + 2,
-        "the state-polling window received both legacy messages"
-    );
-    assert_eq!(
-        report.state, before.state,
-        "posted legacy keys did not change asynchronous device state"
+        report,
+        ObservationReport {
+            state_legacy: before.state_legacy + 2,
+            ..before
+        },
+        "only the selected state-polling consumer's legacy counter changed"
     );
     controller
         .close(&timed(Duration::from_secs(5)))
         .expect("closed state row");
 }
 
-fn terminal_and_cleanup_rows() {
+fn terminal_and_cleanup_rows(foreground: &OwnedForeground) {
     let mut preflight = FixtureProcess::spawn("terminal-preflight");
     let (target, controller) = open_ordinary(&preflight);
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let cancelled = OperationContext::new().with_cancellation(cancellation);
-    let error = controller
-        .execute(&key_pair_request(target), &cancelled)
-        .expect_err("pre-admission cancellation has no receipt");
+    let error = execute_observed(
+        foreground,
+        &controller,
+        &key_pair_request(target),
+        &cancelled,
+    )
+    .expect_err("pre-admission cancellation has no receipt");
     assert_eq!(error.status(), Status::Cancelled);
-    let error = controller
-        .execute(&key_pair_request(target), &timed(Duration::ZERO))
-        .expect_err("pre-admission deadline has no receipt");
+    let error = execute_observed(
+        foreground,
+        &controller,
+        &key_pair_request(target),
+        &timed(Duration::ZERO),
+    )
+    .expect_err("pre-admission deadline has no receipt");
     assert_eq!(error.status(), Status::DeadlineExceeded);
     assert_eq!(preflight.report(preflight.target()).target, 0);
     controller
@@ -580,12 +981,13 @@ fn terminal_and_cleanup_rows() {
     let mut deadline = FixtureProcess::spawn("deadline-cleanup");
     let (target, controller) = open_ordinary(&deadline);
     let started = Instant::now();
-    let receipt = controller
-        .execute(
-            &pressed_delay_request(target),
-            &timed(Duration::from_millis(20)),
-        )
-        .expect("mid-sequence deadline receipted");
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &pressed_delay_request(target),
+        &timed(Duration::from_millis(20)),
+    )
+    .expect("mid-sequence deadline receipted");
     assert_elapsed_budget(
         "deadline-cleanup",
         started.elapsed(),
@@ -611,10 +1013,11 @@ fn terminal_and_cleanup_rows() {
     let (target, controller) = open_ordinary(&cancelled);
     let cancellation = CancellationToken::new();
     let context = timed(Duration::from_secs(5)).with_cancellation(cancellation.clone());
+    foreground.begin_observation();
     let worker_controller = Arc::clone(&controller);
     let worker =
         thread::spawn(move || worker_controller.execute(&pressed_delay_request(target), &context));
-    cancelled.wait_for(
+    cancelled.wait_for_observation(
         "observation role=target family=key-down",
         Duration::from_secs(5),
     );
@@ -624,6 +1027,7 @@ fn terminal_and_cleanup_rows() {
         .join()
         .expect("cancellation worker joined")
         .expect("mid-sequence cancellation receipted");
+    foreground.end_observation();
     assert_elapsed_budget(
         "cancellation-cleanup",
         cleanup_started.elapsed(),
@@ -646,17 +1050,90 @@ fn terminal_and_cleanup_rows() {
     controller
         .close(&timed(Duration::from_secs(5)))
         .expect("closed cancellation");
+
+    let mut failed = FixtureProcess::spawn("cleanup-failure");
+    let (target, controller) = open_ordinary(&failed);
+    let cancellation = CancellationToken::new();
+    let context = timed(Duration::from_secs(5)).with_cancellation(cancellation.clone());
+    foreground.begin_observation();
+    let worker_controller = Arc::clone(&controller);
+    let worker =
+        thread::spawn(move || worker_controller.execute(&pressed_delay_request(target), &context));
+    failed.wait_for_observation(
+        "observation role=target family=key-down",
+        Duration::from_secs(5),
+    );
+    let retained = failed.target();
+    failed.control(retained, CONTROL_DESTROY_TARGET, 0);
+    failed.wait_for("control target-loss=ready", Duration::from_secs(5));
+    cancellation.cancel();
+    let receipt = worker
+        .join()
+        .expect("cleanup-failure worker joined")
+        .expect("failed cleanup is receipted");
+    foreground.end_observation();
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial, "{receipt:?}");
+    assert_eq!(receipt.submitted(), 1);
+    assert_eq!(receipt.fault(), Some(InputFault::Cancelled));
+    assert_eq!(receipt.cleanup(), CleanupState::Incomplete);
+    assert_eq!(receipt.cleanup_released(), 0);
+    assert_eq!(receipt.cleanup_owed(), 1);
+    controller
+        .close(&timed(Duration::from_secs(5)))
+        .expect("closed failed-cleanup controller");
+    drop(failed);
+
+    let mut exhausted = FixtureProcess::spawn("cleanup-exhaustion");
+    let (target, controller) = open_ordinary(&exhausted);
+    let cancellation = CancellationToken::new();
+    let context = timed(Duration::from_secs(5)).with_cancellation(cancellation.clone());
+    foreground.begin_observation();
+    let worker_controller = Arc::clone(&controller);
+    let worker = thread::spawn(move || {
+        worker_controller.execute(&two_pressed_delay_request(target), &context)
+    });
+    for _pressed in 0..2 {
+        exhausted.wait_for_observation(
+            "observation role=target family=key-down",
+            Duration::from_secs(5),
+        );
+    }
+    thread::sleep(Duration::from_millis(10));
+    cancellation.cancel();
+    let receipt = worker
+        .join()
+        .expect("cleanup-exhaustion worker joined")
+        .expect("exhausted cleanup is receipted");
+    foreground.end_observation();
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial, "{receipt:?}");
+    assert_eq!(receipt.submitted(), 2);
+    assert_eq!(receipt.fault(), Some(InputFault::Cancelled));
+    assert_eq!(receipt.cleanup(), CleanupState::Exhausted);
+    assert_eq!(receipt.cleanup_released(), 1);
+    assert_eq!(receipt.cleanup_owed(), 2);
+    assert_eq!(
+        exhausted.report(exhausted.target()).target,
+        3,
+        "bounded cleanup released exactly one of two accepted keys"
+    );
+    controller
+        .close(&timed(Duration::from_secs(5)))
+        .expect("closed exhausted-cleanup controller");
 }
 
-fn late_effect_row() {
+fn late_effect_row(foreground: &OwnedForeground) {
     let mut fixture = FixtureProcess::spawn("late-effect");
     let (target, controller) = open_ordinary(&fixture);
     fixture.control(fixture.target(), CONTROL_BLOCK_QUEUE, 300);
     fixture.wait_for("control queue-block=ready", Duration::from_secs(5));
     let started = Instant::now();
-    let receipt = controller
-        .execute(&key_pair_request(target), &timed(Duration::from_secs(2)))
-        .expect("hung-target queue receipt");
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &key_pair_request(target),
+        &timed(Duration::from_secs(2)),
+    )
+    .expect("hung-target queue receipt");
     assert_complete_queue_receipt(&receipt, 2);
     assert_elapsed_budget(
         "hung-target-queue-admission",
@@ -682,7 +1159,7 @@ struct MonitorRow {
     dpi_y: u32,
 }
 
-fn topology_geometry_rows() {
+fn topology_geometry_rows(foreground: &OwnedForeground) {
     let desktop = DesktopState::capture();
     let monitors = monitor_rows();
     assert!(
@@ -776,19 +1253,20 @@ fn topology_geometry_rows() {
         // the route boundary so this row proves deltas rather than misattributing an
         // absolute process-lifetime counter to the request under test.
         fixture.control(fixture.target(), WM_MOUSEMOVE, 0);
-        fixture.wait_for(
+        fixture.wait_for_observation(
             "observation role=target family=pointer-move units=1",
             Duration::from_secs(5),
         );
         let before_route = fixture.report(fixture.target());
         assert_wrong_targets_clear(before_route);
 
-        let stale = controller
-            .execute(
-                &source_pointer_request(target, previous),
-                &timed(Duration::from_secs(5)),
-            )
-            .expect("stale source-frame refusal receipted");
+        let stale = execute_observed(
+            foreground,
+            &controller,
+            &source_pointer_request(target, previous),
+            &timed(Duration::from_secs(5)),
+        )
+        .expect("stale source-frame refusal receipted");
         assert_eq!(stale.outcome(), SequenceOutcome::Unexecuted, "{stale:?}");
         assert_eq!(stale.submitted(), 0);
         assert_eq!(stale.fault(), Some(InputFault::GeometryChanged));
@@ -799,18 +1277,19 @@ fn topology_geometry_rows() {
         );
         assert_wrong_targets_clear(after_stale);
 
-        let current = controller
-            .execute(
-                &source_pointer_request(target, frame.stamp()),
-                &timed(Duration::from_secs(5)),
-            )
-            .expect("current source-frame pointer receipt");
-        assert_complete_queue_receipt(&current, 1);
+        let current = execute_observed(
+            foreground,
+            &controller,
+            &source_pointer_and_wheel_request(target, frame.stamp()),
+            &timed(Duration::from_secs(5)),
+        )
+        .expect("current source-frame pointer and wheel receipt");
+        assert_complete_queue_receipt(&current, 2);
         let after_current = fixture.report(fixture.target());
         assert_eq!(
             after_current.target,
-            before_route.target + 1,
-            "exactly one current source-frame event reached the target"
+            before_route.target + 3,
+            "one pointer and two wheel units reached the exact target"
         );
         assert_wrong_targets_clear(after_current);
         let placement = frame
@@ -826,7 +1305,7 @@ fn topology_geometry_rows() {
             "frame placement remains on the selected physical monitor: {placement:?}"
         );
         println!(
-            "topology-monitor index={index} frame-scale={}x{} source=correlated",
+            "topology-monitor index={index} frame-scale={}x{} source=correlated stimulus=pointer+wheel",
             placement.scale().x(),
             placement.scale().y()
         );
@@ -850,6 +1329,25 @@ fn source_pointer_request(target: TargetId, source: FrameStamp) -> InputRequest 
         target,
         InputSequence::new(vec![InputEvent::PointerMove(point)])
             .expect("bounded topology sequence"),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
+    )
+    .with_focus(FocusPolicy::Preserve)
+    .with_pointer_geometry(PointerGeometry::require_unchanged_since(source))
+}
+
+fn source_pointer_and_wheel_request(target: TargetId, source: FrameStamp) -> InputRequest {
+    let point =
+        Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5).expect("normalized topology point");
+    InputRequest::new(
+        target,
+        InputSequence::new(vec![
+            InputEvent::PointerMove(point),
+            InputEvent::PointerScroll {
+                horizontal: 1,
+                vertical: 1,
+            },
+        ])
+        .expect("bounded topology pointer and wheel sequence"),
         DeliveryPlan::require(InputDelivery::WindowMessage),
     )
     .with_focus(FocusPolicy::Preserve)
@@ -910,61 +1408,79 @@ unsafe extern "system" fn collect_monitor(
     true.into()
 }
 
-fn controlled_unrelated_activity_row() {
-    let mut fixture = FixtureProcess::spawn("unrelated-activity");
-    let (target, controller) = open_ordinary(&fixture);
-    let foreground = fixture.role_window("Foreground");
+fn controlled_unrelated_activity_row(foreground: &mut OwnedForeground) {
+    let mut delivery = FixtureProcess::spawn("unrelated-activity");
+    let (target, controller) = open_ordinary(&delivery);
+    let foreground_window = foreground.fixture.target();
     let desktop = DesktopState::capture();
+    assert_eq!(
+        desktop.foreground, foreground_window,
+        "the repository-owned unrelated application is foreground"
+    );
     assert_ne!(
         desktop.foreground,
-        fixture.target(),
-        "the target must remain behind an unrelated foreground application"
+        delivery.target(),
+        "the delivery target remains in the background"
     );
-    let foreground_value = foreground.0.addr();
-    let activity = thread::spawn(move || {
-        let foreground = HWND(std::ptr::with_exposed_provenance_mut::<std::ffi::c_void>(
-            foreground_value,
-        ));
-        for _unit in 0..64 {
-            // SAFETY: the retained fixture handle is live; this message carries scalar metadata.
-            unsafe { PostMessageW(Some(foreground), WM_MOUSEMOVE, WPARAM(0), LPARAM(0)) }
-                .expect("posted controlled unrelated activity");
-            thread::sleep(Duration::from_millis(1));
-        }
-    });
-    let request = InputRequest::new(
-        target,
-        InputSequence::new(vec![
-            InputEvent::KeyPress(Key::Function(6)),
-            InputEvent::Delay(Duration::from_millis(100)),
-            InputEvent::KeyRelease(Key::Function(6)),
-        ])
-        .expect("bounded activity sequence"),
-        DeliveryPlan::require(InputDelivery::WindowMessage),
-    )
-    .with_focus(FocusPolicy::Preserve);
-    let receipt = controller
-        .execute(&request, &timed(Duration::from_secs(5)))
+    let before_activity = foreground.fixture_mut().report(foreground_window);
+    let foreground_value = foreground_window.0.addr();
+    let receipt = foreground
+        .observe(|| {
+            let activity = thread::spawn(move || {
+                let foreground = HWND(std::ptr::with_exposed_provenance_mut::<std::ffi::c_void>(
+                    foreground_value,
+                ));
+                for _unit in 0..64 {
+                    // SAFETY: the retained foreground fixture is live; this message is scalar.
+                    unsafe { PostMessageW(Some(foreground), WM_MOUSEMOVE, WPARAM(0), LPARAM(0)) }
+                        .expect("posted controlled unrelated activity");
+                    assert_eq!(
+                        // SAFETY: the return is an opaque handle and is not dereferenced.
+                        unsafe { GetForegroundWindow() },
+                        foreground,
+                        "owned foreground authority remained stable during activity"
+                    );
+                    thread::sleep(Duration::from_millis(1));
+                }
+            });
+            let request = InputRequest::new(
+                target,
+                InputSequence::new(vec![
+                    InputEvent::KeyPress(Key::Function(6)),
+                    InputEvent::Delay(Duration::from_millis(100)),
+                    InputEvent::KeyRelease(Key::Function(6)),
+                ])
+                .expect("bounded activity sequence"),
+                DeliveryPlan::require(InputDelivery::WindowMessage),
+            )
+            .with_focus(FocusPolicy::Preserve);
+            let receipt = controller.execute(&request, &timed(Duration::from_secs(5)));
+            activity.join().expect("unrelated activity joined");
+            receipt
+        })
         .expect("delivery during unrelated activity");
-    activity.join().expect("unrelated activity joined");
     assert_complete_queue_receipt(&receipt, 3);
-    let report = fixture.report(fixture.target());
+    let report = delivery.report(delivery.target());
     assert_eq!(report.target, 2);
-    assert_eq!(report.foreground, 64);
-    assert_eq!(report.sibling, 0);
-    assert_eq!(report.child, 0);
-    assert_eq!(report.game, 0);
+    assert_wrong_targets_clear(report);
+    let after_activity = foreground.fixture_mut().report(foreground_window);
+    assert_eq!(
+        after_activity.target,
+        before_activity.target + 64,
+        "the actual foreground fixture observed every controlled activity unit"
+    );
+    assert_wrong_targets_clear(after_activity);
     desktop.assert_unchanged();
     controller
         .close(&timed(Duration::from_secs(5)))
         .expect("closed activity row");
 }
 
-fn queue_pressure_rows() {
+fn queue_pressure_rows(foreground: &OwnedForeground) {
     let mut full = FixtureProcess::spawn("queue-full");
     let (target_id, controller) = open_ordinary(&full);
     let target = full.target();
-    full.control(target, CONTROL_BLOCK_QUEUE, 15_000);
+    full.control(target, CONTROL_BLOCK_QUEUE, 300);
     full.wait_for("control queue-block=ready", Duration::from_secs(5));
     let capacity = fill_queue(target);
     assert!(
@@ -972,9 +1488,13 @@ fn queue_pressure_rows() {
         "unexpectedly small Windows message queue"
     );
     let started = Instant::now();
-    let receipt = controller
-        .execute(&one_key_request(target_id), &timed(Duration::from_secs(5)))
-        .expect("queue refusal receipted");
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &one_key_request(target_id),
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("queue refusal receipted");
     assert_elapsed_budget(
         "queue-full-refusal",
         started.elapsed(),
@@ -992,7 +1512,7 @@ fn queue_pressure_rows() {
     let mut partial = FixtureProcess::spawn("queue-partial");
     let (target_id, controller) = open_ordinary(&partial);
     let target = partial.target();
-    partial.control(target, CONTROL_BLOCK_QUEUE, 15_000);
+    partial.control(target, CONTROL_BLOCK_QUEUE, 300);
     partial.wait_for("control queue-block=ready", Duration::from_secs(5));
     enqueue_nulls(target, capacity.saturating_sub(2));
     let point =
@@ -1012,9 +1532,13 @@ fn queue_pressure_rows() {
     )
     .with_focus(FocusPolicy::Preserve);
     let started = Instant::now();
-    let receipt = controller
-        .execute(&request, &timed(Duration::from_secs(5)))
-        .expect("partial queue refusal receipted");
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &request,
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("partial queue refusal receipted");
     assert_elapsed_budget(
         "queue-partial-refusal",
         started.elapsed(),
@@ -1022,8 +1546,72 @@ fn queue_pressure_rows() {
     );
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial, "{receipt:?}");
     assert_eq!(receipt.submitted(), 1);
+    assert!(receipt.partial_native_effect());
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::WindowMessage));
+    assert_eq!(
+        receipt.evidence(),
+        Some(SubmissionEvidence::TargetQueueAdmission)
+    );
+    assert!(!receipt.used_fallback());
     assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
+    partial.wait_for("control queue-block=complete", Duration::from_secs(5));
+    partial.wait_for_observation(
+        "observation role=target family=pointer-move",
+        Duration::from_secs(5),
+    );
+    partial.wait_for_observation(
+        "observation role=target family=vertical-wheel",
+        Duration::from_secs(5),
+    );
+    let report = partial.report(target);
+    assert_eq!(
+        report.target, 2,
+        "only the accepted pointer and vertical-wheel prefix reached the target"
+    );
+    assert_wrong_targets_clear(report);
+    controller
+        .close(&timed(Duration::from_secs(5)))
+        .expect("closed partial-wheel controller");
     drop(partial);
+
+    let mut text = FixtureProcess::spawn("queue-partial-text");
+    let (target_id, controller) = open_ordinary(&text);
+    let target = text.target();
+    text.control(target, CONTROL_BLOCK_QUEUE, 1_000);
+    text.wait_for("control queue-block=ready", Duration::from_secs(5));
+    enqueue_nulls(target, capacity.saturating_sub(1));
+    let request = InputRequest::new(
+        target_id,
+        InputSequence::new(vec![InputEvent::Text("😀".to_owned())])
+            .expect("bounded surrogate-pair sequence"),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
+    )
+    .with_focus(FocusPolicy::Preserve);
+    let receipt = execute_observed(
+        foreground,
+        &controller,
+        &request,
+        &timed(Duration::from_secs(5)),
+    )
+    .expect("partial UTF-16 queue refusal receipted");
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial, "{receipt:?}");
+    assert_eq!(receipt.submitted(), 0);
+    assert!(receipt.partial_native_effect());
+    assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
+    text.wait_for("control queue-block=complete", Duration::from_secs(5));
+    text.wait_for_observation(
+        "observation role=target family=text-unit",
+        Duration::from_secs(5),
+    );
+    let report = text.report(target);
+    assert_eq!(
+        report.target, 1,
+        "only the first UTF-16 unit reached the target queue"
+    );
+    assert_wrong_targets_clear(report);
+    controller
+        .close(&timed(Duration::from_secs(5)))
+        .expect("closed partial-text controller");
 }
 
 fn fill_queue(hwnd: HWND) -> usize {
@@ -1041,6 +1629,21 @@ fn enqueue_nulls(hwnd: HWND, count: usize) {
         // SAFETY: WM_NULL carries no payload and targets the blocked fixture queue.
         unsafe { PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0)) }
             .expect("filled the measured queue capacity");
+    }
+}
+
+fn empty_report() -> ObservationReport {
+    ObservationReport {
+        target: 0,
+        replacement: 0,
+        game: 0,
+        sibling: 0,
+        child: 0,
+        foreground: 0,
+        raw_legacy: 0,
+        state_legacy: 0,
+        raw: 0,
+        state: 0,
     }
 }
 

@@ -196,6 +196,7 @@ pub(crate) struct SystemButtonState {
 pub(crate) struct SubmissionFailure {
     pub(crate) fault: InputFault,
     pub(crate) current_event_may_have_effect: bool,
+    pub(crate) current_event_may_leave_pressed_state: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -209,6 +210,7 @@ impl SubmissionFailure {
         Self {
             fault,
             current_event_may_have_effect: false,
+            current_event_may_leave_pressed_state: false,
         }
     }
 
@@ -216,7 +218,13 @@ impl SubmissionFailure {
         Self {
             fault,
             current_event_may_have_effect: true,
+            current_event_may_leave_pressed_state: true,
         }
+    }
+
+    pub(crate) const fn without_pressed_state(mut self) -> Self {
+        self.current_event_may_leave_pressed_state = false;
+        self
     }
 }
 
@@ -364,7 +372,7 @@ impl WindowsInputController {
     ) -> InputReceipt {
         let held = request.sequence().possibly_held_after(
             stopped.submitted,
-            stopped.failure.current_event_may_have_effect,
+            stopped.failure.current_event_may_leave_pressed_state,
         );
         if held.is_empty() {
             return receipt.with_cleanup(0, 0);

@@ -40,7 +40,8 @@
 //! cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 //! # Windows fixture-backed mode additionally requires:
 //! cargo build --locked --package mado-pilot-platform-windows \
-//!   --bin mado-pilot-windows-input-fixture
+//!   --bin mado-pilot-windows-input-fixture \
+//!   --bin mado-pilot-windows-window-message-fixture
 //! cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
 //!   --label "<host>" --windows-native-fixture
 //! ```

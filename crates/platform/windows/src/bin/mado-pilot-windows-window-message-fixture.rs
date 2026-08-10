@@ -11,14 +11,14 @@ fn main() {
 
 #[cfg(windows)]
 fn main() {
-    let token = match fixture::title_token() {
-        Ok(token) => token,
+    let options = match fixture::options() {
+        Ok(options) => options,
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(2);
         }
     };
-    if let Err(error) = fixture::run(token) {
+    if let Err(error) = fixture::run(options) {
         eprintln!("ordinary input fixture failed: {error}");
         std::process::exit(1);
     }
@@ -34,7 +34,7 @@ mod fixture {
     use std::time::Duration;
 
     use mado_pilot_platform_windows::fixture_protocol::{
-        BENCHMARK_FILL_RGB, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
+        BENCHMARK_FILL_RGB, CONTROL_ALLOW_FOREGROUND, CONTROL_BLOCK_QUEUE, CONTROL_DESTROY_TARGET,
         CONTROL_DUPLICATE_METADATA, CONTROL_REPARENT_TARGET, CONTROL_REPLACE_TARGET,
         CONTROL_REPORT, CONTROL_REUSE_STRESS, CONTROL_SET_GEOMETRY, FILL_RGB, MAX_RECORDED_EVENTS,
         ORDINARY_CLASS_NAME, ordinary_fixture_title,
@@ -45,15 +45,17 @@ mod fixture {
         PAINTSTRUCT, UpdateWindow,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::HiDpi::{
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_F6};
     use windows::Win32::UI::Input::{RAWINPUTDEVICE, RegisterRawInputDevices};
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-        GetMessageW, KillTimer, MSG, PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE,
-        SWP_NOACTIVATE, SWP_NOZORDER, SetParent, SetTimer, SetWindowPos, SetWindowTextW,
+        AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+        GetClientRect, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, KillTimer, MSG,
+        PostQuitMessage, RegisterClassExW, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+        SWP_NOZORDER, SetForegroundWindow, SetParent, SetTimer, SetWindowPos, SetWindowTextW,
         ShowWindow, WINDOW_STYLE, WM_CHAR, WM_CLOSE, WM_DESTROY, WM_INPUT, WM_KEYDOWN, WM_KEYUP,
         WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
         WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_TIMER,
@@ -88,12 +90,25 @@ mod fixture {
     static RAW_EVENTS: AtomicU32 = AtomicU32::new(0);
     static STATE_CHANGES: AtomicU32 = AtomicU32::new(0);
 
-    pub(super) fn title_token() -> std::result::Result<String, String> {
+    pub(super) struct Options {
+        token: String,
+        activate: bool,
+    }
+
+    pub(super) fn options() -> std::result::Result<Options, String> {
         let mut token = None;
+        let mut activate = false;
         for argument in std::env::args().skip(1) {
+            if argument == "--activate" {
+                if activate {
+                    return Err("--activate may be supplied only once".to_owned());
+                }
+                activate = true;
+                continue;
+            }
             let Some(value) = argument.strip_prefix("--title-token=") else {
                 return Err(format!(
-                    "unknown argument `{argument}`; expected --title-token=<token>"
+                    "unknown argument `{argument}`; expected --title-token=<token> or --activate"
                 ));
             };
             if value.is_empty() || value.chars().count() > 64 {
@@ -103,15 +118,44 @@ mod fixture {
                 return Err("--title-token may be supplied only once".to_owned());
             }
         }
-        Ok(token.unwrap_or_else(|| std::process::id().to_string()))
+        Ok(Options {
+            token: token.unwrap_or_else(|| std::process::id().to_string()),
+            activate,
+        })
     }
 
-    pub(super) fn run(token: String) -> Result<()> {
+    fn activate_for_fixture_setup(window: HWND) -> Result<()> {
+        // The native matrix must own its unrelated foreground application even
+        // when an unattended host's foreground lock rejects a direct request.
+        // Queue attachment is confined to this explicit fixture-startup mode
+        // and is detached before readiness or any delivery observation.
+        // SAFETY: both identifiers name desktop GUI threads with message queues,
+        // and every successful attachment is detached before this function exits.
+        unsafe {
+            let current_thread = GetCurrentThreadId();
+            let foreground_thread = GetWindowThreadProcessId(GetForegroundWindow(), None);
+            let attached = foreground_thread != 0 && foreground_thread != current_thread;
+            if attached {
+                AttachThreadInput(current_thread, foreground_thread, true).ok()?;
+            }
+            let _was_visible = ShowWindow(window, SW_SHOW);
+            let activated = SetForegroundWindow(window).ok();
+            let detached = if attached {
+                AttachThreadInput(current_thread, foreground_thread, false).ok()
+            } else {
+                Ok(())
+            };
+            activated?;
+            detached
+        }
+    }
+
+    pub(super) fn run(options: Options) -> Result<()> {
         // SAFETY: DPI awareness is selected before this fixture calls USER32.
         unsafe {
             SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
         }
-        TITLE_TOKEN.set(token).map_err(|_| {
+        TITLE_TOKEN.set(options.token).map_err(|_| {
             Error::new(
                 windows::core::HRESULT(0x8000_4005u32.cast_signed()),
                 "title initialized twice",
@@ -154,6 +198,10 @@ mod fixture {
             unsafe {
                 let _was_visible = ShowWindow(window, SW_SHOWNOACTIVATE);
             }
+        }
+
+        if options.activate {
+            activate_for_fixture_setup(target)?;
         }
 
         let devices = [
@@ -236,6 +284,18 @@ mod fixture {
                 // valid successful return that the generated Result wrapper may reject.
                 let _previous = unsafe { SetParent(hwnd, Some(sibling)) };
                 print_line("control reparent=ready");
+                LRESULT(0)
+            }
+            CONTROL_ALLOW_FOREGROUND => {
+                let process_id =
+                    u32::try_from(wparam.0).expect("foreground process identifier fits u32");
+                // SAFETY: the owned fixture is foreground and delegates only to its test host.
+                let delegated = unsafe { AllowSetForegroundWindow(process_id) }.is_ok();
+                print_line(if delegated {
+                    "control foreground-delegate=ready"
+                } else {
+                    "control foreground-delegate=failed"
+                });
                 LRESULT(0)
             }
             CONTROL_REPLACE_TARGET => {
