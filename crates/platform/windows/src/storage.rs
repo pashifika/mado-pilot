@@ -877,16 +877,16 @@ fn lock_with_operation<'mutex>(
 pub(crate) fn descriptor_from_native(
     descriptor: &D3D11_TEXTURE2D_DESC,
     content_extent: PixelExtent,
-) -> std::result::Result<FrameDescriptor, CaptureFault> {
+) -> std::result::Result<Option<FrameDescriptor>, CaptureFault> {
     if descriptor.Format != windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM {
         return Err(CaptureFault::UnsupportedFormat);
     }
     validate_surface(descriptor.Width, descriptor.Height)?;
     validate_surface(content_extent.width(), content_extent.height())?;
     if descriptor.Width < content_extent.width() || descriptor.Height < content_extent.height() {
-        return Err(CaptureFault::UnsupportedFormat);
+        return Ok(None);
     }
-    FrameDescriptor::packed(content_extent, PixelFormat::Bgra8)
+    FrameDescriptor::packed(content_extent, PixelFormat::Bgra8).map(Some)
 }
 
 pub(crate) fn classify_native_error(error: windows::core::Error) -> mado_pilot_core::Error {
@@ -925,11 +925,11 @@ mod tests {
     use super::{
         ByteBudget, DETACHED_TEXTURE_BUDGET, DeviceDomain, DeviceTerminal, GLOBAL_RETAINED_BYTES,
         MAX_SURFACE_BYTES, MAX_TEXTURE_AXIS, MappingState, SESSION_RETAINED_BYTES, SessionMemory,
-        TexturePool, checked_bgra_bytes, finish_mapping_cache, mapping_retained_bytes,
-        native_fault, retained_storage_capacity, validate_surface,
+        TexturePool, checked_bgra_bytes, descriptor_from_native, finish_mapping_cache,
+        mapping_retained_bytes, native_fault, retained_storage_capacity, validate_surface,
     };
     use mado_pilot_capture::{CaptureFault, CpuPixels};
-    use mado_pilot_core::Status;
+    use mado_pilot_core::{PixelExtent, Status};
 
     fn descriptor(width: u32, height: u32) -> D3D11_TEXTURE2D_DESC {
         D3D11_TEXTURE2D_DESC {
@@ -947,6 +947,22 @@ mod tests {
             CPUAccessFlags: 0,
             MiscFlags: 0,
         }
+    }
+
+    #[test]
+    fn a_resize_transition_surface_is_dropped_until_the_pool_catches_up() {
+        let content = PixelExtent::new(480, 320);
+
+        assert!(
+            descriptor_from_native(&descriptor(342, 231), content)
+                .expect("valid transitional surface")
+                .is_none()
+        );
+        assert!(
+            descriptor_from_native(&descriptor(480, 320), content)
+                .expect("current surface")
+                .is_some()
+        );
     }
 
     #[test]

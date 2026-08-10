@@ -1116,7 +1116,10 @@ impl SessionCore {
         let mut native_descriptor = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: output is valid for the complete descriptor.
         unsafe { source.GetDesc(&raw mut native_descriptor) };
-        let descriptor = descriptor_from_native(&native_descriptor, extent)?;
+        let Some(descriptor) = descriptor_from_native(&native_descriptor, extent)? else {
+            let _drop = self.state.try_record_drop();
+            return Ok(());
+        };
 
         let lease = self.textures.try_acquire(native_descriptor).map_err(|_| {
             self.domain
