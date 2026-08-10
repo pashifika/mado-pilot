@@ -36,8 +36,8 @@ The first two retain their fixed pre-measurement ceilings. The maximum-sequence
 ceiling replaces the rejected 64 KiB hypothesis. The harness defines
 `peak_allocated_bytes` as the complete workload footprint above the
 pre-fixture baseline, so it includes the ordinary fixture reader, engine and
-controller, request, sequence, receipt, and route state. The bound profile
-measured 66,685 bytes, 1,149 bytes above 64 KiB. Although the sequence's
+controller, request, sequence, receipt, and route state. The final bound profile
+measured 66,743 bytes, 1,207 bytes above 64 KiB. Although the sequence's
 peak-over-steady increment was only 21,585 bytes, applying that narrower reading
 to the published aggregate metric would make the budget false. The replacement
 256 KiB ceiling is the next 64 KiB boundary above three times the observed
@@ -61,22 +61,29 @@ on arbitrary Windows hosts.
 
 ## Evidence
 
-The retained raw profile
-[`native-phase2-input-window-message-fd71a3f.log`](../evidence/phase-2-performance/native-phase2-input-window-message-fd71a3f.log)
-is bound to source commit `fd71a3f9e08d1eada50b53cf4b47d830e92b60d2`
-and tree `0267816de8c18a98bacf66c7ab455c8a18143650`. Fifty retained
+The retained final raw profile
+[`native-phase2-input-window-message-b8d8de7.log`](../evidence/phase-2-performance/native-phase2-input-window-message-b8d8de7.log)
+is bound to source commit `b8d8de7a0b5728114d8be55cf3010a363c18d07b`
+and tree `cee83e00f0f73a7cdd543ea69c07a89b493c5ffd`. Fifty retained
 samples after five warmups produced zero oracle failures:
 
 | Workload | p50 | p95 | Peak Rust heap | Growth |
 |---|---:|---:|---:|---:|
-| One ordinary pointer unit | 0.1999 ms | 0.3060 ms | 45,105 B | 1,020 B |
-| Position plus primary-button event | 0.4873 ms | 0.7913 ms | 45,760 B | 1,180 B |
-| Maximum 256-event sequence | 47.3561 ms | 51.2646 ms | 66,685 B | 0 B |
+| One ordinary pointer unit | 0.1960 ms | 0.3488 ms | 45,163 B | 1,020 B |
+| Position plus primary-button event | 0.5550 ms | 0.9479 ms | 45,767 B | 1,180 B |
+| Maximum 256-event sequence | 47.7597 ms | 52.5657 ms | 66,743 B | 0 B |
 
-The failed 64 KiB comparison is therefore
-`66,685 > 65,536` by 1,149 bytes. This is evidence against the proposed ceiling,
-not evidence of a leak: the retained maximum-sequence workload returned to zero
-post-warmup growth.
+The final failed 64 KiB comparison is therefore
+`66,743 > 65,536` by 1,207 bytes. This is evidence against the proposed
+ceiling, not evidence of a leak: the retained maximum-sequence workload returned
+to zero post-warmup growth.
+
+The earlier
+[`native-phase2-input-window-message-fd71a3f.log`](../evidence/phase-2-performance/native-phase2-input-window-message-fd71a3f.log)
+first falsified 64 KiB at 66,685 bytes, but its source fields did not include
+then-uncommitted C/C++ example changes. It remains rejected provenance rather
+than normative evidence; the clean committed rerun above supplies the accepted
+binding without changing a ceiling.
 
 The accepted native-matrix rerun
 [`window-message-pressure-cd08dce-rerun.log`](../evidence/phase-2-performance/window-message-pressure-cd08dce-rerun.log)
@@ -100,8 +107,8 @@ rerun passed without weakening the cursor invariant.
 - **Keep 64 KiB and subtract the fixture's steady footprint.** Rejected because
   the committed profile exposes aggregate `peak_allocated_bytes`; silently
   changing the meaning for one row would create a second memory metric.
-- **Optimize until the aggregate happens to fit 64 KiB.** Rejected because the
-  excess is 1,149 bytes, growth is zero, and no product or safety requirement
+- **Optimize until the aggregate happens to fit 64 KiB.** Rejected because
+  the final excess is 1,207 bytes, growth is zero, and no product or safety requirement
   justifies coupling implementation layout to an unmeasured estimate.
 - **Rely only on end-to-end latency.** Rejected because queue pressure and
   cleanup are failure-path contracts and need independently named ceilings.

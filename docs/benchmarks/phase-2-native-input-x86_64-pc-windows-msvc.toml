@@ -1,7 +1,7 @@
 # Phase 2 native input and public-language common flows, remeasured on
 # x86_64-pc-windows-msvc at implementation tree
-# 0267816de8c18a98bacf66c7ab455c8a18143650, source commit
-# fd71a3f9e08d1eada50b53cf4b47d830e92b60d2.
+# cee83e00f0f73a7cdd543ea69c07a89b493c5ffd, source commit
+# b8d8de7a0b5728114d8be55cf3010a363c18d07b.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0026 fixes the
 # existing workload ceilings; ADR 0028 adds the ordinary production
@@ -31,7 +31,7 @@ warmup_iterations = 5
 sample_count = 50
 correctness_oracle = "every retained sample checks frame identity/content, transition state, receipt/event sequence, or complete common-flow outcome as its measurement states"
 queue_policy = "session latest-wins queue depth 1; bounded input sequence executes serially"
-notes = "source commit fd71a3f9e08d1eada50b53cf4b47d830e92b60d2, tree 0267816de8c18a98bacf66c7ab455c8a18143650; toolchain rustc 1.97.1; MSVC 19.44.35228; CMake 3.29.5; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080 driver 32.0.15.9186 (2026-01-20); display topology two 2560x1440 logical displays side by side; primary at (0,0), secondary at (-2560,0); GPU reports 3840x2160 at 120 Hz; permissions/signing Windows exposes no separate capture/input permission; unelevated interactive local process; unsigned candidate fixtures and MSVC C/C++ executables; fixture path deliberately omitted; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup; ADR 0026 and ADR 0028 ceilings are compared without recalibration"
+notes = "source commit b8d8de7a0b5728114d8be55cf3010a363c18d07b, tree cee83e00f0f73a7cdd543ea69c07a89b493c5ffd; toolchain rustc 1.97.1; MSVC 19.44.35228; CMake 3.29.5; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080 driver 32.0.15.9186 (2026-01-20); display topology two 2560x1440 logical displays side by side; primary at (0,0), secondary at (-2560,0); GPU reports 3840x2160 at 120 Hz; permissions/signing Windows exposes no separate capture/input permission; unelevated interactive local process; unsigned candidate fixtures and MSVC C/C++ executables; fixture path deliberately omitted; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup; every workload remained within its committed absolute and hard budgets"
 
 [[budget]]
 measure = "result_correctness"
@@ -51,18 +51,18 @@ kind = "absolute"
 unit = "bytes"
 direction = "at_most"
 limit = 8388608
-rationale = "8 MiB is more than three times the current 2341370-byte measured Rust input-request peak"
+rationale = "8 MiB is more than three times the current 2341428-byte measured Rust input-request peak"
 
 [[measurement]]
 workload = "input_request_receipt"
 correctness_oracle = "the complete two-event receipt corresponds to exactly one fixture key-down and key-up summary"
 result_correctness = 0
-latency_p50_ms = 0.187200
-latency_p95_ms = 0.317000
-iteration_span_ms = 0.199826
+latency_p50_ms = 0.204400
+latency_p95_ms = 0.314200
+iteration_span_ms = 0.213596
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 2341370
-steady_allocated_bytes = 2341183
+peak_allocated_bytes = 2341428
+steady_allocated_bytes = 2341241
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -77,12 +77,12 @@ allocated_growth_bytes = 0
 workload = "ordinary_window_queue_submission"
 correctness_oracle = "one ordinary exact-window pointer event crosses current-target pre/post fences, reports queue admission, and reaches only the selected fixture"
 result_correctness = 0
-latency_p50_ms = 0.199900
-latency_p95_ms = 0.306000
-iteration_span_ms = 0.222460
+latency_p50_ms = 0.196000
+latency_p95_ms = 0.348800
+iteration_span_ms = 0.216506
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 45105
-steady_allocated_bytes = 44940
+peak_allocated_bytes = 45163
+steady_allocated_bytes = 44998
 allocated_growth_bytes = 1020
 
   [[measurement.budget]]
@@ -113,12 +113,12 @@ allocated_growth_bytes = 1020
 workload = "ordinary_window_button_submission"
 correctness_oracle = "one pointer move followed by a two-unit primary-button event crosses the production route and reaches only the selected ordinary fixture"
 result_correctness = 0
-latency_p50_ms = 0.487300
-latency_p95_ms = 0.791300
-iteration_span_ms = 0.540018
+latency_p50_ms = 0.555000
+latency_p95_ms = 0.947900
+iteration_span_ms = 0.630536
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 45760
-steady_allocated_bytes = 45100
+peak_allocated_bytes = 45767
+steady_allocated_bytes = 45158
 allocated_growth_bytes = 1180
 
   [[measurement.budget]]
@@ -141,12 +141,12 @@ allocated_growth_bytes = 1180
 workload = "ordinary_window_max_sequence"
 correctness_oracle = "the maximum accepted 256-event sequence crosses the ordinary production route, reports every submission, and reaches only the selected fixture"
 result_correctness = 0
-latency_p50_ms = 47.356100
-latency_p95_ms = 51.264600
-iteration_span_ms = 47.632850
+latency_p50_ms = 47.759700
+latency_p95_ms = 52.565700
+iteration_span_ms = 48.907894
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 66685
-steady_allocated_bytes = 45100
+peak_allocated_bytes = 66743
+steady_allocated_bytes = 45158
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -155,18 +155,18 @@ allocated_growth_bytes = 0
   unit = "bytes"
   direction = "at_most"
   limit = 262144
-  rationale = "256 KiB is the next 64 KiB boundary above three times the measured 66685-byte aggregate workload peak; ADR 0028 records the failed 64 KiB hypothesis"
+  rationale = "256 KiB is the next 64 KiB boundary above three times the final measured 66743-byte aggregate workload peak; ADR 0028 records the failed 64 KiB hypothesis"
 
 [[measurement]]
 workload = "rust_common_flow"
 correctness_oracle = "fresh open, frame, mapping, exact fixture input, receipt, and close all complete"
 result_correctness = 0
-latency_p50_ms = 108.497200
-latency_p95_ms = 116.587500
-iteration_span_ms = 117.989096
+latency_p50_ms = 108.038100
+latency_p95_ms = 113.859700
+iteration_span_ms = 117.939134
 mapped_bytes_per_result = 2322488
-peak_allocated_bytes = 2336196
-steady_allocated_bytes = 11004
+peak_allocated_bytes = 2336254
+steady_allocated_bytes = 11062
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -189,14 +189,14 @@ allocated_growth_bytes = 0
 workload = "c_process_load"
 correctness_oracle = "a fresh C process loads and negotiates the released ABI without opening native capabilities"
 result_correctness = 0
-latency_p50_ms = 13.833200
-latency_p95_ms = 14.734500
-iteration_span_ms = 13.863788
+latency_p50_ms = 13.868300
+latency_p95_ms = 14.842200
+iteration_span_ms = 13.945452
 mapped_bytes_per_result = 0
 peak_allocated_bytes = 42504
 steady_allocated_bytes = 155
 allocated_growth_bytes = 0
-peak_resident_bytes = 12996608
+peak_resident_bytes = 12988416
 
   [[measurement.budget]]
   measure = "latency_p95"
@@ -218,14 +218,14 @@ peak_resident_bytes = 12996608
 workload = "c_common_flow"
 correctness_oracle = "the released C ABI performs the same bounded fixture flow in a fresh process"
 result_correctness = 0
-latency_p50_ms = 228.299700
-latency_p95_ms = 234.098400
-iteration_span_ms = 241.854284
+latency_p50_ms = 227.870800
+latency_p95_ms = 235.473800
+iteration_span_ms = 242.573252
 mapped_bytes_per_result = 2322488
 peak_allocated_bytes = 68171
 steady_allocated_bytes = 155
 allocated_growth_bytes = 0
-peak_resident_bytes = 54730752
+peak_resident_bytes = 54595584
 
   [[measurement.budget]]
   measure = "latency_p95"
@@ -255,14 +255,14 @@ peak_resident_bytes = 54730752
 workload = "cpp_process_load"
 correctness_oracle = "a fresh C++ process loads its wrapper and negotiates the released ABI without opening native capabilities"
 result_correctness = 0
-latency_p50_ms = 13.944600
-latency_p95_ms = 14.571500
-iteration_span_ms = 14.010714
+latency_p50_ms = 14.072500
+latency_p95_ms = 15.017700
+iteration_span_ms = 14.118118
 mapped_bytes_per_result = 0
 peak_allocated_bytes = 42528
 steady_allocated_bytes = 159
 allocated_growth_bytes = 0
-peak_resident_bytes = 13135872
+peak_resident_bytes = 13139968
 
   [[measurement.budget]]
   measure = "latency_p95"
@@ -284,14 +284,14 @@ peak_resident_bytes = 13135872
 workload = "cpp_common_flow"
 correctness_oracle = "the released C++ wrapper performs the same bounded fixture flow in a fresh process"
 result_correctness = 0
-latency_p50_ms = 228.542600
-latency_p95_ms = 235.819300
-iteration_span_ms = 242.432290
+latency_p50_ms = 227.166400
+latency_p95_ms = 231.629300
+iteration_span_ms = 241.213018
 mapped_bytes_per_result = 2322488
 peak_allocated_bytes = 68203
 steady_allocated_bytes = 159
 allocated_growth_bytes = 0
-peak_resident_bytes = 54784000
+peak_resident_bytes = 54788096
 
   [[measurement.budget]]
   measure = "latency_p95"

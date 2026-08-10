@@ -479,17 +479,17 @@ public-language common flow.
 
 [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) requalified
 the Windows input profile at source commit
-`fd71a3f9e08d1eada50b53cf4b47d830e92b60d2`, tree
-`0267816de8c18a98bacf66c7ab455c8a18143650`, and added production
-`WindowMessage` rows. One-unit submission measured `0.1999 ms` p50 and
-`0.3060 ms` p95; positioning plus a two-unit primary-button event measured
-`0.7913 ms` p95. The maximum 256-event sequence measured 66,685 bytes of
+`b8d8de7a0b5728114d8be55cf3010a363c18d07b`, tree
+`cee83e00f0f73a7cdd543ea69c07a89b493c5ffd`, and added production
+`WindowMessage` rows. One-unit submission measured `0.1960 ms` p50 and
+`0.3488 ms` p95; positioning plus a two-unit primary-button event measured
+`0.9479 ms` p95. The maximum 256-event sequence measured 66,743 bytes of
 aggregate Rust heap with zero post-warmup growth. That result rejected the
-pre-measurement 64 KiB hypothesis by 1,149 bytes, so ADR 0028 records the failed
+pre-measurement 64 KiB hypothesis by 1,207 bytes, so ADR 0028 records the failed
 comparison and sets a 256 KiB regression ceiling rather than changing production
-code to fit an estimate. The final native rerun kept full/partial queue refusal
+code to fit an estimate. The final native runs kept full/partial queue refusal
 below `0.7 ms`, hung queue admission below `0.3 ms`, and
-deadline/cancellation cleanup below `22 ms` against their fixed 10 ms and 250 ms
+deadline/cancellation cleanup below `23 ms` against their fixed 10 ms and 250 ms
 ceilings.
 
 The first Windows transition and language runs were rejected rather than
