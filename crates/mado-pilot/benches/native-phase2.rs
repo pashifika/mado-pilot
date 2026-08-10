@@ -44,7 +44,10 @@ mod native {
     };
 
     #[cfg(windows)]
-    use mado_pilot::{CoordinateSpace, Point};
+    use mado_pilot::{
+        CapabilitySupport, CoordinateSpace, InputAddressScope, Point, SubmissionEvidence,
+        TargetKind,
+    };
     #[cfg(target_os = "macos")]
     use mado_pilot_platform_macos::fixture_protocol as protocol;
     #[cfg(windows)]
@@ -113,6 +116,8 @@ mod native {
     struct Arguments {
         set: WorkloadSet,
         fixture_executable: PathBuf,
+        #[cfg(windows)]
+        ordinary_fixture_executable: Option<PathBuf>,
         c_executable: Option<PathBuf>,
         cpp_executable: Option<PathBuf>,
         hardware: String,
@@ -144,6 +149,12 @@ mod native {
                     Err(format!("{name} does not name a built executable"))
                 }
             };
+            #[cfg(windows)]
+            let ordinary_fixture_executable = if set == WorkloadSet::Input {
+                Some(language_executable("--ordinary-fixture-executable")?)
+            } else {
+                None
+            };
             let (c_executable, cpp_executable) = if set == WorkloadSet::Input {
                 (
                     Some(language_executable("--c-executable")?),
@@ -171,6 +182,8 @@ mod native {
             Ok(Self {
                 set,
                 fixture_executable,
+                #[cfg(windows)]
+                ordinary_fixture_executable,
                 hardware,
                 os_version,
                 c_executable,
@@ -297,6 +310,161 @@ mod native {
         fn drop(&mut self) {
             let _killed = self.child.kill();
             let _waited = self.child.wait();
+        }
+    }
+
+    #[cfg(windows)]
+    struct OrdinaryFixtureProcess {
+        child: Child,
+        lines: mpsc::Receiver<String>,
+        title: String,
+    }
+
+    #[cfg(windows)]
+    impl OrdinaryFixtureProcess {
+        fn spawn() -> Self {
+            let executable = arguments()
+                .ordinary_fixture_executable
+                .as_ref()
+                .expect("the Windows input benchmark requires its ordinary fixture executable");
+            let mut child = Command::new(executable)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap_or_else(|error| {
+                    panic!("the ordinary input benchmark fixture could not start: {error}")
+                });
+            let process_id = child.id();
+            let title = protocol::ordinary_fixture_title(&process_id.to_string());
+            let output = child
+                .stdout
+                .take()
+                .expect("the ordinary fixture exposes readiness output");
+            let (sender, lines) = mpsc::sync_channel(512);
+            thread::spawn(move || {
+                for line in BufReader::new(output).lines() {
+                    let Ok(line) = line else {
+                        break;
+                    };
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            let fixture = Self {
+                child,
+                lines,
+                title,
+            };
+            let ready = fixture
+                .lines
+                .recv_timeout(FIXTURE_WAIT)
+                .expect("the ordinary fixture reports readiness");
+            assert!(
+                ordinary_ready_line_is_approved(&ready, &fixture.title),
+                "the ordinary fixture readiness record was not the exact approved context"
+            );
+            fixture
+        }
+
+        fn next_pointer_move(&self) -> bool {
+            let deadline = Instant::now() + OPERATION_WAIT;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return false;
+                }
+                let Ok(line) = self.lines.recv_timeout(remaining) else {
+                    return false;
+                };
+                if line == "observation role=target family=legacy-mouse units=1" {
+                    return true;
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for OrdinaryFixtureProcess {
+        fn drop(&mut self) {
+            let _killed = self.child.kill();
+            let _waited = self.child.wait();
+        }
+    }
+
+    #[cfg(windows)]
+    struct OrdinaryInputFlow {
+        _engine: Engine,
+        fixture: OrdinaryFixtureProcess,
+        session: Session,
+        target: TargetId,
+    }
+
+    #[cfg(windows)]
+    impl OrdinaryInputFlow {
+        fn spawn() -> Self {
+            let fixture = OrdinaryFixtureProcess::spawn();
+            let engine = native_engine();
+            require_permissions(&engine);
+            let selection_deadline = Instant::now() + FIXTURE_WAIT;
+            let target = loop {
+                let targets = engine
+                    .discover(&bounded(OPERATION_WAIT))
+                    .expect("the ordinary benchmark fixture is discoverable");
+                let mut matching = targets.iter().filter(|candidate| {
+                    candidate.name() == fixture.title
+                        && candidate.capability().kind() == Some(TargetKind::Window)
+                });
+                if let Some(candidate) = matching.next() {
+                    assert!(
+                        matching.next().is_none(),
+                        "the ordinary benchmark fixture title is unique"
+                    );
+                    break candidate.id();
+                }
+                assert!(
+                    Instant::now() < selection_deadline,
+                    "the exact ordinary benchmark fixture becomes selectable"
+                );
+                thread::sleep(Duration::from_millis(50));
+            };
+            let descriptor = engine
+                .describe_input(target, &bounded(OPERATION_WAIT))
+                .expect("the ordinary fixture exposes an input descriptor");
+            let pair = descriptor
+                .capability()
+                .pair(InputOperationKind::Pointer, InputDelivery::WindowMessage);
+            assert_eq!(pair.support(), CapabilitySupport::Unknown);
+            assert_eq!(
+                pair.evidence(),
+                Some(SubmissionEvidence::TargetQueueAdmission)
+            );
+            assert!(!pair.focus_required());
+            let session = engine
+                .open_session(
+                    target,
+                    &SessionRequest::new().requesting_input(
+                        InputOpenRequest::new()
+                            .with_requirement(InputRequirement::Required)
+                            .requiring(InputOperationKind::Pointer, InputDelivery::WindowMessage),
+                    ),
+                    &bounded(OPERATION_WAIT),
+                )
+                .expect("the ordinary fixture opens required exact-window pointer input");
+            Self {
+                _engine: engine,
+                fixture,
+                session,
+                target,
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for OrdinaryInputFlow {
+        fn drop(&mut self) {
+            let _closed = close(&self.session);
         }
     }
 
@@ -491,13 +659,14 @@ mod native {
                 concat!(
                     "usage: cargo bench --package mado-pilot --bench native-phase2 -- ",
                     "--workload-set <capture|transitions|input> ",
-                    "--fixture-executable <path> [--c-executable <path> ",
-                    "--cpp-executable <path>] --hardware <description> ",
-                    "--os-version <description> --source-revision <commit> ",
-                    "--source-tree <tree> --toolchain <versions> ",
-                    "--gpu-driver <description> --display-topology <description> ",
+                    "--fixture-executable <path> [--ordinary-fixture-executable <path> ",
+                    "--c-executable <path> --cpp-executable <path>] ",
+                    "--hardware <description> --os-version <description> ",
+                    "--source-revision <commit> --source-tree <tree> ",
+                    "--toolchain <versions> --gpu-driver <description> ",
+                    "--display-topology <description> ",
                     "--permissions-signing <description>\n",
-                    "(the C and C++ executables are required for the input set)",
+                    "(on Windows the ordinary fixture, C, and C++ executables are required for the input set)",
                 )
             )
         });
@@ -517,7 +686,7 @@ mod native {
             },
             &Profile {
                 fixture: fixture.to_owned(),
-                fixture_sha256: fixture_digest().to_string(),
+                fixture_sha256: fixture_digest(set).to_string(),
                 hardware: args.hardware.clone(),
                 os_version: args.os_version.clone(),
                 build_profile: format!(
@@ -623,7 +792,7 @@ mod native {
                     cpp_example_name(),
                     cpp_receipt_line(),
                 );
-                vec![
+                let mut workloads = vec![
                     measure(
                         "input_request_receipt",
                         "the complete two-event receipt corresponds to exactly one fixture key-down and key-up summary",
@@ -666,7 +835,19 @@ mod native {
                         || cpp.clone(),
                         language_common_flow,
                     ),
-                ]
+                ];
+                #[cfg(windows)]
+                workloads.insert(
+                    1,
+                    measure(
+                        "ordinary_window_queue_submission",
+                        "one ordinary exact-window pointer event crosses current-target pre/post fences, reports queue admission, and reaches only the selected fixture",
+                        plan,
+                        OrdinaryInputFlow::spawn,
+                        ordinary_window_queue_submission,
+                    ),
+                );
+                workloads
             }
         }
     }
@@ -927,6 +1108,42 @@ mod native {
         let receipt_ok = send_key_pair(&state.session);
         let elapsed = started.elapsed();
         let correct = receipt_ok && active.flow.fixture.next_key_pair();
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(windows)]
+    fn ordinary_window_queue_submission(flow: &OrdinaryInputFlow) -> Sample {
+        let point = Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5)
+            .expect("the ordinary benchmark point is normalized");
+        let sequence = InputSequence::new(vec![InputEvent::PointerMove(point)])
+            .expect("the ordinary benchmark sequence is bounded");
+        let started = Instant::now();
+        let receipt = flow
+            .session
+            .send_input(
+                &InputRequest::new(
+                    flow.target,
+                    sequence,
+                    DeliveryPlan::require(InputDelivery::WindowMessage),
+                )
+                .with_focus(FocusPolicy::Preserve),
+                &bounded(OPERATION_WAIT),
+            )
+            .expect("ordinary exact-window submission returns a receipt");
+        let elapsed = started.elapsed();
+        let correct = receipt.target() == flow.target
+            && receipt.outcome() == SequenceOutcome::Complete
+            && receipt.selected_route() == Some(InputDelivery::WindowMessage)
+            && receipt.address_scope() == Some(InputAddressScope::ExactWindow)
+            && receipt.submitted() == 1
+            && receipt.last_submitted() == Some(0)
+            && receipt.evidence() == Some(SubmissionEvidence::TargetQueueAdmission)
+            && receipt.attempts().len() == 1
+            && !receipt.used_fallback()
+            && !receipt.partial_native_effect()
+            && receipt.fault().is_none()
+            && receipt.cleanup() == mado_pilot::CleanupState::NotNeeded
+            && flow.fixture.next_pointer_move();
         Sample::unmapped(elapsed, correct)
     }
 
@@ -1234,9 +1451,9 @@ mod native {
             .expect("benchmark arguments are initialized")
     }
 
-    fn fixture_digest() -> ContentDigest {
+    fn fixture_digest(set: WorkloadSet) -> ContentDigest {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let paths = fixture_sources(manifest);
+        let paths = fixture_sources(manifest, set);
         let mut combined = Vec::new();
         for path in paths {
             combined.extend_from_slice(
@@ -1248,7 +1465,7 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn fixture_sources(manifest: &Path) -> Vec<PathBuf> {
+    fn fixture_sources(manifest: &Path, _set: WorkloadSet) -> Vec<PathBuf> {
         vec![
             manifest.join("../platform/macos/src/bin/mado-pilot-macos-input-fixture.rs"),
             manifest.join("../platform/macos/src/fixture_protocol.rs"),
@@ -1258,11 +1475,19 @@ mod native {
     }
 
     #[cfg(windows)]
-    fn fixture_sources(manifest: &Path) -> Vec<PathBuf> {
-        vec![
+    fn fixture_sources(manifest: &Path, set: WorkloadSet) -> Vec<PathBuf> {
+        let mut sources = vec![
             manifest.join("../platform/windows/src/bin/mado-pilot-windows-input-fixture.rs"),
             manifest.join("../platform/windows/src/fixture_protocol.rs"),
-        ]
+        ];
+        if set == WorkloadSet::Input {
+            sources.push(
+                manifest.join(
+                    "../platform/windows/src/bin/mado-pilot-windows-window-message-fixture.rs",
+                ),
+            );
+        }
+        sources
     }
 
     #[cfg(target_os = "macos")]
@@ -1378,6 +1603,17 @@ mod native {
             )
     }
 
+    #[cfg(windows)]
+    fn ordinary_ready_line_is_approved(line: &str, title: &str) -> bool {
+        line.trim()
+            == format!(
+                "fixture-ready class={} title={} capacity={}",
+                protocol::ORDINARY_CLASS_NAME,
+                title,
+                protocol::MAX_RECORDED_EVENTS,
+            )
+    }
+
     #[cfg(target_os = "macos")]
     fn profile_identity(set: WorkloadSet) -> (&'static str, &'static str) {
         let id = match set {
@@ -1398,9 +1634,11 @@ mod native {
             WorkloadSet::Transitions => "phase-2-native-transitions-x86_64-pc-windows-msvc",
             WorkloadSet::Input => "phase-2-native-input-x86_64-pc-windows-msvc",
         };
-        (
-            id,
-            "crates/platform/windows fixture Rust and protocol sources",
-        )
+        let fixture = if set == WorkloadSet::Input {
+            "crates/platform/windows dedicated and ordinary fixture Rust sources plus shared protocol"
+        } else {
+            "crates/platform/windows fixture Rust and protocol sources"
+        };
+        (id, fixture)
     }
 }
