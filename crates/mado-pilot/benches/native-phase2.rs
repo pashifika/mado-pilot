@@ -45,8 +45,8 @@ mod native {
 
     #[cfg(windows)]
     use mado_pilot::{
-        CapabilitySupport, CoordinateSpace, InputAddressScope, Point, SubmissionEvidence,
-        TargetKind,
+        CapabilitySupport, CoordinateSpace, InputAddressScope, InputReceipt, Point, PointerButton,
+        SubmissionEvidence, TargetKind,
     };
     #[cfg(target_os = "macos")]
     use mado_pilot_platform_macos::fixture_protocol as protocol;
@@ -369,19 +369,40 @@ mod native {
         }
 
         fn next_pointer_move(&self) -> bool {
+            self.next_target_observations(&["observation role=target family=pointer-move units=1"])
+        }
+
+        fn next_pointer_button_press(&self) -> bool {
+            self.next_target_observations(&[
+                "observation role=target family=pointer-move units=1",
+                "observation role=target family=pointer-move units=1",
+                "observation role=target family=button-down units=1",
+            ])
+        }
+
+        fn next_target_observations(&self, expected: &[&str]) -> bool {
             let deadline = Instant::now() + OPERATION_WAIT;
-            loop {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return false;
-                }
-                let Ok(line) = self.lines.recv_timeout(remaining) else {
-                    return false;
-                };
-                if line == "observation role=target family=pointer-move units=1" {
-                    return true;
+            for expected_line in expected {
+                loop {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return false;
+                    }
+                    let Ok(line) = self.lines.recv_timeout(remaining) else {
+                        return false;
+                    };
+                    if line.starts_with("observation role=target ") {
+                        if line != *expected_line {
+                            eprintln!(
+                                "ordinary fixture observation mismatch: expected `{expected_line}`, observed `{line}`"
+                            );
+                            return false;
+                        }
+                        break;
+                    }
                 }
             }
+            true
         }
     }
 
@@ -847,6 +868,17 @@ mod native {
                         ordinary_window_queue_submission,
                     ),
                 );
+                #[cfg(windows)]
+                workloads.insert(
+                    2,
+                    measure(
+                        "ordinary_window_button_submission",
+                        "one pointer move followed by a two-unit primary-button event crosses the production route and reaches only the selected ordinary fixture",
+                        plan,
+                        OrdinaryInputFlow::spawn,
+                        ordinary_window_button_submission,
+                    ),
+                );
                 workloads
             }
         }
@@ -1131,20 +1163,57 @@ mod native {
             )
             .expect("ordinary exact-window submission returns a receipt");
         let elapsed = started.elapsed();
-        let correct = receipt.target() == flow.target
+        let correct =
+            complete_ordinary_receipt(&receipt, flow.target, 1) && flow.fixture.next_pointer_move();
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(windows)]
+    fn ordinary_window_button_submission(flow: &OrdinaryInputFlow) -> Sample {
+        let point = Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5)
+            .expect("the ordinary benchmark point is normalized");
+        let sequence = InputSequence::new(vec![
+            InputEvent::PointerMove(point),
+            InputEvent::PointerPress(PointerButton::Primary),
+        ])
+        .expect("the ordinary button benchmark sequence is bounded");
+        let started = Instant::now();
+        let receipt = flow
+            .session
+            .send_input(
+                &InputRequest::new(
+                    flow.target,
+                    sequence,
+                    DeliveryPlan::require(InputDelivery::WindowMessage),
+                )
+                .with_focus(FocusPolicy::Preserve),
+                &bounded(OPERATION_WAIT),
+            )
+            .expect("ordinary button submission returns a receipt");
+        let elapsed = started.elapsed();
+        let correct = complete_ordinary_receipt(&receipt, flow.target, 2)
+            && flow.fixture.next_pointer_button_press();
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(windows)]
+    fn complete_ordinary_receipt(
+        receipt: &InputReceipt,
+        target: TargetId,
+        submitted: usize,
+    ) -> bool {
+        receipt.target() == target
             && receipt.outcome() == SequenceOutcome::Complete
             && receipt.selected_route() == Some(InputDelivery::WindowMessage)
             && receipt.address_scope() == Some(InputAddressScope::ExactWindow)
-            && receipt.submitted() == 1
-            && receipt.last_submitted() == Some(0)
+            && receipt.submitted() == submitted
+            && receipt.last_submitted() == submitted.checked_sub(1)
             && receipt.evidence() == Some(SubmissionEvidence::TargetQueueAdmission)
             && receipt.attempts().len() == 1
             && !receipt.used_fallback()
             && !receipt.partial_native_effect()
             && receipt.fault().is_none()
             && receipt.cleanup() == mado_pilot::CleanupState::NotNeeded
-            && flow.fixture.next_pointer_move();
-        Sample::unmapped(elapsed, correct)
     }
 
     fn rust_common_flow(flow: &Flow) -> Sample {

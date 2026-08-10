@@ -579,12 +579,18 @@ fn terminal_and_cleanup_rows() {
 
     let mut deadline = FixtureProcess::spawn("deadline-cleanup");
     let (target, controller) = open_ordinary(&deadline);
+    let started = Instant::now();
     let receipt = controller
         .execute(
             &pressed_delay_request(target),
             &timed(Duration::from_millis(20)),
         )
         .expect("mid-sequence deadline receipted");
+    assert_elapsed_budget(
+        "deadline-cleanup",
+        started.elapsed(),
+        Duration::from_millis(250),
+    );
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial, "{receipt:?}");
     assert_eq!(receipt.submitted(), 1);
     assert_eq!(receipt.fault(), Some(InputFault::DeadlineExceeded));
@@ -612,11 +618,17 @@ fn terminal_and_cleanup_rows() {
         "observation role=target family=key-down",
         Duration::from_secs(5),
     );
+    let cleanup_started = Instant::now();
     cancellation.cancel();
     let receipt = worker
         .join()
         .expect("cancellation worker joined")
         .expect("mid-sequence cancellation receipted");
+    assert_elapsed_budget(
+        "cancellation-cleanup",
+        cleanup_started.elapsed(),
+        Duration::from_millis(250),
+    );
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial, "{receipt:?}");
     assert!(
         receipt.submitted() == 1 || (receipt.submitted() == 0 && receipt.partial_native_effect()),
@@ -646,9 +658,10 @@ fn late_effect_row() {
         .execute(&key_pair_request(target), &timed(Duration::from_secs(2)))
         .expect("hung-target queue receipt");
     assert_complete_queue_receipt(&receipt, 2);
-    assert!(
-        started.elapsed() < Duration::from_millis(200),
-        "asynchronous receipt waited for the target procedure"
+    assert_elapsed_budget(
+        "hung-target-queue-admission",
+        started.elapsed(),
+        Duration::from_millis(10),
     );
     fixture.assert_no_line("observation role=target", Duration::from_millis(50));
     fixture.wait_for("control queue-block=complete", Duration::from_secs(2));
@@ -942,9 +955,15 @@ fn queue_pressure_rows() {
         capacity >= 1_000,
         "unexpectedly small Windows message queue"
     );
+    let started = Instant::now();
     let receipt = controller
         .execute(&one_key_request(target_id), &timed(Duration::from_secs(5)))
         .expect("queue refusal receipted");
+    assert_elapsed_budget(
+        "queue-full-refusal",
+        started.elapsed(),
+        Duration::from_millis(10),
+    );
     assert_eq!(
         receipt.outcome(),
         SequenceOutcome::Unexecuted,
@@ -976,9 +995,15 @@ fn queue_pressure_rows() {
         DeliveryPlan::require(InputDelivery::WindowMessage),
     )
     .with_focus(FocusPolicy::Preserve);
+    let started = Instant::now();
     let receipt = controller
         .execute(&request, &timed(Duration::from_secs(5)))
         .expect("partial queue refusal receipted");
+    assert_elapsed_budget(
+        "queue-partial-refusal",
+        started.elapsed(),
+        Duration::from_millis(10),
+    );
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial, "{receipt:?}");
     assert_eq!(receipt.submitted(), 1);
     assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
@@ -1067,6 +1092,18 @@ fn find_window(title: &str) -> HWND {
     // SAFETY: both strings are terminated and owned for this lookup.
     unsafe { FindWindowW(PCWSTR(class.as_ptr()), PCWSTR(title.as_ptr())) }
         .expect("found exact ordinary fixture window")
+}
+
+fn assert_elapsed_budget(row: &str, elapsed: Duration, ceiling: Duration) {
+    println!(
+        "performance row={row} elapsed_us={} ceiling_us={}",
+        elapsed.as_micros(),
+        ceiling.as_micros()
+    );
+    assert!(
+        elapsed <= ceiling,
+        "{row} took {elapsed:?}, exceeding its {ceiling:?} ceiling"
+    );
 }
 
 fn timed(timeout: Duration) -> OperationContext {
