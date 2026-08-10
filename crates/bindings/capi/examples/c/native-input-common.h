@@ -57,6 +57,12 @@ static int failures = 0;
 
 static const uint64_t diagnostic_activity_tag = UINT64_C(0x4d50494e505554a1);
 static const uint32_t diagnostic_capacity = UINT32_C(256);
+typedef enum madopilot_example_route_contract {
+    MADOPILOT_EXAMPLE_ROUTE_DEFAULT = 0,
+    MADOPILOT_EXAMPLE_ROUTE_ORDINARY_WINDOW = 1,
+    MADOPILOT_EXAMPLE_ROUTE_ACKNOWLEDGED_FIXTURE = 2
+} madopilot_example_route_contract_t;
+
 
 static int expect(int condition, const char* what)
 {
@@ -66,6 +72,47 @@ static int expect(int condition, const char* what)
     }
     return condition;
 }
+static int capability_matches_contract(
+    const madopilot_input_capability_t* capability,
+    madopilot_example_route_contract_t contract)
+{
+    if (contract == MADOPILOT_EXAMPLE_ROUTE_ORDINARY_WINDOW) {
+        return capability->support == MADOPILOT_CAPABILITY_UNKNOWN &&
+               capability->evidence ==
+                   MADOPILOT_SUBMISSION_EVIDENCE_TARGET_QUEUE_ADMISSION;
+    }
+    if (contract == MADOPILOT_EXAMPLE_ROUTE_ACKNOWLEDGED_FIXTURE) {
+        return capability->support == MADOPILOT_CAPABILITY_SUPPORTED &&
+               capability->evidence ==
+                   MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT;
+    }
+    return capability->support == MADOPILOT_CAPABILITY_SUPPORTED ||
+           (MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN &&
+            capability->support == MADOPILOT_CAPABILITY_UNKNOWN);
+}
+
+static int descriptor_matches_contract(
+    const madopilot_input_descriptor_t* descriptor,
+    madopilot_example_route_contract_t contract)
+{
+    const uint64_t required = MADOPILOT_EXAMPLE_REQUIRED_PAIRS;
+    if (contract == MADOPILOT_EXAMPLE_ROUTE_ORDINARY_WINDOW) {
+        return (descriptor->unknown_pairs & required) == required &&
+               (descriptor->known_pairs & required) == 0 &&
+               (descriptor->supported_pairs & required) == 0;
+    }
+    if (contract == MADOPILOT_EXAMPLE_ROUTE_ACKNOWLEDGED_FIXTURE) {
+        return (descriptor->known_pairs & required) == required &&
+               (descriptor->supported_pairs & required) == required &&
+               (descriptor->unknown_pairs & required) == 0;
+    }
+    return ((descriptor->supported_pairs |
+             (MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN
+                  ? descriptor->unknown_pairs
+                  : UINT64_C(0))) &
+            required) == required;
+}
+
 
 static int require_ok(const madopilot_api_t* api,
                       madopilot_status_t status,
@@ -384,6 +431,7 @@ static int probe_permissions(const madopilot_api_t* api,
 static int select_target(const madopilot_api_t* api,
                          madopilot_target_list_t* targets,
                          const char* title,
+                         madopilot_example_route_contract_t contract,
                          size_t* selected,
                          uint64_t* target_id,
                          madopilot_input_address_scope_t* address_scope,
@@ -443,10 +491,8 @@ static int select_target(const madopilot_api_t* api,
                         targets, *selected, operations[index / 3], routes[index % 3],
                         &capability) == MADOPILOT_STATUS_OK,
                     "target_list_input_capability") ||
-            !expect(capability.support == MADOPILOT_CAPABILITY_SUPPORTED ||
-                        (MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN &&
-                         capability.support == MADOPILOT_CAPABILITY_UNKNOWN),
-                    "the selected target can attempt every required input pair") ||
+            !expect(capability_matches_contract(&capability, contract),
+                    "the selected target exposes the expected input contract") ||
             !expect((capability.flags & MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE) != 0,
                     "every attemptable pair reports its strongest evidence")) {
             return 0;
@@ -553,7 +599,8 @@ static int deliver(const madopilot_api_t* api,
                   "the bounded native sequence completed with truthful route evidence");
 }
 
-static int run_native(const madopilot_api_t* api, const char* title, int check_only)
+static int run_native(const madopilot_api_t* api, const char* title, int check_only,
+                      madopilot_example_route_contract_t contract)
 {
     madopilot_source_t source;
     madopilot_engine_options_t engine_options;
@@ -562,6 +609,7 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     madopilot_open_request_t open_request;
     madopilot_input_open_request_t input_open_request;
     madopilot_input_descriptor_t input_descriptor;
+    madopilot_input_descriptor_t session_input_descriptor;
     madopilot_session_info_t session_info;
     madopilot_frame_info_t frame_info;
     madopilot_frame_stamp_t frame_stamp;
@@ -626,8 +674,8 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
     if (!bounded_operation(api, UINT64_C(5000000000), &operation) ||
         !require_ok(api, api->engine_discover(engine, &operation, &targets, &error),
                     &error, "engine_discover") ||
-        !select_target(api, targets, title, &selected, &target_id, &address_scope,
-                       &evidence)) {
+        !select_target(api, targets, title, contract, &selected, &target_id,
+                       &address_scope, &evidence)) {
         goto cleanup;
     }
 
@@ -637,14 +685,8 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
                     api->engine_input_descriptor(engine, targets, selected, &operation,
                                                  &input_descriptor, &error),
                     &error, "engine_input_descriptor") ||
-        !expect((input_descriptor.known_pairs &
-                 (input_descriptor.supported_pairs |
-                  (MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN
-                       ? input_descriptor.unknown_pairs
-                       : UINT64_C(0))) &
-                 MADOPILOT_EXAMPLE_REQUIRED_PAIRS) ==
-                    MADOPILOT_EXAMPLE_REQUIRED_PAIRS,
-                "the live descriptor retains every attemptable required pair")) {
+        !expect(descriptor_matches_contract(&input_descriptor, contract),
+                "the live descriptor retains the expected required pairs")) {
         goto cleanup;
     }
 
@@ -671,6 +713,16 @@ static int run_native(const madopilot_api_t* api, const char* title, int check_o
                 "session_describe") ||
         !expect(session_info.accepts_input == 1,
                 "the opened session established input")) {
+        goto cleanup;
+    }
+    memset(&session_input_descriptor, 0, sizeof(session_input_descriptor));
+    session_input_descriptor.struct_size =
+        (uint32_t)sizeof(session_input_descriptor);
+    if (!expect(api->session_input_descriptor(
+                    session, &session_input_descriptor) == MADOPILOT_STATUS_OK,
+                "session_input_descriptor") ||
+        !expect(descriptor_matches_contract(&session_input_descriptor, contract),
+                "the session descriptor retains the expected required pairs")) {
         goto cleanup;
     }
     printf("session: stream %llu target %llu input %d\n",
@@ -801,16 +853,27 @@ int main(int argc, char** argv)
     const char* title = NULL;
     int check_only = 0;
     int load_only = 0;
+    madopilot_example_route_contract_t contract =
+        MADOPILOT_EXAMPLE_ROUTE_DEFAULT;
 
     if (argc == 2 && strcmp(argv[1], "--load-check") == 0) {
         load_only = 1;
     } else if (argc == 2 && strcmp(argv[1], "--check") == 0) {
         check_only = 1;
+    } else if (argc == 3 && strcmp(argv[1], "--ordinary") == 0 &&
+               argv[2][0] != '\0') {
+        contract = MADOPILOT_EXAMPLE_ROUTE_ORDINARY_WINDOW;
+        title = argv[2];
+    } else if (argc == 3 && strcmp(argv[1], "--acknowledged") == 0 &&
+               argv[2][0] != '\0') {
+        contract = MADOPILOT_EXAMPLE_ROUTE_ACKNOWLEDGED_FIXTURE;
+        title = argv[2];
     } else if (argc == 2 && argv[1][0] != '\0') {
         title = argv[1];
     } else {
         fprintf(stderr,
-                "usage: %s --load-check | --check | \"<full fixture window title>\"\n",
+                "usage: %s --load-check | --check | [--ordinary | "
+                "--acknowledged] \"<full fixture window title>\"\n",
                 argv[0]);
         return 2;
     }
@@ -844,12 +907,17 @@ int main(int argc, char** argv)
     printf("%s: abi %u.%u table %u\n", MADOPILOT_EXAMPLE_NAME,
            (unsigned)api->abi_major, (unsigned)api->abi_minor,
            (unsigned)api->struct_size);
+    if (contract == MADOPILOT_EXAMPLE_ROUTE_ORDINARY_WINDOW) {
+        printf("contract: ordinary\n");
+    } else if (contract == MADOPILOT_EXAMPLE_ROUTE_ACKNOWLEDGED_FIXTURE) {
+        printf("contract: acknowledged\n");
+    }
     if (load_only) {
         report_peak_resident_bytes();
         printf("%s complete (load check)\n", MADOPILOT_EXAMPLE_NAME);
         return 0;
     }
-    if (!run_native(api, title, check_only)) {
+    if (!run_native(api, title, check_only, contract)) {
         return 1;
     }
     report_peak_resident_bytes();

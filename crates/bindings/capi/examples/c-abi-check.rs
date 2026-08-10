@@ -70,27 +70,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     check_layout(&paths)?;
     run_c_example(&paths, &label)?;
     let run_windows_native_fixture = windows_native_fixture_requested();
-    let native_fixture = if run_windows_native_fixture {
-        Some(WindowsNativeFixture::spawn(&paths)?)
+    let native_fixtures = if run_windows_native_fixture {
+        Some([
+            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Ordinary)?,
+            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Acknowledged)?,
+        ])
     } else {
         None
     };
-    run_native_c_example(
-        &paths,
-        native_fixture.as_ref().map(WindowsNativeFixture::title),
-    )?;
-    drop(native_fixture);
+    match &native_fixtures {
+        Some([ordinary, acknowledged]) => run_native_c_example(
+            &paths,
+            &[
+                (
+                    WindowsFixtureKind::Ordinary.contract_argument(),
+                    ordinary.title(),
+                ),
+                (
+                    WindowsFixtureKind::Acknowledged.contract_argument(),
+                    acknowledged.title(),
+                ),
+            ],
+        )?,
+        None => run_native_c_example(&paths, &[])?,
+    }
+    drop(native_fixtures);
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
-    let native_fixture = if run_windows_native_fixture {
-        Some(WindowsNativeFixture::spawn(&paths)?)
+    let native_fixtures = if run_windows_native_fixture {
+        Some([
+            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Ordinary)?,
+            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Acknowledged)?,
+        ])
     } else {
         None
     };
-    run_native_cpp_example(
-        &paths,
-        native_fixture.as_ref().map(WindowsNativeFixture::title),
-    )?;
+    match &native_fixtures {
+        Some([ordinary, acknowledged]) => run_native_cpp_example(
+            &paths,
+            &[
+                (
+                    WindowsFixtureKind::Ordinary.contract_argument(),
+                    ordinary.title(),
+                ),
+                (
+                    WindowsFixtureKind::Acknowledged.contract_argument(),
+                    acknowledged.title(),
+                ),
+            ],
+        )?,
+        None => run_native_cpp_example(&paths, &[])?,
+    }
     check_frozen_layout(&paths)?;
     check_frozen_headers(&paths)?;
     check_cmake_consumer(&paths)?;
@@ -232,7 +262,29 @@ impl Paths {
     }
 }
 
-/// A dedicated Windows fixture kept alive across both native language examples.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsFixtureKind {
+    Ordinary,
+    Acknowledged,
+}
+
+impl WindowsFixtureKind {
+    const fn program(self) -> &'static str {
+        match self {
+            Self::Ordinary => "mado-pilot-windows-window-message-fixture",
+            Self::Acknowledged => "mado-pilot-windows-input-fixture",
+        }
+    }
+
+    const fn contract_argument(self) -> &'static str {
+        match self {
+            Self::Ordinary => "--ordinary",
+            Self::Acknowledged => "--acknowledged",
+        }
+    }
+}
+
+/// One repository-owned Windows fixture kept alive for a native language example.
 struct WindowsNativeFixture {
     #[cfg(windows)]
     child: std::process::Child,
@@ -240,10 +292,10 @@ struct WindowsNativeFixture {
 }
 
 impl WindowsNativeFixture {
-    fn spawn(paths: &Paths) -> Result<Self, Box<dyn std::error::Error>> {
+    fn spawn(paths: &Paths, kind: WindowsFixtureKind) -> Result<Self, Box<dyn std::error::Error>> {
         #[cfg(not(windows))]
         {
-            let _ = paths;
+            let _ = (paths, kind);
             Err("`--windows-native-fixture` requires a Windows host".into())
         }
 
@@ -252,22 +304,25 @@ impl WindowsNativeFixture {
             use std::io::{BufRead, BufReader};
             use std::process::Stdio;
 
-            let program = paths.artifacts.join(format!(
-                "mado-pilot-windows-input-fixture{}",
-                env::consts::EXE_SUFFIX
-            ));
+            let program =
+                paths
+                    .artifacts
+                    .join(format!("{}{}", kind.program(), env::consts::EXE_SUFFIX));
             if !program.is_file() {
                 return Err(format!(
                     "{} does not exist.\nBuild it first:\n    cargo build --locked \
-                     --package mado-pilot-platform-windows --bin \
-                     mado-pilot-windows-input-fixture",
-                    program.display()
+                     --package mado-pilot-platform-windows --bin {}",
+                    program.display(),
+                    kind.program()
                 )
                 .into());
             }
 
-            let child = Command::new(&program)
-                .arg("--animate-on-input")
+            let mut command = Command::new(&program);
+            if kind == WindowsFixtureKind::Acknowledged {
+                command.arg("--animate-on-input");
+            }
+            let child = command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
@@ -294,7 +349,10 @@ impl WindowsNativeFixture {
                 return Err("the Windows fixture title did not identify its process".into());
             }
             fixture.title = title.to_owned();
-            println!("windows fixture: ready for exact-title native checks");
+            println!(
+                "windows {:?} fixture: ready for exact-title native checks",
+                kind
+            );
             Ok(fixture)
         }
     }
@@ -744,11 +802,11 @@ fn run_c_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::E
 
 /// Compiles, links, and runs the current release target's native C probe.
 ///
-/// Without `target`, `--check` stops before discovery and sends no input. A
-/// target is the exact title of the dedicated fixture this process owns.
+/// With no targets, `--check` stops before discovery and sends no input. Each
+/// target is one exact repository fixture title and its required contract.
 fn run_native_c_example(
     paths: &Paths,
-    target: Option<&str>,
+    targets: &[(&str, &str)],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = if cfg!(target_os = "windows") {
         "windows-native-input"
@@ -762,17 +820,32 @@ fn run_native_c_example(
         .join("crates/bindings/capi/examples/c")
         .join(format!("{name}.c"));
     let program = compile(paths, Language::C, name, &source, true)?;
-    let argument = target.unwrap_or("--check");
-    let output = run(paths, &program, &[argument])?;
+    if targets.is_empty() {
+        check_native_program(paths, &program, name, "C", None)?;
+    } else {
+        for &target in targets {
+            check_native_program(paths, &program, name, "C", Some(target))?;
+        }
+    }
+    Ok(())
+}
+
+fn check_native_program(
+    paths: &Paths,
+    program: &Path,
+    name: &str,
+    language: &str,
+    target: Option<(&str, &str)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let output = match target {
+        Some((contract, title)) => run(paths, program, &[contract, title])?,
+        None => run(paths, program, &["--check"])?,
+    };
     let stdout = String::from_utf8(output.stdout.clone())?;
     print!("{stdout}");
-    report_output("native C example", &output);
+    report_output(&format!("native {language} example"), &output);
 
-    let mode = if target.is_some() {
-        "fixture-backed flow"
-    } else {
-        "non-prompting check"
-    };
+    let mode = target.map_or("non-prompting check", |_| "fixture-backed flow");
     if !output.status.success() {
         return Err(format!("the {name} {mode} reported a failure").into());
     }
@@ -784,7 +857,15 @@ fn run_native_c_example(
     if !stdout.contains(&expected) {
         return Err(format!("the {name} {mode} never reached the end").into());
     }
-
+    if let Some((contract, _)) = target {
+        let contract = contract.trim_start_matches("--");
+        if !stdout.contains(&format!("contract: {contract}")) {
+            return Err(format!(
+                "the {name} {mode} did not verify the requested {contract} contract"
+            )
+            .into());
+        }
+    }
     Ok(())
 }
 
@@ -807,10 +888,10 @@ fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error:
     check_example("C++", &output)
 }
 
-/// Compiles, links, and runs the native flow through the C++ wrapper.
+/// Compiles, links, and runs the native flow through the C++ RAII wrapper.
 fn run_native_cpp_example(
     paths: &Paths,
-    target: Option<&str>,
+    targets: &[(&str, &str)],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = if cfg!(target_os = "windows") {
         "windows-native-input-cpp"
@@ -823,29 +904,13 @@ fn run_native_cpp_example(
         .root
         .join("crates/bindings/capi/examples/cpp/native-input.cpp");
     let program = compile(paths, Language::Cpp, name, &source, true)?;
-    let argument = target.unwrap_or("--check");
-    let output = run(paths, &program, &[argument])?;
-    let stdout = String::from_utf8(output.stdout.clone())?;
-    print!("{stdout}");
-    report_output("native C++ example", &output);
-
-    let mode = if target.is_some() {
-        "fixture-backed flow"
+    if targets.is_empty() {
+        check_native_program(paths, &program, name, "C++", None)?;
     } else {
-        "non-prompting check"
-    };
-    if !output.status.success() {
-        return Err(format!("the {name} {mode} reported a failure").into());
+        for &target in targets {
+            check_native_program(paths, &program, name, "C++", Some(target))?;
+        }
     }
-    let expected = if target.is_some() {
-        format!("{name} complete")
-    } else {
-        format!("{name} complete (non-prompting check)")
-    };
-    if !stdout.contains(&expected) {
-        return Err(format!("the {name} {mode} never reached the end").into());
-    }
-
     Ok(())
 }
 

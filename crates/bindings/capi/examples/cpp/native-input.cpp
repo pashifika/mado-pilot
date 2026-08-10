@@ -71,6 +71,62 @@ madopilot::Source native_source()
 #endif
 
 int failures = 0;
+enum class RouteContract {
+    platform_default,
+    ordinary_window,
+    acknowledged_fixture,
+};
+
+bool capability_matches_contract(const madopilot::InputCapability& capability,
+                                 RouteContract contract)
+{
+    if (contract == RouteContract::ordinary_window) {
+        return capability.support == MADOPILOT_CAPABILITY_UNKNOWN &&
+               capability.evidence ==
+                   MADOPILOT_SUBMISSION_EVIDENCE_TARGET_QUEUE_ADMISSION;
+    }
+    if (contract == RouteContract::acknowledged_fixture) {
+        return capability.support == MADOPILOT_CAPABILITY_SUPPORTED &&
+               capability.evidence ==
+                   MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT;
+    }
+    return capability.support == MADOPILOT_CAPABILITY_SUPPORTED ||
+           (ALLOWS_UNKNOWN &&
+            capability.support == MADOPILOT_CAPABILITY_UNKNOWN);
+}
+
+bool descriptor_matches_contract(const madopilot::InputDescriptor& descriptor,
+                                 RouteContract contract)
+{
+    if (contract == RouteContract::ordinary_window) {
+        return (descriptor.unknown_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS &&
+               (descriptor.known_pairs & REQUIRED_PAIRS) == 0 &&
+               (descriptor.supported_pairs & REQUIRED_PAIRS) == 0;
+    }
+    if (contract == RouteContract::acknowledged_fixture) {
+        return (descriptor.known_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS &&
+               (descriptor.supported_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS &&
+               (descriptor.unknown_pairs & REQUIRED_PAIRS) == 0;
+    }
+    const auto attemptable_pairs =
+        descriptor.supported_pairs |
+        (ALLOWS_UNKNOWN ? descriptor.unknown_pairs : UINT64_C(0));
+    return (attemptable_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS;
+}
+
+const char* route_contract_name(RouteContract contract)
+{
+    switch (contract) {
+    case RouteContract::ordinary_window:
+        return "ordinary";
+    case RouteContract::acknowledged_fixture:
+        return "acknowledged";
+    case RouteContract::platform_default:
+        return "platform-default";
+    }
+    return "invalid";
+}
+
 constexpr std::uint64_t DIAGNOSTIC_ACTIVITY_TAG = UINT64_C(0x4d50494e505554a1);
 constexpr std::uint32_t DIAGNOSTIC_CAPACITY = UINT32_C(256);
 std::uint64_t peak_resident_bytes()
@@ -346,7 +402,8 @@ bool probe_permissions(madopilot::Engine& engine,
 }
 
 bool select_target(madopilot::TargetList& targets, std::string_view title,
-                   std::size_t& selected, std::uint64_t& target_id,
+                   RouteContract contract, std::size_t& selected,
+                   std::uint64_t& target_id,
                    madopilot::SubmissionEvidence& evidence)
 {
     const auto count = targets.count();
@@ -396,12 +453,9 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
             return report_failure("TargetList::input_capability",
                                   capability.error());
         }
-        const bool attemptable =
-            capability.value().support == MADOPILOT_CAPABILITY_SUPPORTED ||
-            (ALLOWS_UNKNOWN &&
-             capability.value().support == MADOPILOT_CAPABILITY_UNKNOWN);
-        if (!expect(capability.value().target == target_id && attemptable,
-                    "the selected target can attempt the required input route") ||
+        if (!expect(capability.value().target == target_id &&
+                        capability_matches_contract(capability.value(), contract),
+                    "the selected target exposes the expected input contract") ||
             !expect(capability.value().address_scope == ADDRESS_SCOPE &&
                         capability.value().evidence.has_value(),
                     "the route reports its scope and strongest evidence")) {
@@ -428,7 +482,8 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
 }
 
 bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
-                      madopilot::SubmissionEvidence evidence)
+                      madopilot::SubmissionEvidence evidence,
+                      RouteContract contract)
 {
     const auto session_info = session.describe();
     if (!session_info) {
@@ -447,11 +502,8 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
     if (!descriptor) {
         return report_failure("Session::input_descriptor", descriptor.error());
     }
-    const auto attemptable_pairs =
-        descriptor.value().supported_pairs |
-        (ALLOWS_UNKNOWN ? descriptor.value().unknown_pairs : UINT64_C(0));
-    if (!expect((attemptable_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS,
-                "the session retains every attemptable required input pair")) {
+    if (!expect(descriptor_matches_contract(descriptor.value(), contract),
+                "the session retains the expected required input pairs")) {
         return false;
     }
 
@@ -559,7 +611,7 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
 }
 
 bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
-                std::string_view title, bool check_only)
+                std::string_view title, bool check_only, RouteContract contract)
 {
     const auto capabilities = engine.capabilities();
     if (!capabilities) {
@@ -595,7 +647,7 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     std::uint64_t target_id = 0;
     madopilot::SubmissionEvidence evidence =
         MADOPILOT_SUBMISSION_EVIDENCE_NONE;
-    if (!select_target(targets, title, selected, target_id, evidence)) {
+    if (!select_target(targets, title, contract, selected, target_id, evidence)) {
         return false;
     }
 
@@ -603,11 +655,8 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     if (!live_descriptor) {
         return report_failure("Engine::input_descriptor", live_descriptor.error());
     }
-    const auto attemptable_pairs =
-        live_descriptor.value().supported_pairs |
-        (ALLOWS_UNKNOWN ? live_descriptor.value().unknown_pairs : UINT64_C(0));
-    if (!expect((attemptable_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS,
-                "the live descriptor retains every attemptable required pair")) {
+    if (!expect(descriptor_matches_contract(live_descriptor.value(), contract),
+                "the live descriptor retains the expected required input pairs")) {
         return false;
     }
 
@@ -625,7 +674,7 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     targets.reset();
     madopilot::Session session = opened.take();
 
-    const bool exercised = exercise_session(api, session, evidence);
+    const bool exercised = exercise_session(api, session, evidence, contract);
     bool closed = false;
     if (bounded_operation(api, UINT64_C(2000000000), operation)) {
         const auto close = session.close(operation);
@@ -645,15 +694,26 @@ int main(int argc, char** argv)
     bool check_only = false;
     bool load_only = false;
     std::string_view title;
+    RouteContract contract = RouteContract::platform_default;
     if (argc == 2 && std::string_view(argv[1]) == "--load-check") {
         load_only = true;
     } else if (argc == 2 && std::string_view(argv[1]) == "--check") {
         check_only = true;
+    } else if (argc == 3 && std::string_view(argv[1]) == "--ordinary" &&
+               argv[2][0] != '\0') {
+        contract = RouteContract::ordinary_window;
+        title = argv[2];
+    } else if (argc == 3 &&
+               std::string_view(argv[1]) == "--acknowledged" &&
+               argv[2][0] != '\0') {
+        contract = RouteContract::acknowledged_fixture;
+        title = argv[2];
     } else if (argc == 2 && argv[1][0] != '\0') {
         title = argv[1];
     } else {
         std::fprintf(stderr,
-                     "usage: %s --load-check | --check | \"<full fixture window title>\"\n",
+                     "usage: %s --load-check | --check | [--ordinary | "
+                     "--acknowledged] \"<full fixture window title>\"\n",
                      argv[0]);
         return 2;
     }
@@ -678,6 +738,9 @@ int main(int argc, char** argv)
                 static_cast<unsigned>(build.value().abi_major),
                 static_cast<unsigned>(build.value().abi_minor),
                 static_cast<unsigned>(build.value().table_size));
+    if (contract != RouteContract::platform_default) {
+        std::printf("contract: %s\n", route_contract_name(contract));
+    }
     if (load_only) {
         report_peak_resident_bytes();
         std::printf("%s complete (load check)\n", EXAMPLE_NAME);
@@ -710,7 +773,7 @@ int main(int argc, char** argv)
     }
     madopilot::DiagnosticReader diagnostics = std::move(*optional_reader);
 
-    const bool worked = run_native(api, engine, title, check_only);
+    const bool worked = run_native(api, engine, title, check_only, contract);
     engine.reset();
     const bool diagnostics_drained = drain_diagnostics(diagnostics, !check_only);
     if (!worked || !diagnostics_drained || failures != 0) {
