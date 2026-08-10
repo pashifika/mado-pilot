@@ -1,12 +1,12 @@
-# Phase 2 native capture, measured on x86_64-pc-windows-msvc at
-# implementation tree f02c3e9bc3c08d6faca4f032e6c819376ce5e0db, based on source
-# commit 5c7c3b5434c4e5279e9dfc23568de5757914b641.
+# Phase 2 native capture, remeasured on x86_64-pc-windows-msvc at
+# implementation tree 2483269ee071d14adfe14f829d318a4c59337f85, source commit
+# 6873d4b05a13fd15cb3ffd961892b1153f606d78.
 #
-# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0026 accepts
-# this revision-bound Windows profile. Measurement values are the harness
-# output. Latency ceilings are three times measured p95, rounded up; memory,
-# stale-work, and mapped-byte ceilings are stated below. These are target- and
-# fixture-specific regression ceilings, not user-facing latency promises.
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0026 fixes this
+# target's regression ceilings from the accepted baseline. These measurement
+# values are the post-review rerun; individual latency rationales preserve the
+# baseline derivation. Memory, stale-work, and mapped-byte ceilings remain
+# unchanged. They are regression ceilings, not user-facing latency promises.
 
 format_version = 1
 
@@ -29,7 +29,7 @@ warmup_iterations = 20
 sample_count = 200
 correctness_oracle = "every retained sample checks frame identity/content, transition state, receipt/event sequence, or complete common-flow outcome as its measurement states"
 queue_policy = "session latest-wins queue depth 1; adapter finite retained-storage limit"
-notes = "source base commit 5c7c3b5434c4e5279e9dfc23568de5757914b641, measured implementation tree f02c3e9bc3c08d6faca4f032e6c819376ce5e0db; toolchain rustc 1.97.1 (8bab26f4f 2026-07-14); MSVC 19.44.35228; CMake 3.29.5; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080 driver 32.0.15.9186 (2026-01-20); display topology two 2560x1440 logical displays side by side, primary at (0,0), secondary at (-2560,0), GPU reports 3840x2160 at 120 Hz; permissions/signing Windows exposes no separate capture/input permission, unelevated interactive local process, unsigned candidate fixture; fixture path deliberately omitted"
+notes = "source commit 6873d4b05a13fd15cb3ffd961892b1153f606d78, tree 2483269ee071d14adfe14f829d318a4c59337f85; toolchain rustc 1.97.1; MSVC 19.44.35228; CMake 3.29.5; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080 driver 32.0.15.9186 (2026-01-20); display topology two 2560x1440 logical displays side by side; primary at (0,0), secondary at (-2560,0); GPU reports 3840x2160 at 120 Hz; permissions/signing Windows exposes no separate capture/input permission; unelevated interactive local process; unsigned candidate fixture and MSVC C/C++ executables; fixture path deliberately omitted; ADR 0026 ceilings are compared without recalibration"
 
 [[budget]]
 measure = "result_correctness"
@@ -49,19 +49,19 @@ kind = "absolute"
 unit = "bytes"
 direction = "at_most"
 limit = 16777216
-rationale = "16 MiB is more than three times the 4684259-byte measured peak and rejects repeated full-frame accumulation"
+rationale = "16 MiB is more than three times the current 4684907-byte measured peak and rejects repeated full-frame accumulation"
 
 [[measurement]]
 workload = "stimulus_to_frame"
 correctness_oracle = "one acknowledged deterministic fixture change produces a newer stamped frame carrying the opposite declared fill; intermediate publications are discarded and counted"
 result_correctness = 0
-latency_p50_ms = 20.725100
-latency_p95_ms = 31.875100
-iteration_span_ms = 21.972479
+latency_p50_ms = 21.633200
+latency_p95_ms = 31.546700
+iteration_span_ms = 23.026819
 mapped_bytes_per_result = 2322488
 stale_work_ratio = 0.000000000
-peak_allocated_bytes = 4684259
-steady_allocated_bytes = 2361225
+peak_allocated_bytes = 4684907
+steady_allocated_bytes = 2361873
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -92,13 +92,13 @@ allocated_growth_bytes = 0
 workload = "latest_acquisition"
 correctness_oracle = "after an exact stimulated publication advances the producer, latest returns a same-stream frame no older than that publication and reports the observed sequence gap"
 result_correctness = 0
-latency_p50_ms = 0.001500
-latency_p95_ms = 0.002700
-iteration_span_ms = 21.838474
+latency_p50_ms = 0.001400
+latency_p95_ms = 0.002500
+iteration_span_ms = 22.939020
 mapped_bytes_per_result = 0
 stale_work_ratio = 0.000000000
-peak_allocated_bytes = 4678262
-steady_allocated_bytes = 2355228
+peak_allocated_bytes = 4678912
+steady_allocated_bytes = 2355878
 allocated_growth_bytes = 0
 
   [[measurement.budget]]
@@ -121,12 +121,12 @@ allocated_growth_bytes = 0
 workload = "cpu_map_bgra8"
 correctness_oracle = "the newer frame maps once to exact-size BGRA8 bytes carrying one declared fixture fill"
 result_correctness = 0
-latency_p50_ms = 0.968700
-latency_p95_ms = 2.140800
-iteration_span_ms = 21.168974
+latency_p50_ms = 1.047600
+latency_p95_ms = 2.240700
+iteration_span_ms = 23.056472
 mapped_bytes_per_result = 2322488
-peak_allocated_bytes = 4678174
-steady_allocated_bytes = 2355182
+peak_allocated_bytes = 4678822
+steady_allocated_bytes = 2355830
 allocated_growth_bytes = 0
 
   [[measurement.budget]]

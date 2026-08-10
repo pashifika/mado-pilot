@@ -436,7 +436,7 @@ keep the capture mapping exact at 3,072 bytes.
 On the Apple M1 Pro, p95 `Normal` input diagnostics add `0.000042 ms` over
 `Off`, `Debug` adds `0.000125 ms`, debug capture/mapping adds `0.000126 ms`,
 and debug close/drain adds `0.000209 ms`. On the Windows Core i7-12700KF,
-the corresponding differences are `0.000200 ms`, `0.000300 ms`,
+the corresponding post-review differences are `0.000200 ms`, `0.000200 ms`,
 `0.000200 ms`, and `0.000300 ms`. Four submissions against capacity four
 retain all four normal terminal records, report all eight discarded debug
 records, and still return four complete receipts on both targets.
@@ -464,16 +464,18 @@ source. The macOS input requalification retained 300 correct samples with zero
 allocation growth after replacing stale six-event/two-key-pair expectations and
 giving every public-language sample an independent visual precondition.
 
-The Windows run is bound to implementation tree
-`f02c3e9bc3c08d6faca4f032e6c819376ce5e0db` on the named Core i7-12700KF /
-RTX 4080 host. Its retained 600 capture, 80 transition, and 300 input/public-
-language samples all satisfy their exact oracles and report zero allocation
-growth. Capture p95 ranges from `0.002700 ms` for latest acquisition to
-`31.875100 ms` for stimulus-to-frame. Transition p95 ranges from `2.436000 ms`
-for close to `110.547200 ms` for first-frame open. Input p95 is `0.442400 ms`
-for a Rust receipt, `115.182200 ms` for the Rust common flow, about `15 ms` for
-fresh C/C++ process loading, and below `280 ms` for either public-language
-common flow.
+The post-review Windows run is bound to source commit
+`6873d4b05a13fd15cb3ffd961892b1153f606d78`, implementation tree
+`2483269ee071d14adfe14f829d318a4c59337f85`, on the named Core i7-12700KF /
+RTX 4080 host. Its retained 600 capture, 80 transition, and 300
+input/public-language samples all satisfy their exact oracles, report zero
+allocation growth, and pass the unchanged ADR 0026 ceilings. Capture p95 ranges
+from `0.002500 ms` for latest acquisition to `31.546700 ms` for
+stimulus-to-frame. Transition p95 ranges from `2.530000 ms` for close to
+`112.344000 ms` for first-frame open. Input p95 is `0.366000 ms` for a Rust
+receipt, `116.048000 ms` for the Rust common flow, `15.717900 ms` for C process
+loading, `15.343200 ms` for C++ process loading, and below `285 ms` for either
+public-language common flow.
 
 The first Windows transition and language runs were rejected rather than
 recorded. They proved benchmark apparatus defects: the resize fixture stopped

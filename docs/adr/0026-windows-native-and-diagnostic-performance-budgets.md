@@ -23,8 +23,8 @@ and no budgets. An interactive x86_64 Windows host is now available:
 - unelevated interactive local process, with unsigned candidate fixture and
   MSVC C/C++ executables; Windows exposes no separate capture/input permission.
 
-The run used Rust 1.97.1, MSVC 19.44.35228, CMake 3.29.5, and OpenCV 4.14.0. It
-is bound to implementation tree
+The baseline run that fixed the ceilings used Rust 1.97.1, MSVC 19.44.35228,
+CMake 3.29.5, and OpenCV 4.14.0. It was bound to implementation tree
 `f02c3e9bc3c08d6faca4f032e6c819376ce5e0db`, based on candidate commit
 `5c7c3b5434c4e5279e9dfc23568de5757914b641`.
 
@@ -65,7 +65,8 @@ passed with the repaired apparatus.
 ## Decision
 
 The four measured Windows profiles under [`../benchmarks/`](../benchmarks/) are
-normative regression profiles:
+normative regression profiles. Their current measurements record the latest
+accepted requalification; the ceilings retain the baseline decision below:
 
 - [`phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc.toml`](../benchmarks/phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc.toml);
 - [`phase-2-native-capture-x86_64-pc-windows-msvc.toml`](../benchmarks/phase-2-native-capture-x86_64-pc-windows-msvc.toml);
@@ -73,10 +74,11 @@ normative regression profiles:
 - [`phase-2-native-input-x86_64-pc-windows-msvc.toml`](../benchmarks/phase-2-native-input-x86_64-pc-windows-msvc.toml).
 
 Every workload requires zero oracle failures and allocation growth at most 4,096
-bytes. Every measured workload had zero failures and zero growth. Latency
-ceilings are three times measured p95, rounded up:
+bytes. Every baseline workload had zero failures and zero growth. Latency
+ceilings were fixed at three times the accepted baseline p95, rounded up.
+Subsequent reruns compare against these ceilings without recalibrating them:
 
-| Diagnostic workload | Measured p95 (ms) | Ceiling (ms) |
+| Diagnostic workload | Accepted baseline p95 (ms) | Ceiling (ms) |
 |---|---:|---:|
 | input, diagnostics off | 0.000400 | 0.0012 |
 | input, normal | 0.000600 | 0.0018 |
@@ -89,7 +91,7 @@ ceilings are three times measured p95, rounded up:
 | close/drain, normal | 0.000500 | 0.0015 |
 | close/drain, debug | 0.000400 | 0.0012 |
 
-| Native workload | Measured p95 (ms) | Ceiling (ms) |
+| Native workload | Accepted baseline p95 (ms) | Ceiling (ms) |
 |---|---:|---:|
 | stimulus to frame | 31.875100 | 100 |
 | latest acquisition | 0.002700 | 0.009 |
@@ -106,10 +108,11 @@ ceilings are three times measured p95, rounded up:
 | C++ common flow | 279.279500 | 900 |
 
 The diagnostic profile keeps the 32 KiB structural fixture ceiling selected by
-ADR 0024; the 15,651-byte measured peak leaves queue and per-case headroom.
-Native capture and transitions cap live Rust heap at 16 MiB; native input caps
-it at 8 MiB. These native limits exceed three times each profile's largest
-measured peak without permitting repeated full-frame accumulation.
+ADR 0024; the baseline 15,651-byte peak and post-review 16,787-byte peak both
+leave queue and per-case headroom. Native capture and transitions cap live Rust
+heap at 16 MiB; native input caps it at 8 MiB. These limits exceed three times
+both the baseline and post-review profile peaks without permitting repeated
+full-frame accumulation.
 
 Mapped-byte ceilings are exact: 2,322,488 bytes for one 938x619 BGRA8 frame and
 3,860,768 bytes for the transition profile's one 1208x799 resized frame. Capture
@@ -117,9 +120,63 @@ measured no stale work and permits at most a 0.02 ratio. Deliberate retained
 pressure measured 0.5 and is capped at 0.75. C and C++ process-load resident
 high-water marks are capped at 48 MiB; their common flows are capped at 192 MiB.
 
-These numbers are regression ceilings for this target, source tree, fixture
-hash, and host class. They are not application-facing latency or memory
-promises.
+The baseline that fixed these numbers was specific to this target, source tree,
+fixture hash, and host class. A later source revision using the same fixture and
+host class retains the ceilings only after a complete requalification passes.
+The ceilings are not application-facing latency or memory promises.
+
+## Post-review requalification
+
+Review commit `c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848` changed
+diagnostic bookkeeping, runtime session observation, input evidence, and C
+ABI/C++ representations. All four Windows profiles were therefore rerun on
+source commit `6873d4b05a13fd15cb3ffd961892b1153f606d78`, tree
+`2483269ee071d14adfe14f829d318a4c59337f85`, using the same named host and
+unchanged fixture digests:
+
+- diagnostic fixture
+  `42e3133b63bcdc2f905eead2b52a4ac9ba97571da4580ef2c90feb9520398891`;
+- native Windows fixture
+  `f5acaea836b6eb5257fc7252fdaa2b4d8d6f2d5c0418b6109d956d2b3cd0a279`.
+
+The rerun retained 2,980 samples. Every sample satisfied its exact oracle, every
+workload reported zero allocation growth, exact mapped-byte and stale-work
+predicates held, and every unchanged ceiling passed:
+
+| Diagnostic workload | Post-review p95 (ms) | Ceiling (ms) | Result |
+|---|---:|---:|---:|
+| input, diagnostics off | 0.000400 | 0.0012 | PASS |
+| input, normal | 0.000600 | 0.0018 | PASS |
+| input, debug | 0.000600 | 0.0018 | PASS |
+| input, four-slot overflow | 0.002300 | 0.0072 | PASS |
+| capture/map, diagnostics off | 0.000100 | 0.0003 | PASS |
+| capture/map, normal | 0.000200 | 0.0006 | PASS |
+| capture/map, debug | 0.000300 | 0.0009 | PASS |
+| close/drain, diagnostics off | 0.000100 | 0.0003 | PASS |
+| close/drain, normal | 0.000400 | 0.0015 | PASS |
+| close/drain, debug | 0.000400 | 0.0012 | PASS |
+
+| Native workload | Post-review p95 (ms) | Ceiling (ms) | Result |
+|---|---:|---:|---:|
+| stimulus to frame | 31.546700 | 100 | PASS |
+| latest acquisition | 0.002500 | 0.009 | PASS |
+| CPU map BGRA8 | 2.240700 | 8 | PASS |
+| resize recreation | 83.693100 | 300 | PASS |
+| open first frame | 112.344000 | 340 | PASS |
+| retained-pressure resume | 33.181100 | 100 | PASS |
+| close/drain | 2.530000 | 8 | PASS |
+| input request/receipt | 0.366000 | 1.4 | PASS |
+| Rust common flow | 116.048000 | 350 | PASS |
+| C process load | 15.717900 | 50 | PASS |
+| C common flow | 284.684600 | 900 | PASS |
+| C++ process load | 15.343200 | 50 | PASS |
+| C++ common flow | 281.720600 | 900 | PASS |
+
+Peak live Rust heap was 16,787 bytes for diagnostics, 4,684,907 bytes for
+capture, 3,869,438 bytes for transitions, and 2,336,332 bytes for input. The
+largest child-process resident measurement was 56,692,736 bytes. All remain
+within the fixed structural ceilings, so the evidence does not justify a budget
+change or a replacement design decision.
 
 ## Alternatives
 
@@ -165,11 +222,11 @@ does not infer any of those values from the four measured Windows profiles.
 
 ## Verification
 
-The full runs retained 2,980 measured samples: 2,000 diagnostic samples, 600
-capture samples, 80 transition samples, and 300 input/public-language samples.
-Every sample satisfied its oracle and every workload reported zero allocation
-growth. The native runs also enforced hard budgets in-process before printing a
-profile.
+The post-review full run retained 2,980 measured samples: 2,000 diagnostic
+samples, 600 capture samples, 80 transition samples, and 300
+input/public-language samples. Every sample satisfied its oracle and every
+workload reported zero allocation growth. The native runs also enforced hard
+budgets in-process before printing a profile.
 
 The exact build and benchmark commands, host inventory, failures, repairs, and
 observed output are recorded in the Change's

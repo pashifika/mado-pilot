@@ -488,14 +488,16 @@ source `c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848`. Its six workloads retained
 and measured Rust-heap and child-process resident bounds.
 
 [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md)
-accepts the Windows capture, transition, and input/public-language profiles at
-implementation tree `f02c3e9bc3c08d6faca4f032e6c819376ce5e0db`. Their 980
-retained samples all satisfy their exact oracles and report zero allocation
-growth. The rejected precursor runs proved four apparatus defects rather than
-product failures: insufficient post-resize fixture publication, reuse of a
-1,024-event fixture for 2,050 redacted summaries, a missing child-only Cargo
-profile DLL path, and a C++ oracle that expected macOS submission evidence on
-Windows. The ADR records the bounded repairs and target-specific oracle.
+accepts the post-review Windows diagnostic, capture, transition, and
+input/public-language requalification at source commit
+`6873d4b05a13fd15cb3ffd961892b1153f606d78`, implementation tree
+`2483269ee071d14adfe14f829d318a4c59337f85`. Its 2,980 retained samples all
+satisfy their exact oracles, report zero allocation growth, and pass the
+unchanged ceilings. The rejected precursor runs proved four apparatus defects
+rather than product failures: insufficient post-resize fixture publication,
+reuse of a 1,024-event fixture for 2,050 redacted summaries, a missing child-only
+Cargo profile DLL path, and a C++ oracle that expected macOS submission evidence
+on Windows. The ADR records the bounded repairs and target-specific oracle.
 
 The Windows `native-phase2` capture profile does not substitute for the separate
 production-capture acceptance required by
