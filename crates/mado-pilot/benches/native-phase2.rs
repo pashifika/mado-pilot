@@ -40,9 +40,10 @@ mod native {
         PixelFormat, SequenceOutcome, Session, SessionRequest, Status, TargetId,
     };
     use mado_pilot_testkit::bench_harness::{
-        self, Benchmark, Plan, PrefixedLineMatch, Profile, Sample, Workload, argument,
-        classify_prefixed_line, enforce_hard_budgets, measure,
+        self, Benchmark, Plan, Profile, Sample, Workload, argument, enforce_hard_budgets, measure,
     };
+    #[cfg(windows)]
+    use mado_pilot_testkit::bench_harness::{PrefixedLineMatch, classify_prefixed_line};
 
     #[cfg(windows)]
     use mado_pilot::{
@@ -413,6 +414,7 @@ mod native {
                 && self.next_event(protocol::EVENT_KEY_UP, up_units, true)
         }
 
+        #[cfg(windows)]
         fn next_pointer_move(&self) -> bool {
             self.next_event(protocol::EVENT_POINTER_MOVE, 0, false)
         }
@@ -979,7 +981,7 @@ mod native {
                     cpp_example_name(),
                     cpp_receipt_line(),
                 );
-                let mut workloads = vec![
+                let workloads = vec![
                     measure(
                         "input_request_receipt",
                         "the complete two-event receipt corresponds to exactly one fixture key-down and key-up summary",
@@ -1023,6 +1025,8 @@ mod native {
                         language_common_flow,
                     ),
                 ];
+                #[cfg(windows)]
+                let mut workloads = workloads;
                 #[cfg(windows)]
                 workloads.insert(
                     1,
