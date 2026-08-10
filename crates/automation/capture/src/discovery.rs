@@ -53,8 +53,8 @@ impl DiscoveryRequest {
     /// Selects only targets that accept `kind` through `delivery`.
     ///
     /// The pair is required together, because a target that accepts keystrokes
-    /// through the system input path has said nothing about accepting them in the
-    /// background.
+    /// through the system input path has said nothing about accepting an
+    /// exact-window or process-directed route.
     #[must_use]
     pub const fn requiring_input(
         mut self,
@@ -117,7 +117,7 @@ impl DiscoveryRequest {
             return false;
         }
         if let Some((operation, delivery)) = self.required_input
-            && !capability.input().supports(operation, delivery)
+            && !capability.input().pair(operation, delivery).may_attempt()
         {
             return false;
         }
@@ -136,7 +136,7 @@ mod tests {
     use crate::descriptor::{CoordinateSupport, PixelFormat, TargetDescription};
     use mado_pilot_core::{
         CapabilitySupport, IdentityIssuer, InputCapability, InputDelivery, InputOperationKind,
-        PixelExtent, ProviderId, TargetCapability, TargetId, TargetKind,
+        PixelExtent, ProviderId, SubmissionEvidence, TargetCapability, TargetId, TargetKind,
     };
 
     const WINDOWS: ProviderId = ProviderId::new("windows");
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn an_input_filter_requires_the_exact_operation_and_delivery_pair() {
         let ids = ids(1);
-        let background_keyboard = target(
+        let window_message_keyboard = target(
             ids[0],
             "Editor",
             TargetCapability::new(
@@ -236,29 +236,28 @@ mod tests {
                 CapabilitySupport::Supported,
                 InputCapability::none().with_pair(
                     InputOperationKind::Keyboard,
-                    InputDelivery::BackgroundTarget,
+                    InputDelivery::WindowMessage,
+                    CapabilitySupport::Supported,
+                    SubmissionEvidence::TargetProtocolAcknowledgement,
                 ),
             ),
         );
 
         assert!(
             DiscoveryRequest::new()
-                .requiring_input(
-                    InputOperationKind::Keyboard,
-                    InputDelivery::BackgroundTarget
-                )
-                .accepts(&background_keyboard)
+                .requiring_input(InputOperationKind::Keyboard, InputDelivery::WindowMessage)
+                .accepts(&window_message_keyboard)
         );
         assert!(
             !DiscoveryRequest::new()
                 .requiring_input(InputOperationKind::Keyboard, InputDelivery::System)
-                .accepts(&background_keyboard),
+                .accepts(&window_message_keyboard),
             "the pair is what was advertised, not the two axes separately"
         );
         assert!(
             !DiscoveryRequest::new()
-                .requiring_input(InputOperationKind::Pointer, InputDelivery::BackgroundTarget)
-                .accepts(&background_keyboard)
+                .requiring_input(InputOperationKind::Pointer, InputDelivery::WindowMessage)
+                .accepts(&window_message_keyboard)
         );
     }
 

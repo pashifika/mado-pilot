@@ -43,13 +43,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::discovery::{NativeKey, current_placement};
 use crate::fixture_protocol::{ACKNOWLEDGED, CLASS_NAME, COPYDATA_TAG, encode_event, query_packet};
 use crate::input::{
-    DeliveryContexts, DeliveryFailure, DriverState, GeometryFingerprint, InputDriver, PointerState,
-    SystemButtonState, SystemKeyState,
+    DriverState, GeometryFingerprint, InputDriver, PointerState, SubmissionContexts,
+    SubmissionFailure, SystemButtonState, SystemKeyState,
 };
 use crate::provider::TargetRecord;
 
-const BACKGROUND_EVENT_TIMEOUT: Duration = Duration::from_millis(100);
-type DeliveryResult = Result<(), DeliveryFailure>;
+const WINDOW_MESSAGE_TIMEOUT: Duration = Duration::from_millis(100);
+type SubmissionResult = Result<(), SubmissionFailure>;
 
 /// The mutable native state consulted at the final system-input commit boundary.
 ///
@@ -194,7 +194,7 @@ impl NativeInputDriver {
 
         let mut cursor = POINT::default();
         // SAFETY: cursor is a complete writable POINT.
-        unsafe { GetCursorPos(&raw mut cursor) }.map_err(|_| InputFault::DeliveryFailed)?;
+        unsafe { GetCursorPos(&raw mut cursor) }.map_err(|_| InputFault::SubmissionFailed)?;
         let screen = (cursor.x, cursor.y);
         if !contains_screen_point(current, screen) {
             return Err(InputFault::UnsupportedCoordinate);
@@ -207,7 +207,7 @@ impl NativeInputDriver {
         Ok(pointer)
     }
 
-    fn deliver_system(
+    fn submit_system(
         &self,
         focus: FocusPolicy,
         event: &InputEvent,
@@ -215,7 +215,7 @@ impl NativeInputDriver {
         state: &mut DriverState,
         operation: &OperationContext,
         cleanup_budget: CleanupBudget,
-    ) -> DeliveryResult {
+    ) -> SubmissionResult {
         self.record.ensure_live()?;
         self.ensure_system_focus(focus)?;
         if target_has_higher_integrity(&self.record)? == Some(true) {
@@ -305,13 +305,13 @@ impl NativeInputDriver {
         }
     }
 
-    fn deliver_background(
+    fn submit_window_message(
         &self,
         event: &InputEvent,
         geometry: PointerGeometry,
         state: &mut DriverState,
         operation: &OperationContext,
-    ) -> DeliveryResult {
+    ) -> SubmissionResult {
         let point = match event {
             InputEvent::PointerMove(point) => {
                 let resolved = self.resolve_pointer(*point, geometry)?;
@@ -326,7 +326,12 @@ impl NativeInputDriver {
             _ => None,
         };
         let packet = encode_event(event, point)?;
-        send_fixture_packet(&self.record, &packet, operation, InputFault::DeliveryFailed)
+        send_fixture_packet(
+            &self.record,
+            &packet,
+            operation,
+            InputFault::SubmissionFailed,
+        )
     }
 }
 
@@ -368,13 +373,13 @@ impl std::fmt::Debug for NativeInputDriver {
 impl InputDriver for NativeInputDriver {
     fn preflight(
         &self,
-        delivery: InputDelivery,
+        route: InputDelivery,
         focus: FocusPolicy,
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
         operation_fault(operation)?;
         self.record.ensure_live()?;
-        match delivery {
+        match route {
             InputDelivery::System => {
                 self.ensure_system_focus(focus)?;
                 if target_has_higher_integrity(&self.record)? == Some(true) {
@@ -383,7 +388,7 @@ impl InputDriver for NativeInputDriver {
                     Ok(())
                 }
             }
-            InputDelivery::BackgroundTarget => {
+            InputDelivery::WindowMessage => {
                 if self.record.class_name() != Some(CLASS_NAME) {
                     return Err(InputFault::UnsupportedCombination);
                 }
@@ -394,7 +399,7 @@ impl InputDriver for NativeInputDriver {
                     &self.record,
                     &query_packet(),
                     operation,
-                    InputFault::DeliveryUnavailable,
+                    InputFault::RouteUnavailable,
                 )
                 .map_err(|failure| failure.fault)
             }
@@ -402,26 +407,26 @@ impl InputDriver for NativeInputDriver {
         }
     }
 
-    fn deliver(
+    fn submit(
         &self,
-        delivery: InputDelivery,
+        route: InputDelivery,
         focus: FocusPolicy,
         event: &InputEvent,
         geometry: PointerGeometry,
         state: &mut DriverState,
-        contexts: DeliveryContexts<'_>,
-    ) -> DeliveryResult {
-        let DeliveryContexts {
+        contexts: SubmissionContexts<'_>,
+    ) -> SubmissionResult {
+        let SubmissionContexts {
             operation,
             cleanup_budget,
         } = contexts;
         operation_fault(operation)?;
-        match delivery {
+        match route {
             InputDelivery::System => {
-                self.deliver_system(focus, event, geometry, state, operation, cleanup_budget)
+                self.submit_system(focus, event, geometry, state, operation, cleanup_budget)
             }
-            InputDelivery::BackgroundTarget => {
-                self.deliver_background(event, geometry, state, operation)
+            InputDelivery::WindowMessage => {
+                self.submit_window_message(event, geometry, state, operation)
             }
             _ => Err(InputFault::UnsupportedCombination.into()),
         }
@@ -429,15 +434,15 @@ impl InputDriver for NativeInputDriver {
 
     fn release(
         &self,
-        delivery: InputDelivery,
+        route: InputDelivery,
         pressed: PressedState,
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
         operation_fault(operation)?;
-        match delivery {
+        match route {
             InputDelivery::System => send_system_release(pressed, state, self, operation),
-            InputDelivery::BackgroundTarget => {
+            InputDelivery::WindowMessage => {
                 let event = match pressed {
                     PressedState::Button(button) => InputEvent::PointerRelease(button),
                     PressedState::Key(key) => InputEvent::KeyRelease(key),
@@ -453,8 +458,13 @@ impl InputDriver for NativeInputDriver {
                     _ => None,
                 };
                 let packet = encode_event(&event, point)?;
-                send_fixture_packet(&self.record, &packet, operation, InputFault::DeliveryFailed)
-                    .map_err(|failure| failure.fault)
+                send_fixture_packet(
+                    &self.record,
+                    &packet,
+                    operation,
+                    InputFault::SubmissionFailed,
+                )
+                .map_err(|failure| failure.fault)
             }
             _ => Err(InputFault::UnsupportedCombination),
         }
@@ -473,7 +483,7 @@ fn commit_prepared_system_input<S: SystemCommitSource + ?Sized>(
     expected_geometry: Option<GeometryFingerprint>,
     operation: &OperationContext,
     inputs: &[INPUT],
-) -> Result<usize, DeliveryFailure> {
+) -> Result<usize, SubmissionFailure> {
     operation_fault(operation)?;
     source.revalidate_system_commit(focus, expected_geometry)?;
     // Native revalidation can perform target, foreground, integrity, and geometry
@@ -536,7 +546,7 @@ fn send_system_pointer_move(
     driver: &NativeInputDriver,
     focus: FocusPolicy,
     operation: &OperationContext,
-) -> DeliveryResult {
+) -> SubmissionResult {
     let desktop = virtual_desktop()?;
     let dx = normalize_absolute(pointer.screen.0, desktop.0, desktop.2)?;
     let dy = normalize_absolute(pointer.screen.1, desktop.1, desktop.3)?;
@@ -575,7 +585,7 @@ fn send_physical_button(
     driver: &NativeInputDriver,
     focus: FocusPolicy,
     operation: &OperationContext,
-) -> DeliveryResult {
+) -> SubmissionResult {
     let flags = match (physical, pressed) {
         (1, true) => MOUSEEVENTF_LEFTDOWN,
         (1, false) => MOUSEEVENTF_LEFTUP,
@@ -602,7 +612,7 @@ fn send_system_scroll(
     driver: &NativeInputDriver,
     focus: FocusPolicy,
     operation: &OperationContext,
-) -> DeliveryResult {
+) -> SubmissionResult {
     const WHEEL_DELTA: i32 = 120;
     let mut inputs = Vec::with_capacity(2);
     if vertical != 0 {
@@ -625,7 +635,7 @@ fn send_resolved_key(
     driver: &NativeInputDriver,
     focus: FocusPolicy,
     operation: &OperationContext,
-) -> DeliveryResult {
+) -> SubmissionResult {
     let mut flags = KEYBD_EVENT_FLAGS(0);
     if extended {
         flags |= KEYEVENTF_EXTENDEDKEY;
@@ -643,7 +653,7 @@ fn send_system_text(
     focus: FocusPolicy,
     operation: &OperationContext,
     cleanup_budget: CleanupBudget,
-) -> DeliveryResult {
+) -> SubmissionResult {
     let units = text.encode_utf16().collect::<Vec<_>>();
     let mut inputs = Vec::with_capacity(units.len().saturating_mul(2));
     for unit in &units {
@@ -765,7 +775,7 @@ fn send_exact(
     focus: FocusPolicy,
     expected_geometry: Option<GeometryFingerprint>,
     operation: &OperationContext,
-) -> DeliveryResult {
+) -> SubmissionResult {
     let inserted =
         commit_prepared_system_input(driver, focus, expected_geometry, operation, inputs)?;
     if inserted == inputs.len() {
@@ -798,22 +808,21 @@ fn raw_send(inputs: &[INPUT]) -> usize {
     usize::try_from(unsafe { SendInput(inputs, size) }).unwrap_or(0)
 }
 
-fn send_failure(record: &TargetRecord, inserted: usize) -> DeliveryFailure {
+fn send_failure(record: &TargetRecord, inserted: usize) -> SubmissionFailure {
     if inserted > 0 {
-        return DeliveryFailure::during_event(InputFault::DeliveryFailed);
+        return SubmissionFailure::during_event(InputFault::SubmissionFailed);
     }
     let fault = match target_has_higher_integrity(record) {
         Ok(Some(true)) => InputFault::PolicyRefused,
         Err(fault) => fault,
         Ok(_) if record.ensure_live().is_err() => InputFault::TargetLost,
         Ok(_) => {
-            // Microsoft documents that SendInput's return and last-error value do
-            // not identify UIPI. We claim PolicyRefused only when the independent
-            // integrity comparison proves it.
-            InputFault::DeliveryFailed
+            // SendInput does not distinguish UIPI refusal. Claim policy refusal
+            // only when the independent integrity comparison proves it.
+            InputFault::SubmissionFailed
         }
     };
-    DeliveryFailure::before_event(fault)
+    SubmissionFailure::before_event(fault)
 }
 
 fn resolve_virtual_key(key: Key, record: &TargetRecord) -> Result<(VIRTUAL_KEY, bool), InputFault> {
@@ -925,7 +934,7 @@ fn send_fixture_packet(
     packet: &[u8],
     operation: &OperationContext,
     ordinary_failure: InputFault,
-) -> DeliveryResult {
+) -> SubmissionResult {
     operation_fault(operation)?;
     record.ensure_live()?;
     if record.class_name() != Some(CLASS_NAME) {
@@ -964,17 +973,17 @@ fn send_fixture_packet(
         // SAFETY: immediately follows the failing Win32 call on this thread.
         let error = unsafe { GetLastError() };
         return if error == ERROR_ACCESS_DENIED {
-            Err(DeliveryFailure::before_event(InputFault::PolicyRefused))
+            Err(SubmissionFailure::before_event(InputFault::PolicyRefused))
         } else if record.ensure_live().is_err() {
-            Err(DeliveryFailure::during_event(InputFault::TargetLost))
+            Err(SubmissionFailure::during_event(InputFault::TargetLost))
         } else {
-            Err(DeliveryFailure::during_event(ordinary_failure))
+            Err(SubmissionFailure::during_event(ordinary_failure))
         };
     }
     if acknowledged == ACKNOWLEDGED {
         Ok(())
     } else {
-        Err(DeliveryFailure::during_event(ordinary_failure))
+        Err(SubmissionFailure::during_event(ordinary_failure))
     }
 }
 
@@ -982,8 +991,8 @@ fn timeout_millis(operation: &OperationContext) -> Result<u32, InputFault> {
     operation_fault(operation)?;
     let duration = operation
         .remaining()
-        .map_or(BACKGROUND_EVENT_TIMEOUT, |remaining| {
-            remaining.min(BACKGROUND_EVENT_TIMEOUT)
+        .map_or(WINDOW_MESSAGE_TIMEOUT, |remaining| {
+            remaining.min(WINDOW_MESSAGE_TIMEOUT)
         });
     if duration.is_zero() {
         return Err(InputFault::DeadlineExceeded);

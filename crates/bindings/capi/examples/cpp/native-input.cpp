@@ -4,12 +4,19 @@
  * `--check` is suitable for unattended CI: it creates the platform adapter and
  * reads only non-prompting permission/capability state. Passing one exact full
  * fixture-window title enables the end-to-end path: unique selection, capture,
- * mapping, one bounded input sequence, receipt inspection, and explicit close.
+ * mapping, one bounded input sequence under one activity tag, receipt inspection,
+ * a newer-frame visual condition search, diagnostic drain, and explicit close.
+ *
+ * Full mode requires the repository's platform fixture launched with
+ * `--animate-on-input`; a receipt alone is not the success oracle.
  */
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <string_view>
+#include <thread>
+#include <utility>
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -21,18 +28,23 @@
 
 
 #include "madopilot/madopilot.hpp"
+#include "../native-expected-condition.h"
 
 namespace {
 
 #if defined(_WIN32)
 constexpr const char* EXAMPLE_NAME = "windows-native-input-cpp";
 constexpr std::uint64_t REQUIRED_PAIRS =
-    MADOPILOT_INPUT_PAIR_POINTER_BACKGROUND |
-    MADOPILOT_INPUT_PAIR_KEYBOARD_BACKGROUND;
+    MADOPILOT_INPUT_PAIR_POINTER_WINDOW_MESSAGE |
+    MADOPILOT_INPUT_PAIR_KEYBOARD_WINDOW_MESSAGE;
 constexpr madopilot::InputDelivery DELIVERY =
-    MADOPILOT_INPUT_DELIVERY_BACKGROUND_TARGET;
-constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_PRESERVE;
+    MADOPILOT_INPUT_DELIVERY_WINDOW_MESSAGE;
+constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
+    MADOPILOT_INPUT_ADDRESS_EXACT_WINDOW;
+constexpr madopilot::SubmissionEvidence EVIDENCE =
+    MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT;
 constexpr bool READS_PERMISSIONS = false;
+constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_PRESERVE;
 
 madopilot::Source native_source()
 {
@@ -44,6 +56,10 @@ constexpr std::uint64_t REQUIRED_PAIRS =
     MADOPILOT_INPUT_PAIR_POINTER_SYSTEM |
     MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM;
 constexpr madopilot::InputDelivery DELIVERY = MADOPILOT_INPUT_DELIVERY_SYSTEM;
+constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
+    MADOPILOT_INPUT_ADDRESS_FOCUSED_SYSTEM;
+constexpr madopilot::SubmissionEvidence EVIDENCE =
+    MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY;
 constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_ACTIVATE_IF_REQUIRED;
 constexpr bool READS_PERMISSIONS = true;
 
@@ -56,6 +72,8 @@ madopilot::Source native_source()
 #endif
 
 int failures = 0;
+constexpr std::uint64_t DIAGNOSTIC_ACTIVITY_TAG = UINT64_C(0x4d50494e505554a1);
+constexpr std::uint32_t DIAGNOSTIC_CAPACITY = UINT32_C(256);
 std::uint64_t peak_resident_bytes()
 {
 #if defined(_WIN32)
@@ -113,7 +131,177 @@ bool bounded_operation(const madopilot::Api& api, std::uint64_t budget_nanos,
     }
     operation = madopilot::Operation{};
     operation.deadline(now.value() + budget_nanos);
+    operation.activity_tag(DIAGNOSTIC_ACTIVITY_TAG);
     return true;
+}
+
+bool drain_diagnostics(madopilot::DiagnosticReader& reader, bool require_mapping)
+{
+    std::uint64_t records = 0;
+    std::uint64_t normal = 0;
+    std::uint64_t debug = 0;
+    std::uint64_t discarded_normal = 0;
+    std::uint64_t discarded_debug = 0;
+    std::uint64_t mappings = 0;
+
+    for (;;) {
+        auto drained = reader.drain();
+        if (!drained) {
+            return report_failure("DiagnosticReader::drain", drained.error());
+        }
+        auto drain = drained.take();
+        if (drain.state == MADOPILOT_DIAGNOSTIC_DRAIN_END_OF_STREAM) {
+            if (!expect(!drain.batch.has_value(),
+                        "end-of-stream has no diagnostic batch")) {
+                return false;
+            }
+            break;
+        }
+        if (!expect(drain.state == MADOPILOT_DIAGNOSTIC_DRAIN_BATCH &&
+                        drain.batch.has_value(),
+                    "a sealed diagnostic reader yields batches then ends")) {
+            return false;
+        }
+
+        madopilot::DiagnosticBatch batch = std::move(*drain.batch);
+        const auto described = batch.describe();
+        if (!described) {
+            return report_failure("DiagnosticBatch::describe",
+                                  described.error());
+        }
+        discarded_normal += described.value().discarded_normal;
+        discarded_debug += described.value().discarded_debug;
+        for (std::uint64_t index = 0;
+             index < described.value().record_count; ++index) {
+            const auto record = batch.record_at(static_cast<std::size_t>(index));
+            if (!record) {
+                return report_failure("DiagnosticBatch::record_at",
+                                      record.error());
+            }
+            if (!expect((record.value().flags &
+                         MADOPILOT_DIAGNOSTIC_RECORD_HAS_ACTIVITY) != 0 &&
+                            record.value().activity_tag ==
+                                DIAGNOSTIC_ACTIVITY_TAG,
+                        "every diagnostic record retains the caller activity")) {
+                return false;
+            }
+            ++records;
+            normal += record.value().level ==
+                      MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL;
+            debug += record.value().level == MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG;
+            if (record.value().kind == MADOPILOT_DIAGNOSTIC_KIND_MAPPING) {
+                constexpr std::uint32_t required =
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET |
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME |
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_SOURCE_SPACE |
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_DESTINATION_SPACE;
+                if (!expect(
+                        (record.value().flags & required) == required &&
+                            record.value().source_space ==
+                                MADOPILOT_SPACE_CAPTURE_PIXELS &&
+                            record.value().destination_space ==
+                                MADOPILOT_SPACE_CAPTURE_PIXELS,
+                        "mapping diagnostics expose copied identity and spaces")) {
+                    return false;
+                }
+                ++mappings;
+            }
+        }
+    }
+
+    std::printf("diagnostics: %llu record(s), normal %llu, debug %llu, "
+                "discarded-normal %llu, discarded-debug %llu\n",
+                static_cast<unsigned long long>(records),
+                static_cast<unsigned long long>(normal),
+                static_cast<unsigned long long>(debug),
+                static_cast<unsigned long long>(discarded_normal),
+                static_cast<unsigned long long>(discarded_debug));
+    return expect(records != 0,
+                  "the enabled diagnostic stream retained records") &&
+           (!require_mapping ||
+            expect(mappings != 0,
+                   "the mapped frame emitted a debug mapping fact"));
+}
+
+bool same_frame_stamp(const madopilot::FrameStamp& left,
+                      const madopilot::FrameStamp& right)
+{
+    return left.stream == right.stream && left.epoch == right.epoch &&
+           left.sequence == right.sequence && left.geometry == right.geometry;
+}
+
+bool strictly_newer_frame(const madopilot::FrameStamp& candidate,
+                          const madopilot::FrameStamp& before)
+{
+    return candidate.stream == before.stream &&
+           (candidate.epoch > before.epoch ||
+            (candidate.epoch == before.epoch &&
+             candidate.sequence > before.sequence));
+}
+
+bool observe_expected_condition(const madopilot::Api& api,
+                                madopilot::Session& session,
+                                const madopilot::FrameStamp& before)
+{
+    madopilot::Operation operation;
+    if (!bounded_operation(api, UINT64_C(5000000000), operation)) {
+        return false;
+    }
+
+    for (;;) {
+        auto acquired = session.acquire_frame(operation);
+        if (!acquired) {
+            return report_failure("Session::acquire_frame after input",
+                                  acquired.error());
+        }
+        madopilot::Frame frame = acquired.take();
+        const auto frame_stamp = frame.stamp();
+        if (!frame_stamp) {
+            return report_failure("Frame::stamp after input", frame_stamp.error());
+        }
+        if (!expect(frame_stamp.value().stream == before.stream,
+                    "the observation remains correlated to the source stream")) {
+            return false;
+        }
+        if (!strictly_newer_frame(frame_stamp.value(), before)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        madopilot::MapRequest request;
+        request.format(MADOPILOT_PIXEL_FORMAT_BGRA8);
+        auto mapped = frame.map(request, operation);
+        if (!mapped) {
+            return report_failure("Frame::map after input", mapped.error());
+        }
+        madopilot::Mapping mapping = mapped.take();
+        const auto mapping_stamp = mapping.stamp();
+        if (!mapping_stamp) {
+            return report_failure("Mapping::stamp after input",
+                                  mapping_stamp.error());
+        }
+        if (!expect(same_frame_stamp(mapping_stamp.value(), frame_stamp.value()),
+                    "the visual search remains correlated to the observed frame")) {
+            return false;
+        }
+        const auto image = mapping.describe();
+        if (!image) {
+            return report_failure("Mapping::describe after input", image.error());
+        }
+        const bool matched =
+            image.value().format == MADOPILOT_PIXEL_FORMAT_BGRA8 &&
+            madopilot_example_expected_condition_matches(
+                image.value().bytes.data(), image.value().bytes.size(),
+                image.value().stride, image.value().width, image.value().height);
+        if (matched) {
+            std::printf("expected condition: stream %llu epoch %llu sequence %llu\n",
+                        static_cast<unsigned long long>(frame_stamp.value().stream),
+                        static_cast<unsigned long long>(frame_stamp.value().epoch),
+                        static_cast<unsigned long long>(frame_stamp.value().sequence));
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
 
 bool probe_permissions(madopilot::Engine& engine,
@@ -159,8 +347,7 @@ bool probe_permissions(madopilot::Engine& engine,
 }
 
 bool select_target(madopilot::TargetList& targets, std::string_view title,
-                   std::size_t& selected,
-                   madopilot::TargetCapability& capability)
+                   std::size_t& selected, std::uint64_t& target_id)
 {
     const auto count = targets.count();
     if (!count) {
@@ -177,6 +364,7 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
         if (target.value().kind == MADOPILOT_TARGET_KIND_WINDOW &&
             target.value().name.view() == title) {
             selected = index;
+            target_id = target.value().target;
             ++matches;
         }
     }
@@ -186,28 +374,49 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
         return false;
     }
 
-    const auto selected_capability = targets.capability(selected);
-    if (!selected_capability) {
-        return report_failure("TargetList::capability",
-                              selected_capability.error());
+    const auto target = targets.at(selected);
+    if (!target) {
+        return report_failure("TargetList::at", target.error());
     }
-    capability = selected_capability.value();
-
-    if (!expect(capability.kind.has_value() &&
-                    *capability.kind == MADOPILOT_TARGET_KIND_WINDOW,
+    if (!expect(target.value().kind == MADOPILOT_TARGET_KIND_WINDOW,
                 "the selected target remains a window") ||
-        !expect(capability.capture == MADOPILOT_CAPABILITY_SUPPORTED,
-                "the selected target supports capture") ||
-        !expect((capability.input_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS,
-                "the selected target exposes every required input pair") ||
-        !expect((capability.pointer_spaces &
-                 (std::uint32_t{1} << MADOPILOT_SPACE_CAPTURE_PIXELS)) != 0,
-                "the selected target accepts capture-pixel pointer coordinates")) {
+        !expect(target.value().capture == MADOPILOT_CAPABILITY_SUPPORTED,
+                "the selected target supports capture")) {
         return false;
     }
 
+    constexpr madopilot::InputOperationKind OPERATIONS[] = {
+        MADOPILOT_INPUT_OPERATION_POINTER,
+        MADOPILOT_INPUT_OPERATION_KEYBOARD,
+    };
+    for (const auto operation : OPERATIONS) {
+        const auto capability =
+            targets.input_capability(selected, operation, DELIVERY);
+        if (!capability) {
+            return report_failure("TargetList::input_capability",
+                                  capability.error());
+        }
+        if (!expect(capability.value().target == target_id &&
+                        capability.value().support ==
+                            MADOPILOT_CAPABILITY_SUPPORTED,
+                    "the selected target supports the required input route") ||
+            !expect(capability.value().address_scope == ADDRESS_SCOPE &&
+                        capability.value().evidence.has_value() &&
+                        *capability.value().evidence == EVIDENCE,
+                    "the route reports its scope and strongest evidence")) {
+            return false;
+        }
+        if (operation == MADOPILOT_INPUT_OPERATION_POINTER &&
+            !expect((capability.value().pointer_spaces &
+                     (std::uint32_t{1} <<
+                      MADOPILOT_SPACE_CAPTURE_PIXELS)) != 0,
+                    "the route accepts capture-pixel pointer coordinates")) {
+            return false;
+        }
+    }
+
     std::printf("selected: index %zu target %llu\n", selected,
-                static_cast<unsigned long long>(capability.target));
+                static_cast<unsigned long long>(target_id));
     return true;
 }
 
@@ -230,7 +439,8 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
     if (!descriptor) {
         return report_failure("Session::input_descriptor", descriptor.error());
     }
-    if (!expect((descriptor.value().pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS,
+    if (!expect((descriptor.value().supported_pairs & REQUIRED_PAIRS) ==
+                    REQUIRED_PAIRS,
                 "the session retains every required input pair")) {
         return false;
     }
@@ -261,7 +471,7 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
                 static_cast<unsigned>(frame_info.value().height));
 
     madopilot::MapRequest map_request;
-    map_request.format(frame_info.value().format);
+    map_request.format(MADOPILOT_PIXEL_FORMAT_BGRA8);
     if (!bounded_operation(api, UINT64_C(5000000000), operation)) {
         return false;
     }
@@ -275,7 +485,13 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
         return report_failure("Mapping::describe", image.error());
     }
     if (!expect(!image.value().bytes.empty(),
-                "the native frame maps to readable bytes")) {
+                "the native frame maps to readable bytes") ||
+        !expect(image.value().format == MADOPILOT_PIXEL_FORMAT_BGRA8 &&
+                    !madopilot_example_expected_condition_matches(
+                        image.value().bytes.data(), image.value().bytes.size(),
+                        image.value().stride, image.value().width,
+                        image.value().height),
+                "the expected visual condition is absent before input")) {
         return false;
     }
     std::printf("mapping: %zu byte(s)\n", image.value().bytes.size());
@@ -290,10 +506,6 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
         .event(madopilot::InputEvent::key_release(MADOPILOT_KEY_CHARACTER,
                                                   static_cast<std::uint32_t>('m')))
         .event(madopilot::InputEvent::delay(UINT64_C(20000000)))
-        .event(madopilot::InputEvent::key_press(MADOPILOT_KEY_CHARACTER,
-                                                static_cast<std::uint32_t>('p')))
-        .event(madopilot::InputEvent::key_release(MADOPILOT_KEY_CHARACTER,
-                                                  static_cast<std::uint32_t>('p')))
         .delivery(DELIVERY)
         .focus_policy(FOCUS)
         .geometry_policy(MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED)
@@ -302,19 +514,38 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
     if (!bounded_operation(api, UINT64_C(2000000000), operation)) {
         return false;
     }
-    const auto sent = session.send_input(request, operation);
+    auto sent = session.send_input(request, operation);
     if (!sent) {
         return report_failure("Session::send_input", sent.error());
     }
-    const auto& receipt = sent.value();
-    std::printf("receipt: outcome %d delivered %u failure %d cleanup %d\n",
-                static_cast<int>(receipt.outcome),
-                static_cast<unsigned>(receipt.delivered),
-                receipt.failure ? static_cast<int>(receipt.failure->fault) : 0,
-                receipt.failure ? static_cast<int>(receipt.failure->cleanup) : 0);
-    return expect(receipt.outcome == MADOPILOT_SEQUENCE_COMPLETE &&
-                      receipt.delivered == 6,
-                  "the bounded native sequence completed exactly once");
+    madopilot::InputReceipt receipt = sent.take();
+    const auto info = receipt.describe();
+    if (!info) {
+        return report_failure("InputReceipt::describe", info.error());
+    }
+    std::printf("receipt: outcome %d submitted %llu evidence %d cleanup %d\n",
+                static_cast<int>(info.value().outcome),
+                static_cast<unsigned long long>(info.value().submitted),
+                info.value().evidence
+                    ? static_cast<int>(*info.value().evidence)
+                    : 0,
+                static_cast<int>(info.value().cleanup));
+    if (!expect(info.value().outcome == MADOPILOT_SEQUENCE_COMPLETE &&
+                    info.value().submitted == 4 &&
+                    info.value().selected_route.has_value() &&
+                    *info.value().selected_route == DELIVERY &&
+                    info.value().address_scope == ADDRESS_SCOPE &&
+                    info.value().evidence.has_value() &&
+                    *info.value().evidence == EVIDENCE,
+                "the bounded sequence was submitted exactly once with "
+                "truthful route evidence")) {
+        return false;
+    }
+
+    const madopilot::FrameStamp before = frame_stamp.value();
+    mapping.reset();
+    frame.reset();
+    return observe_expected_condition(api, session, before);
 }
 
 bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
@@ -351,8 +582,8 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     }
     madopilot::TargetList targets = discovered.take();
     std::size_t selected = 0;
-    madopilot::TargetCapability target_capability;
-    if (!select_target(targets, title, selected, target_capability)) {
+    std::uint64_t target_id = 0;
+    if (!select_target(targets, title, selected, target_id)) {
         return false;
     }
 
@@ -360,7 +591,8 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     if (!live_descriptor) {
         return report_failure("Engine::input_descriptor", live_descriptor.error());
     }
-    if (!expect((live_descriptor.value().pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS,
+    if (!expect((live_descriptor.value().supported_pairs & REQUIRED_PAIRS) ==
+                    REQUIRED_PAIRS,
                 "the live input descriptor retains every required pair")) {
         return false;
     }
@@ -418,8 +650,8 @@ int main(int argc, char** argv)
         return 1;
     }
     const madopilot::Api api = loaded.take();
-    if (!expect(api.extent() >= MADOPILOT_API_SIZE_SESSION_SEND_INPUT,
-                "the negotiated table contains the complete ABI 1.1 suffix")) {
+    if (!expect(api.extent() >= MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT,
+                "the negotiated table contains the complete ABI 1.2 suffix")) {
         return 1;
     }
 
@@ -443,14 +675,31 @@ int main(int argc, char** argv)
         return 1;
     }
     const madopilot::Source source = native_source();
-    auto created = api.create_engine(source, operation);
+    madopilot::EngineOptions engine_options;
+    engine_options.diagnostics(MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG,
+                               DIAGNOSTIC_CAPACITY);
+    auto created = api.create_engine(source, engine_options, operation);
     if (!created) {
         report_failure("Api::create_engine", created.error());
         return 1;
     }
     madopilot::Engine engine = created.take();
+    auto taken = engine.take_diagnostic_reader();
+    if (!taken) {
+        report_failure("Engine::take_diagnostic_reader", taken.error());
+        return 1;
+    }
+    auto optional_reader = taken.take();
+    if (!expect(optional_reader.has_value(),
+                "an enabled engine exposes one diagnostic reader")) {
+        return 1;
+    }
+    madopilot::DiagnosticReader diagnostics = std::move(*optional_reader);
 
-    if (!run_native(api, engine, title, check_only) || failures != 0) {
+    const bool worked = run_native(api, engine, title, check_only);
+    engine.reset();
+    const bool diagnostics_drained = drain_diagnostics(diagnostics, !check_only);
+    if (!worked || !diagnostics_drained || failures != 0) {
         return 1;
     }
     report_peak_resident_bytes();

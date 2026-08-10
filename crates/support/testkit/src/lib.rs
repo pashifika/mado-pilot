@@ -5,8 +5,9 @@
 //! Doubles and shared contract suites that let every adapter be exercised the
 //! same way: a capture provider a test drives by hand, and the capture contract
 //! suite both it and the production replay adapter must pass. It also holds the
-//! measurement scaffolding the two benchmark targets share, so that the profile
-//! format `docs/performance.md` defines has one printer rather than two.
+//! measurement scaffolding every in-process benchmark target shares, so the
+//! profile format `docs/performance.md` defines has one printer rather than one
+//! per workload family.
 //!
 //! Two implementations is the point. A contract that only one adapter satisfied
 //! would be a description of that adapter, and the paths that matter most —

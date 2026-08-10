@@ -242,7 +242,7 @@ mod native {
         }
 
         fn next_common_flow(&self) -> bool {
-            self.next_pointer_move() && self.next_key_pair() && self.next_key_pair()
+            self.next_pointer_move() && self.next_key_pair()
         }
 
         fn next_key_pair(&self) -> bool {
@@ -425,17 +425,55 @@ mod native {
     #[derive(Clone)]
     struct LanguageProgram {
         executable: PathBuf,
+        #[cfg(windows)]
+        library_directory: PathBuf,
         example_name: &'static str,
+        receipt_line: &'static str,
     }
 
-    struct LanguageFlow {
-        program: LanguageProgram,
-        fixture: Rc<FixtureProcess>,
-    }
+    impl LanguageProgram {
+        fn new(
+            executable: PathBuf,
+            example_name: &'static str,
+            receipt_line: &'static str,
+        ) -> Self {
+            #[cfg(windows)]
+            let library_directory = executable
+                .parent()
+                .and_then(Path::parent)
+                .filter(|directory| directory.join("madopilot.dll").is_file())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} has no madopilot.dll in its cargo profile directory",
+                        executable.display()
+                    )
+                })
+                .to_path_buf();
+            Self {
+                executable,
+                #[cfg(windows)]
+                library_directory,
+                example_name,
+                receipt_line,
+            }
+        }
 
-    impl LanguageFlow {
-        fn new(program: LanguageProgram, fixture: Rc<FixtureProcess>) -> Self {
-            Self { program, fixture }
+        fn command(&self) -> Command {
+            let command = Command::new(&self.executable);
+            #[cfg(windows)]
+            let command = {
+                let mut command = command;
+                let existing = std::env::var_os("PATH").unwrap_or_default();
+                let mut search = vec![self.library_directory.clone()];
+                search.extend(std::env::split_paths(&existing));
+                command.env(
+                    "PATH",
+                    std::env::join_paths(search)
+                        .expect("the Windows child library path is representable"),
+                );
+                command
+            };
+            command
         }
     }
 
@@ -556,7 +594,7 @@ mod native {
                         "retained_pressure_resume",
                         "filling the reported retained limit rejects publication, releasing one slot resumes with an observable sequence gap",
                         plan,
-                        || Flow::from_fixture(Rc::clone(&fixture)),
+                        || (),
                         retained_pressure_resume,
                     ),
                     measure(
@@ -571,20 +609,20 @@ mod native {
             WorkloadSet::Input => {
                 let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Animate));
                 let args = arguments();
-                let c = LanguageProgram {
-                    executable: args
-                        .c_executable
+                let c = LanguageProgram::new(
+                    args.c_executable
                         .clone()
                         .expect("the input benchmark requires its C executable"),
-                    example_name: c_example_name(),
-                };
-                let cpp = LanguageProgram {
-                    executable: args
-                        .cpp_executable
+                    c_example_name(),
+                    "receipt: outcome 1 submitted 4 fault 0 cleanup 0",
+                );
+                let cpp = LanguageProgram::new(
+                    args.cpp_executable
                         .clone()
                         .expect("the input benchmark requires its C++ executable"),
-                    example_name: cpp_example_name(),
-                };
+                    cpp_example_name(),
+                    cpp_receipt_line(),
+                );
                 vec![
                     measure(
                         "input_request_receipt",
@@ -611,7 +649,7 @@ mod native {
                         "c_common_flow",
                         "the released C ABI performs the same bounded fixture flow in a fresh process",
                         plan,
-                        || LanguageFlow::new(c.clone(), Rc::clone(&fixture)),
+                        || c.clone(),
                         language_common_flow,
                     ),
                     measure(
@@ -625,7 +663,7 @@ mod native {
                         "cpp_common_flow",
                         "the released C++ wrapper performs the same bounded fixture flow in a fresh process",
                         plan,
-                        || LanguageFlow::new(cpp.clone(), Rc::clone(&fixture)),
+                        || cpp.clone(),
                         language_common_flow,
                     ),
                 ]
@@ -777,7 +815,10 @@ mod native {
         Sample::new(elapsed, correct, mapping.bytes().len() as u64)
     }
 
-    fn retained_pressure_resume(flow: &Flow) -> Sample {
+    fn retained_pressure_resume(_: &()) -> Sample {
+        let flow = Flow::from_fixture(Rc::new(FixtureProcess::spawn(
+            FixtureBehavior::AnimateAndResize,
+        )));
         let session = flow.open_input_session();
         let capacity = session
             .description()
@@ -794,7 +835,7 @@ mod native {
         while retained.len() < capacity {
             let before = retained.last().expect("a retained frame").stamp();
             assert!(
-                send_confirmed_stimulus(flow, &session),
+                send_confirmed_stimulus(&flow, &session),
                 "retained pressure stimulus completes"
             );
             retained.push(
@@ -805,7 +846,7 @@ mod native {
         }
         let before = retained.last().expect("the last retained frame").stamp();
         assert!(
-            send_confirmed_stimulus(flow, &session),
+            send_confirmed_stimulus(&flow, &session),
             "blocked publication stimulus completes"
         );
         let blocked = session
@@ -814,7 +855,7 @@ mod native {
         retained.remove(0);
         let started = Instant::now();
         assert!(
-            send_confirmed_stimulus(flow, &session),
+            send_confirmed_stimulus(&flow, &session),
             "resume stimulus completes"
         );
         let resumed = session
@@ -906,9 +947,7 @@ mod native {
     }
     fn language_process_load(program: &LanguageProgram) -> Sample {
         let started = Instant::now();
-        let output = Command::new(&program.executable)
-            .arg("--load-check")
-            .output();
+        let output = program.command().arg("--load-check").output();
         let elapsed = started.elapsed();
         let (correct, peak_resident) = match output {
             Ok(output) if output.status.success() && output.stderr.is_empty() => {
@@ -931,10 +970,11 @@ mod native {
         }
     }
 
-    fn language_common_flow(flow: &LanguageFlow) -> Sample {
-        let title = flow.fixture.title();
+    fn language_common_flow(program: &LanguageProgram) -> Sample {
+        let fixture = FixtureProcess::spawn(FixtureBehavior::Animate);
+        let title = fixture.title();
         let started = Instant::now();
-        let output = Command::new(&flow.program.executable).arg(title).output();
+        let output = program.command().arg(title).output();
         let (process_succeeded, stderr_empty, stdout) = match output {
             Ok(output) => (
                 output.status.success(),
@@ -943,13 +983,11 @@ mod native {
             ),
             Err(_) => (false, false, None),
         };
-        let receipt_present = stdout.as_deref().is_some_and(|stdout| {
-            stdout
-                .lines()
-                .any(|line| line == "receipt: outcome 1 delivered 6 failure 0 cleanup 0")
-        });
+        let receipt_present = stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
         let fixture_acknowledged = if process_succeeded || receipt_present {
-            flow.fixture.next_common_flow()
+            fixture.next_common_flow()
         } else {
             false
         };
@@ -964,10 +1002,10 @@ mod native {
             && fixture_acknowledged
             && receipt_present
             && stdout.as_deref().is_some_and(|stdout| {
-                language_abi_line_is_present(stdout, flow.program.example_name)
+                language_abi_line_is_present(stdout, program.example_name)
                     && stdout
                         .lines()
-                        .any(|line| line == format!("{} complete", flow.program.example_name))
+                        .any(|line| line == format!("{} complete", program.example_name))
             })
             && mapped > 0
             && peak_resident.is_some_and(|bytes| bytes > 0);
@@ -979,7 +1017,7 @@ mod native {
     }
 
     fn language_abi_line_is_present(stdout: &str, example_name: &str) -> bool {
-        let prefix = format!("{example_name}: abi 1.1 table ");
+        let prefix = format!("{example_name}: abi 1.2 table ");
         stdout.lines().any(|line| line.starts_with(&prefix))
     }
 
@@ -1082,7 +1120,7 @@ mod native {
         send_sequence(session, sequence, 2)
     }
 
-    fn send_sequence(session: &Session, sequence: InputSequence, delivered: usize) -> bool {
+    fn send_sequence(session: &Session, sequence: InputSequence, submitted: usize) -> bool {
         let receipt = session
             .send_input(
                 &InputRequest::new(
@@ -1095,8 +1133,8 @@ mod native {
             )
             .expect("the benchmark sequence returns a receipt");
         let complete = receipt.outcome() == SequenceOutcome::Complete
-            && receipt.delivered() == delivered
-            && receipt.failure().is_none()
+            && receipt.submitted() == submitted
+            && receipt.fault().is_none()
             && receipt.cleanup() == mado_pilot::CleanupState::NotNeeded;
         if !complete {
             eprintln!("benchmark stimulus receipt: {receipt:?}");
@@ -1259,6 +1297,16 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
+    const fn cpp_receipt_line() -> &'static str {
+        "receipt: outcome 1 submitted 4 evidence 1 cleanup 0"
+    }
+
+    #[cfg(windows)]
+    const fn cpp_receipt_line() -> &'static str {
+        "receipt: outcome 1 submitted 4 evidence 4 cleanup 0"
+    }
+
+    #[cfg(target_os = "macos")]
     fn require_permissions(engine: &Engine) {
         let report = engine
             .permissions(&bounded(OPERATION_WAIT))
@@ -1281,7 +1329,7 @@ mod native {
 
     #[cfg(windows)]
     const fn input_delivery() -> InputDelivery {
-        InputDelivery::BackgroundTarget
+        InputDelivery::WindowMessage
     }
 
     #[cfg(target_os = "macos")]

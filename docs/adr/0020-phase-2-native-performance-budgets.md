@@ -46,11 +46,11 @@ cargo bench --locked --package mado-pilot --bench native-phase2 -- \
 # release-built C and C++ example executables for the input set.
 ```
 
-No approved bare-metal Windows host was available. The
-[Windows gap profile](../benchmarks/phase-2-native-x86_64-pc-windows-msvc-evidence-gap.toml)
-records zero warm-ups, zero samples, and no substituted numbers. Its fixture hash
-is recorded so the eventual run can detect source drift; it is not a measured or
-normative profile.
+At the time, no approved bare-metal Windows host was available. A former gap
+profile recorded zero warmups, zero samples, and no substituted numbers. ADR
+0026 later replaced that artifact with three measured, normative Windows
+profiles; this paragraph records the evidence available to ADR 0020 rather than
+the repository's current Windows status.
 
 One macOS input run is also deliberately rejected evidence. It recorded one
 failed `c_common_flow` sample out of fifty while every other workload passed.

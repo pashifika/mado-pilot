@@ -13,13 +13,17 @@
 
 use std::time::Duration;
 
-use mado_pilot::{CancellationToken, Clock, MonotonicInstant, OperationContext, SystemClock};
+use mado_pilot::{
+    ActivityTag, CancellationToken, Clock, MonotonicInstant, OperationContext, SystemClock,
+};
 
 use crate::boundary::{covers, declared, inputs, prefixes};
 use crate::error::Fault;
 use crate::handle::opaque;
 use crate::status::MADOPILOT_STATUS_OK;
-use crate::types::{MADOPILOT_OPERATION_HAS_DEADLINE, madopilot_operation_t};
+use crate::types::{
+    MADOPILOT_OPERATION_HAS_ACTIVITY_TAG, MADOPILOT_OPERATION_HAS_DEADLINE, madopilot_operation_t,
+};
 use crate::{handle, status};
 
 opaque! {
@@ -53,13 +57,19 @@ inputs! {
             flags,
             deadline_nanos,
             cancellation,
+            activity_tag,
         );
-        // `cancellation` carries no presence bit: null is its documented absent
         // value, so a prefix that omits it says the same thing the field would.
-        const PRESENCE: &'static [(u32, usize)] = &[(
-            MADOPILOT_OPERATION_HAS_DEADLINE,
-            covers!(madopilot_operation_t, deadline_nanos: u64),
-        )];
+        const PRESENCE: &'static [(u32, usize)] = &[
+            (
+                MADOPILOT_OPERATION_HAS_DEADLINE,
+                covers!(madopilot_operation_t, deadline_nanos: u64),
+            ),
+            (
+                MADOPILOT_OPERATION_HAS_ACTIVITY_TAG,
+                covers!(madopilot_operation_t, activity_tag: u64),
+            ),
+        ];
 
         fn defaults() -> Self {
             Self {
@@ -67,6 +77,7 @@ inputs! {
                 flags: 0,
                 deadline_nanos: 0,
                 cancellation: std::ptr::null(),
+                activity_tag: 0,
             }
         }
 
@@ -112,6 +123,15 @@ pub(crate) unsafe fn context(operation: *const madopilot_operation_t) -> Result<
         context = context.with_deadline(MonotonicInstant::from_origin(Duration::from_nanos(
             request.deadline_nanos,
         )));
+    }
+    if declared!(
+        request,
+        madopilot_operation_t,
+        MADOPILOT_OPERATION_HAS_ACTIVITY_TAG
+    ) {
+        let activity = ActivityTag::new(request.activity_tag)
+            .ok_or_else(|| Fault::abi("`activity_tag` must be nonzero when present"))?;
+        context = context.with_activity_tag(activity);
     }
 
     if !request.cancellation.is_null() {

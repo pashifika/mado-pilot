@@ -1,22 +1,25 @@
 //! What the dedicated macOS input fixture is, and how a check selects it safely.
 //!
-//! macOS offers no background input channel, so — unlike the Windows fixture —
-//! this one cannot acknowledge a packet, and there is no protocol to version. It
-//! is a receiver: a window with a stable identity and one fixed colour that
-//! reports what arrived. That leaves selection as the part which has to be
-//! fail-closed, because the events a check sends are real system input and a
-//! wrong target is somebody's application.
+//! macOS offers no target-directed input channel, so — unlike the Windows
+//! fixture — this one cannot acknowledge a packet, and there is no protocol to
+//! version. It is a receiver: a window with a stable identity and one fixed
+//! colour that reports what arrived. That leaves selection as the part which has
+//! to be fail-closed, because the events a check sends are real system input and
+//! a wrong target is somebody's application.
 //!
 //! Selection therefore never rests on a title alone. A candidate must be a
 //! window, must carry the exact process-qualified title this module builds, must
-//! advertise the system input this Adapter implements and no background delivery,
-//! and must be the only such candidate. A check then confirms the selection
-//! against the window's own deterministic content before it sends anything.
+//! advertise the system input this Adapter implements and no `WindowMessage` or
+//! `ProcessDirected` route, and must be the only such candidate. A check then
+//! confirms the selection against the window's own deterministic content before
+//! it sends anything.
 
 use std::fmt;
 
 use mado_pilot_capture::TargetDescription;
-use mado_pilot_core::{InputDelivery, InputOperationKind, PixelExtent, TargetKind};
+use mado_pilot_core::{
+    CapabilitySupport, InputDelivery, InputOperationKind, PixelExtent, TargetKind,
+};
 
 /// The bundle identifier the fixture claims when it is run from an app bundle.
 ///
@@ -212,8 +215,11 @@ pub fn select_unique_fixture(
         }
         let input = target.capability().input();
         InputOperationKind::ALL.iter().all(|operation| {
-            input.supports(*operation, InputDelivery::System)
-                && !input.supports(*operation, InputDelivery::BackgroundTarget)
+            input.pair(*operation, InputDelivery::System).support() == CapabilitySupport::Supported
+                && input
+                    .pair(*operation, InputDelivery::WindowMessage)
+                    .support()
+                    == CapabilitySupport::Unsupported
         })
     });
     let first = matches.next().ok_or(FixtureSelectionError::NotFound)?;
@@ -446,12 +452,19 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_fixture_never_advertises_background_delivery() {
+    fn a_selected_fixture_never_advertises_target_directed_delivery() {
         let chosen = fixture();
         let input = chosen.capability().input();
 
         for kind in InputOperationKind::ALL {
-            assert!(!input.supports(kind, InputDelivery::BackgroundTarget));
+            assert_eq!(
+                input.pair(kind, InputDelivery::WindowMessage).support(),
+                CapabilitySupport::Unsupported
+            );
+            assert_eq!(
+                input.pair(kind, InputDelivery::ProcessDirected).support(),
+                CapabilitySupport::Unsupported
+            );
         }
     }
 

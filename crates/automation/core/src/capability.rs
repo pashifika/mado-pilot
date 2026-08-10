@@ -88,7 +88,7 @@ impl fmt::Display for CapabilitySupport {
     }
 }
 
-/// What an input operation does, independently of how it is delivered.
+/// What an input operation does, independently of how it is submitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum InputOperationKind {
@@ -133,39 +133,55 @@ impl fmt::Display for InputOperationKind {
     }
 }
 
-/// How an input event reaches its target.
+/// How an input event is submitted.
 ///
-/// This is a separate axis from what the operation does, because the two do not
-/// vary together: a target may accept background keystrokes and no background
-/// pointer input, and one that accepts neither may still accept both through the
-/// system input path.
+/// The route is separate from the operation kind and from the evidence a native
+/// API returns. A caller must select a route explicitly; none is a promise that
+/// the target application consumed the event or changed state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum InputDelivery {
-    /// The operating system's own input path, which affects whatever is focused
-    /// and is subject to focus and integrity rules.
+    /// The operating system input path, affecting the focused system target.
     System,
-    /// Delivery addressed to the target itself, without activating it.
-    BackgroundTarget,
+    /// A message addressed to one exact window.
+    WindowMessage,
+    /// An event addressed to the process that owns the selected target.
+    ProcessDirected,
 }
 
 impl InputDelivery {
-    /// Every delivery mechanism version one knows about.
-    pub const ALL: [Self; 2] = [InputDelivery::System, InputDelivery::BackgroundTarget];
+    /// Every delivery route version one knows about.
+    pub const ALL: [Self; 3] = [
+        InputDelivery::System,
+        InputDelivery::WindowMessage,
+        InputDelivery::ProcessDirected,
+    ];
 
-    /// Returns a stable lowercase slug, for logs and the C ABI mapping.
+    /// Returns the address scope inherent to this route.
+    #[must_use]
+    pub const fn address_scope(self) -> InputAddressScope {
+        match self {
+            InputDelivery::System => InputAddressScope::FocusedSystem,
+            InputDelivery::WindowMessage => InputAddressScope::ExactWindow,
+            InputDelivery::ProcessDirected => InputAddressScope::OwningProcess,
+        }
+    }
+
+    /// Returns a stable lowercase slug, for diagnostics and the C ABI mapping.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             InputDelivery::System => "system",
-            InputDelivery::BackgroundTarget => "background_target",
+            InputDelivery::WindowMessage => "window_message",
+            InputDelivery::ProcessDirected => "process_directed",
         }
     }
 
-    const fn index(self) -> u32 {
+    const fn index(self) -> usize {
         match self {
             InputDelivery::System => 0,
-            InputDelivery::BackgroundTarget => 1,
+            InputDelivery::WindowMessage => 1,
+            InputDelivery::ProcessDirected => 2,
         }
     }
 }
@@ -176,25 +192,155 @@ impl fmt::Display for InputDelivery {
     }
 }
 
-/// Which operation-and-delivery combinations a target accepts.
+/// What native object or subsystem a route addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum InputAddressScope {
+    /// The operating system input stream and whatever target is focused.
+    FocusedSystem,
+    /// One exact selected window.
+    ExactWindow,
+    /// The process that owns the selected target.
+    OwningProcess,
+}
+
+impl InputAddressScope {
+    /// Returns a stable lowercase slug, for diagnostics and the C ABI mapping.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            InputAddressScope::FocusedSystem => "focused_system",
+            InputAddressScope::ExactWindow => "exact_window",
+            InputAddressScope::OwningProcess => "owning_process",
+        }
+    }
+}
+
+impl fmt::Display for InputAddressScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// The strongest native submission fact a route can report.
 ///
-/// The supported set is a set of pairs rather than one list of operations and
-/// one list of mechanisms. The cross product would claim combinations no Adapter
-/// verified: advertising `Keyboard` and `BackgroundTarget` separately says
-/// background keystrokes work, and that is a different claim from being able to
-/// deliver keystrokes at all.
-///
-/// A default capability supports nothing, which is what a capture-only target
-/// reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct InputCapability {
-    /// One bit per (operation, delivery) pair.
-    pairs: u8,
-    /// One bit per delivery mechanism that needs the target focused.
-    focus: u8,
-    /// One bit per coordinate space a pointer position may be expressed in.
-    spaces: u8,
+/// These variants are independent facts rather than an ordered confidence score.
+/// None implies application consumption or visual effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum SubmissionEvidence {
+    /// A posting API was invoked and returned without a submission result.
+    InvocationOnly,
+    /// The system input mechanism reported complete insertion.
+    SystemInputAdmission,
+    /// The selected target queue accepted the native representation.
+    TargetQueueAdmission,
+    /// A documented target-specific protocol acknowledged the logical event.
+    TargetProtocolAcknowledgement,
+}
+
+impl SubmissionEvidence {
+    /// Returns a stable lowercase slug, for diagnostics and the C ABI mapping.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            SubmissionEvidence::InvocationOnly => "invocation_only",
+            SubmissionEvidence::SystemInputAdmission => "system_input_admission",
+            SubmissionEvidence::TargetQueueAdmission => "target_queue_admission",
+            SubmissionEvidence::TargetProtocolAcknowledgement => "target_protocol_acknowledgement",
+        }
+    }
+}
+
+impl fmt::Display for SubmissionEvidence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// The complete capability metadata for one operation-and-route pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InputRouteCapability {
+    operation: InputOperationKind,
+    route: InputDelivery,
+    support: CapabilitySupport,
+    focus_required: bool,
+    pointer_spaces: u8,
     permission: Option<PermissionKind>,
+    evidence: Option<SubmissionEvidence>,
+}
+
+impl InputRouteCapability {
+    /// Returns the operation this row describes.
+    #[must_use]
+    pub const fn operation(self) -> InputOperationKind {
+        self.operation
+    }
+
+    /// Returns the route this row describes.
+    #[must_use]
+    pub const fn route(self) -> InputDelivery {
+        self.route
+    }
+
+    /// Returns the route's address scope.
+    #[must_use]
+    pub const fn address_scope(self) -> InputAddressScope {
+        self.route.address_scope()
+    }
+
+    /// Returns whether the pair is supported, unsupported, or attemptable with
+    /// unknown application compatibility.
+    #[must_use]
+    pub const fn support(self) -> CapabilitySupport {
+        self.support
+    }
+
+    /// Reports whether this pair may be attempted.
+    #[must_use]
+    pub const fn may_attempt(self) -> bool {
+        self.support.may_attempt()
+    }
+
+    /// Reports whether this pair requires the selected target to be focused.
+    #[must_use]
+    pub const fn focus_required(self) -> bool {
+        self.focus_required
+    }
+
+    /// Reports whether a pointer position may use `space` for this route.
+    #[must_use]
+    pub const fn accepts_pointer_space(self, space: CoordinateSpace) -> bool {
+        self.pointer_spaces & space_bit(space) != 0
+    }
+
+    /// Returns the authorization this pair ordinarily requires.
+    #[must_use]
+    pub const fn permission(self) -> Option<PermissionKind> {
+        self.permission
+    }
+
+    /// Returns the strongest submission evidence this pair can report.
+    #[must_use]
+    pub const fn evidence(self) -> Option<SubmissionEvidence> {
+        self.evidence
+    }
+}
+
+const INPUT_PAIR_COUNT: usize = InputOperationKind::ALL.len() * InputDelivery::ALL.len();
+
+/// Capability metadata for every operation-and-route pair on one target.
+///
+/// A default capability marks every pair unsupported. Callers inspect one
+/// [`InputRouteCapability`] at a time, so support, scope, focus, permission,
+/// coordinate, and evidence facts cannot be accidentally combined across routes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InputCapability {
+    support: [CapabilitySupport; INPUT_PAIR_COUNT],
+    focus: [bool; INPUT_PAIR_COUNT],
+    spaces: [u8; INPUT_PAIR_COUNT],
+    permissions: [Option<PermissionKind>; INPUT_PAIR_COUNT],
+    evidence: [Option<SubmissionEvidence>; INPUT_PAIR_COUNT],
 }
 
 impl InputCapability {
@@ -202,86 +348,105 @@ impl InputCapability {
     #[must_use]
     pub const fn none() -> Self {
         Self {
-            pairs: 0,
-            focus: 0,
-            spaces: 0,
-            permission: None,
+            support: [CapabilitySupport::Unsupported; INPUT_PAIR_COUNT],
+            focus: [false; INPUT_PAIR_COUNT],
+            spaces: [0; INPUT_PAIR_COUNT],
+            permissions: [None; INPUT_PAIR_COUNT],
+            evidence: [None; INPUT_PAIR_COUNT],
         }
     }
 
-    /// Adds one verified operation-and-delivery combination.
+    /// Configures one operation-and-route pair.
     #[must_use]
-    pub const fn with_pair(mut self, kind: InputOperationKind, delivery: InputDelivery) -> Self {
-        self.pairs |= pair_bit(kind, delivery);
+    pub const fn with_pair(
+        mut self,
+        operation: InputOperationKind,
+        route: InputDelivery,
+        support: CapabilitySupport,
+        evidence: SubmissionEvidence,
+    ) -> Self {
+        let index = pair_index(operation, route);
+        self.support[index] = support;
+        self.evidence[index] = Some(evidence);
         self
     }
 
-    /// Records that `delivery` reaches the target only while it is focused.
+    /// Records that one operation-and-route pair requires focus.
     #[must_use]
-    pub const fn with_focus_required(mut self, delivery: InputDelivery) -> Self {
-        self.focus |= delivery_bit(delivery);
+    pub const fn with_focus_required(
+        mut self,
+        operation: InputOperationKind,
+        route: InputDelivery,
+    ) -> Self {
+        self.focus[pair_index(operation, route)] = true;
         self
     }
 
-    /// Adds a coordinate space a pointer position may be given in.
+    /// Adds a coordinate space accepted by pointer input over `route`.
     #[must_use]
-    pub const fn with_pointer_space(mut self, space: CoordinateSpace) -> Self {
-        self.spaces |= space_bit(space);
+    pub const fn with_pointer_space(
+        mut self,
+        route: InputDelivery,
+        space: CoordinateSpace,
+    ) -> Self {
+        self.spaces[pair_index(InputOperationKind::Pointer, route)] |= space_bit(space);
         self
     }
 
-    /// Records the authorization input delivery ordinarily requires.
+    /// Records the authorization one operation-and-route pair ordinarily needs.
     #[must_use]
-    pub const fn with_permission(mut self, permission: PermissionKind) -> Self {
-        self.permission = Some(permission);
+    pub const fn with_permission(
+        mut self,
+        operation: InputOperationKind,
+        route: InputDelivery,
+        permission: PermissionKind,
+    ) -> Self {
+        self.permissions[pair_index(operation, route)] = Some(permission);
         self
     }
 
-    /// Reports whether `kind` can be delivered through `delivery`.
+    /// Returns the complete metadata for one operation-and-route pair.
     #[must_use]
-    pub const fn supports(self, kind: InputOperationKind, delivery: InputDelivery) -> bool {
-        self.pairs & pair_bit(kind, delivery) != 0
+    pub const fn pair(
+        self,
+        operation: InputOperationKind,
+        route: InputDelivery,
+    ) -> InputRouteCapability {
+        let index = pair_index(operation, route);
+        InputRouteCapability {
+            operation,
+            route,
+            support: self.support[index],
+            focus_required: self.focus[index],
+            pointer_spaces: self.spaces[index],
+            permission: self.permissions[index],
+            evidence: self.evidence[index],
+        }
     }
 
-    /// Reports whether any combination is supported.
+    /// Reports whether any pair is supported or attemptable with unknown
+    /// application compatibility.
     #[must_use]
     pub const fn is_available(self) -> bool {
-        self.pairs != 0
-    }
-
-    /// Reports whether `delivery` requires the target to be focused.
-    #[must_use]
-    pub const fn requires_focus(self, delivery: InputDelivery) -> bool {
-        self.focus & delivery_bit(delivery) != 0
-    }
-
-    /// Reports whether a pointer position may be expressed in `space`.
-    ///
-    /// A coordinate space this build does not know about is not accepted, for
-    /// the reason an unknown space is not convertible: a newer caller must not
-    /// believe an older library will resolve a position it cannot.
-    #[must_use]
-    pub const fn accepts_pointer_space(self, space: CoordinateSpace) -> bool {
-        self.spaces & space_bit(space) != 0
-    }
-
-    /// Returns the authorization input delivery ordinarily requires, if any.
-    #[must_use]
-    pub const fn permission(self) -> Option<PermissionKind> {
-        self.permission
+        let mut index = 0;
+        while index < INPUT_PAIR_COUNT {
+            if self.support[index].may_attempt() {
+                return true;
+            }
+            index += 1;
+        }
+        false
     }
 }
 
-const fn pair_bit(kind: InputOperationKind, delivery: InputDelivery) -> u8 {
-    // Three operations and two mechanisms occupy six of the eight bits. Every
-    // variant is matched by `index`, so a kind or mechanism added later is a
-    // compile error in this package rather than a pair that silently reports
-    // unsupported.
-    1u8 << (kind.index() * 2 + delivery.index())
+impl Default for InputCapability {
+    fn default() -> Self {
+        Self::none()
+    }
 }
 
-const fn delivery_bit(delivery: InputDelivery) -> u8 {
-    1u8 << delivery.index()
+const fn pair_index(operation: InputOperationKind, route: InputDelivery) -> usize {
+    operation.index() as usize * InputDelivery::ALL.len() + route.index()
 }
 
 const fn space_bit(space: CoordinateSpace) -> u8 {
@@ -405,8 +570,8 @@ impl fmt::Display for TargetCapability {
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilitySupport, InputCapability, InputDelivery, InputOperationKind, TargetCapability,
-        TargetKind,
+        CapabilitySupport, InputAddressScope, InputCapability, InputDelivery, InputOperationKind,
+        SubmissionEvidence, TargetCapability, TargetKind,
     };
     use crate::geometry::CoordinateSpace;
     use crate::permission::PermissionKind;
@@ -418,9 +583,12 @@ mod tests {
         assert_eq!(capability.kind(), Some(TargetKind::Display));
         assert_eq!(capability.capture(), CapabilitySupport::Supported);
         assert!(!capability.input().is_available());
-        for kind in InputOperationKind::ALL {
-            for delivery in InputDelivery::ALL {
-                assert!(!capability.input().supports(kind, delivery));
+        for operation in InputOperationKind::ALL {
+            for route in InputDelivery::ALL {
+                assert_eq!(
+                    capability.input().pair(operation, route).support(),
+                    CapabilitySupport::Unsupported
+                );
             }
         }
     }
@@ -430,98 +598,143 @@ mod tests {
         let input = InputCapability::none()
             .with_pair(
                 InputOperationKind::Keyboard,
-                InputDelivery::BackgroundTarget,
+                InputDelivery::WindowMessage,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::TargetProtocolAcknowledgement,
             )
-            .with_pair(InputOperationKind::Pointer, InputDelivery::System);
+            .with_pair(
+                InputOperationKind::Pointer,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            );
 
-        assert!(input.supports(
-            InputOperationKind::Keyboard,
-            InputDelivery::BackgroundTarget
-        ));
-        assert!(input.supports(InputOperationKind::Pointer, InputDelivery::System));
-        assert!(
-            !input.supports(InputOperationKind::Pointer, InputDelivery::BackgroundTarget),
-            "background pointer input was never advertised"
+        assert_eq!(
+            input
+                .pair(InputOperationKind::Keyboard, InputDelivery::WindowMessage)
+                .support(),
+            CapabilitySupport::Supported
         );
-        assert!(
-            !input.supports(InputOperationKind::Keyboard, InputDelivery::System),
+        assert_eq!(
+            input
+                .pair(InputOperationKind::Pointer, InputDelivery::System)
+                .support(),
+            CapabilitySupport::Supported
+        );
+        assert_eq!(
+            input
+                .pair(InputOperationKind::Pointer, InputDelivery::WindowMessage)
+                .support(),
+            CapabilitySupport::Unsupported,
+            "window-message pointer input was never advertised"
+        );
+        assert_eq!(
+            input
+                .pair(InputOperationKind::Keyboard, InputDelivery::System)
+                .support(),
+            CapabilitySupport::Unsupported,
             "system keyboard input was never advertised"
         );
-        assert!(!input.supports(InputOperationKind::Text, InputDelivery::System));
     }
 
     #[test]
-    fn every_pair_occupies_its_own_bit() {
-        let mut all = InputCapability::none();
-        for kind in InputOperationKind::ALL {
-            for delivery in InputDelivery::ALL {
-                all = all.with_pair(kind, delivery);
-            }
-        }
-
-        for kind in InputOperationKind::ALL {
-            for delivery in InputDelivery::ALL {
-                assert!(all.supports(kind, delivery), "{kind} over {delivery}");
-                let single = InputCapability::none().with_pair(kind, delivery);
-                let others = InputOperationKind::ALL.into_iter().flat_map(|other_kind| {
-                    InputDelivery::ALL
-                        .into_iter()
-                        .map(move |other_delivery| (other_kind, other_delivery))
-                });
-                for (other_kind, other_delivery) in others {
-                    assert_eq!(
-                        single.supports(other_kind, other_delivery),
-                        other_kind == kind && other_delivery == delivery,
-                        "{kind}/{delivery} leaked into {other_kind}/{other_delivery}"
-                    );
+    fn every_pair_has_independent_metadata() {
+        for operation in InputOperationKind::ALL {
+            for route in InputDelivery::ALL {
+                let single = InputCapability::none().with_pair(
+                    operation,
+                    route,
+                    CapabilitySupport::Unknown,
+                    SubmissionEvidence::InvocationOnly,
+                );
+                for other_operation in InputOperationKind::ALL {
+                    for other_route in InputDelivery::ALL {
+                        assert_eq!(
+                            single.pair(other_operation, other_route).may_attempt(),
+                            other_operation == operation && other_route == route,
+                            "{operation}/{route} leaked into {other_operation}/{other_route}"
+                        );
+                    }
                 }
             }
         }
     }
 
     #[test]
-    fn focus_is_recorded_per_delivery_mechanism() {
-        let input = InputCapability::none()
-            .with_pair(InputOperationKind::Text, InputDelivery::System)
-            .with_pair(InputOperationKind::Text, InputDelivery::BackgroundTarget)
-            .with_focus_required(InputDelivery::System);
+    fn unknown_is_attemptable_and_unsupported_is_not() {
+        let input = InputCapability::none().with_pair(
+            InputOperationKind::Text,
+            InputDelivery::ProcessDirected,
+            CapabilitySupport::Unknown,
+            SubmissionEvidence::InvocationOnly,
+        );
 
-        assert!(input.requires_focus(InputDelivery::System));
+        let unknown = input.pair(InputOperationKind::Text, InputDelivery::ProcessDirected);
+        assert_eq!(unknown.support(), CapabilitySupport::Unknown);
+        assert!(unknown.may_attempt());
+        assert_eq!(unknown.address_scope(), InputAddressScope::OwningProcess);
+        assert_eq!(unknown.evidence(), Some(SubmissionEvidence::InvocationOnly));
         assert!(
-            !input.requires_focus(InputDelivery::BackgroundTarget),
-            "non-activating delivery is the one that does not need focus"
+            !input
+                .pair(InputOperationKind::Text, InputDelivery::WindowMessage)
+                .may_attempt()
         );
     }
 
     #[test]
-    fn only_declared_pointer_spaces_are_accepted() {
+    fn focus_permission_and_coordinates_are_pair_local() {
         let input = InputCapability::none()
-            .with_pair(InputOperationKind::Pointer, InputDelivery::System)
-            .with_pointer_space(CoordinateSpace::CapturePixels)
-            .with_pointer_space(CoordinateSpace::DesktopLogical);
+            .with_pair(
+                InputOperationKind::Pointer,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            )
+            .with_pair(
+                InputOperationKind::Text,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            )
+            .with_focus_required(InputOperationKind::Text, InputDelivery::System)
+            .with_pointer_space(InputDelivery::System, CoordinateSpace::CapturePixels)
+            .with_pointer_space(InputDelivery::System, CoordinateSpace::DesktopLogical)
+            .with_permission(
+                InputOperationKind::Text,
+                InputDelivery::System,
+                PermissionKind::InputControl,
+            );
 
-        assert!(input.accepts_pointer_space(CoordinateSpace::CapturePixels));
-        assert!(input.accepts_pointer_space(CoordinateSpace::DesktopLogical));
-        assert!(!input.accepts_pointer_space(CoordinateSpace::FrameNormalized));
-        assert!(!input.accepts_pointer_space(CoordinateSpace::TargetNormalized));
-        assert!(!input.accepts_pointer_space(CoordinateSpace::TargetLogical));
+        let pointer = input.pair(InputOperationKind::Pointer, InputDelivery::System);
+        assert!(!pointer.focus_required());
+        assert!(pointer.accepts_pointer_space(CoordinateSpace::CapturePixels));
+        assert!(pointer.accepts_pointer_space(CoordinateSpace::DesktopLogical));
+        assert!(!pointer.accepts_pointer_space(CoordinateSpace::FrameNormalized));
+        assert_eq!(pointer.permission(), None);
+
+        let text = input.pair(InputOperationKind::Text, InputDelivery::System);
+        assert!(text.focus_required());
+        assert_eq!(text.permission(), Some(PermissionKind::InputControl));
+        assert_eq!(text.address_scope(), InputAddressScope::FocusedSystem);
     }
 
     #[test]
-    fn an_unknown_capability_may_still_be_attempted() {
-        assert!(CapabilitySupport::Supported.may_attempt());
-        assert!(CapabilitySupport::Unknown.may_attempt());
-        assert!(!CapabilitySupport::Unsupported.may_attempt());
-    }
-
-    #[test]
-    fn a_capability_records_the_authorizations_each_operation_needs() {
+    fn capability_records_capture_and_pair_authorizations_separately() {
         let capability = TargetCapability::new(
             TargetKind::Window,
             CapabilitySupport::Supported,
             InputCapability::none()
-                .with_pair(InputOperationKind::Pointer, InputDelivery::System)
-                .with_permission(PermissionKind::InputControl),
+                .with_pair(
+                    InputOperationKind::Pointer,
+                    InputDelivery::System,
+                    CapabilitySupport::Supported,
+                    SubmissionEvidence::SystemInputAdmission,
+                )
+                .with_permission(
+                    InputOperationKind::Pointer,
+                    InputDelivery::System,
+                    PermissionKind::InputControl,
+                ),
         )
         .with_capture_permission(PermissionKind::ScreenCapture);
 
@@ -530,7 +743,10 @@ mod tests {
             Some(PermissionKind::ScreenCapture)
         );
         assert_eq!(
-            capability.input().permission(),
+            capability
+                .input()
+                .pair(InputOperationKind::Pointer, InputDelivery::System)
+                .permission(),
             Some(PermissionKind::InputControl)
         );
         let text = capability.to_string();

@@ -7,7 +7,8 @@
 //! matcher needs to bound and correlate a result.
 
 use std::fmt;
-use std::sync::Arc;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Weak};
 
 use mado_pilot_core::PixelExtent;
 
@@ -38,6 +39,59 @@ impl fmt::Display for BackendId {
     }
 }
 
+/// A non-owning identity for one compiled-template payload.
+///
+/// This token exists for bounded diagnostic metadata. It identifies every
+/// prepared-template clone or wrapper that shares one backend payload without
+/// retaining that payload. The payload allocation cannot be reused while this
+/// weak token can still report it as live.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct PreparedTemplateInstance {
+    token: Weak<dyn TemplatePayload>,
+}
+
+impl PreparedTemplateInstance {
+    /// Reports whether a prepared template still owns this token.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.token.strong_count() != 0
+    }
+
+    /// Reports whether two tokens came from clones of one prepared template.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_same(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.token, &other.token)
+    }
+}
+
+impl PartialEq for PreparedTemplateInstance {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_same(other)
+    }
+}
+
+impl Eq for PreparedTemplateInstance {}
+
+impl Hash for PreparedTemplateInstance {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // `Weak::ptr_eq` compares allocation addresses and ignores wide-pointer
+        // metadata, so the hash must do the same.
+        self.token.as_ptr().cast::<()>().hash(state);
+    }
+}
+
+impl fmt::Debug for PreparedTemplateInstance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedTemplateInstance")
+            .field("live", &self.is_live())
+            .finish_non_exhaustive()
+    }
+}
+
 /// A template compiled by one backend, ready to be matched repeatedly.
 ///
 /// Cloning shares the compiled state. Nothing about the value changes after
@@ -51,7 +105,6 @@ pub struct PreparedTemplate {
     defaults: MatchDefaults,
     payload: Arc<dyn TemplatePayload>,
 }
-
 impl PreparedTemplate {
     /// Builds a prepared template around a backend's compiled `payload`.
     ///
@@ -101,6 +154,18 @@ impl PreparedTemplate {
     #[must_use]
     pub fn payload(&self) -> &dyn TemplatePayload {
         self.payload.as_ref()
+    }
+
+    /// Returns a weak, clone-stable token for bounded diagnostic metadata.
+    ///
+    /// The token owns no compiled state and cannot expose or recover the
+    /// backend payload.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn diagnostic_instance(&self) -> PreparedTemplateInstance {
+        PreparedTemplateInstance {
+            token: Arc::downgrade(&self.payload),
+        }
     }
 }
 
@@ -181,6 +246,41 @@ mod tests {
                 .is_some()
         );
         assert!(prepared.payload().as_any().downcast_ref::<u64>().is_none());
+    }
+
+    #[test]
+    fn diagnostic_instances_are_clone_stable_weak_and_payload_distinct() {
+        let payload: Arc<dyn TemplatePayload> = Arc::new(Payload(7));
+        let prepared = PreparedTemplate::new(
+            BackendId::new("controlled"),
+            &source(),
+            Arc::clone(&payload),
+        );
+        let clone = prepared.clone();
+        let first = prepared.diagnostic_instance();
+        let cloned = clone.diagnostic_instance();
+        let same_payload = PreparedTemplate::new(
+            BackendId::new("controlled"),
+            &source(),
+            Arc::clone(&payload),
+        );
+        let shared = same_payload.diagnostic_instance();
+        let other = PreparedTemplate::new(
+            BackendId::new("controlled"),
+            &source(),
+            Arc::new(Payload(7)),
+        );
+        let second = other.diagnostic_instance();
+
+        assert_eq!(first, cloned);
+        assert_eq!(first, shared);
+        assert_ne!(first, second);
+        drop(payload);
+        drop(prepared);
+        assert!(first.is_live(), "the clone still owns the compiled payload");
+        drop(clone);
+        drop(same_payload);
+        assert!(!first.is_live(), "the token does not retain the payload");
     }
 
     #[test]

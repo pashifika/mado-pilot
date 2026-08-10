@@ -21,7 +21,7 @@ workload is rerun.
 ## Runs and sample plans
 
 Two runs are kept separate because capture can be sampled without irreversible
-input, while the public-language flow intentionally delivers to the repository's
+input, while the public-language flow intentionally submits to the repository's
 bounded fixture.
 
 | Run | Warmup | Samples | Reason |
@@ -55,10 +55,10 @@ external-display profile. A profile never averages across topologies.
 
 | Workload | Measured interval | Correctness oracle |
 |---|---|---|
-| `input_sequence` | Final preflight through receipt commit | Exact PID-qualified fixture; requested mechanism and focus policy are preserved; receipt is `Complete`; attempted, delivered, last-completed, failure, and cleanup fields agree; fixture acknowledges the bounded event kinds/count without retaining text; no fallback |
-| `rust_common_flow` | Native engine creation through discovery, open, frame, map, fixture input receipt, and close | Public Rust API completes against one exact target; every intermediate identity agrees; mapping and receipt survive owner teardown as documented; fixture acknowledges once; no capability substitution |
-| `c_common_flow` | ABI negotiation through the same native flow and release of every owned handle | ABI 1.1/table extent is exact; C projections match Rust values; frozen ownership rules hold; all handles and borrowed views obey their lifetimes; fixture acknowledges once; no panic/native exception crosses the table |
-| `cpp_common_flow` | API negotiation through the same flow using only `madopilot.hpp` and released C ABI | Move-only owners, child lifetime, value receipt, error copies, and cleanup behave as documented; the wrapper never uses a Rust symbol directly; fixture acknowledges once |
+| `input_sequence` | Final preflight through receipt commit | Exact PID-qualified fixture; requested route and focus policy are preserved; receipt is `Complete`; per-route attempts, submitted/last-submitted accounting, address scope, evidence, fault, possible partial native effect, and cleanup agree; fixture observes the bounded event kinds/count without retaining text; no fallback |
+| `rust_common_flow` | Native engine creation through discovery, open, frame, map, fixture input receipt, and close | Public Rust API completes against one exact target; every intermediate identity agrees; mapping and receipt survive owner teardown as documented; fixture observes once; no capability substitution |
+| `c_common_flow` | ABI negotiation through the same native flow and release of every owned handle | ABI 1.2/table extent is exact; C projections match Rust values; frozen ABI 1.0 ownership rules hold; all handles and borrowed views obey their lifetimes; fixture observes once; no panic/native exception crosses the table |
+| `cpp_common_flow` | API negotiation through the same flow using only `madopilot.hpp` and released C ABI | Move-only owners, child lifetime, owned receipt, error copies, and cleanup behave as documented; the wrapper never uses a Rust symbol directly; fixture observes once |
 
 The C and C++ workloads are measured as independent processes. Their process-load
 cost is reported separately from in-process ABI negotiation, so dynamic loading
@@ -78,9 +78,9 @@ records:
 - stale/drop/coalesce ratio with numerator and denominator stated; and
 - startup, close drain, resize recreation, and reset recovery durations.
 
-Input/common-flow reports attempted and delivered event counts, cleanup owed and
-released, partial/unexecuted outcomes, process startup, and handle/resource
-baselines. Sensitive payloads are never a measure.
+Input/common-flow reports attempted routes and submitted event counts, address
+scope, evidence, cleanup owed and released, partial/unexecuted outcomes, process
+startup, and handle/resource baselines. Sensitive payloads are never a measure.
 
 These predicates are hard gates on both targets:
 
@@ -99,10 +99,11 @@ These predicates are hard gates on both targets:
 7. Close leaves no platform-owned resource once the last retained public owner is
    released.
 
-Numeric latency and memory ceilings are set only after both native reports exist.
-A workload whose clock reading is zero receives an iteration-span or byte bound,
-not a fabricated sub-tick latency limit. A control workload may deliberately
-withhold a ceiling when its paired public-boundary workload owns the actual gate.
+Numeric latency and memory ceilings are set independently for each target after
+that target produces a valid report. A workload whose clock reading is zero
+receives an iteration-span or byte bound, not a fabricated sub-tick latency
+limit. A control workload may deliberately withhold a ceiling when its paired
+public-boundary workload owns the actual gate.
 
 ## Queue and storage policy
 
@@ -122,9 +123,9 @@ the output.
 ## Fixtures and native context
 
 - Windows capture uses the repository-owned synthetic Win32 window and dedicated
-  `MadoPilotInputFixture`; background input preserves focus and permits no system
-  fallback. The two-4K profile uses the approved signed-origin topology outside
-  work hours.
+  `MadoPilotInputFixture`; fixture-only `WindowMessage` submission preserves
+  focus and permits no system fallback. The two-4K profile uses the approved
+  signed-origin topology outside work hours.
 - macOS uses the repository-owned bundled input fixture, with Screen Recording
   and Accessibility separately granted to the launching terminal. System input
   may focus only the exact PID-qualified fixture. The external-display profile is

@@ -20,10 +20,11 @@ replaces one.
 
 The only ABI is the C one. Its complete 1.0 prefix is frozen under gate
 [`G-010`](validation-gates.md#g-010) by
-[ADR 0007](adr/0007-phase-1-c-abi-freeze.md), and its additive native
-capability, permission, and input suffix is frozen at ABI 1.1 by
-[ADR 0017](adr/0017-c-abi-1-1-native-input-prefix.md). What this header
-adds is source compatibility, governed by the Rust-side policy in
+[ADR 0007](adr/0007-phase-1-c-abi-freeze.md). ABI 1.2 replaces the unreleased
+1.1 draft with explicit input routes and submission evidence, owned receipt
+access, operation activity tags, and bounded diagnostic readers under
+[ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md). What this
+header adds is source compatibility, governed by the Rust-side policy in
 [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md): reviewed
 names, not yet a stability promise.
 
@@ -61,7 +62,7 @@ const madopilot::Api api = loaded.take();
 |---|---|---|
 | `Api` | nothing — the table belongs to the library | copyable |
 | `Error` | its own copies of the message and identifiers | copyable |
-| `Cancellation`, `Engine`, `TargetList`, `Package`, `Template`, `Session`, `Frame`, `Mapping`, `MatchResult` | one reference-counted C handle | `clone()` |
+| `Cancellation`, `Engine`, `TargetList`, `Package`, `Template`, `Session`, `Frame`, `Mapping`, `MatchResult`, `InputReceipt`, `DiagnosticReader`, `DiagnosticBatch` | one reference-counted C handle | `clone()` |
 
 **Every owner is move-only.** Copy construction and copy assignment are deleted,
 because an implicit copy would hide a reference-count bump behind an assignment.
@@ -96,9 +97,11 @@ negotiation that reported success without returning one.
 
 The C rule is that releasing a parent never invalidates a separately retained
 child, and the wrapper preserves it. A `Mapping` stays readable after its
-`Frame`, its `Session`, and its `Engine` are destroyed. A `Template` outlives
-its `Package`. A `MatchResult` outlives all of them, because it owns the exact
-frame it searched.
+`Frame`, `Session`, and `Engine` are destroyed. A `Template` outlives its
+`Package`. A `MatchResult` outlives all of them because it owns the exact frame
+it searched. An `InputReceipt` outlives its `Session` and `Engine`.
+A `DiagnosticReader` continues draining after engine release, and an owned
+`DiagnosticBatch` outlives both reader and engine.
 
 In a function returning `madopilot::Error`:
 
@@ -138,14 +141,13 @@ report arrives as a status in a `Result`, and no status is translated into an
 exception.
 
 The wrapper does throw what its own allocations throw, which is `std::bad_alloc`.
-Four places allocate, and all four are the wrapper making an owned copy for the
-caller: an error's text, when a failing call describes it; the vector
-`MatchResult::matches` fills; the copies a typed request keeps of what its C
-structure points at; and an explicit `BorrowedStr::to_string` or
-`BorrowedBytes::to_vector`. A caller that cannot tolerate `std::bad_alloc` from
-those can read `Error::status()` and the borrowed views without ever making a
-copy. Describing an error releases its C handle whether or not the copy of its
-text succeeds.
+Allocations occur only when the wrapper creates caller-owned storage: copying an
+error's text, filling `MatchResult::matches`, copying typed request storage,
+copying an explicit borrowed string or byte view, and engaging owned wrapper
+values such as diagnostic batches. A caller that cannot tolerate
+`std::bad_alloc` from text copies can read `Error::status()` and borrowed views
+without copying. Describing an error releases its C handle whether or not a text
+copy succeeds.
 
 ```cpp
 madopilot::Result<madopilot::Package> loaded = engine.load_package(source, operation);
@@ -203,33 +205,43 @@ says whose mistake it was; the fault pair says which one. No backend is named,
 because none ran. See
 [ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
 
-**An admitted input outcome is a successful value.** `Session::send_input`
-returns a failed `Result<InputReceipt>` when no receipt can be published:
-validation or table availability failed, the request was refused before
-admission, or the boundary contained an internal failure. Once admitted and
-returned normally, `Complete`, `Unexecuted`, and `Partial` are all successful
-`Result` values; the receipt carries delivered count, optional last-completed
-index, attempted deliveries, typed failure, and cleanup state.
+**An admitted input outcome is a successful owned value.**
+`Session::send_input` returns a failed `Result<InputReceipt>` when no receipt
+can be published: validation or table availability failed, the request was
+refused before admission, or the boundary contained an internal failure. Once
+admitted and returned normally, `Complete`, `Unexecuted`, and `Partial` are all
+successful values. `InputReceipt::describe()` reports selected route and address
+scope, submitted count and optional last-submitted index, submission evidence,
+typed fault, fallback, possible partial native effect, and cleanup state;
+`attempt_at()` preserves each route attempt.
+Semantic counts in `InputReceiptInfo` and each attempt stay `std::uint64_t`,
+exactly as the C records declare them; `attempt_count()` returns the
+`std::size_t` index domain that `attempt_at()` consumes.
 
 ```cpp
 const auto sent = session.send_input(request, operation);
 if (!sent) {
-    // No receipt is available; inspect the status before deciding what is safe.
+    // No receipt exists; inspect the status before deciding what is safe.
     return sent.error();
 }
-const madopilot::InputReceipt& receipt = sent.value();
-if (receipt.outcome == MADOPILOT_SEQUENCE_PARTIAL &&
-    receipt.failure && receipt.failure->may_leave_state_held()) {
+const madopilot::InputReceipt receipt = sent.value().clone();
+const auto described = receipt.describe();
+if (!described) {
+    return described.error();
+}
+const madopilot::InputReceiptInfo& info = described.value();
+if (info.outcome == MADOPILOT_SEQUENCE_PARTIAL &&
+    info.may_leave_state_held()) {
     // Incomplete, exhausted, and unknown cleanup values are conservative.
 }
 ```
 
-A zero delivered count does not make a `Partial` retry-safe: the current native
-event may have had an effect before it failed. The C receipt remains the
-authority; the wrapper neither turns it into an exception nor invents another
-error type.
-A failed result with `MADOPILOT_STATUS_INTERNAL_PANIC` is likewise not proof of
-zero effect and must not be retried automatically.
+A zero submitted count does not make a `Partial` retry-safe: the current native
+unit may have had an effect before a complete logical event reached the route's
+submission threshold. Submission evidence does not claim application
+consumption or visual change. A failed result with
+`MADOPILOT_STATUS_INTERNAL_PANIC` likewise proves neither and must not be retried
+automatically.
 
 **Zero matches is a success.** A search that qualified nothing returns a
 successful `Result` whose optional match is empty.
@@ -295,12 +307,12 @@ the text most likely to outlive the handle it came from.
 
 ## Typed requests
 
-`Operation`, `Source`, `PackageSource`, `InputOpenRequest`, `InputEvent`,
-`OpenRequest`, `MapRequest`, `MatchOptions`, `FindRequest`, and `InputRequest`
-are values a caller composes. Each fills the C structure's `struct_size` itself,
-so no call site can write a stale one. `InputRequest` owns its typed events and
-delivery plan, while each `to_c()` call owns an independent event-record
-projection that borrows text and delivery storage from that request.
+`Operation`, `EngineOptions`, `Source`, `PackageSource`, `InputOpenRequest`,
+`InputEvent`, `OpenRequest`, `MapRequest`, `MatchOptions`, `FindRequest`, and
+`InputRequest` are values a caller composes. Each fills the C structure's
+`struct_size` itself, so no call site can write a stale one. `InputRequest` owns
+its typed events and route plan, while each `to_c()` call owns an independent
+event-record projection that borrows text and route storage from that request.
 
 ```cpp
 const madopilot::Result<std::uint64_t> now = api.clock_now();
@@ -310,11 +322,14 @@ if (!now) {
 
 madopilot::Operation operation;
 operation.deadline(now.value() + 30ull * 1000 * 1000 * 1000)
-    .cancellation(token);
+    .cancellation(token)
+    .activity_tag(42);
 ```
 
 The deadline is an **absolute instant** in the library's monotonic domain, read
-from `Api::clock_now()` and added to. It is not a duration and not a wall clock.
+from `Api::clock_now()` and added to. It is not a duration or wall clock. The
+nonzero activity tag is opaque diagnostic correlation and changes no operation
+semantics.
 
 Three request values borrow handles rather than owning them, and say so:
 
@@ -329,9 +344,10 @@ Three request values borrow handles rather than owning them, and say so:
 function any more than it can name the C structure field, which is `tmpl` for
 the same reason.
 
-Rectangles stay coordinate-qualified. `Match::bounds` and `ResultInfo::searched`
-are `madopilot_pixel_rect_t` under the alias `Rect`, and each names the space it
-is measured in rather than reducing to an integer pair.
+Rectangles stay coordinate-qualified. `Match::bounds`, `ResultInfo::searched`,
+and `DiagnosticRecord::region` are `madopilot_pixel_rect_t` under the alias
+`Rect`, and each names the space it is measured in rather than reducing to an
+integer pair.
 
 A `Rect` the caller *supplies* is the other direction, and is narrower:
 `MapRequest::region` and `FindRequest::region` accept
@@ -342,21 +358,23 @@ comes back as a failed `Result` carrying
 not thrown. Converting before asking is the caller's step; see
 [c-abi.md](c-abi.md).
 
-Input capability keeps operation and delivery separate. `InputOpenRequest`
-accepts exact `MADOPILOT_INPUT_PAIR_*` masks; `OpenRequest::input` selects the
-ABI 1.1 open entry without changing the frozen C open record. `InputEvent`
-factories expose only one active variant and copy text. `InputRequest` copies
-events and delivery order, and keeps focus, geometry, source-frame, and cleanup
-policies explicit.
+Input capability keeps operation and route separate.
+`InputOpenRequest` accepts exact `MADOPILOT_INPUT_PAIR_*` masks;
+`OpenRequest::input` selects the ABI 1.2 open entry without changing the frozen C
+open record. `TargetList::input_capability` returns compatibility support,
+address scope, focus, permission, pointer spaces, and submission evidence for
+one exact pair. `InputEvent` factories expose one active variant and copy text.
+`InputRequest` copies events and route order, and keeps focus, geometry,
+source-frame, and cleanup policies explicit.
 
-The wrapper aliases, rather than restates, the fixed C limits.
+The wrapper aliases rather than restates fixed C limits.
 `InputEvent::max_text_chars`, `max_text_utf8_bytes`, `max_delay_nanos`,
 `max_scroll_notches`, `min_function_key`, and `max_function_key` expose event
 ceilings. `InputRequest::abi_max_events`, `max_cleanup_events`, and
 `max_cleanup_timeout_nanos` expose sequence and cleanup ceilings. A returned
 `InputDescriptor::max_events` may be lower than the ABI-wide sequence ceiling.
-See the [C input-limit table](c-abi.md#input-admission-delivery-and-receipts) for
-units and inclusive-range rules.
+See the [C input-limit table](c-abi.md#input-admission-submission-evidence-and-receipts)
+for units and inclusive-range rules.
 
 ```cpp
 madopilot::InputOpenRequest input;
@@ -376,11 +394,35 @@ request.event(madopilot::InputEvent::pointer_move(
     .source_frame(frame);
 ```
 
-`Engine::capabilities`, `Engine::permission`, `TargetList::capability`,
-`Engine::input_descriptor`, and `Session::input_descriptor` project the 1.1
-records into value types. Optional fields remain `std::optional`; an unknown C
-numeric value stays in its fixed-width alias rather than being narrowed into a
-wrapper enum.
+`Engine::capabilities`, `Engine::permission`,
+`TargetList::input_capability`, `Engine::input_descriptor`, and
+`Session::input_descriptor` project ABI 1.2 records into value types. Optional
+fields remain `std::optional`; an unknown C numeric value stays in its
+fixed-width alias rather than being narrowed into a wrapper enum.
+
+### Engine-scoped diagnostics
+
+Pass `EngineOptions::diagnostics(level, capacity)` to the engine constructor.
+The default is `diagnostics_off()` and allocates no queue.
+`Engine::take_diagnostic_reader()` returns the engine's single reader as an
+optional; diagnostics-off engines and repeated takes return an empty optional.
+
+`DiagnosticReader::drain()` is non-blocking and returns `BATCH`, `OPEN_EMPTY`, or
+`END_OF_STREAM`. An owned `DiagnosticBatch` reports retained-record and exact
+normal/debug loss counts, including loss-only batches, and provides indexed
+`DiagnosticRecord` values in strict sequence order. Records preserve presence
+flags rather than inventing optional values. They contain no borrowed string,
+event payload, or captured-byte view, so they remain ordinary values after the
+batch is released.
+A search record's `region` is the exact coordinate-qualified rectangle the
+search covered after clipping, not a space tag alone. Identity scalars are
+engine-scoped projections of the engine's own ordinals; comparing them across
+engines proves nothing.
+
+The reader can outlive the engine and drain already retained records after
+production seals. Draining is self-silent. The wrapper performs no logging,
+callback dispatch, ordering inference, or correlation logic beyond exposing the
+C values unchanged.
 
 ## Threads
 
@@ -403,16 +445,19 @@ detect.
 Session close races an in-flight operation safely, and both sides observe the
 terminal outcomes the C ABI defines. Two threads may send the same immutable
 `InputRequest`: each call builds an independent C projection before the runtime
-serializes the sequences, so their events cannot interleave. Mutating that
-request concurrently remains invalid caller behavior.
+serializes sequences, so their events cannot interleave. Several threads may
+clone and drain the same diagnostic reader; each committed batch contains
+disjoint records and exact intervening loss counts. Mutating a request or
+destroying its final owner concurrently remains invalid caller behavior.
 
-## What ABI 1.1 does not wrap
+## What ABI 1.2 does not wrap
 
-The 1.1 C table ends at input delivery, and the wrapper wraps only what is in
-that negotiated extent. There is no OCR, watcher, query, callback,
-callback-fence, acceleration, packaging, or native-frame type.
-`crates/bindings/capi/tests/cpp_surface.rs` asserts that inventory and rejects
-close spellings, so a deferred surface cannot appear accidentally.
+The 1.2 C table ends at bounded diagnostic batch access, and the wrapper wraps
+only that negotiated extent. There is no OCR, watcher, action, retry,
+wait-for-effect, callback, callback-fence, acceleration, packaging, or
+native-frame type. Receipt submission and a later visual search remain separate
+operations. `crates/bindings/capi/tests/cpp_surface.rs` asserts that inventory
+and rejects close spellings, so a deferred surface cannot appear accidentally.
 
 `Api::table()` is the escape hatch: it returns the negotiated
 `const madopilot_api_t*` for a caller that needs an entry this wrapper does not
@@ -488,7 +533,8 @@ half it:
    `static_assert`s prove the move-only shape, lvalue-only view accessors, owned
    request storage, and preservation of unknown C values, while runtime checks
    prove clone independence, parent/child lifetime, error release under a
-   throwing copy, zero-match success, ABI 1.0 extent gating, receipt behavior,
+   throwing copy, zero-match success, ABI 1.0 extent gating, owned receipt and
+   attempt behavior, diagnostic reader/batch lifetime and concurrent drains,
    close reporting, and concurrent const access;
 2. compiles and runs `examples/cpp/deterministic-slice.cpp` and requires the
    same match rectangles and scores as the C example;
@@ -497,16 +543,18 @@ half it:
    before stopping without discovery or input. Windows CI instead asks
    `c-abi-check --windows-native-fixture` to own the dedicated fixture and pass
    its exact PID-qualified title to both native language examples; this exercises
-   discovery, capture, mapping, bounded background input, receipt inspection, and
-   explicit close without taking focus or permitting system fallback;
+   discovery, capture, mapping, one bounded window-message sequence, submission
+   evidence and receipt attempts, a strictly newer visual observation, diagnostics,
+   and explicit close without taking focus or permitting system fallback;
 4. configures, builds, and runs the independent CMake consumer project under
    CTest. That project also builds the native example through `MadoPilot::Cpp`
    alone and runs its safe `--check` mode.
 
 Passing the native example an exact full fixture title directly enables the same
-common flow. That mode sends real input on macOS and fixture-gated background
-input on Windows; run it only against the dedicated fixture described in the
-platform verification document.
+common flow. That mode sends real system input on macOS and
+target-protocol-acknowledged window-message input on Windows, then evaluates a
+newer frame separately; run it only against the dedicated fixture described in
+the platform verification document.
 
 The check needs a C++ compiler and **CMake 3.22 or later** in addition to the C
 compiler. Both are the release target's own on both hosts; set `CXX` or `CMAKE`
@@ -516,5 +564,6 @@ which the check finds the CMake that Visual Studio ships.
 
 The checks that need no C++ compiler are in
 `crates/bindings/capi/tests/cpp_surface.rs` and run under plain `cargo test`:
-the declared type inventory, the absence of later-phase concepts, one owner per
-reference-counted handle, and that no C enumerated value is restated.
+the declared ABI 1.2 type inventory, absence of deferred concepts, one owner per
+reference-counted handle, compile-time rejection of removed ABI 1.1 vocabulary,
+and proof that no C enumerated value is restated.

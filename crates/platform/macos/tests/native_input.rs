@@ -4,12 +4,12 @@
 //!
 //! # What runs by default and what does not
 //!
-//! macOS has no background input channel, so there is no way to deliver an event
-//! to a fixture without focusing it and posting real system input. The default
-//! suite therefore delivers nothing: it exercises the read-only native
+//! macOS has no target-directed input channel, so there is no way to submit an
+//! event to a fixture without focusing it and posting real system input. The
+//! default suite therefore submits nothing: it exercises the read-only native
 //! observations, the provider's input surface, and the refusals that happen
-//! before any event. Successful delivery is the explicit, user-focused check at
-//! the bottom, which is ignored by default and documented in
+//! before any event. Successful submission is the explicit, user-focused check
+//! at the bottom, which is ignored by default and documented in
 //! `docs/macos-input-verification.md`.
 
 use std::io::{BufRead, BufReader};
@@ -24,15 +24,15 @@ use mado_pilot_capture::{
     CaptureProvider, FrameRequest, OpenRequest, PixelFormat, TargetDescription,
 };
 use mado_pilot_core::{
-    IdentityIssuer, InputDelivery, InputOperationKind, OperationContext, PermissionKind,
-    PermissionProbe, PermissionState, Status, TargetId, TargetKind,
+    CapabilitySupport, IdentityIssuer, InputDelivery, InputOperationKind, OperationContext,
+    PermissionKind, PermissionProbe, PermissionState, Status, TargetId, TargetKind,
 };
 use mado_pilot_input::{
     DeliveryPlan, FocusPolicy, InputEvent, InputFault, InputOpenRequest, InputProvider,
     InputRequest, InputRequirement, InputSequence, Key, SequenceOutcome,
 };
 use mado_pilot_platform_macos::fixture_protocol::{
-    EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE, MAX_RECORDED_EVENTS,
+    EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE, FixtureSelectionError, MAX_RECORDED_EVENTS,
     fixture_ready_context_is_approved, fixture_title, frame_is_fixture_content,
     frame_is_replacement_content, parse_event_line, select_unique_fixture,
     with_confirmed_fixture_content,
@@ -93,22 +93,23 @@ fn every_discovered_target_reports_the_input_this_adapter_implements() {
 
     for target in &targets {
         let input = target.capability().input();
-        assert_eq!(
-            input.permission(),
-            Some(PermissionKind::InputControl),
-            "every macOS target names Accessibility as the authorization input needs"
-        );
         for kind in InputOperationKind::ALL {
-            assert!(
-                !input.supports(kind, InputDelivery::BackgroundTarget),
-                "a discovered macOS target advertised background {}",
+            assert_eq!(
+                input.pair(kind, InputDelivery::WindowMessage).support(),
+                CapabilitySupport::Unsupported,
+                "a discovered macOS target advertised exact-window {}",
                 kind.as_str()
             );
         }
-        assert!(input.supports(InputOperationKind::Pointer, InputDelivery::System));
+        let pointer = input.pair(InputOperationKind::Pointer, InputDelivery::System);
+        assert_eq!(pointer.support(), CapabilitySupport::Supported);
+        assert_eq!(pointer.permission(), Some(PermissionKind::InputControl));
         let expects_keyboard = target.capability().kind() == Some(TargetKind::Window);
         assert_eq!(
-            input.supports(InputOperationKind::Keyboard, InputDelivery::System),
+            input
+                .pair(InputOperationKind::Keyboard, InputDelivery::System)
+                .support()
+                == CapabilitySupport::Supported,
             expects_keyboard,
             "only a window is a focusable target"
         );
@@ -141,7 +142,7 @@ fn a_described_target_reports_its_own_identity_and_a_foreign_one_is_refused() {
 }
 
 #[test]
-fn an_open_that_requires_background_delivery_fails_without_establishing_anything() {
+fn an_open_that_requires_window_message_fails_without_establishing_anything() {
     let provider = provider();
     let Some(targets) = discovered(&provider) else {
         println!("skipped: this host offers no capture capability");
@@ -160,16 +161,16 @@ fn an_open_that_requires_background_delivery_fails_without_establishing_anything
         window.id(),
         &InputOpenRequest::new()
             .with_requirement(InputRequirement::Required)
-            .requiring(InputOperationKind::Pointer, InputDelivery::BackgroundTarget),
+            .requiring(InputOperationKind::Pointer, InputDelivery::WindowMessage),
         &context(),
     )
-    .expect_err("macOS implements no background delivery");
+    .expect_err("macOS implements no WindowMessage route");
 
     assert_eq!(error.status(), Status::Unsupported);
 }
 
 #[test]
-fn a_preserving_request_to_an_unfocused_window_delivers_nothing() {
+fn a_preserving_request_to_an_unfocused_window_submits_nothing() {
     // The point of this check is that it is safe to run anywhere: a focus policy
     // that will not activate cannot satisfy system delivery, so the refusal
     // happens before any event and the developer's desktop is untouched.
@@ -195,11 +196,15 @@ fn a_preserving_request_to_an_unfocused_window_delivers_nothing() {
         DeliveryPlan::require(InputDelivery::System),
     );
 
-    let error = controller
+    let receipt = controller
         .execute(&request, &context())
-        .expect_err("preserve cannot satisfy a focus-requiring mechanism");
+        .expect("focus-policy refusal is receipt evidence");
 
-    assert_eq!(error.status(), Status::Unsupported);
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.fault(), Some(InputFault::FocusRequired));
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
     controller.close(&context()).expect("close");
     assert!(controller.is_closed());
 }
@@ -235,9 +240,9 @@ fn an_unfocused_window_refuses_a_require_focused_sequence_before_any_event() {
         .execute(&request, &context())
         .expect("an admitted sequence produces a receipt");
 
-    assert_eq!(receipt.delivered(), 0);
+    assert_eq!(receipt.submitted(), 0);
     assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    let fault = receipt.failure().expect("a reason");
+    let fault = receipt.fault().expect("a reason");
     assert!(
         matches!(
             fault,
@@ -478,6 +483,24 @@ fn fixture_executable() -> Option<std::path::PathBuf> {
     executable.is_file().then_some(executable)
 }
 
+fn discover_unique_fixture(
+    provider: &MacosCaptureProvider,
+    process_id: u32,
+    wait: Duration,
+) -> Result<TargetDescription, FixtureSelectionError> {
+    let started = Instant::now();
+    loop {
+        let targets = discovered(provider).ok_or(FixtureSelectionError::NotFound)?;
+        match select_unique_fixture(&targets, process_id) {
+            Ok(target) => return Ok(target.clone()),
+            Err(_) if started.elapsed() < wait => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[test]
 fn the_fixture_starts_publishes_its_title_and_is_selected_exactly_once() {
     if std::env::var_os("MADO_PILOT_MACOS_FIXTURE").is_none() {
@@ -492,13 +515,8 @@ fn the_fixture_starts_publishes_its_title_and_is_selected_exactly_once() {
         return;
     };
     let provider = provider();
-    let Some(targets) = discovered(&provider) else {
-        println!("skipped: this host offers no capture capability");
-        return;
-    };
-
-    let chosen = select_unique_fixture(&targets, fixture.process_id)
-        .expect("exactly one approved fixture is discoverable");
+    let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+        .expect("exactly one approved fixture becomes discoverable");
 
     assert_eq!(chosen.name(), fixture_title(fixture.process_id));
     assert_eq!(chosen.capability().kind(), Some(TargetKind::Window));
@@ -519,9 +537,8 @@ fn owned_window_replacement_never_retargets_the_retained_filter() {
     let fixture =
         Fixture::start_replacing().expect("the replacement fixture starts on this desktop");
     let provider = provider();
-    let targets = discovered(&provider).expect("this check needs Screen Recording granted");
-    let original = select_unique_fixture(&targets, fixture.process_id)
-        .expect("the original fixture is selected exactly once");
+    let original = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+        .expect("the original fixture becomes discoverable exactly once");
 
     let capture = CaptureProvider::open(
         &provider,
@@ -594,10 +611,8 @@ fn owned_window_replacement_never_retargets_the_retained_filter() {
     }
     original_close.expect("the observed original session closes");
 
-    let replacements =
-        discovered(&provider).expect("the successor remains discoverable after replacement");
-    let replacement = select_unique_fixture(&replacements, fixture.process_id)
-        .expect("the same-process successor is selected exactly once");
+    let replacement = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+        .expect("the same-process successor becomes discoverable exactly once");
     let replacement_capture = CaptureProvider::open(
         &provider,
         replacement.id(),
@@ -652,8 +667,7 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
     );
     let fixture = Fixture::start().expect("the fixture starts on an interactive desktop");
     let provider = provider();
-    let targets = discovered(&provider).expect("this check needs Screen Recording granted");
-    let chosen = select_unique_fixture(&targets, fixture.process_id)
+    let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
         .expect("selection is fail-closed: zero or several matches stop here");
 
     // Capture and map the exact selected target before obtaining anything that
@@ -714,7 +728,7 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
             break;
         }
         assert_eq!(
-            receipt.delivered(),
+            receipt.submitted(),
             0,
             "an unfocused target must receive nothing"
         );
@@ -755,8 +769,8 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
         SequenceOutcome::Complete,
         "delivery stopped: {receipt}"
     );
-    assert_eq!(receipt.delivered(), 4);
-    assert_eq!(receipt.delivery(), Some(InputDelivery::System));
+    assert_eq!(receipt.submitted(), 4);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
 
     let observed = fixture.summaries(Duration::from_secs(2));
     assert!(

@@ -1,4 +1,4 @@
-# Frozen header compatibility fixtures
+# Frozen released-header compatibility fixtures
 
 Each subdirectory is one released C header's declarations — every structure,
 field, enumerator and function-table entry as that release declared them —
@@ -20,7 +20,6 @@ itself.
 | Version | Frozen by | Header | Fixture |
 |---|---|---|---|
 | [`v1`](v1/) | [ADR 0007](../../../../../docs/adr/0007-phase-1-c-abi-freeze.md), resolving [`G-010`](../../../../../docs/validation-gates.md#g-010) | [`v1/madopilot/madopilot.h`](v1/madopilot/madopilot.h) | [`v1/old-prefix.c`](v1/old-prefix.c) |
-| [`v1.1`](v1.1/) | [ADR 0017](../../../../../docs/adr/0017-c-abi-1-1-native-input-prefix.md) | [`v1.1/madopilot/madopilot.h`](v1.1/madopilot/madopilot.h) | [`v1.1/old-prefix.c`](v1.1/old-prefix.c) |
 
 ## How a fixture is compiled
 
@@ -33,7 +32,7 @@ deterministic scene, which declares nothing about the ABI.
 
 ## What a fixture checks
 
-Task 9.9 names four verbs, and each is a step of the run:
+Each fixture checks four verbs, and each is a step of the run:
 
 - **compiles** — against the frozen declarations alone;
 - **links** — against the current `cdylib`, through the one exported symbol;

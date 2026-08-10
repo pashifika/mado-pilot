@@ -4,11 +4,12 @@
  * `--check` creates the native engine and reads Screen Recording and
  * Accessibility without prompting. Passing one exact full fixture-window title
  * additionally captures that unique window, requires both permissions, opens
- * system input, moves the pointer, types "mp", reports the receipt, and closes.
+ * system input, moves the pointer, types "m", reports the receipt, and waits
+ * for a strictly newer frame containing the fixture's expected changed fill.
  * No title, captured bytes, or typed text is printed.
  *
- * Use the repository's dedicated `mado-pilot-macos-input-fixture`; an ordinary
- * application is a valid target only when its owner explicitly chooses it.
+ * Use the repository's dedicated `mado-pilot-macos-input-fixture` with
+ * `--animate-on-input`; an ordinary application is not this visual oracle.
  *
  *   macos-native-input --check
  *   macos-native-input "MadoPilot Input Fixture [<pid>]"

@@ -27,8 +27,8 @@
 //! provider paired with an input provider of the same identity, an open that
 //! releases what it already committed when a later step refuses, a session that
 //! refuses a request addressed to another target or carrying another stream's
-//! frame, one terminal outcome per sequence that never discards an account of
-//! what was delivered, and one close that drains both sides.
+//! frame, one terminal outcome per sequence that preserves its route-threshold
+//! accounting, and one close that drains both sides.
 //!
 //! # Allowed seam
 //!
@@ -137,13 +137,22 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+pub mod diagnostic;
 pub mod engine;
 pub mod find;
 pub mod session;
 
-pub use engine::{Engine, EngineWiring, SessionRequest};
+pub use diagnostic::{
+    DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticLosses,
+    DiagnosticOperationId, DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload,
+    DiagnosticReader, DiagnosticRecord, DiagnosticRecordSequence, DiagnosticTemplateId,
+    FrameDiagnostic, InputDiagnostic, InputOperationSet, LifecycleDiagnostic,
+    MAX_DIAGNOSTIC_CAPACITY, MappingDiagnostic, OperationStartedDiagnostic, PermissionDiagnostic,
+    RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome,
+};
+pub use engine::{Engine, EngineOptions, EngineWiring, SessionRequest};
 pub use find::{FindOutcome, FindRequest, SearchFrame};
-pub use session::Session;
+pub use session::{MappingObserver, Session};
 
 pub use mado_pilot_assets::{
     AssetFault, AssetFaultKind, AssetLimits, AssetPackage, ContentDigest, HASH_ALGORITHM,
@@ -156,19 +165,20 @@ pub use mado_pilot_capture::{
     PixelFormat, QueuePolicy, RetainedStoragePolicy, SessionDescription, TargetDescription,
 };
 pub use mado_pilot_core::{
-    CancellationToken, CapabilitySupport, ClipPolicy, Clock, CoordinateSpace, DiagnosticCategory,
-    EngineId, Error, FrameOrder, FrameSequence, FrameStamp, GeometryFault, GeometryRevision,
-    IdentityFault, IdentityIssuer, InputCapability, InputDelivery, InputOperationKind,
-    Interruption, Lifecycle, MonotonicInstant, OperationContext, PermissionKind, PermissionOutcome,
-    PermissionProbe, PermissionReport, PermissionState, PixelExtent, PixelRect, PlatformCode,
-    Point, ProviderId, Rect, RedactedDiagnostic, Result, Scale, Status, StreamEpoch, StreamId,
+    ActivityTag, CancellationToken, CapabilitySupport, ClipPolicy, Clock, CoordinateSpace,
+    DiagnosticCategory, EngineId, Error, FrameOrder, FrameSequence, FrameStamp, GeometryFault,
+    GeometryRevision, IdentityFault, IdentityIssuer, InputAddressScope, InputCapability,
+    InputDelivery, InputOperationKind, InputRouteCapability, Interruption, Lifecycle,
+    MonotonicInstant, OperationContext, PermissionKind, PermissionOutcome, PermissionProbe,
+    PermissionReport, PermissionState, PixelExtent, PixelRect, PlatformCode, Point, ProviderId,
+    Rect, RedactedDiagnostic, Result, Scale, Status, StreamEpoch, StreamId, SubmissionEvidence,
     SystemClock, TargetCapability, TargetId, TargetKind, TargetPlacement, TransformSnapshot,
 };
 pub use mado_pilot_input::{
-    CleanupBudget, CleanupState, DeliveryPlan, FocusPolicy, GeometryPolicy, InputController,
-    InputDescriptor, InputEvent, InputFault, InputOpenRequest, InputProvider, InputReceipt,
-    InputRequest, InputRequirement, InputSequence, Key, Modifier, PointerButton, PointerGeometry,
-    PressedState, SequenceLimits, SequenceOutcome,
+    CleanupBudget, CleanupState, DeliveryPlan, FocusPolicy, GeometryPolicy, InputAttempt,
+    InputController, InputDescriptor, InputEvent, InputFault, InputOpenRequest, InputProvider,
+    InputReceipt, InputRequest, InputRequirement, InputSequence, Key, Modifier, PointerButton,
+    PointerGeometry, PressedState, SequenceLimits, SequenceOutcome,
 };
 pub use mado_pilot_vision::{
     BackendDescriptor, BackendId, Match, MatchDefaults, MatchOptions, MatchResult, Matcher,

@@ -1,53 +1,56 @@
-//! An input adapter a test drives by hand.
+//! A caller-controlled input Adapter for deterministic contract tests.
 //!
-//! Real input cannot be verified without perturbing the desktop it is delivered
-//! to, and the cases that matter most — a mechanism that refuses part-way, cleanup
-//! that cannot release everything, a deadline that expires between two events —
-//! cannot be arranged on a real desktop at all. This double records exactly what
-//! it was asked to deliver and fails wherever a test tells it to, so the receipt
-//! contract can be exercised event by event.
-//!
-//! It delivers nothing. Nothing here calls an operating system, and that is the
-//! point: a test asserts what the contract says about delivery, not what a
-//! platform does.
+//! It never calls an operating system. Tests choose where native submission
+//! stops, whether the current logical event may have had effect, and how bounded
+//! cleanup proceeds. The Adapter records route attempts and complete submitted
+//! events so receipt semantics can be proved without perturbing a desktop.
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use mado_pilot_core::{
-    CoordinateSpace, InputCapability, InputDelivery, InputOperationKind, Lifecycle, Operation,
-    OperationContext, PermissionKind, ProviderId, Result, TargetId,
+    CapabilitySupport, CoordinateSpace, InputCapability, InputDelivery, InputOperationKind,
+    Lifecycle, Operation, OperationContext, PermissionKind, ProviderId, Result, SubmissionEvidence,
+    TargetId,
 };
 use mado_pilot_input::{
-    Admission, FocusPolicy, InputController, InputDescriptor, InputEvent, InputFault,
+    Admission, FocusPolicy, InputAttempt, InputController, InputDescriptor, InputEvent, InputFault,
     InputOpenRequest, InputProvider, InputReceipt, InputRequest, PointerGeometry, PressedState,
 };
 
 /// Provider name qualifying this double's target identities.
 pub const PROVIDER: ProviderId = ProviderId::new("controlled");
 
-/// What the controller should do with the sequence it was given.
+/// What the controller should do with each sequence it receives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Behavior {
-    /// Deliver every event.
+    /// Submit every logical event.
     Complete,
-    /// Deliver the first `delivered` events, then stop with `fault`.
+    /// Submit `submitted` complete logical events, then stop before the next one.
     FailAfter {
-        /// How many events reach the target before the failure.
-        delivered: usize,
-        /// Why the next one does not.
+        /// Number of complete logical events submitted.
+        submitted: usize,
+        /// Why the next event was not submitted.
         fault: InputFault,
     },
-    /// Refuse `mechanism` outright, so a permitted fallback is tried next.
+    /// Submit `submitted` complete events, then fail while submitting the next.
+    FailDuring {
+        /// Number of complete logical events submitted before the partial event.
+        submitted: usize,
+        /// Why submission stopped.
+        fault: InputFault,
+    },
+    /// Refuse `route` before native effect, permitting a caller-authorized fallback.
     Refuse {
-        /// The mechanism that refuses.
-        mechanism: InputDelivery,
+        /// Route that refuses.
+        route: InputDelivery,
         /// Why it refuses.
         fault: InputFault,
     },
-    /// Deliver nothing and report `fault`.
+    /// Refuse every visited route with `fault` before native effect.
     Unexecuted(InputFault),
 }
 
@@ -67,32 +70,30 @@ pub enum Cleanup {
     Fails,
 }
 
-/// One event the controller was asked to deliver, with the mechanism used.
+/// One complete logical event submitted by the controlled Adapter.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Delivered {
-    /// The mechanism the event went through.
-    pub mechanism: InputDelivery,
-    /// The event itself, as the request expressed it.
+pub struct SubmittedEvent {
+    /// Route through which the event was submitted.
+    pub route: InputDelivery,
+    /// Event exactly as the request expressed it.
     pub event: InputEvent,
 }
 
-/// One sequence the controller admitted, with the policies it was handed.
+/// One sequence admitted to a route, with the caller policies it carried.
 ///
-/// A caller's policies are decisions a layer above the Adapter must pass through
-/// rather than interpret, and a layer that quietly substituted one would be
-/// indistinguishable from one that did not — every receipt would still look
-/// right. This records what actually arrived, so that is checkable.
+/// This log proves policy pass-through. Route refusal remains observable in the
+/// receipt attempt list and does not create an admitted-sequence record.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Admitted {
-    /// The mechanism admission selected out of the caller's own order.
-    pub selected: InputDelivery,
-    /// The delivery mechanisms the request permitted, in the caller's order.
-    pub permitted: Vec<InputDelivery>,
-    /// The focus policy the request carried.
+    /// Route selected after preflight.
+    pub selected_route: InputDelivery,
+    /// Routes the caller permitted, in caller order.
+    pub routes: Vec<InputDelivery>,
+    /// Focus policy carried by the request.
     pub focus: FocusPolicy,
-    /// The pointer geometry policy the request carried.
+    /// Pointer geometry policy carried by the request.
     pub geometry: PointerGeometry,
-    /// How many events the sequence held.
+    /// Number of logical events in the sequence.
     pub events: usize,
 }
 
@@ -102,27 +103,54 @@ pub struct ControlledInput {
     capability: InputCapability,
     behavior: Mutex<Behavior>,
     cleanup: Mutex<Cleanup>,
-    log: Arc<Mutex<Vec<Delivered>>>,
+    log: Arc<Mutex<Vec<SubmittedEvent>>>,
     admitted: Arc<Mutex<Vec<Admitted>>>,
     releases: Arc<Mutex<Vec<PressedState>>>,
     executing: Arc<AtomicUsize>,
 }
 
 impl ControlledInput {
-    /// Builds a provider for `target` that accepts pointer, keyboard, and text
-    /// input through the system path.
+    /// Builds a provider for `target` whose three operation kinds are supported
+    /// through system input with system-admission evidence.
     #[must_use]
     pub fn new(target: TargetId) -> Self {
-        Self::with_capability(
-            target,
-            InputCapability::none()
-                .with_pair(InputOperationKind::Pointer, InputDelivery::System)
-                .with_pair(InputOperationKind::Keyboard, InputDelivery::System)
-                .with_pair(InputOperationKind::Text, InputDelivery::System)
-                .with_pointer_space(CoordinateSpace::CapturePixels)
-                .with_pointer_space(CoordinateSpace::FrameNormalized)
-                .with_permission(PermissionKind::InputControl),
-        )
+        let capability = InputCapability::none()
+            .with_pair(
+                InputOperationKind::Pointer,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            )
+            .with_pointer_space(InputDelivery::System, CoordinateSpace::CapturePixels)
+            .with_pointer_space(InputDelivery::System, CoordinateSpace::FrameNormalized)
+            .with_permission(
+                InputOperationKind::Pointer,
+                InputDelivery::System,
+                PermissionKind::InputControl,
+            )
+            .with_pair(
+                InputOperationKind::Keyboard,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            )
+            .with_permission(
+                InputOperationKind::Keyboard,
+                InputDelivery::System,
+                PermissionKind::InputControl,
+            )
+            .with_pair(
+                InputOperationKind::Text,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            )
+            .with_permission(
+                InputOperationKind::Text,
+                InputDelivery::System,
+                PermissionKind::InputControl,
+            );
+        Self::with_capability(target, capability)
     }
 
     /// Builds a provider for `target` with exactly `capability`.
@@ -150,18 +178,16 @@ impl ControlledInput {
         *self.cleanup.lock().expect("uncontended") = cleanup;
     }
 
-    /// Returns every event the controller was asked to deliver, in order.
+    /// Returns every completely submitted logical event, in order.
     #[must_use]
-    pub fn delivered(&self) -> Vec<Delivered> {
+    pub fn submitted_events(&self) -> Vec<SubmittedEvent> {
         self.log.lock().expect("uncontended").clone()
     }
 
-    /// Returns every sequence the controller admitted, in order.
+    /// Returns every sequence admitted to native submission, in order.
     ///
-    /// One entry per admitted sequence, however far it then got. A layer that
-    /// retried a stopped sequence through another mechanism would appear here as
-    /// two entries, which is the only way that mistake is observable from
-    /// outside.
+    /// Preflight-refused routes do not appear here; their immutable attempt
+    /// records remain on the receipt.
     #[must_use]
     pub fn admitted(&self) -> Vec<Admitted> {
         self.admitted.lock().expect("uncontended").clone()
@@ -171,6 +197,16 @@ impl ControlledInput {
     #[must_use]
     pub fn released(&self) -> Vec<PressedState> {
         self.releases.lock().expect("uncontended").clone()
+    }
+
+    /// Clears retained test observations without changing adapter behavior.
+    ///
+    /// Benchmark fixtures use this between samples so the double itself does not
+    /// turn repeated input into unbounded retained history.
+    pub fn clear_observations(&self) {
+        self.log.lock().expect("uncontended").clear();
+        self.admitted.lock().expect("uncontended").clear();
+        self.releases.lock().expect("uncontended").clear();
     }
 
     /// Returns how many sequences are inside `execute` right now.
@@ -202,7 +238,7 @@ impl fmt::Debug for ControlledInput {
         formatter
             .debug_struct("ControlledInput")
             .field("target", &self.target)
-            .field("delivered", &self.delivered().len())
+            .field("submitted", &self.submitted_events().len())
             .finish()
     }
 }
@@ -251,7 +287,7 @@ struct ControlledController {
     descriptor: InputDescriptor,
     behavior: Mutex<Behavior>,
     cleanup: Mutex<Cleanup>,
-    log: Arc<Mutex<Vec<Delivered>>>,
+    log: Arc<Mutex<Vec<SubmittedEvent>>>,
     admitted: Arc<Mutex<Vec<Admitted>>>,
     releases: Arc<Mutex<Vec<PressedState>>>,
     executing: Arc<AtomicUsize>,
@@ -283,11 +319,11 @@ impl ControlledController {
         self.behavior.lock().expect("uncontended").clone()
     }
 
-    fn record(&self, mechanism: InputDelivery, events: &[InputEvent]) {
+    fn record(&self, route: InputDelivery, events: &[InputEvent]) {
         let mut log = self.log.lock().expect("uncontended");
         for event in events {
-            log.push(Delivered {
-                mechanism,
+            log.push(SubmittedEvent {
+                route,
                 event: event.clone(),
             });
         }
@@ -336,6 +372,27 @@ impl ControlledController {
             exhausted,
         }
     }
+
+    fn wait_delay(
+        delay: Duration,
+        operation: &OperationContext,
+    ) -> std::result::Result<(), InputFault> {
+        let end = operation
+            .now()
+            .checked_add(delay)
+            .ok_or(InputFault::DeadlineExceeded)?;
+        loop {
+            Operation::admit(operation).map_err(InputFault::from)?;
+            let now = operation.now();
+            if now >= end {
+                return Ok(());
+            }
+            thread::sleep(
+                end.saturating_duration_since(now)
+                    .min(Duration::from_millis(2)),
+            );
+        }
+    }
 }
 
 /// Counts one sequence as being inside `execute` for as long as it is.
@@ -376,106 +433,114 @@ impl InputController for ControlledController {
         request: &InputRequest,
         operation: &OperationContext,
     ) -> Result<InputReceipt> {
-        // Admission first, and against the descriptor rather than by hand: a double
-        // that admitted what a real Adapter refuses would make the suite pass for
-        // requests no Adapter accepts.
-        let selected = self.descriptor.admit(request)?;
+        self.descriptor.validate(request)?;
         let _guard = self.admission.admit(operation)?;
-        // Counted from here, so a test can wait for the controller to be held
-        // instead of guessing how long admission takes.
         let _executing = ExecutingGuard::new(&self.executing);
-        self.admitted.lock().expect("uncontended").push(Admitted {
-            selected,
-            permitted: request.delivery().modes().to_vec(),
-            focus: request.focus(),
-            geometry: request.pointer_geometry(),
-            events: request.sequence().len(),
-        });
         let target = request.target();
         let events = request.sequence().events();
+        let behavior = self.behavior();
+        let mut attempts = Vec::with_capacity(request.delivery().routes().len());
+        let mut last_fault = InputFault::RouteUnavailable;
 
-        let (mechanism, behavior) = match self.behavior() {
-            Behavior::Refuse { mechanism, fault } if mechanism == selected => {
-                // The caller's own order decides what is tried next; a mechanism the
-                // request did not permit is never substituted.
-                match request
-                    .delivery()
-                    .modes()
-                    .iter()
-                    .copied()
-                    .find(|candidate| *candidate != mechanism)
-                {
-                    Some(fallback) => (fallback, Behavior::Complete),
-                    None => {
-                        return Ok(
-                            InputReceipt::unexecuted(target, fault).with_attempted(vec![mechanism])
-                        );
-                    }
+        for route in request.delivery().routes().iter().copied() {
+            let evidence = match self.descriptor.preflight_route(request, route) {
+                Ok(evidence) => evidence,
+                Err(fault) => {
+                    attempts.push(InputAttempt::refused(route, fault));
+                    last_fault = fault;
+                    continue;
                 }
-            }
-            behavior => (selected, behavior),
-        };
-        let attempted = if mechanism == selected {
-            vec![selected]
-        } else {
-            vec![selected, mechanism]
-        };
+            };
 
-        let receipt = match behavior {
-            Behavior::Complete => {
-                // Counted here rather than from the shared log: the log spans every
-                // sequence this double has been asked to deliver, and a receipt
-                // counts the events of its own sequence.
-                let mut delivered = 0usize;
-                for event in events {
-                    if event.is_irreversible() {
-                        // The deadline is checked before every irreversible event,
-                        // which is what makes a partial receipt truthful rather than
-                        // a guess about where the interruption landed.
-                        if let Err(interruption) = Operation::admit(operation) {
-                            let held = request.sequence().held_after(delivered);
+            let route_behavior = match &behavior {
+                Behavior::Refuse {
+                    route: refused,
+                    fault,
+                } if *refused == route => {
+                    attempts.push(InputAttempt::refused(route, *fault));
+                    last_fault = *fault;
+                    continue;
+                }
+                Behavior::Refuse { .. } => Behavior::Complete,
+                Behavior::Unexecuted(fault) => {
+                    attempts.push(InputAttempt::refused(route, *fault));
+                    last_fault = *fault;
+                    continue;
+                }
+                behavior => behavior.clone(),
+            };
+
+            self.admitted.lock().expect("uncontended").push(Admitted {
+                selected_route: route,
+                routes: request.delivery().routes().to_vec(),
+                focus: request.focus(),
+                geometry: request.pointer_geometry(),
+                events: events.len(),
+            });
+
+            match route_behavior {
+                Behavior::Complete => {
+                    let mut submitted = 0usize;
+                    for event in events {
+                        let submission = match event {
+                            InputEvent::Delay(delay) => Self::wait_delay(*delay, operation),
+                            _ => Operation::admit(operation)
+                                .map(|_| ())
+                                .map_err(InputFault::from),
+                        };
+                        if let Err(fault) = submission {
+                            if submitted == 0 {
+                                attempts.push(InputAttempt::refused(route, fault));
+                                return Ok(InputReceipt::unexecuted(target, fault)
+                                    .with_prior_attempts(attempts));
+                            }
+                            let held = request.sequence().possibly_held_after(submitted, false);
                             let cleanup = self.run_cleanup(&held, request, operation);
                             return Ok(cleanup.apply(
                                 InputReceipt::partial(
-                                    target,
-                                    mechanism,
-                                    delivered,
-                                    InputFault::from(interruption),
+                                    target, route, evidence, submitted, false, fault,
                                 )
-                                .with_attempted(attempted),
+                                .with_prior_attempts(attempts),
                             ));
                         }
+                        self.record(route, std::slice::from_ref(event));
+                        submitted += 1;
                     }
-                    if let InputEvent::Delay(delay) = event {
-                        // A sequence that says wait, waits. A double that skipped
-                        // the delay would hold the controller for no time at all,
-                        // and every rule about one sequence waiting for another
-                        // would be unreachable through it.
-                        thread::sleep(*delay);
-                    }
-                    self.record(mechanism, std::slice::from_ref(event));
-                    delivered += 1;
+
+                    return Ok(InputReceipt::complete(target, route, evidence, submitted)
+                        .with_prior_attempts(attempts));
                 }
-                InputReceipt::complete(target, mechanism, delivered).with_attempted(attempted)
+                Behavior::FailAfter { submitted, fault } => {
+                    let submitted = submitted.min(events.len());
+                    self.record(route, &events[..submitted]);
+                    if submitted == 0 {
+                        attempts.push(InputAttempt::refused(route, fault));
+                        return Ok(
+                            InputReceipt::unexecuted(target, fault).with_prior_attempts(attempts)
+                        );
+                    }
+                    let held = request.sequence().possibly_held_after(submitted, false);
+                    let cleanup = self.run_cleanup(&held, request, operation);
+                    return Ok(cleanup.apply(
+                        InputReceipt::partial(target, route, evidence, submitted, false, fault)
+                            .with_prior_attempts(attempts),
+                    ));
+                }
+                Behavior::FailDuring { submitted, fault } => {
+                    let submitted = submitted.min(events.len().saturating_sub(1));
+                    self.record(route, &events[..submitted]);
+                    let held = request.sequence().possibly_held_after(submitted, true);
+                    let cleanup = self.run_cleanup(&held, request, operation);
+                    return Ok(cleanup.apply(
+                        InputReceipt::partial(target, route, evidence, submitted, true, fault)
+                            .with_prior_attempts(attempts),
+                    ));
+                }
+                Behavior::Refuse { .. } | Behavior::Unexecuted(_) => unreachable!(),
             }
-            Behavior::FailAfter { delivered, fault } => {
-                let delivered = delivered.min(events.len());
-                self.record(mechanism, &events[..delivered]);
-                let held = request.sequence().held_after(delivered);
-                let cleanup = self.run_cleanup(&held, request, operation);
-                cleanup.apply(
-                    InputReceipt::partial(target, mechanism, delivered, fault)
-                        .with_attempted(attempted),
-                )
-            }
-            Behavior::Unexecuted(fault) => {
-                InputReceipt::unexecuted(target, fault).with_attempted(attempted)
-            }
-            Behavior::Refuse { fault, .. } => {
-                InputReceipt::unexecuted(target, fault).with_attempted(attempted)
-            }
-        };
-        Ok(receipt)
+        }
+
+        Ok(InputReceipt::unexecuted(target, last_fault).with_prior_attempts(attempts))
     }
 
     fn close(&self, operation: &OperationContext) -> Result<()> {
@@ -493,8 +558,9 @@ mod tests {
 
     use super::{Behavior, Cleanup, ControlledInput};
     use mado_pilot_core::{
-        CoordinateSpace, IdentityIssuer, InputCapability, InputDelivery, InputOperationKind,
-        Lifecycle, OperationContext, Point, ProviderId, Status, TargetId,
+        CapabilitySupport, CoordinateSpace, IdentityIssuer, InputCapability, InputDelivery,
+        InputOperationKind, Lifecycle, OperationContext, Point, ProviderId, Status,
+        SubmissionEvidence, TargetId,
     };
     use mado_pilot_input::{
         CleanupState, DeliveryPlan, InputEvent, InputFault, InputOpenRequest, InputProvider,
@@ -543,13 +609,13 @@ mod tests {
             .expect("executed");
 
         assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
-        assert_eq!(receipt.delivered(), 4);
+        assert_eq!(receipt.submitted(), 4);
         assert_eq!(receipt.cleanup(), CleanupState::NotNeeded);
-        let delivered = provider.delivered();
-        assert_eq!(delivered.len(), 4);
-        assert_eq!(delivered[0].mechanism, InputDelivery::System);
+        let submitted = provider.submitted_events();
+        assert_eq!(submitted.len(), 4);
+        assert_eq!(submitted[0].route, InputDelivery::System);
         assert_eq!(
-            delivered[1].event,
+            submitted[1].event,
             InputEvent::KeyPress(Key::Character('c'))
         );
     }
@@ -559,8 +625,8 @@ mod tests {
         let target = target();
         let provider = ControlledInput::new(target);
         provider.set_behavior(Behavior::FailAfter {
-            delivered: 2,
-            fault: InputFault::DeliveryFailed,
+            submitted: 2,
+            fault: InputFault::SubmissionFailed,
         });
         let context = OperationContext::new();
         let controller = provider
@@ -572,9 +638,9 @@ mod tests {
             .expect("executed");
 
         assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-        assert_eq!(receipt.delivered(), 2);
-        assert_eq!(receipt.last_completed(), Some(1));
-        assert_eq!(receipt.failure(), Some(InputFault::DeliveryFailed));
+        assert_eq!(receipt.submitted(), 2);
+        assert_eq!(receipt.last_submitted(), Some(1));
+        assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
         assert_eq!(receipt.cleanup(), CleanupState::Complete);
         assert_eq!(receipt.cleanup_owed(), 2);
         assert_eq!(
@@ -592,7 +658,7 @@ mod tests {
         let target = target();
         let provider = ControlledInput::new(target);
         provider.set_behavior(Behavior::FailAfter {
-            delivered: 2,
+            submitted: 2,
             fault: InputFault::PolicyRefused,
         });
         provider.set_cleanup(Cleanup::Partial(1));
@@ -613,18 +679,29 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_mechanism_falls_back_only_where_the_caller_permitted_it() {
+    fn a_refused_route_falls_back_only_where_the_caller_permitted_it() {
         let target = target();
         let provider = ControlledInput::with_capability(
             target,
             InputCapability::none()
-                .with_pair(InputOperationKind::Pointer, InputDelivery::System)
-                .with_pair(InputOperationKind::Pointer, InputDelivery::BackgroundTarget)
-                .with_pointer_space(CoordinateSpace::CapturePixels),
+                .with_pair(
+                    InputOperationKind::Pointer,
+                    InputDelivery::System,
+                    CapabilitySupport::Supported,
+                    SubmissionEvidence::SystemInputAdmission,
+                )
+                .with_pointer_space(InputDelivery::System, CoordinateSpace::CapturePixels)
+                .with_pair(
+                    InputOperationKind::Pointer,
+                    InputDelivery::WindowMessage,
+                    CapabilitySupport::Unknown,
+                    SubmissionEvidence::TargetQueueAdmission,
+                )
+                .with_pointer_space(InputDelivery::WindowMessage, CoordinateSpace::CapturePixels),
         );
         provider.set_behavior(Behavior::Refuse {
-            mechanism: InputDelivery::BackgroundTarget,
-            fault: InputFault::DeliveryUnavailable,
+            route: InputDelivery::WindowMessage,
+            fault: InputFault::RouteUnavailable,
         });
         let context = OperationContext::new();
         let controller = provider
@@ -638,7 +715,7 @@ mod tests {
                     target,
                     sequence.clone(),
                     DeliveryPlan::ordered(vec![
-                        InputDelivery::BackgroundTarget,
+                        InputDelivery::WindowMessage,
                         InputDelivery::System,
                     ])
                     .expect("valid"),
@@ -648,22 +725,28 @@ mod tests {
             .expect("executed");
 
         assert!(permitted.is_complete());
-        assert_eq!(permitted.delivery(), Some(InputDelivery::System));
+        assert_eq!(permitted.selected_route(), Some(InputDelivery::System));
         assert!(permitted.used_fallback());
+        assert_eq!(permitted.attempts().len(), 2);
+        assert_eq!(
+            permitted.attempts()[0].fault(),
+            Some(InputFault::RouteUnavailable)
+        );
 
         let required = controller
             .execute(
                 &InputRequest::new(
                     target,
                     sequence,
-                    DeliveryPlan::require(InputDelivery::BackgroundTarget),
+                    DeliveryPlan::require(InputDelivery::WindowMessage),
                 ),
                 &context,
             )
             .expect("executed");
 
         assert_eq!(required.outcome(), SequenceOutcome::Unexecuted);
-        assert_eq!(required.delivered(), 0);
+        assert_eq!(required.submitted(), 0);
+        assert_eq!(required.attempts().len(), 1);
         assert!(!required.used_fallback());
     }
 
@@ -673,22 +756,93 @@ mod tests {
         let provider = ControlledInput::with_capability(
             target,
             InputCapability::none()
-                .with_pair(InputOperationKind::Pointer, InputDelivery::System)
-                .with_pointer_space(CoordinateSpace::CapturePixels),
+                .with_pair(
+                    InputOperationKind::Pointer,
+                    InputDelivery::System,
+                    CapabilitySupport::Supported,
+                    SubmissionEvidence::SystemInputAdmission,
+                )
+                .with_pointer_space(InputDelivery::System, CoordinateSpace::CapturePixels),
         );
         let context = OperationContext::new();
         let controller = provider
             .open(target, &InputOpenRequest::new(), &context)
             .expect("opened");
 
-        let error = controller
+        let receipt = controller
             .execute(&request(target, chord()), &context)
-            .expect_err("keyboard input was never advertised");
+            .expect("well-formed refusal returns a receipt");
 
-        assert_eq!(error.status(), Status::Unsupported);
+        assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+        assert_eq!(receipt.submitted(), 0);
+        assert_eq!(
+            receipt.attempts()[0].fault(),
+            Some(InputFault::UnsupportedCombination)
+        );
         assert!(
-            provider.delivered().is_empty(),
-            "admission failed before delivery"
+            provider.submitted_events().is_empty(),
+            "preflight refused before native submission"
+        );
+    }
+
+    #[test]
+    fn a_partial_native_press_is_terminal_and_cleanup_is_conservative() {
+        let target = target();
+        let provider = ControlledInput::with_capability(
+            target,
+            InputCapability::none()
+                .with_pair(
+                    InputOperationKind::Pointer,
+                    InputDelivery::WindowMessage,
+                    CapabilitySupport::Unknown,
+                    SubmissionEvidence::TargetQueueAdmission,
+                )
+                .with_pointer_space(InputDelivery::WindowMessage, CoordinateSpace::CapturePixels)
+                .with_pair(
+                    InputOperationKind::Pointer,
+                    InputDelivery::System,
+                    CapabilitySupport::Supported,
+                    SubmissionEvidence::SystemInputAdmission,
+                )
+                .with_pointer_space(InputDelivery::System, CoordinateSpace::CapturePixels),
+        );
+        provider.set_behavior(Behavior::FailDuring {
+            submitted: 0,
+            fault: InputFault::SubmissionFailed,
+        });
+        let context = OperationContext::new();
+        let controller = provider
+            .open(target, &InputOpenRequest::new(), &context)
+            .expect("opened");
+        let sequence = InputSequence::new(vec![InputEvent::PointerPress(PointerButton::Primary)])
+            .expect("valid");
+
+        let receipt = controller
+            .execute(
+                &InputRequest::new(
+                    target,
+                    sequence,
+                    DeliveryPlan::ordered(vec![
+                        InputDelivery::WindowMessage,
+                        InputDelivery::System,
+                    ])
+                    .expect("valid"),
+                ),
+                &context,
+            )
+            .expect("executed");
+
+        assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
+        assert_eq!(receipt.submitted(), 0);
+        assert_eq!(receipt.last_submitted(), None);
+        assert!(receipt.partial_native_effect());
+        assert_eq!(receipt.selected_route(), Some(InputDelivery::WindowMessage));
+        assert_eq!(receipt.attempts().len(), 1, "fallback is forbidden");
+        assert_eq!(receipt.cleanup_owed(), 1);
+        assert_eq!(receipt.cleanup_released(), 1);
+        assert_eq!(
+            provider.released(),
+            [PressedState::Button(PointerButton::Primary)]
         );
     }
 
@@ -710,7 +864,7 @@ mod tests {
             .expect_err("a closed controller accepts nothing");
 
         assert_eq!(error.status(), Status::Closed);
-        assert!(provider.delivered().is_empty());
+        assert!(provider.submitted_events().is_empty());
     }
 
     #[test]
@@ -757,7 +911,7 @@ mod tests {
             )
             .expect("executed");
 
-        assert_eq!(provider.delivered().len(), 2);
+        assert_eq!(provider.submitted_events().len(), 2);
         drop(Arc::clone(&first));
     }
 }

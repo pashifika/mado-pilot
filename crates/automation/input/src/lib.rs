@@ -20,11 +20,12 @@
 //! # What this package will not do for a caller
 //!
 //! It never picks a delivery mechanism the caller did not permit. Substituting
-//! system input for background delivery focuses a window the caller explicitly
+//! system input for a target-directed route focuses a window the caller explicitly
 //! asked not to disturb and injects into whatever is focused instead, so a
 //! substitution the caller did not authorize is refused rather than guessed at.
-//! It also never claims a sequence is atomic: an operating system cannot recall a
-//! delivered event, so partial execution is reported rather than hidden.
+//! It also never claims a sequence is atomic: an operating system cannot recall an
+//! event that may already have native effect, so partial execution is reported
+//! rather than hidden.
 //!
 //! # Allowed seam
 //!
@@ -66,5 +67,5 @@ pub use descriptor::InputDescriptor;
 pub use event::{InputEvent, Key, Modifier, PointerButton, PressedState};
 pub use fault::InputFault;
 pub use policy::{DeliveryPlan, FocusPolicy, GeometryPolicy, PointerGeometry};
-pub use receipt::{CleanupState, InputReceipt, SequenceOutcome};
+pub use receipt::{CleanupState, InputAttempt, InputReceipt, SequenceOutcome};
 pub use request::{InputRequest, InputSequence, SequenceLimits};

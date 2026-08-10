@@ -1,11 +1,10 @@
-//! The measurement scaffolding both benchmark targets share.
+//! The measurement scaffolding every in-process benchmark target shares.
 //!
-//! Two benchmarks emit the profile format `docs/performance.md` defines: the
-//! Rust workflow's, in `mado-pilot`, and the C boundary's, in
-//! `mado-pilot-capi`. They measure different things and must emit the *same*
-//! shape, because a committed profile is read by whoever compares two runs and
-//! a second copy of the printer is a second thing to keep in step with the
-//! format document.
+//! The deterministic Rust workflow, C boundary, and diagnostic-overhead
+//! benchmarks all emit the profile format `docs/performance.md` defines. They
+//! measure different things and must emit the *same* shape, because a committed
+//! profile is read by whoever compares two runs and a second copy of the printer
+//! is a second thing to keep in step with the format document.
 //!
 //! What is here is everything that is not a workload: the sampling loop, the
 //! allocation accounting, the host arguments, the report, and the hard budgets.
@@ -15,18 +14,18 @@
 //! # Which budgets are enforced here
 //!
 //! A `hard` budget is a structural property that holds on any host, so the
-//! harness enforces it: [`enforce_hard_budgets`] is called by both benchmark
-//! targets on both of the paths they run. An `absolute` or `relative` budget is
-//! a per-target regression ceiling measured on named hardware, so only a run on
-//! that hardware can evaluate it, and those stay with the operator and the
+//! harness enforces it: [`enforce_hard_budgets`] is called by every in-process
+//! benchmark target on both of the paths they run. An `absolute` or `relative`
+//! budget is a per-target regression ceiling measured on named hardware, so
+//! only a run on that hardware can evaluate it; those stay with the operator and
 //! committed profile for the matching release target.
 //!
 //! # Why the counters live in a library
 //!
 //! A `#[global_allocator]` is per binary, so each benchmark declares its own
-//! static. [`Accounting`] is the implementation they both point at, and the
+//! static. [`Accounting`] is the implementation they all point at, and the
 //! counters are its statics, which is what lets [`measure`] read them without
-//! either benchmark passing them in.
+//! any benchmark passing them in.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -555,10 +554,10 @@ pub const GROWTH_LIMIT_BYTES: i64 = 4096;
 
 /// Fails the run when a workload violates a hard budget.
 ///
-/// Both benchmark targets call this unconditionally, so the two predicates are
-/// enforced on the `cargo bench` path and on the `cargo test --all-targets`
-/// path that CI runs on both release targets. Call it after the report, so a
-/// run that fails still emits the numbers that explain the failure.
+/// Every in-process benchmark target calls this unconditionally, so the two
+/// predicates are enforced on the `cargo bench` path and on the
+/// `cargo test --all-targets` path that CI runs on both release targets. Call it
+/// after the report, so a run that fails still emits the numbers that explain it.
 ///
 /// Sensitivity differs between the two paths even though the gate does not. A
 /// smoke run retains three samples ([`Plan::smoke`]), so a per-iteration leak

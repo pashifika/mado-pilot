@@ -69,16 +69,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     check_layout(&paths)?;
     run_c_example(&paths, &label)?;
-    let native_fixture = if windows_native_fixture_requested() {
+    let run_windows_native_fixture = windows_native_fixture_requested();
+    let native_fixture = if run_windows_native_fixture {
         Some(WindowsNativeFixture::spawn(&paths)?)
     } else {
         None
     };
-    let native_target = native_fixture.as_ref().map(WindowsNativeFixture::title);
-    run_native_c_example(&paths, native_target)?;
+    run_native_c_example(
+        &paths,
+        native_fixture.as_ref().map(WindowsNativeFixture::title),
+    )?;
+    drop(native_fixture);
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
-    run_native_cpp_example(&paths, native_target)?;
+    let native_fixture = if run_windows_native_fixture {
+        Some(WindowsNativeFixture::spawn(&paths)?)
+    } else {
+        None
+    };
+    run_native_cpp_example(
+        &paths,
+        native_fixture.as_ref().map(WindowsNativeFixture::title),
+    )?;
     check_frozen_layout(&paths)?;
     check_frozen_headers(&paths)?;
     check_cmake_consumer(&paths)?;
@@ -255,6 +267,7 @@ impl WindowsNativeFixture {
             }
 
             let child = Command::new(&program)
+                .arg("--animate-on-input")
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
@@ -899,12 +912,11 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Every released header this library still promises to serve.
+/// Released header profiles whose frozen declarations remain ABI obligations.
 ///
-/// One entry per frozen released header. A later minor that appends entries
-/// adds a fixture beside the existing ones rather than editing them, so the
-/// list only ever grows and each entry keeps saying what one released header saw.
-const FROZEN_HEADERS: &[&str] = &["v1", "v1.1"];
+/// ABI 1.0 is the only released profile older than the working ABI 1.2 header.
+/// The unreleased ABI 1.1 draft has no compatibility fixture.
+const FROZEN_HEADERS: &[&str] = &["v1"];
 
 /// Runs the layout probe against each frozen header, and checks that what that
 /// header declares is still true of the library built now.
@@ -1024,14 +1036,12 @@ fn check_frozen_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Compiles, links, negotiates, and runs each frozen header's fixture against
+/// Compiles, links, and runs every released historical header fixture against
 /// the library built now.
 ///
 /// The fixture is compiled with its own include directory *instead of* the
-/// working one, so it cannot reach the current header. That is the whole
-/// mechanism: the day the working header gains an entry, this program still
-/// compiles against the frozen declarations, and negotiation is what tells it
-/// how much of the table it may use.
+/// working one, so it cannot reach the current header. Every released fixture
+/// must still negotiate and run.
 fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
     for version in FROZEN_HEADERS {
         let include = paths.frozen_include(version);
@@ -1047,15 +1057,15 @@ fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
         report_output(&name, &output);
 
         if !output.status.success() {
-            return Err(format!("the frozen {version} header no longer works").into());
+            return Err(format!("the released {version} header fixture failed").into());
         }
         if !stdout.contains(&format!("{name} complete")) {
-            return Err(format!("the frozen {version} fixture never reached the end").into());
+            return Err(format!("the released {version} fixture never reached the end").into());
         }
     }
 
     println!(
-        "abi compatibility: {} frozen header(s) still compile, link, negotiate, and run",
+        "abi history: {} frozen header fixture(s) passed their expected negotiation behavior",
         FROZEN_HEADERS.len()
     );
 

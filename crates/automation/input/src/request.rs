@@ -137,7 +137,7 @@ impl InputSequence {
     ///
     /// Admission checks each of these against the accepted descriptor, so a
     /// sequence that mixes a supported click with an unsupported keystroke is
-    /// refused before the click is delivered.
+    /// refused before the click reaches a native route.
     #[must_use]
     pub fn operation_kinds(&self) -> Vec<InputOperationKind> {
         let mut kinds = Vec::new();
@@ -149,15 +149,15 @@ impl InputSequence {
         kinds
     }
 
-    /// Returns what is still held after the first `delivered` events.
+    /// Returns what is still held after the first `submitted` events.
     ///
     /// This is what cleanup releases after a partial failure: state this sequence
     /// pressed and did not release, in reverse order of pressing, so a modifier
     /// pressed first is released last.
     #[must_use]
-    pub fn held_after(&self, delivered: usize) -> Vec<PressedState> {
+    pub fn held_after(&self, submitted: usize) -> Vec<PressedState> {
         let mut held: Vec<PressedState> = Vec::new();
-        for event in self.events.iter().take(delivered) {
+        for event in self.events.iter().take(submitted) {
             if let Some(pressed) = event.presses() {
                 held.push(pressed);
             }
@@ -171,12 +171,36 @@ impl InputSequence {
         held
     }
 
-    /// Reports whether every event is supported by `capability` over `delivery`.
+    /// Returns state that may remain held when the current incomplete event may
+    /// have had native effect.
+    ///
+    /// `submitted` counts complete logical events. If the next event is a press,
+    /// cleanup must conservatively release it before state held by the complete
+    /// prefix. A partial release adds no obligation; releasing an already-released
+    /// sequence-owned state remains bounded by the complete-prefix obligation.
     #[must_use]
-    pub fn supported_by(&self, capability: InputCapability, delivery: InputDelivery) -> bool {
+    pub fn possibly_held_after(
+        &self,
+        submitted: usize,
+        current_event_may_have_effect: bool,
+    ) -> Vec<PressedState> {
+        let mut held = self.held_after(submitted);
+        if current_event_may_have_effect
+            && let Some(pressed) = self.events.get(submitted).and_then(InputEvent::presses)
+            && !held.contains(&pressed)
+        {
+            held.insert(0, pressed);
+        }
+        held
+    }
+
+    /// Reports whether every operation is supported or safely attemptable over
+    /// `route`.
+    #[must_use]
+    pub fn may_submit_via(&self, capability: InputCapability, route: InputDelivery) -> bool {
         self.operation_kinds()
             .into_iter()
-            .all(|kind| capability.supports(kind, delivery))
+            .all(|kind| capability.pair(kind, route).may_attempt())
     }
 }
 
@@ -304,8 +328,8 @@ mod tests {
     use crate::fault::InputFault;
     use crate::policy::{DeliveryPlan, FocusPolicy, GeometryPolicy, PointerGeometry};
     use mado_pilot_core::{
-        CoordinateSpace, IdentityIssuer, InputCapability, InputDelivery, InputOperationKind, Point,
-        ProviderId, TargetId,
+        CapabilitySupport, CoordinateSpace, IdentityIssuer, InputCapability, InputDelivery,
+        InputOperationKind, Point, ProviderId, SubmissionEvidence, TargetId,
     };
 
     fn target() -> TargetId {
@@ -408,14 +432,23 @@ mod tests {
             InputEvent::KeyPress(Key::Enter),
         ])
         .expect("valid");
-        let pointer_only =
-            InputCapability::none().with_pair(InputOperationKind::Pointer, InputDelivery::System);
-        let both = pointer_only.with_pair(InputOperationKind::Keyboard, InputDelivery::System);
+        let pointer_only = InputCapability::none().with_pair(
+            InputOperationKind::Pointer,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::SystemInputAdmission,
+        );
+        let both = pointer_only.with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::SystemInputAdmission,
+        );
 
-        assert!(!sequence.supported_by(pointer_only, InputDelivery::System));
-        assert!(sequence.supported_by(both, InputDelivery::System));
+        assert!(!sequence.may_submit_via(pointer_only, InputDelivery::System));
+        assert!(sequence.may_submit_via(both, InputDelivery::System));
         assert!(
-            !sequence.supported_by(both, InputDelivery::BackgroundTarget),
+            !sequence.may_submit_via(both, InputDelivery::WindowMessage),
             "support is per mechanism"
         );
     }
@@ -449,6 +482,27 @@ mod tests {
                 PressedState::Button(PointerButton::Primary),
                 PressedState::Key(Key::Modifier(Modifier::Control)),
             ]
+        );
+    }
+
+    #[test]
+    fn a_partial_press_adds_a_conservative_cleanup_obligation() {
+        let sequence = InputSequence::new(vec![
+            InputEvent::KeyPress(Key::Modifier(Modifier::Control)),
+            InputEvent::PointerPress(PointerButton::Primary),
+        ])
+        .expect("valid");
+
+        assert_eq!(
+            sequence.possibly_held_after(1, true),
+            vec![
+                PressedState::Button(PointerButton::Primary),
+                PressedState::Key(Key::Modifier(Modifier::Control)),
+            ]
+        );
+        assert_eq!(
+            sequence.possibly_held_after(1, false),
+            vec![PressedState::Key(Key::Modifier(Modifier::Control))]
         );
     }
 
@@ -521,7 +575,7 @@ mod tests {
         let request = InputRequest::new(
             target(),
             click(),
-            DeliveryPlan::ordered(vec![InputDelivery::BackgroundTarget, InputDelivery::System])
+            DeliveryPlan::ordered(vec![InputDelivery::WindowMessage, InputDelivery::System])
                 .expect("valid"),
         )
         .with_focus(FocusPolicy::ActivateIfRequired);

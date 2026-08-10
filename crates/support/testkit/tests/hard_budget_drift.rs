@@ -19,9 +19,9 @@ use mado_pilot_testkit::bench_harness::{GROWTH_LIMIT_BYTES, HARD_BUDGET_PREDICAT
 
 /// Every committed measured profile, by repository path and content.
 ///
-/// `example-synthetic.toml` and the Phase 2 Windows evidence-gap profile are
-/// deliberately absent: neither records measurements, so neither gates a run.
-const PROFILES: [(&str, &str); 7] = [
+/// `example-synthetic.toml` is deliberately absent because it records no
+/// measurements and therefore gates no run.
+const PROFILES: [(&str, &str); 12] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -43,9 +43,27 @@ const PROFILES: [(&str, &str); 7] = [
         include_str!("../../../../docs/benchmarks/phase-1-c-boundary-x86_64-pc-windows-msvc.toml"),
     ),
     (
+        "docs/benchmarks/phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
         "docs/benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml",
         include_str!(
             "../../../../docs/benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-native-capture-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-native-capture-x86_64-pc-windows-msvc.toml"
         ),
     ),
     (
@@ -55,8 +73,20 @@ const PROFILES: [(&str, &str); 7] = [
         ),
     ),
     (
+        "docs/benchmarks/phase-2-native-transitions-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-native-transitions-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
         "docs/benchmarks/phase-2-native-input-aarch64-apple-darwin.toml",
         include_str!("../../../../docs/benchmarks/phase-2-native-input-aarch64-apple-darwin.toml"),
+    ),
+    (
+        "docs/benchmarks/phase-2-native-input-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-native-input-x86_64-pc-windows-msvc.toml"
+        ),
     ),
 ];
 

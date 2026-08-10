@@ -5,9 +5,9 @@
 //! contained panic. A caller never has to parse a message to decide what to do.
 //!
 //! Status values 0 through 12 are frozen by
-//! `docs/adr/0007-phase-1-c-abi-freeze.md`. ABI 1.1 appends input status 13
-//! under `docs/adr/0017-c-abi-1-1-native-input-prefix.md`. `Status` is
-//! `#[non_exhaustive]`, so any later status reports as
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`. ABI 1.2 appends input status 13
+//! under `docs/adr/0023-input-submission-observation-and-abi-1-2.md`. `Status`
+//! is `#[non_exhaustive]`, so any later status reports as
 //! `MADOPILOT_STATUS_INTERNAL` until an ABI minor gives it a value of its own.
 //! Reusing the nearest existing status instead would tell a C caller something
 //! specific and wrong.
@@ -79,7 +79,7 @@ pub const MADOPILOT_ERROR_CATEGORY_VISION: madopilot_error_category_t = 6;
 pub const MADOPILOT_ERROR_CATEGORY_GEOMETRY: madopilot_error_category_t = 7;
 /// Non-prompting permission probes.
 pub const MADOPILOT_ERROR_CATEGORY_PERMISSION: madopilot_error_category_t = 8;
-/// Input admission or delivery.
+/// Input admission, submission, or cleanup.
 pub const MADOPILOT_ERROR_CATEGORY_INPUT: madopilot_error_category_t = 9;
 
 /// Projects a facade status onto its C code.
@@ -89,7 +89,7 @@ pub const MADOPILOT_ERROR_CATEGORY_INPUT: madopilot_error_category_t = 9;
 /// cannot look up. That is the honest answer: the library returned something
 /// this ABI major has no vocabulary for.
 ///
-/// `Status::InputFailed` gained its own value in ABI 1.1. Later unknown values
+/// `Status::InputFailed` gained its own value in ABI 1.2. Later unknown values
 /// continue to use the fallback.
 #[must_use]
 pub(crate) fn code(status: Status) -> madopilot_status_t {

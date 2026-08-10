@@ -21,15 +21,14 @@ pub enum InputFault {
     /// The capture and input providers wired together are different providers.
     ///
     /// One provider's target identity means nothing to another, so a pairing that
-    /// was allowed would deliver input to whatever happened to share an ordinal.
+    /// was allowed would submit input to whatever happened to share an ordinal.
     ProviderMismatch,
-    /// The requested operation and delivery combination is not in the accepted
-    /// descriptor.
+    /// The requested operation and route pair is unsupported by the descriptor.
     UnsupportedCombination,
-    /// The request declares no delivery mechanism, or names one twice.
-    InvalidDeliveryPlan,
-    /// Every allowed delivery mechanism refused the sequence.
-    DeliveryUnavailable,
+    /// The request declares no route, or names one twice.
+    InvalidRoutePlan,
+    /// Every caller-allowed route refused the sequence before native effect.
+    RouteUnavailable,
     /// The sequence is empty, longer than the accepted limit, or contains an
     /// event that exceeds its own bound.
     SequenceOutOfBounds,
@@ -49,7 +48,7 @@ pub enum InputFault {
     FocusRefused,
     /// The operating system withheld authorization for input.
     NotAuthorized,
-    /// The operating system's own policy refused the delivery: integrity level,
+    /// The operating system's own policy refused submission: integrity level,
     /// interface privilege isolation, or a comparable restriction.
     PolicyRefused,
     /// The controller is closed or closing, so it accepts no new sequence.
@@ -63,7 +62,7 @@ pub enum InputFault {
     /// The operation's deadline passed before the next event.
     DeadlineExceeded,
     /// The platform reported a failure that none of the above explains.
-    DeliveryFailed,
+    SubmissionFailed,
 }
 
 impl InputFault {
@@ -74,12 +73,12 @@ impl InputFault {
             InputFault::ForeignTarget
             | InputFault::UnknownTarget
             | InputFault::ProviderMismatch
-            | InputFault::InvalidDeliveryPlan
+            | InputFault::InvalidRoutePlan
             | InputFault::SequenceOutOfBounds
             | InputFault::MissingCoordinateSource => Status::InvalidArgument,
             InputFault::UnsupportedCombination
             | InputFault::UnsupportedCoordinate
-            | InputFault::DeliveryUnavailable
+            | InputFault::RouteUnavailable
             | InputFault::FocusRequired => Status::Unsupported,
             InputFault::TargetLost => Status::TargetLost,
             InputFault::ControllerClosed => Status::Closed,
@@ -89,7 +88,7 @@ impl InputFault {
             | InputFault::FocusRefused
             | InputFault::NotAuthorized
             | InputFault::PolicyRefused
-            | InputFault::DeliveryFailed => Status::InputFailed,
+            | InputFault::SubmissionFailed => Status::InputFailed,
         }
     }
 
@@ -100,10 +99,10 @@ impl InputFault {
             InputFault::TargetLost => "target no longer exists",
             InputFault::ProviderMismatch => "capture and input providers do not match",
             InputFault::UnsupportedCombination => {
-                "requested operation and delivery combination is not supported"
+                "requested operation and route combination is unsupported"
             }
-            InputFault::InvalidDeliveryPlan => "delivery plan is empty or repeats a mechanism",
-            InputFault::DeliveryUnavailable => "no allowed delivery mechanism was available",
+            InputFault::InvalidRoutePlan => "route plan is empty or repeats a route",
+            InputFault::RouteUnavailable => "no caller-allowed input route was available",
             InputFault::SequenceOutOfBounds => "input sequence exceeds its declared bounds",
             InputFault::UnsupportedCoordinate => {
                 "pointer coordinate space is not accepted by this target"
@@ -115,11 +114,11 @@ impl InputFault {
             InputFault::FocusRequired => "operation requires focus the focus policy withholds",
             InputFault::FocusRefused => "the operating system refused to focus the target",
             InputFault::NotAuthorized => "input control is not authorized",
-            InputFault::PolicyRefused => "operating-system policy refused the delivery",
+            InputFault::PolicyRefused => "operating-system policy refused input submission",
             InputFault::ControllerClosed => "input controller is closed",
             InputFault::Cancelled => "operation was cancelled",
             InputFault::DeadlineExceeded => "operation deadline passed",
-            InputFault::DeliveryFailed => "input delivery failed",
+            InputFault::SubmissionFailed => "native input submission failed",
         }
     }
 }

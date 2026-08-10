@@ -20,7 +20,7 @@ use mado_pilot::{
     CleanupState, Continuity, DeliveryPlan, Engine, FrameDescriptor, FrameRequest, InputDelivery,
     InputEvent, InputFault, InputOpenRequest, InputReceipt, InputRequest, InputRequirement,
     InputSequence, Key, MonotonicInstant, OpenRequest, OperationContext, PixelExtent, PixelFormat,
-    PointerGeometry, SequenceOutcome, Session, SessionRequest, Status,
+    PointerGeometry, SequenceOutcome, Session, SessionRequest, Status, SubmissionEvidence,
 };
 
 const FORMAT: PixelFormat = PixelFormat::Rgba8;
@@ -224,17 +224,19 @@ fn the_receipt_vocabulary_a_caller_branches_on_is_reachable_from_the_facade() {
     let receipt = InputReceipt::partial(
         session.target(),
         InputDelivery::System,
+        SubmissionEvidence::SystemInputAdmission,
         2,
-        InputFault::DeliveryFailed,
+        false,
+        InputFault::SubmissionFailed,
     )
     .with_cleanup(1, 2);
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
     assert!(!receipt.is_complete());
-    assert_eq!(receipt.delivered(), 2);
-    assert_eq!(receipt.last_completed(), Some(1));
-    assert_eq!(receipt.delivery(), Some(InputDelivery::System));
-    assert_eq!(receipt.failure(), Some(InputFault::DeliveryFailed));
+    assert_eq!(receipt.submitted(), 2);
+    assert_eq!(receipt.last_submitted(), Some(1));
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+    assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
     assert_eq!(receipt.cleanup(), CleanupState::Incomplete);
     assert!(receipt.cleanup().may_leave_state_held());
     session.close(&operation).expect("closed");

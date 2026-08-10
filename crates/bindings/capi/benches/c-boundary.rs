@@ -631,6 +631,7 @@ fn operation() -> madopilot_operation_t {
         flags: 0,
         deadline_nanos: 0,
         cancellation: ptr::null(),
+        activity_tag: 0,
     }
 }
 

@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mado_pilot_core::{
-    CancellationToken, Clock, CoordinateSpace, IdentityIssuer, InputCapability, InputDelivery,
-    InputOperationKind, Lifecycle, MonotonicInstant, OperationContext, Point, ProviderId, Status,
-    TargetId, TargetKind,
+    CancellationToken, CapabilitySupport, Clock, CoordinateSpace, IdentityIssuer, InputCapability,
+    InputDelivery, InputOperationKind, Lifecycle, MonotonicInstant, OperationContext, Point,
+    ProviderId, Status, TargetId, TargetKind,
 };
 use mado_pilot_input::{
     CleanupBudget, CleanupState, DeliveryPlan, FocusPolicy, InputController, InputDescriptor,
@@ -20,7 +20,7 @@ use mado_pilot_input::{
 };
 
 use super::{
-    DeliveryFailure, DriverState, InputDriver, MacosInputController, SystemButtonState,
+    DriverState, InputDriver, MacosInputController, SubmissionFailure, SystemButtonState,
     SystemKeyState, input_capability,
 };
 
@@ -72,7 +72,7 @@ fn system(target: TargetId, sequence: InputSequence) -> InputRequest {
 #[derive(Debug, Clone, PartialEq)]
 enum Action {
     Preflight(InputDelivery),
-    Deliver(InputDelivery),
+    Submit(InputDelivery),
     Release(PressedState),
 }
 
@@ -82,13 +82,13 @@ struct ScriptedDriver {
     log: Mutex<Vec<Action>>,
     preflight: Mutex<Option<InputFault>>,
     /// Fails the delivery at this zero-based index with this failure.
-    fail_delivery_at: Mutex<Option<(usize, DeliveryFailure)>>,
+    fail_delivery_at: Mutex<Option<(usize, SubmissionFailure)>>,
     /// Refuses every release from this zero-based index onward.
     refuse_release_from: Mutex<Option<usize>>,
     /// Moves the test's clock forward at this delivery index, so an operation can
     /// expire part-way through a sequence rather than before it starts.
     advance_at: Mutex<Option<(usize, Arc<ManualClock>, Duration)>>,
-    delivered: Mutex<usize>,
+    submitted: Mutex<usize>,
     released: Mutex<usize>,
 }
 
@@ -97,7 +97,7 @@ impl ScriptedDriver {
         Arc::new(Self::default())
     }
 
-    fn failing_at(index: usize, failure: DeliveryFailure) -> Arc<Self> {
+    fn failing_at(index: usize, failure: SubmissionFailure) -> Arc<Self> {
         let driver = Self::default();
         *driver.fail_delivery_at.lock().expect("uncontended") = Some((index, failure));
         Arc::new(driver)
@@ -149,7 +149,7 @@ impl InputDriver for ScriptedDriver {
         }
     }
 
-    fn deliver(
+    fn submit(
         &self,
         delivery: InputDelivery,
         _focus: FocusPolicy,
@@ -157,12 +157,12 @@ impl InputDriver for ScriptedDriver {
         _geometry: PointerGeometry,
         state: &mut DriverState,
         _operation: &OperationContext,
-    ) -> Result<(), DeliveryFailure> {
-        self.record(Action::Deliver(delivery));
-        let mut delivered = self.delivered.lock().expect("uncontended");
-        let index = *delivered;
-        *delivered += 1;
-        drop(delivered);
+    ) -> Result<(), SubmissionFailure> {
+        self.record(Action::Submit(delivery));
+        let mut submitted = self.submitted.lock().expect("uncontended");
+        let index = *submitted;
+        *submitted += 1;
+        drop(submitted);
         if let Some((at, clock, step)) = self.advance_at.lock().expect("uncontended").as_ref()
             && *at == index
         {
@@ -205,7 +205,7 @@ impl InputDriver for ScriptedDriver {
         *released += 1;
         drop(released);
         match *self.refuse_release_from.lock().expect("uncontended") {
-            Some(from) if index >= from => Err(InputFault::DeliveryFailed),
+            Some(from) if index >= from => Err(InputFault::SubmissionFailed),
             _ => Ok(()),
         }
     }
@@ -242,16 +242,17 @@ fn a_supported_system_sequence_reports_exact_counts_and_the_system_mechanism() {
         .expect("an admitted sequence produces a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
-    assert_eq!(receipt.delivered(), 3);
-    assert_eq!(receipt.last_completed(), Some(2));
-    assert_eq!(receipt.delivery(), Some(InputDelivery::System));
-    assert_eq!(receipt.attempted(), [InputDelivery::System]);
+    assert_eq!(receipt.submitted(), 3);
+    assert_eq!(receipt.last_submitted(), Some(2));
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
     assert!(!receipt.used_fallback());
     assert_eq!(receipt.cleanup(), CleanupState::NotNeeded);
 }
 
 #[test]
-fn a_background_request_is_refused_before_any_event_and_never_substituted() {
+fn a_window_message_request_is_refused_before_any_event_and_never_substituted() {
     let target = target();
     let driver = ScriptedDriver::new();
     let controller =
@@ -259,27 +260,35 @@ fn a_background_request_is_refused_before_any_event_and_never_substituted() {
     let request = InputRequest::new(
         target,
         click(),
-        DeliveryPlan::require(InputDelivery::BackgroundTarget),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
     )
     .with_focus(FocusPolicy::RequireFocused);
 
-    let error = controller
+    let receipt = controller
         .execute(&request, &OperationContext::new())
-        .expect_err("macOS advertises no background delivery");
+        .expect("route refusal is receipt evidence");
 
-    assert_eq!(error.status(), Status::Unsupported);
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.selected_route(), None);
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.fault(), Some(InputFault::UnsupportedCombination));
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::WindowMessage);
+    assert_eq!(
+        receipt.attempts()[0].fault(),
+        Some(InputFault::UnsupportedCombination)
+    );
     assert!(
         driver.actions().is_empty(),
-        "nothing was preflighted or delivered for a mechanism this Adapter does not have"
+        "unsupported delivery is recorded without reaching the native driver"
     );
 }
 
 #[test]
-fn a_permitted_fallback_reports_only_the_mechanism_that_was_actually_tried() {
-    // A caller that permits background delivery and then system input gets
-    // system input, and the receipt lists what was tried rather than what was
-    // permitted: the mechanism this Adapter does not implement is not something
-    // the platform refused, it is something that was never asked.
+fn a_permitted_fallback_records_each_route_and_only_drives_the_supported_one() {
+    // The receipt retains every route the caller asked the Adapter to visit,
+    // including the unsupported route refused before the native driver. Only
+    // the supported system route reaches native preflight and submission.
     let target = target();
     let driver = ScriptedDriver::new();
     let controller =
@@ -287,7 +296,7 @@ fn a_permitted_fallback_reports_only_the_mechanism_that_was_actually_tried() {
     let request = InputRequest::new(
         target,
         click(),
-        DeliveryPlan::ordered(vec![InputDelivery::BackgroundTarget, InputDelivery::System])
+        DeliveryPlan::ordered(vec![InputDelivery::WindowMessage, InputDelivery::System])
             .expect("valid"),
     )
     .with_focus(FocusPolicy::RequireFocused);
@@ -296,24 +305,30 @@ fn a_permitted_fallback_reports_only_the_mechanism_that_was_actually_tried() {
         .execute(&request, &OperationContext::new())
         .expect("the permitted fallback is available");
 
-    assert_eq!(receipt.delivery(), Some(InputDelivery::System));
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+    assert_eq!(receipt.attempts().len(), 2);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::WindowMessage);
     assert_eq!(
-        receipt.attempted(),
-        [InputDelivery::System],
-        "the mechanism this Adapter does not implement is never attempted"
+        receipt.attempts()[0].fault(),
+        Some(InputFault::UnsupportedCombination)
+    );
+    assert_eq!(receipt.attempts()[1].route(), InputDelivery::System);
+    assert_eq!(receipt.attempts()[1].outcome(), SequenceOutcome::Complete);
+    assert!(
+        receipt.used_fallback(),
+        "the selected route follows one recorded refusal"
     );
     assert_eq!(
         driver.actions(),
         vec![
             Action::Preflight(InputDelivery::System),
-            Action::Deliver(InputDelivery::System),
-            Action::Deliver(InputDelivery::System),
-            Action::Deliver(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
         ],
-        "no background preflight reached the driver"
+        "no WindowMessage preflight reached the driver"
     );
 }
-
 #[test]
 fn a_preserving_request_against_a_focus_requiring_window_is_refused() {
     let target = target();
@@ -326,11 +341,14 @@ fn a_preserving_request_against_a_focus_requiring_window_is_refused() {
         DeliveryPlan::require(InputDelivery::System),
     );
 
-    let error = controller
+    let receipt = controller
         .execute(&preserving, &OperationContext::new())
-        .expect_err("system delivery reaches whatever is focused");
+        .expect("focus refusal is receipt evidence");
 
-    assert_eq!(error.status(), Status::Unsupported);
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.fault(), Some(InputFault::FocusRequired));
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
     assert!(driver.actions().is_empty());
 }
 
@@ -361,7 +379,7 @@ fn a_keystroke_to_a_display_is_refused_because_nothing_there_can_receive_it() {
     let descriptor = InputDescriptor::new(target, input_capability(TargetKind::Display));
     let controller = MacosInputController::with_driver(descriptor, ScriptedDriver::new() as _);
 
-    let error = controller
+    let receipt = controller
         .execute(
             &InputRequest::new(
                 target,
@@ -370,17 +388,22 @@ fn a_keystroke_to_a_display_is_refused_because_nothing_there_can_receive_it() {
             ),
             &OperationContext::new(),
         )
-        .expect_err("a display is not a focusable target");
+        .expect("unsupported target-kind delivery is receipt evidence");
 
-    assert_eq!(error.status(), Status::Unsupported);
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.fault(), Some(InputFault::UnsupportedCombination));
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
 }
 
 #[test]
 fn a_stop_part_way_releases_exactly_what_that_sequence_had_pressed() {
     let target = target();
     // Fails on the fifth event, after a modifier, a move, a button, and a key.
-    let driver =
-        ScriptedDriver::failing_at(4, DeliveryFailure::before_event(InputFault::NotAuthorized));
+    let driver = ScriptedDriver::failing_at(
+        4,
+        SubmissionFailure::before_event(InputFault::NotAuthorized),
+    );
     let controller =
         MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
 
@@ -389,8 +412,8 @@ fn a_stop_part_way_releases_exactly_what_that_sequence_had_pressed() {
         .expect("a receipt, not an error");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 4);
-    assert_eq!(receipt.failure(), Some(InputFault::NotAuthorized));
+    assert_eq!(receipt.submitted(), 4);
+    assert_eq!(receipt.fault(), Some(InputFault::NotAuthorized));
     assert_eq!(receipt.cleanup(), CleanupState::Complete);
     assert_eq!(receipt.cleanup_owed(), 3);
     assert_eq!(receipt.cleanup_released(), 3);
@@ -415,9 +438,11 @@ fn a_stop_part_way_releases_exactly_what_that_sequence_had_pressed() {
 #[test]
 fn a_release_the_platform_refuses_is_incomplete_rather_than_exhausted() {
     let target = target();
-    let driver =
-        ScriptedDriver::failing_at(4, DeliveryFailure::before_event(InputFault::DeliveryFailed))
-            .refusing_releases_from(1);
+    let driver = ScriptedDriver::failing_at(
+        4,
+        SubmissionFailure::before_event(InputFault::SubmissionFailed),
+    )
+    .refusing_releases_from(1);
     let controller =
         MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
 
@@ -434,8 +459,10 @@ fn a_release_the_platform_refuses_is_incomplete_rather_than_exhausted() {
 #[test]
 fn a_cleanup_that_runs_out_of_its_own_bound_is_exhausted_and_says_so() {
     let target = target();
-    let driver =
-        ScriptedDriver::failing_at(4, DeliveryFailure::before_event(InputFault::DeliveryFailed));
+    let driver = ScriptedDriver::failing_at(
+        4,
+        SubmissionFailure::before_event(InputFault::SubmissionFailed),
+    );
     let controller =
         MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
     let request = system(target, chord())
@@ -479,8 +506,8 @@ fn cleanup_runs_under_its_own_bound_and_not_the_interrupted_request() {
         "the request itself is interrupted by the time cleanup runs"
     );
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 4);
-    assert_eq!(receipt.failure(), Some(InputFault::DeadlineExceeded));
+    assert_eq!(receipt.submitted(), 4);
+    assert_eq!(receipt.fault(), Some(InputFault::DeadlineExceeded));
     assert_eq!(
         receipt.cleanup(),
         CleanupState::Complete,
@@ -491,7 +518,7 @@ fn cleanup_runs_under_its_own_bound_and_not_the_interrupted_request() {
 }
 
 #[test]
-fn a_cancellation_between_events_stops_with_the_count_already_delivered() {
+fn a_cancellation_between_events_preserves_the_count_already_submitted() {
     let target = target();
     let token = CancellationToken::new();
     let driver = ScriptedDriver::new();
@@ -499,7 +526,7 @@ fn a_cancellation_between_events_stops_with_the_count_already_delivered() {
         MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
     let operation = OperationContext::new().with_cancellation(token.clone());
 
-    // Cancelling before execution stops at the first event with nothing delivered.
+    // Cancelling before execution stops at the first event with nothing submitted.
     token.cancel();
     let error = controller
         .execute(&system(target, chord()), &operation)
@@ -515,8 +542,10 @@ fn a_native_effect_before_any_event_completed_is_partial_and_not_unexecuted() {
     // trust that nothing happened. Native effect with no completed event is
     // therefore reported as partial with a zero count.
     let target = target();
-    let driver =
-        ScriptedDriver::failing_at(0, DeliveryFailure::during_event(InputFault::DeliveryFailed));
+    let driver = ScriptedDriver::failing_at(
+        0,
+        SubmissionFailure::during_event(InputFault::SubmissionFailed),
+    );
     let controller =
         MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
 
@@ -525,16 +554,18 @@ fn a_native_effect_before_any_event_completed_is_partial_and_not_unexecuted() {
         .expect("a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 0);
-    assert_eq!(receipt.last_completed(), None);
-    assert_eq!(receipt.delivery(), Some(InputDelivery::System));
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.last_submitted(), None);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
 }
 
 #[test]
 fn a_failure_before_the_first_event_took_effect_is_unexecuted() {
     let target = target();
-    let driver =
-        ScriptedDriver::failing_at(0, DeliveryFailure::before_event(InputFault::NotAuthorized));
+    let driver = ScriptedDriver::failing_at(
+        0,
+        SubmissionFailure::before_event(InputFault::NotAuthorized),
+    );
     let controller =
         MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
 
@@ -543,8 +574,8 @@ fn a_failure_before_the_first_event_took_effect_is_unexecuted() {
         .expect("a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    assert_eq!(receipt.delivered(), 0);
-    assert_eq!(receipt.failure(), Some(InputFault::NotAuthorized));
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.fault(), Some(InputFault::NotAuthorized));
 }
 
 #[test]
@@ -559,8 +590,9 @@ fn a_target_lost_at_preflight_delivers_nothing_and_reports_the_attempt() {
         .expect("a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    assert_eq!(receipt.failure(), Some(InputFault::TargetLost));
-    assert_eq!(receipt.attempted(), [InputDelivery::System]);
+    assert_eq!(receipt.fault(), Some(InputFault::TargetLost));
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
     assert_eq!(
         driver.actions(),
         vec![Action::Preflight(InputDelivery::System)]
@@ -579,7 +611,7 @@ fn an_unauthorized_preflight_delivers_nothing() {
         .expect("a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    assert_eq!(receipt.failure(), Some(InputFault::NotAuthorized));
+    assert_eq!(receipt.fault(), Some(InputFault::NotAuthorized));
     assert_eq!(receipt.cleanup(), CleanupState::NotNeeded);
 }
 
@@ -604,8 +636,8 @@ fn a_delay_observes_the_deadline_rather_than_sleeping_through_it() {
         .expect("a receipt");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 1, "the keystroke, not the delay");
-    assert_eq!(receipt.failure(), Some(InputFault::DeadlineExceeded));
+    assert_eq!(receipt.submitted(), 1, "the keystroke, not the delay");
+    assert_eq!(receipt.fault(), Some(InputFault::DeadlineExceeded));
     assert_eq!(
         receipt.cleanup(),
         CleanupState::Complete,
@@ -655,13 +687,19 @@ fn a_request_for_another_target_never_reaches_the_driver() {
 fn the_advertised_capability_is_what_admission_decides_against() {
     let capability = input_capability(TargetKind::Window);
 
-    assert_eq!(
-        capability.permission(),
-        Some(mado_pilot_core::PermissionKind::InputControl)
-    );
     for kind in InputOperationKind::ALL {
-        assert!(capability.supports(kind, InputDelivery::System));
-        assert!(!capability.supports(kind, InputDelivery::BackgroundTarget));
+        let system = capability.pair(kind, InputDelivery::System);
+        assert_eq!(
+            system.permission(),
+            Some(mado_pilot_core::PermissionKind::InputControl)
+        );
+        assert_eq!(system.support(), CapabilitySupport::Supported);
+        assert_eq!(
+            capability
+                .pair(kind, InputDelivery::WindowMessage)
+                .support(),
+            CapabilitySupport::Unsupported
+        );
     }
     assert!(
         !InputCapability::none().is_available(),
@@ -675,7 +713,9 @@ fn the_advertised_capability_is_what_admission_decides_against() {
         CoordinateSpace::DesktopLogical,
     ] {
         assert!(
-            capability.accepts_pointer_space(space),
+            capability
+                .pair(InputOperationKind::Pointer, InputDelivery::System)
+                .accepts_pointer_space(space),
             "macOS capture publishes an authoritative placement, so {space} resolves"
         );
     }

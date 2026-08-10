@@ -1,22 +1,20 @@
 /*
- * MadoPilot C ABI — ABI 1.1.
+ * MadoPilot C ABI — ABI 1.2.
  *
  * MadoPilot is a headless visual automation runtime. This header is the whole
  * C contract: one exported symbol, an immutable function table reached through
- * it, opaque handles with a complete retain and release lifecycle, and
+ * it, opaque handles with complete retain and release lifecycles, and
  * size-versioned structures with documented mandatory prefixes.
  *
  * ============================================================================
- * ABI 1.1. COMPLETE ABI 1.0 PREFIX FROZEN.
+ * ABI 1.2. COMPLETE RELEASED ABI 1.0 PREFIX FROZEN.
  *
  * Every ABI 1.0 numeric value, structure prefix, field offset, and
  * function-table position is frozen for ABI major 1 by
- * docs/adr/0007-phase-1-c-abi-freeze.md. ABI 1.1 appends native capability,
- * permission, and input contracts under
- * docs/adr/0017-c-abi-1-1-native-input-prefix.md. Within this major,
- * values do not change, fields do not move, and table entries do not move: a
- * later minor appends only. A different major is a different
- * library, and negotiation refuses it.
+ * docs/adr/0007-phase-1-c-abi-freeze.md. ABI 1.2 replaces the unreleased ABI
+ * 1.1 draft after that boundary with explicit input-submission evidence and
+ * bounded caller-owned diagnostics. ABI 1.1 is intentionally unsupported.
+ * Within this major, ABI 1.2 and later append only.
  *
  * Use the smaller of your sizeof and the returned table's struct_size to decide
  * which members exist. crates/bindings/capi/tests/abi-compat/ keeps every
@@ -58,8 +56,8 @@ extern "C" {
  * library: the release loader names carry it. */
 #define MADOPILOT_ABI_MAJOR 1u
 
-/* The ABI minor version this header declares. A later minor only appends. */
-#define MADOPILOT_ABI_MINOR 1u
+/* The ABI minor version this header declares. ABI 1.1 was never released. */
+#define MADOPILOT_ABI_MINOR 2u
 
 /* ---------------------------------------------------------------------------
  * Status
@@ -313,13 +311,14 @@ enum {
     MADOPILOT_INPUT_OPERATION_TEXT = 3
 };
 
-/* How an input event reaches its target. */
+/* How an input event is submitted. */
 typedef int32_t madopilot_input_delivery_t;
 
 enum {
     MADOPILOT_INPUT_DELIVERY_NONE = 0,
     MADOPILOT_INPUT_DELIVERY_SYSTEM = 1,
-    MADOPILOT_INPUT_DELIVERY_BACKGROUND_TARGET = 2
+    MADOPILOT_INPUT_DELIVERY_WINDOW_MESSAGE = 2,
+    MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED = 3
 };
 
 /* Whether session open can proceed without requested input. */
@@ -408,10 +407,7 @@ enum {
     MADOPILOT_INPUT_EVENT_DELAY = 8
 };
 
-/* Fixed ABI 1.1 input ceilings. A descriptor's max_events may be lower.
- * Text counts Unicode scalar values; its byte ceiling is the largest valid
- * UTF-8 representation of that many values. Each scroll component is in
- * [-MAX_SCROLL_NOTCHES, MAX_SCROLL_NOTCHES], and both cannot be zero. */
+/* Fixed ABI 1.2 input ceilings. A descriptor's max_events may be lower. */
 #define MADOPILOT_INPUT_MAX_EVENTS 256u
 #define MADOPILOT_INPUT_MAX_TEXT_CHARS 4096u
 #define MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES 16384u
@@ -441,6 +437,27 @@ enum {
     MADOPILOT_CLEANUP_EXHAUSTED = 3
 };
 
+/* What native object or subsystem a route addresses. */
+typedef int32_t madopilot_input_address_scope_t;
+
+enum {
+    MADOPILOT_INPUT_ADDRESS_NONE = 0,
+    MADOPILOT_INPUT_ADDRESS_FOCUSED_SYSTEM = 1,
+    MADOPILOT_INPUT_ADDRESS_EXACT_WINDOW = 2,
+    MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS = 3
+};
+
+/* The strongest native submission fact a route can report. */
+typedef int32_t madopilot_submission_evidence_t;
+
+enum {
+    MADOPILOT_SUBMISSION_EVIDENCE_NONE = 0,
+    MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY = 1,
+    MADOPILOT_SUBMISSION_EVIDENCE_SYSTEM_INPUT_ADMISSION = 2,
+    MADOPILOT_SUBMISSION_EVIDENCE_TARGET_QUEUE_ADMISSION = 3,
+    MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT = 4
+};
+
 /* Why an admitted sequence stopped, or why input was refused. */
 typedef int32_t madopilot_input_fault_t;
 
@@ -451,8 +468,8 @@ enum {
     MADOPILOT_INPUT_FAULT_TARGET_LOST = 3,
     MADOPILOT_INPUT_FAULT_PROVIDER_MISMATCH = 4,
     MADOPILOT_INPUT_FAULT_UNSUPPORTED_COMBINATION = 5,
-    MADOPILOT_INPUT_FAULT_INVALID_DELIVERY_PLAN = 6,
-    MADOPILOT_INPUT_FAULT_DELIVERY_UNAVAILABLE = 7,
+    MADOPILOT_INPUT_FAULT_INVALID_ROUTE_PLAN = 6,
+    MADOPILOT_INPUT_FAULT_ROUTE_UNAVAILABLE = 7,
     MADOPILOT_INPUT_FAULT_SEQUENCE_OUT_OF_BOUNDS = 8,
     MADOPILOT_INPUT_FAULT_UNSUPPORTED_COORDINATE = 9,
     MADOPILOT_INPUT_FAULT_MISSING_COORDINATE_SOURCE = 10,
@@ -464,30 +481,84 @@ enum {
     MADOPILOT_INPUT_FAULT_CONTROLLER_CLOSED = 16,
     MADOPILOT_INPUT_FAULT_CANCELLED = 17,
     MADOPILOT_INPUT_FAULT_DEADLINE_EXCEEDED = 18,
-    MADOPILOT_INPUT_FAULT_DELIVERY_FAILED = 19
+    MADOPILOT_INPUT_FAULT_SUBMISSION_FAILED = 19
 };
 
 /* Input capability pair masks. */
-#define MADOPILOT_INPUT_PAIR_POINTER_SYSTEM UINT64_C(0x1)
-#define MADOPILOT_INPUT_PAIR_POINTER_BACKGROUND UINT64_C(0x2)
-#define MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM UINT64_C(0x4)
-#define MADOPILOT_INPUT_PAIR_KEYBOARD_BACKGROUND UINT64_C(0x8)
-#define MADOPILOT_INPUT_PAIR_TEXT_SYSTEM UINT64_C(0x10)
-#define MADOPILOT_INPUT_PAIR_TEXT_BACKGROUND UINT64_C(0x20)
-#define MADOPILOT_INPUT_PAIRS_ALL UINT64_C(0x3f)
+#define MADOPILOT_INPUT_PAIR_POINTER_SYSTEM UINT64_C(0x001)
+#define MADOPILOT_INPUT_PAIR_POINTER_WINDOW_MESSAGE UINT64_C(0x002)
+#define MADOPILOT_INPUT_PAIR_POINTER_PROCESS_DIRECTED UINT64_C(0x004)
+#define MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM UINT64_C(0x008)
+#define MADOPILOT_INPUT_PAIR_KEYBOARD_WINDOW_MESSAGE UINT64_C(0x010)
+#define MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED UINT64_C(0x020)
+#define MADOPILOT_INPUT_PAIR_TEXT_SYSTEM UINT64_C(0x040)
+#define MADOPILOT_INPUT_PAIR_TEXT_WINDOW_MESSAGE UINT64_C(0x080)
+#define MADOPILOT_INPUT_PAIR_TEXT_PROCESS_DIRECTED UINT64_C(0x100)
+#define MADOPILOT_INPUT_PAIRS_ALL UINT64_C(0x1ff)
 
-/* Which delivery mechanisms require focus. */
-#define MADOPILOT_INPUT_FOCUS_SYSTEM 0x1u
-#define MADOPILOT_INPUT_FOCUS_BACKGROUND 0x2u
-#define MADOPILOT_INPUT_FOCUS_ALL 0x3u
+/* Diagnostic configuration and drain outcomes. */
+typedef int32_t madopilot_diagnostic_level_t;
+enum {
+    MADOPILOT_DIAGNOSTIC_LEVEL_OFF = 0,
+    MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL = 1,
+    MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG = 2
+};
+
+typedef int32_t madopilot_diagnostic_drain_state_t;
+enum {
+    MADOPILOT_DIAGNOSTIC_DRAIN_BATCH = 1,
+    MADOPILOT_DIAGNOSTIC_DRAIN_OPEN_EMPTY = 2,
+    MADOPILOT_DIAGNOSTIC_DRAIN_END_OF_STREAM = 3
+};
+
+/* Stable diagnostic payload categories. */
+typedef int32_t madopilot_diagnostic_kind_t;
+enum {
+    MADOPILOT_DIAGNOSTIC_KIND_OPERATION_STARTED = 1,
+    MADOPILOT_DIAGNOSTIC_KIND_FRAME = 2,
+    MADOPILOT_DIAGNOSTIC_KIND_MAPPING = 3,
+    MADOPILOT_DIAGNOSTIC_KIND_SEARCH = 4,
+    MADOPILOT_DIAGNOSTIC_KIND_INPUT = 5,
+    MADOPILOT_DIAGNOSTIC_KIND_ROUTE_ATTEMPT = 6,
+    MADOPILOT_DIAGNOSTIC_KIND_LIFECYCLE = 7,
+    MADOPILOT_DIAGNOSTIC_KIND_PERMISSION = 8
+};
+
+typedef int32_t madopilot_diagnostic_operation_kind_t;
+enum {
+    MADOPILOT_DIAGNOSTIC_OPERATION_DISCOVERY = 1,
+    MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_DESCRIPTION = 2,
+    MADOPILOT_DIAGNOSTIC_OPERATION_PERMISSION = 3,
+    MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_OPEN = 4,
+    MADOPILOT_DIAGNOSTIC_OPERATION_FRAME_ACQUIRE = 5,
+    MADOPILOT_DIAGNOSTIC_OPERATION_MAPPING = 6,
+    MADOPILOT_DIAGNOSTIC_OPERATION_TEMPLATE_PREPARATION = 7,
+    MADOPILOT_DIAGNOSTIC_OPERATION_SEARCH = 8,
+    MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_SUBMISSION = 9,
+    MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_CLOSE = 10
+};
+
+typedef int32_t madopilot_search_diagnostic_outcome_t;
+enum {
+    MADOPILOT_SEARCH_DIAGNOSTIC_MATCHED = 1,
+    MADOPILOT_SEARCH_DIAGNOSTIC_NO_MATCH = 2,
+    MADOPILOT_SEARCH_DIAGNOSTIC_FAILED = 3
+};
+
+typedef int32_t madopilot_lifecycle_t;
+enum {
+    MADOPILOT_LIFECYCLE_OPEN = 1,
+    MADOPILOT_LIFECYCLE_CLOSING = 2,
+    MADOPILOT_LIFECYCLE_CLOSED = 3
+};
+
 /* ---------------------------------------------------------------------------
  * Flags
  * ------------------------------------------------------------------------ */
 
-/* madopilot_operation_t.deadline_nanos carries an absolute deadline. Without
- * it the operation has no deadline, which is not the same as a very large one:
- * zero nanoseconds is the domain origin and a valid instant. */
+/* madopilot_operation_t optional fields. */
 #define MADOPILOT_OPERATION_HAS_DEADLINE 0x1u
+#define MADOPILOT_OPERATION_HAS_ACTIVITY_TAG 0x2u
 
 /* madopilot_open_request_t: which optional fields are set. */
 #define MADOPILOT_OPEN_HAS_REQUIRED_FORMAT 0x1u
@@ -496,16 +567,14 @@ enum {
 /* madopilot_map_request_t.region is set; the whole frame is mapped without it. */
 #define MADOPILOT_MAP_HAS_REGION 0x1u
 
-/* madopilot_find_request_t.region is set; the whole frame is searched
- * without it. */
+/* madopilot_find_request_t.region is set. */
 #define MADOPILOT_FIND_HAS_REGION 0x1u
 
-/* madopilot_match_options_t: which fields override the template's defaults. */
+/* madopilot_match_options_t overrides. */
 #define MADOPILOT_MATCH_HAS_MIN_SCORE 0x1u
 #define MADOPILOT_MATCH_HAS_MAX_RESULTS 0x2u
 #define MADOPILOT_MATCH_HAS_SUPPRESSION 0x4u
 
-/* The mapped bytes are shared with the frame rather than copied out of it. */
 #define MADOPILOT_IMAGE_SHARED 0x1u
 
 /* madopilot_target_t capability and presence bits. */
@@ -521,25 +590,42 @@ enum {
 #define MADOPILOT_PERMISSION_HAS_DIAGNOSTIC 0x1u
 #define MADOPILOT_PERMISSION_HAS_PLATFORM_CODE 0x2u
 
-/* madopilot_target_capability_t presence bits. */
-#define MADOPILOT_TARGET_CAPABILITY_HAS_KIND 0x1u
-#define MADOPILOT_TARGET_CAPABILITY_HAS_CAPTURE_PERMISSION 0x2u
-#define MADOPILOT_TARGET_CAPABILITY_HAS_INPUT_PERMISSION 0x4u
+/* madopilot_input_capability_t presence bits. */
+#define MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION 0x1u
+#define MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE 0x2u
 
-/* madopilot_input_descriptor_t presence bits. */
-#define MADOPILOT_INPUT_DESCRIPTOR_HAS_PERMISSION 0x1u
-
-/* madopilot_input_request_t supplies explicit cleanup bounds. */
 #define MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET 0x1u
 
-/* madopilot_input_receipt_t presence and outcome bits. */
-#define MADOPILOT_INPUT_RECEIPT_HAS_TARGET 0x1u
-#define MADOPILOT_INPUT_RECEIPT_HAS_DELIVERY 0x2u
-#define MADOPILOT_INPUT_RECEIPT_HAS_LAST_COMPLETED 0x4u
-#define MADOPILOT_INPUT_RECEIPT_HAS_FAILURE 0x8u
-#define MADOPILOT_INPUT_RECEIPT_USED_FALLBACK 0x10u
+/* madopilot_input_receipt_info_t presence and outcome bits. */
+#define MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE 0x01u
+#define MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED 0x02u
+#define MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE 0x04u
+#define MADOPILOT_INPUT_RECEIPT_HAS_FAULT 0x08u
+#define MADOPILOT_INPUT_RECEIPT_PARTIAL_NATIVE_EFFECT 0x10u
+#define MADOPILOT_INPUT_RECEIPT_USED_FALLBACK 0x20u
 
-/* madopilot_error_detail_t: which optional fields the library populated. */
+/* madopilot_input_attempt_t presence and outcome bits. */
+#define MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED 0x1u
+#define MADOPILOT_INPUT_ATTEMPT_HAS_EVIDENCE 0x2u
+#define MADOPILOT_INPUT_ATTEMPT_HAS_FAULT 0x4u
+#define MADOPILOT_INPUT_ATTEMPT_PARTIAL_NATIVE_EFFECT 0x8u
+
+/* madopilot_diagnostic_record_t presence bits. */
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_ACTIVITY 0x001u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET 0x002u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME 0x004u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_TEMPLATE 0x008u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_SOURCE_SPACE 0x010u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_DESTINATION_SPACE 0x020u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION 0x040u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_ROUTE 0x080u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_ADDRESS_SCOPE 0x100u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_EVIDENCE 0x200u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT 0x400u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_STATUS 0x800u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE 0x1000u
+
+/* madopilot_error_detail_t optional fields. */
 #define MADOPILOT_ERROR_HAS_ASSET_DETAIL 0x1u
 #define MADOPILOT_ERROR_HAS_BACKEND 0x2u
 
@@ -601,6 +687,9 @@ typedef struct madopilot_session_t madopilot_session_t;
 typedef struct madopilot_frame_t madopilot_frame_t;
 typedef struct madopilot_mapping_t madopilot_mapping_t;
 typedef struct madopilot_result_t madopilot_result_t;
+typedef struct madopilot_input_receipt_t madopilot_input_receipt_t;
+typedef struct madopilot_diagnostic_reader_t madopilot_diagnostic_reader_t;
+typedef struct madopilot_diagnostic_batch_t madopilot_diagnostic_batch_t;
 
 /* ---------------------------------------------------------------------------
  * Structures
@@ -657,6 +746,23 @@ typedef struct madopilot_engine_capabilities_t {
     uint32_t struct_size;
     uint32_t flags; /* MADOPILOT_ENGINE_{DELIVERS_INPUT,READS_PERMISSIONS} */
 } madopilot_engine_capabilities_t;
+/* Engine-wide diagnostic configuration. Mandatory prefix: whole. Off requires
+ * zero capacity; enabled levels accept capacities from 1 through 65,536. */
+typedef struct madopilot_engine_options_t {
+    uint32_t struct_size;
+    uint32_t flags; /* No bits defined; the caller sets zero. */
+    madopilot_diagnostic_level_t diagnostic_level;
+    uint32_t diagnostic_capacity;
+} madopilot_engine_options_t;
+
+/* Summary of one immutable owned diagnostic batch. */
+typedef struct madopilot_diagnostic_batch_info_t {
+    uint32_t struct_size;
+    uint32_t flags; /* No bits defined; written as zero. */
+    uint64_t record_count;
+    uint64_t discarded_normal;
+    uint64_t discarded_debug;
+} madopilot_diagnostic_batch_info_t;
 
 /* One non-prompting permission-probe result. Mandatory prefix: through state.
  * Borrowed strings remain valid while the engine is retained. */
@@ -672,48 +778,46 @@ typedef struct madopilot_permission_t {
     madopilot_str_t context;
 } madopilot_permission_t;
 
-/* Capability data for one target. Mandatory prefix: whole. */
-typedef struct madopilot_target_capability_t {
+/* Capability data for one operation/route pair on one target.
+ * Mandatory prefix: through support. */
+typedef struct madopilot_input_capability_t {
     uint32_t struct_size;
-    uint32_t flags; /* MADOPILOT_TARGET_CAPABILITY_HAS_* */
-    uint64_t target; /* Engine-local target identity. */
-    madopilot_target_kind_t kind;
-    madopilot_capability_support_t capture;
-    madopilot_permission_kind_t capture_permission;
-    uint32_t reserved; /* Written as zero. */
-    uint64_t input_pairs; /* MADOPILOT_INPUT_PAIR_* */
-    uint32_t focus_required; /* MADOPILOT_INPUT_FOCUS_* */
+    uint32_t flags; /* MADOPILOT_INPUT_CAPABILITY_HAS_* */
+    uint64_t target;
+    madopilot_input_operation_kind_t operation;
+    madopilot_input_delivery_t delivery;
+    madopilot_capability_support_t support;
+    madopilot_input_address_scope_t address_scope;
+    madopilot_permission_kind_t permission;
+    madopilot_submission_evidence_t evidence;
+    int32_t focus_required;
     uint32_t pointer_spaces; /* Bit (1 << space) for accepted pointer spaces. */
-    madopilot_permission_kind_t input_permission;
-    uint32_t reserved2; /* Written as zero. */
-} madopilot_target_capability_t;
+    uint32_t reserved;
+} madopilot_input_capability_t;
 
-/* Input requested while opening capture. Mandatory prefix: whole.
- * Pair masks contain only MADOPILOT_INPUT_PAIR_* bits. */
+/* Input requested while opening capture. Mandatory prefix: through requirement. */
 typedef struct madopilot_input_open_request_t {
     uint32_t struct_size;
     uint32_t flags; /* No bits defined; the caller sets zero. */
     madopilot_input_requirement_t requirement;
-    uint32_t reserved; /* The caller sets zero. */
+    uint32_t reserved;
     uint64_t required_pairs;
     uint64_t preferred_pairs;
 } madopilot_input_open_request_t;
 
-/* What input an engine or an open session accepts. Mandatory prefix: whole. */
+/* What input an engine or open session accepts. Mandatory prefix: whole. */
 typedef struct madopilot_input_descriptor_t {
     uint32_t struct_size;
-    uint32_t flags; /* MADOPILOT_INPUT_DESCRIPTOR_HAS_PERMISSION */
-    uint64_t target; /* Zero for an engine-wide descriptor. */
-    uint64_t pairs; /* MADOPILOT_INPUT_PAIR_* */
-    uint32_t focus_required; /* MADOPILOT_INPUT_FOCUS_* */
-    uint32_t pointer_spaces; /* Bit (1 << space) for accepted pointer spaces. */
-    madopilot_permission_kind_t permission;
+    uint32_t flags; /* No bits defined; written as zero. */
+    uint64_t target;
+    uint64_t known_pairs;
+    uint64_t supported_pairs;
+    uint64_t unknown_pairs;
+    uint32_t pointer_spaces;
     uint32_t max_events;
 } madopilot_input_descriptor_t;
 
-/* One bounded input event. The mandatory prefix varies by kind. Fields not
- * selected by kind are ignored. Character keys accept one non-control Unicode
- * scalar in key_value; function keys use the published inclusive range. */
+/* One bounded input event. The mandatory prefix varies by kind. */
 typedef struct madopilot_input_event_t {
     uint32_t struct_size;
     madopilot_input_event_kind_t kind;
@@ -723,49 +827,62 @@ typedef struct madopilot_input_event_t {
     uint32_t key_value;
     double x;
     double y;
-    int32_t horizontal; /* Absolute value <= MADOPILOT_INPUT_MAX_SCROLL_NOTCHES. */
-    int32_t vertical; /* Absolute value <= MADOPILOT_INPUT_MAX_SCROLL_NOTCHES. */
-    madopilot_str_t text; /* Borrowed UTF-8 for the call, under both text limits. */
-    uint64_t delay_nanos; /* <= MADOPILOT_INPUT_MAX_DELAY_NANOS. */
+    int32_t horizontal;
+    int32_t vertical;
+    madopilot_str_t text;
+    uint64_t delay_nanos;
 } madopilot_input_event_t;
 
-/* One bounded input sequence and its delivery policy. Mandatory prefix:
+/* One bounded input sequence and explicit route plan. Mandatory prefix:
  * through source_frame. Arrays and event text are borrowed for the call. */
 typedef struct madopilot_input_request_t {
     uint32_t struct_size;
     uint32_t flags; /* MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET */
     const madopilot_input_event_t* events;
-    size_t event_count; /* At most descriptor.max_events and the ABI ceiling. */
+    size_t event_count;
     size_t event_stride;
     const madopilot_input_delivery_t* deliveries;
     size_t delivery_count;
     madopilot_focus_policy_t focus_policy;
     madopilot_geometry_policy_t geometry_policy;
-    const madopilot_frame_t* source_frame; /* Borrowed and retained by caller. */
-    uint32_t cleanup_max_events; /* Clamped to the published cleanup ceiling. */
-    uint32_t reserved; /* The caller sets zero. */
-    uint64_t cleanup_timeout_nanos; /* Clamped to the published cleanup ceiling. */
+    const madopilot_frame_t* source_frame;
+    uint32_t cleanup_max_events;
+    uint32_t reserved;
+    uint64_t cleanup_timeout_nanos;
 } madopilot_input_request_t;
 
-/* The one terminal outcome of an admitted input sequence. Mandatory prefix:
- * whole. Presence flags distinguish optional scalars from valid zero values. */
-typedef struct madopilot_input_receipt_t {
+/* Fixed fields of one immutable owned receipt. Route attempts are indexed
+ * separately from the receipt handle. Mandatory prefix: whole. */
+typedef struct madopilot_input_receipt_info_t {
     uint32_t struct_size;
-    uint32_t flags; /* MADOPILOT_INPUT_RECEIPT_{HAS_*,USED_FALLBACK} */
+    uint32_t flags; /* MADOPILOT_INPUT_RECEIPT_* */
     uint64_t target;
     madopilot_sequence_outcome_t outcome;
-    madopilot_input_delivery_t delivery;
-    uint32_t attempted_count;
-    madopilot_input_delivery_t attempted_first;
-    madopilot_input_delivery_t attempted_second;
-    uint32_t delivered;
-    uint32_t last_completed;
-    madopilot_input_fault_t failure;
+    madopilot_input_delivery_t selected_route;
+    madopilot_input_address_scope_t address_scope;
+    uint64_t attempt_count;
+    uint64_t submitted;
+    uint64_t last_submitted;
+    madopilot_submission_evidence_t evidence;
+    madopilot_input_fault_t fault;
     madopilot_cleanup_state_t cleanup;
-    uint32_t cleanup_released;
-    uint32_t cleanup_owed;
-    uint32_t reserved; /* Written as zero. */
-} madopilot_input_receipt_t;
+    uint64_t cleanup_released;
+    uint64_t cleanup_owed;
+} madopilot_input_receipt_info_t;
+
+/* One immutable route attempt borrowed from its receipt. */
+typedef struct madopilot_input_attempt_t {
+    uint32_t struct_size;
+    uint32_t flags; /* MADOPILOT_INPUT_ATTEMPT_* */
+    madopilot_input_delivery_t route;
+    madopilot_input_address_scope_t address_scope;
+    madopilot_sequence_outcome_t outcome;
+    uint64_t submitted;
+    uint64_t last_submitted;
+    madopilot_submission_evidence_t evidence;
+    madopilot_input_fault_t fault;
+    uint32_t reserved;
+} madopilot_input_attempt_t;
 
 /* What the loaded library is. Mandatory prefix: through table_size. */
 typedef struct madopilot_build_info_t {
@@ -787,9 +904,10 @@ typedef struct madopilot_build_info_t {
  * must not be presented as one. */
 typedef struct madopilot_operation_t {
     uint32_t struct_size;
-    uint32_t flags; /* MADOPILOT_OPERATION_HAS_DEADLINE */
+    uint32_t flags; /* MADOPILOT_OPERATION_HAS_* */
     uint64_t deadline_nanos;
     const madopilot_cancellation_t* cancellation; /* Borrowed, may be null. */
+    uint64_t activity_tag; /* Opaque nonzero diagnostic correlation tag. */
 } madopilot_operation_t;
 
 /* The complete public identity of one published frame.
@@ -797,7 +915,7 @@ typedef struct madopilot_operation_t {
  * Mandatory prefix: the whole structure. Identity is not optional; a caller
  * that cannot store all four fields cannot correlate a result at all.
  *
- * `stream` is unique for the life of the loaded library and is never reused. */
+ * `stream` is a nonzero engine-local ordinal that is never reused by its engine. */
 typedef struct madopilot_frame_stamp_t {
     uint32_t struct_size;
     uint32_t flags; /* No bits defined; the library writes zero. */
@@ -806,6 +924,46 @@ typedef struct madopilot_frame_stamp_t {
     uint64_t sequence;
     uint64_t geometry;
 } madopilot_frame_stamp_t;
+/* One privacy-reviewed immutable diagnostic record. Presence flags distinguish
+ * optional scalar values from valid zero values. Mandatory prefix: whole. */
+typedef struct madopilot_diagnostic_record_t {
+    uint32_t struct_size;
+    uint32_t flags; /* MADOPILOT_DIAGNOSTIC_RECORD_HAS_* */
+    uint64_t sequence;
+    uint64_t timestamp_nanos;
+    uint64_t operation_id;
+    uint64_t activity_tag;
+    madopilot_diagnostic_level_t level;
+    madopilot_diagnostic_kind_t kind;
+    madopilot_diagnostic_operation_kind_t operation;
+    madopilot_status_t status;
+    uint64_t target;
+    madopilot_frame_stamp_t frame;
+    uint64_t template_identity;
+    madopilot_space_t source_space;
+    madopilot_space_t destination_space;
+    madopilot_pixel_rect_t region;
+    madopilot_input_delivery_t route;
+    madopilot_input_address_scope_t address_scope;
+    madopilot_submission_evidence_t evidence;
+    madopilot_input_fault_t input_fault;
+    madopilot_sequence_outcome_t input_outcome;
+    madopilot_cleanup_state_t cleanup;
+    madopilot_permission_kind_t permission_kind;
+    madopilot_permission_state_t permission_state;
+    madopilot_lifecycle_t lifecycle;
+    madopilot_search_diagnostic_outcome_t search_outcome;
+    uint32_t input_operations;
+    int32_t partial_native_effect;
+    int32_t used_fallback;
+    uint32_t reserved;
+    uint64_t requested;
+    uint64_t submitted;
+    uint64_t result_count;
+    uint64_t cleanup_released;
+    uint64_t cleanup_owed;
+} madopilot_diagnostic_record_t;
+
 
 /* A frame's pixel geometry. Mandatory prefix: through space. */
 typedef struct madopilot_frame_info_t {
@@ -848,7 +1006,7 @@ typedef struct madopilot_target_t {
     int32_t coordinate_spaces;
     madopilot_str_t name;
     madopilot_str_t provider;
-    uint64_t target; /* Engine-local target identity. */
+    uint64_t target; /* Nonzero engine-local target ordinal. */
     madopilot_target_kind_t kind;
     madopilot_capability_support_t capture;
     madopilot_permission_kind_t capture_permission;
@@ -856,7 +1014,7 @@ typedef struct madopilot_target_t {
 } madopilot_target_t;
 
 /* What an open session accepted. Mandatory prefix: through coordinate_spaces.
- * ABI 1.1 appends target, accepts_input, and reserved without moving that prefix. */
+ * ABI 1.2 appends target, accepts_input, and reserved without moving that prefix. */
 typedef struct madopilot_session_info_t {
     uint32_t struct_size;
     uint32_t flags; /* No bits defined; the library writes zero. */
@@ -868,7 +1026,7 @@ typedef struct madopilot_session_info_t {
      * Read as a madopilot_space_t it gives a plausible wrong answer: the value
      * 1 is both "capture pixels converts" and SPACE_FRAME_NORMALIZED. */
     int32_t coordinate_spaces;
-    uint64_t target; /* Boundary identity copied from discovery. */
+    uint64_t target; /* Nonzero engine-local target ordinal. */
     int32_t accepts_input; /* One when input was established, otherwise zero. */
     uint32_t reserved; /* Written as zero. */
 } madopilot_session_info_t;
@@ -876,7 +1034,7 @@ typedef struct madopilot_session_info_t {
 /* How to open a capture session. Mandatory prefix: through flags.
  *
  * Without either format bit the adapter's own layout is accepted. Input policy
- * is supplied separately to the ABI 1.1 session_open_with_input entry. */
+ * is supplied separately to the ABI 1.2 session_open_with_input entry. */
 typedef struct madopilot_open_request_t {
     uint32_t struct_size;
     uint32_t flags; /* MADOPILOT_OPEN_HAS_* */
@@ -1283,19 +1441,13 @@ typedef struct madopilot_api_t {
                                        size_t index,
                                        madopilot_match_t* out_match);
 
-    /* --- ABI 1.1 native capability and input suffix --------------------- */
+    /* --- ABI 1.2 input and bounded diagnostic suffix -------------------- */
 
-    /* Opens capture and input together. Keeping the two request pointers
-     * separate preserves the frozen size and alignment of
-     * madopilot_open_request_t. */
-    madopilot_status_t (*session_open_with_input)(
-        const madopilot_engine_t* engine,
-        const madopilot_target_list_t* targets,
-        size_t index,
-        const madopilot_open_request_t* request,
-        const madopilot_input_open_request_t* input_request,
+    madopilot_status_t (*engine_create_with_options)(
+        const madopilot_source_t* source,
+        const madopilot_engine_options_t* options,
         const madopilot_operation_t* operation,
-        madopilot_session_t** out_session,
+        madopilot_engine_t** out_engine,
         madopilot_error_t** out_error);
     madopilot_status_t (*engine_capabilities)(
         const madopilot_engine_t* engine,
@@ -1306,16 +1458,27 @@ typedef struct madopilot_api_t {
         const madopilot_operation_t* operation,
         madopilot_permission_t* out_permission,
         madopilot_error_t** out_error);
-    madopilot_status_t (*target_list_capability)(
+    madopilot_status_t (*target_list_input_capability)(
         const madopilot_target_list_t* targets,
         size_t index,
-        madopilot_target_capability_t* out_capability);
+        madopilot_input_operation_kind_t operation,
+        madopilot_input_delivery_t delivery,
+        madopilot_input_capability_t* out_capability);
     madopilot_status_t (*engine_input_descriptor)(
         const madopilot_engine_t* engine,
         const madopilot_target_list_t* targets,
         size_t index,
         const madopilot_operation_t* operation,
         madopilot_input_descriptor_t* out_descriptor,
+        madopilot_error_t** out_error);
+    madopilot_status_t (*session_open_with_input)(
+        const madopilot_engine_t* engine,
+        const madopilot_target_list_t* targets,
+        size_t index,
+        const madopilot_open_request_t* request,
+        const madopilot_input_open_request_t* input_request,
+        const madopilot_operation_t* operation,
+        madopilot_session_t** out_session,
         madopilot_error_t** out_error);
     madopilot_status_t (*session_input_descriptor)(
         const madopilot_session_t* session,
@@ -1324,8 +1487,44 @@ typedef struct madopilot_api_t {
         const madopilot_session_t* session,
         const madopilot_input_request_t* request,
         const madopilot_operation_t* operation,
-        madopilot_input_receipt_t* out_receipt,
+        madopilot_input_receipt_t** out_receipt,
         madopilot_error_t** out_error);
+    madopilot_status_t (*input_receipt_retain)(
+        const madopilot_input_receipt_t* receipt);
+    madopilot_status_t (*input_receipt_release)(
+        madopilot_input_receipt_t* receipt);
+    madopilot_status_t (*input_receipt_info)(
+        const madopilot_input_receipt_t* receipt,
+        madopilot_input_receipt_info_t* out_info);
+    madopilot_status_t (*input_receipt_attempt_count)(
+        const madopilot_input_receipt_t* receipt,
+        size_t* out_count);
+    madopilot_status_t (*input_receipt_attempt_at)(
+        const madopilot_input_receipt_t* receipt,
+        size_t index,
+        madopilot_input_attempt_t* out_attempt);
+    madopilot_status_t (*engine_take_diagnostic_reader)(
+        const madopilot_engine_t* engine,
+        madopilot_diagnostic_reader_t** out_reader);
+    madopilot_status_t (*diagnostic_reader_retain)(
+        const madopilot_diagnostic_reader_t* reader);
+    madopilot_status_t (*diagnostic_reader_release)(
+        madopilot_diagnostic_reader_t* reader);
+    madopilot_status_t (*diagnostic_reader_drain)(
+        const madopilot_diagnostic_reader_t* reader,
+        madopilot_diagnostic_drain_state_t* out_state,
+        madopilot_diagnostic_batch_t** out_batch);
+    madopilot_status_t (*diagnostic_batch_retain)(
+        const madopilot_diagnostic_batch_t* batch);
+    madopilot_status_t (*diagnostic_batch_release)(
+        madopilot_diagnostic_batch_t* batch);
+    madopilot_status_t (*diagnostic_batch_info)(
+        const madopilot_diagnostic_batch_t* batch,
+        madopilot_diagnostic_batch_info_t* out_info);
+    madopilot_status_t (*diagnostic_batch_record_at)(
+        const madopilot_diagnostic_batch_t* batch,
+        size_t index,
+        madopilot_diagnostic_record_t* out_record);
 } madopilot_api_t;
 
 /* The table's mandatory prefix: everything through status_text.
@@ -1341,23 +1540,50 @@ typedef struct madopilot_api_t {
  * assumes neither, and it is the same number on both release targets. */
 #define MADOPILOT_API_SIZE_INFORMATION offsetof(madopilot_api_t, cancellation_create)
 
-/* Complete ABI 1.0 prefix and additive ABI 1.1 entry extents. A caller checks
- * the smaller of its own extent and the library's reported struct_size. */
+/* Complete released ABI 1.0 prefix and additive ABI 1.2 entry extents. */
 #define MADOPILOT_API_SIZE_ABI_1_0 \
-    offsetof(madopilot_api_t, session_open_with_input)
-#define MADOPILOT_API_SIZE_SESSION_OPEN_WITH_INPUT \
+    offsetof(madopilot_api_t, engine_create_with_options)
+#define MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OPTIONS \
     offsetof(madopilot_api_t, engine_capabilities)
 #define MADOPILOT_API_SIZE_ENGINE_CAPABILITIES \
     offsetof(madopilot_api_t, engine_permission)
 #define MADOPILOT_API_SIZE_ENGINE_PERMISSION \
-    offsetof(madopilot_api_t, target_list_capability)
-#define MADOPILOT_API_SIZE_TARGET_LIST_CAPABILITY \
+    offsetof(madopilot_api_t, target_list_input_capability)
+#define MADOPILOT_API_SIZE_TARGET_LIST_INPUT_CAPABILITY \
     offsetof(madopilot_api_t, engine_input_descriptor)
 #define MADOPILOT_API_SIZE_ENGINE_INPUT_DESCRIPTOR \
+    offsetof(madopilot_api_t, session_open_with_input)
+#define MADOPILOT_API_SIZE_SESSION_OPEN_WITH_INPUT \
     offsetof(madopilot_api_t, session_input_descriptor)
 #define MADOPILOT_API_SIZE_SESSION_INPUT_DESCRIPTOR \
     offsetof(madopilot_api_t, session_send_input)
-#define MADOPILOT_API_SIZE_SESSION_SEND_INPUT sizeof(madopilot_api_t)
+#define MADOPILOT_API_SIZE_SESSION_SEND_INPUT \
+    offsetof(madopilot_api_t, input_receipt_retain)
+#define MADOPILOT_API_SIZE_INPUT_RECEIPT_RETAIN \
+    offsetof(madopilot_api_t, input_receipt_release)
+#define MADOPILOT_API_SIZE_INPUT_RECEIPT_RELEASE \
+    offsetof(madopilot_api_t, input_receipt_info)
+#define MADOPILOT_API_SIZE_INPUT_RECEIPT_INFO \
+    offsetof(madopilot_api_t, input_receipt_attempt_count)
+#define MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_COUNT \
+    offsetof(madopilot_api_t, input_receipt_attempt_at)
+#define MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_AT \
+    offsetof(madopilot_api_t, engine_take_diagnostic_reader)
+#define MADOPILOT_API_SIZE_ENGINE_TAKE_DIAGNOSTIC_READER \
+    offsetof(madopilot_api_t, diagnostic_reader_retain)
+#define MADOPILOT_API_SIZE_DIAGNOSTIC_READER_RETAIN \
+    offsetof(madopilot_api_t, diagnostic_reader_release)
+#define MADOPILOT_API_SIZE_DIAGNOSTIC_READER_RELEASE \
+    offsetof(madopilot_api_t, diagnostic_reader_drain)
+#define MADOPILOT_API_SIZE_DIAGNOSTIC_READER_DRAIN \
+    offsetof(madopilot_api_t, diagnostic_batch_retain)
+#define MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RETAIN \
+    offsetof(madopilot_api_t, diagnostic_batch_release)
+#define MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RELEASE \
+    offsetof(madopilot_api_t, diagnostic_batch_info)
+#define MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_INFO \
+    offsetof(madopilot_api_t, diagnostic_batch_record_at)
+#define MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT sizeof(madopilot_api_t)
 
 /* ---------------------------------------------------------------------------
  * The one exported symbol

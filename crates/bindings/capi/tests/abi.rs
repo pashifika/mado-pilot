@@ -93,6 +93,29 @@ fn a_minimum_minor_newer_than_the_library_is_refused() {
 }
 
 #[test]
+fn the_unreleased_abi_1_1_profile_is_refused_at_every_extent() {
+    for extent in [
+        MADOPILOT_API_SIZE_INFORMATION as usize,
+        size_of::<madopilot_api_t>(),
+    ] {
+        let status = negotiate(MADOPILOT_ABI_MAJOR, 1, extent)
+            .expect_err("minimum minor 1 never names a supported profile");
+        assert_eq!(status, MADOPILOT_STATUS_UNSUPPORTED);
+    }
+}
+
+#[test]
+fn an_abi_1_0_caller_cannot_claim_the_abi_1_2_suffix() {
+    let status = negotiate(
+        MADOPILOT_ABI_MAJOR,
+        0,
+        MADOPILOT_API_SIZE_PHASE1 as usize + 1,
+    )
+    .expect_err("minor zero is bounded by the complete frozen ABI 1.0 table");
+    assert_eq!(status, MADOPILOT_STATUS_UNSUPPORTED);
+}
+
+#[test]
 fn a_table_size_below_the_mandatory_prefix_is_refused() {
     let status = negotiate(
         MADOPILOT_ABI_MAJOR,
@@ -422,15 +445,23 @@ fn every_versioned_output_holds_a_declared_size_to_its_own_field_boundaries() {
         },
     );
     assert_output_prefixes(
-        "target_list_capability",
-        "madopilot_target_capability_t",
-        56,
-        |out| unsafe { (api.target_list_capability)(flow.targets, 0, out) },
+        "target_list_input_capability",
+        "madopilot_input_capability_t",
+        28,
+        |out| unsafe {
+            (api.target_list_input_capability)(
+                flow.targets,
+                0,
+                MADOPILOT_INPUT_OPERATION_POINTER,
+                MADOPILOT_INPUT_DELIVERY_SYSTEM,
+                out,
+            )
+        },
     );
     assert_output_prefixes(
         "engine_input_descriptor",
         "madopilot_input_descriptor_t",
-        40,
+        48,
         |out| unsafe {
             (api.engine_input_descriptor)(
                 flow.engine,
@@ -445,65 +476,8 @@ fn every_versioned_output_holds_a_declared_size_to_its_own_field_boundaries() {
     assert_output_prefixes(
         "session_input_descriptor",
         "madopilot_input_descriptor_t",
-        40,
+        48,
         |out| unsafe { (api.session_input_descriptor)(flow.session, out) },
-    );
-
-    let event = madopilot_input_event_t {
-        struct_size: struct_size::<madopilot_input_event_t>(),
-        kind: MADOPILOT_INPUT_EVENT_DELAY,
-        space: MADOPILOT_SPACE_CAPTURE_PIXELS,
-        button: MADOPILOT_POINTER_BUTTON_PRIMARY,
-        key: MADOPILOT_KEY_ENTER,
-        key_value: 0,
-        x: 0.0,
-        y: 0.0,
-        horizontal: 0,
-        vertical: 0,
-        text: madopilot_str_t::empty(),
-        delay_nanos: 1,
-    };
-    let deliveries = [MADOPILOT_INPUT_DELIVERY_SYSTEM];
-    let request = madopilot_input_request_t {
-        struct_size: struct_size::<madopilot_input_request_t>(),
-        flags: 0,
-        events: &raw const event,
-        event_count: 1,
-        event_stride: size_of::<madopilot_input_event_t>(),
-        deliveries: deliveries.as_ptr(),
-        delivery_count: deliveries.len(),
-        focus_policy: MADOPILOT_FOCUS_PRESERVE,
-        geometry_policy: MADOPILOT_GEOMETRY_REPROJECT_CURRENT,
-        source_frame: ptr::null(),
-        cleanup_max_events: 0,
-        reserved: 0,
-        cleanup_timeout_nanos: 0,
-    };
-    assert_output_prefixes(
-        "session_send_input",
-        "madopilot_input_receipt_t",
-        64,
-        |out| unsafe {
-            let mut error = ptr::null_mut();
-            let status = (api.session_send_input)(
-                flow.session,
-                &raw const request,
-                &raw const operation,
-                out,
-                &raw mut error,
-            );
-            if status == MADOPILOT_STATUS_UNSUPPORTED {
-                assert!(
-                    !error.is_null(),
-                    "the unavailable input path owns its error"
-                );
-                assert_eq!((api.error_release)(error), MADOPILOT_STATUS_OK);
-                MADOPILOT_STATUS_OK
-            } else {
-                (api.error_release)(error);
-                status
-            }
-        },
     );
 
     // SAFETY: each handle is owned by this frame.
@@ -1212,6 +1186,7 @@ fn a_cancelled_token_stops_an_entry_before_it_starts() {
         flags: 0,
         deadline_nanos: 0,
         cancellation,
+        activity_tag: 0,
     };
     let mut engine = ptr::null_mut();
     // SAFETY: as above.

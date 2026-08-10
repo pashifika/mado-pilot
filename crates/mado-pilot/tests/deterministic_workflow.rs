@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
-    AssetLimits, ClipPolicy, ContentDigest, Continuity, CoordinateSpace, Engine, FindRequest,
+    ActivityTag, AssetLimits, ClipPolicy, ContentDigest, Continuity, CoordinateSpace,
+    DiagnosticDrain, DiagnosticKind, DiagnosticOptions, DiagnosticPayload, Engine, FindRequest,
     Frame, FrameDescriptor, FrameRequest, MatchOptions, MonotonicInstant, OpenRequest,
     OperationContext, PackageSource, PixelFormat, PreparedTemplate, REQUIRED_BACKEND, Rect,
     ReplayEngineRequest, Session, Status,
@@ -336,6 +337,85 @@ fn a_mapping_and_an_outcome_stay_valid_after_the_session_closes() {
             .status(),
         Status::Closed
     );
+}
+
+#[test]
+fn diagnostics_are_off_by_default_and_enabled_as_one_owned_bounded_stream() {
+    let default = engine(1);
+    assert!(default.take_diagnostic_reader().is_none());
+
+    let diagnostics = DiagnosticOptions::normal(16).expect("bounded capacity");
+    let engine = mado_pilot::replay_engine(
+        ReplayEngineRequest::new(scene_source(1)).with_diagnostics(diagnostics),
+    )
+    .expect("an OpenCV 4 development installation");
+    let reader = engine
+        .take_diagnostic_reader()
+        .expect("enabled diagnostics have one reader");
+    assert!(
+        engine.take_diagnostic_reader().is_none(),
+        "reader ownership is unique"
+    );
+    assert!(matches!(reader.drain(), DiagnosticDrain::OpenEmpty));
+
+    let tag = ActivityTag::new(0x2a).expect("nonzero");
+    let operation = OperationContext::new().with_activity_tag(tag);
+    let session = opened(&engine, &operation);
+    let frame = session
+        .acquire_frame(&FrameRequest::latest(), &operation)
+        .expect("captured");
+    let template = prepared(&engine, "panel.patch", &operation);
+    session
+        .find_template(
+            &FindRequest::exact(&frame, &template, options(&template)),
+            &operation,
+        )
+        .expect("searched");
+    session.close(&operation).expect("closed");
+    drop(session);
+    drop(engine);
+
+    let batch = match reader.drain() {
+        DiagnosticDrain::Batch(batch) => batch,
+        other => panic!("expected retained diagnostics, got {other:?}"),
+    };
+    assert_eq!(
+        batch
+            .records()
+            .iter()
+            .map(|record| record.kind())
+            .collect::<Vec<_>>(),
+        vec![
+            DiagnosticKind::Lifecycle,
+            DiagnosticKind::Search,
+            DiagnosticKind::Lifecycle,
+        ]
+    );
+    assert!(
+        batch
+            .records()
+            .iter()
+            .all(|record| record.activity() == Some(tag))
+    );
+    assert!(
+        batch
+            .records()
+            .windows(2)
+            .all(|records| records[0].sequence() < records[1].sequence())
+    );
+    assert!(batch.losses().is_empty());
+
+    let search = batch
+        .records()
+        .iter()
+        .find_map(|record| match record.payload() {
+            DiagnosticPayload::Search(search) => Some(search),
+            _ => None,
+        })
+        .expect("search summary");
+    assert_eq!(search.frame, Some(frame.stamp()));
+    assert_ne!(search.template.get(), 0);
+    assert!(matches!(reader.drain(), DiagnosticDrain::EndOfStream));
 }
 
 #[test]

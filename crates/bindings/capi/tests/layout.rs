@@ -46,11 +46,12 @@ const FROZEN_LAYOUT: [(&str, &str); 2] = [
 /// Both have to be real boundaries, and ADR 0007 is the only other place the
 /// asymmetry is recorded.
 const MANDATORY: &[(&str, usize)] = &[
+    ("madopilot_engine_options_t", 16),
     ("madopilot_engine_capabilities_t", 8),
     ("madopilot_permission_t", 16),
-    ("madopilot_target_capability_t", 56),
+    ("madopilot_input_capability_t", 28),
     ("madopilot_input_open_request_t", 32),
-    ("madopilot_input_descriptor_t", 40),
+    ("madopilot_input_descriptor_t", 48),
     ("madopilot_input_event_t", 8),
     ("madopilot_input_event_t", 16),
     ("madopilot_input_event_t", 24),
@@ -60,7 +61,10 @@ const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_input_event_t", 72),
     ("madopilot_input_request_t", 64),
     ("madopilot_input_request_t", 80),
-    ("madopilot_input_receipt_t", 64),
+    ("madopilot_input_receipt_info_t", 88),
+    ("madopilot_input_attempt_t", 56),
+    ("madopilot_diagnostic_batch_info_t", 32),
+    ("madopilot_diagnostic_record_t", 240),
     ("madopilot_build_info_t", 20),
     ("madopilot_operation_t", 8),
     ("madopilot_frame_stamp_t", 40),
@@ -144,13 +148,27 @@ const TABLE_ORDER: &[&str] = &[
     "result_stamp",
     "result_options",
     "result_match",
-    "session_open_with_input",
+    "engine_create_with_options",
     "engine_capabilities",
     "engine_permission",
-    "target_list_capability",
+    "target_list_input_capability",
     "engine_input_descriptor",
+    "session_open_with_input",
     "session_input_descriptor",
     "session_send_input",
+    "input_receipt_retain",
+    "input_receipt_release",
+    "input_receipt_info",
+    "input_receipt_attempt_count",
+    "input_receipt_attempt_at",
+    "engine_take_diagnostic_reader",
+    "diagnostic_reader_retain",
+    "diagnostic_reader_release",
+    "diagnostic_reader_drain",
+    "diagnostic_batch_retain",
+    "diagnostic_batch_release",
+    "diagnostic_batch_info",
+    "diagnostic_batch_record_at",
 ];
 
 fn find(name: &str) -> &'static TypeLayout {
@@ -324,20 +342,23 @@ fn the_function_table_keeps_its_abi_major_one_order() {
         "the mandatory prefix fits inside the frozen ABI 1.0 table"
     );
 
-    let suffix = &table.fields[TABLE_ORDER.len() - 7..];
+    let suffix = &table.fields[TABLE_ORDER.len() - 21..];
     assert_eq!(
         suffix[0].offset, MADOPILOT_API_SIZE_PHASE1 as usize,
-        "ABI 1.1 starts immediately after the complete frozen ABI 1.0 table"
+        "ABI 1.2 starts immediately after the complete frozen ABI 1.0 table"
     );
     let offsets: Vec<usize> = suffix.iter().map(|field| field.offset).collect();
     assert_eq!(
         offsets,
-        [424, 432, 440, 448, 456, 464, 472],
-        "the accepted ABI 1.1 entry offsets are frozen"
+        [
+            424, 432, 440, 448, 456, 464, 472, 480, 488, 496, 504, 512, 520, 528, 536, 544, 552,
+            560, 568, 576, 584,
+        ],
+        "the accepted ABI 1.2 entry offsets are frozen"
     );
     assert_eq!(
-        table.size, 480,
-        "the accepted ABI 1.1 table extent is frozen"
+        table.size, 592,
+        "the accepted ABI 1.2 table extent is frozen"
     );
 }
 

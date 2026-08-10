@@ -119,10 +119,9 @@ impl TargetMetadata {
     ///
     /// The capability states what this Adapter implements and nothing more:
     /// capture through ScreenCaptureKit, every coordinate space the placement
-    /// supports, and `CGEvent` system input under Accessibility. Background
-    /// delivery is absent because macOS offers no per-window channel an unfocused
-    /// process may post to, and advertising one would be a claim without an
-    /// implementation.
+    /// supports, and `CGEvent` system input under Accessibility. `WindowMessage`
+    /// and `ProcessDirected` are absent because macOS offers no target-directed
+    /// channel, and advertising one would be a claim without an implementation.
     pub(crate) fn describe(&self, id: TargetId, kind: TargetKind) -> TargetDescription {
         TargetDescription::new(
             id,
@@ -295,12 +294,11 @@ mod tests {
     }
 
     #[test]
-    fn a_described_target_offers_capture_and_system_input_but_never_background_delivery() {
+    fn a_described_target_offers_capture_and_system_input_but_no_target_directed_route() {
         // The negative half of this is the one that reverses quietly. macOS offers
-        // no per-window channel an unfocused process may post to, so a background
-        // pair appearing here would be a capability claim with nothing behind it,
-        // and admission would then route a caller that asked not to disturb the
-        // desktop into system input that focuses a window.
+        // no channel an unfocused process may use to address one window or process,
+        // so either target-directed pair would be a capability claim with nothing
+        // behind it and could route a caller into focusing system input.
         let issuer = IdentityIssuer::new();
         let id = issuer
             .issue_target(crate::provider::PROVIDER)
@@ -335,28 +333,37 @@ mod tests {
         );
 
         let input = capability.input();
-        assert_eq!(
-            input.permission(),
-            Some(PermissionKind::InputControl),
-            "Accessibility is the authorization input needs, named separately from \
-             the one capture needs"
-        );
         for kind in InputOperationKind::ALL {
-            assert!(
-                input.supports(kind, InputDelivery::System),
+            let system = input.pair(kind, InputDelivery::System);
+            assert_eq!(
+                system.permission(),
+                Some(PermissionKind::InputControl),
+                "Accessibility is the authorization input needs, named separately from \
+                 the one capture needs"
+            );
+            assert_eq!(
+                system.support(),
+                CapabilitySupport::Supported,
                 "a window accepts {} through system delivery",
                 kind.as_str()
             );
-            assert!(
-                !input.supports(kind, InputDelivery::BackgroundTarget),
-                "a macOS target claimed background {}",
+            assert_eq!(
+                input.pair(kind, InputDelivery::WindowMessage).support(),
+                CapabilitySupport::Unsupported,
+                "a macOS target claimed exact-window {}",
                 kind.as_str()
             );
+            assert_eq!(
+                input.pair(kind, InputDelivery::ProcessDirected).support(),
+                CapabilitySupport::Unsupported,
+                "a macOS target claimed process-directed {}",
+                kind.as_str()
+            );
+            assert!(
+                system.focus_required(),
+                "system delivery reaches whatever is focused, so it needs the target to be"
+            );
         }
-        assert!(
-            input.requires_focus(InputDelivery::System),
-            "system delivery reaches whatever is focused, so it needs the target to be"
-        );
     }
 
     #[test]
@@ -371,20 +378,31 @@ mod tests {
             .capability()
             .input();
 
-        assert!(input.supports(InputOperationKind::Pointer, InputDelivery::System));
+        assert_eq!(
+            input
+                .pair(InputOperationKind::Pointer, InputDelivery::System)
+                .support(),
+            CapabilitySupport::Supported
+        );
         for kind in [InputOperationKind::Keyboard, InputOperationKind::Text] {
-            assert!(
-                !input.supports(kind, InputDelivery::System),
+            assert_eq!(
+                input.pair(kind, InputDelivery::System).support(),
+                CapabilitySupport::Unsupported,
                 "a display is not a focusable target, so {} has nothing to reach",
                 kind.as_str()
             );
         }
         assert!(
-            !input.requires_focus(InputDelivery::System),
+            !input
+                .pair(InputOperationKind::Pointer, InputDelivery::System)
+                .focus_required(),
             "pointer input to a display needs nothing focused"
         );
         for kind in InputOperationKind::ALL {
-            assert!(!input.supports(kind, InputDelivery::BackgroundTarget));
+            assert_eq!(
+                input.pair(kind, InputDelivery::WindowMessage).support(),
+                CapabilitySupport::Unsupported
+            );
         }
     }
 

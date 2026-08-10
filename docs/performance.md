@@ -7,12 +7,13 @@ an agreed cost before the phase exits.
 
 This document defines the format that evidence takes. Setting a numeric budget
 for a workload is gate [`G-013`](validation-gates.md#g-013), which is resolved
-per workload and target rather than once. Phase 1 is resolved. ADR 0020
-historically accepted partial macOS Phase 2 evidence, but
-[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
-invalidates those profiles after source and correctness-oracle drift. Every
-Phase 2 native workload is open again; old measurements remain reviewable but
-are not current ceilings.
+per workload and target rather than once. Phase 1 is resolved. ADR 0021
+invalidated the three historical macOS Phase 2 native profiles after source and
+correctness-oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
+now accepts the macOS diagnostic slice, and
+[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
+revision-bound macOS native input and public-language profile. The remaining
+native workload and target gaps stay open.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -401,42 +402,94 @@ That workload therefore has no latency budget on either target. It is bounded by
 two hundred iterations. `negotiate_table` is bounded the same way for the same
 reason, and so is any later operation whose fast path is a pointer copy.
 
+## Phase 2.2 diagnostic performance
+
+The common diagnostic hot paths have one benchmark at
+`crates/automation/runtime/benches/diagnostic-overhead.rs`. Its ten workloads
+measure one-event input submission, retained-frame acquisition/mapping, and
+explicit close/drain with diagnostics `Off`, `Normal`, and `Debug`, plus a
+four-slot debug queue under input pressure. Every sample proves its frame,
+mapping, receipt, or close result is unchanged, validates retained categories
+and order, checks exact loss counts, and records mapped bytes where applicable.
+
+The benchmark's smoke plan runs under
+`cargo test --locked --workspace --all-targets`, so both release-target CI jobs
+enforce zero oracle failures and bounded allocation growth. A full profile is
+run with the target's named host metadata:
+
+```sh
+cargo bench --locked --package mado-pilot-runtime \
+    --bench diagnostic-overhead -- \
+    --hardware "<named host hardware>" \
+    --os-version "<named host OS and build>"
+```
+
+[ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the
+[aarch64 profile](benchmarks/phase-2-input-diagnostic-overhead-aarch64-apple-darwin.toml).
+[ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md)
+replaces the Windows timing gap with the measured
+[x86_64 profile](benchmarks/phase-2-input-diagnostic-overhead-x86_64-pc-windows-msvc.toml).
+Both profiles retain 200 samples after 20 warmups for every workload, report
+zero oracle failures and allocation growth, cap live Rust heap at 32 KiB, and
+keep the capture mapping exact at 3,072 bytes.
+
+On the Apple M1 Pro, p95 `Normal` input diagnostics add `0.000042 ms` over
+`Off`, `Debug` adds `0.000125 ms`, debug capture/mapping adds `0.000126 ms`,
+and debug close/drain adds `0.000209 ms`. On the Windows Core i7-12700KF,
+the corresponding post-review differences are `0.000200 ms`, `0.000200 ms`,
+`0.000200 ms`, and `0.000300 ms`. Four submissions against capacity four
+retain all four normal terminal records, report all eight discarded debug
+records, and still return four complete receipts on both targets.
+
 ## Phase 2 native performance status
 
-Phase 2's affected [`G-013`](validation-gates.md#g-013) workloads are open.
-[ADR 0020](adr/0020-phase-2-native-performance-budgets.md) recorded three
-revision-bound profiles from an Apple M1 Pro under macOS 26.5.2, but
-[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
-supersedes their normative status:
+Phase 2's affected [`G-013`](validation-gates.md#g-013) workloads are partially
+resolved. [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+invalidated the three macOS profiles originally accepted by
+[ADR 0020](adr/0020-phase-2-native-performance-budgets.md). ADR 0025 replaced
+the macOS input profile; ADR 0026 now replaces every Windows native gap:
 
-| Workload set | Historical profile | Current status |
-|---|---|---|
-| Capture | [aarch64](benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml) | non-normative after stimulus, latest-frame, source, and liveness repairs |
-| Transitions | [aarch64](benchmarks/phase-2-native-transitions-aarch64-apple-darwin.toml) | non-normative because it names the superseded benchmark tree |
-| Input and public languages | [aarch64](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml) | non-normative after source and input-liveness repairs |
+| Workload set | Target | Profile | Current status |
+|---|---|---|---|
+| Capture | macOS | [aarch64](benchmarks/phase-2-native-capture-aarch64-apple-darwin.toml) | historical, non-normative after source and oracle repairs |
+| Capture | Windows | [x86_64](benchmarks/phase-2-native-capture-x86_64-pc-windows-msvc.toml) | measured and normative under ADR 0026 |
+| Transitions | macOS | [aarch64](benchmarks/phase-2-native-transitions-aarch64-apple-darwin.toml) | historical, non-normative because it names the superseded tree |
+| Transitions | Windows | [x86_64](benchmarks/phase-2-native-transitions-x86_64-pc-windows-msvc.toml) | measured and normative under ADR 0026 |
+| Input and public languages | macOS | [aarch64](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml) | measured and normative under ADR 0025 |
+| Input and public languages | Windows | [x86_64](benchmarks/phase-2-native-input-x86_64-pc-windows-msvc.toml) | measured and normative under ADR 0026 |
 
-The files retain their old samples, environment metadata, and former budget
-blocks as historical evidence, with `normative = false`. They do not gate the
-current source. A corrected non-normative capture probe produced zero oracle
-failures and zero allocation growth, but also proved that the old
-stimulus-to-frame latency, mapped-byte, and stale-work ceilings no longer
-describe the repaired workload. No ceiling was widened from that uncommitted
-probe.
+The two historical macOS files retain their old samples, environment metadata,
+and former budget blocks with `normative = false`; they do not gate current
+source. The macOS input requalification retained 300 correct samples with zero
+allocation growth after replacing stale six-event/two-key-pair expectations and
+giving every public-language sample an independent visual precondition.
 
-The historical macOS input evidence also includes a rejected first run: one of
-fifty `c_common_flow` samples failed its correctness oracle and no cause was
-established. That run remains in the Change evidence directory. It remains a
-constraint on the future C/C++ rerun rather than an accepted current result.
+The post-review Windows run is bound to source commit
+`6873d4b05a13fd15cb3ffd961892b1153f606d78`, implementation tree
+`2483269ee071d14adfe14f829d318a4c59337f85`, on the named Core i7-12700KF /
+RTX 4080 host. Its retained 600 capture, 80 transition, and 300
+input/public-language samples all satisfy their exact oracles, report zero
+allocation growth, and pass the unchanged ADR 0026 ceilings. Capture p95 ranges
+from `0.002500 ms` for latest acquisition to `31.546700 ms` for
+stimulus-to-frame. Transition p95 ranges from `2.530000 ms` for close to
+`112.344000 ms` for first-frame open. Input p95 is `0.366000 ms` for a Rust
+receipt, `116.048000 ms` for the Rust common flow, `15.717900 ms` for C process
+loading, `15.343200 ms` for C++ process loading, and below `285 ms` for either
+public-language common flow.
 
-No approved bare-metal Windows host was available. The
-[Windows evidence-gap profile](benchmarks/phase-2-native-x86_64-pc-windows-msvc-evidence-gap.toml)
-records zero samples and no budgets; neither macOS numbers, hosted CI timings,
-nor the G-002 ownership prototype are substituted.
+The first Windows transition and language runs were rejected rather than
+recorded. They proved benchmark apparatus defects: the resize fixture stopped
+publishing before WGC pool recreation stabilized, one workload reused a
+1,024-event fixture for 2,050 redacted summaries, child processes lacked the
+known Cargo-profile DLL path, and the C++ oracle expected macOS evidence on
+Windows. ADR 0026 records the probes and the bounded repairs. Production capture
+and input semantics were not changed to make a benchmark pass.
 
-The Phase 1 macOS deterministic and C-boundary profiles historically passed all
-55 applicable comparisons at the ADR 0020 source revision. Release acceptance
-requires rerunning them at the eventual final Phase 2 revision; their committed
-Phase 1 ceilings do not move.
+The Phase 1 profiles historically passed all applicable comparisons at their
+recorded source revisions. Release acceptance still requires rerunning them at
+the eventual final Phase 2 revision; their committed Phase 1 ceilings do not
+move. Current macOS capture and transition profiles also remain required before
+Phase 2 exit.
 
 ## Phase 2 Windows ownership prototype
 
@@ -466,10 +519,11 @@ Each 600-frame 3840×2160 display row copied 23,887,872,000 bytes and mapped
 publishing a WGC surface or by reusing leased content; it may optimize scheduling
 or representation only while the ADR's detachment and lifetime tests still pass.
 
-The production Windows capture Change resolves its affected part of
-[`G-013`](validation-gates.md#g-013). Its profile must budget capture arrival,
-callback-copy p95, mapped and copied bytes, detached/staging and resident memory,
-drops and stale work under pressure, session startup, resize recreation, close
-drain, and reset recovery at 1280×720 and on the named two-4K topology. The
-complete workload and correctness obligations are in
+The production Windows capture portion of
+[`G-013`](validation-gates.md#g-013) remains open independently of the
+`native-phase2` profile accepted by ADR 0026. Its acceptance profile must budget
+capture arrival, callback-copy p95, mapped and copied bytes, detached/staging
+and resident memory, drops and stale work under pressure, session startup,
+resize recreation, close drain, and reset recovery at 1280×720 and on the named
+dual-4K topology. The complete workload and correctness obligations are in
 [windows-capture-contract-tests.md](windows-capture-contract-tests.md).

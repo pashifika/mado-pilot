@@ -18,6 +18,29 @@ use std::time::Duration;
 use crate::status::{Error, Status};
 use crate::time::{Clock, MonotonicInstant, SystemClock};
 
+/// An opaque caller-selected correlation value for one logical activity.
+///
+/// Tags are copied into diagnostics and have no control-flow meaning. Zero is
+/// reserved for the absent representation at foreign-function boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ActivityTag(std::num::NonZeroU64);
+
+impl ActivityTag {
+    /// Creates a nonzero activity tag.
+    #[must_use]
+    pub const fn new(value: u64) -> Option<Self> {
+        match std::num::NonZeroU64::new(value) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Returns the caller-supplied numeric value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
 /// A cancellation flag shared by every clone.
 ///
 /// Cloning is cheap and cancelling from any clone cancels all of them, so one
@@ -88,6 +111,7 @@ pub struct OperationContext {
     clock: Arc<dyn Clock>,
     deadline: Option<MonotonicInstant>,
     cancellation: Option<CancellationToken>,
+    activity_tag: Option<ActivityTag>,
 }
 
 impl OperationContext {
@@ -98,6 +122,7 @@ impl OperationContext {
             clock: Arc::new(SystemClock),
             deadline: None,
             cancellation: None,
+            activity_tag: None,
         }
     }
 
@@ -139,6 +164,13 @@ impl OperationContext {
         self
     }
 
+    /// Attaches an opaque caller correlation tag.
+    #[must_use]
+    pub fn with_activity_tag(mut self, tag: ActivityTag) -> Self {
+        self.activity_tag = Some(tag);
+        self
+    }
+
     /// Returns the absolute deadline, or `None` when the operation has none.
     #[must_use]
     pub fn deadline(&self) -> Option<MonotonicInstant> {
@@ -149,6 +181,12 @@ impl OperationContext {
     #[must_use]
     pub fn cancellation(&self) -> Option<&CancellationToken> {
         self.cancellation.as_ref()
+    }
+
+    /// Returns the caller correlation tag, if one is attached.
+    #[must_use]
+    pub const fn activity_tag(&self) -> Option<ActivityTag> {
+        self.activity_tag
     }
 
     /// Returns the current instant in this context's clock domain.
@@ -299,7 +337,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::{CancellationToken, Interruption, Operation, OperationContext};
+    use super::{ActivityTag, CancellationToken, Interruption, Operation, OperationContext};
     use crate::status::Status;
     use crate::time::{MonotonicInstant, testing::ManualClock};
 
@@ -492,5 +530,30 @@ mod tests {
 
         clock.advance(Duration::from_secs(1));
         assert_eq!(context.interruption(), Some(Interruption::DeadlineExceeded));
+    }
+
+    #[test]
+    fn activity_tags_are_nonzero_and_do_not_change_operation_results() {
+        assert_eq!(ActivityTag::new(0), None);
+        let tag = ActivityTag::new(41).expect("nonzero");
+        let tagged = OperationContext::new().with_activity_tag(tag);
+        let untagged = OperationContext::new();
+
+        assert_eq!(tagged.activity_tag(), Some(tag));
+        assert_eq!(untagged.activity_tag(), None);
+        assert_eq!(
+            Operation::admit(&tagged).and_then(|operation| operation.commit(7)),
+            Operation::admit(&untagged).and_then(|operation| operation.commit(7))
+        );
+    }
+
+    #[test]
+    fn cloning_preserves_only_the_attached_activity_tag() {
+        let tag = ActivityTag::new(u64::MAX).expect("nonzero");
+        let tagged = OperationContext::new().with_activity_tag(tag);
+        let clone = tagged.clone();
+
+        assert_eq!(clone.activity_tag(), Some(tag));
+        assert_eq!(OperationContext::new().activity_tag(), None);
     }
 }

@@ -2,25 +2,23 @@
 //!
 //! An engine is the C caller's root handle: it owns the wired capture adapter
 //! and the required matching backend, and every other handle is reached through
-//! it. ABI 1.1 adds the native release-target wiring without changing replay.
+//! it. ABI 1.2 adds native release-target wiring without changing replay.
 //!
 //! # Boundary identities
 //!
-//! Facade target and stream identities are deliberately opaque. The C boundary
-//! therefore mints fixed-width nonzero identities from process-wide counters
-//! that never reuse a value while the library is loaded. A target identity is
-//! minted for one discovery snapshot and copied into every session descriptor
-//! and receipt opened from it. A stream identity is minted per open session.
-//! These values correlate C records exactly as their Rust counterparts do; they
-//! are not platform handles and cannot be compared with Rust API identities.
-//! ADR 0006 keeps the facade identities opaque, and ADR 0017 fixes these C
-//! projections.
+//! Facade target and stream identities expose checked nonzero ordinals scoped
+//! to their issuing engine. The C boundary projects those ordinals directly,
+//! so rediscovery and lazy diagnostic projection preserve correlation without
+//! retaining a second identity registry.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ops::Deref;
 use std::time::Duration;
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
-use mado_pilot::{Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription};
+use mado_pilot::{
+    DiagnosticOptions, Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription,
+    TargetId,
+};
 
 use crate::boundary::{self, Input, Out, Versioned, covers, inputs, prefixes};
 use crate::error::{self, Fault, madopilot_error_t};
@@ -43,7 +41,27 @@ use crate::{handle, hooks};
 
 opaque! {
     /// A configured engine: one capture adapter and one matching backend.
-    madopilot_engine_t => Engine
+    madopilot_engine_t => EngineHandle
+}
+
+/// The facade engine behind the C handle.
+#[derive(Debug)]
+pub(crate) struct EngineHandle {
+    engine: Engine,
+}
+
+impl EngineHandle {
+    fn new(engine: Engine) -> Self {
+        Self { engine }
+    }
+}
+
+impl Deref for EngineHandle {
+    type Target = Engine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
 }
 
 opaque! {
@@ -55,31 +73,27 @@ opaque! {
     madopilot_target_list_t => TargetList
 }
 
-/// One target and the fixed-width identity minted for its discovery snapshot.
+/// One target in an immutable discovery snapshot.
 #[derive(Debug)]
 pub(crate) struct TargetRecord {
     description: TargetDescription,
-    boundary_id: u64,
 }
 
 impl TargetRecord {
-    fn new(description: TargetDescription) -> Result<Self, Fault> {
-        Ok(Self {
-            description,
-            boundary_id: next_target()?,
-        })
+    fn new(description: TargetDescription) -> Self {
+        Self { description }
     }
 
     pub(crate) const fn description(&self) -> &TargetDescription {
         &self.description
     }
 
-    pub(crate) const fn facade_id(&self) -> mado_pilot::TargetId {
+    pub(crate) const fn facade_id(&self) -> TargetId {
         self.description.id()
     }
 
-    pub(crate) const fn boundary_id(&self) -> u64 {
-        self.boundary_id
+    pub(crate) const fn ordinal(&self) -> u64 {
+        self.facade_id().get()
     }
 }
 
@@ -91,36 +105,6 @@ impl TargetList {
     pub(crate) fn targets(&self) -> &[TargetRecord] {
         &self.0
     }
-}
-
-/// Mints the next boundary stream identity.
-pub(crate) fn next_stream() -> Result<u64, Fault> {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-
-    next_identity(&NEXT, "the C stream identity space is exhausted")
-}
-
-fn next_target() -> Result<u64, Fault> {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-
-    next_identity(&NEXT, "the C target identity space is exhausted")
-}
-
-fn next_identity(counter: &AtomicU64, exhausted: &'static str) -> Result<u64, Fault> {
-    counter
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            if current == 0 {
-                None
-            } else {
-                Some(current.wrapping_add(1))
-            }
-        })
-        .map_err(|_| {
-            Fault::from_error(
-                &mado_pilot::Error::new(mado_pilot::Status::LimitExceeded, exhausted),
-                MADOPILOT_ERROR_CATEGORY_CAPTURE,
-            )
-        })
 }
 
 inputs! {
@@ -270,13 +254,13 @@ unsafe fn replay_source(source: &madopilot_source_t) -> Result<ReplaySource, Fau
 }
 
 #[cfg(windows)]
-fn native_windows_engine() -> Result<Engine, Fault> {
-    mado_pilot::windows_engine(mado_pilot::NativeEngineRequest::new())
+fn native_windows_engine(diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+    mado_pilot::windows_engine(mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics))
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
 }
 
 #[cfg(not(windows))]
-fn native_windows_engine() -> Result<Engine, Fault> {
+fn native_windows_engine(_diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
     Err(Fault::from_error(
         &mado_pilot::Error::new(
             mado_pilot::Status::Unsupported,
@@ -287,13 +271,13 @@ fn native_windows_engine() -> Result<Engine, Fault> {
 }
 
 #[cfg(target_os = "macos")]
-fn native_macos_engine() -> Result<Engine, Fault> {
-    mado_pilot::macos_engine(mado_pilot::NativeEngineRequest::new())
+fn native_macos_engine(diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+    mado_pilot::macos_engine(mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics))
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn native_macos_engine() -> Result<Engine, Fault> {
+fn native_macos_engine(_diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
     Err(Fault::from_error(
         &mado_pilot::Error::new(
             mado_pilot::Status::Unsupported,
@@ -403,6 +387,26 @@ pub(crate) fn create(
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
+    create_inner(source, std::ptr::null(), operation, out_engine, out_error)
+}
+
+pub(crate) fn create_with_options(
+    source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
+    create_inner(source, options, operation, out_engine, out_error)
+}
+
+fn create_inner(
+    source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
     if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
         unsafe { boundary::begin_outputs(out_engine, "out_engine", out_error) }
@@ -412,11 +416,17 @@ pub(crate) fn create(
     hooks::reach(hooks::Site::Entry);
 
     // SAFETY: `out_error` was validated above.
-    unsafe { report(out_error, build_engine(source, operation, out_engine)) }
+    unsafe {
+        report(
+            out_error,
+            build_engine(source, options, operation, out_engine),
+        )
+    }
 }
 
 fn build_engine(
     source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
 ) -> Result<(), Fault> {
@@ -427,6 +437,8 @@ fn build_engine(
 
     // SAFETY: as above.
     let request = unsafe { boundary::read_input::<madopilot_source_t>(source) }?;
+    // SAFETY: null selects defaults; otherwise the caller keeps the options readable.
+    let diagnostics = unsafe { crate::diagnostic::options(options) }?;
 
     // SAFETY: as above. Fields not selected by the source tag remain unread.
     let engine = match request.kind {
@@ -434,13 +446,16 @@ fn build_engine(
             // SAFETY: the replay fields selected by the tag remain readable for
             // the call under this function's boundary contract.
             let configured = unsafe { replay_source(&request) }?;
-            mado_pilot::replay_engine(configured)
-                .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
+            mado_pilot::replay_engine(
+                mado_pilot::ReplayEngineRequest::new(configured).with_diagnostics(diagnostics),
+            )
+            .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
         }
-        MADOPILOT_SOURCE_NATIVE_WINDOWS => native_windows_engine()?,
-        MADOPILOT_SOURCE_NATIVE_MACOS => native_macos_engine()?,
+        MADOPILOT_SOURCE_NATIVE_WINDOWS => native_windows_engine(diagnostics)?,
+        MADOPILOT_SOURCE_NATIVE_MACOS => native_macos_engine(diagnostics)?,
         other => return Err(Fault::abi(format!("unrecognized source kind {other}"))),
     };
+    let engine = EngineHandle::new(engine);
     hooks::reach(hooks::Site::AfterTemporary);
 
     // The engine exists but is not the caller's yet. An operation that ran out
@@ -457,14 +472,14 @@ fn build_engine(
 pub(crate) fn retain(engine: *const madopilot_engine_t) -> madopilot_status_t {
     // SAFETY: the handle is null or one this module produced, and the caller
     // holds a live reference for the call.
-    unsafe { handle::retain::<Engine>(engine) }
+    unsafe { handle::retain::<EngineHandle>(engine) }
 
     MADOPILOT_STATUS_OK
 }
 
 pub(crate) fn release(engine: *mut madopilot_engine_t) -> madopilot_status_t {
     // SAFETY: as `retain`, and the caller is giving up the reference it owns.
-    unsafe { handle::release::<Engine>(engine) }
+    unsafe { handle::release::<EngineHandle>(engine) }
 
     MADOPILOT_STATUS_OK
 }
@@ -493,7 +508,7 @@ fn run_discover(
     out_targets: *mut *mut madopilot_target_list_t,
 ) -> Result<(), Fault> {
     // SAFETY: the caller keeps the engine retained for the call.
-    let Some(engine) = (unsafe { handle::borrow::<Engine>(engine) }) else {
+    let Some(engine) = (unsafe { handle::borrow::<EngineHandle>(engine) }) else {
         return Err(Fault::abi("`engine` is null"));
     };
     // SAFETY: the caller keeps the operation structure readable for the call.
@@ -506,7 +521,7 @@ fn run_discover(
     let targets = targets
         .into_iter()
         .map(TargetRecord::new)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
 
@@ -645,7 +660,7 @@ fn describe_target(target: &TargetRecord, struct_size: u32) -> Result<madopilot_
         coordinate_spaces,
         name: madopilot_str_t::borrowed(description.name()),
         provider: madopilot_str_t::borrowed(description.provider().name()),
-        target: target.boundary_id(),
+        target: target.ordinal(),
         kind,
         capture: crate::input::capability_support_code(capability.capture()),
         capture_permission,
@@ -666,24 +681,5 @@ pub(crate) unsafe fn report(
         Ok(()) => MADOPILOT_STATUS_OK,
         // SAFETY: forwarded unchanged from this function's own contract.
         Err(fault) => unsafe { error::emit(out_error, fault) },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::atomic::AtomicU64;
-
-    use super::next_identity;
-
-    #[test]
-    fn the_last_nonzero_identity_is_minted_once_before_exhaustion() {
-        let counter = AtomicU64::new(u64::MAX);
-
-        assert_eq!(
-            next_identity(&counter, "exhausted").expect("the last identity remains available"),
-            u64::MAX
-        );
-        assert!(next_identity(&counter, "exhausted").is_err());
-        assert!(next_identity(&counter, "exhausted").is_err());
     }
 }

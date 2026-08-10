@@ -88,8 +88,8 @@ pub mod time;
 pub mod transform;
 
 pub use capability::{
-    CapabilitySupport, InputCapability, InputDelivery, InputOperationKind, TargetCapability,
-    TargetKind,
+    CapabilitySupport, InputAddressScope, InputCapability, InputDelivery, InputOperationKind,
+    InputRouteCapability, SubmissionEvidence, TargetCapability, TargetKind,
 };
 pub use diagnostic::{DiagnosticCategory, PlatformCode, RedactedDiagnostic};
 pub use geometry::{
@@ -100,7 +100,7 @@ pub use identity::{
     IdentityIssuer, ProviderId, StreamCursor, StreamEpoch, StreamId, TargetId,
 };
 pub use lifecycle::Lifecycle;
-pub use operation::{CancellationToken, Interruption, Operation, OperationContext};
+pub use operation::{ActivityTag, CancellationToken, Interruption, Operation, OperationContext};
 pub use permission::{
     PermissionKind, PermissionOutcome, PermissionProbe, PermissionReport, PermissionState,
 };

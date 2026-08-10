@@ -360,7 +360,7 @@ impl TargetRecord {
             .map_err(|status| match status {
                 ShimStatus::TargetLost => InputFault::TargetLost,
                 ShimStatus::InvalidArgument => InputFault::UnsupportedCoordinate,
-                _ => InputFault::DeliveryFailed,
+                _ => InputFault::SubmissionFailed,
             })
     }
 

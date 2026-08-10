@@ -5,9 +5,9 @@
 //! summary of the events that reach it. It retains no characters: a key event is
 //! reported as its kind and its UTF-16 unit count.
 //!
-//! macOS has no background input channel, so there is nothing here that accepts a
-//! packet. Everything this fixture observes arrived as ordinary system input,
-//! which is the only kind the macOS Adapter delivers.
+//! macOS has no target-directed input channel, so there is nothing here that
+//! accepts a packet. Everything this fixture observes arrived as ordinary
+//! system input, which is the only route the macOS Adapter submits through.
 
 #[cfg(not(target_os = "macos"))]
 fn main() {

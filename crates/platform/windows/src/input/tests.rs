@@ -9,18 +9,19 @@ use mado_pilot_capture::{
     StoragePublication, StreamState,
 };
 use mado_pilot_core::{
-    CancellationToken, Clock, CoordinateSpace, GeometryRevision, IdentityIssuer, InputCapability,
-    InputDelivery, InputOperationKind, MonotonicInstant, OperationContext, PixelExtent, ProviderId,
-    Scale, StreamCursor, TargetKind, TargetPlacement, TransformSnapshot,
+    CancellationToken, CapabilitySupport, Clock, CoordinateSpace, GeometryRevision, IdentityIssuer,
+    InputCapability, InputDelivery, InputOperationKind, MonotonicInstant, OperationContext,
+    PixelExtent, ProviderId, Scale, StreamCursor, SubmissionEvidence, TargetKind, TargetPlacement,
+    TransformSnapshot,
 };
 use mado_pilot_input::{
     CleanupState, DeliveryPlan, FocusPolicy, InputController, InputDescriptor, InputEvent,
-    InputFault, InputRequest, InputSequence, Key, Modifier, PointerGeometry, PressedState,
-    SequenceOutcome,
+    InputFault, InputReceipt, InputRequest, InputSequence, Key, Modifier, PointerGeometry,
+    PressedState, SequenceOutcome,
 };
 
 use super::{
-    DeliveryContexts, DeliveryFailure, DriverState, GeometryLedger, InputDriver,
+    DriverState, GeometryLedger, InputDriver, SubmissionContexts, SubmissionFailure,
     WindowsInputController, input_capability,
 };
 
@@ -50,7 +51,7 @@ struct ScriptedDriver {
     advance_after: Mutex<Option<(usize, Arc<ManualClock>, Duration)>>,
     attempts: AtomicUsize,
     preflights: Mutex<Vec<InputDelivery>>,
-    delivered: Mutex<Vec<(InputDelivery, InputEvent)>>,
+    submitted: Mutex<Vec<(InputDelivery, InputEvent)>>,
     released: Mutex<Vec<(InputDelivery, PressedState)>>,
 }
 
@@ -70,13 +71,13 @@ impl ScriptedDriver {
         self
     }
 
-    fn cancel_after(self, delivered: usize, token: CancellationToken) -> Self {
-        *self.cancel_after.lock().expect("uncontended") = Some((delivered, token));
+    fn cancel_after(self, submitted: usize, token: CancellationToken) -> Self {
+        *self.cancel_after.lock().expect("uncontended") = Some((submitted, token));
         self
     }
 
-    fn advance_after(self, delivered: usize, clock: Arc<ManualClock>, step: Duration) -> Self {
-        *self.advance_after.lock().expect("uncontended") = Some((delivered, clock, step));
+    fn advance_after(self, submitted: usize, clock: Arc<ManualClock>, step: Duration) -> Self {
+        *self.advance_after.lock().expect("uncontended") = Some((submitted, clock, step));
         self
     }
 }
@@ -97,39 +98,39 @@ impl InputDriver for ScriptedDriver {
         Ok(())
     }
 
-    fn deliver(
+    fn submit(
         &self,
-        delivery: InputDelivery,
+        route: InputDelivery,
         _focus: FocusPolicy,
         event: &InputEvent,
         _geometry: PointerGeometry,
         _state: &mut DriverState,
-        _contexts: DeliveryContexts<'_>,
-    ) -> Result<(), DeliveryFailure> {
+        _contexts: SubmissionContexts<'_>,
+    ) -> Result<(), SubmissionFailure> {
         let index = self.attempts.fetch_add(1, Ordering::AcqRel);
         if let Some((failure_index, fault, during_event)) =
             *self.fail_at.lock().expect("uncontended")
             && failure_index == index
         {
             return Err(if during_event {
-                DeliveryFailure::during_event(fault)
+                SubmissionFailure::during_event(fault)
             } else {
-                DeliveryFailure::before_event(fault)
+                SubmissionFailure::before_event(fault)
             });
         }
-        self.delivered
+        self.submitted
             .lock()
             .expect("uncontended")
-            .push((delivery, event.clone()));
-        let delivered = index + 1;
+            .push((route, event.clone()));
+        let submitted = index + 1;
         if let Some((cancel_after, token)) = &*self.cancel_after.lock().expect("uncontended")
-            && *cancel_after == delivered
+            && *cancel_after == submitted
         {
             token.cancel();
         }
         if let Some((advance_after, clock, step)) =
             &*self.advance_after.lock().expect("uncontended")
-            && *advance_after == delivered
+            && *advance_after == submitted
         {
             clock.advance(*step);
         }
@@ -158,13 +159,35 @@ fn target() -> mado_pilot_core::TargetId {
 }
 
 fn capability() -> InputCapability {
-    let mut capability = InputCapability::none().with_pointer_space(CoordinateSpace::CapturePixels);
+    let mut capability = InputCapability::none();
     for operation in InputOperationKind::ALL {
         capability = capability
-            .with_pair(operation, InputDelivery::System)
-            .with_pair(operation, InputDelivery::BackgroundTarget);
+            .with_pair(
+                operation,
+                InputDelivery::System,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::SystemInputAdmission,
+            )
+            .with_focus_required(operation, InputDelivery::System)
+            .with_pair(
+                operation,
+                InputDelivery::WindowMessage,
+                CapabilitySupport::Supported,
+                SubmissionEvidence::TargetQueueAdmission,
+            );
     }
-    capability.with_focus_required(InputDelivery::System)
+    for space in [
+        CoordinateSpace::CapturePixels,
+        CoordinateSpace::FrameNormalized,
+        CoordinateSpace::TargetNormalized,
+        CoordinateSpace::TargetLogical,
+        CoordinateSpace::DesktopLogical,
+    ] {
+        capability = capability
+            .with_pointer_space(InputDelivery::System, space)
+            .with_pointer_space(InputDelivery::WindowMessage, space);
+    }
+    capability
 }
 
 fn controller(
@@ -184,27 +207,83 @@ fn chord() -> InputSequence {
     .expect("valid")
 }
 
+fn attempted_routes(receipt: &InputReceipt) -> Vec<InputDelivery> {
+    receipt
+        .attempts()
+        .iter()
+        .map(|attempt| attempt.route())
+        .collect()
+}
+
 #[test]
-fn target_classes_advertise_only_the_verified_delivery_matrix() {
+fn target_classes_advertise_only_the_verified_route_matrix() {
     let ordinary = input_capability(TargetKind::Window, Some("OrdinaryWindow"));
     let fixture = input_capability(TargetKind::Window, Some(CLASS_NAME));
     let display = input_capability(TargetKind::Display, None);
 
     for operation in InputOperationKind::ALL {
-        assert!(ordinary.supports(operation, InputDelivery::System));
-        assert!(!ordinary.supports(operation, InputDelivery::BackgroundTarget));
-        assert!(fixture.supports(operation, InputDelivery::System));
-        assert!(fixture.supports(operation, InputDelivery::BackgroundTarget));
+        assert_eq!(
+            ordinary.pair(operation, InputDelivery::System).support(),
+            CapabilitySupport::Supported
+        );
+        assert_eq!(
+            ordinary
+                .pair(operation, InputDelivery::WindowMessage)
+                .support(),
+            CapabilitySupport::Unsupported
+        );
+        assert_eq!(
+            fixture.pair(operation, InputDelivery::System).support(),
+            CapabilitySupport::Supported
+        );
+        assert_eq!(
+            fixture
+                .pair(operation, InputDelivery::WindowMessage)
+                .support(),
+            CapabilitySupport::Supported
+        );
+        assert_eq!(
+            fixture
+                .pair(operation, InputDelivery::ProcessDirected)
+                .support(),
+            CapabilitySupport::Unsupported
+        );
     }
-    assert!(display.supports(InputOperationKind::Pointer, InputDelivery::System));
-    assert!(!display.supports(InputOperationKind::Keyboard, InputDelivery::System));
-    assert!(!display.supports(InputOperationKind::Text, InputDelivery::System));
+    assert_eq!(
+        display
+            .pair(InputOperationKind::Pointer, InputDelivery::System)
+            .support(),
+        CapabilitySupport::Supported
+    );
+    for operation in [InputOperationKind::Keyboard, InputOperationKind::Text] {
+        assert_eq!(
+            display.pair(operation, InputDelivery::System).support(),
+            CapabilitySupport::Unsupported
+        );
+    }
     for operation in InputOperationKind::ALL {
-        assert!(!display.supports(operation, InputDelivery::BackgroundTarget));
+        assert_eq!(
+            display
+                .pair(operation, InputDelivery::WindowMessage)
+                .support(),
+            CapabilitySupport::Unsupported
+        );
+        assert!(
+            ordinary
+                .pair(operation, InputDelivery::System)
+                .focus_required()
+        );
+        assert!(
+            fixture
+                .pair(operation, InputDelivery::System)
+                .focus_required()
+        );
     }
-    assert!(ordinary.requires_focus(InputDelivery::System));
-    assert!(fixture.requires_focus(InputDelivery::System));
-    assert!(!display.requires_focus(InputDelivery::System));
+    assert!(
+        !display
+            .pair(InputOperationKind::Pointer, InputDelivery::System)
+            .focus_required()
+    );
     for space in [
         CoordinateSpace::CapturePixels,
         CoordinateSpace::FrameNormalized,
@@ -212,9 +291,21 @@ fn target_classes_advertise_only_the_verified_delivery_matrix() {
         CoordinateSpace::TargetLogical,
         CoordinateSpace::DesktopLogical,
     ] {
-        assert!(ordinary.accepts_pointer_space(space));
-        assert!(fixture.accepts_pointer_space(space));
-        assert!(display.accepts_pointer_space(space));
+        assert!(
+            ordinary
+                .pair(InputOperationKind::Pointer, InputDelivery::System)
+                .accepts_pointer_space(space)
+        );
+        assert!(
+            fixture
+                .pair(InputOperationKind::Pointer, InputDelivery::WindowMessage)
+                .accepts_pointer_space(space)
+        );
+        assert!(
+            display
+                .pair(InputOperationKind::Pointer, InputDelivery::System)
+                .accepts_pointer_space(space)
+        );
     }
 }
 
@@ -348,12 +439,14 @@ fn system_focus_policy_is_explicit_before_any_delivery() {
         DeliveryPlan::require(InputDelivery::System),
     );
 
-    let error = preserving_controller
+    let receipt = preserving_controller
         .execute(&preserving, &OperationContext::new())
-        .expect_err("preserve cannot satisfy system focus");
-    assert_eq!(error.status(), mado_pilot_core::Status::Unsupported);
+        .expect("focus refusal is receipt evidence");
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.fault(), Some(InputFault::FocusRequired));
+    assert_eq!(attempted_routes(&receipt), [InputDelivery::System]);
     assert!(driver.preflights.lock().expect("uncontended").is_empty());
-    assert!(driver.delivered.lock().expect("uncontended").is_empty());
+    assert!(driver.submitted.lock().expect("uncontended").is_empty());
 
     let refusing = Arc::new(
         ScriptedDriver::default().unavailable(InputDelivery::System, InputFault::FocusRefused),
@@ -369,23 +462,23 @@ fn system_focus_policy_is_explicit_before_any_delivery() {
         .execute(&requiring, &OperationContext::new())
         .expect("runtime focus refusal is receipted");
     assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    assert_eq!(receipt.failure(), Some(InputFault::FocusRefused));
-    assert_eq!(receipt.attempted(), [InputDelivery::System]);
-    assert!(refusing.delivered.lock().expect("uncontended").is_empty());
+    assert_eq!(receipt.fault(), Some(InputFault::FocusRefused));
+    assert_eq!(attempted_routes(&receipt), [InputDelivery::System]);
+    assert!(refusing.submitted.lock().expect("uncontended").is_empty());
 }
 
 #[test]
-fn unavailable_background_falls_back_only_when_system_was_permitted() {
+fn unavailable_exact_window_route_falls_back_only_when_system_was_permitted() {
     let target = target();
-    let driver = Arc::new(ScriptedDriver::default().unavailable(
-        InputDelivery::BackgroundTarget,
-        InputFault::DeliveryUnavailable,
-    ));
+    let driver = Arc::new(
+        ScriptedDriver::default()
+            .unavailable(InputDelivery::WindowMessage, InputFault::RouteUnavailable),
+    );
     let controller = controller(target, Arc::clone(&driver));
     let request = InputRequest::new(
         target,
         chord(),
-        DeliveryPlan::ordered(vec![InputDelivery::BackgroundTarget, InputDelivery::System])
+        DeliveryPlan::ordered(vec![InputDelivery::WindowMessage, InputDelivery::System])
             .expect("valid"),
     )
     .with_focus(FocusPolicy::ActivateIfRequired);
@@ -395,34 +488,34 @@ fn unavailable_background_falls_back_only_when_system_was_permitted() {
         .expect("executed");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
-    assert_eq!(receipt.delivery(), Some(InputDelivery::System));
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
     assert!(receipt.used_fallback());
     assert_eq!(
-        receipt.attempted(),
-        [InputDelivery::BackgroundTarget, InputDelivery::System]
+        attempted_routes(&receipt),
+        [InputDelivery::WindowMessage, InputDelivery::System]
     );
     assert!(
         driver
-            .delivered
+            .submitted
             .lock()
             .expect("uncontended")
             .iter()
-            .all(|(mode, _)| *mode == InputDelivery::System)
+            .all(|(route, _)| *route == InputDelivery::System)
     );
 }
 
 #[test]
-fn a_required_background_failure_never_sends_system_input() {
+fn a_required_exact_window_route_failure_never_sends_system_input() {
     let target = target();
-    let driver = Arc::new(ScriptedDriver::default().unavailable(
-        InputDelivery::BackgroundTarget,
-        InputFault::DeliveryUnavailable,
-    ));
+    let driver = Arc::new(
+        ScriptedDriver::default()
+            .unavailable(InputDelivery::WindowMessage, InputFault::RouteUnavailable),
+    );
     let controller = controller(target, Arc::clone(&driver));
     let request = InputRequest::new(
         target,
         chord(),
-        DeliveryPlan::require(InputDelivery::BackgroundTarget),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
     );
 
     let receipt = controller
@@ -430,20 +523,20 @@ fn a_required_background_failure_never_sends_system_input() {
         .expect("receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    assert_eq!(receipt.failure(), Some(InputFault::DeliveryUnavailable));
-    assert_eq!(receipt.attempted(), [InputDelivery::BackgroundTarget]);
-    assert!(driver.delivered.lock().expect("uncontended").is_empty());
+    assert_eq!(receipt.fault(), Some(InputFault::RouteUnavailable));
+    assert_eq!(attempted_routes(&receipt), [InputDelivery::WindowMessage]);
+    assert!(driver.submitted.lock().expect("uncontended").is_empty());
 }
 
 #[test]
-fn a_partial_sequence_never_retries_through_another_mode() {
+fn a_partial_sequence_never_retries_through_another_route() {
     let target = target();
     let driver = Arc::new(ScriptedDriver::default().fail_at(1, InputFault::PolicyRefused));
     let controller = controller(target, Arc::clone(&driver));
     let request = InputRequest::new(
         target,
         chord(),
-        DeliveryPlan::ordered(vec![InputDelivery::BackgroundTarget, InputDelivery::System])
+        DeliveryPlan::ordered(vec![InputDelivery::WindowMessage, InputDelivery::System])
             .expect("valid"),
     )
     .with_focus(FocusPolicy::ActivateIfRequired);
@@ -453,54 +546,54 @@ fn a_partial_sequence_never_retries_through_another_mode() {
         .expect("receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 1);
-    assert_eq!(receipt.delivery(), Some(InputDelivery::BackgroundTarget));
-    assert_eq!(receipt.failure(), Some(InputFault::PolicyRefused));
-    assert_eq!(receipt.attempted(), [InputDelivery::BackgroundTarget]);
+    assert_eq!(receipt.submitted(), 1);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::WindowMessage));
+    assert_eq!(receipt.fault(), Some(InputFault::PolicyRefused));
+    assert_eq!(attempted_routes(&receipt), [InputDelivery::WindowMessage]);
     assert_eq!(receipt.cleanup(), CleanupState::Complete);
     assert_eq!(receipt.cleanup_owed(), 1);
     assert_eq!(
         driver.released.lock().expect("uncontended").as_slice(),
         [(
-            InputDelivery::BackgroundTarget,
+            InputDelivery::WindowMessage,
             PressedState::Key(Key::Modifier(Modifier::Control))
         )]
     );
 }
 
 #[test]
-fn a_pre_send_refusal_is_unexecuted_and_never_falls_back() {
+fn a_pre_submission_refusal_is_unexecuted_and_never_falls_back() {
     let target = target();
     let driver = Arc::new(ScriptedDriver::default().fail_at(0, InputFault::FocusRequired));
     let controller = controller(target, Arc::clone(&driver));
     let request = InputRequest::new(
         target,
         chord(),
-        DeliveryPlan::ordered(vec![InputDelivery::System, InputDelivery::BackgroundTarget])
+        DeliveryPlan::ordered(vec![InputDelivery::System, InputDelivery::WindowMessage])
             .expect("valid"),
     )
     .with_focus(FocusPolicy::ActivateIfRequired);
 
     let receipt = controller
         .execute(&request, &OperationContext::new())
-        .expect("pre-send refusal is receipted");
+        .expect("pre-submission refusal is receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    assert_eq!(receipt.delivered(), 0);
-    assert_eq!(receipt.failure(), Some(InputFault::FocusRequired));
-    assert_eq!(receipt.attempted(), [InputDelivery::System]);
-    assert!(driver.delivered.lock().expect("uncontended").is_empty());
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.fault(), Some(InputFault::FocusRequired));
+    assert_eq!(attempted_routes(&receipt), [InputDelivery::System]);
+    assert!(driver.submitted.lock().expect("uncontended").is_empty());
 }
 
 #[test]
 fn a_partial_native_event_is_not_misreported_as_unexecuted() {
     let target = target();
-    let driver = Arc::new(ScriptedDriver::default().fail_during(0, InputFault::DeliveryFailed));
+    let driver = Arc::new(ScriptedDriver::default().fail_during(0, InputFault::SubmissionFailed));
     let controller = controller(target, Arc::clone(&driver));
     let request = InputRequest::new(
         target,
         InputSequence::new(vec![InputEvent::Text("bounded".to_owned())]).expect("valid"),
-        DeliveryPlan::ordered(vec![InputDelivery::BackgroundTarget, InputDelivery::System])
+        DeliveryPlan::ordered(vec![InputDelivery::WindowMessage, InputDelivery::System])
             .expect("valid"),
     )
     .with_focus(FocusPolicy::ActivateIfRequired);
@@ -510,41 +603,42 @@ fn a_partial_native_event_is_not_misreported_as_unexecuted() {
         .expect("receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 0);
-    assert_eq!(receipt.last_completed(), None);
-    assert_eq!(receipt.delivery(), Some(InputDelivery::BackgroundTarget));
-    assert_eq!(receipt.failure(), Some(InputFault::DeliveryFailed));
-    assert_eq!(receipt.attempted(), [InputDelivery::BackgroundTarget]);
-    assert!(driver.delivered.lock().expect("uncontended").is_empty());
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.last_submitted(), None);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::WindowMessage));
+    assert_eq!(receipt.fault(), Some(InputFault::SubmissionFailed));
+    assert_eq!(attempted_routes(&receipt), [InputDelivery::WindowMessage]);
+    assert!(receipt.partial_native_effect());
+    assert!(driver.submitted.lock().expect("uncontended").is_empty());
 }
 
 #[test]
 fn cleanup_releases_only_sequence_owned_state_newest_first() {
     let target = target();
-    let driver = Arc::new(ScriptedDriver::default().fail_at(2, InputFault::DeliveryFailed));
+    let driver = Arc::new(ScriptedDriver::default().fail_at(2, InputFault::SubmissionFailed));
     let controller = controller(target, Arc::clone(&driver));
     let request = InputRequest::new(
         target,
         chord(),
-        DeliveryPlan::require(InputDelivery::BackgroundTarget),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
     );
 
     let receipt = controller
         .execute(&request, &OperationContext::new())
         .expect("receipted");
 
-    assert_eq!(receipt.delivered(), 2);
+    assert_eq!(receipt.submitted(), 2);
     assert_eq!(receipt.cleanup_released(), 2);
     assert_eq!(receipt.cleanup_owed(), 2);
     assert_eq!(
         driver.released.lock().expect("uncontended").as_slice(),
         [
             (
-                InputDelivery::BackgroundTarget,
+                InputDelivery::WindowMessage,
                 PressedState::Key(Key::Character('c'))
             ),
             (
-                InputDelivery::BackgroundTarget,
+                InputDelivery::WindowMessage,
                 PressedState::Key(Key::Modifier(Modifier::Control))
             ),
         ]
@@ -552,7 +646,7 @@ fn cleanup_releases_only_sequence_owned_state_newest_first() {
 }
 
 #[test]
-fn cancellation_between_events_preserves_the_partial_count_and_runs_cleanup() {
+fn cancellation_between_submissions_preserves_the_partial_count_and_runs_cleanup() {
     let target = target();
     let token = CancellationToken::new();
     let driver = Arc::new(ScriptedDriver::default().cancel_after(1, token.clone()));
@@ -560,21 +654,21 @@ fn cancellation_between_events_preserves_the_partial_count_and_runs_cleanup() {
     let request = InputRequest::new(
         target,
         chord(),
-        DeliveryPlan::require(InputDelivery::BackgroundTarget),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
     );
     let operation = OperationContext::new().with_cancellation(token);
 
     let receipt = controller.execute(&request, &operation).expect("receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 1);
-    assert_eq!(receipt.failure(), Some(InputFault::Cancelled));
+    assert_eq!(receipt.submitted(), 1);
+    assert_eq!(receipt.fault(), Some(InputFault::Cancelled));
     assert_eq!(receipt.cleanup(), CleanupState::Complete);
     assert_eq!(receipt.cleanup_released(), 1);
 }
 
 #[test]
-fn deadline_between_events_preserves_the_partial_count_and_runs_cleanup() {
+fn deadline_between_submissions_preserves_the_partial_count_and_runs_cleanup() {
     let target = target();
     let clock = Arc::new(ManualClock::default());
     let driver = Arc::new(ScriptedDriver::default().advance_after(
@@ -586,7 +680,7 @@ fn deadline_between_events_preserves_the_partial_count_and_runs_cleanup() {
     let request = InputRequest::new(
         target,
         chord(),
-        DeliveryPlan::require(InputDelivery::BackgroundTarget),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
     );
     let operation = OperationContext::new()
         .with_clock(clock)
@@ -595,21 +689,21 @@ fn deadline_between_events_preserves_the_partial_count_and_runs_cleanup() {
     let receipt = controller.execute(&request, &operation).expect("receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 1);
-    assert_eq!(receipt.failure(), Some(InputFault::DeadlineExceeded));
+    assert_eq!(receipt.submitted(), 1);
+    assert_eq!(receipt.fault(), Some(InputFault::DeadlineExceeded));
     assert_eq!(receipt.cleanup(), CleanupState::Complete);
     assert_eq!(receipt.cleanup_released(), 1);
 }
 
 #[test]
-fn target_loss_after_delivery_is_partial_and_cleans_sequence_state() {
+fn target_loss_after_submission_is_partial_and_cleans_sequence_state() {
     let target = target();
     let driver = Arc::new(ScriptedDriver::default().fail_at(1, InputFault::TargetLost));
     let controller = controller(target, Arc::clone(&driver));
     let request = InputRequest::new(
         target,
         chord(),
-        DeliveryPlan::require(InputDelivery::BackgroundTarget),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
     );
 
     let receipt = controller
@@ -617,14 +711,14 @@ fn target_loss_after_delivery_is_partial_and_cleans_sequence_state() {
         .expect("receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
-    assert_eq!(receipt.delivered(), 1);
-    assert_eq!(receipt.failure(), Some(InputFault::TargetLost));
+    assert_eq!(receipt.submitted(), 1);
+    assert_eq!(receipt.fault(), Some(InputFault::TargetLost));
     assert_eq!(receipt.cleanup(), CleanupState::Complete);
     assert_eq!(receipt.cleanup_released(), 1);
 }
 
 #[test]
-fn target_loss_before_delivery_is_an_unexecuted_receipt() {
+fn target_loss_before_submission_is_an_unexecuted_receipt() {
     let target = target();
     let driver = Arc::new(
         ScriptedDriver::default().unavailable(InputDelivery::System, InputFault::TargetLost),
@@ -642,9 +736,9 @@ fn target_loss_before_delivery_is_an_unexecuted_receipt() {
         .expect("receipted");
 
     assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    assert_eq!(receipt.failure(), Some(InputFault::TargetLost));
-    assert_eq!(receipt.delivered(), 0);
-    assert!(driver.delivered.lock().expect("uncontended").is_empty());
+    assert_eq!(receipt.fault(), Some(InputFault::TargetLost));
+    assert_eq!(receipt.submitted(), 0);
+    assert!(driver.submitted.lock().expect("uncontended").is_empty());
 }
 
 #[test]
@@ -661,7 +755,7 @@ fn close_is_idempotent_and_stops_admission() {
     let request = InputRequest::new(
         target,
         chord(),
-        DeliveryPlan::require(InputDelivery::BackgroundTarget),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
     );
     let error = controller
         .execute(&request, &operation)

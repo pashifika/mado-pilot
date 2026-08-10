@@ -1,6 +1,6 @@
 # ADR 0017: Append the native-input C ABI 1.1 prefix
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR 0023
 - **Date:** 2026-08-08
 - **Resolves gate:** _none_
 - **Supersedes:** _none_
@@ -33,11 +33,10 @@ The corrected prototype keeps `madopilot_open_request_t` exactly 16 bytes with
 4-byte alignment and passes input policy to a separate table entry. Apple Clang
 and Rust both measure the unchanged table prefix at 424 bytes, the new open
 entry at offset 424, and the complete table at 480 bytes. The unchanged frozen
-header compiles, links, negotiates, and runs against that library. The exact
-declarations remain in the
-[ABI 1.1 header fixture](../../crates/bindings/capi/tests/abi-compat/v1.1/madopilot/madopilot.h);
-the numeric and per-field report travels with Change
-`phase-2-c-abi-1-1-cpp` as `evidence/abi-1.1-freeze.md`.
+header compiles, links, negotiates, and runs against that library. ADR 0023 later
+removed the unreleased 1.1 declarations and executable fixture from the current
+tree; this superseded ADR and repository history retain the development record
+without creating a compatibility obligation.
 
 ## Decision
 

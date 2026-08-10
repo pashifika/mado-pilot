@@ -1,9 +1,10 @@
 //! The native Windows workflow, end to end, against one window the operator names.
 //!
 //! Report what authorization this platform grants, discover targets, select
-//! exactly one window by its full title, open capture and input together, take
-//! and map a frame, deliver one bounded sequence whose pointer position is bound
-//! to that exact frame without touching focus, read the receipt, and close.
+//! exactly one window by its full title, open capture and input together, verify
+//! the source-frame condition, submit one bounded sequence without touching
+//! focus, verify the expected condition on a strictly newer frame, drain
+//! correlated diagnostics, and close.
 //!
 //! ```text
 //! cargo run --locked --package mado-pilot --example windows-native-input -- "<window title>"
@@ -11,14 +12,14 @@
 //!
 //! # Why this one cannot disturb an ordinary window
 //!
-//! It requires background delivery and permits no substitute, and it preserves
-//! focus. The Windows Adapter advertises background delivery for its own
-//! dedicated fixture class alone, because arbitrary window classes share no
-//! reliable background-input contract. An ordinary application window therefore
-//! does not advertise it, the request is refused before any event exists, and
-//! system input is never quietly put in its place — substituting it would focus a
-//! window this program promised not to touch and type into whatever is focused
-//! instead.
+//! It requires target-directed `WindowMessage` delivery and permits no
+//! substitute, and it preserves focus. The Windows Adapter advertises that route
+//! for its own dedicated fixture class alone, because arbitrary window classes
+//! share no reliable target-directed input contract. An ordinary application
+//! window therefore does not advertise it, the request is refused before any
+//! event exists, and system input is never quietly put in its place —
+//! substituting it would focus a window this program promised not to touch and
+//! type into whatever is focused instead.
 //!
 //! The receiver this is meant for is `mado-pilot-windows-input-fixture` in
 //! `mado-pilot-platform-windows`, whose window title is
@@ -34,6 +35,10 @@
 //! Counts, identities, extents, and statuses. Never a window title, never a
 //! captured pixel, never the characters that were typed.
 
+#[cfg(windows)]
+#[path = "support/native_observation.rs"]
+mod native_observation;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
     {
@@ -47,14 +52,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(windows)]
 mod windows {
+    use super::native_observation;
+
     use std::time::Duration;
 
     use mado_pilot::{
-        CoordinateSpace, DeliveryPlan, Engine, Error, FocusPolicy, Frame, FrameRequest,
-        InputDelivery, InputEvent, InputOpenRequest, InputOperationKind, InputReceipt,
-        InputRequest, InputRequirement, InputSequence, Key, NativeEngineRequest, OpenRequest,
-        OperationContext, Point, PointerGeometry, SequenceOutcome, Session, SessionRequest,
-        TargetDescription, TargetId, TargetKind,
+        CapabilitySupport, CoordinateSpace, DeliveryPlan, DiagnosticOptions, Engine, Error,
+        FocusPolicy, Frame, FrameRequest, InputDelivery, InputEvent, InputOpenRequest,
+        InputOperationKind, InputReceipt, InputRequest, InputRequirement, InputSequence, Key,
+        NativeEngineRequest, OpenRequest, OperationContext, PixelFormat, Point, PointerGeometry,
+        SequenceOutcome, Session, SessionRequest, TargetDescription, TargetId, TargetKind,
     };
 
     /// How long a discovery pass may take.
@@ -66,10 +73,16 @@ mod windows {
 
     /// How long the whole input sequence may take.
     ///
-    /// Each background event is one synchronous acknowledged packet, and the
-    /// sequence below is six events with one short delay in it. Two seconds
-    /// bounds a fixture that stops acknowledging.
+    /// Each `WindowMessage` event is one synchronous acknowledged fixture packet,
+    /// and the sequence below is six events with one short delay in it. Two
+    /// seconds bounds a fixture that stops acknowledging.
     const INPUT_BUDGET: Duration = Duration::from_secs(2);
+
+    /// How long a strictly-newer frame may take to show the expected condition.
+    const OBSERVATION_BUDGET: Duration = Duration::from_secs(5);
+
+    /// Enough room for the complete example while keeping retention finite.
+    const DIAGNOSTIC_CAPACITY: usize = 256;
 
     /// How long the two-sided close may take.
     const CLOSE_BUDGET: Duration = Duration::from_secs(2);
@@ -80,7 +93,7 @@ mod windows {
     /// can widen it by accident: a plan with a second mechanism in it would be a
     /// permission to fall back to system input, and this program has promised not
     /// to.
-    const MECHANISM: InputDelivery = InputDelivery::BackgroundTarget;
+    const MECHANISM: InputDelivery = InputDelivery::WindowMessage;
 
     pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         let title = match std::env::args().nth(1) {
@@ -95,10 +108,16 @@ mod windows {
             }
         };
 
-        // 1. Build the engine. This touches no Windows API and asks for no
-        //    authorization: an unusable OpenCV fails here, and nothing else is
-        //    substituted for it.
-        let engine = mado_pilot::windows_engine(NativeEngineRequest::new())?;
+        // 1. Build the engine with a bounded debug stream. This touches no
+        //    Windows API and asks for no authorization: an unusable OpenCV fails
+        //    here, and nothing else is substituted for it.
+        let engine = mado_pilot::windows_engine(
+            NativeEngineRequest::new()
+                .with_diagnostics(DiagnosticOptions::debug(DIAGNOSTIC_CAPACITY)?),
+        )?;
+        let diagnostics = engine
+            .take_diagnostic_reader()
+            .ok_or("an enabled engine exposes one diagnostic reader")?;
         println!("backend: {}", engine.backend());
 
         // 2. Say what this platform grants. Windows has no separate capture or
@@ -129,7 +148,7 @@ mod windows {
         //    before a session exists. This is what excludes every window but the
         //    dedicated fixture class, and it happens while excluding one is still
         //    free.
-        require_background_pointer_and_keyboard(&engine, target.id())?;
+        require_window_message_pointer_and_keyboard(&engine, target.id())?;
 
         // 5. Open capture and input as one session. Input is required, so a
         //    capability that cannot be established fails the open and releases the
@@ -160,8 +179,12 @@ mod windows {
         // the right shape.
         let worked = deliver(&session);
         let closed = shut_down(&session);
+        drop(session);
+        drop(engine);
+        let diagnostics_drained = native_observation::drain_diagnostics(&diagnostics);
         let receipt = worked?;
         closed?;
+        diagnostics_drained?;
 
         if receipt.outcome() == SequenceOutcome::Complete {
             Ok(())
@@ -170,7 +193,8 @@ mod windows {
         }
     }
 
-    /// Steps 6 and 7: capture, map, and deliver, all against one open session.
+    /// Steps 6 through 8: capture and check the source frame, submit input, then
+    /// check the expected condition on a strictly newer frame.
     fn deliver(session: &Session) -> Result<InputReceipt, Box<dyn std::error::Error>> {
         // 6. Take one frame and map it. The pixels are never printed; what is
         //    reported is the identity that correlates this frame with anything
@@ -192,22 +216,27 @@ mod windows {
         // The mapping is CPU bytes the caller owns, and it outlives the session.
         // Only its size and its source identity are reported: the bytes
         // themselves are the contents of somebody's window.
-        let mapping = frame.map(frame.descriptor().format(), &bounded(DISCOVERY_BUDGET)?)?;
+        let mapping = session.map_frame(&frame, PixelFormat::Bgra8, &bounded(DISCOVERY_BUDGET)?)?;
         println!(
             "mapping: {} byte(s) of {}, from frame sequence {}",
             mapping.bytes().len(),
             mapping.descriptor(),
             mapping.stamp().sequence().value()
         );
+        if native_observation::expected_condition_matches(&mapping) {
+            return Err(
+                "the expected fixture condition is already present on the source frame".into(),
+            );
+        }
 
-        // 7. Deliver one bounded sequence, addressed to the exact frame above and
+        // 7. Submit one bounded sequence, addressed to the exact frame above and
         //    without touching focus. The pointer position is expressed in that
         //    frame's own capture pixels, and `RequireUnchanged` binds it to that
         //    frame's identity: if the window moved or resized since it was
         //    captured, the coordinate no longer names what was captured, and the
-        //    sequence is refused rather than delivered somewhere else. The
-        //    delivery plan names exactly one mechanism, so nothing is substituted
-        //    for it.
+        //    sequence is refused rather than submitted somewhere else. The
+        //    delivery plan names exactly one mechanism, so nothing is
+        //    substituted for it.
         let receipt = session.send_input(
             &InputRequest::new(
                 session.target(),
@@ -219,10 +248,15 @@ mod windows {
             &bounded(INPUT_BUDGET)?,
         )?;
         report_receipt(&receipt);
+        if receipt.outcome() == SequenceOutcome::Complete {
+            // 8. A complete receipt proves native submission only. Application
+            //    effect is a separate visual fact from a strictly newer frame.
+            native_observation::observe_expected_condition(session, stamp, OBSERVATION_BUDGET)?;
+        }
         Ok(receipt)
     }
 
-    /// Step 8: close both lifecycles, whatever the work above did.
+    /// Step 9: close both lifecycles, whatever the work above did.
     ///
     /// Idempotent, and retryable if the first close loses its own race.
     fn shut_down(session: &Session) -> Result<(), Box<dyn std::error::Error>> {
@@ -234,12 +268,12 @@ mod windows {
         Ok(())
     }
 
-    /// Returns an operation bounded by `budget`.
+    /// Returns an operation bounded by `budget` and correlated to this run.
     fn bounded(budget: Duration) -> Result<OperationContext, Error> {
-        OperationContext::new().with_timeout(budget)
+        native_observation::bounded(budget)
     }
 
-    /// A move to the centre of `frame`, two keystrokes, and a short delay so the
+    /// A move to the centre of `frame`, one keystroke, and a short delay so the
     /// receipt has something to bound.
     ///
     /// A move rather than a click: it is the least a pointer event can do, and it
@@ -258,8 +292,6 @@ mod windows {
             InputEvent::KeyPress(Key::Character('m')),
             InputEvent::KeyRelease(Key::Character('m')),
             InputEvent::Delay(Duration::from_millis(20)),
-            InputEvent::KeyPress(Key::Character('p')),
-            InputEvent::KeyRelease(Key::Character('p')),
         ])?)
     }
 
@@ -284,22 +316,26 @@ mod windows {
         Ok(selected)
     }
 
-    fn require_background_pointer_and_keyboard(
+    fn require_window_message_pointer_and_keyboard(
         engine: &Engine,
         target: TargetId,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let descriptor = engine.describe_input(target, &bounded(DISCOVERY_BUDGET)?)?;
         let capability = descriptor.capability();
         for kind in [InputOperationKind::Pointer, InputOperationKind::Keyboard] {
-            if !capability.supports(kind, MECHANISM) {
+            if capability.pair(kind, MECHANISM).support() != CapabilitySupport::Supported {
                 return Err(format!(
-                    "the selected window does not accept background {kind} delivery, and system \
-                     input is not substituted for it — point this at the dedicated input fixture"
+                    "the selected window does not accept {kind} through the window-message route, \
+                     and system input is not substituted for it — point this at the dedicated \
+                     input fixture"
                 )
                 .into());
             }
         }
-        if !capability.accepts_pointer_space(CoordinateSpace::CapturePixels) {
+        if !capability
+            .pair(InputOperationKind::Pointer, MECHANISM)
+            .accepts_pointer_space(CoordinateSpace::CapturePixels)
+        {
             return Err(
                 "the selected window does not accept coordinates in a frame's own capture pixels"
                     .into(),
@@ -313,10 +349,12 @@ mod windows {
         // typed is not among them, here or in the receipt itself.
         println!("receipt: {receipt}");
         println!(
-            "  outcome {} delivered {} of the sequence, via {:?}",
+            "  outcome {} submitted {} event(s), via {:?}, scope {:?}, evidence {:?}",
             receipt.outcome(),
-            receipt.delivered(),
-            receipt.delivery()
+            receipt.submitted(),
+            receipt.selected_route(),
+            receipt.address_scope(),
+            receipt.evidence()
         );
         if receipt.used_fallback() {
             println!("  a permitted fallback was used");
@@ -329,8 +367,8 @@ mod windows {
                 receipt.cleanup_owed()
             );
         }
-        if let Some(failure) = receipt.failure() {
-            println!("  stopped because: {failure} ({})", failure.status());
+        if let Some(fault) = receipt.fault() {
+            println!("  stopped because: {fault} ({})", fault.status());
         }
     }
 }

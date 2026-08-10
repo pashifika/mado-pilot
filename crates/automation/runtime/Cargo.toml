@@ -18,5 +18,9 @@ mado-pilot-vision = { path = "../vision" }
 [dev-dependencies]
 mado-pilot-testkit = { path = "../../support/testkit" }
 
+
+[[bench]]
+name = "diagnostic-overhead"
+harness = false
 [lints]
 workspace = true
