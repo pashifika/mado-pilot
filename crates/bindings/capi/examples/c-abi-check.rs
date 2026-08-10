@@ -270,6 +270,7 @@ enum WindowsFixtureKind {
 }
 
 impl WindowsFixtureKind {
+    #[cfg(windows)]
     const fn program(self) -> &'static str {
         match self {
             Self::Ordinary => "mado-pilot-windows-window-message-fixture",
