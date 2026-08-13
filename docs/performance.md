@@ -477,20 +477,21 @@ receipt, `116.048000 ms` for the Rust common flow, `15.717900 ms` for C process
 loading, `15.343200 ms` for C++ process loading, and below `285 ms` for either
 public-language common flow.
 
-[ADR 0028](adr/0028-windows-window-message-performance-budgets.md) requalified
-the Windows input profile at source commit
-`b72a95fa144f3e55855bdf1ba43f833a4b986f91`, tree
-`2502e334f254191f873722afc6258d77be9eb02f`, and added production
-`WindowMessage` rows. One-unit submission measured `0.2782 ms` p50 and
-`0.3504 ms` p95; positioning plus a two-unit primary-button event measured
-`0.9568 ms` p95. The maximum 256-event sequence measured 66,811 bytes of
-aggregate Rust heap with zero post-warmup growth. That result rejected the
-pre-measurement 64 KiB hypothesis by 1,275 bytes, so ADR 0028 records the failed
-comparison and keeps a 256 KiB regression ceiling rather than changing
-production code to fit an estimate. The final native run measured full and
-partial queue refusal at `3.880 ms` and `3.772 ms`, hung queue admission at
-`4.771 ms`, and deadline/cancellation cleanup at `23.621 ms` and `2.888 ms`
-against their fixed 10 ms and 250 ms ceilings.
+[ADR 0028](adr/0028-windows-window-message-performance-budgets.md) fixed the
+production `WindowMessage` ceilings from the decision-setting `b72a95f`
+profile. That run rejected the pre-measurement 64 KiB maximum-sequence
+hypothesis by 1,275 bytes and retained a measured 256 KiB regression ceiling.
+
+The post-review input/public-language profile was regenerated at source
+`223925d52d24045ddadbc97c751d79d75a94ad7c`, tree
+`ae009ae7f8b917ae13c2ebd02cdea92696d009b9`; its
+[raw output](evidence/phase-2-performance/native-phase2-input-window-message-223925d.log)
+retains 50 samples after five warmups. One-unit submission measured
+`0.3134 ms` p50 and `0.5124 ms` p95; positioning plus a two-unit
+primary-button event measured `0.7904 ms` p50 and `1.0026 ms` p95. The maximum
+256-event sequence measured `73.7495 ms` p50, `78.8125 ms` p95, 66,647 bytes
+of aggregate Rust heap, and zero post-warmup growth. Every workload satisfied
+its oracle and the unchanged ADR 0026/0028 budgets.
 
 The first Windows transition and language runs were rejected rather than
 recorded. They proved benchmark apparatus defects: the resize fixture stopped

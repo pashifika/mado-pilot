@@ -279,19 +279,48 @@ typed text.
 
 ## Native evidence and limitations
 
-The revision-bound Windows 11 Pro 26200 run covers ordinary pointer, button,
+The revision-bound Windows 11 Pro 26200 runs cover ordinary pointer, button,
 wheel, key, text, delay, drag, and chord rows; duplicate metadata;
 reparent/replacement/destroy/restarted ownership; negative Raw Input and
 state-polling consumers; cancellation, deadline, cleanup, queue-full and partial
-outcomes; a hung target; same-DPI signed-origin topology; unrelated foreground
-activity; and facade visual/no-visual observations.
+outcomes; a hung target; single-display, same-DPI, and mixed-DPI signed-origin
+topology; unrelated foreground activity; facade visual/no-visual observations;
+and medium-to-high-integrity refusal.
 
-The same host did not execute the mandatory single-display, mixed-DPI, or
-higher-integrity/UIPI rows. A bounded 4,096-attempt handle-reuse stress run
-observed no same-value recurrence, which is not proof of generation-atomic
-safety. These are explicit limitations, not inferred passes. Unknown
-compatibility also remains exactly that: evidence for one legacy consumer does
-not establish support for an arbitrary game or another input family.
+The supplemental single-display row used one physical monitor at effective DPI
+`144x144`. It rejected stale source-frame geometry after the geometry revision
+and accepted only the current correlated pointer/wheel request while preserving
+foreground, cursor, and exact-target invariants.
+
+The supplemental mixed-DPI row used two physical monitors at effective DPI
+`144x144` and `96x96`. It rejected stale source-frame geometry after each
+cross-monitor move and accepted only the current correlated pointer/wheel
+request while preserving foreground, cursor, and exact-target invariants.
+
+The supplemental same-DPI `H-02` row used two physical monitors at effective
+DPI `144x144`. It crossed to the negative-X secondary, rejected stale
+source-frame geometry after each move, and accepted only current correlated
+pointer/wheel requests while preserving foreground, cursor, and exact-target
+invariants.
+
+The supplemental higher-integrity `H-07` row independently confirmed a
+medium-integrity C ABI caller (RID `0x2000`) and high-integrity ordinary fixture
+(RID `0x3000`). Production returned `Unexecuted`, zero submitted,
+`PolicyRefused`, with no cleanup owed. The operator elevated only the target
+fixture process; MadoPilot performed no elevation, message-filter change, or
+fallback. The generic positive-flow verifier therefore exited `1`; that
+nonzero exit plus the exact negative receipt is the row's expected result.
+
+The same committed source `223925d` also passed both public-facade visual
+oracles, the Rust example, the complete ABI 1.2 C/C++/CMake matrix, frozen ABI
+1.0 compatibility, and the 50-sample native input/public-language performance
+profile. Every measured workload satisfied its oracle and retained budget.
+
+A bounded 4,096-attempt handle-reuse stress run observed no same-value
+recurrence, which is not proof of generation-atomic safety. This remains an
+explicit limitation, not an inferred pass. Unknown compatibility also remains
+exactly that: evidence for one legacy consumer does not establish support for an
+arbitrary game or another input family.
 
 ## Redaction review
 

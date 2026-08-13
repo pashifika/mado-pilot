@@ -88,6 +88,14 @@ trailing fixture events. Hosted CI subsequently exposed a stale WGC resize
 surface; the production fix in `b72a95f` required the final profile above even
 though no input ceiling changed.
 
+Post-review source `223925d52d24045ddadbc97c751d79d75a94ad7c`, tree
+`ae009ae7f8b917ae13c2ebd02cdea92696d009b9`, reran the same 50-sample profile.
+Its retained
+[`native-phase2-input-window-message-223925d.log`](../evidence/phase-2-performance/native-phase2-input-window-message-223925d.log)
+records 66,647 bytes and zero growth for the maximum sequence; every workload
+passes the unchanged decision above. The `b72a95f` profile remains the
+decision-setting provenance rather than being relabeled as the newer run.
+
 The final native-matrix rerun
 [`window-message-native-b72a95f.log`](../evidence/phase-2-performance/window-message-native-b72a95f.log)
 is bound to the same source commit and tree. It records 3.880 ms for full
