@@ -70,7 +70,7 @@ pub(crate) fn submit<S: WindowMessageSource + ?Sized>(
             post_units(
                 source,
                 std::slice::from_ref(&unit),
-                Some(pointer.geometry),
+                pointer.expected_geometry,
                 operation,
             )?;
             state.pointer = Some(pointer);
@@ -112,11 +112,7 @@ pub(crate) fn release<S: WindowMessageSource + ?Sized>(
                 .map_or_else(|| source.resolve_button(button), Ok)?;
             let local = source.client_point(pointer.screen)?;
             source
-                .post(
-                    mouse_move(local, mouse_state(state)),
-                    Some(pointer.geometry),
-                    operation,
-                )
+                .post(mouse_move(local, mouse_state(state)), None, operation)
                 .map_err(|failure| failure.fault)?;
             let unit = button_unit(
                 physical,
@@ -125,7 +121,7 @@ pub(crate) fn release<S: WindowMessageSource + ?Sized>(
                 local,
             )?;
             source
-                .post(unit, Some(pointer.geometry), operation)
+                .post(unit, None, operation)
                 .map_err(|failure| failure.fault)?;
             if let Some(index) = index {
                 state.buttons.remove(index);
@@ -171,7 +167,7 @@ fn submit_button<S: WindowMessageSource + ?Sized>(
         .map(|current| current.physical)
         .map_or_else(|| source.resolve_button(button), Ok)?;
     let move_unit = mouse_move(local, mouse_state(state));
-    if let Err(failure) = source.post(move_unit, Some(pointer.geometry), operation) {
+    if let Err(failure) = source.post(move_unit, pointer.expected_geometry, operation) {
         return Err(failure.without_pressed_state());
     }
 
@@ -181,7 +177,7 @@ fn submit_button<S: WindowMessageSource + ?Sized>(
         mouse_state_after_button(state, physical, pressed),
         local,
     )?;
-    if let Err(failure) = source.post(transition, Some(pointer.geometry), operation) {
+    if let Err(failure) = source.post(transition, pointer.expected_geometry, operation) {
         let transition_may_have_effect = failure.current_event_may_have_effect;
         if pressed && transition_may_have_effect {
             state.buttons.push(SystemButtonState {
@@ -243,7 +239,7 @@ fn submit_scroll<S: WindowMessageSource + ?Sized>(
         units[len] = wheel_unit(WM_MOUSEHWHEEL, mouse_state, delta, screen);
         len += 1;
     }
-    post_units(source, &units[..len], Some(pointer.geometry), operation)
+    post_units(source, &units[..len], pointer.expected_geometry, operation)
 }
 
 fn submit_key<S: WindowMessageSource + ?Sized>(
@@ -510,7 +506,8 @@ mod tests {
         MessageUnit, ResolvedWindowKey, WindowMessageSource, checked_point, release, submit,
     };
     use crate::input::{
-        DriverState, GeometryFingerprint, PointerState, SubmissionFailure, SystemKeyState,
+        DriverState, GeometryFingerprint, PointerState, SubmissionFailure, SystemButtonState,
+        SystemKeyState,
     };
 
     fn lparam_bits(value: isize) -> u32 {
@@ -528,6 +525,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeSource {
         posts: Mutex<Vec<MessageUnit>>,
+        geometries: Mutex<Vec<Option<GeometryFingerprint>>>,
         fail_at: Mutex<Option<(usize, SubmissionFailure)>>,
         client: Mutex<(i16, i16)>,
         button: Mutex<Option<u8>>,
@@ -560,6 +558,10 @@ mod tests {
 
         fn posts(&self) -> Vec<MessageUnit> {
             self.posts.lock().expect("uncontended").clone()
+        }
+
+        fn geometries(&self) -> Vec<Option<GeometryFingerprint>> {
+            self.geometries.lock().expect("uncontended").clone()
         }
     }
 
@@ -611,7 +613,7 @@ mod tests {
         fn post(
             &self,
             unit: MessageUnit,
-            _expected_geometry: Option<GeometryFingerprint>,
+            expected_geometry: Option<GeometryFingerprint>,
             _operation: &OperationContext,
         ) -> Result<(), SubmissionFailure> {
             let mut posts = self.posts.lock().expect("uncontended");
@@ -621,23 +623,29 @@ mod tests {
             {
                 return Err(failure);
             }
+            self.geometries
+                .lock()
+                .expect("uncontended")
+                .push(expected_geometry);
             posts.push(unit);
             Ok(())
         }
     }
 
     fn pointer() -> PointerState {
+        let geometry = GeometryFingerprint {
+            extent: PixelExtent::new(640, 480),
+            placement: TargetPlacement::new(
+                (0.0, 0.0),
+                (640.0, 480.0),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("placement"),
+        };
         PointerState {
             screen: (120, -30),
-            geometry: GeometryFingerprint {
-                extent: PixelExtent::new(640, 480),
-                placement: TargetPlacement::new(
-                    (0.0, 0.0),
-                    (640.0, 480.0),
-                    Scale::new(1.0, 1.0).expect("scale"),
-                )
-                .expect("placement"),
-            },
+            geometry,
+            expected_geometry: Some(geometry),
         }
     }
 
@@ -663,6 +671,27 @@ mod tests {
         assert_eq!(source.posts()[0].message, WM_MOUSEMOVE);
         assert_eq!(lparam_bits(source.posts()[0].lparam), 0x000b_fff9);
         assert_eq!(state.pointer, Some(pointer()));
+        assert_eq!(source.geometries(), vec![pointer().expected_geometry]);
+    }
+
+    #[test]
+    fn retained_snapshot_pointer_skips_the_live_geometry_fence() {
+        let source = FakeSource::with_client((-7, 11));
+        let mut snapshot = pointer();
+        snapshot.expected_geometry = None;
+        let mut state = DriverState::default();
+        submit(
+            &source,
+            &InputEvent::PointerMove(
+                Point::new(CoordinateSpace::CapturePixels, 1.0, 2.0).expect("point"),
+            ),
+            Some(snapshot),
+            &mut state,
+            &operation(),
+        )
+        .expect("submitted from retained snapshot");
+
+        assert_eq!(source.geometries(), vec![None]);
     }
 
     #[test]
@@ -1013,6 +1042,38 @@ mod tests {
         .expect("released");
         assert_eq!(source.posts().as_slice()[0].message, WM_KEYUP);
         assert!(state.keys.is_empty());
+    }
+
+    #[test]
+    fn button_cleanup_ignores_stale_press_geometry_but_retains_authority_fences() {
+        let source = FakeSource::with_client((5, 6));
+        let mut state = DriverState {
+            pointer: Some(pointer()),
+            buttons: vec![SystemButtonState {
+                logical: PointerButton::Primary,
+                physical: 1,
+            }],
+            ..DriverState::default()
+        };
+
+        release(
+            &source,
+            PressedState::Button(PointerButton::Primary),
+            &mut state,
+            &operation(),
+        )
+        .expect("release is attempted after a geometry change");
+
+        assert_eq!(
+            source
+                .posts()
+                .iter()
+                .map(|unit| unit.message)
+                .collect::<Vec<_>>(),
+            vec![WM_MOUSEMOVE, WM_LBUTTONUP]
+        );
+        assert_eq!(source.geometries(), vec![None, None]);
+        assert!(state.buttons.is_empty());
     }
 
     #[test]

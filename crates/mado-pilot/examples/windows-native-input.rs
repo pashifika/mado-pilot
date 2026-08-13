@@ -65,9 +65,9 @@ mod windows {
 
     use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
-    use std::process::{Child, Command, Stdio};
-    use std::sync::Arc;
+    use std::process::{Child, ChildStdout, Command, Stdio};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -93,6 +93,9 @@ mod windows {
     /// against the window manager; a second is generous for it and short enough
     /// that an unresponsive host ends the program rather than hanging it.
     const DISCOVERY_BUDGET: Duration = Duration::from_secs(1);
+
+    /// How long a child may take to publish its single readiness record.
+    const FIXTURE_READY_BUDGET: Duration = Duration::from_secs(5);
 
     /// How long the whole input sequence may take.
     ///
@@ -156,6 +159,23 @@ mod windows {
             }
         }
     }
+    fn read_fixture_ready(output: ChildStdout) -> Result<String, Box<dyn std::error::Error>> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut ready = String::new();
+            let result = BufReader::new(output).read_line(&mut ready).map(|_| ready);
+            let _sent = sender.send(result);
+        });
+        match receiver.recv_timeout(FIXTURE_READY_BUDGET) {
+            Ok(result) => Ok(result?),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err("the owned foreground fixture timed out before readiness".into())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("the owned foreground fixture readiness reader stopped".into())
+            }
+        }
+    }
 
     #[derive(Debug)]
     struct OwnedForeground {
@@ -191,8 +211,7 @@ mod windows {
                 .stdout
                 .take()
                 .ok_or("the owned foreground fixture exposes readiness output")?;
-            let mut ready = String::new();
-            BufReader::new(output).read_line(&mut ready)?;
+            let ready = read_fixture_ready(output)?;
             if !ready.starts_with("fixture-ready ")
                 || !ready.contains(&format!(
                     "class={ORDINARY_CLASS_NAME} title={title} capacity="

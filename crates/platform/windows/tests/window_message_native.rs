@@ -472,6 +472,7 @@ impl Drop for OwnedForeground {
 }
 
 #[test]
+#[ignore = "opens and activates real fixture windows; run deliberately on an unlocked desktop"]
 fn ordinary_window_message_native_matrix() {
     let _serial = NATIVE_MATRIX.lock().expect("native matrix serialized");
     // SAFETY: DPI awareness is fixed before this test calls USER32.
@@ -554,10 +555,24 @@ fn ordinary_window_message_native_matrix() {
     foreground.assert_stable();
 
     let mut reparented = FixtureProcess::spawn("reparent");
-    let (target, controller) = open_ordinary(&reparented);
+    let reparented_provider = WindowsCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+    let (target, controller) = open_ordinary_title(&reparented_provider, &reparented.title());
     let retained = reparented.target();
     reparented.control(retained, CONTROL_REPARENT_TARGET, 0);
     reparented.wait_for("control reparent=ready", Duration::from_secs(5));
+    let descriptor =
+        InputProvider::describe(&reparented_provider, target, &timed(Duration::from_secs(5)))
+            .expect("the live target still has a truthful input descriptor");
+    for operation in InputOperationKind::ALL {
+        assert_eq!(
+            descriptor
+                .capability()
+                .pair(operation, InputDelivery::WindowMessage)
+                .support(),
+            CapabilitySupport::Unsupported,
+            "a target whose exact current authority changed does not expose WindowMessage"
+        );
+    }
     assert_unexecuted_target_loss(&foreground, &controller, one_key_request(target));
     assert_wrong_targets_clear(reparented.report(retained));
     drop(reparented);

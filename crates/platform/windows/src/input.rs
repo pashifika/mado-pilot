@@ -169,6 +169,11 @@ pub(crate) struct GeometryFingerprint {
 pub(crate) struct PointerState {
     pub(crate) screen: (i32, i32),
     pub(crate) geometry: GeometryFingerprint,
+    /// Geometry that must still match at the irreversible native commit.
+    ///
+    /// `UseFrameSnapshot` deliberately trusts retained coordinates after a
+    /// target moves, so it carries no live-geometry equality fence.
+    pub(crate) expected_geometry: Option<GeometryFingerprint>,
 }
 
 #[derive(Debug, Default)]
@@ -276,8 +281,7 @@ pub(crate) struct WindowsInputController {
 }
 
 impl WindowsInputController {
-    pub(crate) fn new(record: Arc<TargetRecord>) -> Arc<Self> {
-        let descriptor = record.input_descriptor();
+    pub(crate) fn new(record: Arc<TargetRecord>, descriptor: InputDescriptor) -> Arc<Self> {
         Arc::new(Self {
             descriptor,
             driver: Arc::new(NativeInputDriver::new(record)),

@@ -303,7 +303,6 @@ impl WindowsNativeFixture {
 
         #[cfg(windows)]
         {
-            use std::io::{BufRead, BufReader};
             use std::process::Stdio;
 
             let program =
@@ -339,8 +338,7 @@ impl WindowsNativeFixture {
                 .stdout
                 .take()
                 .ok_or("the Windows fixture did not expose its readiness output")?;
-            let mut ready = String::new();
-            BufReader::new(output).read_line(&mut ready)?;
+            let ready = read_windows_fixture_ready(output)?;
             let title = ready
                 .strip_prefix("fixture-ready ")
                 .and_then(|line| line.split_once(" title="))
@@ -361,6 +359,34 @@ impl WindowsNativeFixture {
 
     fn title(&self) -> &str {
         &self.title
+    }
+}
+
+#[cfg(windows)]
+fn read_windows_fixture_ready(
+    output: std::process::ChildStdout,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    const READY_BUDGET: Duration = Duration::from_secs(5);
+
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut ready = String::new();
+        let result = BufReader::new(output).read_line(&mut ready).map(|_| ready);
+        let _sent = sender.send(result);
+    });
+    match receiver.recv_timeout(READY_BUDGET) {
+        Ok(result) => Ok(result?),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err("the Windows fixture timed out before readiness".into())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("the Windows fixture readiness reader stopped".into())
+        }
     }
 }
 

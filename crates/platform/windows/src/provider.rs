@@ -23,7 +23,7 @@ use crate::discovery::{Candidate, CaptureItem, NativeKey, TargetMetadata, invent
 use crate::input::{GeometryLedger, WindowsInputController};
 use crate::native::{NativeSession, NativeSessionSource, native_target_fault};
 use crate::storage::validate_surface;
-use crate::window_authority::RetainedWindowAuthority;
+use crate::window_authority::{RetainedWindowAuthority, WindowAuthorityStatus};
 
 /// Provider name qualifying every native Windows target identity.
 pub const PROVIDER: ProviderId = ProviderId::new("windows");
@@ -300,8 +300,9 @@ impl InputProvider for WindowsCaptureProvider {
         let attempt = Operation::admit(operation)?;
         InputProvider::accepts_target(self, target, self.issuer.engine())?;
         let record = self.select_input_record(target)?;
-        request.check(record.input_descriptor().capability())?;
-        let controller = WindowsInputController::new(record);
+        let descriptor = record.input_descriptor();
+        request.check(descriptor.capability())?;
+        let controller = WindowsInputController::new(record, descriptor);
         Ok(attempt.commit(controller as Arc<dyn InputController>)?)
     }
 }
@@ -324,8 +325,17 @@ fn lock_with_operation<'mutex>(
 
 impl TargetRecord {
     fn description(&self) -> TargetDescription {
-        self.metadata
-            .describe(self.id, self.key.kind(), self.authority.is_some())
+        self.metadata.describe(
+            self.id,
+            self.key.kind(),
+            self.window_message_authority_is_current(),
+        )
+    }
+
+    fn window_message_authority_is_current(&self) -> bool {
+        self.authority
+            .as_ref()
+            .is_some_and(|authority| authority.status() == WindowAuthorityStatus::SameTarget)
     }
 
     pub(crate) fn target(&self) -> TargetId {

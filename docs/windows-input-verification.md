@@ -163,27 +163,33 @@ are selected by exact title and retained target identity; zero or multiple
 matches stop before input. Only the exact acknowledged class reports
 `TargetProtocolAcknowledgement`.
 
-## Automated Windows checks
+## Windows checks
 
-Run the focused checks from the repository root:
+Run the non-interactive checks from the repository root:
 
 ```sh
 cargo check --locked -p mado-pilot-platform-windows --all-targets
 cargo test --locked -p mado-pilot-input
 cargo test --locked -p mado-pilot-platform-windows --lib
 cargo test --locked -p mado-pilot-platform-windows --test native_input
-cargo test --locked -p mado-pilot-platform-windows --test window_message_native -- --nocapture --test-threads=1
 ```
 
-The ordinary native matrix runs the public production route against
-repository-owned legacy and negative-consumer modes while an unrelated owned
-window remains foreground. It fails on foreground, physical-cursor,
-sibling/child/replacement, or wrong-process effects and records queue,
-consumer/visual, lifecycle, topology, and cleanup observations separately. The
-acknowledged native test remains a distinct protocol check. Deterministic suites
-cover capability admission, exact authority, all message translations, immediate
-post errors, partial native effects, fallback closure, cleanup, target loss,
-cancellation/deadline races, diagnostics, and close.
+The ordinary native matrix requires an unlocked interactive desktop because it
+temporarily activates a repository-owned foreground fixture. Run it explicitly:
+
+```sh
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native ordinary_window_message_native_matrix -- --ignored --exact --nocapture --test-threads=1
+```
+
+The matrix runs the public production route against repository-owned legacy and
+negative-consumer modes while an unrelated owned window remains foreground. It
+fails on foreground, physical-cursor, sibling/child/replacement, or wrong-process
+effects and records queue, consumer/visual, lifecycle, topology, and cleanup
+observations separately. The acknowledged native test remains a distinct
+protocol check. Deterministic suites cover capability admission, exact authority,
+all message translations, immediate post errors, partial native effects,
+fallback closure, cleanup, target loss, cancellation/deadline races, diagnostics,
+and close.
 
 ## Explicit system-input check
 

@@ -283,6 +283,7 @@ impl NativeInputDriver {
         Ok(PointerState {
             screen,
             geometry: fingerprint,
+            expected_geometry: expected_commit_geometry(geometry.policy(), fingerprint),
         })
     }
 
@@ -309,6 +310,7 @@ impl NativeInputDriver {
         let pointer = PointerState {
             screen,
             geometry: current,
+            expected_geometry: expected_commit_geometry(geometry.policy(), current),
         };
         state.pointer = Some(pointer);
         Ok(pointer)
@@ -339,7 +341,14 @@ impl NativeInputDriver {
             InputEvent::PointerPress(button) => {
                 let pointer = self.pointer_for_non_move(geometry, state)?;
                 let physical = physical_button(*button)?;
-                send_physical_button(physical, true, pointer.geometry, self, focus, operation)?;
+                send_physical_button(
+                    physical,
+                    true,
+                    pointer.expected_geometry,
+                    self,
+                    focus,
+                    operation,
+                )?;
                 state.buttons.push(SystemButtonState {
                     logical: *button,
                     physical,
@@ -355,7 +364,14 @@ impl NativeInputDriver {
                 let physical = index
                     .map(|index| state.buttons[index].physical)
                     .map_or_else(|| physical_button(*button), Ok)?;
-                send_physical_button(physical, false, pointer.geometry, self, focus, operation)?;
+                send_physical_button(
+                    physical,
+                    false,
+                    pointer.expected_geometry,
+                    self,
+                    focus,
+                    operation,
+                )?;
                 if let Some(index) = index {
                     state.buttons.remove(index);
                 }
@@ -369,7 +385,7 @@ impl NativeInputDriver {
                 send_system_scroll(
                     *horizontal,
                     *vertical,
-                    pointer.geometry,
+                    pointer.expected_geometry,
                     self,
                     focus,
                     operation,
@@ -762,6 +778,13 @@ fn fingerprint(transform: &TransformSnapshot) -> Result<GeometryFingerprint, Inp
     })
 }
 
+fn expected_commit_geometry(
+    policy: GeometryPolicy,
+    geometry: GeometryFingerprint,
+) -> Option<GeometryFingerprint> {
+    (!matches!(policy, GeometryPolicy::UseFrameSnapshot)).then_some(geometry)
+}
+
 fn point_to_screen(point: Point, geometry: GeometryFingerprint) -> Result<(i32, i32), InputFault> {
     let x = round_i32(point.x())?;
     let y = round_i32(point.y())?;
@@ -811,7 +834,7 @@ fn send_system_pointer_move(
         std::slice::from_ref(&input),
         driver,
         focus,
-        Some(pointer.geometry),
+        pointer.expected_geometry,
         operation,
     )
 }
@@ -832,7 +855,7 @@ fn physical_button(button: PointerButton) -> Result<u8, InputFault> {
 fn send_physical_button(
     physical: u8,
     pressed: bool,
-    geometry: GeometryFingerprint,
+    expected_geometry: Option<GeometryFingerprint>,
     driver: &NativeInputDriver,
     focus: FocusPolicy,
     operation: &OperationContext,
@@ -851,7 +874,7 @@ fn send_physical_button(
         std::slice::from_ref(&input),
         driver,
         focus,
-        Some(geometry),
+        expected_geometry,
         operation,
     )
 }
@@ -859,7 +882,7 @@ fn send_physical_button(
 fn send_system_scroll(
     horizontal: i16,
     vertical: i16,
-    geometry: GeometryFingerprint,
+    expected_geometry: Option<GeometryFingerprint>,
     driver: &NativeInputDriver,
     focus: FocusPolicy,
     operation: &OperationContext,
@@ -876,7 +899,7 @@ fn send_system_scroll(
         let delta = i32::from(horizontal) * WHEEL_DELTA;
         inputs.push(mouse_input(0, 0, delta.cast_unsigned(), MOUSEEVENTF_HWHEEL));
     }
-    send_exact(&inputs, driver, focus, Some(geometry), operation)
+    send_exact(&inputs, driver, focus, expected_geometry, operation)
 }
 
 fn send_resolved_key(
@@ -1416,8 +1439,8 @@ mod tests {
 
     use super::{
         SystemCommitSource, WindowMessageCommitSource, commit_prepared_system_input,
-        commit_window_message, finish_fixture_send, keyboard_input, map_post_message_error,
-        normalize_absolute, point_to_screen,
+        commit_window_message, expected_commit_geometry, finish_fixture_send, keyboard_input,
+        map_post_message_error, normalize_absolute, point_to_screen,
     };
     use crate::input::GeometryFingerprint;
     use crate::window_message::MessageUnit;
@@ -1425,7 +1448,7 @@ mod tests {
         CancellationToken, Clock, CoordinateSpace, MonotonicInstant, OperationContext, PixelExtent,
         Point, Scale, TargetPlacement,
     };
-    use mado_pilot_input::{FocusPolicy, InputFault};
+    use mado_pilot_input::{FocusPolicy, GeometryPolicy, InputFault};
     use windows::Win32::Foundation::{
         ERROR_ACCESS_DENIED, ERROR_INVALID_WINDOW_HANDLE, ERROR_NOT_ENOUGH_QUOTA, WIN32_ERROR,
     };
@@ -1843,6 +1866,42 @@ mod tests {
             Some(geometry),
             InputFault::GeometryChanged,
         );
+    }
+
+    #[test]
+    fn only_frame_snapshot_skips_live_geometry_equality_at_commit() {
+        let geometry = commit_geometry();
+        assert_eq!(
+            expected_commit_geometry(GeometryPolicy::RequireUnchanged, geometry),
+            Some(geometry)
+        );
+        assert_eq!(
+            expected_commit_geometry(GeometryPolicy::ReprojectCurrent, geometry),
+            Some(geometry)
+        );
+        let expected_geometry =
+            expected_commit_geometry(GeometryPolicy::UseFrameSnapshot, geometry);
+        assert_eq!(expected_geometry, None);
+
+        let source = ScriptedCommitSource::new(geometry);
+        source.change(|state| {
+            state.geometry.placement = TargetPlacement::new(
+                (11.0, 20.0),
+                (100.0, 50.0),
+                Scale::new(1.0, 1.0).expect("scale"),
+            )
+            .expect("moved placement");
+        });
+        let input = prepared_input();
+        commit_prepared_system_input(
+            &source,
+            FocusPolicy::Preserve,
+            expected_geometry,
+            &OperationContext::new(),
+            std::slice::from_ref(&input),
+        )
+        .expect("retained frame coordinates remain valid after a geometry change");
+        assert_eq!(source.send_count(), 1);
     }
 
     #[test]
