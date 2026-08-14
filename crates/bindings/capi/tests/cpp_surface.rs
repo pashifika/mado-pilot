@@ -264,12 +264,32 @@ fn no_deferred_concept_appears_anywhere_in_the_header() {
     }
 }
 
+/// The superseded development-only ABI 1.1 route and completion claims must not
+/// return as C++ conveniences around the corrected ABI 1.2 contract.
+#[test]
+fn unreleased_abi_1_1_vocabulary_is_absent() {
+    let header = without_comments(&header()).to_lowercase();
+
+    for removed in [
+        "backgroundtarget",
+        "background_target",
+        "last_completed",
+        "delivered",
+    ] {
+        assert!(
+            !header.contains(removed),
+            "the C++ header resurrected removed ABI 1.1 vocabulary: `{removed}`"
+        );
+    }
+}
+
 #[test]
 fn every_owner_is_reachable_and_none_is_orphaned() {
     let header = header();
 
     // One owner per reference-counted C handle, and no more: an owner with no
-    // handle behind it would be a type with nothing to own.
+    // handle behind it would be a type with nothing to own. ABI 1.2 adds the
+    // receipt and pull-diagnostic owners after the complete frozen 1.0 set.
     const HANDLES: &[(&str, &str)] = &[
         ("Cancellation", "madopilot_cancellation_t"),
         ("Engine", "madopilot_engine_t"),
@@ -280,20 +300,24 @@ fn every_owner_is_reachable_and_none_is_orphaned() {
         ("Frame", "madopilot_frame_t"),
         ("Mapping", "madopilot_mapping_t"),
         ("MatchResult", "madopilot_result_t"),
+        ("InputReceipt", "madopilot_input_receipt_t"),
+        ("DiagnosticReader", "madopilot_diagnostic_reader_t"),
+        ("DiagnosticBatch", "madopilot_diagnostic_batch_t"),
     ];
+    let normalized = header.split_whitespace().collect::<Vec<_>>().join(" ");
 
     for (owner, handle) in HANDLES {
         assert!(
-            header.contains(&format!(
+            normalized.contains(&format!(
                 "class {owner} : public detail::Owner<{owner}, ::{handle}>"
             )),
             "`{owner}` should own `{handle}` through the move-only owner base"
         );
     }
 
-    // `madopilot_error_t` is the tenth handle and deliberately has no owner: the
-    // wrapper describes an error, copies it, and releases the handle before the
-    // caller ever sees a `Result`.
+    // `madopilot_error_t` deliberately has no owner: the wrapper describes an
+    // error, copies it, and releases the handle before the caller ever sees a
+    // `Result`.
     assert!(
         !header.contains("public detail::Owner<Error"),
         "the C++ error is a value, not an owner of a retained C handle"
@@ -323,6 +347,8 @@ fn the_header_restates_no_status_value() {
         "using CapabilitySupport = ::madopilot_capability_support_t;",
         "using InputOperationKind = ::madopilot_input_operation_kind_t;",
         "using InputDelivery = ::madopilot_input_delivery_t;",
+        "using InputAddressScope = ::madopilot_input_address_scope_t;",
+        "using SubmissionEvidence = ::madopilot_submission_evidence_t;",
         "using InputRequirement = ::madopilot_input_requirement_t;",
         "using FocusPolicy = ::madopilot_focus_policy_t;",
         "using GeometryPolicy = ::madopilot_geometry_policy_t;",

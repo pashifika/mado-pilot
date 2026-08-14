@@ -223,6 +223,8 @@ version = "0.2.1"
 dependencies = [
  "mado-pilot-adapter-replay",
  "mado-pilot-backend-opencv",
+ "mado-pilot-capture",
+ "mado-pilot-core",
  "mado-pilot-platform-macos",
  "mado-pilot-platform-windows",
  "mado-pilot-runtime",
@@ -274,6 +276,7 @@ name = "mado-pilot-capi"
 version = "0.2.1"
 dependencies = [
  "mado-pilot",
+ "mado-pilot-core",
  "mado-pilot-runtime",
  "mado-pilot-testkit",
 ]
@@ -316,6 +319,7 @@ dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
  "mado-pilot-input",
+ "serde_json",
 ]
 
 [[package]]

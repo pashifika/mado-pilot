@@ -92,6 +92,8 @@ using DiagnosticLevel = ::madopilot_diagnostic_level_t;
 using DiagnosticDrainState = ::madopilot_diagnostic_drain_state_t;
 using DiagnosticKind = ::madopilot_diagnostic_kind_t;
 using DiagnosticOperationKind = ::madopilot_diagnostic_operation_kind_t;
+using InputRevalidationCategory = ::madopilot_input_revalidation_category_t;
+using InputGeometryResult = ::madopilot_input_geometry_result_t;
 using SearchDiagnosticOutcome = ::madopilot_search_diagnostic_outcome_t;
 using Lifecycle = ::madopilot_lifecycle_t;
 
@@ -1189,6 +1191,25 @@ struct InputDescriptor {
 
 namespace detail {
 
+inline InputCapability project_input_capability(
+    const ::madopilot_input_capability_t& value) noexcept {
+    InputCapability out;
+    out.target = value.target;
+    out.operation = value.operation;
+    out.delivery = value.delivery;
+    out.support = value.support;
+    out.address_scope = value.address_scope;
+    if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION) != 0u) {
+        out.permission = value.permission;
+    }
+    if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE) != 0u) {
+        out.evidence = value.evidence;
+    }
+    out.focus_required = value.focus_required != 0;
+    out.pointer_spaces = value.pointer_spaces;
+    return out;
+}
+
 inline InputDescriptor project_input_descriptor(
     const ::madopilot_input_descriptor_t& value) noexcept {
     return InputDescriptor{
@@ -1239,6 +1260,61 @@ struct InputAttempt {
     bool partial_native_effect = false;
 };
 
+namespace detail {
+
+inline InputReceiptInfo project_input_receipt_info(
+    const ::madopilot_input_receipt_info_t& value) noexcept {
+    InputReceiptInfo out;
+    out.target = value.target;
+    out.outcome = value.outcome;
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE) != 0u) {
+        out.selected_route = value.selected_route;
+    }
+    out.address_scope = value.address_scope;
+    out.attempt_count = value.attempt_count;
+    out.submitted = value.submitted;
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED) != 0u) {
+        out.last_submitted = value.last_submitted;
+    }
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE) != 0u) {
+        out.evidence = value.evidence;
+    }
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_FAULT) != 0u) {
+        out.fault = value.fault;
+    }
+    out.cleanup = value.cleanup;
+    out.cleanup_released = value.cleanup_released;
+    out.cleanup_owed = value.cleanup_owed;
+    out.partial_native_effect =
+        (value.flags & MADOPILOT_INPUT_RECEIPT_PARTIAL_NATIVE_EFFECT) != 0u;
+    out.used_fallback =
+        (value.flags & MADOPILOT_INPUT_RECEIPT_USED_FALLBACK) != 0u;
+    return out;
+}
+
+inline InputAttempt project_input_attempt(
+    const ::madopilot_input_attempt_t& value) noexcept {
+    InputAttempt out;
+    out.route = value.route;
+    out.address_scope = value.address_scope;
+    out.outcome = value.outcome;
+    out.submitted = value.submitted;
+    if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED) != 0u) {
+        out.last_submitted = value.last_submitted;
+    }
+    if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_EVIDENCE) != 0u) {
+        out.evidence = value.evidence;
+    }
+    if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_FAULT) != 0u) {
+        out.fault = value.fault;
+    }
+    out.partial_native_effect =
+        (value.flags & MADOPILOT_INPUT_ATTEMPT_PARTIAL_NATIVE_EFFECT) != 0u;
+    return out;
+}
+
+} // namespace detail
+
 /// Counts retained by one immutable diagnostic batch.
 struct DiagnosticBatchInfo {
     std::uint64_t record_count = 0;
@@ -1283,6 +1359,10 @@ struct DiagnosticRecord {
     SearchDiagnosticOutcome search_outcome =
         MADOPILOT_SEARCH_DIAGNOSTIC_NO_MATCH;
     std::uint32_t input_operations = 0;
+    InputRevalidationCategory input_revalidation = 0;
+    InputGeometryResult input_geometry = 0;
+    std::uint64_t input_event_index = 0;
+    std::optional<std::uint64_t> candidate_count;
     bool partial_native_effect = false;
     bool used_fallback = false;
     std::uint64_t requested = 0;
@@ -1532,21 +1612,8 @@ public:
             return Result<InputCapability>::failure(Error::from_status(status));
         }
 
-        InputCapability out;
-        out.target = value.target;
-        out.operation = value.operation;
-        out.delivery = value.delivery;
-        out.support = value.support;
-        out.address_scope = value.address_scope;
-        if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION) != 0u) {
-            out.permission = value.permission;
-        }
-        if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE) != 0u) {
-            out.evidence = value.evidence;
-        }
-        out.focus_required = value.focus_required != 0;
-        out.pointer_spaces = value.pointer_spaces;
-        return Result<InputCapability>::success(out);
+        return Result<InputCapability>::success(
+            detail::project_input_capability(value));
     }
 
 private:
@@ -1882,8 +1949,9 @@ private:
 
 /// A call-local C projection of an input request.
 ///
-/// The projection owns its event-record array. Event text and delivery order
-/// still borrow the `InputRequest`, which must outlive the C call.
+/// Every `to_c()` call owns a fresh event-record array, and moving a projection
+/// rebinds its C pointer to the transferred array. Event text and delivery order
+/// still borrow the `InputRequest`, which must outlive the complete C call.
 class InputRequest::CView {
 public:
     explicit CView(const InputRequest& request) {
@@ -2174,32 +2242,8 @@ public:
             return Result<InputReceiptInfo>::failure(Error::from_status(status));
         }
 
-        InputReceiptInfo out;
-        out.target = value.target;
-        out.outcome = value.outcome;
-        if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE) != 0u) {
-            out.selected_route = value.selected_route;
-        }
-        out.address_scope = value.address_scope;
-        out.attempt_count = value.attempt_count;
-        out.submitted = value.submitted;
-        if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED) != 0u) {
-            out.last_submitted = value.last_submitted;
-        }
-        if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE) != 0u) {
-            out.evidence = value.evidence;
-        }
-        if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_FAULT) != 0u) {
-            out.fault = value.fault;
-        }
-        out.cleanup = value.cleanup;
-        out.cleanup_released = value.cleanup_released;
-        out.cleanup_owed = value.cleanup_owed;
-        out.partial_native_effect =
-            (value.flags & MADOPILOT_INPUT_RECEIPT_PARTIAL_NATIVE_EFFECT) != 0u;
-        out.used_fallback =
-            (value.flags & MADOPILOT_INPUT_RECEIPT_USED_FALLBACK) != 0u;
-        return Result<InputReceiptInfo>::success(out);
+        return Result<InputReceiptInfo>::success(
+            detail::project_input_receipt_info(value));
     }
 
     Result<std::size_t> attempt_count() const {
@@ -2225,23 +2269,8 @@ public:
             return Result<InputAttempt>::failure(Error::from_status(status));
         }
 
-        InputAttempt out;
-        out.route = value.route;
-        out.address_scope = value.address_scope;
-        out.outcome = value.outcome;
-        out.submitted = value.submitted;
-        if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED) != 0u) {
-            out.last_submitted = value.last_submitted;
-        }
-        if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_EVIDENCE) != 0u) {
-            out.evidence = value.evidence;
-        }
-        if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_FAULT) != 0u) {
-            out.fault = value.fault;
-        }
-        out.partial_native_effect =
-            (value.flags & MADOPILOT_INPUT_ATTEMPT_PARTIAL_NATIVE_EFFECT) != 0u;
-        return Result<InputAttempt>::success(out);
+        return Result<InputAttempt>::success(
+            detail::project_input_attempt(value));
     }
 
 private:
@@ -2325,6 +2354,24 @@ public:
         out.input_operations = value.input_operations;
         out.partial_native_effect = value.partial_native_effect != 0;
         out.used_fallback = value.used_fallback != 0;
+        if (value.kind == MADOPILOT_DIAGNOSTIC_KIND_INPUT_EVENT) {
+            out.input_event_index = value.cleanup_released;
+        }
+        if ((value.flags &
+             MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_EVENT_DETAIL) != 0u) {
+            out.input_revalidation =
+                static_cast<InputRevalidationCategory>(
+                    value.reserved &
+                    MADOPILOT_DIAGNOSTIC_INPUT_EVENT_REVALIDATION_MASK);
+            out.input_geometry = static_cast<InputGeometryResult>(
+                (value.reserved &
+                 MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_MASK) >>
+                MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_SHIFT);
+        }
+        if ((value.flags &
+             MADOPILOT_DIAGNOSTIC_RECORD_HAS_CANDIDATE_COUNT) != 0u) {
+            out.candidate_count = value.result_count;
+        }
         out.requested = value.requested;
         out.submitted = value.submitted;
         out.result_count = value.result_count;

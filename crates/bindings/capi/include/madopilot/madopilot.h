@@ -521,7 +521,8 @@ enum {
     MADOPILOT_DIAGNOSTIC_KIND_INPUT = 5,
     MADOPILOT_DIAGNOSTIC_KIND_ROUTE_ATTEMPT = 6,
     MADOPILOT_DIAGNOSTIC_KIND_LIFECYCLE = 7,
-    MADOPILOT_DIAGNOSTIC_KIND_PERMISSION = 8
+    MADOPILOT_DIAGNOSTIC_KIND_PERMISSION = 8,
+    MADOPILOT_DIAGNOSTIC_KIND_INPUT_EVENT = 9
 };
 
 typedef int32_t madopilot_diagnostic_operation_kind_t;
@@ -536,6 +537,23 @@ enum {
     MADOPILOT_DIAGNOSTIC_OPERATION_SEARCH = 8,
     MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_SUBMISSION = 9,
     MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_CLOSE = 10
+};
+
+typedef int32_t madopilot_input_revalidation_category_t;
+enum {
+    MADOPILOT_INPUT_REVALIDATION_PASSED = 1,
+    MADOPILOT_INPUT_REVALIDATION_TARGET_LOST = 2,
+    MADOPILOT_INPUT_REVALIDATION_AMBIGUOUS = 3,
+    MADOPILOT_INPUT_REVALIDATION_INTERRUPTED = 4,
+    MADOPILOT_INPUT_REVALIDATION_UNAVAILABLE = 5
+};
+
+typedef int32_t madopilot_input_geometry_result_t;
+enum {
+    MADOPILOT_INPUT_GEOMETRY_NOT_APPLICABLE = 1,
+    MADOPILOT_INPUT_GEOMETRY_PASSED = 2,
+    MADOPILOT_INPUT_GEOMETRY_CHANGED = 3,
+    MADOPILOT_INPUT_GEOMETRY_NOT_EVALUATED = 4
 };
 
 typedef int32_t madopilot_search_diagnostic_outcome_t;
@@ -624,6 +642,11 @@ enum {
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT 0x400u
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_STATUS 0x800u
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE 0x1000u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_CANDIDATE_COUNT 0x2000u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_EVENT_DETAIL 0x4000u
+#define MADOPILOT_DIAGNOSTIC_INPUT_EVENT_REVALIDATION_MASK 0x0000ffffu
+#define MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_MASK 0xffff0000u
+#define MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_SHIFT 16u
 
 /* madopilot_error_detail_t optional fields. */
 #define MADOPILOT_ERROR_HAS_ASSET_DETAIL 0x1u
@@ -956,11 +979,13 @@ typedef struct madopilot_diagnostic_record_t {
     uint32_t input_operations;
     int32_t partial_native_effect;
     int32_t used_fallback;
+    /* Packed input revalidation/geometry values when
+     * MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_EVENT_DETAIL is set; zero otherwise. */
     uint32_t reserved;
-    uint64_t requested;
-    uint64_t submitted;
-    uint64_t result_count;
-    uint64_t cleanup_released;
+    uint64_t requested; /* Logical events, or expected native units for INPUT_EVENT. */
+    uint64_t submitted; /* Logical events, or invoked native units for INPUT_EVENT. */
+    uint64_t result_count; /* Search results or input-event eligible recipients. */
+    uint64_t cleanup_released; /* Cleanup releases or INPUT_EVENT logical-event index. */
     uint64_t cleanup_owed;
 } madopilot_diagnostic_record_t;
 

@@ -63,7 +63,6 @@ typedef enum madopilot_example_route_contract {
     MADOPILOT_EXAMPLE_ROUTE_ACKNOWLEDGED_FIXTURE = 2
 } madopilot_example_route_contract_t;
 
-
 static int expect(int condition, const char* what)
 {
     if (!condition) {
@@ -72,6 +71,7 @@ static int expect(int condition, const char* what)
     }
     return condition;
 }
+
 static int capability_matches_contract(
     const madopilot_input_capability_t* capability,
     madopilot_example_route_contract_t contract)
@@ -85,6 +85,15 @@ static int capability_matches_contract(
         return capability->support == MADOPILOT_CAPABILITY_SUPPORTED &&
                capability->evidence ==
                    MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT;
+    }
+    if (MADOPILOT_EXAMPLE_DELIVERY ==
+        MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED) {
+        return capability->support == MADOPILOT_CAPABILITY_UNKNOWN &&
+               capability->address_scope ==
+                   MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS &&
+               capability->evidence ==
+                   MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY &&
+               capability->focus_required == 0;
     }
     return capability->support == MADOPILOT_CAPABILITY_SUPPORTED ||
            (MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN &&
@@ -589,14 +598,16 @@ static int deliver(const madopilot_api_t* api,
     return expect(info.outcome == MADOPILOT_SEQUENCE_COMPLETE &&
                       info.submitted ==
                           (uint64_t)(sizeof(events) / sizeof(events[0])) &&
+                      info.attempt_count == UINT64_C(1) &&
                       (info.flags & (MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE |
                                      MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE)) ==
                           (MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE |
                            MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE) &&
+                      (info.flags & MADOPILOT_INPUT_RECEIPT_USED_FALLBACK) == 0 &&
                       info.selected_route == MADOPILOT_EXAMPLE_DELIVERY &&
                       info.address_scope == address_scope &&
                       info.evidence == evidence,
-                  "the bounded native sequence completed with truthful route evidence");
+                  "the bounded native route completed once with truthful evidence");
 }
 
 static int run_native(const madopilot_api_t* api, const char* title, int check_only,

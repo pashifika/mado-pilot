@@ -576,6 +576,8 @@ pub const MADOPILOT_DIAGNOSTIC_KIND_ROUTE_ATTEMPT: madopilot_diagnostic_kind_t =
 pub const MADOPILOT_DIAGNOSTIC_KIND_LIFECYCLE: madopilot_diagnostic_kind_t = 7;
 /// A non-prompting permission probe reached a terminal result.
 pub const MADOPILOT_DIAGNOSTIC_KIND_PERMISSION: madopilot_diagnostic_kind_t = 8;
+/// One process-directed logical event reached its final native gate.
+pub const MADOPILOT_DIAGNOSTIC_KIND_INPUT_EVENT: madopilot_diagnostic_kind_t = 9;
 
 /// A public operation observed by diagnostics.
 pub type madopilot_diagnostic_operation_kind_t = i32;
@@ -602,6 +604,29 @@ pub const MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_SUBMISSION: madopilot_diagnostic_
     9;
 /// Capture-session closing.
 pub const MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_CLOSE: madopilot_diagnostic_operation_kind_t = 10;
+/// Retained target/process authority result for one debug input-event record.
+pub type madopilot_input_revalidation_category_t = i32;
+/// Retained authority and the one-recipient rule passed.
+pub const MADOPILOT_INPUT_REVALIDATION_PASSED: madopilot_input_revalidation_category_t = 1;
+/// The retained target or owning process no longer matched.
+pub const MADOPILOT_INPUT_REVALIDATION_TARGET_LOST: madopilot_input_revalidation_category_t = 2;
+/// More than one eligible recipient made process-directed delivery ambiguous.
+pub const MADOPILOT_INPUT_REVALIDATION_AMBIGUOUS: madopilot_input_revalidation_category_t = 3;
+/// The operation ended before the final irreversible boundary.
+pub const MADOPILOT_INPUT_REVALIDATION_INTERRUPTED: madopilot_input_revalidation_category_t = 4;
+/// No authoritative classification was available.
+pub const MADOPILOT_INPUT_REVALIDATION_UNAVAILABLE: madopilot_input_revalidation_category_t = 5;
+
+/// Geometry-policy result for one debug input-event record.
+pub type madopilot_input_geometry_result_t = i32;
+/// The event has no coordinate or geometry dependency.
+pub const MADOPILOT_INPUT_GEOMETRY_NOT_APPLICABLE: madopilot_input_geometry_result_t = 1;
+/// Authoritative current geometry matched the prepared geometry.
+pub const MADOPILOT_INPUT_GEOMETRY_PASSED: madopilot_input_geometry_result_t = 2;
+/// Current geometry no longer matched the prepared geometry.
+pub const MADOPILOT_INPUT_GEOMETRY_CHANGED: madopilot_input_geometry_result_t = 3;
+/// Another gate refused the event before geometry could be evaluated.
+pub const MADOPILOT_INPUT_GEOMETRY_NOT_EVALUATED: madopilot_input_geometry_result_t = 4;
 
 /// A terminal template-search result in diagnostics.
 pub type madopilot_search_diagnostic_outcome_t = i32;
@@ -723,6 +748,16 @@ pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT: u32 = 1 << 10;
 pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_STATUS: u32 = 1 << 11;
 /// `madopilot_diagnostic_record_t.permission_state` is populated.
 pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE: u32 = 1 << 12;
+/// `madopilot_diagnostic_record_t.result_count` carries an input-event candidate count.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_CANDIDATE_COUNT: u32 = 1 << 13;
+/// `madopilot_diagnostic_record_t.reserved` carries packed input-event gate results.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_EVENT_DETAIL: u32 = 1 << 14;
+/// Low-word mask for the packed input-event revalidation category.
+pub const MADOPILOT_DIAGNOSTIC_INPUT_EVENT_REVALIDATION_MASK: u32 = 0x0000_FFFF;
+/// High-word mask for the packed input-event geometry result.
+pub const MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_MASK: u32 = 0xFFFF_0000;
+/// Bit shift for the packed input-event geometry result.
+pub const MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_SHIFT: u32 = 16;
 
 /// `madopilot_error_detail_t` carries `asset_fault` and `asset_stage`.
 pub const MADOPILOT_ERROR_HAS_ASSET_DETAIL: u32 = 1 << 0;
@@ -1188,15 +1223,17 @@ pub struct madopilot_diagnostic_record_t {
     pub partial_native_effect: i32,
     /// Nonzero when an earlier route was refused.
     pub used_fallback: i32,
-    /// Reserved; written as zero.
+    /// Packed input-event revalidation/geometry values when their presence bit is set;
+    /// zero for every other record kind.
     pub reserved: u32,
     /// Requested logical event count.
     pub requested: u64,
     /// Complete logical events submitted.
     pub submitted: u64,
-    /// Semantic search result count.
+    /// Semantic search-result count, or eligible-recipient count for an input-event record.
     pub result_count: u64,
-    /// Cleanup releases completed.
+    /// Cleanup releases completed, or the zero-based logical event index for an
+    /// input-event record.
     pub cleanup_released: u64,
     /// Cleanup releases owed when cleanup began.
     pub cleanup_owed: u64,

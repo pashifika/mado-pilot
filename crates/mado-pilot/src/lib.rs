@@ -447,10 +447,13 @@ pub fn windows_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine>
 /// input.
 ///
 /// Present on macOS builds only. Discovery is picker-free, capture is
-/// ScreenCaptureKit, input is `CGEvent` system delivery, and the two
-/// authorizations macOS grants separately are reported separately; none of those
-/// types reaches this API, which speaks the same platform-neutral vocabulary the
-/// replay engine does.
+/// ScreenCaptureKit, and input keeps focus-dependent `System` separate from the
+/// candidate, caller-selected `ProcessDirected` route on gated windows. The latter
+/// remains owning-process scoped, unknown in application compatibility, and
+/// invocation-only in evidence; the per-target descriptor reports whether it
+/// is currently attemptable. Neither native route nor either authorization
+/// type reaches this API, which speaks the same platform-neutral vocabulary on
+/// both release targets.
 ///
 /// Construction touches no macOS API, requests no authorization, and presents
 /// nothing: it selects adapters. Every native call, including the two
@@ -505,15 +508,16 @@ pub use mado_pilot_runtime::{
     FindOutcome, FindRequest, FocusPolicy, Frame, FrameDescriptor, FrameDiagnostic, FrameOrder,
     FrameRequest, FrameSelection, FrameSequence, FrameStamp, FrameView, GeometryFault,
     GeometryPolicy, GeometryRevision, IdentityFault, InputAddressScope, InputAttempt,
-    InputCapability, InputDelivery, InputDescriptor, InputDiagnostic, InputEvent, InputFault,
+    InputCapability, InputDelivery, InputDescriptor, InputDiagnostic, InputEvent,
+    InputEventDiagnostic, InputEventObservation, InputExecution, InputFault, InputGeometryResult,
     InputOpenRequest, InputOperationKind, InputOperationSet, InputReceipt, InputRequest,
-    InputRequirement, InputRouteCapability, InputSequence, Interruption, Key, Lifecycle,
-    LifecycleDiagnostic, LoadStage, MAX_DIAGNOSTIC_CAPACITY, Manifest, MappingDiagnostic,
-    MappingObserver, Match, MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage,
-    Modifier, MonotonicInstant, OpenRequest, OperationContext, OperationStartedDiagnostic,
-    OverflowPolicy, PackagePath, PackageSource, PermissionDiagnostic, PermissionKind,
-    PermissionOutcome, PermissionReport, PermissionState, PixelExtent, PixelFormat, PixelRect,
-    PlatformCode, Point, PointerButton, PointerGeometry, PreparedTemplate, PressedState,
+    InputRequirement, InputRevalidationCategory, InputRouteCapability, InputSequence, Interruption,
+    Key, Lifecycle, LifecycleDiagnostic, LoadStage, MAX_DIAGNOSTIC_CAPACITY, Manifest,
+    MappingDiagnostic, MappingObserver, Match, MatchDefaults, MatchOptions, MatchResult,
+    MemoryEntry, MemoryPackage, Modifier, MonotonicInstant, OpenRequest, OperationContext,
+    OperationStartedDiagnostic, OverflowPolicy, PackagePath, PackageSource, PermissionDiagnostic,
+    PermissionKind, PermissionOutcome, PermissionReport, PermissionState, PixelExtent, PixelFormat,
+    PixelRect, PlatformCode, Point, PointerButton, PointerGeometry, PreparedTemplate, PressedState,
     Provenance, ProviderId, QueuePolicy, Rect, RedactedDiagnostic, RegionSelection, Result,
     RetainedStoragePolicy, RouteAttemptDiagnostic, Scale, SearchDiagnostic,
     SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome, Session,

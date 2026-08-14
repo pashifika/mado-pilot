@@ -18,6 +18,7 @@
  *   usage: madopilot-cpp-ownership --package <dir>
  */
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
@@ -25,6 +26,7 @@
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "deterministic-scene.h"
@@ -179,6 +181,12 @@ static_assert(std::is_copy_constructible_v<madopilot::InputEvent>,
               "InputEvent owns its variable data");
 static_assert(std::is_copy_constructible_v<madopilot::InputRequest>,
               "InputRequest owns its event and delivery arrays");
+static_assert(
+    !std::is_copy_constructible_v<madopilot::InputRequest::CView> &&
+        !std::is_copy_assignable_v<madopilot::InputRequest::CView> &&
+        std::is_nothrow_move_constructible_v<madopilot::InputRequest::CView> &&
+        std::is_nothrow_move_assignable_v<madopilot::InputRequest::CView>,
+    "each call-local input projection is a move-only owner");
 static_assert(std::is_copy_constructible_v<madopilot::EngineCapabilities>,
               "EngineCapabilities is a value");
 static_assert(std::is_copy_constructible_v<madopilot::OpenRequest>,
@@ -215,6 +223,16 @@ static_assert(std::is_same_v<decltype(madopilot::DiagnosticRecord::region),
                              madopilot::Rect>,
               "search diagnostics expose the exact pixel rectangle");
 static_assert(
+    std::is_same_v<decltype(madopilot::DiagnosticRecord::input_revalidation),
+                   madopilot::InputRevalidationCategory> &&
+        std::is_same_v<decltype(madopilot::DiagnosticRecord::input_geometry),
+                       madopilot::InputGeometryResult> &&
+        std::is_same_v<decltype(madopilot::DiagnosticRecord::input_event_index),
+                       std::uint64_t> &&
+        std::is_same_v<decltype(madopilot::DiagnosticRecord::candidate_count),
+                       std::optional<std::uint64_t>>,
+    "input-event diagnostics expose bounded gate facts without borrowed payloads");
+static_assert(
     std::is_same_v<decltype(&madopilot::InputReceipt::attempt_count),
                    madopilot::Result<std::size_t> (
                        madopilot::InputReceipt::*)() const> &&
@@ -246,6 +264,12 @@ static_assert(std::is_same_v<madopilot::PermissionState,
                              ::madopilot_permission_state_t> &&
                   std::is_same_v<madopilot::CapabilitySupport,
                                  ::madopilot_capability_support_t> &&
+                  std::is_same_v<madopilot::InputDelivery,
+                                 ::madopilot_input_delivery_t> &&
+                  std::is_same_v<madopilot::InputAddressScope,
+                                 ::madopilot_input_address_scope_t> &&
+                  std::is_same_v<madopilot::SubmissionEvidence,
+                                 ::madopilot_submission_evidence_t> &&
                   std::is_same_v<madopilot::SequenceOutcome,
                                  ::madopilot_sequence_outcome_t> &&
                   std::is_same_v<madopilot::InputFault,
@@ -791,7 +815,8 @@ void abi_1_2_replay_capabilities_are_explicit(Fixture& fixture)
 
     const auto target = fixture.targets.at(0);
     const auto input_capability = fixture.targets.input_capability(
-        0, MADOPILOT_INPUT_OPERATION_POINTER, MADOPILOT_INPUT_DELIVERY_SYSTEM);
+        0, MADOPILOT_INPUT_OPERATION_POINTER,
+        MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED);
     if (check_ok(target, "target") &&
         check_ok(input_capability, "input capability")) {
         check(input_capability.value().target == target.value().target,
@@ -799,7 +824,7 @@ void abi_1_2_replay_capabilities_are_explicit(Fixture& fixture)
         check(input_capability.value().operation ==
                   MADOPILOT_INPUT_OPERATION_POINTER &&
                   input_capability.value().delivery ==
-                  MADOPILOT_INPUT_DELIVERY_SYSTEM,
+                      MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED,
               "capability preserves the queried pair");
         check(input_capability.value().support ==
                   MADOPILOT_CAPABILITY_UNSUPPORTED,
@@ -835,12 +860,111 @@ void abi_1_2_replay_capabilities_are_explicit(Fixture& fixture)
 
     madopilot::InputRequest request;
     request.event(madopilot::InputEvent::delay(1))
-        .delivery(MADOPILOT_INPUT_DELIVERY_SYSTEM);
+        .delivery(MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED);
     const auto refused = fixture.session.send_input(request, fixture.operation);
     check(!refused && refused.status() == MADOPILOT_STATUS_UNSUPPORTED,
           "a capture-only session refuses unavailable input before admission");
     check(refused.error().category() == MADOPILOT_ERROR_CATEGORY_INPUT,
           "the refusal carries an owned input error");
+}
+
+/// The existing ABI 1.2 C records project the public process-directed contract
+/// without strengthening invocation into application consumption.
+void abi_1_2_process_directed_projection_is_truthful(Fixture&)
+{
+    auto capability = madopilot::detail::sized<madopilot_input_capability_t>();
+    capability.flags = MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE;
+    capability.target = UINT64_C(41);
+    capability.operation = MADOPILOT_INPUT_OPERATION_KEYBOARD;
+    capability.delivery = MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED;
+    capability.support = MADOPILOT_CAPABILITY_UNKNOWN;
+    capability.address_scope = MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS;
+    capability.evidence = MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY;
+    const auto projected_capability =
+        madopilot::detail::project_input_capability(capability);
+    check(projected_capability.target == UINT64_C(41) &&
+              projected_capability.operation ==
+                  MADOPILOT_INPUT_OPERATION_KEYBOARD &&
+              projected_capability.delivery ==
+                  MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED &&
+              projected_capability.support == MADOPILOT_CAPABILITY_UNKNOWN &&
+              projected_capability.address_scope ==
+                  MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS &&
+              projected_capability.evidence.has_value() &&
+              *projected_capability.evidence ==
+                  MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY,
+          "capability projection keeps process scope, unknown compatibility, "
+          "and invocation-only evidence");
+
+    madopilot::InputOpenRequest open;
+    open.requirement(MADOPILOT_INPUT_REQUIRED)
+        .require_pairs(MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED);
+    const auto open_c = open.to_c();
+    check(open_c.required_pairs ==
+                  MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED &&
+              open_c.preferred_pairs == 0,
+          "session open opts into only the process-directed pair");
+
+    madopilot::InputRequest request;
+    request.event(madopilot::InputEvent::key_press(MADOPILOT_KEY_ENTER))
+        .delivery(MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED)
+        .focus_policy(MADOPILOT_FOCUS_PRESERVE);
+    const auto request_c = request.to_c();
+    check(request_c.value().delivery_count == 1 &&
+              request_c.value().deliveries != nullptr &&
+              request_c.value().deliveries[0] ==
+                  MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED &&
+              request_c.value().focus_policy == MADOPILOT_FOCUS_PRESERVE,
+          "the request contains no implicit system fallback");
+
+    auto receipt = madopilot::detail::sized<madopilot_input_receipt_info_t>();
+    receipt.flags = MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE |
+                    MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED |
+                    MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE;
+    receipt.target = UINT64_C(41);
+    receipt.outcome = MADOPILOT_SEQUENCE_COMPLETE;
+    receipt.selected_route = MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED;
+    receipt.address_scope = MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS;
+    receipt.attempt_count = 1;
+    receipt.submitted = 1;
+    receipt.last_submitted = 0;
+    receipt.evidence = MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY;
+    receipt.cleanup = MADOPILOT_CLEANUP_NOT_NEEDED;
+    const auto projected_receipt =
+        madopilot::detail::project_input_receipt_info(receipt);
+    check(projected_receipt.selected_route.has_value() &&
+              *projected_receipt.selected_route ==
+                  MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED &&
+              projected_receipt.address_scope ==
+                  MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS &&
+              projected_receipt.evidence.has_value() &&
+              *projected_receipt.evidence ==
+                  MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY &&
+              projected_receipt.attempt_count == 1 &&
+              projected_receipt.submitted == 1 &&
+              !projected_receipt.used_fallback,
+          "receipt projection reports invocation progress without a fallback "
+          "or consumption claim");
+
+    auto attempt = madopilot::detail::sized<madopilot_input_attempt_t>();
+    attempt.flags = MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED |
+                    MADOPILOT_INPUT_ATTEMPT_HAS_EVIDENCE;
+    attempt.route = MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED;
+    attempt.address_scope = MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS;
+    attempt.outcome = MADOPILOT_SEQUENCE_COMPLETE;
+    attempt.submitted = 1;
+    attempt.last_submitted = 0;
+    attempt.evidence = MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY;
+    const auto projected_attempt =
+        madopilot::detail::project_input_attempt(attempt);
+    check(projected_attempt.route ==
+                  MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED &&
+              projected_attempt.address_scope ==
+                  MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS &&
+              projected_attempt.evidence.has_value() &&
+              *projected_attempt.evidence ==
+                  MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY,
+          "attempt projection retains the same process-addressed threshold");
 }
 
 /// Variable-size request data belongs to the C++ values that expose it. Copies
@@ -853,7 +977,7 @@ void abi_1_2_requests_own_their_storage(Fixture& fixture)
 
     madopilot::InputRequest original;
     original.event(text)
-        .delivery(MADOPILOT_INPUT_DELIVERY_WINDOW_MESSAGE)
+        .delivery(MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED)
         .delivery(MADOPILOT_INPUT_DELIVERY_SYSTEM)
         .focus_policy(MADOPILOT_FOCUS_REQUIRE_FOCUSED)
         .geometry_policy(MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED)
@@ -880,9 +1004,10 @@ void abi_1_2_requests_own_their_storage(Fixture& fixture)
     check(request.delivery_count == 2 && request.deliveries != nullptr,
           "the copied request owns its delivery order");
     if (request.delivery_count == 2 && request.deliveries != nullptr) {
-        check(request.deliveries[0] == MADOPILOT_INPUT_DELIVERY_WINDOW_MESSAGE &&
+        check(request.deliveries[0] ==
+                      MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED &&
                   request.deliveries[1] == MADOPILOT_INPUT_DELIVERY_SYSTEM,
-              "delivery precedence survives the copy");
+              "explicit delivery precedence survives the copy");
     }
     check(request.focus_policy == MADOPILOT_FOCUS_REQUIRE_FOCUSED &&
               request.geometry_policy == MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED,
@@ -891,9 +1016,94 @@ void abi_1_2_requests_own_their_storage(Fixture& fixture)
               request.cleanup_max_events == 4 && request.cleanup_timeout_nanos == 5,
           "the explicit cleanup budget survives the copy");
 
+    auto move_source = copied.to_c();
+    const auto* move_source_events = move_source.value().events;
+    auto move_constructed = std::move(move_source);
+    check(move_constructed.value().event_count == 1 &&
+              move_constructed.value().events == move_source_events,
+          "move construction rebinds the C record to the transferred array");
+    check((move_source.value().event_count == 0 &&
+           move_source.value().events == nullptr) ||
+              (move_source.value().event_count != 0 &&
+               move_source.value().events != nullptr),
+          "the moved-from projection remains internally consistent");
+
+    auto assignment_source = copied.to_c();
+    const auto* assignment_source_events = assignment_source.value().events;
+    auto move_assigned = copied.to_c();
+    const auto* replaced_events = move_assigned.value().events;
+    move_assigned = std::move(assignment_source);
+    check(move_assigned.value().event_count == 1 &&
+              move_assigned.value().events == assignment_source_events &&
+              move_assigned.value().events != replaced_events,
+          "move assignment releases its old array and rebinds the transferred one");
+    check((assignment_source.value().event_count == 0 &&
+           assignment_source.value().events == nullptr) ||
+              (assignment_source.value().event_count != 0 &&
+               assignment_source.value().events != nullptr),
+          "the move-assigned source remains internally consistent");
+
+    const void* concurrent_events[2] = {nullptr, nullptr};
+    const void* concurrent_deliveries[2] = {nullptr, nullptr};
+    const char* concurrent_text_data[2] = {nullptr, nullptr};
+    bool concurrent_text[2] = {false, false};
+    bool concurrent_distinct[2] = {false, false};
+    std::atomic<int> ready{0};
+    std::atomic<int> compared{0};
+    const auto project_concurrently =
+        [&concurrent_events, &concurrent_deliveries, &concurrent_text_data,
+         &concurrent_text, &concurrent_distinct, &ready,
+         &compared](madopilot::InputRequest request, std::size_t index) {
+            const auto view = request.to_c();
+            concurrent_events[index] = view.value().events;
+            concurrent_deliveries[index] = view.value().deliveries;
+            concurrent_text_data[index] =
+                view.value().event_count == 1 && view.value().events != nullptr
+                    ? view.value().events[0].text.data
+                    : nullptr;
+            concurrent_text[index] =
+                view.value().event_count == 1 &&
+                view.value().events != nullptr &&
+                std::string_view(view.value().events[0].text.data,
+                                 view.value().events[0].text.len) ==
+                    "copied text";
+            ready.fetch_add(1, std::memory_order_acq_rel);
+            while (ready.load(std::memory_order_acquire) != 2) {
+                std::this_thread::yield();
+            }
+            concurrent_distinct[index] =
+                concurrent_events[0] != nullptr &&
+                concurrent_events[1] != nullptr &&
+                concurrent_events[0] != concurrent_events[1] &&
+                concurrent_deliveries[0] != nullptr &&
+                concurrent_deliveries[1] != nullptr &&
+                concurrent_deliveries[0] != concurrent_deliveries[1] &&
+                concurrent_text_data[0] != nullptr &&
+                concurrent_text_data[1] != nullptr &&
+                concurrent_text_data[0] != concurrent_text_data[1];
+            compared.fetch_add(1, std::memory_order_acq_rel);
+            while (compared.load(std::memory_order_acquire) != 2) {
+                std::this_thread::yield();
+            }
+        };
+    std::thread first_projection(project_concurrently, copied, std::size_t{0});
+    std::thread second_projection(project_concurrently, copied, std::size_t{1});
+    first_projection.join();
+    second_projection.join();
+    check(concurrent_distinct[0] && concurrent_distinct[1] &&
+              concurrent_text[0] && concurrent_text[1],
+          "concurrent immutable request copies own distinct unchanged projections");
+
+    const auto after_concurrency = copied.to_c();
+    check(after_concurrency.value().event_count == 1 &&
+              std::string_view(after_concurrency.value().events[0].text.data,
+                               after_concurrency.value().events[0].text.len) ==
+                  "copied text",
+          "concurrent projection leaves the reusable request unchanged");
+
     madopilot::InputOpenRequest policy;
     policy.requirement(MADOPILOT_INPUT_REQUIRED)
-        .require_pairs(MADOPILOT_INPUT_PAIR_POINTER_SYSTEM)
+        .require_pairs(MADOPILOT_INPUT_PAIR_POINTER_PROCESS_DIRECTED)
         .prefer_pairs(MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM);
     madopilot::OpenRequest open;
     open.input(policy);
@@ -1212,6 +1422,8 @@ int main(int argc, char** argv)
         an_unsupported_coordinate_space_is_refused, fixture);
     run("ABI 1.2 replay capabilities are explicit",
         abi_1_2_replay_capabilities_are_explicit, fixture);
+    run("ABI 1.2 process-directed projection is truthful",
+        abi_1_2_process_directed_projection_is_truthful, fixture);
     run("ABI 1.2 requests own their storage",
         abi_1_2_requests_own_their_storage, fixture);
     run("an old table extent hides every ABI 1.2 entry",

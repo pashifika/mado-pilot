@@ -8,8 +8,11 @@
  * newer-frame visual condition search, diagnostic drain, and explicit close.
  *
  * On Windows, ordinary targets are unknown-but-attemptable and report queue
- * admission; only the dedicated fixture reports protocol acknowledgement. A
- * receipt alone is never the visual success oracle.
+ * admission; only the dedicated fixture reports protocol acknowledgement. On
+ * macOS, the request explicitly selects owning-process `ProcessDirected`,
+ * preserves focus, and reports `InvocationOnly`; application consumption and
+ * the strictly-newer visual result remain separate facts on both platforms.
+ * No request contains an implicit System fallback.
  */
 
 #include <chrono>
@@ -55,15 +58,17 @@ madopilot::Source native_source()
 #elif defined(__APPLE__)
 constexpr const char* EXAMPLE_NAME = "macos-native-input-cpp";
 constexpr std::uint64_t REQUIRED_PAIRS =
-    MADOPILOT_INPUT_PAIR_POINTER_SYSTEM |
-    MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM;
-constexpr madopilot::InputDelivery DELIVERY = MADOPILOT_INPUT_DELIVERY_SYSTEM;
+    MADOPILOT_INPUT_PAIR_POINTER_PROCESS_DIRECTED |
+    MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED |
+    MADOPILOT_INPUT_PAIR_TEXT_PROCESS_DIRECTED;
+constexpr madopilot::InputDelivery DELIVERY =
+    MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED;
 constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
-    MADOPILOT_INPUT_ADDRESS_FOCUSED_SYSTEM;
-constexpr bool ALLOWS_UNKNOWN = false;
-constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_ACTIVATE_IF_REQUIRED;
+    MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS;
+constexpr bool ALLOWS_UNKNOWN = true;
+constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_PRESERVE;
 constexpr bool READS_PERMISSIONS = true;
-constexpr std::uint64_t EXPECTED_SUBMITTED = 4;
+constexpr std::uint64_t EXPECTED_SUBMITTED = 5;
 
 madopilot::Source native_source()
 {
@@ -92,6 +97,14 @@ bool capability_matches_contract(const madopilot::InputCapability& capability,
         return capability.support == MADOPILOT_CAPABILITY_SUPPORTED &&
                capability.evidence ==
                    MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT;
+    }
+    if (DELIVERY == MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED) {
+        return capability.support == MADOPILOT_CAPABILITY_UNKNOWN &&
+               capability.address_scope ==
+                   MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS &&
+               capability.evidence ==
+                   MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY &&
+               !capability.focus_required;
     }
     return capability.support == MADOPILOT_CAPABILITY_SUPPORTED ||
            (ALLOWS_UNKNOWN &&
@@ -448,9 +461,7 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
     constexpr madopilot::InputOperationKind OPERATIONS[] = {
         MADOPILOT_INPUT_OPERATION_POINTER,
         MADOPILOT_INPUT_OPERATION_KEYBOARD,
-#if defined(_WIN32)
         MADOPILOT_INPUT_OPERATION_TEXT,
-#endif
     };
     for (const auto operation : OPERATIONS) {
         const auto capability =
@@ -667,6 +678,7 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
                                                 static_cast<std::uint32_t>('m')))
         .event(madopilot::InputEvent::key_release(MADOPILOT_KEY_CHARACTER,
                                                   static_cast<std::uint32_t>('m')))
+        .event(madopilot::InputEvent::text("m"))
         .event(madopilot::InputEvent::delay(UINT64_C(20000000)));
 #endif
     request.delivery(DELIVERY)
@@ -706,13 +718,15 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
                 static_cast<int>(info.value().cleanup));
     if (!expect(info.value().outcome == MADOPILOT_SEQUENCE_COMPLETE &&
                     info.value().submitted == EXPECTED_SUBMITTED &&
+                    info.value().attempt_count == 1 &&
                     info.value().selected_route.has_value() &&
                     *info.value().selected_route == DELIVERY &&
                     info.value().address_scope == ADDRESS_SCOPE &&
                     info.value().evidence.has_value() &&
-                    *info.value().evidence == evidence,
-                "the bounded sequence was submitted exactly once with "
-                "truthful route evidence")) {
+                    *info.value().evidence == evidence &&
+                    !info.value().used_fallback,
+                "the bounded native route recorded exact progress once with "
+                "truthful evidence")) {
         return false;
     }
 

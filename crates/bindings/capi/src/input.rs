@@ -1532,11 +1532,186 @@ mod tests {
 
     use super::*;
 
+    fn target() -> mado_pilot::TargetId {
+        IdentityIssuer::new()
+            .issue_target(ProviderId::new("capi-test"))
+            .expect("issued")
+    }
+
+    fn full_size<T>() -> u32 {
+        u32::try_from(size_of::<T>()).expect("ABI structure size fits u32")
+    }
+
+    #[test]
+    fn process_directed_capability_projects_the_abi_1_2_contract() {
+        let capability = InputCapability::none()
+            .with_pair(
+                InputOperationKind::Keyboard,
+                InputDelivery::ProcessDirected,
+                CapabilitySupport::Unknown,
+                SubmissionEvidence::InvocationOnly,
+            )
+            .with_permission(
+                InputOperationKind::Keyboard,
+                InputDelivery::ProcessDirected,
+                PermissionKind::InputControl,
+            );
+        let projected = capability_record(
+            41,
+            capability.pair(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
+            full_size::<madopilot_input_capability_t>(),
+        );
+
+        assert_eq!(projected.target, 41);
+        assert_eq!(projected.operation, MADOPILOT_INPUT_OPERATION_KEYBOARD);
+        assert_eq!(
+            projected.delivery,
+            MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED
+        );
+        assert_eq!(projected.support, MADOPILOT_CAPABILITY_UNKNOWN);
+        assert_eq!(
+            projected.address_scope,
+            MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS
+        );
+        assert_eq!(
+            projected.flags,
+            MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION | MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE
+        );
+        assert_eq!(
+            projected.permission,
+            MADOPILOT_PERMISSION_KIND_INPUT_CONTROL
+        );
+        assert_eq!(
+            projected.evidence,
+            MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY
+        );
+        assert_eq!(projected.focus_required, 0);
+
+        let fields = capability_fields(capability);
+        assert_eq!(
+            fields.unknown_pairs,
+            MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED
+        );
+        assert_eq!(fields.supported_pairs, 0);
+        assert_eq!(
+            fields.known_pairs & MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED,
+            0,
+            "unknown compatibility is not projected as known support"
+        );
+        assert_ne!(
+            fields.known_pairs & MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM,
+            0,
+            "the separately unsupported system pair remains explicit"
+        );
+    }
+
+    #[test]
+    fn process_directed_open_and_delivery_inputs_do_not_add_system_fallback() {
+        let request = madopilot_input_open_request_t {
+            struct_size: full_size::<madopilot_input_open_request_t>(),
+            flags: 0,
+            requirement: MADOPILOT_INPUT_REQUIRED,
+            reserved: 0,
+            required_pairs: MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED,
+            preferred_pairs: 0,
+        };
+        // SAFETY: `request` is a live, fully initialized ABI 1.2 record.
+        let converted = unsafe { open_request(&raw const request) }.expect("converted");
+        assert_eq!(converted.requirement(), InputRequirement::Required);
+        assert_eq!(
+            converted.required(),
+            &[(InputOperationKind::Keyboard, InputDelivery::ProcessDirected)]
+        );
+
+        let system_only = InputCapability::none().with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::SystemInputAdmission,
+        );
+        assert_eq!(
+            converted
+                .check(system_only)
+                .expect_err("the required process pair is gated")
+                .status(),
+            mado_pilot::Status::Unsupported
+        );
+
+        let deliveries = [MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED];
+        // SAFETY: `deliveries` is a live, aligned one-element array.
+        let plan = unsafe { delivery_plan(deliveries.as_ptr(), deliveries.len()) }
+            .expect("one explicit route");
+        assert_eq!(plan.routes(), &[InputDelivery::ProcessDirected]);
+        assert!(!plan.routes().contains(&InputDelivery::System));
+    }
+
+    #[test]
+    fn process_directed_receipt_handle_retains_invocation_only_facts() {
+        let target = target();
+        let receipt = InputReceipt::complete(
+            target,
+            InputDelivery::ProcessDirected,
+            SubmissionEvidence::InvocationOnly,
+            2,
+        );
+        let raw = handle::into_raw(InputReceiptHandle { receipt });
+
+        assert_eq!(receipt_retain(raw), MADOPILOT_STATUS_OK);
+        assert_eq!(
+            receipt_release(raw),
+            MADOPILOT_STATUS_OK,
+            "releasing one sibling leaves the retained receipt alive"
+        );
+
+        let mut info =
+            madopilot_input_receipt_info_t::failure(full_size::<madopilot_input_receipt_info_t>());
+        assert_eq!(receipt_info(raw, &raw mut info), MADOPILOT_STATUS_OK);
+        assert_eq!(info.target, target.get());
+        assert_eq!(info.outcome, MADOPILOT_SEQUENCE_COMPLETE);
+        assert_eq!(
+            info.flags
+                & (MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE
+                    | MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE),
+            MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE | MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE
+        );
+        assert_eq!(
+            info.selected_route,
+            MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED
+        );
+        assert_eq!(info.address_scope, MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS);
+        assert_eq!(info.evidence, MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY);
+        assert_eq!(info.submitted, 2);
+        assert_eq!(info.attempt_count, 1);
+        assert_eq!(info.flags & MADOPILOT_INPUT_RECEIPT_USED_FALLBACK, 0);
+
+        let mut count = 0;
+        assert_eq!(
+            receipt_attempt_count(raw, &raw mut count),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(count, 1);
+        let mut attempt =
+            madopilot_input_attempt_t::failure(full_size::<madopilot_input_attempt_t>());
+        assert_eq!(
+            receipt_attempt_at(raw, 0, &raw mut attempt),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(attempt.route, MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED);
+        assert_eq!(
+            attempt.address_scope,
+            MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS
+        );
+        assert_eq!(
+            attempt.evidence,
+            MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY
+        );
+
+        assert_eq!(receipt_release(raw), MADOPILOT_STATUS_OK);
+    }
+
     #[test]
     fn receipt_projection_keeps_target_ordinal_and_counts_above_u32() {
-        let target = IdentityIssuer::new()
-            .issue_target(ProviderId::new("capi-test"))
-            .expect("issued");
+        let target = target();
         let submitted = usize::try_from(u64::from(u32::MAX) + 7).expect("64-bit usize");
         let submitted_u64 = u64::try_from(submitted).expect("64-bit count");
         let receipt = InputReceipt::complete(
@@ -1548,12 +1723,8 @@ mod tests {
         .with_cleanup(submitted + 1, submitted + 2);
         let handle = InputReceiptHandle { receipt };
 
-        let projected = receipt_record(
-            &handle,
-            u32::try_from(size_of::<madopilot_input_receipt_info_t>())
-                .expect("receipt structure fits u32"),
-        )
-        .expect("projected");
+        let projected = receipt_record(&handle, full_size::<madopilot_input_receipt_info_t>())
+            .expect("projected");
         assert_eq!(projected.target, target.get());
         assert_eq!(projected.attempt_count, 1);
         assert_eq!(projected.submitted, submitted_u64);
@@ -1563,8 +1734,7 @@ mod tests {
 
         let attempt = attempt_record(
             handle.receipt.attempts()[0],
-            u32::try_from(size_of::<madopilot_input_attempt_t>())
-                .expect("attempt structure fits u32"),
+            full_size::<madopilot_input_attempt_t>(),
         )
         .expect("projected");
         assert_eq!(attempt.submitted, submitted_u64);
