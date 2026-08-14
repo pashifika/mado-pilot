@@ -22,7 +22,7 @@ use mado_pilot_testkit::bench_harness::{Benchmark, benchmark_block};
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 12] = [
+const PROFILES: [(&str, &str); 17] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -87,6 +87,36 @@ const PROFILES: [(&str, &str); 12] = [
         "docs/benchmarks/phase-2-native-input-x86_64-pc-windows-msvc.toml",
         include_str!(
             "../../../../docs/benchmarks/phase-2-native-input-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-2-controlled-transitions-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-controlled-transitions-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml"
         ),
     ),
 ];

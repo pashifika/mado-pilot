@@ -1,0 +1,194 @@
+# Phase 2.2 macOS process-directed diagnostics, measured on aarch64-apple-darwin at source
+# ee3f5e022c46160348f74602d57567a16a9e0abe and tree
+# de7f152f74d8b41d223d0af23585c44a2fa19ad7.
+#
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029
+# accepts this revision-bound run and its pre-measurement qualification
+# budgets. These are regression ceilings, not user-facing promises.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-2-process-directed-diagnostics-aarch64-apple-darwin"
+workload = "macOS process-directed posting with diagnostics Off, Normal, Debug, and overflow"
+phase = "2.2"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "separately linked private macOS fixture Rust, protocol-v5, header, Objective-C, and renderer sources"
+fixture_sha256 = "c5cc796060477cd4aac8a7db95b0a9dab553b6cdbd21edf7a3f5eadfd69fca93"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 cores, 32 GiB"
+os_version = "macOS 26.5.2 (25F84)"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release --features private-fixture; signed .app launch"
+warmup_iterations = 20
+sample_count = 200
+correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
+queue_policy = "diagnostics Off has no queue; Normal and Debug use capacity 64; overflow uses capacity 4; every sample drains"
+notes = "source commit a774de53b05b0715f6b222f0c6b271f3daf94329, tree f801b2e7eaf1b219668da0159c275632272d3689; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays: MSI 2560x1440 logical/5120x2880 backing 2x main, built-in 1512x982 logical/3024x1964 backing 2x, Dell 3840x2160 logical/backing 1x; same-scale and mixed-scale horizontal seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 72e407e154482435a279a6990b829fdbc2b4a7beb9601bcb082ed48f077331e9; fixture path deliberately omitted; lineage=process-directed-diagnostics; mode=default renderer=appkit-background"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 16777216
+rationale = "the frozen 16 MiB process-directed live Rust heap ceiling"
+
+[[measurement]]
+workload = "event_diagnostics_off"
+correctness_oracle = "the process-directed invocation-only receipt and separate pointer observation are exact and no diagnostic reader exists"
+result_correctness = 0
+latency_p50_ms = 160.904000
+latency_p95_ms = 165.331750
+iteration_span_ms = 161.994298
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 4673665
+steady_allocated_bytes = 4672633
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p50"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 300.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 750.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_max"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 2000.0
+  rationale = "frozen hard scenario bound from the Phase 2.2 qualification plan"
+
+[[measurement]]
+workload = "event_diagnostics_normal"
+correctness_oracle = "the same process-directed receipt and observation hold while exactly one normal terminal record drains without loss"
+result_correctness = 0
+latency_p50_ms = 160.773834
+latency_p95_ms = 165.833375
+iteration_span_ms = 162.006510
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 4684137
+steady_allocated_bytes = 4683105
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p50"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 300.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 750.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_max"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 2000.0
+  rationale = "frozen hard scenario bound from the Phase 2.2 qualification plan"
+
+[[measurement]]
+workload = "event_diagnostics_debug"
+correctness_oracle = "the same process-directed receipt and observation hold while debug start, route attempt, per-event observation, and normal terminal records drain in order without loss"
+result_correctness = 0
+latency_p50_ms = 161.404500
+latency_p95_ms = 166.297792
+iteration_span_ms = 162.562998
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 4684473
+steady_allocated_bytes = 4683169
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p50"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 300.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 750.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_max"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 2000.0
+  rationale = "frozen hard scenario bound from the Phase 2.2 qualification plan"
+
+[[measurement]]
+workload = "event_diagnostic_overflow"
+correctness_oracle = "four complete process-directed receipts and separate pointer observations remain exact while the four-slot queue retains normal records and reports every debug loss"
+result_correctness = 0
+latency_p50_ms = 163.566417
+latency_p95_ms = 167.292167
+iteration_span_ms = 644.789857
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 4676993
+steady_allocated_bytes = 4673569
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p50"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 300.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 750.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_max"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 2000.0
+  rationale = "frozen hard scenario bound from the Phase 2.2 qualification plan"

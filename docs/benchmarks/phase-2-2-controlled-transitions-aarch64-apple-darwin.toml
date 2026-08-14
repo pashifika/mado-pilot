@@ -1,0 +1,131 @@
+# Phase 2.2 controlled-stimulus transitions, measured on aarch64-apple-darwin at source
+# ee3f5e022c46160348f74602d57567a16a9e0abe and tree
+# de7f152f74d8b41d223d0af23585c44a2fa19ad7.
+#
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029
+# accepts this revision-bound run and its pre-measurement qualification
+# budgets. These are regression ceilings, not user-facing promises.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-2-controlled-transitions-aarch64-apple-darwin"
+workload = "native controlled open, retained-pressure recovery, resize, and close transitions"
+phase = "2.2"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "separately linked private macOS fixture Rust, protocol-v5, header, Objective-C, and renderer sources"
+fixture_sha256 = "c5cc796060477cd4aac8a7db95b0a9dab553b6cdbd21edf7a3f5eadfd69fca93"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 cores, 32 GiB"
+os_version = "macOS 26.5.2 (25F84)"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release --features private-fixture; signed .app launch"
+warmup_iterations = 5
+sample_count = 50
+correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
+queue_policy = "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
+notes = "source commit a774de53b05b0715f6b222f0c6b271f3daf94329, tree f801b2e7eaf1b219668da0159c275632272d3689; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays: MSI 2560x1440 logical/5120x2880 backing 2x main, built-in 1512x982 logical/3024x1964 backing 2x, Dell 3840x2160 logical/backing 1x; same-scale and mixed-scale horizontal seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 72e407e154482435a279a6990b829fdbc2b4a7beb9601bcb082ed48f077331e9; fixture path deliberately omitted; lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 16777216
+rationale = "the retained ADR 0025 ceiling permits one transient resized-frame copy but rejects accumulation"
+
+[[measurement]]
+workload = "resize_recreation"
+correctness_oracle = "one acknowledged private resize advances epoch and geometry and returns the resized extent independently of the acknowledgement"
+result_correctness = 0
+latency_p50_ms = 52.227125
+latency_p95_ms = 68.659292
+iteration_span_ms = 52.814494
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 8448
+steady_allocated_bytes = 7336
+allocated_growth_bytes = 0
+
+[[measurement]]
+workload = "open_first_frame"
+correctness_oracle = "each fresh capture-only session returns a correctly identified deterministic first frame and closes"
+result_correctness = 0
+latency_p50_ms = 101.960917
+latency_p95_ms = 111.464458
+iteration_span_ms = 156.288787
+mapped_bytes_per_result = 5327872
+peak_allocated_bytes = 5335432
+steady_allocated_bytes = 4811
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 7504640
+  rationale = "the retained ADR 0025 resized-frame mapping ceiling"
+
+[[measurement]]
+workload = "retained_pressure_resume"
+correctness_oracle = "controlled publications fill the reported retained limit; releasing one slot resumes with an observable sequence gap"
+result_correctness = 0
+latency_p50_ms = 3.615583
+latency_p95_ms = 17.168750
+iteration_span_ms = 1013.142898
+mapped_bytes_per_result = 0
+stale_work_ratio = 0.836065574
+peak_allocated_bytes = 4672014
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+
+[[measurement]]
+workload = "close_drain"
+correctness_oracle = "explicit capture-session close reaches the closed state and remains idempotent"
+result_correctness = 0
+latency_p50_ms = 55.841209
+latency_p95_ms = 66.907917
+iteration_span_ms = 157.960886
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 7400
+steady_allocated_bytes = 4811
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p50"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 100.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 250.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_max"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 1000.0
+  rationale = "frozen hard scenario bound from the Phase 2.2 qualification plan"
