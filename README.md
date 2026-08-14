@@ -42,11 +42,12 @@ crates/bindings/capi/examples/cpp/native-input.cpp
 ```
 
 Release acceptance remains incomplete. The revision-bound macOS current-display
-matrix passes, but its shared external-display matrix and both Windows
-interactive matrices still require their approved physical topologies. macOS
-capture needs Screen Recording and input needs Accessibility; MadoPilot probes
-both without prompting. A green run that skipped a permissioned native scenario
-is not evidence that scenario ran.
+matrix passes, but its shared external-display matrix, the macOS
+process-directed qualification matrices, and both Windows interactive matrices
+still require their approved physical topologies. macOS capture needs Screen
+Recording and input needs event-post access; MadoPilot probes both without
+prompting. A green run that skipped a permissioned native scenario is not
+evidence that scenario ran.
 
 The public workflow still neither recognizes text nor waits on a condition.
 Adding a package here is not a claim that its behavior exists.
@@ -207,7 +208,7 @@ cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<
 | [docs/performance.md](docs/performance.md) | Benchmark profiles, Phase 1 budgets, and the invalidated/requalification status of Phase 2 native evidence |
 | [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |
 | [docs/windows-input-verification.md](docs/windows-input-verification.md) | Windows input capability matrix, focus/UIPI behavior, fixture privacy bounds, and native checks |
-| [docs/macos-input-verification.md](docs/macos-input-verification.md) | macOS input capability matrix, Accessibility and focus behavior, fixture privacy bounds, and native checks |
+| [docs/macos-input-verification.md](docs/macos-input-verification.md) | macOS input capability matrix, authorization and focus behavior, process-directed qualification, fixture privacy bounds, and native checks |
 | [docs/releases/](docs/releases/) | Canonical release notes and exact artifact limitations |
 | [docs/adr/](docs/adr/) | Architecture decision records, and [the template](docs/adr/0000-template.md) with the rule for when one is required |
 | [docs/evidence/](docs/evidence/) | The measurements behind decisions that rest on them |
@@ -228,11 +229,11 @@ tracked replay sequences and files, and injects no input. The native workflow is
 now reachable from the public facade and keeps the same commitments: both
 platform packages capture and submit input with no elevation and redacted fixture
 evidence; macOS reads its two authorizations without prompting and reads the
-Accessibility decision again before every event; Windows reports that it reads
-no separate authorization rather than having one invented for it. Receipts state
-native submission evidence and never claim application consumption. The C ABI
-and C++ wrapper preserve the same explicit capability, permission, route,
-receipt, diagnostic, and ownership contracts.
+event-post decision again before every irreversible event on both routes;
+Windows reports that it reads no separate authorization rather than having one
+invented for it. Receipts state native submission evidence and never claim
+application consumption. The C ABI and C++ wrapper preserve the same explicit
+capability, permission, route, receipt, diagnostic, and ownership contracts.
 
 ## Contributing
 

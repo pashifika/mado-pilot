@@ -556,9 +556,11 @@ half it:
 When the caller owns a fixture lifecycle, pass `--ordinary "<full title>"` or
 `--acknowledged "<full title>"` directly to the native example. Those modes send
 explicit focus-preserving `WindowMessage` on Windows and evaluate a newer frame
-separately. On macOS, an exact title selects the separate system route. Run real
-input only against a target you own and have selected exactly, as described in
-the platform verification documents.
+separately. On macOS, an exact title selects the explicit process-directed
+route: the wrapper flow requires `ProcessDirected` with owning-process scope,
+unknown compatibility, and invocation-only evidence, preserves foreground, and
+permits no fallback. Run real input only against a target you own and have
+selected exactly, as described in the platform verification documents.
 
 The check needs a C++ compiler and **CMake 3.22 or later** in addition to the C
 compiler. Both are the release target's own on both hosts; set `CXX` or `CMAKE`

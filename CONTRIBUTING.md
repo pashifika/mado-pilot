@@ -72,26 +72,33 @@ implies the session the connection comes from. Keep that order if either entry p
 edited: the preflight is what stands between an unauthorized host and an abort.
 
 The macOS input implementation adds a second authorization with the same
-non-prompting rule: **Accessibility granted to the process running the tests**,
-under System Settings ▸ Privacy & Security ▸ Accessibility. macOS does not fail a
-synthesized event from an untrusted process — it discards it silently — so the
-Adapter reads that decision before every irreversible event and reports
-`NotAuthorized` rather than claiming a delivery. Screen Recording and
-Accessibility are separate grants and neither implies the other.
+non-prompting rule: **event-post access granted to the process running the
+tests**, which macOS surfaces under System Settings ▸ Privacy & Security ▸
+Accessibility. macOS does not fail a synthesized event from an unauthorized
+process — it discards it silently — so the Adapter reads the public
+`CGPreflightPostEventAccess` decision before every irreversible event on both
+input routes and reports `NotAuthorized` rather than claiming a delivery. The
+legacy `AXIsProcessTrusted` observation is read beside that preflight only as
+paired qualification evidence; it grants nothing and demotes nothing. Screen
+Recording and event-post access are separate grants and neither implies the
+other.
 
-The ordinary workspace test run **delivers no macOS input at all**. macOS offers
-no background channel, so there is no way to reach a fixture without focusing it
-and posting real system input; the automatic checks exercise the read-only native
-observations and the refusals that happen before any event. Starting the fixture
-window is itself opt-in, because it takes focus:
+The ordinary workspace test run **delivers no macOS input at all**. Both real
+routes — focus-dependent `System` and process-scoped `ProcessDirected` — post
+real events to a real process, so the automatic checks exercise the read-only
+native observations and the refusals that happen before any event, and every
+posting row is opt-in. The fixture binary and its private control protocol are
+built only under the explicit `private-fixture` feature and are absent from the
+production library. Starting the fixture window is itself opt-in, because it
+takes focus:
 
 ```sh
 MADO_PILOT_MACOS_FIXTURE=1 cargo test --locked \
-  -p mado-pilot-platform-macos --test native_input
+  -p mado-pilot-platform-macos --features private-fixture --test native_input
 ```
 
-Successful macOS injection is the explicit user-focused check, run on an
-interactive desktop with both grants in place:
+Successful macOS `System` injection is the explicit user-focused check, run on
+an interactive desktop with both grants in place:
 
 ```sh
 cargo test --locked -p mado-pilot-platform-macos --test native_input interactive_system_delivery_targets_only_the_exact_fixture -- --ignored --exact --nocapture --test-threads=1
@@ -100,8 +107,28 @@ cargo test --locked -p mado-pilot-platform-macos --test native_input interactive
 It sends no click and no pointer movement, stops before input when selection is
 absent or ambiguous, and refuses rather than activating anything on its own. Do
 not make it pass by requesting a permission, opening System Settings, or
-activating another application to force focus. The capability matrix, typed
-outcomes, privacy bounds, and bundling step are in
+activating another application to force focus.
+
+Process-directed qualification is a separate pair of explicit tests that never
+focus the target fixture: they post through the production `ProcessDirected`
+route while an unrelated owned fixture stays frontmost, assert unchanged
+physical cursor and foreground, keep sustained capture active, and fail closed
+if the retained window or original process lifetime is lost. Additional
+same-process windows deliberately remain admitted because the route promises
+owning-process, not exact-window, scope:
+
+```sh
+MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  cargo test --locked -p mado-pilot-platform-macos --test native_input \
+  process_directed_delivery_qualifies_default_and_game_like_renderers -- \
+  --ignored --exact --nocapture --test-threads=1
+MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  cargo test --locked -p mado-pilot-platform-macos --test native_input \
+  process_directed_delivery_uses_process_authority_and_revalidates_window_state -- \
+  --ignored --exact --nocapture --test-threads=1
+```
+
+The capability matrix, typed outcomes, privacy bounds, and bundling step are in
 [docs/macos-input-verification.md](docs/macos-input-verification.md).
 
 The owned-window replacement acceptance probe sends no input, but it opens and

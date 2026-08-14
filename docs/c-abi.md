@@ -401,9 +401,10 @@ Its `known_pairs`, `supported_pairs`, and `unknown_pairs` keep attemptability
 separate from positive application-compatibility evidence.
 
 `engine_permission` is a probe, never a request. It presents no UI and calls no
-permission-request API. macOS reports Screen Recording and Accessibility
-separately. Only `MADOPILOT_PERMISSION_STATE_GRANTED` is authorization;
-`UNKNOWN`, `NOT_GRANTED`, and `UNAVAILABLE` promise no operation will succeed.
+permission-request API. macOS reports Screen Recording and input-control —
+the public non-prompting event-post-access preflight — separately. Only
+`MADOPILOT_PERMISSION_STATE_GRANTED` is authorization; `UNKNOWN`,
+`NOT_GRANTED`, and `UNAVAILABLE` promise no operation will succeed.
 The optional diagnostic is redacted, and its string views borrow from the
 retained engine. Windows advertises no readable permission mechanism:
 `MADOPILOT_ENGINE_READS_PERMISSIONS` is clear and `engine_permission` returns
@@ -499,8 +500,12 @@ Windows advertises exact-window `WindowMessage` for ordinary retained
 top-level windows as unknown-but-attemptable with target-queue-admission
 evidence. The dedicated fixture raises the same route to supported with
 target-protocol acknowledgement. Both remain separate from Windows system
-routes. macOS advertises system routes only. The negotiated capability report,
-not a platform guess in the caller, decides what may be admitted.
+routes. macOS advertises system routes plus qualified process-directed routes
+with owning-process scope, unknown compatibility, and invocation-only evidence
+for retained top-level windows. Additional windows in the same process do not
+revoke that scope, and no exact-window route exists on macOS. The negotiated
+capability report, not a platform guess in the caller, decides what may be
+admitted.
 
 ## Bounded diagnostic stream
 

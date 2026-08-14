@@ -220,8 +220,12 @@ for why the weak load command the review anticipated is not available to a Cargo
 dependency's build script.
 
 macOS input keeps the same arrangement and adds no crate. `CGEvent`,
-`CGWindowList`, and the Accessibility trust check all come from frameworks the
-build script already declares. The two frameworks input additionally needs are
+`CGWindowList`, and the legacy Accessibility observation all come from
+frameworks the build script already declares, and the process-directed entry
+points `CGEventPostToPid` and `CGPreflightPostEventAccess` are resolved by
+symbol from the absolute CoreGraphics framework path on first use, so a host
+that cannot supply them reports a typed `Unsupported` result for exactly the
+operation that needed them. The two frameworks input additionally needs are
 loaded rather than linked, for the same reason ScreenCaptureKit is: **AppKit**
 supplies the application activation `FocusPolicy::ActivateIfRequired` performs,
 and **HIToolbox** — inside `Carbon.framework` — supplies the keyboard-layout
@@ -230,7 +234,10 @@ library must not carry a load command for the desktop UI framework or for Carbon
 so each is opened from its absolute system path on first use and the operation
 that needed it reports `Unsupported` where it is unavailable. `tests/linkage.rs`
 asserts the eager framework list is unchanged, and the interactive fixture's
-window is compiled into a separate archive that no released artifact links.
+window, private control protocol, and event recorder are compiled into a
+separate archive that no released artifact links. The fixture alone opens
+**OpenGL** from its absolute system framework path, and only in its opt-in
+game-like renderer mode; no production artifact gains that load.
 
 The same review recorded what the shim needs of the host, because a native
 boundary's prerequisite belongs beside the one OpenCV declares. On the measured
