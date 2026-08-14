@@ -2642,14 +2642,25 @@ mod native {
 
     #[cfg(target_os = "macos")]
     fn controlled_command_ok(fixture: &FixtureProcess, kind: protocol::FixtureCommandKind) -> bool {
-        fixture
-            .command(kind, OPERATION_WAIT)
-            .is_ok_and(|acknowledgement| {
+        match fixture.command(kind, OPERATION_WAIT) {
+            Ok(acknowledgement) => {
                 let result = acknowledgement.result();
-                result.status == 0
+                let accepted = result.status == 0
                     && result.before_window != 0
-                    && result.before_window == result.after_window
-            })
+                    && result.before_window == result.after_window;
+                if !accepted {
+                    eprintln!(
+                        "benchmark fixture command {kind:?} returned an invalid acknowledgement: \
+                         {result:?}"
+                    );
+                }
+                accepted
+            }
+            Err(error) => {
+                eprintln!("benchmark fixture command {kind:?} failed: {error}");
+                false
+            }
+        }
     }
 
     #[cfg(target_os = "macos")]
