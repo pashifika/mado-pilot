@@ -1585,7 +1585,7 @@ mod native {
             ),
             measure(
                 "event_diagnostics_debug",
-                "the same process-directed receipt and observation hold while debug start, route attempt, and normal terminal records drain in order without loss",
+                "the same process-directed receipt and observation hold while debug start, route attempt, per-event observation, and normal terminal records drain in order without loss",
                 plan,
                 || ProcessFlow::new(FixtureBehavior::Static, ProcessDiagnosticCase::Debug),
                 process_diagnostic_event,
@@ -2010,13 +2010,14 @@ mod native {
         match diagnostics {
             ProcessDiagnosticCase::Off => reader.is_none(),
             ProcessDiagnosticCase::Normal => {
-                process_drain_matches(reader, submissions, 0, 0, submissions, 0, 0)
+                process_drain_matches(reader, submissions, 0, 0, submissions, 0, 0, 0)
             }
             ProcessDiagnosticCase::Debug => process_drain_matches(
                 reader,
-                submissions * 3,
+                submissions * 4,
                 0,
                 0,
+                submissions,
                 submissions,
                 submissions,
                 submissions,
@@ -2025,8 +2026,9 @@ mod native {
                 reader,
                 PROCESS_OVERFLOW_CAPACITY,
                 0,
-                (submissions * 2) as u64,
+                (submissions * 3) as u64,
                 PROCESS_OVERFLOW_CAPACITY,
+                0,
                 0,
                 0,
             ),
@@ -2042,6 +2044,7 @@ mod native {
         input_records: usize,
         attempt_records: usize,
         started_records: usize,
+        event_records: usize,
     ) -> bool {
         let Some(reader) = reader else {
             return false;
@@ -2074,6 +2077,11 @@ mod native {
                 })
                 .count()
                 == started_records
+            && retained
+                .iter()
+                .filter(|record| record.kind() == DiagnosticKind::InputEvent)
+                .count()
+                == event_records
             && sequences_increase
             && matches!(reader.drain(), DiagnosticDrain::OpenEmpty)
     }
