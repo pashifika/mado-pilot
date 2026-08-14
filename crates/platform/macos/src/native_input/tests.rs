@@ -11,19 +11,22 @@ use std::time::Duration;
 
 use mado_pilot_core::{
     CancellationToken, CoordinateSpace, GeometryRevision, IdentityIssuer, InputDelivery,
-    OperationContext, Point, ProviderId, TargetId, TargetKind, TransformSnapshot,
+    InputOperationKind, OperationContext, PermissionState, Point, ProviderId, TargetId, TargetKind,
+    TransformSnapshot,
 };
 use mado_pilot_input::{
     CleanupState, DeliveryPlan, FocusPolicy, GeometryPolicy, InputController, InputDescriptor,
-    InputEvent, InputFault, InputRequest, InputSequence, Key, Modifier, PointerButton,
-    PointerGeometry, PressedState, SequenceOutcome,
+    InputEvent, InputFault, InputGeometryResult, InputRequest, InputRevalidationCategory,
+    InputSequence, Key, Modifier, PointerButton, PointerGeometry, PressedState, SequenceOutcome,
 };
 
 use super::{
     CommitGeometry, DriverState, FUNCTION_KEYS, GeometryFingerprint, NativePost, PointerState,
-    SystemButtonState, SystemCommitSource, SystemKeyState, commit_geometry, commit_prepared,
-    contains_desktop_point, extent_from_points, focus_wait, key_flag, modifier_flag, native_button,
-    placement_for, release_system, resolve_key_code, text_chunks,
+    ProcessCommitObservation, ProcessCommitSource, SystemButtonState, SystemCommitSource,
+    SystemKeyState, commit_geometry, commit_prepared, commit_process, contains_desktop_point,
+    extent_from_points, focus_wait, key_flag, modifier_flag, native_button, placement_for,
+    process_permission_denied_fault, process_status_fault, release_system, resolve_key_code,
+    summarize_process_event, text_chunks,
 };
 use crate::input::{InputDriver, MacosInputController, SubmissionFailure, input_capability};
 use crate::shim::{self, ShimStatus};
@@ -133,6 +136,46 @@ impl SystemCommitSource for FakeSource {
             ShimStatus::PermissionDenied => InputFault::NotAuthorized,
             _ => InputFault::SubmissionFailed,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FakeProcessSource {
+    result: Result<shim::ProcessPostOutcome, shim::ProcessPostFailure>,
+}
+
+impl ProcessCommitSource for FakeProcessSource {
+    fn post_process(
+        &self,
+        _event_source: Option<&shim::ProcessEventSource>,
+        _post: shim::ProcessPost<'_>,
+        _geometry: shim::ProcessGeometry,
+        _flags: u32,
+        _wait: Duration,
+        _operation: &OperationContext,
+    ) -> Result<shim::ProcessPostOutcome, shim::ProcessPostFailure> {
+        self.result
+    }
+}
+
+#[derive(Debug)]
+struct InterruptingProcessSource {
+    result: Result<shim::ProcessPostOutcome, shim::ProcessPostFailure>,
+    cancellation: CancellationToken,
+}
+
+impl ProcessCommitSource for InterruptingProcessSource {
+    fn post_process(
+        &self,
+        _event_source: Option<&shim::ProcessEventSource>,
+        _post: shim::ProcessPost<'_>,
+        _geometry: shim::ProcessGeometry,
+        _flags: u32,
+        _wait: Duration,
+        _operation: &OperationContext,
+    ) -> Result<shim::ProcessPostOutcome, shim::ProcessPostFailure> {
+        self.cancellation.cancel();
+        self.result
     }
 }
 
@@ -385,11 +428,11 @@ fn a_cleanup_release_is_posted_without_revalidating_focus() {
 }
 
 #[test]
-fn revoked_accessibility_after_a_submitted_press_leaves_cleanup_truthfully_incomplete() {
+fn revoked_post_event_access_after_a_submitted_press_leaves_cleanup_truthfully_incomplete() {
     let target = target();
     let driver = Arc::new(RevokingNativePathDriver::default());
     let controller = MacosInputController::with_driver(
-        InputDescriptor::new(target, input_capability(TargetKind::Window)),
+        InputDescriptor::new(target, input_capability(TargetKind::Window, true)),
         Arc::clone(&driver) as Arc<dyn InputDriver>,
     );
     let sequence = InputSequence::new(vec![
@@ -596,6 +639,42 @@ fn a_post_that_partly_reached_the_target_reports_effect_it_cannot_take_back() {
     assert!(failure.current_event_may_have_effect);
     assert_eq!(failure.fault, InputFault::SubmissionFailed);
 }
+#[test]
+fn capture_query_denial_does_not_masquerade_as_input_denial() {
+    assert_eq!(
+        process_permission_denied_fault(PermissionState::Granted),
+        InputFault::SubmissionFailed
+    );
+    assert_eq!(
+        process_permission_denied_fault(PermissionState::NotGranted),
+        InputFault::NotAuthorized
+    );
+}
+
+#[test]
+fn every_native_process_status_maps_to_an_existing_input_fault() {
+    let operation = OperationContext::new();
+    let cases = [
+        (ShimStatus::TargetLost, InputFault::TargetLost),
+        (ShimStatus::PermissionDenied, InputFault::NotAuthorized),
+        (ShimStatus::Unsupported, InputFault::UnsupportedCombination),
+        (ShimStatus::GeometryChanged, InputFault::GeometryChanged),
+        (ShimStatus::Closed, InputFault::ControllerClosed),
+        (ShimStatus::TimedOut, InputFault::SubmissionFailed),
+        (ShimStatus::InvalidArgument, InputFault::SubmissionFailed),
+        (ShimStatus::PlatformFailure, InputFault::SubmissionFailed),
+        (ShimStatus::NativeException, InputFault::SubmissionFailed),
+        (ShimStatus::Unrecognized(999), InputFault::SubmissionFailed),
+    ];
+
+    for (status, expected) in cases {
+        assert_eq!(
+            process_status_fault(status, &operation),
+            expected,
+            "{status:?}"
+        );
+    }
+}
 
 #[test]
 fn a_post_that_reached_nothing_is_classified_by_what_the_platform_said() {
@@ -613,6 +692,182 @@ fn a_post_that_reached_nothing_is_classified_by_what_the_platform_said() {
 
     assert!(!failure.current_event_may_have_effect);
     assert_eq!(failure.fault, InputFault::TargetLost);
+}
+
+#[test]
+fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
+    let failure = |status, invoked_native_units| FakeProcessSource {
+        result: Err(shim::ProcessPostFailure {
+            status,
+            invoked_native_units,
+            target_match_count: 1,
+            authorization: shim::ProcessAuthorizationObservation::Unknown,
+            geometry: shim::ProcessGeometryObservation::NotEvaluated,
+        }),
+    };
+
+    let geometry_changed = commit_process(
+        &failure(ShimStatus::GeometryChanged, 0),
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("geometry changed before posting");
+    assert_eq!(geometry_changed.fault, InputFault::GeometryChanged);
+    assert!(!geometry_changed.current_event_may_have_effect);
+
+    let revoked = commit_process(
+        &failure(ShimStatus::PermissionDenied, 1),
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("authorization changed after native effect");
+    assert_eq!(revoked.fault, InputFault::NotAuthorized);
+    assert!(revoked.current_event_may_have_effect);
+}
+#[test]
+fn process_event_summary_retains_final_gate_facts_and_saturating_native_counts() {
+    let commits = [
+        ProcessCommitObservation {
+            expected_native_units: 1,
+            invoked_native_units: 1,
+            target_match_count: 1,
+            authorization: shim::ProcessAuthorizationObservation::Granted,
+            geometry: shim::ProcessGeometryObservation::Passed,
+            status: None,
+        },
+        ProcessCommitObservation {
+            expected_native_units: 2,
+            invoked_native_units: 1,
+            target_match_count: 1,
+            authorization: shim::ProcessAuthorizationObservation::NotGranted,
+            geometry: shim::ProcessGeometryObservation::Changed,
+            status: Some(ShimStatus::PermissionDenied),
+        },
+    ];
+
+    let observation = summarize_process_event(
+        4,
+        InputOperationKind::Text,
+        Some(InputFault::NotAuthorized),
+        &commits,
+    );
+
+    assert_eq!(observation.route, InputDelivery::ProcessDirected);
+    assert_eq!(observation.event_index, 4);
+    assert_eq!(observation.operation, InputOperationKind::Text);
+    assert_eq!(observation.revalidation, InputRevalidationCategory::Passed);
+    assert_eq!(observation.candidate_count, Some(1));
+    assert_eq!(observation.authorization, PermissionState::NotGranted);
+    assert_eq!(observation.geometry, InputGeometryResult::Changed);
+    assert_eq!(observation.expected_native_units, 3);
+    assert_eq!(observation.invoked_native_units, 2);
+    assert_eq!(observation.fault, Some(InputFault::NotAuthorized));
+}
+
+#[test]
+fn process_commit_requires_exact_native_unit_and_target_match_counts() {
+    let source = |invoked_native_units, target_match_count| FakeProcessSource {
+        result: Ok(shim::ProcessPostOutcome {
+            invoked_native_units,
+            target_match_count,
+            authorization: shim::ProcessAuthorizationObservation::Granted,
+            geometry: shim::ProcessGeometryObservation::NotApplicable,
+        }),
+    };
+
+    commit_process(
+        &source(1, 1),
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect("one key event and one retained-window match are exact");
+
+    let contradictory = commit_process(
+        &source(0, 2),
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("multiple exact retained-window matches are contradictory");
+    assert_eq!(contradictory.fault, InputFault::SubmissionFailed);
+    assert!(!contradictory.current_event_may_have_effect);
+
+    let units: Vec<u16> = "x".encode_utf16().collect();
+    let partial_text = commit_process(
+        &source(1, 1),
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        &OperationContext::new(),
+        NativePost::Text(&units),
+        0,
+    )
+    .expect_err("text requires both balanced native events");
+    assert!(partial_text.current_event_may_have_effect);
+}
+
+#[test]
+fn process_commit_arbitrates_cancellation_again_after_the_blocking_post() {
+    let cancellation = CancellationToken::new();
+    let context = OperationContext::new().with_cancellation(cancellation.clone());
+    let invoked = InterruptingProcessSource {
+        result: Ok(shim::ProcessPostOutcome {
+            invoked_native_units: 1,
+            target_match_count: 1,
+            authorization: shim::ProcessAuthorizationObservation::Granted,
+            geometry: shim::ProcessGeometryObservation::NotApplicable,
+        }),
+        cancellation,
+    };
+
+    let failure = commit_process(
+        &invoked,
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        &context,
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("cancellation observed after native effect cannot commit success");
+
+    assert_eq!(failure.fault, InputFault::Cancelled);
+    assert!(failure.current_event_may_have_effect);
+
+    let cancellation = CancellationToken::new();
+    let context = OperationContext::new().with_cancellation(cancellation.clone());
+    let untouched = InterruptingProcessSource {
+        result: Err(shim::ProcessPostFailure {
+            status: ShimStatus::PlatformFailure,
+            invoked_native_units: 0,
+            target_match_count: 1,
+            authorization: shim::ProcessAuthorizationObservation::Unknown,
+            geometry: shim::ProcessGeometryObservation::NotEvaluated,
+        }),
+        cancellation,
+    };
+
+    let failure = commit_process(
+        &untouched,
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        &context,
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("post-call cancellation still distinguishes an untouched event");
+
+    assert_eq!(failure.fault, InputFault::Cancelled);
+    assert!(!failure.current_event_may_have_effect);
 }
 
 #[test]

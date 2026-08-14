@@ -7,7 +7,10 @@
 
 use std::fmt;
 
-use mado_pilot_core::{InputAddressScope, InputDelivery, SubmissionEvidence, TargetId};
+use mado_pilot_core::{
+    InputAddressScope, InputDelivery, InputOperationKind, PermissionState, SubmissionEvidence,
+    TargetId,
+};
 
 use crate::fault::InputFault;
 
@@ -208,6 +211,100 @@ impl InputAttempt {
     #[must_use]
     pub const fn fault(self) -> Option<InputFault> {
         self.fault
+    }
+}
+
+/// Result of the retained target/process revalidation for one route event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum InputRevalidationCategory {
+    /// Retained authority and the one-recipient rule passed.
+    Passed,
+    /// The retained target or owning process no longer matched.
+    TargetLost,
+    /// More than one eligible recipient made process-directed delivery ambiguous.
+    Ambiguous,
+    /// The operation ended before the final irreversible boundary.
+    Interrupted,
+    /// No authoritative classification was available.
+    Unavailable,
+}
+
+/// Result of applying the request's geometry policy at one route event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum InputGeometryResult {
+    /// The event has no coordinate or geometry dependency.
+    NotApplicable,
+    /// Authoritative current geometry matched the prepared geometry.
+    Passed,
+    /// Current geometry no longer matched the prepared geometry.
+    Changed,
+    /// Geometry could not be evaluated before another gate refused the event.
+    NotEvaluated,
+}
+
+/// Privacy-reviewed debug facts for one logical event at a route boundary.
+///
+/// The record contains no event payload, process identifier, native window
+/// number, title, signing identity, cursor location, or native framework type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InputEventObservation {
+    /// Attempted delivery route.
+    pub route: InputDelivery,
+    /// Zero-based logical-event index in the caller's sequence.
+    pub event_index: u64,
+    /// Payload-free operation category.
+    pub operation: InputOperationKind,
+    /// Retained authority result.
+    pub revalidation: InputRevalidationCategory,
+    /// Bounded eligible-recipient count, when authority produced one.
+    pub candidate_count: Option<u32>,
+    /// Public authorization state observed at the final native gate.
+    pub authorization: PermissionState,
+    /// Geometry-policy result.
+    pub geometry: InputGeometryResult,
+    /// Native units required for the logical event.
+    pub expected_native_units: u64,
+    /// Native units whose invocation returned.
+    pub invoked_native_units: u64,
+    /// Typed terminal fault for this event, if it stopped the route.
+    pub fault: Option<InputFault>,
+}
+
+/// One input receipt plus optional privacy-reviewed route observations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputExecution {
+    receipt: InputReceipt,
+    observations: Vec<InputEventObservation>,
+}
+
+impl InputExecution {
+    /// Creates an execution result from its terminal receipt and debug facts.
+    #[must_use]
+    pub fn new(receipt: InputReceipt, observations: Vec<InputEventObservation>) -> Self {
+        Self {
+            receipt,
+            observations,
+        }
+    }
+
+    /// Returns the immutable terminal receipt.
+    #[must_use]
+    pub const fn receipt(&self) -> &InputReceipt {
+        &self.receipt
+    }
+
+    /// Returns the privacy-reviewed per-event observations in commit order.
+    #[must_use]
+    pub fn observations(&self) -> &[InputEventObservation] {
+        &self.observations
+    }
+
+    /// Separates the caller-owned receipt and observation storage.
+    #[must_use]
+    pub fn into_parts(self) -> (InputReceipt, Vec<InputEventObservation>) {
+        (self.receipt, self.observations)
     }
 }
 

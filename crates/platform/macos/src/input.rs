@@ -22,23 +22,26 @@ use mado_pilot_core::{
     SubmissionEvidence, TargetKind, TargetPlacement, TransformSnapshot,
 };
 use mado_pilot_input::{
-    Admission, FocusPolicy, InputAttempt, InputController, InputDescriptor, InputEvent, InputFault,
-    InputReceipt, InputRequest, Key, PointerButton, PointerGeometry, PressedState,
+    Admission, FocusPolicy, InputAttempt, InputController, InputDescriptor, InputEvent,
+    InputEventObservation, InputExecution, InputFault, InputReceipt, InputRequest, Key,
+    PointerButton, PointerGeometry, PressedState,
 };
 
 use crate::native_input::NativeInputDriver;
 use crate::provider::TargetRecord;
+use crate::shim::ProcessEventSource;
 
 const DELAY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Returns the pairwise input contract for a discovered macOS target.
 ///
-/// macOS exposes only `System` input. A successful `CGEventPost` invocation
-/// carries invocation-only evidence; it does not acknowledge target consumption.
-/// Windows accept pointer, keyboard, and text after Accessibility authorization.
-/// Displays accept pointer input only.
-pub(crate) fn input_capability(kind: TargetKind) -> InputCapability {
-    let mut capability = InputCapability::none()
+/// macOS always exposes `System` input. A qualifying window additionally
+/// advertises process-scoped pointer, keyboard, and text as `Unknown` until the
+/// operation pair passes native qualification. Both routes carry
+/// invocation-only evidence; Core Graphics does not acknowledge consumption.
+/// Displays accept system pointer input only.
+pub(crate) fn input_capability(kind: TargetKind, process_directed: bool) -> InputCapability {
+    let capability = InputCapability::none()
         .with_pair(
             InputOperationKind::Pointer,
             InputDelivery::System,
@@ -56,35 +59,93 @@ pub(crate) fn input_capability(kind: TargetKind) -> InputCapability {
             PermissionKind::InputControl,
         );
 
-    if kind == TargetKind::Window {
-        capability = capability
-            .with_focus_required(InputOperationKind::Pointer, InputDelivery::System)
-            .with_pair(
-                InputOperationKind::Keyboard,
-                InputDelivery::System,
-                CapabilitySupport::Supported,
-                SubmissionEvidence::InvocationOnly,
-            )
-            .with_focus_required(InputOperationKind::Keyboard, InputDelivery::System)
-            .with_permission(
-                InputOperationKind::Keyboard,
-                InputDelivery::System,
-                PermissionKind::InputControl,
-            )
-            .with_pair(
-                InputOperationKind::Text,
-                InputDelivery::System,
-                CapabilitySupport::Supported,
-                SubmissionEvidence::InvocationOnly,
-            )
-            .with_focus_required(InputOperationKind::Text, InputDelivery::System)
-            .with_permission(
-                InputOperationKind::Text,
-                InputDelivery::System,
-                PermissionKind::InputControl,
-            );
+    if kind != TargetKind::Window {
+        return capability;
     }
+    let capability = capability
+        .with_focus_required(InputOperationKind::Pointer, InputDelivery::System)
+        .with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_focus_required(InputOperationKind::Keyboard, InputDelivery::System)
+        .with_permission(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            PermissionKind::InputControl,
+        )
+        .with_pair(
+            InputOperationKind::Text,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_focus_required(InputOperationKind::Text, InputDelivery::System)
+        .with_permission(
+            InputOperationKind::Text,
+            InputDelivery::System,
+            PermissionKind::InputControl,
+        );
+    if !process_directed {
+        return capability;
+    }
+
     capability
+        .with_pair(
+            InputOperationKind::Pointer,
+            InputDelivery::ProcessDirected,
+            CapabilitySupport::Unknown,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::CapturePixels,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::FrameNormalized,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::TargetNormalized,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::TargetLogical,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::DesktopLogical,
+        )
+        .with_permission(
+            InputOperationKind::Pointer,
+            InputDelivery::ProcessDirected,
+            PermissionKind::InputControl,
+        )
+        .with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::ProcessDirected,
+            CapabilitySupport::Unknown,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_permission(
+            InputOperationKind::Keyboard,
+            InputDelivery::ProcessDirected,
+            PermissionKind::InputControl,
+        )
+        .with_pair(
+            InputOperationKind::Text,
+            InputDelivery::ProcessDirected,
+            CapabilitySupport::Unknown,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_permission(
+            InputOperationKind::Text,
+            InputDelivery::ProcessDirected,
+            PermissionKind::InputControl,
+        )
 }
 
 /// The latest authoritative transform for every live capture stream of a target.
@@ -170,6 +231,18 @@ pub(crate) struct DriverState {
     pub(crate) pointer: Option<PointerState>,
     pub(crate) keys: Vec<SystemKeyState>,
     pub(crate) buttons: Vec<SystemButtonState>,
+    pub(crate) pending_text_release: Option<PendingTextRelease>,
+    pub(crate) process_event_source: Option<ProcessEventSource>,
+}
+
+/// A synthesized text key-down whose matching key-up did not run.
+///
+/// The payload is deliberately absent: a key-up for virtual key zero balances
+/// the native state without retaining or re-emitting caller text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingTextRelease {
+    pub(crate) route: InputDelivery,
+    pub(crate) flags: u32,
 }
 
 impl DriverState {
@@ -211,6 +284,8 @@ pub(crate) struct SystemButtonState {
 pub(crate) struct SubmissionFailure {
     pub(crate) fault: InputFault,
     pub(crate) current_event_may_have_effect: bool,
+    /// Native units from the current logical event whose invocation completed.
+    pub(crate) invoked_native_units: usize,
 }
 
 impl SubmissionFailure {
@@ -218,13 +293,15 @@ impl SubmissionFailure {
         Self {
             fault,
             current_event_may_have_effect: false,
+            invoked_native_units: 0,
         }
     }
 
-    pub(crate) const fn during_event(fault: InputFault) -> Self {
+    pub(crate) const fn after_native_units(fault: InputFault, invoked_native_units: usize) -> Self {
         Self {
             fault,
-            current_event_may_have_effect: true,
+            current_event_may_have_effect: invoked_native_units != 0,
+            invoked_native_units,
         }
     }
 }
@@ -252,6 +329,18 @@ pub(crate) trait InputDriver: fmt::Debug + Send + Sync {
         operation: &OperationContext,
     ) -> Result<(), InputFault>;
 
+    /// Creates route-private state after preflight and before route selection is
+    /// committed. Failure is still eligible for caller-ordered fallback because
+    /// no event has been submitted.
+    fn begin_route(
+        &self,
+        _route: InputDelivery,
+        _state: &mut DriverState,
+        _operation: &OperationContext,
+    ) -> Result<(), InputFault> {
+        Ok(())
+    }
+
     /// Submits one logical event or reports whether its native representation may
     /// have had effect.
     fn submit(
@@ -264,6 +353,18 @@ pub(crate) trait InputDriver: fmt::Debug + Send + Sync {
         operation: &OperationContext,
     ) -> Result<(), SubmissionFailure>;
 
+    fn begin_event_observation(&self) {}
+
+    fn finish_event_observation(
+        &self,
+        _route: InputDelivery,
+        _event_index: u64,
+        _operation: InputOperationKind,
+        _fault: Option<InputFault>,
+    ) -> Option<InputEventObservation> {
+        None
+    }
+
     fn release(
         &self,
         route: InputDelivery,
@@ -271,6 +372,20 @@ pub(crate) trait InputDriver: fmt::Debug + Send + Sync {
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> Result<(), InputFault>;
+
+    /// Releases a route-private native state that has no public
+    /// [`PressedState`] representation.
+    ///
+    /// Returns `true` only when one pending state was released. The default is
+    /// correct for adapters and test doubles that create no such state.
+    fn release_pending(
+        &self,
+        _route: InputDelivery,
+        _state: &mut DriverState,
+        _operation: &OperationContext,
+    ) -> Result<bool, InputFault> {
+        Ok(false)
+    }
 }
 
 pub(crate) struct MacosInputController {
@@ -280,8 +395,7 @@ pub(crate) struct MacosInputController {
 }
 
 impl MacosInputController {
-    pub(crate) fn new(record: Arc<TargetRecord>) -> Arc<Self> {
-        let descriptor = record.input_descriptor();
+    pub(crate) fn new(record: Arc<TargetRecord>, descriptor: InputDescriptor) -> Arc<Self> {
         Arc::new(Self {
             descriptor,
             driver: Arc::new(NativeInputDriver::new(record)),
@@ -298,9 +412,86 @@ impl MacosInputController {
         }
     }
 
+    fn execute_inner(
+        &self,
+        request: &InputRequest,
+        operation: &OperationContext,
+        observe_events: bool,
+    ) -> mado_pilot_core::Result<InputExecution> {
+        self.descriptor.validate(request)?;
+        let _guard = self.admission.admit(operation)?;
+        let mut state = DriverState::default();
+        let (route, evidence, prior_attempts) =
+            match self.select_route(request, &mut state, operation) {
+                Ok(selected) => selected,
+                Err(receipt) => return Ok(InputExecution::new(receipt, Vec::new())),
+            };
+
+        let mut observations = Vec::new();
+        let mut submitted = 0usize;
+        for (index, event) in request.sequence().events().iter().enumerate() {
+            let operation_kind = event.operation_kind();
+            let observe_event = observe_events
+                && route == InputDelivery::ProcessDirected
+                && operation_kind.is_some();
+            if observe_event {
+                self.driver.begin_event_observation();
+            }
+            let result = if let InputEvent::Delay(delay) = event {
+                wait_delay(*delay, operation).map_err(SubmissionFailure::from)
+            } else {
+                match operation.interruption() {
+                    Some(interruption) => Err(SubmissionFailure::before_event(InputFault::from(
+                        interruption,
+                    ))),
+                    None => self.driver.submit(
+                        route,
+                        request.focus(),
+                        event,
+                        request.pointer_geometry(),
+                        &mut state,
+                        operation,
+                    ),
+                }
+            };
+            if observe_event {
+                let event_index = u64::try_from(index).unwrap_or(u64::MAX);
+                let fault = result.as_ref().err().map(|failure| failure.fault);
+                if let Some(observation) = self.driver.finish_event_observation(
+                    route,
+                    event_index,
+                    operation_kind.expect("observe_event requires an operation kind"),
+                    fault,
+                ) {
+                    observations.push(observation);
+                }
+            }
+            if let Err(failure) = result {
+                let receipt = self.stopped_receipt(
+                    request,
+                    StoppedSubmission {
+                        route,
+                        evidence,
+                        prior_attempts,
+                        submitted,
+                        failure,
+                    },
+                    &mut state,
+                    operation,
+                );
+                return Ok(InputExecution::new(receipt, observations));
+            }
+            submitted += 1;
+        }
+        let receipt = InputReceipt::complete(request.target(), route, evidence, submitted)
+            .with_prior_attempts(prior_attempts);
+        Ok(InputExecution::new(receipt, observations))
+    }
+
     fn select_route(
         &self,
         request: &InputRequest,
+        state: &mut DriverState,
         operation: &OperationContext,
     ) -> Result<(InputDelivery, SubmissionEvidence, Vec<InputAttempt>), InputReceipt> {
         let target = request.target();
@@ -316,11 +507,16 @@ impl MacosInputController {
                     continue;
                 }
             };
-            match self.driver.preflight(route, request.focus(), operation) {
+            let prepared = self
+                .driver
+                .preflight(route, request.focus(), operation)
+                .and_then(|()| self.driver.begin_route(route, state, operation));
+            match prepared {
                 Ok(()) => return Ok((route, evidence, prior_attempts)),
                 Err(fault) => {
                     prior_attempts.push(InputAttempt::refused(route, fault));
                     last_fault = fault;
+                    *state = DriverState::default();
                     if matches!(
                         fault,
                         InputFault::Cancelled
@@ -377,31 +573,45 @@ impl MacosInputController {
             stopped.submitted,
             stopped.failure.current_event_may_have_effect,
         );
-        if held.is_empty() {
+        let pending = usize::from(state.pending_text_release.is_some());
+        let owed = pending + held.len();
+        if owed == 0 {
             return receipt.with_cleanup(0, 0);
         }
         let budget = request.cleanup_budget();
         let cleanup = budget.context(operation);
         let mut released = 0usize;
         let mut exhausted = false;
-        for pressed in &held {
+        if pending != 0 {
             if released >= budget.max_events() || cleanup.interruption().is_some() {
                 exhausted = true;
-                break;
+            } else {
+                match self.driver.release_pending(stopped.route, state, &cleanup) {
+                    Ok(true) => released += 1,
+                    Ok(false) | Err(_) => return receipt.with_cleanup(released, owed),
+                }
             }
-            if self
-                .driver
-                .release(stopped.route, *pressed, state, &cleanup)
-                .is_err()
-            {
-                break;
+        }
+        if !exhausted {
+            for pressed in &held {
+                if released >= budget.max_events() || cleanup.interruption().is_some() {
+                    exhausted = true;
+                    break;
+                }
+                if self
+                    .driver
+                    .release(stopped.route, *pressed, state, &cleanup)
+                    .is_err()
+                {
+                    break;
+                }
+                released += 1;
             }
-            released += 1;
         }
         if exhausted {
-            receipt.with_exhausted_cleanup(released, held.len())
+            receipt.with_exhausted_cleanup(released, owed)
         } else {
-            receipt.with_cleanup(released, held.len())
+            receipt.with_cleanup(released, owed)
         }
     }
 }
@@ -426,53 +636,16 @@ impl InputController for MacosInputController {
         request: &InputRequest,
         operation: &OperationContext,
     ) -> mado_pilot_core::Result<InputReceipt> {
-        self.descriptor.validate(request)?;
-        let _guard = self.admission.admit(operation)?;
-        let (route, evidence, prior_attempts) = match self.select_route(request, operation) {
-            Ok(selected) => selected,
-            Err(receipt) => return Ok(receipt),
-        };
+        self.execute_inner(request, operation, false)
+            .map(|execution| execution.into_parts().0)
+    }
 
-        let mut submitted = 0usize;
-        let mut state = DriverState::default();
-        for event in request.sequence().events() {
-            let result = if let InputEvent::Delay(delay) = event {
-                wait_delay(*delay, operation).map_err(SubmissionFailure::from)
-            } else {
-                match operation.interruption() {
-                    Some(interruption) => Err(SubmissionFailure::before_event(InputFault::from(
-                        interruption,
-                    ))),
-                    None => self.driver.submit(
-                        route,
-                        request.focus(),
-                        event,
-                        request.pointer_geometry(),
-                        &mut state,
-                        operation,
-                    ),
-                }
-            };
-            if let Err(failure) = result {
-                return Ok(self.stopped_receipt(
-                    request,
-                    StoppedSubmission {
-                        route,
-                        evidence,
-                        prior_attempts,
-                        submitted,
-                        failure,
-                    },
-                    &mut state,
-                    operation,
-                ));
-            }
-            submitted += 1;
-        }
-        Ok(
-            InputReceipt::complete(request.target(), route, evidence, submitted)
-                .with_prior_attempts(prior_attempts),
-        )
+    fn execute_with_observations(
+        &self,
+        request: &InputRequest,
+        operation: &OperationContext,
+    ) -> mado_pilot_core::Result<InputExecution> {
+        self.execute_inner(request, operation, true)
     }
 
     fn close(&self, operation: &OperationContext) -> mado_pilot_core::Result<()> {

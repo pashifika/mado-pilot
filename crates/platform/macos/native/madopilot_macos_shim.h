@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 5u
+#define MP_SHIM_ABI_VERSION 9u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -106,6 +106,8 @@ typedef uint32_t mp_shim_status;
 #define MP_SHIM_STOPPED_BY_USER 11u
 /* The operating system ended the stream without naming a cause. */
 #define MP_SHIM_STOPPED_BY_SYSTEM 12u
+/* Authoritative target geometry changed after event preparation. */
+#define MP_SHIM_GEOMETRY_CHANGED 13u
 
 /* What a non-prompting authorization probe established. */
 #define MP_SHIM_PERMISSION_GRANTED 0u
@@ -136,6 +138,9 @@ typedef uint32_t mp_shim_status;
 #define MP_SHIM_TARGET_WINDOW 0u
 #define MP_SHIM_TARGET_DISPLAY 1u
 
+/* `mp_shim_target_info.flags`: process-directed input passed snapshot admission. */
+#define MP_SHIM_TARGET_INFO_PROCESS_DIRECTED 1u
+
 /* The only pixel layout this shim publishes. */
 #define MP_SHIM_PIXEL_BGRA8 0u
 
@@ -149,6 +154,7 @@ typedef struct mp_shim_inventory mp_shim_inventory;
 typedef struct mp_shim_target mp_shim_target;
 typedef struct mp_shim_session mp_shim_session;
 typedef struct mp_shim_frame mp_shim_frame;
+typedef struct mp_shim_process_event_source mp_shim_process_event_source;
 
 /*
  * One discovered window or display.
@@ -175,7 +181,7 @@ typedef struct mp_shim_target_info {
     double backing_scale;
     /* Byte length of the UTF-8 name available from mp_shim_inventory_name. */
     uint32_t name_len;
-    uint32_t reserved;
+    uint32_t flags;
 } mp_shim_target_info;
 
 /* The layout and frame-time geometry of one produced frame. */
@@ -279,7 +285,20 @@ uint32_t mp_shim_abi_version(void);
  * rather than trusting that they do.
  */
 mp_shim_status mp_shim_struct_sizes(uint32_t *out_target_info, uint32_t *out_frame_info,
-                                    uint32_t *out_open_request);
+                                    uint32_t *out_open_request,
+                                    uint32_t *out_process_authority,
+                                    uint32_t *out_process_post_request,
+                                    uint32_t *out_process_post_report);
+
+/*
+ * Reports offsets for every process-post pointer/count field whose placement
+ * changed or was renamed in ABI 9. Rust compares these with its hand-written
+ * mirrors before exposing any native capability.
+ */
+mp_shim_status mp_shim_process_struct_offsets(
+    uint32_t *out_authority_target_match_count, uint32_t *out_request_target,
+    uint32_t *out_request_event_source, uint32_t *out_request_timeout_nanos,
+    uint32_t *out_report_target_match_count, uint32_t *out_report_invoked_native_units);
 
 /*
  * Reports whether this host offers the capture capability at all.
@@ -380,6 +399,96 @@ mp_shim_status mp_shim_testing_surface_recommendation(double logical_width,
 mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
     mp_shim_status *out_delivery_status, size_t *out_allocations, size_t *out_configurations,
     size_t *out_posts, size_t *out_releases, size_t *out_posted);
+
+/* Scenarios for the deterministic process-post state-machine seam. */
+#define MP_SHIM_TEST_PROCESS_SUCCESS 0u
+#define MP_SHIM_TEST_PROCESS_PERMISSION_DENIED 1u
+#define MP_SHIM_TEST_PROCESS_TARGET_LOST 2u
+#define MP_SHIM_TEST_PROCESS_WINDOW_UNAVAILABLE 3u
+#define MP_SHIM_TEST_PROCESS_INVALID_EVENT 4u
+#define MP_SHIM_TEST_PROCESS_NATIVE_EXCEPTION 5u
+#define MP_SHIM_TEST_PROCESS_API_UNAVAILABLE 6u
+#define MP_SHIM_TEST_PROCESS_REVOKED_AFTER_FIRST 7u
+#define MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED 8u
+#define MP_SHIM_TEST_PROCESS_TARGET_LOST_AFTER_FIRST 9u
+#define MP_SHIM_TEST_PROCESS_LIFETIME_LOST_BEFORE_POST 10u
+#define MP_SHIM_TEST_PROCESS_INTERRUPTED_BEFORE_POST 11u
+#define MP_SHIM_TEST_PROCESS_CONSTRUCTION_FAILED 12u
+#define MP_SHIM_TEST_PROCESS_INTERRUPTED_AFTER_FIRST 13u
+
+/* Invalid process-post request scenarios; every row must fail before native effect. */
+#define MP_SHIM_TEST_PROCESS_VALIDATE_NULL_REQUEST 0u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_REQUEST_PREFIX 1u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_REPORT_PREFIX 2u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TARGET_NULL 3u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TARGET_MAGIC 4u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TARGET_KIND 5u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TARGET_NATIVE_ID 6u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TARGET_PROCESS 7u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TARGET_FILTER 8u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TARGET_OWNER 9u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TARGET_LIFETIME 10u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TARGET_LAUNCH 11u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_SOURCE_NULL 12u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_SOURCE_MAGIC 13u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_SOURCE_VALUE 14u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_INTERRUPTION_CONTEXT 15u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_INTERRUPTION_CALLBACK 16u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TIMEOUT 17u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_FLAGS 18u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_GEOMETRY_POLICY 19u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_RESERVED 20u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_GEOMETRY_BOUNDS 21u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_POINTER_COORDINATE 22u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_POINTER_ACTION 23u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_POINTER_BUTTON 24u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_POINTER_CLICK 25u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_SCROLL_ZERO 26u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_SCROLL_RANGE 27u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_KEY_CODE 28u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_KEY_GEOMETRY 29u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TEXT_POINTER 30u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TEXT_COUNT 31u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_TEXT_UTF16 32u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_EVENT_KIND 33u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_OUTPUT_NULL 34u
+
+/*
+ * Runs the production process-post state machine with deterministic authority,
+ * preflight, event, and release callbacks. `out_delivery_status` is the state
+ * machine result; this function itself reports only seam argument failures.
+ */
+mp_shim_status mp_shim_testing_process_post(
+    uint32_t scenario, mp_shim_status *out_delivery_status, uint64_t *out_invoked_native_units,
+    uint32_t *out_target_match_count, uint64_t *out_authority_calls,
+    uint64_t *out_preflight_calls, uint64_t *out_lifetime_calls,
+    uint64_t *out_prepare_calls, uint64_t *out_post_calls, uint64_t *out_release_calls);
+
+/*
+ * Runs one invalid request through the public native entry point. A valid report
+ * prefix is reset before every request-side failure.
+ */
+mp_shim_status mp_shim_testing_validate_process_post(
+    uint32_t scenario, mp_shim_status *out_delivery_status,
+    uint32_t *out_target_match_count, uint64_t *out_invoked_native_units);
+
+/* Scenarios for retained process/window identity independent of process window count. */
+#define MP_SHIM_TEST_AUTHORITY_SUCCESS 0u
+#define MP_SHIM_TEST_AUTHORITY_PROCESS_REPLACED 1u
+#define MP_SHIM_TEST_AUTHORITY_PROCESS_RESTARTED 2u
+#define MP_SHIM_TEST_AUTHORITY_PROCESS_TERMINATED 3u
+#define MP_SHIM_TEST_AUTHORITY_WINDOW_REPLACED 4u
+#define MP_SHIM_TEST_AUTHORITY_EXTRA_WINDOW 5u
+#define MP_SHIM_TEST_AUTHORITY_MINIMIZED 6u
+#define MP_SHIM_TEST_AUTHORITY_OWNER_REPLACED 7u
+#define MP_SHIM_TEST_AUTHORITY_WINDOW_MISSING 8u
+#define MP_SHIM_TEST_AUTHORITY_AUXILIARY_WINDOW 9u
+#define MP_SHIM_TEST_AUTHORITY_DUPLICATE_WINDOW 10u
+
+/* Deterministically evaluates the production identity/admission predicates. */
+mp_shim_status mp_shim_testing_process_authority_rules(
+    uint32_t scenario, mp_shim_status *out_authority_status,
+    uint32_t *out_target_match_count);
 
 /* Deterministically exercises the production signature-state classifier. */
 mp_shim_status mp_shim_testing_classify_signature(int32_t signing_info_status,
@@ -559,6 +668,139 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
  * count the caller is told about equal to the count that was posted.
  */
 #define MP_SHIM_INPUT_MAX_TEXT_CHUNK 16u
+
+/*
+ * Process-directed posting remains process-scoped even though `target` retains
+ * one exact ScreenCaptureKit window. The retained window and owning-process
+ * lifetime authorize the current PID; neither PID nor window number selects a
+ * replacement.
+ */
+#define MP_SHIM_PROCESS_EVENT_POINTER 0u
+#define MP_SHIM_PROCESS_EVENT_SCROLL 1u
+#define MP_SHIM_PROCESS_EVENT_KEY 2u
+#define MP_SHIM_PROCESS_EVENT_TEXT 3u
+
+/* Whether the final native gate must match the geometry prepared by Rust. */
+#define MP_SHIM_PROCESS_GEOMETRY_AUTHORITY_ONLY 0u
+#define MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT 1u
+
+/* Privacy-safe facts from the final per-unit process-directed gate. */
+#define MP_SHIM_PROCESS_AUTHORIZATION_UNKNOWN 0u
+#define MP_SHIM_PROCESS_AUTHORIZATION_GRANTED 1u
+#define MP_SHIM_PROCESS_AUTHORIZATION_NOT_GRANTED 2u
+#define MP_SHIM_PROCESS_AUTHORIZATION_UNAVAILABLE 3u
+#define MP_SHIM_PROCESS_GEOMETRY_NOT_APPLICABLE 0u
+#define MP_SHIM_PROCESS_GEOMETRY_NOT_EVALUATED 1u
+#define MP_SHIM_PROCESS_GEOMETRY_PASSED 2u
+#define MP_SHIM_PROCESS_GEOMETRY_CHANGED 3u
+
+/*
+ * One fresh retained-window/process-authority observation.
+ *
+ * `target_match_count` is zero or one and records whether the exact retained
+ * logical window passed current admission. Other windows owned by the process
+ * are neither counted nor used to refuse process-scoped delivery.
+ * Geometry is written only on success.
+ */
+typedef struct mp_shim_process_authority_report {
+    uint32_t struct_size;
+    uint32_t target_match_count;
+    double logical_x;
+    double logical_y;
+    double logical_width;
+    double logical_height;
+    double backing_scale;
+} mp_shim_process_authority_report;
+
+/*
+ * One bounded process-directed native event.
+ *
+ * Fields not selected by `event_kind` are ignored after their containing
+ * structure and reserved bytes are validated. Text is a borrowed pointer-length
+ * view valid only for the call. No native framework type crosses this boundary.
+ */
+typedef struct mp_shim_process_post_request {
+    uint32_t struct_size;
+    uint32_t event_kind;
+    const mp_shim_target *target;
+    const mp_shim_process_event_source *event_source;
+    uint64_t timeout_nanos;
+    uint32_t flags;
+    uint32_t geometry_check;
+    uint32_t action;
+    uint32_t button;
+    uint64_t click_state;
+    double x;
+    double y;
+    int32_t horizontal;
+    int32_t vertical;
+    uint16_t key_code;
+    bool key_down;
+    uint8_t reserved[5];
+    const uint16_t *text_units;
+    size_t text_unit_count;
+    double expected_x;
+    double expected_y;
+    double expected_width;
+    double expected_height;
+    double expected_scale;
+    /*
+     * Synchronous caller interruption fence. The callback and context remain
+     * valid for this call and the callback must contain its own failures.
+     */
+    void *interruption_context;
+    mp_shim_status (*interruption_callback)(void *context);
+} mp_shim_process_post_request;
+
+/*
+ * Result facts written even when a later native unit fails.
+ *
+ * `target_match_count` records only the retained-window match; it never
+ * inventories unrelated same-process windows. `invoked_native_units` counts
+ * returned `CGEventPostToPid` calls, not logical events, queue admission,
+ * target observation, consumption, or visual effect.
+ */
+typedef struct mp_shim_process_post_report {
+    uint32_t struct_size;
+    uint32_t target_match_count;
+    uint64_t invoked_native_units;
+    uint32_t authorization;
+    uint32_t geometry_result;
+} mp_shim_process_post_report;
+
+/*
+ * Reads the two public non-prompting authorization observations used by the
+ * qualification evidence. Production process posting uses the post-event
+ * preflight as its authorization truth; Accessibility remains diagnostic only.
+ */
+mp_shim_status mp_shim_process_authorization(uint32_t *out_post_event_access,
+                                             uint32_t *out_accessibility);
+
+/*
+ * Revalidates the retained logical window, process birth token, current PID,
+ * current geometry, and post-event access. Other same-process windows do not
+ * affect this process-scoped authority.
+ */
+mp_shim_status mp_shim_process_authority(const mp_shim_target *target,
+                                         uint64_t timeout_nanos,
+                                         mp_shim_process_authority_report *out_authority);
+
+/*
+ * Creates one isolated `CGEventSourceStatePrivate` source for a selected
+ * process-directed sequence. The caller owns it until release; release accepts
+ * NULL. Every event and sequence-owned cleanup release passes the same source.
+ */
+mp_shim_status mp_shim_process_event_source_create(mp_shim_process_event_source **out_source);
+void mp_shim_process_event_source_release(mp_shim_process_event_source *source);
+
+/*
+ * Repeats retained-window/process authority and authorization, creates every
+ * balanced native event from `request->event_source` before posting, performs a
+ * final post-event preflight, and invokes `CGEventPostToPid`. It never activates
+ * the process or reads/moves the cursor.
+ */
+mp_shim_status mp_shim_process_post(const mp_shim_process_post_request *request,
+                                    mp_shim_process_post_report *out_report);
 
 /*
  * Reports whether the exact retained window is the active application's focused

@@ -15,7 +15,10 @@ use mado_pilot_core::{
     InputOperationKind, Lifecycle, MonotonicInstant, Operation, OperationContext, PermissionKind,
     PermissionState, PixelRect, Status, SubmissionEvidence, TargetId,
 };
-use mado_pilot_input::{CleanupState, InputFault, InputReceipt, InputRequest, SequenceOutcome};
+use mado_pilot_input::{
+    CleanupState, InputAttempt, InputEventObservation, InputFault, InputGeometryResult,
+    InputReceipt, InputRequest, InputRevalidationCategory, SequenceOutcome,
+};
 use mado_pilot_vision::prepared::{PreparedTemplate, PreparedTemplateInstance};
 
 /// Maximum number of retained diagnostic records per engine.
@@ -193,6 +196,8 @@ pub enum DiagnosticKind {
     Input,
     /// One route attempt was made or refused.
     RouteAttempt,
+    /// One privacy-reviewed process-directed logical-event boundary.
+    InputEvent,
     /// A lifecycle operation failed or completed.
     Lifecycle,
     /// A permission state was observed or failed.
@@ -316,6 +321,69 @@ pub struct RouteAttemptDiagnostic {
     pub fault: Option<InputFault>,
 }
 
+impl RouteAttemptDiagnostic {
+    pub(crate) fn from_attempt(target: TargetId, attempt: InputAttempt) -> Self {
+        Self {
+            target,
+            route: attempt.route(),
+            address_scope: attempt.address_scope(),
+            evidence: attempt.evidence(),
+            outcome: attempt.outcome(),
+            submitted: attempt.submitted() as u64,
+            partial_native_effect: attempt.partial_native_effect(),
+            fault: attempt.fault(),
+        }
+    }
+}
+
+/// One process-directed event's bounded revalidation and invocation facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct InputEventDiagnostic {
+    /// The selected public target.
+    pub target: TargetId,
+    /// Attempted route.
+    pub route: InputDelivery,
+    /// Zero-based logical-event index.
+    pub event_index: u64,
+    /// Payload-free operation category.
+    pub operation: InputOperationKind,
+    /// Retained authority result.
+    pub revalidation: InputRevalidationCategory,
+    /// Bounded exact retained-target match count from the final native gate.
+    pub candidate_count: Option<u32>,
+    /// Public authorization state from the final native gate.
+    pub authorization: PermissionState,
+    /// Geometry-policy result.
+    pub geometry: InputGeometryResult,
+    /// Native units required for this logical event.
+    pub expected_native_units: u64,
+    /// Native units whose invocation returned.
+    pub invoked_native_units: u64,
+    /// Typed terminal fault, if this event stopped the route.
+    pub fault: Option<InputFault>,
+}
+
+impl InputEventDiagnostic {
+    pub(crate) const fn from_observation(
+        target: TargetId,
+        observation: InputEventObservation,
+    ) -> Self {
+        Self {
+            target,
+            route: observation.route,
+            event_index: observation.event_index,
+            operation: observation.operation,
+            revalidation: observation.revalidation,
+            candidate_count: observation.candidate_count,
+            authorization: observation.authorization,
+            geometry: observation.geometry,
+            expected_native_units: observation.expected_native_units,
+            invoked_native_units: observation.invoked_native_units,
+            fault: observation.fault,
+        }
+    }
+}
+
 /// A terminal input summary without text, keys, or native identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InputDiagnostic {
@@ -325,9 +393,10 @@ pub struct InputDiagnostic {
     pub operations: InputOperationSet,
     /// Number of logical events in the bounded request.
     pub requested: u64,
-    /// The selected route, if any route was attempted.
+    /// The route on which native effect became possible, or the final refused
+    /// route when every attempt was unexecuted.
     pub route: Option<InputDelivery>,
-    /// The selected route's address scope.
+    /// The reported route's address scope.
     pub address_scope: Option<InputAddressScope>,
     /// The selected route's strongest evidence.
     pub evidence: Option<SubmissionEvidence>,
@@ -353,12 +422,20 @@ pub struct InputDiagnostic {
 
 impl InputDiagnostic {
     pub(crate) fn from_receipt(request: &InputRequest, receipt: &InputReceipt) -> Self {
+        let refused_route = receipt
+            .attempts()
+            .last()
+            .filter(|attempt| attempt.outcome() == SequenceOutcome::Unexecuted);
         Self {
             target: receipt.target(),
             operations: InputOperationSet::from_request(request),
             requested: request.sequence().len() as u64,
-            route: receipt.selected_route(),
-            address_scope: receipt.address_scope(),
+            route: receipt
+                .selected_route()
+                .or_else(|| refused_route.map(|attempt| attempt.route())),
+            address_scope: receipt
+                .address_scope()
+                .or_else(|| refused_route.map(|attempt| attempt.address_scope())),
             evidence: receipt.evidence(),
             outcome: receipt.outcome(),
             submitted: receipt.submitted() as u64,
@@ -431,6 +508,8 @@ pub enum DiagnosticPayload {
     Input(InputDiagnostic),
     /// Per-route attempt detail.
     RouteAttempt(RouteAttemptDiagnostic),
+    /// Per-event process-directed revalidation and invocation detail.
+    InputEvent(InputEventDiagnostic),
     /// Lifecycle summary.
     Lifecycle(LifecycleDiagnostic),
     /// Permission summary.
@@ -448,6 +527,7 @@ impl DiagnosticPayload {
             Self::Search(_) => DiagnosticKind::Search,
             Self::Input(_) => DiagnosticKind::Input,
             Self::RouteAttempt(_) => DiagnosticKind::RouteAttempt,
+            Self::InputEvent(_) => DiagnosticKind::InputEvent,
             Self::Lifecycle(_) => DiagnosticKind::Lifecycle,
             Self::Permission(_) => DiagnosticKind::Permission,
         }
@@ -865,6 +945,10 @@ impl DiagnosticSink {
         ))
     }
 
+    pub(crate) fn is_debug(&self) -> bool {
+        self.stream.level == DiagnosticLevel::Debug
+    }
+
     pub(crate) fn emitter(&self) -> DiagnosticEmitter {
         DiagnosticEmitter {
             stream: Arc::downgrade(&self.stream),
@@ -1004,7 +1088,7 @@ mod tests {
     use mado_pilot_core::{
         FrameSequence, GeometryRevision, IdentityIssuer, PixelExtent, ProviderId, StreamEpoch,
     };
-    use mado_pilot_input::{DeliveryPlan, InputEvent, InputSequence, Key};
+    use mado_pilot_input::{DeliveryPlan, InputAttempt, InputEvent, InputSequence, Key};
     use mado_pilot_testkit::{ControlledMatcher, match_fixtures};
     use mado_pilot_vision::{MatchBackend, Matcher};
 
@@ -1039,6 +1123,207 @@ mod tests {
             DiagnosticDrain::Batch(batch) => batch,
             other => panic!("expected batch, got {other:?}"),
         }
+    }
+
+    fn process_request(target: TargetId, delivery: DeliveryPlan) -> InputRequest {
+        InputRequest::new(
+            target,
+            InputSequence::new(vec![
+                InputEvent::Text("diagnostic-secret-text".to_owned()),
+                InputEvent::KeyPress(Key::Character('🔐')),
+            ])
+            .expect("valid input sequence"),
+            delivery,
+        )
+    }
+
+    #[test]
+    fn complete_process_invocation_reports_process_scope_and_invocation_evidence() {
+        let target = target();
+        let request = process_request(
+            target,
+            DeliveryPlan::require(InputDelivery::ProcessDirected),
+        );
+        let receipt = InputReceipt::complete(
+            target,
+            InputDelivery::ProcessDirected,
+            SubmissionEvidence::InvocationOnly,
+            2,
+        );
+
+        let normal = InputDiagnostic::from_receipt(&request, &receipt);
+        assert_eq!(normal.target, target);
+        assert!(normal.operations.contains(InputOperationKind::Text));
+        assert!(normal.operations.contains(InputOperationKind::Keyboard));
+        assert_eq!(normal.requested, 2);
+        assert_eq!(normal.route, Some(InputDelivery::ProcessDirected));
+        assert_eq!(normal.address_scope, Some(InputAddressScope::OwningProcess));
+        assert_eq!(normal.evidence, Some(SubmissionEvidence::InvocationOnly));
+        assert_eq!(normal.outcome, SequenceOutcome::Complete);
+        assert_eq!(normal.submitted, 2);
+        assert!(!normal.partial_native_effect);
+        assert_eq!(normal.fault, None);
+        assert_eq!(normal.status, None);
+        assert!(!normal.fallback);
+        assert_eq!(normal.cleanup, CleanupState::NotNeeded);
+        assert_eq!(normal.cleanup_released, 0);
+        assert_eq!(normal.cleanup_owed, 0);
+
+        let debug = RouteAttemptDiagnostic::from_attempt(target, receipt.attempts()[0]);
+        assert_eq!(debug.route, InputDelivery::ProcessDirected);
+        assert_eq!(debug.address_scope, InputAddressScope::OwningProcess);
+        assert_eq!(debug.evidence, Some(SubmissionEvidence::InvocationOnly));
+        assert_eq!(debug.outcome, SequenceOutcome::Complete);
+        assert_eq!(debug.submitted, 2);
+        assert!(!debug.partial_native_effect);
+        assert_eq!(debug.fault, None);
+    }
+
+    #[test]
+    fn refused_process_route_reports_typed_fault_without_evidence_or_fallback() {
+        let target = target();
+        let request = process_request(
+            target,
+            DeliveryPlan::require(InputDelivery::ProcessDirected),
+        );
+        let receipt = InputReceipt::unexecuted(target, InputFault::RouteUnavailable)
+            .with_prior_attempts(vec![InputAttempt::refused(
+                InputDelivery::ProcessDirected,
+                InputFault::NotAuthorized,
+            )]);
+
+        let normal = InputDiagnostic::from_receipt(&request, &receipt);
+        assert_eq!(normal.route, Some(InputDelivery::ProcessDirected));
+        assert_eq!(normal.address_scope, Some(InputAddressScope::OwningProcess));
+        assert_eq!(normal.evidence, None);
+        assert_eq!(normal.outcome, SequenceOutcome::Unexecuted);
+        assert_eq!(normal.submitted, 0);
+        assert!(!normal.partial_native_effect);
+        assert_eq!(normal.fault, Some(InputFault::RouteUnavailable));
+        assert_eq!(normal.status, Some(Status::Unsupported));
+        assert!(!normal.fallback);
+        assert_eq!(normal.cleanup, CleanupState::NotNeeded);
+
+        let debug = RouteAttemptDiagnostic::from_attempt(target, receipt.attempts()[0]);
+        assert_eq!(debug.route, InputDelivery::ProcessDirected);
+        assert_eq!(debug.address_scope, InputAddressScope::OwningProcess);
+        assert_eq!(debug.evidence, None);
+        assert_eq!(debug.outcome, SequenceOutcome::Unexecuted);
+        assert_eq!(debug.submitted, 0);
+        assert!(!debug.partial_native_effect);
+        assert_eq!(debug.fault, Some(InputFault::NotAuthorized));
+    }
+
+    #[test]
+    fn partial_process_invocation_reports_possible_native_effect_and_closes_fallback() {
+        let target = target();
+        let request = process_request(
+            target,
+            DeliveryPlan::require(InputDelivery::ProcessDirected),
+        );
+        let receipt = InputReceipt::partial(
+            target,
+            InputDelivery::ProcessDirected,
+            SubmissionEvidence::InvocationOnly,
+            0,
+            true,
+            InputFault::SubmissionFailed,
+        );
+
+        let normal = InputDiagnostic::from_receipt(&request, &receipt);
+        assert_eq!(normal.route, Some(InputDelivery::ProcessDirected));
+        assert_eq!(normal.address_scope, Some(InputAddressScope::OwningProcess));
+        assert_eq!(normal.evidence, Some(SubmissionEvidence::InvocationOnly));
+        assert_eq!(normal.outcome, SequenceOutcome::Partial);
+        assert_eq!(normal.submitted, 0);
+        assert!(normal.partial_native_effect);
+        assert_eq!(normal.fault, Some(InputFault::SubmissionFailed));
+        assert_eq!(normal.status, Some(Status::InputFailed));
+        assert!(!normal.fallback);
+
+        let debug = RouteAttemptDiagnostic::from_attempt(target, receipt.attempts()[0]);
+        assert_eq!(debug.outcome, SequenceOutcome::Partial);
+        assert_eq!(debug.submitted, 0);
+        assert!(debug.partial_native_effect);
+        assert_eq!(debug.fault, Some(InputFault::SubmissionFailed));
+    }
+
+    #[test]
+    fn cleanup_failed_process_invocation_reports_released_and_owed_counts() {
+        let target = target();
+        let request = process_request(
+            target,
+            DeliveryPlan::require(InputDelivery::ProcessDirected),
+        );
+        let receipt = InputReceipt::partial(
+            target,
+            InputDelivery::ProcessDirected,
+            SubmissionEvidence::InvocationOnly,
+            1,
+            false,
+            InputFault::Cancelled,
+        )
+        .with_cleanup(1, 2);
+
+        let normal = InputDiagnostic::from_receipt(&request, &receipt);
+        assert_eq!(normal.route, Some(InputDelivery::ProcessDirected));
+        assert_eq!(normal.address_scope, Some(InputAddressScope::OwningProcess));
+        assert_eq!(normal.evidence, Some(SubmissionEvidence::InvocationOnly));
+        assert_eq!(normal.outcome, SequenceOutcome::Partial);
+        assert_eq!(normal.submitted, 1);
+        assert!(!normal.partial_native_effect);
+        assert_eq!(normal.fault, Some(InputFault::Cancelled));
+        assert_eq!(normal.status, Some(Status::Cancelled));
+        assert!(!normal.fallback);
+        assert_eq!(normal.cleanup, CleanupState::Incomplete);
+        assert_eq!(normal.cleanup_released, 1);
+        assert_eq!(normal.cleanup_owed, 2);
+    }
+
+    #[test]
+    fn explicit_fallback_is_distinct_from_a_refused_process_attempt() {
+        let target = target();
+        let request = process_request(
+            target,
+            DeliveryPlan::ordered(vec![InputDelivery::ProcessDirected, InputDelivery::System])
+                .expect("distinct ordered routes"),
+        );
+        let receipt = InputReceipt::complete(
+            target,
+            InputDelivery::System,
+            SubmissionEvidence::InvocationOnly,
+            2,
+        )
+        .with_prior_attempts(vec![InputAttempt::refused(
+            InputDelivery::ProcessDirected,
+            InputFault::NotAuthorized,
+        )]);
+
+        let normal = InputDiagnostic::from_receipt(&request, &receipt);
+        assert_eq!(normal.route, Some(InputDelivery::System));
+        assert_eq!(normal.address_scope, Some(InputAddressScope::FocusedSystem));
+        assert_eq!(normal.evidence, Some(SubmissionEvidence::InvocationOnly));
+        assert_eq!(normal.outcome, SequenceOutcome::Complete);
+        assert_eq!(normal.submitted, 2);
+        assert!(!normal.partial_native_effect);
+        assert_eq!(normal.fault, None);
+        assert_eq!(normal.status, None);
+        assert!(normal.fallback);
+
+        let attempts = receipt.attempts();
+        assert_eq!(attempts.len(), 2);
+        let refused = RouteAttemptDiagnostic::from_attempt(target, attempts[0]);
+        assert_eq!(refused.route, InputDelivery::ProcessDirected);
+        assert_eq!(refused.address_scope, InputAddressScope::OwningProcess);
+        assert_eq!(refused.evidence, None);
+        assert_eq!(refused.outcome, SequenceOutcome::Unexecuted);
+        assert_eq!(refused.fault, Some(InputFault::NotAuthorized));
+        let fallback = RouteAttemptDiagnostic::from_attempt(target, attempts[1]);
+        assert_eq!(fallback.route, InputDelivery::System);
+        assert_eq!(fallback.address_scope, InputAddressScope::FocusedSystem);
+        assert_eq!(fallback.evidence, Some(SubmissionEvidence::InvocationOnly));
+        assert_eq!(fallback.outcome, SequenceOutcome::Complete);
+        assert_eq!(fallback.fault, None);
     }
 
     #[test]
@@ -1094,6 +1379,19 @@ mod tests {
                     format!("{:?}", value.partial_native_effect),
                     format!("{:?}", value.fault),
                 ],
+                DiagnosticPayload::InputEvent(value) => vec![
+                    format!("{:?}", value.target),
+                    format!("{:?}", value.route),
+                    format!("{:?}", value.event_index),
+                    format!("{:?}", value.operation),
+                    format!("{:?}", value.revalidation),
+                    format!("{:?}", value.candidate_count),
+                    format!("{:?}", value.authorization),
+                    format!("{:?}", value.geometry),
+                    format!("{:?}", value.expected_native_units),
+                    format!("{:?}", value.invoked_native_units),
+                    format!("{:?}", value.fault),
+                ],
                 DiagnosticPayload::Lifecycle(value) => vec![
                     format!("{:?}", value.target),
                     format!("{:?}", value.lifecycle),
@@ -1110,8 +1408,14 @@ mod tests {
         const TEMPLATE_NAME: &str = "private/assets/account-name-template.png";
         const INPUT_TEXT: &str = "caller-secret-input-text";
         const INPUT_KEY: char = '🔐';
-        const WINDOW_TITLE: &str = "Private Account — caller@example.invalid";
-        const PLATFORM_FAILURE: &str = "native failure mentioned caller-home/private.db";
+        const PID: &str = "1972681003";
+        const NATIVE_WINDOW_NUMBER: &str = "1983792004";
+        const APP_NAME: &str = "PrivateGameApplication";
+        const UNRELATED_FOREGROUND: &str = "UnrelatedForegroundIdentity";
+        const WINDOW_TITLE: &str = "Private Account — caller@example.invalid; pid=1972681003; window=1983792004; app=PrivateGameApplication; foreground=UnrelatedForegroundIdentity";
+        const SIGNING_IDENTIFIER: &str = "invalid.example.private-game";
+        const RAW_AUTHORIZATION_VALUES: &str = "AX=0xA11CE991;CG=0xC0DEC992";
+        const PLATFORM_FAILURE: &str = "native failure mentioned caller-home/private.db; signing=invalid.example.private-game; auth=AX=0xA11CE991;CG=0xC0DEC992";
 
         assert_copy::<DiagnosticPayload>();
         assert_copy::<DiagnosticRecord>();
@@ -1137,6 +1441,7 @@ mod tests {
 
         let backend = Arc::new(ControlledMatcher::new(PixelFormat::Rgba8));
         let matcher = Matcher::new(Arc::clone(&backend) as Arc<dyn MatchBackend>);
+        let pixel_contents = format!("{:?}", match_fixtures::patch_rgb());
         let source = match_fixtures::planted_template(TEMPLATE_NAME);
         let prepared = matcher
             .prepare(&source, &OperationContext::new())
@@ -1151,12 +1456,12 @@ mod tests {
                 InputEvent::KeyPress(Key::Character(INPUT_KEY)),
             ])
             .expect("valid caller-sensitive events"),
-            DeliveryPlan::require(InputDelivery::WindowMessage),
+            DeliveryPlan::require(InputDelivery::ProcessDirected),
         );
         let receipt = InputReceipt::complete(
             target,
-            InputDelivery::WindowMessage,
-            SubmissionEvidence::TargetQueueAdmission,
+            InputDelivery::ProcessDirected,
+            SubmissionEvidence::InvocationOnly,
             2,
         );
         let input = InputDiagnostic::from_receipt(&request, &receipt);
@@ -1199,14 +1504,24 @@ mod tests {
             (DiagnosticKind::Input, DiagnosticPayload::Input(input)),
             (
                 DiagnosticKind::RouteAttempt,
-                DiagnosticPayload::RouteAttempt(RouteAttemptDiagnostic {
+                DiagnosticPayload::RouteAttempt(RouteAttemptDiagnostic::from_attempt(
                     target,
-                    route: InputDelivery::WindowMessage,
-                    address_scope: InputAddressScope::ExactWindow,
-                    evidence: Some(SubmissionEvidence::TargetQueueAdmission),
-                    outcome: SequenceOutcome::Complete,
-                    submitted: 2,
-                    partial_native_effect: false,
+                    receipt.attempts()[0],
+                )),
+            ),
+            (
+                DiagnosticKind::InputEvent,
+                DiagnosticPayload::InputEvent(InputEventDiagnostic {
+                    target,
+                    route: InputDelivery::ProcessDirected,
+                    event_index: 1,
+                    operation: InputOperationKind::Text,
+                    revalidation: InputRevalidationCategory::Passed,
+                    candidate_count: Some(1),
+                    authorization: PermissionState::Granted,
+                    geometry: InputGeometryResult::NotApplicable,
+                    expected_native_units: 3,
+                    invoked_native_units: 3,
                     fault: None,
                 }),
             ),
@@ -1228,14 +1543,21 @@ mod tests {
             ),
         ];
 
-        assert_eq!(matrix.len(), 8);
+        assert_eq!(matrix.len(), 9);
         let input_key = INPUT_KEY.to_string();
         let sensitive = [
             TEMPLATE_NAME,
             INPUT_TEXT,
             input_key.as_str(),
+            PID,
+            NATIVE_WINDOW_NUMBER,
+            APP_NAME,
+            UNRELATED_FOREGROUND,
             WINDOW_TITLE,
+            SIGNING_IDENTIFIER,
+            RAW_AUTHORIZATION_VALUES,
             PLATFORM_FAILURE,
+            pixel_contents.as_str(),
         ];
         for (kind, payload) in matrix {
             assert_eq!(payload.kind(), kind);

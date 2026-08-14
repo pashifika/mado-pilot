@@ -2,28 +2,30 @@
 //!
 //! # What makes a receipt truthful here
 //!
-//! macOS does not fail a synthesized event posted by an untrusted process: it
-//! discards it. `CGEventPost` returns nothing either way. So the Accessibility
-//! decision is read again immediately before every irreversible event rather than
-//! once at open, and a revocation observed mid-sequence stops delivery with the
-//! count that had already gone out. Everything this module reports about delivery
-//! rests on that check rather than on a return value the platform does not give.
+//! macOS does not fail a synthesized event posted by an unauthorized process: it
+//! discards it, and both posting functions return nothing. Public post-event
+//! access is therefore read again immediately before every irreversible logical
+//! event rather than once at open. A revocation observed mid-sequence stops
+//! delivery with the exact completed-event count; invocation-only evidence never
+//! implies target observation or application consumption.
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use mado_pilot_core::{
     CoordinateSpace, GeometryRevision, InputDelivery, OperationContext, PermissionState,
     PixelExtent, Point, Scale, TargetKind, TransformSnapshot,
 };
 use mado_pilot_input::{
-    FocusPolicy, GeometryPolicy, InputEvent, InputFault, Key, Modifier, PointerButton,
-    PointerGeometry, PressedState,
+    FocusPolicy, GeometryPolicy, InputEvent, InputEventObservation, InputFault,
+    InputGeometryResult, InputRevalidationCategory, Key, Modifier, PointerButton, PointerGeometry,
+    PressedState,
 };
 
 use crate::discovery::placement_from_points;
 use crate::input::{
-    DriverState, GeometryFingerprint, InputDriver, PointerState, SubmissionFailure,
-    SystemButtonState, SystemKeyState,
+    DriverState, GeometryFingerprint, InputDriver, PendingTextRelease, PointerState,
+    SubmissionFailure, SystemButtonState, SystemKeyState,
 };
 use crate::provider::TargetRecord;
 use crate::shim::{self, ShimStatus};
@@ -39,12 +41,21 @@ type SubmissionResult = Result<(), SubmissionFailure>;
 const ACTIVATION_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 const ACTIVATION_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 const FOCUS_OBSERVATION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+const PROCESS_OBSERVATION_WAIT: std::time::Duration = shim::MAX_NATIVE_WAIT;
 
 fn focus_wait(operation: &OperationContext) -> std::time::Duration {
     operation
         .remaining()
         .map_or(FOCUS_OBSERVATION_WAIT, |remaining| {
             remaining.min(FOCUS_OBSERVATION_WAIT)
+        })
+}
+
+fn process_wait(operation: &OperationContext) -> std::time::Duration {
+    operation
+        .remaining()
+        .map_or(PROCESS_OBSERVATION_WAIT, |remaining| {
+            remaining.min(PROCESS_OBSERVATION_WAIT)
         })
 }
 
@@ -120,6 +131,40 @@ pub(crate) enum NativePost<'units> {
     Text(&'units [u16]),
 }
 
+impl<'units> NativePost<'units> {
+    fn process_post(self) -> shim::ProcessPost<'units> {
+        match self {
+            NativePost::Pointer {
+                action,
+                button,
+                click_state,
+                location,
+            } => shim::ProcessPost::Pointer {
+                action,
+                button,
+                click_state,
+                location,
+            },
+            NativePost::Scroll {
+                horizontal,
+                vertical,
+            } => shim::ProcessPost::Scroll {
+                horizontal,
+                vertical,
+            },
+            NativePost::Key { key_code, down } => shim::ProcessPost::Key { key_code, down },
+            NativePost::Text(units) => shim::ProcessPost::Text(units),
+        }
+    }
+
+    const fn process_native_units(self) -> u64 {
+        match self {
+            NativePost::Text(_) => 2,
+            NativePost::Pointer { .. } | NativePost::Scroll { .. } | NativePost::Key { .. } => 1,
+        }
+    }
+}
+
 /// Geometry validation required at the irreversible commit boundary.
 ///
 /// Pointer resolution always retains the geometry policy explicitly. In
@@ -158,26 +203,77 @@ pub(crate) trait SystemCommitSource {
     fn classify_post_failure(&self, status: ShimStatus) -> InputFault;
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ProcessCommitObservation {
+    expected_native_units: u64,
+    invoked_native_units: u64,
+    target_match_count: u32,
+    authorization: shim::ProcessAuthorizationObservation,
+    geometry: shim::ProcessGeometryObservation,
+    status: Option<ShimStatus>,
+}
+
+pub(crate) trait ProcessCommitSource {
+    fn post_process(
+        &self,
+        event_source: Option<&shim::ProcessEventSource>,
+        post: shim::ProcessPost<'_>,
+        geometry: shim::ProcessGeometry,
+        flags: u32,
+        wait: std::time::Duration,
+        operation: &OperationContext,
+    ) -> Result<shim::ProcessPostOutcome, shim::ProcessPostFailure>;
+
+    fn classify_process_failure(
+        &self,
+        status: ShimStatus,
+        operation: &OperationContext,
+    ) -> InputFault {
+        process_status_fault(status, operation)
+    }
+
+    fn record_process_observation(&self, _observation: ProcessCommitObservation) {}
+}
+
 pub(crate) struct NativeInputDriver {
     record: Arc<TargetRecord>,
+    observing_event: AtomicBool,
+    process_observations: Mutex<Vec<ProcessCommitObservation>>,
 }
 
 impl NativeInputDriver {
     pub(crate) fn new(record: Arc<TargetRecord>) -> Self {
-        Self { record }
+        Self {
+            record,
+            observing_event: AtomicBool::new(false),
+            process_observations: Mutex::new(Vec::new()),
+        }
     }
 
-    /// Reads the Accessibility decision without requesting it.
+    /// Reads public post-event access without requesting it.
     ///
-    /// Anything but a granted decision is refused. An unavailable or unreadable
-    /// state is not authorization, and treating it as one would post events macOS
-    /// silently drops while the receipt claimed a submission threshold had been
-    /// reached.
+    /// Accessibility is retained in the paired migration observation for
+    /// qualification only. It cannot promote a denied post-event result or demote
+    /// a granted one.
     fn ensure_authorized(&self) -> Result<(), InputFault> {
-        match shim::probe_accessibility() {
-            Ok(PermissionState::Granted) => Ok(()),
+        match shim::process_authorization() {
+            Ok(observed) if observed.post_event_access == PermissionState::Granted => Ok(()),
             _ => Err(InputFault::NotAuthorized),
         }
+    }
+
+    /// Distinguishes direct post-event denial from capture-query denial.
+    fn classify_process_status(
+        &self,
+        status: ShimStatus,
+        operation: &OperationContext,
+    ) -> InputFault {
+        if status != ShimStatus::PermissionDenied {
+            return process_status_fault(status, operation);
+        }
+        shim::process_authorization().map_or(InputFault::SubmissionFailed, |observed| {
+            process_permission_denied_fault(observed.post_event_access)
+        })
     }
 
     fn is_focused(&self, operation: &OperationContext) -> Result<bool, InputFault> {
@@ -217,6 +313,15 @@ impl NativeInputDriver {
         }
     }
 
+    fn ensure_process_focus(&self, policy: FocusPolicy) -> Result<(), InputFault> {
+        match policy {
+            // Process posting neither depends on nor changes the foreground
+            // application. Accessibility focus is therefore not consulted.
+            FocusPolicy::Preserve | FocusPolicy::ActivateIfRequired => Ok(()),
+            _ => Err(InputFault::UnsupportedCombination),
+        }
+    }
+
     /// Asks macOS to activate the owning application and reads exact focus back.
     ///
     /// This activates an application; it never raises one particular window.
@@ -248,17 +353,22 @@ impl NativeInputDriver {
         }
     }
 
-    fn current_geometry(
-        &self,
-        operation: &OperationContext,
+    fn geometry_from_bounds(
+        bounds: shim::NativeBounds,
     ) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
-        let bounds = self.record.current_bounds(focus_wait(operation))?;
         let extent = extent_from_points(bounds.size, bounds.scale)?;
         let placement = placement_from_points(bounds.origin, bounds.size, bounds.scale, extent)
             .map_err(|_| InputFault::UnsupportedCoordinate)?;
         let transform = TransformSnapshot::with_target(GeometryRevision::FIRST, extent, placement)
             .map_err(|_| InputFault::UnsupportedCoordinate)?;
         Ok((transform, GeometryFingerprint { extent, placement }))
+    }
+
+    fn current_geometry(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
+        Self::geometry_from_bounds(self.record.current_bounds(focus_wait(operation))?)
     }
 
     fn policy_geometry(
@@ -284,6 +394,107 @@ impl NativeInputDriver {
             }
             _ => Err(InputFault::UnsupportedCombination),
         }
+    }
+
+    fn process_current_geometry(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<(TransformSnapshot, GeometryFingerprint, shim::NativeBounds), InputFault> {
+        let authority = self
+            .record
+            .process_authority(process_wait(operation))
+            .map_err(|failure| self.classify_process_status(failure.status, operation))?;
+        if authority.target_match_count != 1 {
+            return Err(InputFault::UnsupportedCombination);
+        }
+        let (transform, fingerprint) = Self::geometry_from_bounds(authority.bounds)?;
+        Ok((transform, fingerprint, authority.bounds))
+    }
+
+    fn process_policy_geometry(
+        &self,
+        geometry: PointerGeometry,
+        operation: &OperationContext,
+    ) -> Result<
+        (
+            TransformSnapshot,
+            GeometryFingerprint,
+            shim::ProcessGeometry,
+        ),
+        InputFault,
+    > {
+        match geometry.policy() {
+            GeometryPolicy::ReprojectCurrent => {
+                let (transform, fingerprint, bounds) = self.process_current_geometry(operation)?;
+                Ok((
+                    transform,
+                    fingerprint,
+                    shim::ProcessGeometry::RequireCurrent(bounds),
+                ))
+            }
+            GeometryPolicy::RequireUnchanged => {
+                let transform = self.source_transform(geometry)?;
+                let source_fingerprint = fingerprint(&transform)?;
+                let (_, current_fingerprint, bounds) = self.process_current_geometry(operation)?;
+                if source_fingerprint != current_fingerprint {
+                    return Err(InputFault::GeometryChanged);
+                }
+                Ok((
+                    transform,
+                    source_fingerprint,
+                    shim::ProcessGeometry::RequireCurrent(bounds),
+                ))
+            }
+            GeometryPolicy::UseFrameSnapshot => {
+                let transform = self.source_transform(geometry)?;
+                let source_fingerprint = fingerprint(&transform)?;
+                let _authority = self.process_current_geometry(operation)?;
+                Ok((
+                    transform,
+                    source_fingerprint,
+                    shim::ProcessGeometry::AuthorityOnly,
+                ))
+            }
+            _ => Err(InputFault::UnsupportedCombination),
+        }
+    }
+
+    fn resolve_process_pointer(
+        &self,
+        point: Point,
+        geometry: PointerGeometry,
+        operation: &OperationContext,
+    ) -> Result<(PointerState, shim::ProcessGeometry), InputFault> {
+        let (transform, fingerprint, commit_geometry) =
+            self.process_policy_geometry(geometry, operation)?;
+        let desktop = transform
+            .convert_point(point, CoordinateSpace::DesktopLogical)
+            .map_err(|_| InputFault::UnsupportedCoordinate)?;
+        let location = (desktop.x(), desktop.y());
+        if !contains_desktop_point(fingerprint, location) {
+            return Err(InputFault::UnsupportedCoordinate);
+        }
+        Ok((
+            PointerState {
+                desktop: location,
+                geometry: fingerprint,
+            },
+            commit_geometry,
+        ))
+    }
+
+    fn process_pointer_for_non_move(
+        &self,
+        geometry: PointerGeometry,
+        state: &mut DriverState,
+        operation: &OperationContext,
+    ) -> Result<(PointerState, shim::ProcessGeometry), InputFault> {
+        let pointer = state.pointer.ok_or(InputFault::UnsupportedCoordinate)?;
+        let (_, current, commit_geometry) = self.process_policy_geometry(geometry, operation)?;
+        if pointer.geometry != current {
+            return Err(InputFault::GeometryChanged);
+        }
+        Ok((pointer, commit_geometry))
     }
 
     fn source_transform(&self, geometry: PointerGeometry) -> Result<TransformSnapshot, InputFault> {
@@ -492,7 +703,7 @@ impl NativeInputDriver {
                 }
                 Ok(())
             }
-            InputEvent::Text(text) => self.deliver_text(text, focus, operation, flags),
+            InputEvent::Text(text) => self.deliver_text(text, focus, operation, state, flags),
             InputEvent::Delay(_) => Err(InputFault::UnsupportedCombination.into()),
             _ => Err(InputFault::UnsupportedCombination.into()),
         }
@@ -504,18 +715,16 @@ impl NativeInputDriver {
     /// effect this Adapter cannot take back, so the failure is reported as
     /// happening *during* the event and the receipt says so.
     ///
-    /// # Why no cleanup budget reaches here
-    ///
-    /// The Windows Adapter passes one, because Win32 can accept the down half of a
-    /// UTF-16 unit and leave it pressed, which is a release cleanup has to send.
-    /// Core Graphics posts a chunk's down and up as two complete events, so a
-    /// failure between them leaves no pressed state this sequence recorded and
-    /// there is nothing for a budget to bound.
+    /// A text chunk is a balanced native key-down/key-up pair. If the down call
+    /// returns and a later gate refuses the up, the driver records one private
+    /// pending release so the controller's bounded cleanup can report and attempt
+    /// it without retaining caller text.
     fn deliver_text(
         &self,
         text: &str,
         focus: FocusPolicy,
         operation: &OperationContext,
+        state: &mut DriverState,
         flags: u32,
     ) -> SubmissionResult {
         let units: Vec<u16> = text.encode_utf16().collect();
@@ -530,6 +739,201 @@ impl NativeInputDriver {
                 flags,
             );
             if let Err(mut failure) = result {
+                if failure.invoked_native_units == 1 {
+                    state.pending_text_release = Some(PendingTextRelease {
+                        route: InputDelivery::System,
+                        flags,
+                    });
+                }
+                if sent > 0 {
+                    failure.current_event_may_have_effect = true;
+                }
+                return Err(failure);
+            }
+            sent += chunk.len();
+        }
+        Ok(())
+    }
+
+    fn deliver_process(
+        &self,
+        focus: FocusPolicy,
+        event: &InputEvent,
+        geometry: PointerGeometry,
+        state: &mut DriverState,
+        operation: &OperationContext,
+    ) -> SubmissionResult {
+        self.ensure_process_focus(focus)?;
+        let flags = state.held_flags();
+
+        match event {
+            InputEvent::PointerMove(point) => {
+                let (resolved, commit_geometry) =
+                    self.resolve_process_pointer(*point, geometry, operation)?;
+                let button = state
+                    .dragging()
+                    .map_or(Ok(shim::INPUT_BUTTON_NONE), native_button)?;
+                commit_process(
+                    self,
+                    state.process_event_source.as_ref(),
+                    commit_geometry,
+                    operation,
+                    NativePost::Pointer {
+                        action: shim::INPUT_POINTER_MOVE,
+                        button,
+                        click_state: 0,
+                        location: resolved.desktop,
+                    },
+                    flags,
+                )?;
+                state.pointer = Some(resolved);
+                Ok(())
+            }
+            InputEvent::PointerPress(button) => {
+                let (pointer, commit_geometry) =
+                    self.process_pointer_for_non_move(geometry, state, operation)?;
+                let native = native_button(*button)?;
+                commit_process(
+                    self,
+                    state.process_event_source.as_ref(),
+                    commit_geometry,
+                    operation,
+                    NativePost::Pointer {
+                        action: shim::INPUT_POINTER_PRESS,
+                        button: native,
+                        click_state: shim::INPUT_SINGLE_CLICK,
+                        location: pointer.desktop,
+                    },
+                    flags,
+                )?;
+                state.buttons.push(SystemButtonState {
+                    logical: *button,
+                    native,
+                });
+                Ok(())
+            }
+            InputEvent::PointerRelease(button) => {
+                let (pointer, commit_geometry) =
+                    self.process_pointer_for_non_move(geometry, state, operation)?;
+                let index = state
+                    .buttons
+                    .iter()
+                    .rposition(|pressed| pressed.logical == *button);
+                let native = index
+                    .map(|index| state.buttons[index].native)
+                    .map_or_else(|| native_button(*button), Ok)?;
+                commit_process(
+                    self,
+                    state.process_event_source.as_ref(),
+                    commit_geometry,
+                    operation,
+                    NativePost::Pointer {
+                        action: shim::INPUT_POINTER_RELEASE,
+                        button: native,
+                        click_state: shim::INPUT_SINGLE_CLICK,
+                        location: pointer.desktop,
+                    },
+                    flags,
+                )?;
+                if let Some(index) = index {
+                    state.buttons.remove(index);
+                }
+                Ok(())
+            }
+            InputEvent::PointerScroll {
+                horizontal,
+                vertical,
+            } => {
+                let (_pointer, commit_geometry) =
+                    self.process_pointer_for_non_move(geometry, state, operation)?;
+                commit_process(
+                    self,
+                    state.process_event_source.as_ref(),
+                    commit_geometry,
+                    operation,
+                    NativePost::Scroll {
+                        horizontal: i32::from(*horizontal),
+                        vertical: i32::from(*vertical),
+                    },
+                    flags,
+                )
+            }
+            InputEvent::KeyPress(key) => {
+                let key_code = resolve_key_code(*key)?;
+                let flags = flags | key_flag(*key);
+                commit_process(
+                    self,
+                    state.process_event_source.as_ref(),
+                    shim::ProcessGeometry::AuthorityOnly,
+                    operation,
+                    NativePost::Key {
+                        key_code,
+                        down: true,
+                    },
+                    flags,
+                )?;
+                state.keys.push(SystemKeyState {
+                    logical: *key,
+                    key_code,
+                });
+                Ok(())
+            }
+            InputEvent::KeyRelease(key) => {
+                let index = state
+                    .keys
+                    .iter()
+                    .rposition(|pressed| pressed.logical == *key);
+                let key_code = index
+                    .map(|index| Ok(state.keys[index].key_code))
+                    .unwrap_or_else(|| resolve_key_code(*key))?;
+                let flags = flags & !key_flag(*key);
+                commit_process(
+                    self,
+                    state.process_event_source.as_ref(),
+                    shim::ProcessGeometry::AuthorityOnly,
+                    operation,
+                    NativePost::Key {
+                        key_code,
+                        down: false,
+                    },
+                    flags,
+                )?;
+                if let Some(index) = index {
+                    state.keys.remove(index);
+                }
+                Ok(())
+            }
+            InputEvent::Text(text) => self.deliver_process_text(text, state, operation, flags),
+            InputEvent::Delay(_) => Err(InputFault::UnsupportedCombination.into()),
+            _ => Err(InputFault::UnsupportedCombination.into()),
+        }
+    }
+
+    fn deliver_process_text(
+        &self,
+        text: &str,
+        state: &mut DriverState,
+        operation: &OperationContext,
+        flags: u32,
+    ) -> SubmissionResult {
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let mut sent = 0usize;
+        for chunk in text_chunks(&units) {
+            let result = commit_process(
+                self,
+                state.process_event_source.as_ref(),
+                shim::ProcessGeometry::AuthorityOnly,
+                operation,
+                NativePost::Text(&units[chunk.clone()]),
+                flags,
+            );
+            if let Err(mut failure) = result {
+                if failure.invoked_native_units == 1 {
+                    state.pending_text_release = Some(PendingTextRelease {
+                        route: InputDelivery::ProcessDirected,
+                        flags,
+                    });
+                }
                 if sent > 0 {
                     failure.current_event_may_have_effect = true;
                 }
@@ -616,6 +1020,48 @@ impl SystemCommitSource for NativeInputDriver {
     }
 }
 
+impl ProcessCommitSource for NativeInputDriver {
+    fn post_process(
+        &self,
+        event_source: Option<&shim::ProcessEventSource>,
+        post: shim::ProcessPost<'_>,
+        geometry: shim::ProcessGeometry,
+        flags: u32,
+        wait: std::time::Duration,
+        operation: &OperationContext,
+    ) -> Result<shim::ProcessPostOutcome, shim::ProcessPostFailure> {
+        let Some(event_source) = event_source else {
+            return Err(shim::ProcessPostFailure {
+                status: ShimStatus::InvalidArgument,
+                invoked_native_units: 0,
+                target_match_count: 0,
+                authorization: shim::ProcessAuthorizationObservation::Unknown,
+                geometry: shim::ProcessGeometryObservation::NotEvaluated,
+            });
+        };
+        self.record
+            .process_post(event_source, post, geometry, flags, wait, operation)
+    }
+
+    fn classify_process_failure(
+        &self,
+        status: ShimStatus,
+        operation: &OperationContext,
+    ) -> InputFault {
+        self.classify_process_status(status, operation)
+    }
+
+    fn record_process_observation(&self, observation: ProcessCommitObservation) {
+        if !self.observing_event.load(Ordering::Acquire) {
+            return;
+        }
+        self.process_observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(observation);
+    }
+}
+
 impl std::fmt::Debug for NativeInputDriver {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -634,17 +1080,46 @@ impl InputDriver for NativeInputDriver {
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
         operation_fault(operation)?;
-        self.record.ensure_live(focus_wait(operation))?;
         match delivery {
             InputDelivery::System => {
+                self.record.ensure_live(focus_wait(operation))?;
                 self.ensure_authorized()?;
                 self.ensure_system_focus(focus, operation)
             }
-            // macOS has no target-directed channel, so this is refused rather
-            // than substituted: a caller that asked not to disturb the desktop
-            // did not ask for system input.
+            InputDelivery::ProcessDirected => {
+                if self.record.kind() != TargetKind::Window {
+                    return Err(InputFault::UnsupportedCombination);
+                }
+                self.ensure_authorized()?;
+                let authority = self
+                    .record
+                    .process_authority(process_wait(operation))
+                    .map_err(|failure| self.classify_process_status(failure.status, operation))?;
+                if authority.target_match_count != 1 {
+                    return Err(InputFault::UnsupportedCombination);
+                }
+                self.ensure_process_focus(focus)
+            }
             _ => Err(InputFault::UnsupportedCombination),
         }
+    }
+
+    fn begin_route(
+        &self,
+        delivery: InputDelivery,
+        state: &mut DriverState,
+        operation: &OperationContext,
+    ) -> Result<(), InputFault> {
+        operation_fault(operation)?;
+        state.process_event_source = match delivery {
+            InputDelivery::System => None,
+            InputDelivery::ProcessDirected => Some(
+                shim::ProcessEventSource::new()
+                    .map_err(|status| self.classify_process_status(status, operation))?,
+            ),
+            _ => return Err(InputFault::UnsupportedCombination),
+        };
+        Ok(())
     }
 
     fn submit(
@@ -659,8 +1134,91 @@ impl InputDriver for NativeInputDriver {
         operation_fault(operation)?;
         match delivery {
             InputDelivery::System => self.deliver_system(focus, event, geometry, state, operation),
+            InputDelivery::ProcessDirected => {
+                self.deliver_process(focus, event, geometry, state, operation)
+            }
             _ => Err(InputFault::UnsupportedCombination.into()),
         }
+    }
+
+    fn begin_event_observation(&self) {
+        let mut observations = self
+            .process_observations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        observations.clear();
+        self.observing_event.store(true, Ordering::Release);
+    }
+
+    fn finish_event_observation(
+        &self,
+        route: InputDelivery,
+        event_index: u64,
+        operation: mado_pilot_core::InputOperationKind,
+        fault: Option<InputFault>,
+    ) -> Option<InputEventObservation> {
+        if route != InputDelivery::ProcessDirected {
+            self.observing_event.store(false, Ordering::Release);
+            self.process_observations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
+            return None;
+        }
+        self.observing_event.store(false, Ordering::Release);
+        let commits = std::mem::take(
+            &mut *self
+                .process_observations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        Some(summarize_process_event(
+            event_index,
+            operation,
+            fault,
+            &commits,
+        ))
+    }
+
+    fn release_pending(
+        &self,
+        delivery: InputDelivery,
+        state: &mut DriverState,
+        operation: &OperationContext,
+    ) -> Result<bool, InputFault> {
+        operation_fault(operation)?;
+        let Some(pending) = state.pending_text_release else {
+            return Ok(false);
+        };
+        if pending.route != delivery {
+            return Err(InputFault::UnsupportedCombination);
+        }
+        match delivery {
+            InputDelivery::System => commit_cleanup(
+                self,
+                operation,
+                NativePost::Key {
+                    key_code: 0,
+                    down: false,
+                },
+                pending.flags,
+            ),
+            InputDelivery::ProcessDirected => commit_process(
+                self,
+                state.process_event_source.as_ref(),
+                shim::ProcessGeometry::AuthorityOnly,
+                operation,
+                NativePost::Key {
+                    key_code: 0,
+                    down: false,
+                },
+                pending.flags,
+            )
+            .map_err(|failure| failure.fault),
+            _ => Err(InputFault::UnsupportedCombination),
+        }?;
+        state.pending_text_release = None;
+        Ok(true)
     }
 
     fn release(
@@ -671,10 +1229,11 @@ impl InputDriver for NativeInputDriver {
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
         operation_fault(operation)?;
-        if delivery != InputDelivery::System {
-            return Err(InputFault::UnsupportedCombination);
+        match delivery {
+            InputDelivery::System => release_system(pressed, state, self, operation),
+            InputDelivery::ProcessDirected => release_process(pressed, state, self, operation),
+            _ => Err(InputFault::UnsupportedCombination),
         }
-        release_system(pressed, state, self, operation)
     }
 }
 
@@ -743,10 +1302,221 @@ fn release_system<S: SystemCommitSource + ?Sized>(
     }
 }
 
+fn release_process(
+    pressed: PressedState,
+    state: &mut DriverState,
+    source: &NativeInputDriver,
+    cleanup: &OperationContext,
+) -> Result<(), InputFault> {
+    match pressed {
+        PressedState::Button(button) => {
+            let index = state
+                .buttons
+                .iter()
+                .rposition(|held| held.logical == button);
+            let native = index
+                .map(|index| state.buttons[index].native)
+                .map_or_else(|| native_button(button), Ok)?;
+            let location = state
+                .pointer
+                .ok_or(InputFault::UnsupportedCoordinate)?
+                .desktop;
+            let flags = state.held_flags();
+            commit_process(
+                source,
+                state.process_event_source.as_ref(),
+                shim::ProcessGeometry::AuthorityOnly,
+                cleanup,
+                NativePost::Pointer {
+                    action: shim::INPUT_POINTER_RELEASE,
+                    button: native,
+                    click_state: shim::INPUT_SINGLE_CLICK,
+                    location,
+                },
+                flags,
+            )
+            .map_err(|failure| failure.fault)?;
+            if let Some(index) = index {
+                state.buttons.remove(index);
+            }
+            Ok(())
+        }
+        PressedState::Key(key) => {
+            let index = state.keys.iter().rposition(|held| held.logical == key);
+            let key_code = index
+                .map(|index| Ok(state.keys[index].key_code))
+                .unwrap_or_else(|| resolve_key_code(key))?;
+            let flags = state.held_flags() & !key_flag(key);
+            commit_process(
+                source,
+                state.process_event_source.as_ref(),
+                shim::ProcessGeometry::AuthorityOnly,
+                cleanup,
+                NativePost::Key {
+                    key_code,
+                    down: false,
+                },
+                flags,
+            )
+            .map_err(|failure| failure.fault)?;
+            if let Some(index) = index {
+                state.keys.remove(index);
+            }
+            Ok(())
+        }
+        _ => Err(InputFault::UnsupportedCombination),
+    }
+}
+
 fn operation_fault(operation: &OperationContext) -> Result<(), InputFault> {
     operation
         .interruption()
         .map_or(Ok(()), |interruption| Err(InputFault::from(interruption)))
+}
+
+const fn process_permission_denied_fault(post_event_access: PermissionState) -> InputFault {
+    match post_event_access {
+        PermissionState::NotGranted => InputFault::NotAuthorized,
+        PermissionState::Granted | PermissionState::Unavailable | PermissionState::Unknown => {
+            InputFault::SubmissionFailed
+        }
+        _ => InputFault::SubmissionFailed,
+    }
+}
+fn summarize_process_event(
+    event_index: u64,
+    operation: mado_pilot_core::InputOperationKind,
+    fault: Option<InputFault>,
+    commits: &[ProcessCommitObservation],
+) -> InputEventObservation {
+    let last = commits.last().copied();
+    let target_match_count = last.map(|observation| observation.target_match_count);
+    let revalidation = if matches!(
+        fault,
+        Some(InputFault::Cancelled | InputFault::DeadlineExceeded)
+    ) {
+        InputRevalidationCategory::Interrupted
+    } else if fault == Some(InputFault::TargetLost)
+        || last.is_some_and(|observation| observation.status == Some(ShimStatus::TargetLost))
+    {
+        InputRevalidationCategory::TargetLost
+    } else if target_match_count == Some(1) {
+        InputRevalidationCategory::Passed
+    } else {
+        InputRevalidationCategory::Unavailable
+    };
+    let authorization = last.map_or(PermissionState::Unknown, |observation| {
+        match observation.authorization {
+            shim::ProcessAuthorizationObservation::Unknown => PermissionState::Unknown,
+            shim::ProcessAuthorizationObservation::Granted => PermissionState::Granted,
+            shim::ProcessAuthorizationObservation::NotGranted => PermissionState::NotGranted,
+            shim::ProcessAuthorizationObservation::Unavailable => PermissionState::Unavailable,
+        }
+    });
+    let geometry = last.map_or(
+        InputGeometryResult::NotEvaluated,
+        |observation| match observation.geometry {
+            shim::ProcessGeometryObservation::NotApplicable => InputGeometryResult::NotApplicable,
+            shim::ProcessGeometryObservation::NotEvaluated => InputGeometryResult::NotEvaluated,
+            shim::ProcessGeometryObservation::Passed => InputGeometryResult::Passed,
+            shim::ProcessGeometryObservation::Changed => InputGeometryResult::Changed,
+        },
+    );
+    let expected_native_units = commits.iter().fold(0u64, |total, observation| {
+        total.saturating_add(observation.expected_native_units)
+    });
+    let invoked_native_units = commits.iter().fold(0u64, |total, observation| {
+        total.saturating_add(observation.invoked_native_units)
+    });
+    InputEventObservation {
+        route: InputDelivery::ProcessDirected,
+        event_index,
+        operation,
+        revalidation,
+        candidate_count: target_match_count,
+        authorization,
+        geometry,
+        expected_native_units,
+        invoked_native_units,
+        fault,
+    }
+}
+
+fn process_status_fault(status: ShimStatus, operation: &OperationContext) -> InputFault {
+    match status {
+        ShimStatus::TargetLost => InputFault::TargetLost,
+        ShimStatus::PermissionDenied => InputFault::NotAuthorized,
+        ShimStatus::Unsupported => InputFault::UnsupportedCombination,
+        ShimStatus::GeometryChanged => InputFault::GeometryChanged,
+        ShimStatus::Closed => InputFault::ControllerClosed,
+        ShimStatus::TimedOut => operation
+            .interruption()
+            .map_or(InputFault::SubmissionFailed, InputFault::from),
+        _ => InputFault::SubmissionFailed,
+    }
+}
+
+fn commit_process<S: ProcessCommitSource + ?Sized>(
+    source: &S,
+    event_source: Option<&shim::ProcessEventSource>,
+    geometry: shim::ProcessGeometry,
+    operation: &OperationContext,
+    post: NativePost<'_>,
+    flags: u32,
+) -> SubmissionResult {
+    operation_fault(operation)?;
+    let expected_units = post.process_native_units();
+    let result = source.post_process(
+        event_source,
+        post.process_post(),
+        geometry,
+        flags,
+        process_wait(operation),
+        operation,
+    );
+    match result {
+        Ok(outcome) => source.record_process_observation(ProcessCommitObservation {
+            expected_native_units: expected_units,
+            invoked_native_units: outcome.invoked_native_units,
+            target_match_count: outcome.target_match_count,
+            authorization: outcome.authorization,
+            geometry: outcome.geometry,
+            status: None,
+        }),
+        Err(failure) => source.record_process_observation(ProcessCommitObservation {
+            expected_native_units: expected_units,
+            invoked_native_units: failure.invoked_native_units,
+            target_match_count: failure.target_match_count,
+            authorization: failure.authorization,
+            geometry: failure.geometry,
+            status: Some(failure.status),
+        }),
+    }
+    let interruption = operation.interruption().map(InputFault::from);
+    match result {
+        Ok(outcome) if interruption.is_some() => Err(SubmissionFailure::after_native_units(
+            interruption.expect("matched Some"),
+            usize::try_from(outcome.invoked_native_units).unwrap_or(usize::MAX),
+        )),
+        Ok(outcome)
+            if outcome.invoked_native_units == expected_units
+                && outcome.target_match_count == 1 =>
+        {
+            Ok(())
+        }
+        Ok(outcome) => Err(SubmissionFailure::after_native_units(
+            InputFault::SubmissionFailed,
+            usize::try_from(outcome.invoked_native_units).unwrap_or(usize::MAX),
+        )),
+        Err(failure) if interruption.is_some() => Err(SubmissionFailure::after_native_units(
+            interruption.expect("matched Some"),
+            usize::try_from(failure.invoked_native_units).unwrap_or(usize::MAX),
+        )),
+        Err(failure) => Err(SubmissionFailure::after_native_units(
+            source.classify_process_failure(failure.status, operation),
+            usize::try_from(failure.invoked_native_units).unwrap_or(usize::MAX),
+        )),
+    }
 }
 
 /// Revalidates and then posts, with arbitration adjacent to the irreversible act.
@@ -764,11 +1534,14 @@ pub(crate) fn commit_prepared<S: SystemCommitSource + ?Sized>(
     // arbitration is checked once more as the last operation before the post.
     operation_fault(operation)?;
     source.post(post, flags).map_err(|(status, posted)| {
-        if posted > 0 {
-            SubmissionFailure::during_event(InputFault::SubmissionFailed)
-        } else {
-            SubmissionFailure::before_event(source.classify_post_failure(status))
-        }
+        SubmissionFailure::after_native_units(
+            if posted > 0 {
+                InputFault::SubmissionFailed
+            } else {
+                source.classify_post_failure(status)
+            },
+            usize::from(posted > 0),
+        )
     })
 }
 

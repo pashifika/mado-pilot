@@ -67,5 +67,8 @@ pub use descriptor::InputDescriptor;
 pub use event::{InputEvent, Key, Modifier, PointerButton, PressedState};
 pub use fault::InputFault;
 pub use policy::{DeliveryPlan, FocusPolicy, GeometryPolicy, PointerGeometry};
-pub use receipt::{CleanupState, InputAttempt, InputReceipt, SequenceOutcome};
+pub use receipt::{
+    CleanupState, InputAttempt, InputEventObservation, InputExecution, InputGeometryResult,
+    InputReceipt, InputRevalidationCategory, SequenceOutcome,
+};
 pub use request::{InputRequest, InputSequence, SequenceLimits};

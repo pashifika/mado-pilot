@@ -19,9 +19,12 @@ use mado_pilot_input::{
 
 use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
-use crate::input::{GeometryLedger, MacosInputController};
+use crate::input::{GeometryLedger, MacosInputController, input_capability};
 use crate::native::{NativeSession, SessionTarget};
-use crate::shim::{MAX_NATIVE_WAIT, NativeBounds, ShimStatus, TargetToken};
+use crate::shim::{
+    MAX_NATIVE_WAIT, NativeBounds, ProcessAuthority, ProcessAuthorityFailure, ProcessEventSource,
+    ProcessGeometry, ProcessPost, ProcessPostFailure, ProcessPostOutcome, ShimStatus, TargetToken,
+};
 
 /// Provider name qualifying every native macOS target identity.
 pub const PROVIDER: ProviderId = ProviderId::new("macos");
@@ -281,7 +284,8 @@ impl InputProvider for MacosCaptureProvider {
         let attempt = Operation::admit(operation)?;
         InputProvider::accepts_target(self, target, self.issuer.engine())?;
         let record = self.select_input_record(target, inventory_wait(operation.remaining()))?;
-        Ok(attempt.commit(record.input_descriptor())?)
+        let descriptor = record.input_descriptor(inventory_wait(operation.remaining()));
+        Ok(attempt.commit(descriptor)?)
     }
 
     fn open(
@@ -293,8 +297,9 @@ impl InputProvider for MacosCaptureProvider {
         let attempt = Operation::admit(operation)?;
         InputProvider::accepts_target(self, target, self.issuer.engine())?;
         let record = self.select_input_record(target, inventory_wait(operation.remaining()))?;
-        request.check(record.input_descriptor().capability())?;
-        let controller = MacosInputController::new(record);
+        let descriptor = record.input_descriptor(inventory_wait(operation.remaining()));
+        request.check(descriptor.capability())?;
+        let controller = MacosInputController::new(record, descriptor);
         Ok(attempt.commit(controller as Arc<dyn InputController>)?)
     }
 }
@@ -341,8 +346,17 @@ impl TargetRecord {
         &self.geometry
     }
 
-    pub(crate) fn input_descriptor(&self) -> InputDescriptor {
-        InputDescriptor::new(self.id, self.description().capability().input())
+    pub(crate) fn input_descriptor(&self, wait: Duration) -> InputDescriptor {
+        let process_directed = self.process_directed_available(wait);
+        InputDescriptor::new(self.id, input_capability(self.kind(), process_directed))
+    }
+
+    fn process_directed_available(&self, wait: Duration) -> bool {
+        if self.kind() != TargetKind::Window {
+            return false;
+        }
+        self.process_authority(wait)
+            .is_ok_and(|authority| authority.target_match_count == 1)
     }
 
     /// Reads the retained selection's current rectangle from a fresh bounded
@@ -362,6 +376,29 @@ impl TargetRecord {
                 ShimStatus::InvalidArgument => InputFault::UnsupportedCoordinate,
                 _ => InputFault::SubmissionFailed,
             })
+    }
+
+    /// Revalidates this retained window's owning-process lifetime, exact-window
+    /// identity, current geometry, and post-event authorization.
+    pub(crate) fn process_authority(
+        &self,
+        wait: Duration,
+    ) -> std::result::Result<ProcessAuthority, ProcessAuthorityFailure> {
+        self.selection.process_authority(wait)
+    }
+
+    /// Invokes one bounded event through the retained process authority.
+    pub(crate) fn process_post(
+        &self,
+        event_source: &ProcessEventSource,
+        post: ProcessPost<'_>,
+        geometry: ProcessGeometry,
+        flags: u32,
+        wait: Duration,
+        operation: &OperationContext,
+    ) -> std::result::Result<ProcessPostOutcome, ProcessPostFailure> {
+        self.selection
+            .process_post(event_source, post, geometry, flags, wait, operation)
     }
 
     /// Reads focus for this exact retained selection within `wait`.
@@ -417,6 +454,7 @@ mod tests {
                     Scale::new(1.0, 1.0).expect("scale"),
                 )
                 .expect("placement"),
+                process_directed: true,
             },
         }
     }

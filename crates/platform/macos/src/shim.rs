@@ -22,10 +22,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mado_pilot_capture::CaptureFault;
-use mado_pilot_core::{PermissionState, PixelExtent};
+use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 5;
+pub(crate) const ABI_VERSION: u32 = 9;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -42,6 +42,7 @@ pub(crate) const KIND_DISPLAY: u32 = 1;
 
 /// The only pixel layout the shim publishes.
 pub(crate) const PIXEL_BGRA8: u32 = 0;
+const TARGET_INFO_PROCESS_DIRECTED: u32 = 1;
 
 /// `FrameInfo` carries a validated same-frame `SCStreamFrameInfoScreenRect`.
 pub(crate) const FRAME_INFO_SCREEN_RECT: u32 = 1;
@@ -97,6 +98,11 @@ struct OpaqueTarget {
 }
 
 #[repr(C)]
+struct OpaqueProcessEventSource {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
 struct OpaqueSession {
     _private: [u8; 0],
 }
@@ -125,7 +131,7 @@ pub(crate) struct TargetInfo {
     pub(crate) logical_height: f64,
     pub(crate) backing_scale: f64,
     pub(crate) name_len: u32,
-    reserved: u32,
+    flags: u32,
 }
 
 impl TargetInfo {
@@ -143,7 +149,7 @@ impl TargetInfo {
             logical_height: 0.0,
             backing_scale: 0.0,
             name_len: 0,
-            reserved: 0,
+            flags: 0,
         }
     }
 
@@ -151,6 +157,10 @@ impl TargetInfo {
     pub(crate) fn extent(&self) -> Option<PixelExtent> {
         (self.pixel_width > 0 && self.pixel_height > 0)
             .then(|| PixelExtent::new(self.pixel_width, self.pixel_height))
+    }
+    /// Reports snapshot-time process-directed admission.
+    pub(crate) const fn process_directed(&self) -> bool {
+        self.kind == KIND_WINDOW && self.flags & TARGET_INFO_PROCESS_DIRECTED != 0
     }
 }
 
@@ -468,6 +478,49 @@ impl Drop for Inventory {
     }
 }
 
+/// One isolated Core Graphics event source owned by a process-directed sequence.
+///
+/// The handle is intentionally neither cloneable nor shared. A controller creates
+/// it after selecting the route, reuses it for every ordinary post and bounded
+/// cleanup release, and drops it when that one admitted sequence ends.
+pub(crate) struct ProcessEventSource {
+    handle: NonNull<OpaqueProcessEventSource>,
+}
+
+impl ProcessEventSource {
+    /// Creates a private-state source without posting or prompting.
+    pub(crate) fn new() -> Result<Self, ShimStatus> {
+        let mut source = std::ptr::null_mut();
+        // SAFETY: `source` is writable for one opaque handle and the native
+        // boundary either leaves it null or transfers exactly one owned handle.
+        let status = unsafe { mp_shim_process_event_source_create(&raw mut source) };
+        ShimStatus::from_raw(status).into_result()?;
+        NonNull::new(source)
+            .map(|handle| Self { handle })
+            .ok_or(ShimStatus::PlatformFailure)
+    }
+
+    fn as_ptr(&self) -> *const OpaqueProcessEventSource {
+        self.handle.as_ptr()
+    }
+}
+
+impl fmt::Debug for ProcessEventSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProcessEventSource")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for ProcessEventSource {
+    fn drop(&mut self) {
+        // SAFETY: construction accepted exactly one owned native handle and this
+        // non-cloneable wrapper releases it exactly once.
+        unsafe { mp_shim_process_event_source_release(self.handle.as_ptr()) };
+    }
+}
+
 /// An exact capture selection constructed from one discovery snapshot.
 ///
 /// The native handle retains the original `SCContentFilter`. Window input
@@ -549,6 +602,31 @@ impl TargetToken {
     /// Reads whether this exact retained window is focused within a bounded wait.
     pub(crate) fn input_focused(&self, wait: Duration) -> Result<bool, ShimStatus> {
         input_target_focused(self, wait)
+    }
+
+    /// Revalidates retained-window and owning-process identity, current geometry,
+    /// and post-event authorization without prompting or activating the target.
+    pub(crate) fn process_authority(
+        &self,
+        wait: Duration,
+    ) -> Result<ProcessAuthority, ProcessAuthorityFailure> {
+        process_target_authority(self, wait)
+    }
+
+    /// Posts one bounded event to the retained target's current owning process.
+    ///
+    /// The returned unit count is invocation-only evidence. A nonzero count on
+    /// failure means this logical event may already have native effect.
+    pub(crate) fn process_post(
+        &self,
+        source: &ProcessEventSource,
+        post: ProcessPost<'_>,
+        geometry: ProcessGeometry,
+        flags: u32,
+        wait: Duration,
+        operation: &OperationContext,
+    ) -> Result<ProcessPostOutcome, ProcessPostFailure> {
+        process_post(self, source, post, geometry, flags, wait, operation)
     }
 }
 
@@ -785,25 +863,65 @@ pub(crate) fn probe_screen_capture() -> Result<PermissionState, ShimStatus> {
     })
 }
 
-/// Reads the Accessibility authorization without requesting it.
-pub(crate) fn probe_accessibility() -> Result<PermissionState, ShimStatus> {
-    probe(|state| {
-        // SAFETY: `state` is a writable output for one u32.
-        unsafe { mp_shim_probe_accessibility(state) }
-    })
+/// The migration probe's two public non-prompting input observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessAuthorization {
+    /// The authorization truth used immediately before event posting.
+    pub(crate) post_event_access: PermissionState,
+    /// The legacy Accessibility observation retained for qualification evidence.
+    pub(crate) accessibility: PermissionState,
+}
+
+impl ProcessAuthorization {
+    const fn from_raw(post_event_access: u32, accessibility: u32) -> Self {
+        Self {
+            post_event_access: permission_state(post_event_access),
+            accessibility: permission_state(accessibility),
+        }
+    }
+
+    /// Reports whether two available boolean observations disagree.
+    #[cfg(test)]
+    pub(crate) const fn disagrees(self) -> bool {
+        matches!(
+            (self.post_event_access, self.accessibility),
+            (PermissionState::Granted, PermissionState::NotGranted)
+                | (PermissionState::NotGranted, PermissionState::Granted)
+        )
+    }
+}
+
+/// Reads post-event access and the legacy Accessibility observation together.
+pub(crate) fn process_authorization() -> Result<ProcessAuthorization, ShimStatus> {
+    let mut post_event_access = u32::MAX;
+    let mut accessibility = u32::MAX;
+    // SAFETY: both outputs are writable for one u32, and the native read is
+    // non-prompting.
+    let status = unsafe {
+        mp_shim_process_authorization(&raw mut post_event_access, &raw mut accessibility)
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok(ProcessAuthorization::from_raw(
+        post_event_access,
+        accessibility,
+    ))
 }
 
 fn probe(read: impl FnOnce(*mut u32) -> u32) -> Result<PermissionState, ShimStatus> {
     let mut state = u32::MAX;
     let status = read(&raw mut state);
     ShimStatus::from_raw(status).into_result()?;
-    Ok(match state {
+    Ok(permission_state(state))
+}
+
+const fn permission_state(state: u32) -> PermissionState {
+    match state {
         0 => PermissionState::Granted,
         1 => PermissionState::NotGranted,
         2 => PermissionState::Unavailable,
         // A state this build does not know about is not read as authorization.
         _ => PermissionState::Unknown,
-    })
+    }
 }
 
 /// The bundle-launch context an authorization answer was read in.
@@ -1063,6 +1181,106 @@ pub(crate) const INPUT_MAX_TEXT_CHUNK: usize = 16;
 /// The click count an ordinary single press or release declares.
 pub(crate) const INPUT_SINGLE_CLICK: u64 = 1;
 
+/// What one process-directed native request constructs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ProcessPost<'units> {
+    Pointer {
+        action: u32,
+        button: u32,
+        click_state: u64,
+        location: (f64, f64),
+    },
+    Scroll {
+        horizontal: i32,
+        vertical: i32,
+    },
+    Key {
+        key_code: u16,
+        down: bool,
+    },
+    Text(&'units [u16]),
+}
+
+/// Geometry repeated at the final native authority boundary.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum ProcessGeometry {
+    AuthorityOnly,
+    RequireCurrent(NativeBounds),
+}
+
+/// One successful fresh process/window authority observation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ProcessAuthority {
+    pub(crate) bounds: NativeBounds,
+    pub(crate) target_match_count: u32,
+}
+
+/// Why process/window authority could not be established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessAuthorityFailure {
+    pub(crate) status: ShimStatus,
+    pub(crate) target_match_count: u32,
+}
+
+/// Privacy-safe authorization result from the last native per-unit gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessAuthorizationObservation {
+    Unknown,
+    Granted,
+    NotGranted,
+    Unavailable,
+}
+
+impl ProcessAuthorizationObservation {
+    const fn from_raw(raw: u32) -> Self {
+        match raw {
+            1 => Self::Granted,
+            2 => Self::NotGranted,
+            3 => Self::Unavailable,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Geometry-policy result from the last native per-unit gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessGeometryObservation {
+    NotApplicable,
+    NotEvaluated,
+    Passed,
+    Changed,
+}
+
+impl ProcessGeometryObservation {
+    const fn from_raw(raw: u32) -> Self {
+        match raw {
+            0 => Self::NotApplicable,
+            2 => Self::Passed,
+            3 => Self::Changed,
+            _ => Self::NotEvaluated,
+        }
+    }
+}
+
+/// Invocation-only facts from one process-directed native request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessPostOutcome {
+    pub(crate) invoked_native_units: u64,
+    pub(crate) target_match_count: u32,
+    pub(crate) authorization: ProcessAuthorizationObservation,
+    pub(crate) geometry: ProcessGeometryObservation,
+}
+
+/// A process-directed request failure plus any irreversible prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProcessPostFailure {
+    pub(crate) status: ShimStatus,
+    pub(crate) invoked_native_units: u64,
+    pub(crate) target_match_count: u32,
+    pub(crate) authorization: ProcessAuthorizationObservation,
+    pub(crate) geometry: ProcessGeometryObservation,
+}
+
 /// One target's live rectangle in the global point space, with its backing scale.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct NativeBounds {
@@ -1121,6 +1339,251 @@ fn input_target_bounds(target: &TargetToken, wait: Duration) -> Result<NativeBou
         size: (values[2], values[3]),
         scale: values[4],
     })
+}
+
+fn process_target_authority(
+    target: &TargetToken,
+    wait: Duration,
+) -> Result<ProcessAuthority, ProcessAuthorityFailure> {
+    let Some(handle) = target.inner.handle else {
+        #[cfg(test)]
+        {
+            return input_target_bounds(target, wait)
+                .map(|bounds| ProcessAuthority {
+                    bounds,
+                    target_match_count: 1,
+                })
+                .map_err(|status| ProcessAuthorityFailure {
+                    status,
+                    target_match_count: 0,
+                });
+        }
+        #[cfg(not(test))]
+        return Err(ProcessAuthorityFailure {
+            status: ShimStatus::InvalidArgument,
+            target_match_count: 0,
+        });
+    };
+    let mut native = NativeProcessAuthority {
+        struct_size: u32::try_from(size_of::<NativeProcessAuthority>())
+            .expect("structure size fits u32"),
+        target_match_count: 0,
+        logical_x: 0.0,
+        logical_y: 0.0,
+        logical_width: 0.0,
+        logical_height: 0.0,
+        backing_scale: 0.0,
+    };
+    // SAFETY: the retained opaque target stays alive for the call and `native`
+    // is writable for the exact size-versioned structure declared to C.
+    let status = ShimStatus::from_raw(unsafe {
+        mp_shim_process_authority(handle.as_ptr(), nanos(wait), &raw mut native)
+    });
+    if status != ShimStatus::Ok {
+        return Err(ProcessAuthorityFailure {
+            status,
+            target_match_count: native.target_match_count,
+        });
+    }
+    Ok(ProcessAuthority {
+        bounds: NativeBounds {
+            origin: (native.logical_x, native.logical_y),
+            size: (native.logical_width, native.logical_height),
+            scale: native.backing_scale,
+        },
+        target_match_count: native.target_match_count,
+    })
+}
+
+fn process_post(
+    target: &TargetToken,
+    source: &ProcessEventSource,
+    post: ProcessPost<'_>,
+    geometry: ProcessGeometry,
+    flags: u32,
+    wait: Duration,
+    operation: &OperationContext,
+) -> Result<ProcessPostOutcome, ProcessPostFailure> {
+    let Some(handle) = target.inner.handle else {
+        #[cfg(test)]
+        {
+            if let Err(status) = input_target_bounds(target, wait) {
+                return Err(ProcessPostFailure {
+                    status,
+                    invoked_native_units: 0,
+                    target_match_count: 0,
+                    authorization: ProcessAuthorizationObservation::Unknown,
+                    geometry: ProcessGeometryObservation::NotEvaluated,
+                });
+            }
+            return Ok(ProcessPostOutcome {
+                invoked_native_units: u64::from(matches!(post, ProcessPost::Text(_))) + 1,
+                target_match_count: 1,
+                authorization: ProcessAuthorizationObservation::Granted,
+                geometry: match geometry {
+                    ProcessGeometry::AuthorityOnly => ProcessGeometryObservation::NotApplicable,
+                    ProcessGeometry::RequireCurrent(_) => ProcessGeometryObservation::Passed,
+                },
+            });
+        }
+        #[cfg(not(test))]
+        return Err(ProcessPostFailure {
+            status: ShimStatus::InvalidArgument,
+            invoked_native_units: 0,
+            target_match_count: 0,
+            authorization: ProcessAuthorizationObservation::Unknown,
+            geometry: ProcessGeometryObservation::NotEvaluated,
+        });
+    };
+
+    let (
+        event_kind,
+        action,
+        button,
+        click_state,
+        x,
+        y,
+        horizontal,
+        vertical,
+        key_code,
+        key_down,
+        text_units,
+        text_unit_count,
+    ) = match post {
+        ProcessPost::Pointer {
+            action,
+            button,
+            click_state,
+            location,
+        } => (
+            0,
+            action,
+            button,
+            click_state,
+            location.0,
+            location.1,
+            0,
+            0,
+            0,
+            false,
+            std::ptr::null(),
+            0,
+        ),
+        ProcessPost::Scroll {
+            horizontal,
+            vertical,
+        } => (
+            1,
+            0,
+            0,
+            0,
+            0.0,
+            0.0,
+            horizontal,
+            vertical,
+            0,
+            false,
+            std::ptr::null(),
+            0,
+        ),
+        ProcessPost::Key { key_code, down } => (
+            2,
+            0,
+            0,
+            0,
+            0.0,
+            0.0,
+            0,
+            0,
+            key_code,
+            down,
+            std::ptr::null(),
+            0,
+        ),
+        ProcessPost::Text(units) => (
+            3,
+            0,
+            0,
+            0,
+            0.0,
+            0.0,
+            0,
+            0,
+            0,
+            false,
+            units.as_ptr(),
+            units.len(),
+        ),
+    };
+    let (geometry_check, expected) = match geometry {
+        ProcessGeometry::AuthorityOnly => (
+            0,
+            NativeBounds {
+                origin: (0.0, 0.0),
+                size: (0.0, 0.0),
+                scale: 0.0,
+            },
+        ),
+        ProcessGeometry::RequireCurrent(expected) => (1, expected),
+    };
+    let interruption_context = std::ptr::from_ref(operation).cast_mut().cast::<c_void>();
+    let request = NativeProcessPostRequest {
+        struct_size: u32::try_from(size_of::<NativeProcessPostRequest>())
+            .expect("structure size fits u32"),
+        event_kind,
+        target: handle.as_ptr(),
+        event_source: source.as_ptr(),
+        timeout_nanos: nanos(wait),
+        flags,
+        geometry_check,
+        action,
+        button,
+        click_state,
+        x,
+        y,
+        horizontal,
+        vertical,
+        key_code,
+        key_down,
+        reserved: [0; 5],
+        text_units,
+        text_unit_count,
+        expected_x: expected.origin.0,
+        expected_y: expected.origin.1,
+        expected_width: expected.size.0,
+        expected_height: expected.size.1,
+        expected_scale: expected.scale,
+        interruption_context,
+        interruption_callback: Some(process_interruption_callback),
+    };
+    let mut report = NativeProcessPostReport {
+        struct_size: u32::try_from(size_of::<NativeProcessPostReport>())
+            .expect("structure size fits u32"),
+        target_match_count: 0,
+        invoked_native_units: 0,
+        authorization: 0,
+        geometry_result: 1,
+    };
+    // SAFETY: the target and optional text slice outlive the call; request and
+    // report match the C layout and the report is exclusively writable.
+    let status =
+        ShimStatus::from_raw(unsafe { mp_shim_process_post(&raw const request, &raw mut report) });
+    if status == ShimStatus::Ok {
+        Ok(ProcessPostOutcome {
+            invoked_native_units: report.invoked_native_units,
+            target_match_count: report.target_match_count,
+            authorization: ProcessAuthorizationObservation::from_raw(report.authorization),
+            geometry: ProcessGeometryObservation::from_raw(report.geometry_result),
+        })
+    } else {
+        Err(ProcessPostFailure {
+            status,
+            invoked_native_units: report.invoked_native_units,
+            target_match_count: report.target_match_count,
+            authorization: ProcessAuthorizationObservation::from_raw(report.authorization),
+            geometry: ProcessGeometryObservation::from_raw(report.geometry_result),
+        })
+    }
 }
 
 /// Reads the pointer location in the global point space.
@@ -1199,32 +1662,100 @@ pub(crate) fn input_post_text(units: &[u16], flags: u32) -> Result<(), (ShimStat
     }
 }
 
-/// Returns the surface version and structure sizes the linked shim was built to.
-pub(crate) fn linked_layout() -> (u32, [u32; 3]) {
+/// Returns the version, structure sizes, and process-field offsets compiled into
+/// the linked shim.
+pub(crate) fn linked_layout() -> (u32, [u32; 6], [u32; 6]) {
     // SAFETY: the version call takes no arguments.
     let version = unsafe { mp_shim_abi_version() };
-    let mut sizes = [0; 3];
-    let [target_info, frame_info, open_request] = &mut sizes;
-    // SAFETY: all three outputs are writable for one u32 each.
-    let status = unsafe {
+    let mut sizes = [0; 6];
+    let [
+        target_info,
+        frame_info,
+        open_request,
+        process_authority,
+        process_post_request,
+        process_post_report,
+    ] = &mut sizes;
+    // SAFETY: all six outputs are writable for one u32 each.
+    let size_status = unsafe {
         mp_shim_struct_sizes(
             &raw mut *target_info,
             &raw mut *frame_info,
             &raw mut *open_request,
+            &raw mut *process_authority,
+            &raw mut *process_post_request,
+            &raw mut *process_post_report,
         )
     };
-    if ShimStatus::from_raw(status) != ShimStatus::Ok {
-        return (version, [0; 3]);
+    if ShimStatus::from_raw(size_status) != ShimStatus::Ok {
+        return (version, [0; 6], [0; 6]);
     }
-    (version, sizes)
+
+    let mut offsets = [0; 6];
+    let [
+        authority_target_count,
+        request_target,
+        request_event_source,
+        request_timeout,
+        report_target_count,
+        report_invoked_units,
+    ] = &mut offsets;
+    // SAFETY: all six outputs are writable for one u32 each.
+    let offset_status = unsafe {
+        mp_shim_process_struct_offsets(
+            &raw mut *authority_target_count,
+            &raw mut *request_target,
+            &raw mut *request_event_source,
+            &raw mut *request_timeout,
+            &raw mut *report_target_count,
+            &raw mut *report_invoked_units,
+        )
+    };
+    if ShimStatus::from_raw(offset_status) != ShimStatus::Ok {
+        return (version, sizes, [0; 6]);
+    }
+    (version, sizes, offsets)
 }
 
 /// The sizes this build compiled its mirrored structures to.
-pub(crate) fn declared_layout() -> [u32; 3] {
+pub(crate) fn declared_layout() -> [u32; 6] {
     [
         u32::try_from(size_of::<TargetInfo>()).expect("structure size fits u32"),
         u32::try_from(size_of::<FrameInfo>()).expect("structure size fits u32"),
         u32::try_from(size_of::<NativeOpenRequest>()).expect("structure size fits u32"),
+        u32::try_from(size_of::<NativeProcessAuthority>()).expect("structure size fits u32"),
+        u32::try_from(size_of::<NativeProcessPostRequest>()).expect("structure size fits u32"),
+        u32::try_from(size_of::<NativeProcessPostReport>()).expect("structure size fits u32"),
+    ]
+}
+
+/// The process-field offsets this build compiled its mirrors to.
+pub(crate) fn declared_process_offsets() -> [u32; 6] {
+    [
+        u32::try_from(std::mem::offset_of!(
+            NativeProcessAuthority,
+            target_match_count
+        ))
+        .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(NativeProcessPostRequest, target))
+            .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(NativeProcessPostRequest, event_source))
+            .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(
+            NativeProcessPostRequest,
+            timeout_nanos
+        ))
+        .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(
+            NativeProcessPostReport,
+            target_match_count
+        ))
+        .expect("field offset fits u32"),
+        u32::try_from(std::mem::offset_of!(
+            NativeProcessPostReport,
+            invoked_native_units
+        ))
+        .expect("field offset fits u32"),
     ]
 }
 
@@ -1257,6 +1788,8 @@ pub(crate) enum ShimStatus {
     StoppedByUser,
     /// The operating system ended the stream without naming a cause.
     StoppedBySystem,
+    /// Authoritative target geometry changed after event preparation.
+    GeometryChanged,
     /// A status this build does not know about.
     Unrecognized(u32),
 }
@@ -1279,6 +1812,7 @@ impl ShimStatus {
             10 => ShimStatus::FrameIncomplete,
             11 => ShimStatus::StoppedByUser,
             12 => ShimStatus::StoppedBySystem,
+            13 => ShimStatus::GeometryChanged,
             other => ShimStatus::Unrecognized(other),
         }
     }
@@ -1299,6 +1833,7 @@ impl ShimStatus {
             ShimStatus::FrameIncomplete => 10,
             ShimStatus::StoppedByUser => 11,
             ShimStatus::StoppedBySystem => 12,
+            ShimStatus::GeometryChanged => 13,
             ShimStatus::Unrecognized(other) => other,
         }
     }
@@ -1335,7 +1870,9 @@ impl ShimStatus {
             ShimStatus::StoppedBySystem => CaptureFault::StreamEnded,
             ShimStatus::TimedOut => CaptureFault::SourceInvalid,
             ShimStatus::BudgetExhausted => CaptureFault::StorageBudgetExhausted,
-            ShimStatus::FrameIncomplete => CaptureFault::SourceInvalid,
+            ShimStatus::FrameIncomplete | ShimStatus::GeometryChanged => {
+                CaptureFault::SourceInvalid
+            }
         }
     }
 }
@@ -1367,6 +1904,24 @@ pub(crate) type FrameCommitCallback = unsafe extern "C" fn(*mut c_void) -> u32;
 
 /// The producer-stopped callback signature the shim invokes.
 pub(crate) type StoppedCallback = unsafe extern "C" fn(*mut c_void, u32);
+
+/// Synchronously reports whether the owning Rust operation was interrupted.
+type ProcessInterruptionCallback = unsafe extern "C" fn(*mut c_void) -> u32;
+
+unsafe extern "C" fn process_interruption_callback(context: *mut c_void) -> u32 {
+    if context.is_null() {
+        return ShimStatus::InvalidArgument.as_raw();
+    }
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: `process_post` passes a reference that outlives its synchronous
+        // native call. The shim never stores or invokes it after returning.
+        let operation = unsafe { &*context.cast::<OperationContext>() };
+        operation
+            .interruption()
+            .map_or(ShimStatus::Ok, |_| ShimStatus::TimedOut)
+    }));
+    outcome.map_or(ShimStatus::PlatformFailure.as_raw(), ShimStatus::as_raw)
+}
 
 /// Wraps a frame callback body so no panic and no invalid handle crosses back.
 ///
@@ -1545,6 +2100,88 @@ fn testing_input_text_second_allocation_failure() -> Result<(ShimStatus, [usize;
     Ok((ShimStatus::from_raw(delivery), observations))
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessPostTestObservation {
+    delivery: ShimStatus,
+    invoked_native_units: u64,
+    target_match_count: u32,
+    calls: [u64; 6],
+}
+
+#[cfg(test)]
+fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, ShimStatus> {
+    let mut delivery = u32::MAX;
+    let mut invoked_native_units = u64::MAX;
+    let mut target_match_count = u32::MAX;
+    let mut calls = [u64::MAX; 6];
+    let [authority, preflight, lifetime, prepare, post, release] = &mut calls;
+    // SAFETY: every output is writable for its declared scalar type. The native
+    // seam uses sentinel events handled only by injected callbacks and never
+    // invokes Core Graphics posting.
+    let status = unsafe {
+        mp_shim_testing_process_post(
+            scenario,
+            &raw mut delivery,
+            &raw mut invoked_native_units,
+            &raw mut target_match_count,
+            &raw mut *authority,
+            &raw mut *preflight,
+            &raw mut *lifetime,
+            &raw mut *prepare,
+            &raw mut *post,
+            &raw mut *release,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok(ProcessPostTestObservation {
+        delivery: ShimStatus::from_raw(delivery),
+        invoked_native_units,
+        target_match_count,
+        calls,
+    })
+}
+
+#[cfg(test)]
+fn testing_validate_process_post(scenario: u32) -> Result<(ShimStatus, u32, u64), ShimStatus> {
+    let mut delivery = u32::MAX;
+    let mut target_match_count = u32::MAX;
+    let mut invoked_native_units = u64::MAX;
+    // SAFETY: every output is writable. Every native scenario fails validation
+    // before dereferencing sentinel retained objects or invoking Core Graphics.
+    let status = unsafe {
+        mp_shim_testing_validate_process_post(
+            scenario,
+            &raw mut delivery,
+            &raw mut target_match_count,
+            &raw mut invoked_native_units,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((
+        ShimStatus::from_raw(delivery),
+        target_match_count,
+        invoked_native_units,
+    ))
+}
+
+#[cfg(test)]
+fn testing_process_authority_rules(scenario: u32) -> Result<(ShimStatus, u32), ShimStatus> {
+    let mut authority = u32::MAX;
+    let mut target_match_count = u32::MAX;
+    // SAFETY: both outputs are writable scalars. The native seam uses only local
+    // Objective-C test objects and performs no platform query.
+    let status = unsafe {
+        mp_shim_testing_process_authority_rules(
+            scenario,
+            &raw mut authority,
+            &raw mut target_match_count,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((ShimStatus::from_raw(authority), target_match_count))
+}
+
 #[repr(C)]
 #[derive(Debug)]
 struct NativeOpenRequest {
@@ -1568,16 +2205,83 @@ struct NativeOpenRequest {
     stopped_callback: Option<StoppedCallback>,
 }
 
+#[repr(C)]
+#[derive(Debug)]
+struct NativeProcessAuthority {
+    struct_size: u32,
+    target_match_count: u32,
+    logical_x: f64,
+    logical_y: f64,
+    logical_width: f64,
+    logical_height: f64,
+    backing_scale: f64,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct NativeProcessPostRequest {
+    struct_size: u32,
+    event_kind: u32,
+    target: *const OpaqueTarget,
+    event_source: *const OpaqueProcessEventSource,
+    timeout_nanos: u64,
+    flags: u32,
+    geometry_check: u32,
+    action: u32,
+    button: u32,
+    click_state: u64,
+    x: f64,
+    y: f64,
+    horizontal: i32,
+    vertical: i32,
+    key_code: u16,
+    key_down: bool,
+    reserved: [u8; 5],
+    text_units: *const u16,
+    text_unit_count: usize,
+    expected_x: f64,
+    expected_y: f64,
+    expected_width: f64,
+    expected_height: f64,
+    expected_scale: f64,
+    interruption_context: *mut c_void,
+    interruption_callback: Option<ProcessInterruptionCallback>,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct NativeProcessPostReport {
+    struct_size: u32,
+    target_match_count: u32,
+    invoked_native_units: u64,
+    authorization: u32,
+    geometry_result: u32,
+}
+
 unsafe extern "C" {
     fn mp_shim_abi_version() -> u32;
     fn mp_shim_struct_sizes(
         out_target_info: *mut u32,
         out_frame_info: *mut u32,
         out_open_request: *mut u32,
+        out_process_authority: *mut u32,
+        out_process_post_request: *mut u32,
+        out_process_post_report: *mut u32,
+    ) -> u32;
+    fn mp_shim_process_struct_offsets(
+        out_authority_target_match_count: *mut u32,
+        out_request_target: *mut u32,
+        out_request_event_source: *mut u32,
+        out_request_timeout_nanos: *mut u32,
+        out_report_target_match_count: *mut u32,
+        out_report_invoked_native_units: *mut u32,
     ) -> u32;
     fn mp_shim_capture_available() -> u32;
     fn mp_shim_probe_screen_capture(out_state: *mut u32) -> u32;
-    fn mp_shim_probe_accessibility(out_state: *mut u32) -> u32;
+    fn mp_shim_process_authorization(
+        out_post_event_access: *mut u32,
+        out_accessibility: *mut u32,
+    ) -> u32;
     fn mp_shim_execution_context(
         out_launch: *mut u32,
         out_signature: *mut u32,
@@ -1636,6 +2340,32 @@ unsafe extern "C" {
         out_posts: *mut usize,
         out_releases: *mut usize,
         out_posted: *mut usize,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_process_post(
+        scenario: u32,
+        out_delivery_status: *mut u32,
+        out_invoked_native_units: *mut u64,
+        out_target_match_count: *mut u32,
+        out_authority_calls: *mut u64,
+        out_preflight_calls: *mut u64,
+        out_lifetime_calls: *mut u64,
+        out_prepare_calls: *mut u64,
+        out_post_calls: *mut u64,
+        out_release_calls: *mut u64,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_validate_process_post(
+        scenario: u32,
+        out_delivery_status: *mut u32,
+        out_target_match_count: *mut u32,
+        out_invoked_native_units: *mut u64,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_process_authority_rules(
+        scenario: u32,
+        out_authority_status: *mut u32,
+        out_target_match_count: *mut u32,
     ) -> u32;
 
     fn mp_shim_inventory_acquire(timeout_nanos: u64, out: *mut *mut OpaqueInventory) -> u32;
@@ -1697,6 +2427,17 @@ unsafe extern "C" {
         out_height: *mut f64,
         out_scale: *mut f64,
     ) -> u32;
+    fn mp_shim_process_authority(
+        target: *const OpaqueTarget,
+        timeout_nanos: u64,
+        out_authority: *mut NativeProcessAuthority,
+    ) -> u32;
+    fn mp_shim_process_event_source_create(out_source: *mut *mut OpaqueProcessEventSource) -> u32;
+    fn mp_shim_process_event_source_release(source: *mut OpaqueProcessEventSource);
+    fn mp_shim_process_post(
+        request: *const NativeProcessPostRequest,
+        out_report: *mut NativeProcessPostReport,
+    ) -> u32;
     fn mp_shim_input_pointer_location(out_x: *mut f64, out_y: *mut f64) -> u32;
     fn mp_shim_input_activate_owner(owner_process: i64) -> u32;
     fn mp_shim_input_resolve_character(scalar: u32, out_key_code: *mut u16) -> u32;
@@ -1732,16 +2473,18 @@ mod tests {
 
     use super::{
         ABI_VERSION, DEFAULT_NATIVE_WAIT, ExecutionContext, FrameInfo, KIND_DISPLAY, KIND_WINDOW,
-        LaunchContext, MAX_NATIVE_WAIT, MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest, ShimStatus,
-        SignatureMode, TargetToken, contained_frame_callback, contained_frame_commit_callback,
-        contained_stopped_callback, declared_layout, execution_context, linked_layout,
-        live_objects, monotonic_nanos, nanos, testing_classify_signature, testing_gate_retries,
-        testing_input_text_second_allocation_failure, testing_stop_completion_exception,
-        testing_surface_recommendation, testing_terminalize_twice,
+        LaunchContext, MAX_NATIVE_WAIT, MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest,
+        ProcessAuthorization, ProcessEventSource, ShimStatus, SignatureMode, TargetToken,
+        contained_frame_callback, contained_frame_commit_callback, contained_stopped_callback,
+        declared_layout, declared_process_offsets, execution_context, linked_layout, live_objects,
+        monotonic_nanos, nanos, process_interruption_callback, testing_classify_signature,
+        testing_gate_retries, testing_input_text_second_allocation_failure,
+        testing_process_authority_rules, testing_process_post, testing_stop_completion_exception,
+        testing_surface_recommendation, testing_terminalize_twice, testing_validate_process_post,
         validate_open_shape_and_metadata,
     };
     use mado_pilot_capture::CaptureFault;
-    use mado_pilot_core::PixelExtent;
+    use mado_pilot_core::{CancellationToken, OperationContext, PixelExtent};
 
     /// Runs `body` with panic reporting suppressed, so a deliberately panicking
     /// callback does not print a backtrace over the test output.
@@ -1755,10 +2498,18 @@ mod tests {
 
     #[test]
     fn the_linked_shim_matches_the_declarations_this_build_mirrors() {
-        let (version, sizes) = linked_layout();
+        let (version, sizes, offsets) = linked_layout();
 
         assert_eq!(version, ABI_VERSION);
         assert_eq!(sizes, declared_layout());
+        assert_eq!(offsets, declared_process_offsets());
+    }
+
+    #[test]
+    fn process_event_source_has_an_owned_native_lifecycle() {
+        let source =
+            ProcessEventSource::new().expect("this host can create a private Core Graphics source");
+        drop(source);
     }
 
     #[test]
@@ -1805,6 +2556,37 @@ mod tests {
         assert_eq!(bundled.signature, SignatureMode::AdHoc);
         assert_eq!(unbundled.signature, SignatureMode::AdHoc);
         assert_ne!(bundled.as_context(), unbundled.as_context());
+    }
+
+    #[test]
+    fn post_event_access_remains_truth_when_accessibility_disagrees() {
+        let denied = ProcessAuthorization::from_raw(1, 0);
+        assert_eq!(
+            denied.post_event_access,
+            mado_pilot_core::PermissionState::NotGranted
+        );
+        assert!(denied.disagrees());
+
+        let granted = ProcessAuthorization::from_raw(0, 1);
+        assert_eq!(
+            granted.post_event_access,
+            mado_pilot_core::PermissionState::Granted
+        );
+        assert!(granted.disagrees());
+    }
+
+    #[test]
+    fn unavailable_migration_observations_are_not_invented_as_disagreement() {
+        let unavailable = ProcessAuthorization::from_raw(2, 3);
+        assert_eq!(
+            unavailable.post_event_access,
+            mado_pilot_core::PermissionState::Unavailable
+        );
+        assert_eq!(
+            unavailable.accessibility,
+            mado_pilot_core::PermissionState::Unknown
+        );
+        assert!(!unavailable.disagrees());
     }
 
     #[test]
@@ -1863,6 +2645,173 @@ mod tests {
         assert_eq!(posts, 0, "the key-down never reaches the system");
         assert_eq!(releases, 1, "the first native event is released on failure");
         assert_eq!(posted, 0, "the caller observes no native effect");
+    }
+
+    #[test]
+    fn process_interruption_callback_tracks_the_owning_operation() {
+        let cancellation = CancellationToken::new();
+        let operation = OperationContext::new().with_cancellation(cancellation.clone());
+        let context = std::ptr::from_ref(&operation).cast_mut().cast::<c_void>();
+
+        // SAFETY: `context` points to the live operation for both synchronous calls.
+        assert_eq!(
+            unsafe { process_interruption_callback(context) },
+            ShimStatus::Ok.as_raw()
+        );
+        cancellation.cancel();
+        // SAFETY: `context` still points to the live operation.
+        assert_eq!(
+            unsafe { process_interruption_callback(context) },
+            ShimStatus::TimedOut.as_raw()
+        );
+    }
+
+    #[test]
+    fn process_post_revalidates_authority_and_authorization_before_posting() {
+        let observed = testing_process_post(0).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::Ok);
+        assert_eq!(observed.invoked_native_units, 1);
+        assert_eq!(observed.target_match_count, 1);
+        assert_eq!(
+            observed.calls,
+            [1, 1, 1, 1, 1, 1],
+            "authority, direct authorization, and retained lifetime are the final gates before one bounded construction and post"
+        );
+    }
+
+    #[test]
+    fn process_post_fails_closed_before_native_effect() {
+        let rows = [
+            (1, ShimStatus::PermissionDenied, 1, [1, 1, 0, 0, 0, 0]),
+            (2, ShimStatus::TargetLost, 0, [1, 0, 0, 0, 0, 0]),
+            (3, ShimStatus::Unsupported, 0, [1, 0, 0, 0, 0, 0]),
+            (4, ShimStatus::InvalidArgument, 0, [0, 0, 0, 0, 0, 0]),
+            (6, ShimStatus::Unsupported, 0, [0, 0, 0, 0, 0, 0]),
+            (8, ShimStatus::GeometryChanged, 1, [1, 0, 0, 0, 0, 0]),
+            (10, ShimStatus::TargetLost, 1, [1, 1, 1, 0, 0, 0]),
+            (11, ShimStatus::TimedOut, 0, [0, 0, 0, 0, 0, 0]),
+            (12, ShimStatus::PlatformFailure, 1, [1, 1, 1, 1, 0, 0]),
+        ];
+
+        for (scenario, delivery, target_count, calls) in rows {
+            let observed = testing_process_post(scenario).expect("native process-post seam runs");
+            assert_eq!(observed.delivery, delivery, "scenario {scenario}");
+            assert_eq!(observed.invoked_native_units, 0, "scenario {scenario}");
+            assert_eq!(
+                observed.target_match_count, target_count,
+                "scenario {scenario}"
+            );
+            assert_eq!(observed.calls, calls, "scenario {scenario}");
+        }
+    }
+
+    #[test]
+    fn process_post_rejects_every_invalid_native_request_before_effect() {
+        let scenarios = [
+            "null request",
+            "request prefix",
+            "report prefix",
+            "null target",
+            "target magic",
+            "target kind",
+            "target native id",
+            "target process",
+            "target filter",
+            "target owner",
+            "target lifetime",
+            "target launch",
+            "null source",
+            "source magic",
+            "source value",
+            "interruption context",
+            "interruption callback",
+            "timeout",
+            "flags",
+            "geometry policy",
+            "reserved bytes",
+            "geometry bounds",
+            "pointer coordinate",
+            "pointer action",
+            "pointer button",
+            "pointer click count",
+            "zero scroll",
+            "scroll range",
+            "key code",
+            "key geometry",
+            "text pointer",
+            "text count",
+            "text UTF-16",
+            "event kind",
+            "null output",
+        ];
+
+        for (scenario, description) in scenarios.into_iter().enumerate() {
+            let (delivery, target_count, invoked_units) =
+                testing_validate_process_post(scenario as u32)
+                    .expect("native request-validation seam runs");
+            assert_eq!(
+                delivery,
+                ShimStatus::InvalidArgument,
+                "scenario {scenario}: {description}"
+            );
+            if !matches!(scenario, 2 | 34) {
+                assert_eq!(target_count, 0, "scenario {scenario}: {description}");
+                assert_eq!(invoked_units, 0, "scenario {scenario}: {description}");
+            }
+        }
+    }
+
+    #[test]
+    fn process_post_contains_native_exceptions_and_releases_prepared_events() {
+        let observed = testing_process_post(5).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::NativeException);
+        assert_eq!(observed.invoked_native_units, 0);
+        assert_eq!(observed.calls, [1, 1, 1, 1, 0, 1]);
+    }
+
+    #[test]
+    fn process_post_stops_text_after_authority_or_authorization_changes() {
+        let revoked = testing_process_post(7).expect("native process-post seam runs");
+        assert_eq!(revoked.delivery, ShimStatus::PermissionDenied);
+        assert_eq!(revoked.invoked_native_units, 1);
+        assert_eq!(revoked.calls, [2, 2, 1, 1, 1, 1]);
+
+        let lost = testing_process_post(9).expect("native process-post seam runs");
+        assert_eq!(lost.delivery, ShimStatus::TargetLost);
+        assert_eq!(lost.invoked_native_units, 1);
+        assert_eq!(lost.calls, [2, 1, 1, 1, 1, 1]);
+
+        let interrupted = testing_process_post(13).expect("native process-post seam runs");
+        assert_eq!(interrupted.delivery, ShimStatus::TimedOut);
+        assert_eq!(interrupted.invoked_native_units, 1);
+        assert_eq!(interrupted.calls, [1, 1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn process_authority_preserves_exact_identity_without_rejecting_other_owned_windows() {
+        let expected = [
+            (0, ShimStatus::Ok, 1),
+            (1, ShimStatus::TargetLost, 0),
+            (2, ShimStatus::TargetLost, 0),
+            (3, ShimStatus::TargetLost, 0),
+            (4, ShimStatus::TargetLost, 0),
+            (5, ShimStatus::Ok, 1),
+            (6, ShimStatus::Unsupported, 0),
+            (7, ShimStatus::TargetLost, 0),
+            (8, ShimStatus::TargetLost, 0),
+            (9, ShimStatus::Ok, 1),
+            (10, ShimStatus::TargetLost, 0),
+        ];
+
+        for (scenario, status, retained_match_count) in expected {
+            assert_eq!(
+                testing_process_authority_rules(scenario).expect("native authority rule seam runs"),
+                (status, retained_match_count),
+                "scenario {scenario}"
+            );
+        }
     }
 
     #[test]
