@@ -657,6 +657,7 @@ impl LaunchGuard {
     }
 
     fn take(mut self) -> Child {
+        self.application_pid = None;
         self.child.take().expect("the guarded launcher exists")
     }
 }
