@@ -1325,7 +1325,7 @@ mod native {
             ),
             measure(
                 "static_latest_retained",
-                "without a private transition, latest returns the retained immutable frame and does not invent producer progress",
+                "without a private transition, latest returns a same-stream frame no older than the retained frame and preserves the declared pixels",
                 plan,
                 || {
                     ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
@@ -1335,15 +1335,15 @@ mod native {
                 static_latest_retained,
             ),
             measure(
-                "static_strictly_newer_expiry",
-                "without a private transition, a bounded strictly-newer request expires while the session stays open and latest still exposes the retained frame",
+                "static_newer_repeated_pixels",
+                "without a private transition, a bounded strictly-newer request evaluates the exact later frame and observes the same declared pixels",
                 plan,
                 || {
                     ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
                         FixtureBehavior::Static,
                     )))
                 },
-                static_strictly_newer_expiry,
+                static_newer_repeated_pixels,
             ),
             measure(
                 "latest_acquisition",
@@ -2178,10 +2178,6 @@ mod native {
     fn static_latest_retained(active: &ActiveFlow) -> Sample {
         let state = lock_state(active);
         let before = state.last.stamp();
-        let expired = state
-            .session
-            .acquire_frame(&FrameRequest::newer_than(before), &bounded(PRESSURE_WAIT))
-            .expect_err("a static fixture publishes no synthetic heartbeat");
         let started = Instant::now();
         let latest = state
             .session
@@ -2191,29 +2187,34 @@ mod native {
         let mapping = latest
             .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
             .expect("the retained static frame maps");
-        let correct = expired.status() == Status::DeadlineExceeded
-            && latest.stamp() == before
+        let stamp = latest.stamp();
+        let correct = stamp.stream() == before.stream()
+            && (stamp.epoch() > before.epoch()
+                || (stamp.epoch() == before.epoch() && stamp.sequence() >= before.sequence()))
             && benchmark_mapping_fill(&mapping) == Some(state.fill);
         Sample::new(elapsed, correct, mapping.bytes().len() as u64)
     }
 
     #[cfg(target_os = "macos")]
-    fn static_strictly_newer_expiry(active: &ActiveFlow) -> Sample {
-        let state = lock_state(active);
+    fn static_newer_repeated_pixels(active: &ActiveFlow) -> Sample {
+        let mut state = lock_state(active);
         let before = state.last.stamp();
         let started = Instant::now();
-        let expired = state
+        let frame = state
             .session
-            .acquire_frame(&FrameRequest::newer_than(before), &bounded(PRESSURE_WAIT));
+            .acquire_frame(&FrameRequest::newer_than(before), &bounded(OPERATION_WAIT))
+            .expect("the static capture publishes a later authoritative frame");
         let elapsed = started.elapsed();
-        let latest = state
-            .session
-            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
-            .expect("a newer-frame expiry leaves the static session open");
-        let correct = expired.is_err_and(|error| error.status() == Status::DeadlineExceeded)
-            && latest.stamp() == before
-            && !state.session.is_closed();
-        Sample::unmapped(elapsed, correct)
+        let mapping = frame
+            .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
+            .expect("the later static frame maps");
+        let stamp = frame.stamp();
+        let correct = stamp.stream() == before.stream()
+            && stamp.epoch() == before.epoch()
+            && stamp.sequence() > before.sequence()
+            && benchmark_mapping_fill(&mapping) == Some(state.fill);
+        state.last = frame;
+        Sample::new(elapsed, correct, mapping.bytes().len() as u64)
     }
 
     fn latest_acquisition(active: &ActiveFlow) -> Sample {
