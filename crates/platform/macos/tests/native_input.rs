@@ -60,6 +60,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const FOCUS_WAIT: Duration = Duration::from_secs(15);
 /// How long the fail-closed content gate waits for one authoritative frame.
 const CONTENT_WAIT: Duration = Duration::from_secs(5);
+/// Minimum continuous-capture interval for the route-wide sustained soak.
+const SUSTAINED_CAPTURE_SOAK: Duration = Duration::from_secs(60);
 /// How long the fixture is given to publish its ready line.
 const READY_WAIT: Duration = Duration::from_secs(10);
 /// How long the owned-window oracle allows the successor and terminal loss.
@@ -2591,6 +2593,178 @@ fn process_directed_delivery_qualifies_default_and_game_like_renderers() {
     );
     for mode in [FixtureMode::GameLike, FixtureMode::Default] {
         qualify_process_directed_renderer(mode);
+    }
+}
+
+/// Keeps capture active beyond the indicator dwell while two renderer modes
+/// receive spaced process-directed sequences under an unrelated foreground.
+#[test]
+#[ignore = "runs a bounded sustained-capture soak and delivers process-directed input"]
+fn sustained_capture_soak_keeps_process_route_isolated() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "qualification requires the configured signed fixture bundle"
+    );
+    assert!(
+        post_event_access_granted(),
+        "qualification requires non-prompting post-event authorization to be granted"
+    );
+
+    for mode in [FixtureMode::GameLike, FixtureMode::Default] {
+        let mut foreground_fixture =
+            Fixture::start().expect("the unrelated foreground fixture starts first");
+        let mut fixture = Fixture::start_inactive(mode)
+            .expect("the owned fixture starts visible without taking foreground ownership");
+        let provider = provider();
+        let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+            .expect("the owned child exposes exactly one eligible fixture window");
+        let capture = CaptureProvider::open(
+            &provider,
+            chosen.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &bounded(CONTENT_WAIT),
+        )
+        .expect("capture opens for the exact retained fixture");
+        let capture_started = Instant::now();
+        let first = capture
+            .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+            .expect("the fixture publishes its initial frame");
+        let auxiliary = fixture
+            .command(FixtureCommandKind::OpenAuxiliary, CONTENT_WAIT)
+            .expect("the additional ordinary window opens");
+        assert_eq!(auxiliary.status, 0);
+        thread::sleep(Duration::from_secs(10));
+
+        let foreground_deadline = Instant::now() + CONTENT_WAIT;
+        let foreground_before = loop {
+            if let Some(foreground) = frontmost_application()
+                && foreground.1 == foreground_fixture.process_id
+            {
+                break foreground;
+            }
+            assert!(
+                Instant::now() < foreground_deadline,
+                "the inactive soak target stole foreground ownership"
+            );
+            thread::sleep(Duration::from_millis(25));
+        };
+
+        let input = InputProvider::open(
+            &provider,
+            chosen.id(),
+            &InputOpenRequest::new()
+                .with_requirement(InputRequirement::Required)
+                .requiring(InputOperationKind::Pointer, InputDelivery::ProcessDirected)
+                .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
+            &bounded(CONTENT_WAIT),
+        )
+        .expect("the soak process-directed pairs open");
+
+        fixture.begin_event_row(CONTENT_WAIT);
+        foreground_fixture.begin_event_row(CONTENT_WAIT);
+        let cursor_before = pointer_location();
+        let (_, pointer_events, expected_pointer_events) =
+            pointer_qualification_rows(&first, CoordinateSpace::CapturePixels)
+                .into_iter()
+                .next()
+                .expect("the pointer soak row exists");
+        let submitted = pointer_events.len();
+        let first_receipt = input
+            .execute(
+                &InputRequest::new(
+                    chosen.id(),
+                    InputSequence::new(pointer_events).expect("the pointer soak row is bounded"),
+                    DeliveryPlan::require(InputDelivery::ProcessDirected),
+                )
+                .with_focus(FocusPolicy::Preserve)
+                .with_pointer_geometry(PointerGeometry::require_unchanged_since(first.stamp())),
+                &bounded(CONTENT_WAIT),
+            )
+            .expect("the first spaced process-directed sequence posts");
+        assert_process_receipt(&first_receipt, submitted);
+        fixture.expect_event_kinds(&expected_pointer_events, CONTENT_WAIT);
+        assert_unrelated_desktop_state(
+            &fixture,
+            &mut foreground_fixture,
+            &foreground_before,
+            cursor_before,
+        );
+        let first_transition =
+            observe_controlled_transition(&mut fixture, capture.as_ref(), first.stamp(), true);
+
+        let soak_deadline = capture_started + SUSTAINED_CAPTURE_SOAK;
+        while Instant::now() < soak_deadline {
+            let latest = capture
+                .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+                .expect("sustained capture keeps publishing retained fixture frames");
+            assert!(
+                latest.stamp().is_same_stream(&first_transition)
+                    && latest.stamp().sequence().value() >= first_transition.sequence().value(),
+                "sustained capture regressed the retained stream identity"
+            );
+            let mapping = latest
+                .map(PixelFormat::Bgra8, &bounded(CONTENT_WAIT))
+                .expect("a sustained-capture sample maps");
+            assert!(
+                frame_is_replacement_content(
+                    mapping.bytes(),
+                    mapping.descriptor().stride(),
+                    mapping.descriptor().extent(),
+                ),
+                "ambient or unrelated pixels replaced the controlled retained content"
+            );
+            thread::sleep(
+                soak_deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_secs(1)),
+            );
+        }
+
+        fixture.begin_event_row(CONTENT_WAIT);
+        foreground_fixture.begin_event_row(CONTENT_WAIT);
+        let cursor_before = pointer_location();
+        let second_receipt = input
+            .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
+            .expect("the second spaced process-directed sequence posts");
+        assert_process_receipt(&second_receipt, 2);
+        fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+        assert_unrelated_desktop_state(
+            &fixture,
+            &mut foreground_fixture,
+            &foreground_before,
+            cursor_before,
+        );
+        let _second_transition =
+            observe_controlled_transition(&mut fixture, capture.as_ref(), first_transition, false);
+        assert!(
+            capture_started.elapsed() >= SUSTAINED_CAPTURE_SOAK,
+            "the capture soak ended before its frozen minimum"
+        );
+
+        let auxiliary_closed = fixture
+            .command(FixtureCommandKind::CloseAuxiliary, CONTENT_WAIT)
+            .expect("the additional ordinary window closes");
+        assert_eq!(auxiliary_closed.status, 0);
+        input.close(&bounded(CONTENT_WAIT)).expect("input closes");
+        input
+            .close(&bounded(CONTENT_WAIT))
+            .expect("repeated input close is idempotent");
+        capture
+            .close(&bounded(CONTENT_WAIT))
+            .expect("capture closes");
+        capture
+            .close(&bounded(CONTENT_WAIT))
+            .expect("repeated capture close is idempotent");
+        let stopped = fixture
+            .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+            .expect("owned fixture stop is acknowledged");
+        assert_eq!(stopped.status, 0);
+        let foreground_stopped = foreground_fixture
+            .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+            .expect("the unrelated foreground fixture stop is acknowledged");
+        assert_eq!(foreground_stopped.status, 0);
+        fixture.input = None;
+        foreground_fixture.input = None;
     }
 }
 
