@@ -7,6 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+autobins = false
+
+[features]
+# The interactive qualification fixture is not a production package target.
+# Enabling this feature builds and links its separately isolated executable.
+private-fixture = []
+
+[[bin]]
+name = "mado-pilot-macos-input-fixture"
+path = "src/bin/mado-pilot-macos-input-fixture.rs"
+required-features = ["private-fixture"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mado-pilot-core = { path = "../../automation/core" }
@@ -22,6 +33,9 @@ mado-pilot-input = { path = "../../automation/input" }
 # OpenCV binding generator on every host.
 [build-dependencies]
 cc.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

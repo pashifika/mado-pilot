@@ -280,6 +280,15 @@ impl Workload {
         let index = ((last as f64) * percentile).round() as usize;
         sorted.get(index).copied().unwrap_or_default().as_secs_f64() * 1_000.0
     }
+    /// Returns the slowest retained sample.
+    ///
+    /// This is the hard scenario-bound observation. Percentiles can hide one
+    /// path that exceeded its absolute deadline, so qualification profiles use
+    /// both.
+    #[must_use]
+    pub fn max_elapsed(&self) -> Duration {
+        self.elapsed.iter().copied().max().unwrap_or_default()
+    }
 
     /// Returns one sampled iteration's cost in milliseconds, from a single span.
     ///
@@ -307,6 +316,11 @@ impl Workload {
     #[must_use]
     pub const fn growth_bytes(&self) -> i64 {
         self.growth_bytes
+    }
+    /// High-water live Rust heap bytes attributable to this workload.
+    #[must_use]
+    pub const fn peak_allocated_bytes(&self) -> usize {
+        self.peak_bytes
     }
 
     /// Share of observed producer work skipped before a retained result.
@@ -535,6 +549,108 @@ pub fn summarize(name: &str, plan: Plan, workloads: &[Workload]) {
     );
 }
 
+/// One frozen latency gate for a named workload.
+///
+/// These values are fixed before a native qualification run. They are kept out
+/// of [`measure`] because most profiles establish host-specific ceilings only
+/// after measurement; callers opt in only when a pre-measurement plan already
+/// fixed all three bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LatencyBudget {
+    workload: &'static str,
+    p50: Duration,
+    p95: Duration,
+    hard_max: Duration,
+}
+
+impl LatencyBudget {
+    /// Builds one pre-measurement latency gate.
+    #[must_use]
+    pub const fn new(
+        workload: &'static str,
+        p50: Duration,
+        p95: Duration,
+        hard_max: Duration,
+    ) -> Self {
+        Self {
+            workload,
+            p50,
+            p95,
+            hard_max,
+        }
+    }
+
+    /// Returns the workload name this gate applies to.
+    #[must_use]
+    pub const fn workload(self) -> &'static str {
+        self.workload
+    }
+}
+
+/// Enforces frozen p50, p95, and per-scenario latency ceilings.
+///
+/// A missing or duplicated workload is a harness error rather than a skipped
+/// gate. The hard maximum is checked independently because a passing percentile
+/// must never conceal one operation that escaped its scenario bound.
+///
+/// # Panics
+///
+/// Panics when a budget is malformed, names anything other than one measured
+/// workload, or when a retained measurement exceeds any ceiling.
+pub fn enforce_latency_budgets(workloads: &[Workload], budgets: &[LatencyBudget]) {
+    for (index, budget) in budgets.iter().enumerate() {
+        assert!(
+            budget.p50 <= budget.p95 && budget.p95 <= budget.hard_max,
+            "latency budget for {} must satisfy p50 <= p95 <= hard maximum",
+            budget.workload
+        );
+        assert!(
+            budgets[..index]
+                .iter()
+                .all(|earlier| earlier.workload != budget.workload),
+            "latency budget for {} is duplicated",
+            budget.workload
+        );
+        let mut matching = workloads
+            .iter()
+            .filter(|workload| workload.name() == budget.workload);
+        let workload = matching.next().unwrap_or_else(|| {
+            panic!(
+                "latency budget names unmeasured workload {}",
+                budget.workload
+            )
+        });
+        assert!(
+            matching.next().is_none(),
+            "measured workload {} is duplicated",
+            budget.workload
+        );
+
+        let p50 = workload.percentile(0.50);
+        let p95 = workload.percentile(0.95);
+        let hard_max = workload.max_elapsed();
+        assert!(
+            p50 <= budget.p50.as_secs_f64() * 1_000.0,
+            "{} exceeded frozen p50 latency ceiling: {p50:.6} ms > {:.6} ms",
+            budget.workload,
+            budget.p50.as_secs_f64() * 1_000.0
+        );
+        assert!(
+            p95 <= budget.p95.as_secs_f64() * 1_000.0,
+            "{} exceeded frozen p95 latency ceiling: {p95:.6} ms > {:.6} ms",
+            budget.workload,
+            budget.p95.as_secs_f64() * 1_000.0
+        );
+        assert!(
+            hard_max <= budget.hard_max,
+            "{} exceeded frozen hard scenario bound: {:.6} ms > {:.6} ms",
+            budget.workload,
+            hard_max.as_secs_f64() * 1_000.0,
+            budget.hard_max.as_secs_f64() * 1_000.0
+        );
+    }
+}
+
 // --- Hard budgets --------------------------------------------------------------
 
 /// The `kind = "hard"` predicates every committed profile states, enforced by
@@ -663,7 +779,10 @@ fn escape(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Plan, PrefixedLineMatch, Sample, classify_prefixed_line, measure};
+    use super::{
+        LatencyBudget, Plan, PrefixedLineMatch, Sample, Workload, classify_prefixed_line,
+        enforce_latency_budgets, measure,
+    };
     use std::time::Duration;
 
     fn fixture() {}
@@ -683,6 +802,86 @@ mod tests {
         );
 
         assert_eq!(workload.stale_work_ratio(), Some(0.25));
+    }
+
+    fn timed_workload(name: &'static str, elapsed: Vec<Duration>) -> Workload {
+        Workload {
+            name,
+            oracle: "the synthetic timing sample is accepted",
+            elapsed,
+            incorrect: 0,
+            stale: 0,
+            scheduled: 0,
+            mapped: 0,
+            iteration_span: Duration::ZERO,
+            peak_bytes: 0,
+            steady_bytes: 0,
+            peak_resident_bytes: None,
+            growth_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn frozen_latency_budgets_check_percentiles_and_the_slowest_sample() {
+        let workloads = [timed_workload(
+            "qualified",
+            vec![
+                Duration::from_millis(10),
+                Duration::from_millis(20),
+                Duration::from_millis(30),
+            ],
+        )];
+
+        enforce_latency_budgets(
+            &workloads,
+            &[LatencyBudget::new(
+                "qualified",
+                Duration::from_millis(20),
+                Duration::from_millis(30),
+                Duration::from_millis(40),
+            )],
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeded frozen hard scenario bound")]
+    fn one_slow_sample_cannot_hide_behind_a_passing_percentile() {
+        let mut elapsed = vec![Duration::from_millis(1); 100];
+        elapsed.push(Duration::from_millis(501));
+        let workloads = [timed_workload("qualified", elapsed)];
+
+        enforce_latency_budgets(
+            &workloads,
+            &[LatencyBudget::new(
+                "qualified",
+                Duration::from_millis(10),
+                Duration::from_millis(10),
+                Duration::from_millis(500),
+            )],
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeded frozen p95 latency ceiling")]
+    fn a_percentile_ceiling_is_not_treated_as_only_a_hard_maximum() {
+        let workloads = [timed_workload(
+            "qualified",
+            vec![
+                Duration::from_millis(1),
+                Duration::from_millis(2),
+                Duration::from_millis(30),
+            ],
+        )];
+
+        enforce_latency_budgets(
+            &workloads,
+            &[LatencyBudget::new(
+                "qualified",
+                Duration::from_millis(2),
+                Duration::from_millis(20),
+                Duration::from_millis(40),
+            )],
+        );
     }
 
     #[test]
