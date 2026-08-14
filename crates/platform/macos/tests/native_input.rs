@@ -6,10 +6,11 @@
 //!
 //! The default suite submits nothing: it exercises read-only native observations,
 //! the provider's input surface, and refusals that happen before any event. Native
-//! submission remains deliberate and ignored by default. One check exercises the
-//! focused system route; the exact fixture qualification exercises the explicit
-//! process-directed route without taking foreground or moving the physical cursor.
-//! Both are documented in `docs/macos-input-verification.md`.
+//! submission remains deliberate and ignored by default. One row exercises the
+//! focused system route. The process-directed rows keep an unrelated owned
+//! fixture frontmost, bind pointer qualification to an explicit display topology,
+//! separate unrelated activity, and include a sustained-capture soak. Every
+//! opt-in row is documented in `docs/macos-input-verification.md`.
 
 #[allow(dead_code, unreachable_pub, unused_imports)]
 #[path = "../src/fixture_protocol.rs"]
@@ -70,6 +71,327 @@ const REPLACEMENT_WAIT: Duration = Duration::from_secs(10);
 const MAX_FIXTURE_OUTPUT_RECORDS: usize = MAX_RECORDED_EVENTS + 16;
 static FIXTURE_SOCKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static FIXTURE_RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Explicit selector binding a qualification run to one frozen display row.
+const QUALIFICATION_TOPOLOGY_ENV: &str = "MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QualificationTopology {
+    Single,
+    SameScale,
+    MixedScale,
+}
+
+impl QualificationTopology {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "single" => Some(Self::Single),
+            "same-scale" => Some(Self::SameScale),
+            "mixed-scale" => Some(Self::MixedScale),
+            _ => None,
+        }
+    }
+
+    fn required() -> Self {
+        let value = std::env::var(QUALIFICATION_TOPOLOGY_ENV).unwrap_or_else(|_| {
+            panic!(
+                "qualification requires {QUALIFICATION_TOPOLOGY_ENV}=\
+                 <single|same-scale|mixed-scale>"
+            )
+        });
+        Self::parse(&value).unwrap_or_else(|| {
+            panic!(
+                "{QUALIFICATION_TOPOLOGY_ENV} must be exactly single, same-scale, or mixed-scale; \
+                 got {value:?}"
+            )
+        })
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Single => "single",
+            Self::SameScale => "same-scale",
+            Self::MixedScale => "mixed-scale",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct QualificationGeometry {
+    origin: (f64, f64),
+    logical: (f64, f64),
+    backing: (u32, u32),
+    scale: (f64, f64),
+}
+
+impl QualificationGeometry {
+    fn mapping_is_consistent(self) -> bool {
+        self.origin.0.is_finite()
+            && self.origin.1.is_finite()
+            && self.logical.0.is_finite()
+            && self.logical.1.is_finite()
+            && self.scale.0.is_finite()
+            && self.scale.1.is_finite()
+            && self.logical.0 > 0.0
+            && self.logical.1 > 0.0
+            && self.backing.0 > 0
+            && self.backing.1 > 0
+            && self.scale.0 > 0.0
+            && self.scale.1 > 0.0
+            && approximately(f64::from(self.backing.0) / self.logical.0, self.scale.0)
+            && approximately(f64::from(self.backing.1) / self.logical.1, self.scale.1)
+    }
+
+    fn has_scale(self, scale: f64) -> bool {
+        approximately(self.scale.0, scale) && approximately(self.scale.1, scale)
+    }
+
+    fn has_signed_origin(self) -> bool {
+        self.origin.0 < 0.0 || self.origin.1 < 0.0
+    }
+
+    fn is_horizontally_adjacent_to(self, right: Self) -> bool {
+        let vertical_overlap = self.origin.1 < right.origin.1 + right.logical.1
+            && right.origin.1 < self.origin.1 + self.logical.1;
+        approximately(self.origin.0 + self.logical.0, right.origin.0) && vertical_overlap
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ObservedQualificationGeometry {
+    geometry: QualificationGeometry,
+    stamp: FrameStamp,
+}
+
+fn approximately(left: f64, right: f64) -> bool {
+    (left - right).abs() <= 1.0e-6
+}
+
+fn validate_qualification_topology(
+    expected: QualificationTopology,
+    geometries: &[QualificationGeometry],
+) -> Result<(), String> {
+    if geometries.is_empty() {
+        return Err("no display geometry was observed".to_owned());
+    }
+    if let Some(invalid) = geometries
+        .iter()
+        .copied()
+        .find(|geometry| !geometry.mapping_is_consistent())
+    {
+        return Err(format!(
+            "display geometry has inconsistent logical/backing scale: {invalid:?}"
+        ));
+    }
+
+    let mut ordered = geometries.to_vec();
+    ordered.sort_by(|left, right| left.origin.0.total_cmp(&right.origin.0));
+    match expected {
+        QualificationTopology::Single => {
+            if ordered.len() != 1 || !ordered[0].has_scale(2.0) {
+                return Err(format!(
+                    "single requires exactly one 2x display, observed {ordered:?}"
+                ));
+            }
+        }
+        QualificationTopology::SameScale => {
+            if ordered.len() != 2
+                || ordered.iter().any(|geometry| !geometry.has_scale(2.0))
+                || !ordered[0].is_horizontally_adjacent_to(ordered[1])
+            {
+                return Err(format!(
+                    "same-scale requires exactly two horizontally adjacent 2x displays, \
+                     observed {ordered:?}"
+                ));
+            }
+        }
+        QualificationTopology::MixedScale => {
+            let mixed_signed_seam = ordered.windows(2).any(|pair| {
+                pair[0].is_horizontally_adjacent_to(pair[1])
+                    && ((pair[0].has_scale(1.0) && pair[1].has_scale(2.0))
+                        || (pair[0].has_scale(2.0) && pair[1].has_scale(1.0)))
+                    && (pair[0].has_signed_origin() || pair[1].has_signed_origin())
+            });
+            if !mixed_signed_seam {
+                return Err(format!(
+                    "mixed-scale requires a horizontally adjacent 2x/1x seam with a signed \
+                     origin, observed {ordered:?}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn qualification_geometry(frame: &Frame) -> QualificationGeometry {
+    let placement = frame
+        .transform()
+        .target()
+        .expect("a native qualification frame carries target placement");
+    let extent = frame.descriptor().extent();
+    QualificationGeometry {
+        origin: placement.desktop_origin(),
+        logical: placement.logical_size(),
+        backing: (extent.width(), extent.height()),
+        scale: (placement.scale().x(), placement.scale().y()),
+    }
+}
+
+fn observe_qualification_topology(
+    provider: &MacosCaptureProvider,
+    expected: QualificationTopology,
+) -> Vec<ObservedQualificationGeometry> {
+    let displays = discovered(provider)
+        .expect("the qualifying host remains discoverable")
+        .into_iter()
+        .filter(|target| target.capability().kind() == Some(TargetKind::Display));
+    let mut observed = Vec::new();
+    for display in displays {
+        let capture = CaptureProvider::open(
+            provider,
+            display.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &bounded(CONTENT_WAIT),
+        )
+        .expect("each qualifying display opens for authoritative geometry");
+        let frame = capture
+            .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+            .expect("each qualifying display publishes authoritative geometry");
+        observed.push(ObservedQualificationGeometry {
+            geometry: qualification_geometry(&frame),
+            stamp: frame.stamp(),
+        });
+        capture
+            .close(&bounded(CONTENT_WAIT))
+            .expect("qualification display capture closes");
+    }
+    observed.sort_by(|left, right| left.geometry.origin.0.total_cmp(&right.geometry.origin.0));
+    let geometries: Vec<_> = observed.iter().map(|item| item.geometry).collect();
+    validate_qualification_topology(expected, &geometries)
+        .unwrap_or_else(|reason| panic!("{} topology refused: {reason}", expected.label()));
+    for (ordinal, item) in observed.iter().enumerate() {
+        println!(
+            "qualification-topology={} display={} logical={}x{} backing={}x{} \
+             origin=({},{}) scale={}x{} frame={:?}",
+            expected.label(),
+            ordinal,
+            item.geometry.logical.0,
+            item.geometry.logical.1,
+            item.geometry.backing.0,
+            item.geometry.backing.1,
+            item.geometry.origin.0,
+            item.geometry.origin.1,
+            item.geometry.scale.0,
+            item.geometry.scale.1,
+            item.stamp,
+        );
+    }
+    observed
+}
+
+fn validate_window_topology(
+    expected: QualificationTopology,
+    visits: &[ObservedQualificationGeometry],
+) -> Result<(), String> {
+    if visits.is_empty() {
+        return Err("no retained-window geometry was observed".to_owned());
+    }
+    if let Some(invalid) = visits
+        .iter()
+        .find(|visit| !visit.geometry.mapping_is_consistent())
+    {
+        return Err(format!(
+            "retained-window geometry has inconsistent logical/backing scale: {invalid:?}"
+        ));
+    }
+    if visits.windows(2).any(|pair| {
+        pair[0].stamp.geometry() == pair[1].stamp.geometry()
+            || !pair[0].stamp.is_same_stream(&pair[1].stamp)
+    }) {
+        return Err(format!(
+            "inter-display traversal did not advance same-stream geometry: {visits:?}"
+        ));
+    }
+
+    match expected {
+        QualificationTopology::Single => {
+            if visits.len() != 1 || !visits[0].geometry.has_scale(2.0) {
+                return Err(format!(
+                    "single retained-window traversal must stay on one 2x display: {visits:?}"
+                ));
+            }
+        }
+        QualificationTopology::SameScale => {
+            if visits.len() != 2 || visits.iter().any(|visit| !visit.geometry.has_scale(2.0)) {
+                return Err(format!(
+                    "same-scale retained-window traversal must visit both 2x displays: \
+                     {visits:?}"
+                ));
+            }
+        }
+        QualificationTopology::MixedScale => {
+            let crossed_scale = visits.windows(2).any(|pair| {
+                (pair[0].geometry.has_scale(1.0) && pair[1].geometry.has_scale(2.0))
+                    || (pair[0].geometry.has_scale(2.0) && pair[1].geometry.has_scale(1.0))
+            });
+            if !crossed_scale
+                || !visits
+                    .iter()
+                    .any(|visit| visit.geometry.has_signed_origin())
+            {
+                return Err(format!(
+                    "mixed-scale retained-window traversal must cross 2x/1x and publish a \
+                     signed target origin: {visits:?}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn qualification_topology_rows_cannot_substitute_for_one_another() {
+    let geometry = |origin: (f64, f64), logical: (f64, f64), scale: f64| QualificationGeometry {
+        origin,
+        logical,
+        backing: ((logical.0 * scale) as u32, (logical.1 * scale) as u32),
+        scale: (scale, scale),
+    };
+    let single = [geometry((0.0, 0.0), (1_512.0, 982.0), 2.0)];
+    let same_scale = [
+        geometry((-1_512.0, 0.0), (1_512.0, 982.0), 2.0),
+        geometry((0.0, 0.0), (2_560.0, 1_440.0), 2.0),
+    ];
+    let mixed_scale = [
+        geometry((-3_840.0, -720.0), (3_840.0, 2_160.0), 1.0),
+        geometry((0.0, 0.0), (2_560.0, 1_440.0), 2.0),
+    ];
+
+    assert_eq!(
+        QualificationTopology::parse("single"),
+        Some(QualificationTopology::Single)
+    );
+    assert_eq!(
+        QualificationTopology::parse("same-scale"),
+        Some(QualificationTopology::SameScale)
+    );
+    assert_eq!(
+        QualificationTopology::parse("mixed-scale"),
+        Some(QualificationTopology::MixedScale)
+    );
+    assert_eq!(QualificationTopology::parse("mixed"), None);
+    assert!(validate_qualification_topology(QualificationTopology::Single, &single).is_ok());
+    assert!(validate_qualification_topology(QualificationTopology::SameScale, &same_scale).is_ok());
+    assert!(
+        validate_qualification_topology(QualificationTopology::MixedScale, &mixed_scale).is_ok()
+    );
+    assert!(validate_qualification_topology(QualificationTopology::Single, &same_scale).is_err());
+    assert!(
+        validate_qualification_topology(QualificationTopology::SameScale, &mixed_scale).is_err()
+    );
+    assert!(
+        validate_qualification_topology(QualificationTopology::MixedScale, &same_scale).is_err()
+    );
+}
 
 /// Statuses a host without Screen Recording or without the capture framework
 /// legitimately reports, which every check below tolerates.
@@ -2095,7 +2417,7 @@ fn assert_stale_pointer_frame_refused(
     );
 }
 
-fn qualify_process_directed_renderer(mode: FixtureMode) {
+fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: QualificationTopology) {
     let mut foreground_fixture =
         Fixture::start().expect("the unrelated foreground fixture starts first");
     let mut fixture = Fixture::start_inactive(mode)
@@ -2307,6 +2629,10 @@ fn qualify_process_directed_renderer(mode: FixtureMode) {
         "the bounded public display inventory is non-empty"
     );
     let mut topology_frame = resized_current;
+    let mut topology_visits = vec![ObservedQualificationGeometry {
+        geometry: qualification_geometry(&topology_frame),
+        stamp: topology_frame.stamp(),
+    }];
     for _ in 1..display_count {
         let moved_display = fixture
             .command(FixtureCommandKind::MoveToNextDisplay, CONTENT_WAIT)
@@ -2344,6 +2670,35 @@ fn qualify_process_directed_renderer(mode: FixtureMode) {
         );
         observed_stamp = next_current.stamp();
         topology_frame = next_current;
+        topology_visits.push(ObservedQualificationGeometry {
+            geometry: qualification_geometry(&topology_frame),
+            stamp: topology_frame.stamp(),
+        });
+    }
+    validate_window_topology(expected_topology, &topology_visits).unwrap_or_else(|reason| {
+        panic!(
+            "{:?} {} retained-window topology refused: {reason}",
+            fixture.facts.renderer(),
+            expected_topology.label()
+        )
+    });
+    for (ordinal, visit) in topology_visits.iter().enumerate() {
+        println!(
+            "qualification-window-topology={} renderer={:?} visit={} logical={}x{} \
+             backing={}x{} origin=({},{}) scale={}x{} frame={:?}",
+            expected_topology.label(),
+            fixture.facts.renderer(),
+            ordinal,
+            visit.geometry.logical.0,
+            visit.geometry.logical.1,
+            visit.geometry.backing.0,
+            visit.geometry.backing.1,
+            visit.geometry.origin.0,
+            visit.geometry.origin.1,
+            visit.geometry.scale.0,
+            visit.geometry.scale.1,
+            visit.stamp,
+        );
     }
     observed_stamp =
         observe_controlled_transition(&mut fixture, capture.as_ref(), observed_stamp, false);
@@ -2591,8 +2946,332 @@ fn process_directed_delivery_qualifies_default_and_game_like_renderers() {
         post_event_access_granted(),
         "qualification requires non-prompting post-event authorization to be granted"
     );
+    let expected_topology = QualificationTopology::required();
+    let topology_provider = provider();
+    let _observed_topology = observe_qualification_topology(&topology_provider, expected_topology);
     for mode in [FixtureMode::GameLike, FixtureMode::Default] {
-        qualify_process_directed_renderer(mode);
+        qualify_process_directed_renderer(mode, expected_topology);
+    }
+}
+
+fn assert_fixture_frame_content(frame: &Frame, replacement: bool, context_label: &str) {
+    let mapping = frame
+        .map(PixelFormat::Bgra8, &bounded(CONTENT_WAIT))
+        .unwrap_or_else(|error| panic!("{context_label} frame maps: {error}"));
+    let descriptor = mapping.descriptor();
+    let matches = if replacement {
+        frame_is_replacement_content(mapping.bytes(), descriptor.stride(), descriptor.extent())
+    } else {
+        frame_is_fixture_content(mapping.bytes(), descriptor.stride(), descriptor.extent())
+    };
+    assert!(
+        matches,
+        "{context_label} published unexpected fixture content"
+    );
+}
+
+fn observe_unchanged_fixture_content(
+    capture: &dyn CaptureSession,
+    after: FrameStamp,
+    replacement: bool,
+    context_label: &str,
+) -> FrameStamp {
+    let frame = capture
+        .frame(&FrameRequest::newer_than(after), &bounded(CONTENT_WAIT))
+        .unwrap_or_else(|error| panic!("{context_label} publishes a newer frame: {error}"));
+    assert!(
+        frame.stamp().is_same_stream(&after),
+        "{context_label} changed stream identity without an approved transition"
+    );
+    assert_eq!(
+        frame.stamp().epoch(),
+        after.epoch(),
+        "{context_label} changed epoch without an approved transition"
+    );
+    assert_eq!(
+        frame.stamp().geometry(),
+        after.geometry(),
+        "{context_label} changed geometry without an approved transition"
+    );
+    assert!(
+        frame.stamp().sequence().value() > after.sequence().value(),
+        "{context_label} did not publish a strictly newer frame"
+    );
+    assert_fixture_frame_content(&frame, replacement, context_label);
+    frame.stamp()
+}
+
+fn wait_for_frontmost_fixture(fixture: &Fixture) -> (String, u32) {
+    let deadline = Instant::now() + CONTENT_WAIT;
+    loop {
+        if let Some(frontmost) = frontmost_application()
+            && frontmost.1 == fixture.process_id
+        {
+            return frontmost;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the owned foreground fixture did not remain frontmost"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn post_isolated_process_key_pair(
+    input: &dyn InputController,
+    target: TargetId,
+    fixture: &mut Fixture,
+    foreground_fixture: &mut Fixture,
+    foreground_before: &(String, u32),
+) -> mado_pilot_input::InputReceipt {
+    fixture.begin_event_row(CONTENT_WAIT);
+    foreground_fixture.begin_event_row(CONTENT_WAIT);
+    let cursor_before = pointer_location();
+    let receipt = input
+        .execute(&process_key_pair(target), &bounded(CONTENT_WAIT))
+        .expect("the bracketed process-directed key pair returns a receipt");
+    assert_process_receipt(&receipt, 2);
+    fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+    assert_unrelated_desktop_state(
+        fixture,
+        foreground_fixture,
+        foreground_before,
+        cursor_before,
+    );
+    receipt
+}
+
+fn qualify_controlled_unrelated_activity(mode: FixtureMode) {
+    let mut foreground_fixture =
+        Fixture::start().expect("the owned unrelated foreground fixture starts first");
+    let mut fixture = Fixture::start_inactive(mode)
+        .expect("the qualification target starts without taking foreground");
+    let provider = provider();
+    let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+        .expect("the qualification target is selected exactly once");
+    let foreground =
+        discover_unique_fixture(&provider, foreground_fixture.process_id, CONTENT_WAIT)
+            .expect("the foreground fixture is selected exactly once");
+
+    let capture = CaptureProvider::open(
+        &provider,
+        chosen.id(),
+        &OpenRequest::new().require_format(PixelFormat::Bgra8),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("the qualification target opens for capture");
+    let foreground_capture = CaptureProvider::open(
+        &provider,
+        foreground.id(),
+        &OpenRequest::new().require_format(PixelFormat::Bgra8),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("the foreground fixture opens for capture");
+    let target_initial = capture
+        .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+        .expect("the qualification target publishes an initial frame");
+    assert_fixture_frame_content(&target_initial, false, "qualification target");
+    let foreground_initial = foreground_capture
+        .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+        .expect("the foreground fixture publishes an initial frame");
+    let foreground_mapping = foreground_initial
+        .map(PixelFormat::Bgra8, &bounded(CONTENT_WAIT))
+        .expect("the foreground fixture initial frame maps");
+    let foreground_descriptor = foreground_mapping.descriptor();
+
+    let system_input = with_confirmed_fixture_content(
+        foreground_mapping.bytes(),
+        foreground_descriptor.stride(),
+        foreground_descriptor.extent(),
+        || {
+            InputProvider::open(
+                &provider,
+                foreground.id(),
+                &InputOpenRequest::new()
+                    .with_requirement(InputRequirement::Required)
+                    .requiring(InputOperationKind::Keyboard, InputDelivery::System),
+                &bounded(CONTENT_WAIT),
+            )
+        },
+    )
+    .expect("the foreground input gate matches approved fixture pixels")
+    .expect("system keyboard input opens for the owned foreground fixture");
+    let process_input = InputProvider::open(
+        &provider,
+        chosen.id(),
+        &InputOpenRequest::new()
+            .with_requirement(InputRequirement::Required)
+            .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("process-directed keyboard input opens for the inactive target");
+
+    let foreground_before = wait_for_frontmost_fixture(&foreground_fixture);
+    assert_ne!(
+        foreground_before.1, fixture.process_id,
+        "the qualification target must remain inactive"
+    );
+    thread::sleep(Duration::from_secs(10));
+
+    let before_receipt = post_isolated_process_key_pair(
+        process_input.as_ref(),
+        chosen.id(),
+        &mut fixture,
+        &mut foreground_fixture,
+        &foreground_before,
+    );
+    let mut target_stamp = observe_unchanged_fixture_content(
+        capture.as_ref(),
+        target_initial.stamp(),
+        false,
+        "qualification target after first process row",
+    );
+
+    fixture.begin_event_row(CONTENT_WAIT);
+    foreground_fixture.begin_event_row(CONTENT_WAIT);
+    let foreground_stamp = observe_controlled_transition(
+        &mut foreground_fixture,
+        foreground_capture.as_ref(),
+        foreground_initial.stamp(),
+        true,
+    );
+    target_stamp = observe_unchanged_fixture_content(
+        capture.as_ref(),
+        target_stamp,
+        false,
+        "qualification target during unrelated foreground redraw",
+    );
+    assert_eq!(
+        fixture.event_totals(CONTENT_WAIT),
+        EventTotals::default(),
+        "the foreground redraw reached the target process"
+    );
+    assert_eq!(
+        foreground_fixture.event_totals(CONTENT_WAIT),
+        EventTotals::default(),
+        "the private foreground redraw synthesized input"
+    );
+    assert_eq!(
+        frontmost_application().as_ref(),
+        Some(&foreground_before),
+        "the private foreground redraw changed frontmost ownership"
+    );
+
+    fixture.begin_event_row(CONTENT_WAIT);
+    foreground_fixture.begin_event_row(CONTENT_WAIT);
+    let system_receipt = system_input
+        .execute(
+            &InputRequest::new(
+                foreground.id(),
+                InputSequence::new(vec![
+                    InputEvent::KeyPress(Key::Enter),
+                    InputEvent::KeyRelease(Key::Enter),
+                ])
+                .expect("the scripted foreground action is balanced"),
+                DeliveryPlan::require(InputDelivery::System),
+            )
+            .with_focus(FocusPolicy::RequireFocused),
+            &bounded(CONTENT_WAIT),
+        )
+        .expect("the scripted foreground keyboard action returns a receipt");
+    assert_eq!(
+        system_receipt.outcome(),
+        SequenceOutcome::Complete,
+        "{system_receipt}"
+    );
+    assert_eq!(system_receipt.submitted(), 2);
+    assert_eq!(system_receipt.selected_route(), Some(InputDelivery::System));
+    assert!(!system_receipt.used_fallback());
+    foreground_fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+    assert_eq!(
+        fixture.event_totals(CONTENT_WAIT),
+        EventTotals::default(),
+        "the target process observed the scripted foreground action"
+    );
+    target_stamp = observe_unchanged_fixture_content(
+        capture.as_ref(),
+        target_stamp,
+        false,
+        "qualification target during scripted foreground action",
+    );
+    let foreground_stamp = observe_unchanged_fixture_content(
+        foreground_capture.as_ref(),
+        foreground_stamp,
+        true,
+        "foreground fixture after scripted keyboard action",
+    );
+    assert_eq!(
+        frontmost_application().as_ref(),
+        Some(&foreground_before),
+        "the scripted foreground action changed frontmost ownership"
+    );
+
+    let after_receipt = post_isolated_process_key_pair(
+        process_input.as_ref(),
+        chosen.id(),
+        &mut fixture,
+        &mut foreground_fixture,
+        &foreground_before,
+    );
+    assert_eq!(
+        after_receipt, before_receipt,
+        "unrelated foreground activity changed the process-directed receipt"
+    );
+    target_stamp = observe_unchanged_fixture_content(
+        capture.as_ref(),
+        target_stamp,
+        false,
+        "qualification target after second process row",
+    );
+    println!(
+        "qualification-unrelated-activity renderer={:?} process-sequences=2 \
+         process-logical-events=4 foreground-system-logical-events=2 \
+         foreground-private-transitions=1 target-visual-transitions=0 \
+         process-window-cursor-invariance=true foreground-preserved=true \
+         receipts-unchanged=true target-frame={target_stamp:?} \
+         foreground-frame={foreground_stamp:?}",
+        fixture.facts.renderer(),
+    );
+
+    process_input
+        .close(&bounded(CONTENT_WAIT))
+        .expect("process-directed input closes");
+    system_input
+        .close(&bounded(CONTENT_WAIT))
+        .expect("foreground system input closes");
+    capture
+        .close(&bounded(CONTENT_WAIT))
+        .expect("qualification target capture closes");
+    foreground_capture
+        .close(&bounded(CONTENT_WAIT))
+        .expect("foreground capture closes");
+    let stopped = fixture
+        .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+        .expect("qualification target stop is acknowledged");
+    assert_eq!(stopped.status, 0);
+    let foreground_stopped = foreground_fixture
+        .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+        .expect("foreground fixture stop is acknowledged");
+    assert_eq!(foreground_stopped.status, 0);
+    fixture.input = None;
+    foreground_fixture.input = None;
+}
+
+/// Proves scripted foreground redraw and System input cannot contaminate the
+/// process-directed target's receipts, events, or visual correlation.
+#[test]
+#[ignore = "delivers scripted System and process-directed input on an interactive desktop"]
+fn controlled_unrelated_activity_remains_outside_process_evidence() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "qualification requires the configured signed fixture bundle"
+    );
+    assert!(
+        post_event_access_granted(),
+        "qualification requires non-prompting post-event authorization to be granted"
+    );
+    for mode in [FixtureMode::GameLike, FixtureMode::Default] {
+        qualify_controlled_unrelated_activity(mode);
     }
 }
 
