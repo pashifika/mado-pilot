@@ -3238,7 +3238,7 @@ mod native {
         };
         (
             id,
-            "separately linked private macOS fixture Rust, protocol-v3, header, Objective-C, and renderer sources",
+            "separately linked private macOS fixture Rust, protocol-v5, header, Objective-C, and renderer sources",
         )
     }
 
