@@ -63,9 +63,13 @@ after capture admission stops.
 
 On a content-size change, the transition frame is not published. The Adapter
 recreates the two-frame WGC pool for the new size and advances geometry
-revision. Detached old-size frames complete under their old revision; unused
-incompatible textures retire, while leased old-generation textures remain
-alive until release.
+revision. A callback already queued for the old pool may expose a surface that
+cannot cover the new `ContentSize`; the Adapter drops that clipped transition
+frame and waits for a covering replacement-pool surface rather than terminating
+the session as an unsupported format. A genuinely different surface format
+remains unsupported. Detached old-size frames complete under their old
+revision; unused incompatible textures retire, while leased old-generation
+textures remain alive until release.
 
 Close and reset follow this order:
 

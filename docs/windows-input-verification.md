@@ -2,122 +2,170 @@
 
 The Windows platform package implements input at the Adapter boundary.
 `mado_pilot::windows_engine` wires it into the public Rust facade, and C ABI 1.2
-plus the header-only C++ wrapper expose that same negotiated workflow. Release
-acceptance still includes the user-focused system-input check below; automated
-exact-window verification uses only the dedicated fixture and makes no claim
-about ordinary applications accepting window messages.
+plus the header-only C++ wrapper expose the same negotiated workflow. `System`
+and `WindowMessage` remain separate caller-selected routes. Ordinary retained
+top-level windows expose `WindowMessage` as unknown-but-attemptable with
+target-queue evidence; only the dedicated acknowledged fixture raises that
+evidence to target-protocol acknowledgement. Neither receipt proves application
+consumption or visual effect.
 
 ## Capability boundary
 
-Capabilities are operation-and-route pairs. A target never acquires an
+Capabilities are operation-and-route pairs. Address scope, compatibility, and
+submission evidence are independent fields; a target never acquires an
 exact-window capability merely because it accepts the same operation through
 system input.
 
 | Discovered target | `System` | `WindowMessage` |
 |---|---|---|
-| Ordinary top-level window | Pointer, keyboard, text; focus required | Unknown compatibility, so not advertised |
-| Class `MadoPilotInputFixture` | Pointer, keyboard, text; focus required | Pointer, keyboard, text; exact-window address and target-protocol acknowledgement |
+| Retained ordinary top-level window | Pointer, keyboard, text; supported; focus required | Pointer, keyboard, text; `Unknown`; exact-window, focus-preserving, target-queue-admission evidence |
+| Exact class `MadoPilotInputFixture` | Pointer, keyboard, text; supported; focus required | Pointer, keyboard, text; `Supported`; exact-window, focus-preserving, target-protocol acknowledgement |
 | Display | Pointer only; no focusable target is implied | Unsupported |
+| Child, lost, replaced, or unrevalidatable window | Not admitted as a retained top-level target | Unsupported or refused before posting |
 
-### Ordinary-window message qualification
+The caller explicitly selects or orders routes. There is no default
+`WindowMessage` choice and no implicit fallback to `System`:
+
+```mermaid
+flowchart TD
+    A[Retained target capability] --> B{Caller-selected route}
+    B -->|System| C[Focus and integrity preflight]
+    B -->|WindowMessage| D[Exact authority and integrity preflight]
+    D -->|Retry-safe refusal| E[Unexecuted receipt; caller-ordered fallback may advance]
+    D -->|Admitted| F[Preflight → PostMessageW → post-identity fence]
+    F --> G[Queue-admission or fixture-acknowledged receipt]
+    G --> H[Caller evaluates a strictly newer frame separately]
+    C --> I[SendInput submission receipt]
+    I --> H
+```
 
 [ADR 0022](adr/0022-windows-ordinary-background-input-qualification.md)
-keeps the ordinary-window route above as a tested no-go boundary. A disposable
-probe on the approved Windows 11 Pro 25H2 host made 212 exact-`HWND`
-legacy-message calls while an unrelated owned fixture remained foreground.
-Instrumented ordinary and game-legacy consumers observed their messages; Raw
-Input and asynchronous state-polling consumers did not. No accepted row changed
-the foreground target, the real cursor, or any unintended-window counter.
+remains the evidence for the stronger claim it tested. Its ordinary/game-like
+consumers observed legacy messages, while Raw Input and asynchronous
+state-polling consumers did not; queue admission and a generic procedure return
+could not establish application consumption. [ADR 0027](adr/0027-windows-window-message-queue-submission.md)
+therefore supersedes only ADR 0022's system-only consequence. The current
+contract reports ordinary compatibility as `Unknown`, caps evidence at
+`TargetQueueAdmission`, and requires a separate newer-frame observation when a
+caller needs effect evidence. It makes no Raw Input, DirectInput, XInput,
+asynchronous-state, raw-HID, helper, hook, anti-cheat, or arbitrary-game claim.
 
-That transport result is insufficient for a generally supported product
-capability. `PostMessageW` success proved target-queue admission only, while
-`SendMessageTimeoutW` success proved only bounded window-procedure return. A
-hung-window row timed out before its message was observed, demonstrating why
-timeout is not proof of no effect. Only private fixture counters could establish
-target-protocol acknowledgement, and arbitrary ordinary windows expose neither
-that acknowledgement nor a stable public consumer-eligibility predicate.
+### Exact target authority
 
-The frozen matrix therefore failed its compatibility and evidence gates;
-mandatory handle-reuse, higher-integrity/UIPI, single-display, mixed-DPI, and
-hosted-CI rows also remained unexecuted. The probe was removed after recording
-the revision-bound summary. Do not reintroduce it through an opt-in mode, target
-metadata whitelist, richer transport-only receipt, feature flag, focus bypass,
-hook, injected helper, or fallback. The evidence and rejected alternatives are
-recorded in ADR 0022 and its linked qualification report.
+Immediately before and after every normal or cleanup `PostMessageW`, the Adapter
+checks the retained `HWND`, owner process creation identity, owning thread, root
+relationship, class, provider identity, capture-item liveness, operation bound,
+integrity, and required geometry. Mutable title and geometry never grant target
+authority. A failed preflight posts nothing. An accepted post followed by changed
+or unavailable authority is a possible native effect and stops the sequence.
 
-All five shared pointer spaces are advertised because Windows capture publishes an
-authoritative target placement. A request still fails when its selected geometry
-policy cannot resolve the named frame:
+This fence is intentionally not described as atomic. Win32 has no
+generation-bearing compare-and-post API, and a foreign window can be destroyed
+and its same-value handle recycled between validation and `PostMessageW`.
+Bounded reuse stress can detect a recurrence in that run but cannot prove the
+race absent.
 
-- `ReprojectCurrent` reads the current extent, placement, and scale.
-- `RequireUnchanged` accepts only a source frame retained for that target whose
-  geometry fingerprint still equals the live target.
-- `UseFrameSnapshot` uses a retained source transform. An old revision that is no
-  longer retained is unsupported rather than reconstructed from current DPI.
+### Ordinary message profile
 
-Windows virtual-screen coordinates are signed physical coordinates. System pointer
-moves use `MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK`, preserve half-open target
-bounds, and never clamp a far edge into an adjacent display. Primary and secondary
-buttons honor `SM_SWAPBUTTON`, and cleanup retains the exact physical mapping used
-at press time.
+Ordinary delivery uses asynchronous `PostMessageW` only:
 
-Logical keys are resolved through the target thread's active keyboard layout. A
-`Key::Character` that needs implicit modifiers or more than one UTF-16 unit is
-unsupported; callers use explicit modifier events or `InputEvent::Text` instead.
-Text uses paired `KEYEVENTF_UNICODE` records and the shared 4,096-character bound.
+| Logical event | Native profile | Native units and bounds |
+|---|---|---|
+| Pointer move | `WM_MOUSEMOVE`; signed client coordinates and current `MK_*` state | One unit |
+| Primary/secondary/middle button down/up | Unconditional positioning `WM_MOUSEMOVE`, then matching `WM_*BUTTONDOWN/UP` | Exactly two units; requires a previously established pointer position |
+| Vertical/horizontal scroll | `WM_MOUSEWHEEL`, then `WM_MOUSEHWHEEL`; signed screen coordinates, checked `WHEEL_DELTA` multiples and `MK_*` state | Zero to two units in that order; requires a previously established pointer position |
+| Key down/up | `WM_KEYDOWN/WM_KEYUP`; target-layout virtual key and scan code, extended, previous-state, and transition bits | One unit |
+| Text | Ordered direct `WM_CHAR` UTF-16; no `TranslateMessage` dependency | `1..=8192` units for at most 4,096 public scalars |
+| Delay | Bounded wait with operation checks | Zero units |
 
-## Focus, integrity, and submission evidence
+The public input vocabulary contains only primary, secondary, and middle
+buttons, so there is no X-button translation. Every packed client or screen
+coordinate must fit signed `i16`; the Adapter refuses an unrepresentable event
+instead of truncating, wrapping, or clamping it. A combined scroll posts vertical
+before horizontal, and failure after the first component is partial.
 
-Window system input revalidates focus before every irreversible event.
+All five shared pointer spaces are advertised because Windows capture publishes
+an authoritative target placement. `ReprojectCurrent` reads current extent,
+placement, and scale. `RequireUnchanged` compares the retained source transform
+with current authority. `UseFrameSnapshot` requires that exact stream, epoch, and
+geometry revision to remain retained; the Adapter does not reconstruct an
+evicted revision from current DPI.
+
+The route never synthesizes `WM_INPUT`, mutates global asynchronous key state,
+activates the target, moves the physical cursor, calls `SendInput`,
+`SendMessageTimeoutW`, or `BlockInput`, attaches queues, changes message filters,
+broadcasts, installs hooks, injects a helper, or elevates.
+
+## Focus, integrity, receipts, and cleanup
+
+Window `System` input revalidates focus before every irreversible event.
 `Preserve` cannot satisfy a focus-requiring system path. `RequireFocused` never
 activates a window. `ActivateIfRequired` makes one ordinary
 [`SetForegroundWindow`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)
 attempt and then re-reads the foreground window; Windows may refuse it under its
-foreground-lock rules. The Adapter does not attach input queues, start an elevated
-helper, or otherwise bypass that policy.
+foreground-lock rules. `WindowMessage` instead invokes neither focus activation
+nor physical-cursor mutation APIs. External input or the target's own message
+handling can still change global state, so a receipt does not certify immutable
+foreground/cursor values; controlled native rows assert unchanged observations
+as a separate fixture oracle.
 
-Before system or fixture submission, the Adapter compares the caller and selected
-window process integrity levels. A proven higher target reports `PolicyRefused`.
-When
+Before either route submits input, the Adapter compares the caller and selected
+window process integrity levels. A proven higher target reports
+`PolicyRefused`. When
 [`SendInput`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
-returns zero and integrity inspection does not prove UIPI, the Adapter reports
-the nonspecific `DeliveryFailed` that the API evidence supports; it does not
-infer a UIPI cause from last error.
+returns zero and integrity inspection does not prove UIPI, the system route
+reports `DeliveryFailed`; it does not infer UIPI from last error. For
+`PostMessageW`, access denial maps to `PolicyRefused`, an invalid window to
+`TargetLost`, and queue quota or another posting failure to
+`SubmissionFailed`.
 
 `submitted` counts complete logical events admitted to the selected native
-route. System `SendInput` yields `SystemInputAdmission`; the dedicated fixture
-route yields `TargetProtocolAcknowledgement`. A short nonzero native insertion,
-or a fixture dispatch that began without returning the expected acknowledgement,
-is `Partial` even if no logical event completed. It is never `Unexecuted`, and no
-fallback route is tried after possible native effect.
-[ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md) records why
-submission evidence cannot claim that an application consumed the event or
-changed visual state.
+route. System `SendInput` yields `SystemInputAdmission`; ordinary
+`WindowMessage` yields `TargetQueueAdmission`; the dedicated fixture yields
+`TargetProtocolAcknowledgement`. These remain submission facts. A complete
+ordinary receipt may coexist with no consumer or visual change.
 
-Pressed buttons and keys belong only to the sequence that successfully pressed
-them. On a partial stop they are released newest first under the independent shared
-cleanup bound: at most 256 releases and no new release after 250 milliseconds.
+Once a route enters event submission, fallback closes even if the first
+`PostMessageW` accepts no unit. A partial native representation, any accepted
+unit followed by failure, or an indeterminate post-identity fence is `Partial`
+with possible effect; it is never retry-safe `Unexecuted`. Only a separately
+reported preflight refusal may let an explicitly ordered fallback advance.
 
-## Dedicated fixture
+Pressed buttons and keys belong only to the sequence that successfully posted
+their complete press representation. On a stop, cleanup releases them newest
+first through the same route and retained authority. It admits no more than 256
+release events and starts no new release after 250 milliseconds. Cleanup cannot
+switch to `System`, revive a lost target, or turn queue admission into proof of
+application state.
 
-`mado-pilot-windows-input-fixture` creates one controlled top-level window with:
+## Repository-owned fixtures
+
+`mado-pilot-windows-window-message-fixture` creates ordinary top-level windows
+through the production discovery class path. Its default title is
+`MadoPilot Ordinary WindowMessage Fixture [<token>]`. Controlled modes model
+ordinary and game-like legacy consumers, Raw Input, asynchronous state polling,
+duplicate descriptive metadata, sibling/child/reparent/replacement/restarted
+ownership, queue pressure, target loss, and bounded repaint. Its painted
+condition is an observation oracle, not acknowledgement hidden in the receipt.
+
+`mado-pilot-windows-input-fixture` creates the one acknowledged top-level window:
 
 - class `MadoPilotInputFixture`;
 - exact title `MadoPilot Input Fixture [<pid>]`;
 - a versioned and size-bounded `WM_COPYDATA` vocabulary;
-- synchronous acknowledgement for each accepted event;
-- at most 1,024 retained summaries containing only event kind and UTF-16 unit count.
+- synchronous acknowledgement for each accepted event; and
+- at most 1,024 retained summaries containing only event kind and UTF-16 unit
+  count.
 
-The fixture validates packet length, scalar fields, key and button codes, and UTF-16.
-It neither retains nor prints input text. Verification calls
-`select_unique_fixture`, which requires a window target, the exact PID-qualified
-title, and all three fixture-only `WindowMessage` capabilities with
-target-protocol acknowledgement. Zero matches and multiple matches both stop
-before input.
+The acknowledged fixture validates packet length, scalar fields, key and button
+codes, and UTF-16. It neither retains nor prints input text. Both fixture kinds
+are selected by exact title and retained target identity; zero or multiple
+matches stop before input. Only the exact acknowledged class reports
+`TargetProtocolAcknowledgement`.
 
-## Automated Windows checks
+## Windows checks
 
-Run the focused checks from the repository root:
+Run the non-interactive checks from the repository root:
 
 ```sh
 cargo check --locked -p mado-pilot-platform-windows --all-targets
@@ -126,13 +174,22 @@ cargo test --locked -p mado-pilot-platform-windows --lib
 cargo test --locked -p mado-pilot-platform-windows --test native_input
 ```
 
-The native integration test starts the dedicated fixture without activating it,
-discovers and selects it exactly once, and submits six acknowledged exact-window
-pointer, keyboard, and text events. It never calls system delivery and therefore
-does not move the developer's pointer or type into the desktop. Deterministic
-tests cover system/window-message separation, target classes, focus outcomes,
-signed mixed-DPI coordinates, integrity-policy receipts, partial native effects,
-cleanup, target loss, cancellation/deadline races, and close.
+The ordinary native matrix requires an unlocked interactive desktop because it
+temporarily activates a repository-owned foreground fixture. Run it explicitly:
+
+```sh
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native ordinary_window_message_native_matrix -- --ignored --exact --nocapture --test-threads=1
+```
+
+The matrix runs the public production route against repository-owned legacy and
+negative-consumer modes while an unrelated owned window remains foreground. It
+fails on foreground, physical-cursor, sibling/child/replacement, or wrong-process
+effects and records queue, consumer/visual, lifecycle, topology, and cleanup
+observations separately. The acknowledged native test remains a distinct
+protocol check. Deterministic suites cover capability admission, exact authority,
+all message translations, immediate post errors, partial native effects,
+fallback closure, cleanup, target loss, cancellation/deadline races, diagnostics,
+and close.
 
 ## Explicit system-input check
 
@@ -157,29 +214,35 @@ elevation, or input intended to defeat foreground policy.
 
 ## Explicit facade check
 
-The check above exercises the Adapter directly. The same route through the public
-Rust facade — engine construction with bounded `Debug` diagnostics, discovery,
-capture, mapping, one frame-bound sequence under a shared activity tag, immutable
-receipt inspection, a strictly newer expected-condition search, diagnostic drain,
-and explicit close — is `crates/mado-pilot/examples/windows-native-input.rs`.
-Start the fixture in animated mode, then name its exact window title:
+The Adapter tests above do not replace the public Rust composition path.
+`crates/mado-pilot/examples/windows-native-input.rs` builds the Windows engine
+with bounded diagnostics, selects one exact ordinary window, captures and maps a
+source frame, requires the unknown-but-attemptable `WindowMessage` route, submits
+one frame-bound sequence with focus preservation, inspects queue-admission
+evidence, evaluates an expected condition only on a strictly newer frame, drains
+diagnostics, and closes.
+
+Start the ordinary target fixture, then pass its exact full title. The example
+launches, activates, and monitors a second repository-owned fixture as the
+unrelated foreground application:
 
 ```sh
-cargo run --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture -- --animate-on-input
-cargo run --locked --package mado-pilot --example windows-native-input -- "MadoPilot Input Fixture [<pid>]"
+cargo run --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-window-message-fixture -- --title-token=example
+cargo run --locked --package mado-pilot --example windows-native-input -- "MadoPilot Ordinary WindowMessage Fixture [example]"
 ```
 
-It needs no focus: it requires `WindowMessage`, exact-window addressing,
-target-protocol acknowledgement, and no fallback, so it cannot reach a window
-that does not advertise that contract. It matches the title exactly and refuses
-zero or more than one match. The receipt and the newer visual search remain
-independent facts; drained records carry only the documented metadata for the
-shared activity tag.
+The explicit foreground-fixture setup can use one balanced temporary input-queue
+attachment before readiness when an unattended host's foreground lock rejects a
+direct request. That setup ends before discovery or delivery and never activates
+the input target. The input request never selects `System`, activation, elevation,
+a helper, or a privileged identity. It refuses zero or multiple title matches.
+Its receipt and newer-frame result are printed as independent facts; neither
+titles, pixels, nor typed payloads enter diagnostics.
 
 ## Explicit C and C++ boundary checks
 
 The ABI check compiles and runs both native common-flow examples in `--check`
-mode by default. That mode creates the real Windows engine, verifies the ABI 1.2
+mode by default. That mode creates the real Windows engine, verifies ABI 1.2
 route-capability and diagnostic surfaces, confirms that no permission-probe
 capability is advertised, and stops before discovery or input:
 
@@ -187,29 +250,90 @@ capability is advertised, and stops before discovery or input:
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
-The unattended Windows CI matrix uses fixture-backed mode instead. Build the
-fixture binary, then let `c-abi-check` launch it, parse its exact PID-qualified
-title, keep it alive through both language flows, and terminate it afterward:
+The unattended Windows matrix owns both fixture lifecycles. Build them first,
+then let `c-abi-check` pass the ordinary and acknowledged exact titles to each C
+and C++ flow:
 
 ```bat
-cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture
+cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture
+cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>" --windows-native-fixture
 ```
 
-Each C and C++ flow independently performs engine construction, exact discovery,
-capture, mapping, a frame-bound four-event target-protocol-acknowledged
-`WindowMessage` request, immutable receipt and attempt inspection, a strictly
-newer expected-condition search, diagnostic drain, and explicit close. The
-checker owns the fixture lifecycle and launches its animated mode; the examples
-receive only its exact title. Selection requires the fixture class and permits no
-system fallback, so the check neither takes focus nor injects into another
-window. Output excludes the title, captured bytes, and typed text.
+The C flow independently performs engine construction, discovery, capture,
+mapping, a bounded four-event request, immutable receipt/attempt inspection, a
+strictly newer expected-condition search, diagnostic drain, and explicit close
+for both contracts. The Windows C++ flow performs the same lifecycle with a
+16-event request covering pointer movement, every button, both wheel axes, a
+function key, an ordered modifier chord, Unicode text, and an observed delay;
+the harness also checks the complete redacted fixture-event order. The ordinary
+flow requires `Unknown` capability and `TargetQueueAdmission`; the dedicated
+flow requires `Supported` and `TargetProtocolAcknowledgement`. Both preserve
+focus and permit no system fallback. Frozen ABI 1.0 layout and negotiation, ABI
+1.2 wrapper ownership, and the independent CMake consumer run in the same check.
+
+When the caller owns a fixture lifecycle, pass `--ordinary "<full title>"` or
+`--acknowledged "<full title>"` directly to `windows-native-input.exe` or
+`windows-native-input-cpp.exe`. Output excludes the title, captured bytes, and
+typed text.
+
+## Native evidence and limitations
+
+The revision-bound Windows 11 Pro 26200 runs cover ordinary pointer, button,
+wheel, key, text, delay, drag, and chord rows; duplicate metadata;
+reparent/replacement/destroy/restarted ownership; negative Raw Input and
+state-polling consumers; cancellation, deadline, cleanup, queue-full and partial
+outcomes; a hung target; single-display, same-DPI, and mixed-DPI signed-origin
+topology; unrelated foreground activity; facade visual/no-visual observations;
+and medium-to-high-integrity refusal.
+
+The supplemental single-display row used one physical monitor at effective DPI
+`144x144`. It rejected stale source-frame geometry after the geometry revision
+and accepted only the current correlated pointer/wheel request while preserving
+foreground, cursor, and exact-target invariants.
+
+The supplemental mixed-DPI row used two physical monitors at effective DPI
+`144x144` and `96x96`. It rejected stale source-frame geometry after each
+cross-monitor move and accepted only the current correlated pointer/wheel
+request while preserving foreground, cursor, and exact-target invariants.
+
+The supplemental same-DPI `H-02` row used two physical monitors at effective
+DPI `144x144`. It crossed to the negative-X secondary, rejected stale
+source-frame geometry after each move, and accepted only current correlated
+pointer/wheel requests while preserving foreground, cursor, and exact-target
+invariants.
+
+The supplemental higher-integrity `H-07` row independently confirmed a
+medium-integrity C ABI caller (RID `0x2000`) and high-integrity ordinary fixture
+(RID `0x3000`). Production returned `Unexecuted`, zero submitted,
+`PolicyRefused`, with no cleanup owed. The operator elevated only the target
+fixture process; MadoPilot performed no elevation, message-filter change, or
+fallback. The generic positive-flow verifier therefore exited `1`; that
+nonzero exit plus the exact negative receipt is the row's expected result.
+
+The same committed source `223925d` also passed both public-facade visual
+oracles, the Rust example, the complete ABI 1.2 C/C++/CMake matrix, frozen ABI
+1.0 compatibility, and the 50-sample native input/public-language performance
+profile. Every measured workload satisfied its oracle and retained budget.
+
+A bounded 4,096-attempt handle-reuse stress run observed no same-value
+recurrence, which is not proof of generation-atomic safety. This remains an
+explicit limitation, not an inferred pass. Unknown compatibility also remains
+exactly that: evidence for one legacy consumer does not establish support for an
+arbitrary game or another input family.
 
 ## Redaction review
 
-Production input and diagnostic code emits no event, key, text, window title,
-desktop content, captured bytes, native free-form message, platform namespace,
-or backend name. The only title retained by the verifier is its own
-deterministic fixture title. Interactive evidence may record capability, route,
-submission counts and evidence, typed faults, cleanup counts, and diagnostic
-loss counts; it must not record input text or unrelated desktop payload.
+Production input and diagnostic code emits no event payload, key, text, window
+title, desktop content, captured bytes, native identifier, free-form native
+message, platform namespace, path, signing identity, or backend name. It records
+bounded public identities, route/scope/support, operation kinds and counts,
+queue or protocol evidence, typed outcomes/faults, cleanup counts, and loss
+counts.
+
+The native verifier may retain only repository-fixture roles, bounded counts and
+statuses, host/topology facts, commands, source/executable hashes, and hashes of
+bounded raw output. It must not retain typed text, captured pixels, unrelated
+window titles, or unrelated desktop payload. Fixture protocol observations,
+queue admission, and visual search results remain separate columns so no report
+can silently promote one into another.

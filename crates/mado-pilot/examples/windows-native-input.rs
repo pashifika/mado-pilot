@@ -1,34 +1,43 @@
-//! The native Windows workflow, end to end, against one window the operator names.
+//! The native Windows `WindowMessage` workflow with unrelated foreground, end to end.
 //!
 //! Report what authorization this platform grants, discover targets, select
-//! exactly one window by its full title, open capture and input together, verify
-//! the source-frame condition, submit one bounded sequence without touching
-//! focus, verify the expected condition on a strictly newer frame, drain
-//! correlated diagnostics, and close.
+//! exactly one ordinary window by its full title, open capture and input
+//! together, verify the source-frame condition, submit one bounded sequence
+//! without touching focus, verify the expected condition on a strictly newer
+//! frame, drain correlated diagnostics, and close.
+//!
+//! Start the ordinary evidence fixture, then pass its full title. The example
+//! launches and monitors a second repository-owned fixture as the unrelated
+//! foreground application:
 //!
 //! ```text
-//! cargo run --locked --package mado-pilot --example windows-native-input -- "<window title>"
+//! cargo run --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-window-message-fixture -- --title-token=example
+//! cargo run --locked --package mado-pilot --example windows-native-input -- "MadoPilot Ordinary WindowMessage Fixture [example]"
 //! ```
 //!
-//! # Why this one cannot disturb an ordinary window
+//! `cargo run` locates the foreground fixture beside the example's Cargo profile.
+//! Set `MADO_PILOT_WINDOW_MESSAGE_FIXTURE` only when the fixture binary lives
+//! elsewhere.
 //!
-//! It requires target-directed `WindowMessage` delivery and permits no
-//! substitute, and it preserves focus. The Windows Adapter advertises that route
-//! for its own dedicated fixture class alone, because arbitrary window classes
-//! share no reliable target-directed input contract. An ordinary application
-//! window therefore does not advertise it, the request is refused before any
-//! event exists, and system input is never quietly put in its place —
-//! substituting it would focus a window this program promised not to touch and
-//! type into whatever is focused instead.
+//! # Why delivery does not disturb the owned foreground window
 //!
-//! The receiver this is meant for is `mado-pilot-windows-input-fixture` in
-//! `mado-pilot-platform-windows`, whose window title is
-//! `MadoPilot Input Fixture [<pid>]`. The title is a required argument rather
-//! than a search: nothing is guessed, a prefix is not accepted, and more than one
-//! match is refused rather than resolved.
+//! Setup deliberately activates the unrelated child application before native
+//! work begins and monitors it through input, visual observation, diagnostics,
+//! and close. Delivery then requires exact-window `WindowMessage`, permits no
+//! substitute, and preserves focus. An ordinary target advertises this route as
+//! unknown-but-attemptable: successful submission proves target-queue admission,
+//! not that the application consumed the legacy message or changed state.
+//! `System` is never quietly substituted, so the input route does not activate
+//! the target, move the real cursor, or type into the owned foreground.
 //!
-//! Every prerequisite is checked before any event is sent, and a missing one ends
-//! the program with an actionable message and a non-zero status.
+//! The full title is a required argument rather than a search heuristic:
+//! nothing is guessed, a prefix is not accepted, and more than one match is
+//! refused rather than resolved. The included ordinary fixture paints a
+//! deterministic post-input fill so the example can demonstrate that queue
+//! admission and a strictly newer visual observation are separate facts.
+//!
+//! Every prerequisite is checked before any event is sent, and a missing one
+//! ends the program with an actionable message and a non-zero status.
 //!
 //! # What it prints
 //!
@@ -54,15 +63,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod windows {
     use super::native_observation;
 
-    use std::time::Duration;
+    use std::io::{BufRead, BufReader};
+    use std::path::PathBuf;
+    use std::process::{Child, ChildStdout, Command, Stdio};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use mado_pilot::{
-        CapabilitySupport, CoordinateSpace, DeliveryPlan, DiagnosticOptions, Engine, Error,
-        FocusPolicy, Frame, FrameRequest, InputDelivery, InputEvent, InputOpenRequest,
-        InputOperationKind, InputReceipt, InputRequest, InputRequirement, InputSequence, Key,
-        NativeEngineRequest, OpenRequest, OperationContext, PixelFormat, Point, PointerGeometry,
-        SequenceOutcome, Session, SessionRequest, TargetDescription, TargetId, TargetKind,
+        CoordinateSpace, DeliveryPlan, DiagnosticOptions, Engine, Error, FocusPolicy, Frame,
+        FrameRequest, InputDelivery, InputEvent, InputOpenRequest, InputOperationKind,
+        InputReceipt, InputRequest, InputRequirement, InputSequence, Key, NativeEngineRequest,
+        OpenRequest, OperationContext, PixelFormat, Point, PointerGeometry, SequenceOutcome,
+        Session, SessionRequest, TargetDescription, TargetId, TargetKind,
     };
+    use mado_pilot_platform_windows::fixture_protocol::{
+        ORDINARY_CLASS_NAME, ordinary_fixture_title,
+    };
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GetForegroundWindow, SetForegroundWindow,
+    };
+    use windows::core::PCWSTR;
 
     /// How long a discovery pass may take.
     ///
@@ -71,11 +94,13 @@ mod windows {
     /// that an unresponsive host ends the program rather than hanging it.
     const DISCOVERY_BUDGET: Duration = Duration::from_secs(1);
 
+    /// How long a child may take to publish its single readiness record.
+    const FIXTURE_READY_BUDGET: Duration = Duration::from_secs(5);
+
     /// How long the whole input sequence may take.
     ///
-    /// Each `WindowMessage` event is one synchronous acknowledged fixture packet,
-    /// and the sequence below is six events with one short delay in it. Two
-    /// seconds bounds a fixture that stops acknowledging.
+    /// The sequence below has four logical events and three asynchronous native
+    /// units; the delay is a logical event but posts no window message.
     const INPUT_BUDGET: Duration = Duration::from_secs(2);
 
     /// How long a strictly-newer frame may take to show the expected condition.
@@ -95,6 +120,248 @@ mod windows {
     /// to.
     const MECHANISM: InputDelivery = InputDelivery::WindowMessage;
 
+    #[derive(Debug)]
+    struct ChildGuard {
+        child: Option<Child>,
+        original: HWND,
+        restore_on_drop: bool,
+    }
+
+    impl ChildGuard {
+        fn new(child: Child, original: HWND) -> Self {
+            Self {
+                child: Some(child),
+                original,
+                restore_on_drop: true,
+            }
+        }
+
+        fn child_mut(&mut self) -> &mut Child {
+            self.child.as_mut().expect("foreground child remains owned")
+        }
+
+        fn transfer(mut self) -> (Child, HWND) {
+            let child = self.child.take().expect("foreground child remains owned");
+            self.restore_on_drop = false;
+            (child, self.original)
+        }
+    }
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(child) = self.child.as_mut() {
+                let _killed = child.kill();
+                let _waited = child.wait();
+            }
+            if self.restore_on_drop && self.original != HWND::default() {
+                // SAFETY: this is the opaque foreground handle observed before spawn.
+                let _restored = unsafe { SetForegroundWindow(self.original) };
+            }
+        }
+    }
+    fn read_fixture_ready(output: ChildStdout) -> Result<String, Box<dyn std::error::Error>> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::spawn(move || {
+            let mut ready = String::new();
+            let result = BufReader::new(output).read_line(&mut ready).map(|_| ready);
+            let _sent = sender.send(result);
+        });
+        match receiver.recv_timeout(FIXTURE_READY_BUDGET) {
+            Ok(result) => Ok(result?),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err("the owned foreground fixture timed out before readiness".into())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("the owned foreground fixture readiness reader stopped".into())
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct OwnedForeground {
+        child: Child,
+        window: HWND,
+        original: HWND,
+        stop: Arc<AtomicBool>,
+        violation: Arc<AtomicUsize>,
+        monitor: Option<thread::JoinHandle<()>>,
+    }
+
+    impl OwnedForeground {
+        fn establish() -> Result<Self, Box<dyn std::error::Error>> {
+            // Capture this before `--activate` can replace it. The startup guard
+            // attempts restoration on every later setup failure.
+            // SAFETY: the return is an opaque handle and is not dereferenced.
+            let original = unsafe { GetForegroundWindow() };
+            let executable = foreground_fixture_executable()?;
+            let token = format!("example-owned-foreground-{}", std::process::id());
+            let mut child = ChildGuard::new(
+                Command::new(executable)
+                    .arg(format!("--title-token={token}"))
+                    .arg("--activate")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::inherit())
+                    .spawn()?,
+                original,
+            );
+            let title = ordinary_fixture_title(&token);
+            let output = child
+                .child_mut()
+                .stdout
+                .take()
+                .ok_or("the owned foreground fixture exposes readiness output")?;
+            let ready = read_fixture_ready(output)?;
+            if !ready.starts_with("fixture-ready ")
+                || !ready.contains(&format!(
+                    "class={ORDINARY_CLASS_NAME} title={title} capacity="
+                ))
+            {
+                return Err("the owned foreground fixture returned malformed readiness".into());
+            }
+
+            let class = wide(ORDINARY_CLASS_NAME);
+            let title = wide(&title);
+            // SAFETY: both strings are terminated and remain live for this lookup.
+            let window = unsafe { FindWindowW(PCWSTR(class.as_ptr()), PCWSTR(title.as_ptr())) }
+                .map_err(|_| "the owned foreground fixture window was not found")?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                // SAFETY: `window` is the live top-level window of the child this value owns.
+                let _requested = unsafe { SetForegroundWindow(window) };
+                // SAFETY: the return is an opaque handle and is not dereferenced.
+                if unsafe { GetForegroundWindow() } == window {
+                    break;
+                }
+                if child.child_mut().try_wait()?.is_some() {
+                    return Err("the owned foreground fixture exited during activation".into());
+                }
+                if Instant::now() >= deadline {
+                    return Err(
+                        "Windows foreground-lock policy refused the owned fixture; rerun from \
+                         the active terminal without interacting with another application"
+                            .into(),
+                    );
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            let stop = Arc::new(AtomicBool::new(false));
+            let violation = Arc::new(AtomicUsize::new(0));
+            let ready = Arc::new(AtomicBool::new(false));
+            let monitor_stop = Arc::clone(&stop);
+            let monitor_violation = Arc::clone(&violation);
+            let monitor_ready = Arc::clone(&ready);
+            let expected = window.0.addr();
+            let monitor = thread::spawn(move || {
+                while !monitor_stop.load(Ordering::Acquire) {
+                    // SAFETY: the return is an opaque handle and is not dereferenced.
+                    if unsafe { GetForegroundWindow() }.0.addr() != expected {
+                        monitor_violation.store(1, Ordering::Release);
+                        return;
+                    }
+                    monitor_ready.store(true, Ordering::Release);
+                    thread::sleep(Duration::from_millis(1));
+                }
+            });
+            let (child, original) = child.transfer();
+            let guard = Self {
+                child,
+                window,
+                original,
+                stop,
+                violation,
+                monitor: Some(monitor),
+            };
+            while !ready.load(Ordering::Acquire) {
+                if guard.violation.load(Ordering::Acquire) != 0 {
+                    return Err("the owned fixture lost foreground before input work began".into());
+                }
+                if Instant::now() >= deadline {
+                    return Err("the owned foreground monitor did not become ready".into());
+                }
+                thread::yield_now();
+            }
+            println!("foreground: owned unrelated application is monitored");
+            Ok(guard)
+        }
+
+        fn assert_stable(&self) -> Result<(), Box<dyn std::error::Error>> {
+            if self.violation.load(Ordering::Acquire) != 0 {
+                return Err(
+                    "the owned unrelated application stopped being foreground during the workflow"
+                        .into(),
+                );
+            }
+            // SAFETY: the return is an opaque handle and is not dereferenced.
+            if unsafe { GetForegroundWindow() } != self.window {
+                return Err("the owned unrelated application is no longer foreground".into());
+            }
+            Ok(())
+        }
+
+        fn stop_monitor(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(monitor) = self.monitor.take() {
+                let _joined = monitor.join();
+            }
+        }
+
+        fn finish(mut self) -> Result<(), Box<dyn std::error::Error>> {
+            let stable = self.assert_stable();
+            let running = self.child.try_wait()?.is_none();
+            self.stop_monitor();
+            stable?;
+            if !running {
+                return Err("the owned unrelated foreground application exited early".into());
+            }
+            println!("foreground: unchanged through input, observation, diagnostics, and close");
+            Ok(())
+        }
+    }
+
+    impl Drop for OwnedForeground {
+        fn drop(&mut self) {
+            self.stop_monitor();
+            let _killed = self.child.kill();
+            let _waited = self.child.wait();
+            if self.original != HWND::default() {
+                // SAFETY: this is the opaque foreground handle observed before setup.
+                let _restored = unsafe { SetForegroundWindow(self.original) };
+            }
+        }
+    }
+
+    fn foreground_fixture_executable() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let executable = match std::env::var_os("MADO_PILOT_WINDOW_MESSAGE_FIXTURE") {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ => {
+                let current = std::env::current_exe()?;
+                current
+                    .parent()
+                    .and_then(std::path::Path::parent)
+                    .ok_or("the example executable has no Cargo profile directory")?
+                    .join(format!(
+                        "mado-pilot-windows-window-message-fixture{}",
+                        std::env::consts::EXE_SUFFIX
+                    ))
+            }
+        };
+        if !executable.is_file() {
+            return Err(format!(
+                "{} does not exist; build the Windows window-message fixture first or set \
+                 MADO_PILOT_WINDOW_MESSAGE_FIXTURE to its full path",
+                executable.display()
+            )
+            .into());
+        }
+        Ok(executable)
+    }
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
     pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         let title = match std::env::args().nth(1) {
             Some(title) if !title.trim().is_empty() => title,
@@ -107,6 +374,7 @@ mod windows {
                 );
             }
         };
+        let foreground = OwnedForeground::establish()?;
 
         // 1. Build the engine with a bounded debug stream. This touches no
         //    Windows API and asks for no authorization: an unusable OpenCV fails
@@ -145,9 +413,9 @@ mod windows {
         );
 
         // 4. Confirm the target advertises the mechanism this program permits,
-        //    before a session exists. This is what excludes every window but the
-        //    dedicated fixture class, and it happens while excluding one is still
-        //    free.
+        //    before a session exists. Ordinary windows expose it as
+        //    unknown-but-attemptable; unsupported targets are refused while
+        //    substitution is still free.
         require_window_message_pointer_and_keyboard(&engine, target.id())?;
 
         // 5. Open capture and input as one session. Input is required, so a
@@ -182,9 +450,11 @@ mod windows {
         drop(session);
         drop(engine);
         let diagnostics_drained = native_observation::drain_diagnostics(&diagnostics);
+        let foreground_held = foreground.finish();
         let receipt = worked?;
         closed?;
         diagnostics_drained?;
+        foreground_held?;
 
         if receipt.outcome() == SequenceOutcome::Complete {
             Ok(())
@@ -323,11 +593,10 @@ mod windows {
         let descriptor = engine.describe_input(target, &bounded(DISCOVERY_BUDGET)?)?;
         let capability = descriptor.capability();
         for kind in [InputOperationKind::Pointer, InputOperationKind::Keyboard] {
-            if capability.pair(kind, MECHANISM).support() != CapabilitySupport::Supported {
+            if !capability.pair(kind, MECHANISM).may_attempt() {
                 return Err(format!(
-                    "the selected window does not accept {kind} through the window-message route, \
-                     and system input is not substituted for it — point this at the dedicated \
-                     input fixture"
+                    "the selected window cannot attempt {kind} through the window-message route, \
+                     and system input is not substituted for it"
                 )
                 .into());
             }

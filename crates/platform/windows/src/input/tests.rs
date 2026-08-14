@@ -16,13 +16,13 @@ use mado_pilot_core::{
 };
 use mado_pilot_input::{
     CleanupState, DeliveryPlan, FocusPolicy, InputController, InputDescriptor, InputEvent,
-    InputFault, InputReceipt, InputRequest, InputSequence, Key, Modifier, PointerGeometry,
-    PressedState, SequenceOutcome,
+    InputFault, InputReceipt, InputRequest, InputSequence, Key, Modifier, PointerButton,
+    PointerGeometry, PressedState, SequenceOutcome,
 };
 
 use super::{
     DriverState, GeometryLedger, InputDriver, SubmissionContexts, SubmissionFailure,
-    WindowsInputController, input_capability,
+    WindowsInputController, input_capability, wait_delay,
 };
 
 #[derive(Debug, Default)]
@@ -42,11 +42,24 @@ impl Clock for ManualClock {
         MonotonicInstant::from_origin(*self.elapsed.lock().expect("uncontended"))
     }
 }
+#[derive(Debug, Default)]
+struct StepClock {
+    milliseconds: AtomicUsize,
+}
+
+impl Clock for StepClock {
+    fn now(&self) -> MonotonicInstant {
+        let milliseconds = self.milliseconds.fetch_add(1, Ordering::AcqRel);
+        MonotonicInstant::from_origin(Duration::from_millis(
+            u64::try_from(milliseconds).expect("test tick fits u64"),
+        ))
+    }
+}
 
 #[derive(Debug, Default)]
 struct ScriptedDriver {
     unavailable: Mutex<Option<(InputDelivery, InputFault)>>,
-    fail_at: Mutex<Option<(usize, InputFault, bool)>>,
+    fail_at: Mutex<Option<(usize, InputFault, bool, bool)>>,
     cancel_after: Mutex<Option<(usize, CancellationToken)>>,
     advance_after: Mutex<Option<(usize, Arc<ManualClock>, Duration)>>,
     attempts: AtomicUsize,
@@ -62,12 +75,17 @@ impl ScriptedDriver {
     }
 
     fn fail_at(self, index: usize, fault: InputFault) -> Self {
-        *self.fail_at.lock().expect("uncontended") = Some((index, fault, false));
+        *self.fail_at.lock().expect("uncontended") = Some((index, fault, false, false));
         self
     }
 
     fn fail_during(self, index: usize, fault: InputFault) -> Self {
-        *self.fail_at.lock().expect("uncontended") = Some((index, fault, true));
+        *self.fail_at.lock().expect("uncontended") = Some((index, fault, true, true));
+        self
+    }
+
+    fn fail_during_without_pressed_state(self, index: usize, fault: InputFault) -> Self {
+        *self.fail_at.lock().expect("uncontended") = Some((index, fault, true, false));
         self
     }
 
@@ -108,14 +126,19 @@ impl InputDriver for ScriptedDriver {
         _contexts: SubmissionContexts<'_>,
     ) -> Result<(), SubmissionFailure> {
         let index = self.attempts.fetch_add(1, Ordering::AcqRel);
-        if let Some((failure_index, fault, during_event)) =
+        if let Some((failure_index, fault, during_event, may_leave_pressed_state)) =
             *self.fail_at.lock().expect("uncontended")
             && failure_index == index
         {
-            return Err(if during_event {
+            let failure = if during_event {
                 SubmissionFailure::during_event(fault)
             } else {
                 SubmissionFailure::before_event(fault)
+            };
+            return Err(if may_leave_pressed_state {
+                failure
+            } else {
+                failure.without_pressed_state()
             });
         }
         self.submitted
@@ -217,9 +240,10 @@ fn attempted_routes(receipt: &InputReceipt) -> Vec<InputDelivery> {
 
 #[test]
 fn target_classes_advertise_only_the_verified_route_matrix() {
-    let ordinary = input_capability(TargetKind::Window, Some("OrdinaryWindow"));
-    let fixture = input_capability(TargetKind::Window, Some(CLASS_NAME));
-    let display = input_capability(TargetKind::Display, None);
+    let ordinary = input_capability(TargetKind::Window, Some("OrdinaryWindow"), true);
+    let fixture = input_capability(TargetKind::Window, Some(CLASS_NAME), true);
+    let unavailable = input_capability(TargetKind::Window, Some("OrdinaryWindow"), false);
+    let display = input_capability(TargetKind::Display, None, false);
 
     for operation in InputOperationKind::ALL {
         assert_eq!(
@@ -230,7 +254,13 @@ fn target_classes_advertise_only_the_verified_route_matrix() {
             ordinary
                 .pair(operation, InputDelivery::WindowMessage)
                 .support(),
-            CapabilitySupport::Unsupported
+            CapabilitySupport::Unknown
+        );
+        assert_eq!(
+            ordinary
+                .pair(operation, InputDelivery::WindowMessage)
+                .evidence(),
+            Some(SubmissionEvidence::TargetQueueAdmission)
         );
         assert_eq!(
             fixture.pair(operation, InputDelivery::System).support(),
@@ -241,6 +271,18 @@ fn target_classes_advertise_only_the_verified_route_matrix() {
                 .pair(operation, InputDelivery::WindowMessage)
                 .support(),
             CapabilitySupport::Supported
+        );
+        assert_eq!(
+            fixture
+                .pair(operation, InputDelivery::WindowMessage)
+                .evidence(),
+            Some(SubmissionEvidence::TargetProtocolAcknowledgement)
+        );
+        assert_eq!(
+            unavailable
+                .pair(operation, InputDelivery::WindowMessage)
+                .support(),
+            CapabilitySupport::Unsupported
         );
         assert_eq!(
             fixture
@@ -278,6 +320,11 @@ fn target_classes_advertise_only_the_verified_route_matrix() {
                 .pair(operation, InputDelivery::System)
                 .focus_required()
         );
+        assert!(
+            !ordinary
+                .pair(operation, InputDelivery::WindowMessage)
+                .focus_required()
+        );
     }
     assert!(
         !display
@@ -294,6 +341,11 @@ fn target_classes_advertise_only_the_verified_route_matrix() {
         assert!(
             ordinary
                 .pair(InputOperationKind::Pointer, InputDelivery::System)
+                .accepts_pointer_space(space)
+        );
+        assert!(
+            ordinary
+                .pair(InputOperationKind::Pointer, InputDelivery::WindowMessage)
                 .accepts_pointer_space(space)
         );
         assert!(
@@ -325,6 +377,10 @@ fn geometry_ledger_retains_only_the_live_streams_latest_revision() {
 
     assert_eq!(ledger.source_transform(first), Some(first_transform));
     assert_eq!(ledger.source_transform(later_same_revision), None);
+    assert_eq!(
+        ledger.resolve_source_transform(later_same_revision),
+        Err(InputFault::UnsupportedCoordinate)
+    );
     ledger.record(later_same_revision, first_transform);
     assert_eq!(ledger.source_transform(first), Some(first_transform));
     assert_eq!(
@@ -338,9 +394,17 @@ fn geometry_ledger_retains_only_the_live_streams_latest_revision() {
     ledger.record(moved, moved_transform);
 
     assert_eq!(ledger.source_transform(first), None);
+    assert_eq!(
+        ledger.resolve_source_transform(first),
+        Err(InputFault::GeometryChanged)
+    );
     assert_eq!(ledger.source_transform(moved), Some(moved_transform));
     ledger.remove(moved.stream());
     assert_eq!(ledger.source_transform(moved), None);
+    assert_eq!(
+        ledger.resolve_source_transform(moved),
+        Err(InputFault::UnsupportedCoordinate)
+    );
 }
 
 #[test]
@@ -613,6 +677,32 @@ fn a_partial_native_event_is_not_misreported_as_unexecuted() {
 }
 
 #[test]
+fn a_partial_positioning_effect_does_not_release_an_unpressed_button() {
+    let target = target();
+    let driver = Arc::new(
+        ScriptedDriver::default()
+            .fail_during_without_pressed_state(0, InputFault::SubmissionFailed),
+    );
+    let controller = controller(target, Arc::clone(&driver));
+    let request = InputRequest::new(
+        target,
+        InputSequence::new(vec![InputEvent::PointerPress(PointerButton::Primary)])
+            .expect("valid pointer press"),
+        DeliveryPlan::require(InputDelivery::WindowMessage),
+    );
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("receipted");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
+    assert!(receipt.partial_native_effect());
+    assert_eq!(receipt.cleanup(), CleanupState::NotNeeded);
+    assert_eq!(receipt.cleanup_owed(), 0);
+    assert!(driver.released.lock().expect("uncontended").is_empty());
+}
+
+#[test]
 fn cleanup_releases_only_sequence_owned_state_newest_first() {
     let target = target();
     let driver = Arc::new(ScriptedDriver::default().fail_at(2, InputFault::SubmissionFailed));
@@ -761,4 +851,26 @@ fn close_is_idempotent_and_stops_admission() {
         .execute(&request, &operation)
         .expect_err("closed controller");
     assert_eq!(error.status(), mado_pilot_core::Status::Closed);
+}
+
+#[test]
+fn delay_observes_cancellation_without_native_submission() {
+    let token = CancellationToken::new();
+    token.cancel();
+    let operation = OperationContext::new().with_cancellation(token);
+    assert_eq!(
+        wait_delay(Duration::from_millis(10), &operation),
+        Err(InputFault::Cancelled)
+    );
+}
+
+#[test]
+fn delay_observes_deadline_with_a_deterministic_clock() {
+    let operation = OperationContext::new()
+        .with_clock(Arc::new(StepClock::default()))
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(3)));
+    assert_eq!(
+        wait_delay(Duration::from_millis(10), &operation),
+        Err(InputFault::DeadlineExceeded)
+    );
 }

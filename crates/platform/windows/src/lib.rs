@@ -58,6 +58,10 @@ mod optional_api;
 mod provider;
 #[cfg(windows)]
 mod storage;
+#[cfg(windows)]
+mod window_authority;
+#[cfg(windows)]
+mod window_message;
 
 #[cfg(windows)]
 pub use provider::{PROVIDER, WindowsCaptureProvider};

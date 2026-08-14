@@ -495,10 +495,12 @@ conservatively.
 
 A contained boundary panic leaves the receipt handle null but cannot prove no
 native input took effect, so the caller must not automatically retry.
-Windows advertises system routes for ordinary targets and
-target-protocol-acknowledged window-message routes only for the dedicated
-fixture. macOS advertises system routes only. The capability report, not a
-platform guess in the caller, decides what may be admitted.
+Windows advertises exact-window `WindowMessage` for ordinary retained
+top-level windows as unknown-but-attemptable with target-queue-admission
+evidence. The dedicated fixture raises the same route to supported with
+target-protocol acknowledgement. Both remain separate from Windows system
+routes. macOS advertises system routes only. The negotiated capability report,
+not a platform guess in the caller, decides what may be admitted.
 
 ## Bounded diagnostic stream
 
@@ -667,22 +669,30 @@ macOS and for an ordinary local run:
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 ```
 
-On Windows, `--windows-native-fixture` launches the already-built dedicated
-fixture, parses its PID-qualified title, runs both native C and C++ common flows
-against that exact title, and terminates the fixture:
+On Windows, `--windows-native-fixture` launches both already-built repository
+fixtures, obtains their exact titles, runs the C and C++ common flows once
+against the ordinary contract and once against the acknowledged contract, and
+terminates both fixtures:
 
 ```bat
-cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture
+cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture
+cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>" --windows-native-fixture
 ```
 
-The fixture-backed flow covers discovery, capture, mapping, one bounded
-pointer/keyboard sequence, receipt inspection, a strictly newer visual-condition
-search, diagnostic drain, and explicit session close. It uses acknowledged
-`WindowMessage` submission, preserves focus, permits no system-input fallback,
-and prints no title or typed text. Passing an exact full fixture title directly
-to `windows-native-input.exe` or its `-cpp` counterpart exercises the same flow
-when the caller owns the fixture lifecycle.
+Each flow covers discovery, capture, mapping, one bounded pointer/keyboard
+sequence, immutable receipt and attempt inspection, a strictly newer
+visual-condition search, diagnostic drain, and explicit session close. The
+ordinary run requires `MADOPILOT_CAPABILITY_UNKNOWN` and
+`MADOPILOT_SUBMISSION_EVIDENCE_TARGET_QUEUE_ADMISSION`; the dedicated fixture
+requires `MADOPILOT_CAPABILITY_SUPPORTED` and
+`MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT`. Both preserve
+focus, permit no system-input fallback, and print no title, captured bytes, or
+typed text.
+
+When a caller owns the fixture lifecycle, pass `--ordinary "<full title>"` or
+`--acknowledged "<full title>"` directly to `windows-native-input.exe`; the C++
+counterpart accepts the same flags.
 
 ## How the header is verified
 

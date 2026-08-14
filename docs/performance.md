@@ -456,7 +456,7 @@ the macOS input profile; ADR 0026 now replaces every Windows native gap:
 | Transitions | macOS | [aarch64](benchmarks/phase-2-native-transitions-aarch64-apple-darwin.toml) | historical, non-normative because it names the superseded tree |
 | Transitions | Windows | [x86_64](benchmarks/phase-2-native-transitions-x86_64-pc-windows-msvc.toml) | measured and normative under ADR 0026 |
 | Input and public languages | macOS | [aarch64](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml) | measured and normative under ADR 0025 |
-| Input and public languages | Windows | [x86_64](benchmarks/phase-2-native-input-x86_64-pc-windows-msvc.toml) | measured and normative under ADR 0026 |
+| Input and public languages | Windows | [x86_64](benchmarks/phase-2-native-input-x86_64-pc-windows-msvc.toml) | measured and normative under ADR 0026, extended by ADR 0028 |
 
 The two historical macOS files retain their old samples, environment metadata,
 and former budget blocks with `normative = false`; they do not gate current
@@ -476,6 +476,22 @@ stimulus-to-frame. Transition p95 ranges from `2.530000 ms` for close to
 receipt, `116.048000 ms` for the Rust common flow, `15.717900 ms` for C process
 loading, `15.343200 ms` for C++ process loading, and below `285 ms` for either
 public-language common flow.
+
+[ADR 0028](adr/0028-windows-window-message-performance-budgets.md) fixed the
+production `WindowMessage` ceilings from the decision-setting `b72a95f`
+profile. That run rejected the pre-measurement 64 KiB maximum-sequence
+hypothesis by 1,275 bytes and retained a measured 256 KiB regression ceiling.
+
+The post-review input/public-language profile was regenerated at source
+`223925d52d24045ddadbc97c751d79d75a94ad7c`, tree
+`ae009ae7f8b917ae13c2ebd02cdea92696d009b9`; its
+[raw output](evidence/phase-2-performance/native-phase2-input-window-message-223925d.log)
+retains 50 samples after five warmups. One-unit submission measured
+`0.3134 ms` p50 and `0.5124 ms` p95; positioning plus a two-unit
+primary-button event measured `0.7904 ms` p50 and `1.0026 ms` p95. The maximum
+256-event sequence measured `73.7495 ms` p50, `78.8125 ms` p95, 66,647 bytes
+of aggregate Rust heap, and zero post-warmup growth. Every workload satisfied
+its oracle and the unchanged ADR 0026/0028 budgets.
 
 The first Windows transition and language runs were rejected rather than
 recorded. They proved benchmark apparatus defects: the resize fixture stopped

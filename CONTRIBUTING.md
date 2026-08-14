@@ -130,12 +130,23 @@ review is in
 [docs/adr/0013-windows-capture-frame-detachment.md](docs/adr/0013-windows-capture-frame-detachment.md)
 records the ownership decision that the production implementation follows.
 
-The Windows input implementation adds no external prerequisite or helper process.
-It uses target-gated Win32 bindings, does not elevate, and does not attach another
-thread's input queue. The ordinary workspace test run starts the dedicated
-`MadoPilotInputFixture` without activating it and exercises only its acknowledged
-background protocol, so that check does not move the pointer or type into the
-desktop. The fixture retains bounded event summaries and never input text.
+The Windows input implementation adds no external prerequisite or production
+helper process. It uses target-gated Win32 bindings, does not elevate, and does
+not attach another thread's input queue. The ordinary workspace test run starts
+only `MadoPilotInputFixture` in no-activation mode, sends no system input, and
+never retains input text.
+
+The ordinary `WindowMessage` native matrix is also ignored by default because it
+temporarily activates a repository-owned foreground fixture and requires an
+unlocked interactive desktop. Run it deliberately with:
+
+```sh
+cargo test --locked -p mado-pilot-platform-windows --test window_message_native ordinary_window_message_native_matrix -- --ignored --exact --nocapture --test-threads=1
+```
+
+It posts only to other exact fixture windows, sends no `System` input, does not
+intentionally move the physical pointer, and attempts to restore the prior
+foreground and cursor on exit.
 
 Successful system injection is deliberately excluded from the automatic suite
 because Windows requires a real foreground target. On an interactive Windows host,

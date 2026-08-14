@@ -122,10 +122,13 @@ the output.
 
 ## Fixtures and native context
 
-- Windows capture uses the repository-owned synthetic Win32 window and dedicated
-  `MadoPilotInputFixture`; fixture-only `WindowMessage` submission preserves
-  focus and permits no system fallback. The two-4K profile uses the approved
-  signed-origin topology outside work hours.
+- Windows capture uses the repository-owned synthetic Win32 window. Input
+  profiles use both the ordinary legacy-message fixture and the dedicated
+  `MadoPilotInputFixture`: ordinary `WindowMessage` requires unknown
+  compatibility and target-queue evidence, while the dedicated path requires
+  supported compatibility and protocol acknowledgement. Both preserve focus and
+  permit no system fallback. The two-4K profile uses the approved signed-origin
+  topology outside work hours.
 - macOS uses the repository-owned bundled input fixture, with Screen Recording
   and Accessibility separately granted to the launching terminal. System input
   may focus only the exact PID-qualified fixture. The external-display profile is

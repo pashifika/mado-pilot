@@ -541,20 +541,24 @@ half it:
 3. compiles and runs `examples/cpp/native-input.cpp`. The default `--check`
    creates the real target Adapter and reads only non-prompting permission state
    before stopping without discovery or input. Windows CI instead asks
-   `c-abi-check --windows-native-fixture` to own the dedicated fixture and pass
-   its exact PID-qualified title to both native language examples; this exercises
-   discovery, capture, mapping, one bounded window-message sequence, submission
-   evidence and receipt attempts, a strictly newer visual observation, diagnostics,
-   and explicit close without taking focus or permitting system fallback;
+   `c-abi-check --windows-native-fixture` to own both repository fixtures and
+   pass each exact title to both native language examples. Each language runs
+   discovery, capture, mapping, one bounded window-message sequence, immutable
+   receipt/attempt inspection, a strictly newer visual observation, diagnostics,
+   and explicit close twice: the ordinary contract must report unknown
+   compatibility and target-queue admission, while the dedicated contract must
+   report supported compatibility and target-protocol acknowledgement. Neither
+   run takes focus or permits system fallback;
 4. configures, builds, and runs the independent CMake consumer project under
    CTest. That project also builds the native example through `MadoPilot::Cpp`
    alone and runs its safe `--check` mode.
 
-Passing the native example an exact full fixture title directly enables the same
-common flow. That mode sends real system input on macOS and
-target-protocol-acknowledged window-message input on Windows, then evaluates a
-newer frame separately; run it only against the dedicated fixture described in
-the platform verification document.
+When the caller owns a fixture lifecycle, pass `--ordinary "<full title>"` or
+`--acknowledged "<full title>"` directly to the native example. Those modes send
+explicit focus-preserving `WindowMessage` on Windows and evaluate a newer frame
+separately. On macOS, an exact title selects the separate system route. Run real
+input only against a target you own and have selected exactly, as described in
+the platform verification documents.
 
 The check needs a C++ compiler and **CMake 3.22 or later** in addition to the C
 compiler. Both are the release target's own on both hosts; set `CXX` or `CMAKE`

@@ -42,9 +42,14 @@ mod native {
     use mado_pilot_testkit::bench_harness::{
         self, Benchmark, Plan, Profile, Sample, Workload, argument, enforce_hard_budgets, measure,
     };
+    #[cfg(windows)]
+    use mado_pilot_testkit::bench_harness::{PrefixedLineMatch, classify_prefixed_line};
 
     #[cfg(windows)]
-    use mado_pilot::{CoordinateSpace, Point};
+    use mado_pilot::{
+        CapabilitySupport, CoordinateSpace, InputAddressScope, InputReceipt, Point, PointerButton,
+        SequenceLimits, SubmissionEvidence, TargetKind,
+    };
     #[cfg(target_os = "macos")]
     use mado_pilot_platform_macos::fixture_protocol as protocol;
     #[cfg(windows)]
@@ -54,6 +59,88 @@ mod native {
     const CLOSE_WAIT: Duration = Duration::from_secs(5);
     const PRESSURE_WAIT: Duration = Duration::from_millis(100);
     const FIXTURE_WAIT: Duration = Duration::from_secs(10);
+
+    const COMMON_LANGUAGE_EVENTS: [protocol::EventSummary; 3] = [
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_MOVE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_DOWN,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_UP,
+            text_units: expected_key_units(),
+        },
+    ];
+
+    #[cfg(windows)]
+    const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 15] = [
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_MOVE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_PRESS,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_RELEASE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_PRESS,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_RELEASE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_PRESS,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_RELEASE,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_POINTER_SCROLL,
+            text_units: 0,
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_DOWN,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_UP,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_DOWN,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_DOWN,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_UP,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_KEY_UP,
+            text_units: expected_key_units(),
+        },
+        protocol::EventSummary {
+            kind: protocol::EVENT_TEXT,
+            text_units: 3,
+        },
+    ];
+
+    #[cfg(target_os = "macos")]
+    const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 3] = COMMON_LANGUAGE_EVENTS;
 
     static ARGUMENTS: OnceLock<Arguments> = OnceLock::new();
 
@@ -113,6 +200,8 @@ mod native {
     struct Arguments {
         set: WorkloadSet,
         fixture_executable: PathBuf,
+        #[cfg(windows)]
+        ordinary_fixture_executable: Option<PathBuf>,
         c_executable: Option<PathBuf>,
         cpp_executable: Option<PathBuf>,
         hardware: String,
@@ -144,6 +233,12 @@ mod native {
                     Err(format!("{name} does not name a built executable"))
                 }
             };
+            #[cfg(windows)]
+            let ordinary_fixture_executable = if set == WorkloadSet::Input {
+                Some(language_executable("--ordinary-fixture-executable")?)
+            } else {
+                None
+            };
             let (c_executable, cpp_executable) = if set == WorkloadSet::Input {
                 (
                     Some(language_executable("--c-executable")?),
@@ -171,6 +266,8 @@ mod native {
             Ok(Self {
                 set,
                 fixture_executable,
+                #[cfg(windows)]
+                ordinary_fixture_executable,
                 hardware,
                 os_version,
                 c_executable,
@@ -198,6 +295,7 @@ mod native {
     struct FixtureProcess {
         child: Child,
         lines: mpsc::Receiver<String>,
+        reader: Option<thread::JoinHandle<()>>,
     }
 
     impl FixtureProcess {
@@ -216,7 +314,7 @@ mod native {
                 .take()
                 .expect("the benchmark fixture exposes readiness output");
             let (sender, lines) = mpsc::sync_channel(512);
-            thread::spawn(move || {
+            let reader = thread::spawn(move || {
                 for line in BufReader::new(output).lines() {
                     let Ok(line) = line else {
                         break;
@@ -226,7 +324,11 @@ mod native {
                     }
                 }
             });
-            let fixture = Self { child, lines };
+            let fixture = Self {
+                child,
+                lines,
+                reader: Some(reader),
+            };
             let ready = fixture
                 .lines
                 .recv_timeout(FIXTURE_WAIT)
@@ -241,8 +343,65 @@ mod native {
             protocol::fixture_title(self.child.id())
         }
 
-        fn next_common_flow(&self) -> bool {
-            self.next_pointer_move() && self.next_key_pair()
+        fn next_flow(&self, expected: &[protocol::EventSummary]) -> bool {
+            expected.iter().all(|expected| {
+                let deadline = Instant::now() + OPERATION_WAIT;
+                loop {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return false;
+                    }
+                    let Ok(line) = self.lines.recv_timeout(remaining) else {
+                        return false;
+                    };
+                    let Some(observed) = protocol::parse_event_line(&line) else {
+                        continue;
+                    };
+                    if observed != *expected {
+                        eprintln!(
+                            "benchmark fixture event mismatch: expected {expected:?}, observed {observed:?}"
+                        );
+                        return false;
+                    }
+                    return true;
+                }
+            })
+        }
+
+        fn finish_observation(mut self) -> bool {
+            let _killed = self.child.kill();
+            let _waited = self.child.wait();
+            let deadline = Instant::now() + OPERATION_WAIT;
+            let mut complete = true;
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    eprintln!("benchmark fixture output reader did not terminate");
+                    return false;
+                }
+                match self.lines.recv_timeout(remaining) {
+                    Ok(line) => {
+                        if let Some(event) = protocol::parse_event_line(&line) {
+                            eprintln!("benchmark fixture emitted a trailing event: {event:?}");
+                            complete = false;
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        eprintln!("benchmark fixture output reader did not terminate");
+                        return false;
+                    }
+                }
+            }
+            if self
+                .reader
+                .take()
+                .is_some_and(|reader| reader.join().is_err())
+            {
+                eprintln!("benchmark fixture output reader panicked");
+                complete = false;
+            }
+            complete
         }
 
         fn next_key_pair(&self) -> bool {
@@ -255,6 +414,7 @@ mod native {
                 && self.next_event(protocol::EVENT_KEY_UP, up_units, true)
         }
 
+        #[cfg(windows)]
         fn next_pointer_move(&self) -> bool {
             self.next_event(protocol::EVENT_POINTER_MOVE, 0, false)
         }
@@ -297,6 +457,195 @@ mod native {
         fn drop(&mut self) {
             let _killed = self.child.kill();
             let _waited = self.child.wait();
+        }
+    }
+
+    #[cfg(windows)]
+    struct OrdinaryFixtureProcess {
+        child: Child,
+        lines: mpsc::Receiver<String>,
+        title: String,
+    }
+
+    #[cfg(windows)]
+    impl OrdinaryFixtureProcess {
+        fn spawn() -> Self {
+            let executable = arguments()
+                .ordinary_fixture_executable
+                .as_ref()
+                .expect("the Windows input benchmark requires its ordinary fixture executable");
+            let mut child = Command::new(executable)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap_or_else(|error| {
+                    panic!("the ordinary input benchmark fixture could not start: {error}")
+                });
+            let process_id = child.id();
+            let title = protocol::ordinary_fixture_title(&process_id.to_string());
+            let output = child
+                .stdout
+                .take()
+                .expect("the ordinary fixture exposes readiness output");
+            let (sender, lines) = mpsc::sync_channel(512);
+            thread::spawn(move || {
+                for line in BufReader::new(output).lines() {
+                    let Ok(line) = line else {
+                        break;
+                    };
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            let fixture = Self {
+                child,
+                lines,
+                title,
+            };
+            let ready = fixture
+                .lines
+                .recv_timeout(FIXTURE_WAIT)
+                .expect("the ordinary fixture reports readiness");
+            assert!(
+                ordinary_ready_line_is_approved(&ready, &fixture.title),
+                "the ordinary fixture readiness record was not the exact approved context"
+            );
+            fixture
+        }
+
+        fn next_pointer_move(&self) -> bool {
+            self.next_target_observations(&["observation role=target family=pointer-move units=1"])
+        }
+
+        fn next_pointer_button_press(&self) -> bool {
+            self.next_target_observations(&[
+                "observation role=target family=pointer-move units=1",
+                "observation role=target family=pointer-move units=1",
+                "observation role=target family=button-down units=1",
+            ])
+        }
+        fn next_pointer_moves(&self, count: usize) -> bool {
+            let deadline = Instant::now() + OPERATION_WAIT;
+            (0..count).all(|_| {
+                self.next_target_observation(
+                    "observation role=target family=pointer-move units=1",
+                    deadline,
+                )
+            })
+        }
+
+        fn next_target_observations(&self, expected: &[&str]) -> bool {
+            let deadline = Instant::now() + OPERATION_WAIT;
+            expected
+                .iter()
+                .all(|expected_line| self.next_target_observation(expected_line, deadline))
+        }
+
+        fn next_target_observation(&self, expected_line: &str, deadline: Instant) -> bool {
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return false;
+                }
+                let Ok(line) = self.lines.recv_timeout(remaining) else {
+                    return false;
+                };
+                match classify_prefixed_line(&line, "observation role=", expected_line) {
+                    PrefixedLineMatch::Irrelevant => {}
+                    PrefixedLineMatch::Expected => return true,
+                    PrefixedLineMatch::Unexpected => {
+                        eprintln!(
+                            "ordinary fixture observation mismatch: expected `{expected_line}`, observed `{line}`"
+                        );
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for OrdinaryFixtureProcess {
+        fn drop(&mut self) {
+            let _killed = self.child.kill();
+            let _waited = self.child.wait();
+        }
+    }
+
+    #[cfg(windows)]
+    struct OrdinaryInputFlow {
+        _engine: Engine,
+        fixture: OrdinaryFixtureProcess,
+        session: Session,
+        target: TargetId,
+    }
+
+    #[cfg(windows)]
+    impl OrdinaryInputFlow {
+        fn spawn() -> Self {
+            let fixture = OrdinaryFixtureProcess::spawn();
+            let engine = native_engine();
+            require_permissions(&engine);
+            let selection_deadline = Instant::now() + FIXTURE_WAIT;
+            let target = loop {
+                let targets = engine
+                    .discover(&bounded(OPERATION_WAIT))
+                    .expect("the ordinary benchmark fixture is discoverable");
+                let mut matching = targets.iter().filter(|candidate| {
+                    candidate.name() == fixture.title
+                        && candidate.capability().kind() == Some(TargetKind::Window)
+                });
+                if let Some(candidate) = matching.next() {
+                    assert!(
+                        matching.next().is_none(),
+                        "the ordinary benchmark fixture title is unique"
+                    );
+                    break candidate.id();
+                }
+                assert!(
+                    Instant::now() < selection_deadline,
+                    "the exact ordinary benchmark fixture becomes selectable"
+                );
+                thread::sleep(Duration::from_millis(50));
+            };
+            let descriptor = engine
+                .describe_input(target, &bounded(OPERATION_WAIT))
+                .expect("the ordinary fixture exposes an input descriptor");
+            let pair = descriptor
+                .capability()
+                .pair(InputOperationKind::Pointer, InputDelivery::WindowMessage);
+            assert_eq!(pair.support(), CapabilitySupport::Unknown);
+            assert_eq!(
+                pair.evidence(),
+                Some(SubmissionEvidence::TargetQueueAdmission)
+            );
+            assert!(!pair.focus_required());
+            let session = engine
+                .open_session(
+                    target,
+                    &SessionRequest::new().requesting_input(
+                        InputOpenRequest::new()
+                            .with_requirement(InputRequirement::Required)
+                            .requiring(InputOperationKind::Pointer, InputDelivery::WindowMessage),
+                    ),
+                    &bounded(OPERATION_WAIT),
+                )
+                .expect("the ordinary fixture opens required exact-window pointer input");
+            Self {
+                _engine: engine,
+                fixture,
+                session,
+                target,
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for OrdinaryInputFlow {
+        fn drop(&mut self) {
+            let _closed = close(&self.session);
         }
     }
 
@@ -475,6 +824,14 @@ mod native {
             };
             command
         }
+
+        fn expected_fixture_events(&self) -> &'static [protocol::EventSummary] {
+            if self.example_name == cpp_example_name() {
+                &CPP_LANGUAGE_EVENTS
+            } else {
+                &COMMON_LANGUAGE_EVENTS
+            }
+        }
     }
 
     pub(super) fn run() {
@@ -491,13 +848,14 @@ mod native {
                 concat!(
                     "usage: cargo bench --package mado-pilot --bench native-phase2 -- ",
                     "--workload-set <capture|transitions|input> ",
-                    "--fixture-executable <path> [--c-executable <path> ",
-                    "--cpp-executable <path>] --hardware <description> ",
-                    "--os-version <description> --source-revision <commit> ",
-                    "--source-tree <tree> --toolchain <versions> ",
-                    "--gpu-driver <description> --display-topology <description> ",
+                    "--fixture-executable <path> [--ordinary-fixture-executable <path> ",
+                    "--c-executable <path> --cpp-executable <path>] ",
+                    "--hardware <description> --os-version <description> ",
+                    "--source-revision <commit> --source-tree <tree> ",
+                    "--toolchain <versions> --gpu-driver <description> ",
+                    "--display-topology <description> ",
                     "--permissions-signing <description>\n",
-                    "(the C and C++ executables are required for the input set)",
+                    "(on Windows the ordinary fixture, C, and C++ executables are required for the input set)",
                 )
             )
         });
@@ -517,7 +875,7 @@ mod native {
             },
             &Profile {
                 fixture: fixture.to_owned(),
-                fixture_sha256: fixture_digest().to_string(),
+                fixture_sha256: fixture_digest(set).to_string(),
                 hardware: args.hardware.clone(),
                 os_version: args.os_version.clone(),
                 build_profile: format!(
@@ -623,7 +981,7 @@ mod native {
                     cpp_example_name(),
                     cpp_receipt_line(),
                 );
-                vec![
+                let workloads = vec![
                     measure(
                         "input_request_receipt",
                         "the complete two-event receipt corresponds to exactly one fixture key-down and key-up summary",
@@ -661,12 +1019,48 @@ mod native {
                     ),
                     measure(
                         "cpp_common_flow",
-                        "the released C++ wrapper performs the same bounded fixture flow in a fresh process",
+                        cpp_correctness_oracle(),
                         plan,
                         || cpp.clone(),
                         language_common_flow,
                     ),
-                ]
+                ];
+                #[cfg(windows)]
+                let mut workloads = workloads;
+                #[cfg(windows)]
+                workloads.insert(
+                    1,
+                    measure(
+                        "ordinary_window_queue_submission",
+                        "one ordinary exact-window pointer event crosses current-target pre/post fences, reports queue admission, and reaches only the selected fixture",
+                        plan,
+                        OrdinaryInputFlow::spawn,
+                        ordinary_window_queue_submission,
+                    ),
+                );
+                #[cfg(windows)]
+                workloads.insert(
+                    2,
+                    measure(
+                        "ordinary_window_button_submission",
+                        "one pointer move followed by a two-unit primary-button event crosses the production route and reaches only the selected ordinary fixture",
+                        plan,
+                        OrdinaryInputFlow::spawn,
+                        ordinary_window_button_submission,
+                    ),
+                );
+                #[cfg(windows)]
+                workloads.insert(
+                    3,
+                    measure(
+                        "ordinary_window_max_sequence",
+                        "the maximum accepted 256-event sequence crosses the ordinary production route, reports every submission, and reaches only the selected fixture",
+                        plan,
+                        OrdinaryInputFlow::spawn,
+                        ordinary_window_max_sequence,
+                    ),
+                );
+                workloads
             }
         }
     }
@@ -930,6 +1324,107 @@ mod native {
         Sample::unmapped(elapsed, correct)
     }
 
+    #[cfg(windows)]
+    fn ordinary_window_queue_submission(flow: &OrdinaryInputFlow) -> Sample {
+        let point = Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5)
+            .expect("the ordinary benchmark point is normalized");
+        let sequence = InputSequence::new(vec![InputEvent::PointerMove(point)])
+            .expect("the ordinary benchmark sequence is bounded");
+        let started = Instant::now();
+        let receipt = flow
+            .session
+            .send_input(
+                &InputRequest::new(
+                    flow.target,
+                    sequence,
+                    DeliveryPlan::require(InputDelivery::WindowMessage),
+                )
+                .with_focus(FocusPolicy::Preserve),
+                &bounded(OPERATION_WAIT),
+            )
+            .expect("ordinary exact-window submission returns a receipt");
+        let elapsed = started.elapsed();
+        let correct =
+            complete_ordinary_receipt(&receipt, flow.target, 1) && flow.fixture.next_pointer_move();
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(windows)]
+    fn ordinary_window_button_submission(flow: &OrdinaryInputFlow) -> Sample {
+        let point = Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5)
+            .expect("the ordinary benchmark point is normalized");
+        let sequence = InputSequence::new(vec![
+            InputEvent::PointerMove(point),
+            InputEvent::PointerPress(PointerButton::Primary),
+        ])
+        .expect("the ordinary button benchmark sequence is bounded");
+        let started = Instant::now();
+        let receipt = flow
+            .session
+            .send_input(
+                &InputRequest::new(
+                    flow.target,
+                    sequence,
+                    DeliveryPlan::require(InputDelivery::WindowMessage),
+                )
+                .with_focus(FocusPolicy::Preserve),
+                &bounded(OPERATION_WAIT),
+            )
+            .expect("ordinary button submission returns a receipt");
+        let elapsed = started.elapsed();
+        let correct = complete_ordinary_receipt(&receipt, flow.target, 2)
+            && flow.fixture.next_pointer_button_press();
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(windows)]
+    fn ordinary_window_max_sequence(flow: &OrdinaryInputFlow) -> Sample {
+        let point = Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5)
+            .expect("the maximum-sequence benchmark point is normalized");
+        let sequence = InputSequence::new(
+            std::iter::repeat_n(InputEvent::PointerMove(point), SequenceLimits::MAX_EVENTS)
+                .collect(),
+        )
+        .expect("the maximum ordinary sequence is accepted");
+        let started = Instant::now();
+        let receipt = flow
+            .session
+            .send_input(
+                &InputRequest::new(
+                    flow.target,
+                    sequence,
+                    DeliveryPlan::require(InputDelivery::WindowMessage),
+                )
+                .with_focus(FocusPolicy::Preserve),
+                &bounded(OPERATION_WAIT),
+            )
+            .expect("maximum ordinary submission returns a receipt");
+        let elapsed = started.elapsed();
+        let correct = complete_ordinary_receipt(&receipt, flow.target, SequenceLimits::MAX_EVENTS)
+            && flow.fixture.next_pointer_moves(SequenceLimits::MAX_EVENTS);
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(windows)]
+    fn complete_ordinary_receipt(
+        receipt: &InputReceipt,
+        target: TargetId,
+        submitted: usize,
+    ) -> bool {
+        receipt.target() == target
+            && receipt.outcome() == SequenceOutcome::Complete
+            && receipt.selected_route() == Some(InputDelivery::WindowMessage)
+            && receipt.address_scope() == Some(InputAddressScope::ExactWindow)
+            && receipt.submitted() == submitted
+            && receipt.last_submitted() == submitted.checked_sub(1)
+            && receipt.evidence() == Some(SubmissionEvidence::TargetQueueAdmission)
+            && receipt.attempts().len() == 1
+            && !receipt.used_fallback()
+            && !receipt.partial_native_effect()
+            && receipt.fault().is_none()
+            && receipt.cleanup() == mado_pilot::CleanupState::NotNeeded
+    }
+
     fn rust_common_flow(flow: &Flow) -> Sample {
         let started = Instant::now();
         let session = flow.open_input_session();
@@ -987,11 +1482,12 @@ mod native {
             .as_deref()
             .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
         let fixture_acknowledged = if process_succeeded || receipt_present {
-            fixture.next_common_flow()
+            fixture.next_flow(program.expected_fixture_events())
         } else {
             false
         };
         let elapsed = started.elapsed();
+        let fixture_sequence_complete = fixture.finish_observation();
         let mapped = stdout
             .as_deref()
             .and_then(language_mapping_bytes)
@@ -1000,6 +1496,7 @@ mod native {
         let correct = process_succeeded
             && stderr_empty
             && fixture_acknowledged
+            && fixture_sequence_complete
             && receipt_present
             && stdout.as_deref().is_some_and(|stdout| {
                 language_abi_line_is_present(stdout, program.example_name)
@@ -1234,9 +1731,9 @@ mod native {
             .expect("benchmark arguments are initialized")
     }
 
-    fn fixture_digest() -> ContentDigest {
+    fn fixture_digest(set: WorkloadSet) -> ContentDigest {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let paths = fixture_sources(manifest);
+        let paths = fixture_sources(manifest, set);
         let mut combined = Vec::new();
         for path in paths {
             combined.extend_from_slice(
@@ -1248,7 +1745,7 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn fixture_sources(manifest: &Path) -> Vec<PathBuf> {
+    fn fixture_sources(manifest: &Path, _set: WorkloadSet) -> Vec<PathBuf> {
         vec![
             manifest.join("../platform/macos/src/bin/mado-pilot-macos-input-fixture.rs"),
             manifest.join("../platform/macos/src/fixture_protocol.rs"),
@@ -1258,11 +1755,19 @@ mod native {
     }
 
     #[cfg(windows)]
-    fn fixture_sources(manifest: &Path) -> Vec<PathBuf> {
-        vec![
+    fn fixture_sources(manifest: &Path, set: WorkloadSet) -> Vec<PathBuf> {
+        let mut sources = vec![
             manifest.join("../platform/windows/src/bin/mado-pilot-windows-input-fixture.rs"),
             manifest.join("../platform/windows/src/fixture_protocol.rs"),
-        ]
+        ];
+        if set == WorkloadSet::Input {
+            sources.push(
+                manifest.join(
+                    "../platform/windows/src/bin/mado-pilot-windows-window-message-fixture.rs",
+                ),
+            );
+        }
+        sources
     }
 
     #[cfg(target_os = "macos")]
@@ -1297,13 +1802,23 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
+    const fn cpp_correctness_oracle() -> &'static str {
+        "the released C++ wrapper performs the same bounded fixture flow in a fresh process"
+    }
+
+    #[cfg(windows)]
+    const fn cpp_correctness_oracle() -> &'static str {
+        "the released C++ wrapper submits the full bounded pointer, button, wheel, key, modifier, text, and delay flow through a fresh process"
+    }
+
+    #[cfg(target_os = "macos")]
     const fn cpp_receipt_line() -> &'static str {
         "receipt: outcome 1 submitted 4 evidence 1 cleanup 0"
     }
 
     #[cfg(windows)]
     const fn cpp_receipt_line() -> &'static str {
-        "receipt: outcome 1 submitted 4 evidence 4 cleanup 0"
+        "receipt: outcome 1 submitted 16 evidence 4 cleanup 0"
     }
 
     #[cfg(target_os = "macos")]
@@ -1378,6 +1893,17 @@ mod native {
             )
     }
 
+    #[cfg(windows)]
+    fn ordinary_ready_line_is_approved(line: &str, title: &str) -> bool {
+        line.trim()
+            == format!(
+                "fixture-ready class={} title={} capacity={}",
+                protocol::ORDINARY_CLASS_NAME,
+                title,
+                protocol::MAX_RECORDED_EVENTS,
+            )
+    }
+
     #[cfg(target_os = "macos")]
     fn profile_identity(set: WorkloadSet) -> (&'static str, &'static str) {
         let id = match set {
@@ -1398,9 +1924,11 @@ mod native {
             WorkloadSet::Transitions => "phase-2-native-transitions-x86_64-pc-windows-msvc",
             WorkloadSet::Input => "phase-2-native-input-x86_64-pc-windows-msvc",
         };
-        (
-            id,
-            "crates/platform/windows fixture Rust and protocol sources",
-        )
+        let fixture = if set == WorkloadSet::Input {
+            "crates/platform/windows dedicated and ordinary fixture Rust sources plus shared protocol"
+        } else {
+            "crates/platform/windows fixture Rust and protocol sources"
+        };
+        (id, fixture)
     }
 }

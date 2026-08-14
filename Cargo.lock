@@ -227,6 +227,7 @@ dependencies = [
  "mado-pilot-platform-windows",
  "mado-pilot-runtime",
  "mado-pilot-testkit",
+ "windows",
 ]
 
 [[package]]

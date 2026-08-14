@@ -100,9 +100,13 @@ correlation, not causation.
 - The C ABI and C++ wrapper negotiate minor 2 and inspect entry extents before
   calling them. ABI 1.0 consumers remain compatible; the unreleased 1.1 draft is
   intentionally unsupported.
-- The Windows fixture advertises `WindowMessage` with target-protocol
-  acknowledgement. Ordinary Windows targets expose system routes only. macOS
-  exposes system routes only; neither platform fabricates consumption evidence.
+- At this decision's acceptance, the Windows fixture advertised `WindowMessage`
+  with target-protocol acknowledgement and ordinary targets exposed system
+  routes only. [ADR 0027](0027-windows-window-message-queue-submission.md) later
+  supersedes that ordinary-target consequence: retained top-level windows may
+  expose explicit exact-window `WindowMessage` as `Unknown` with target-queue
+  evidence. macOS still exposes system routes only. Neither platform fabricates
+  consumption evidence.
 - The diagnostic queue is an observability mechanism, not a scheduler, watcher,
   retry engine, or causal action primitive.
 

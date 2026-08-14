@@ -242,6 +242,188 @@ fn the_receipt_vocabulary_a_caller_branches_on_is_reachable_from_the_facade() {
     session.close(&operation).expect("closed");
 }
 
+#[cfg(windows)]
+mod windows {
+    use std::time::Duration;
+
+    use mado_pilot::{
+        CapabilitySupport, CoordinateSpace, CpuMapping, DeliveryPlan, Engine, FocusPolicy,
+        FrameOrder, FrameRequest, FrameStamp, InputDelivery, InputEvent, InputOpenRequest,
+        InputOperationKind, InputReceipt, InputRequest, InputRequirement, InputSequence,
+        NativeEngineRequest, OpenRequest, OperationContext, PixelFormat, Point, PointerGeometry,
+        SequenceOutcome, Session, SessionRequest, SubmissionEvidence, TargetId, TargetKind,
+    };
+
+    #[test]
+    #[ignore = "requires MADO_PILOT_WINDOW_MESSAGE_TARGET_TITLE and the ordinary native fixture"]
+    fn ordinary_window_message_runs_through_the_public_facade() {
+        let (_engine, session, target) =
+            open_public_session("MADO_PILOT_WINDOW_MESSAGE_TARGET_TITLE");
+        let before = session
+            .acquire_frame(&FrameRequest::latest(), &bounded(Duration::from_secs(5)))
+            .expect("source frame");
+        let receipt = submit(&session, target, before.stamp());
+        assert_complete_queue_receipt(&receipt);
+
+        let after = session
+            .acquire_frame(
+                &FrameRequest::newer_than(before.stamp()),
+                &bounded(Duration::from_secs(5)),
+            )
+            .expect("strictly newer visual observation");
+        assert_eq!(before.stamp().order(&after.stamp()), Ok(FrameOrder::Before));
+        let mapping = session
+            .map_frame(&after, PixelFormat::Bgra8, &bounded(Duration::from_secs(5)))
+            .expect("mapped newer frame");
+        assert_eq!(central_bgra(&mapping), [0x2e, 0x5b, 0xc4]);
+        session
+            .close(&bounded(Duration::from_secs(5)))
+            .expect("closed");
+    }
+
+    #[test]
+    #[ignore = "requires MADO_PILOT_WINDOW_MESSAGE_STATIC_TARGET_TITLE and the ordinary native fixture"]
+    fn queue_admission_does_not_claim_visual_progress() {
+        let (_engine, session, target) =
+            open_public_session("MADO_PILOT_WINDOW_MESSAGE_STATIC_TARGET_TITLE");
+        let before = session
+            .acquire_frame(&FrameRequest::latest(), &bounded(Duration::from_secs(5)))
+            .expect("source frame");
+        let baseline = session
+            .map_frame(
+                &before,
+                PixelFormat::Bgra8,
+                &bounded(Duration::from_secs(5)),
+            )
+            .expect("mapped source frame");
+        assert_eq!(central_bgra(&baseline), [0x60, 0x40, 0x20]);
+
+        let receipt = submit(&session, target, before.stamp());
+        assert_complete_queue_receipt(&receipt);
+        std::thread::sleep(Duration::from_millis(100));
+        let observed = session
+            .acquire_frame(&FrameRequest::latest(), &bounded(Duration::from_secs(5)))
+            .expect("latest observation after queue admission");
+        let mapping = session
+            .map_frame(
+                &observed,
+                PixelFormat::Bgra8,
+                &bounded(Duration::from_secs(5)),
+            )
+            .expect("mapped observation");
+        assert_eq!(
+            central_bgra(&mapping),
+            [0x60, 0x40, 0x20],
+            "queue admission is not application visual progress"
+        );
+        session
+            .close(&bounded(Duration::from_secs(5)))
+            .expect("closed");
+    }
+
+    fn open_public_session(variable: &str) -> (Engine, Session, TargetId) {
+        let title = std::env::var(variable).expect("set the exact ordinary fixture title");
+        let engine = mado_pilot::windows_engine(NativeEngineRequest::new())
+            .expect("an OpenCV 4 development installation");
+        let operation = bounded(Duration::from_secs(5));
+        let targets = engine
+            .discover(&operation)
+            .expect("discovered native targets");
+        let mut matching = targets.iter().filter(|target| {
+            target.name() == title && target.capability().kind() == Some(TargetKind::Window)
+        });
+        let target = matching.next().expect("ordinary fixture discovered");
+        assert!(matching.next().is_none(), "the exact title is unique");
+
+        let descriptor = engine
+            .describe_input(target.id(), &operation)
+            .expect("ordinary target descriptor");
+        for kind in [
+            InputOperationKind::Pointer,
+            InputOperationKind::Keyboard,
+            InputOperationKind::Text,
+        ] {
+            let pair = descriptor
+                .capability()
+                .pair(kind, InputDelivery::WindowMessage);
+            assert_eq!(pair.support(), CapabilitySupport::Unknown);
+            assert_eq!(
+                pair.evidence(),
+                Some(SubmissionEvidence::TargetQueueAdmission)
+            );
+            assert!(!pair.focus_required());
+        }
+
+        let target = target.id();
+        let session = engine
+            .open_session(
+                target,
+                &SessionRequest::new()
+                    .capturing(OpenRequest::new())
+                    .requesting_input(
+                        InputOpenRequest::new()
+                            .with_requirement(InputRequirement::Required)
+                            .requiring(InputOperationKind::Pointer, InputDelivery::WindowMessage)
+                            .requiring(InputOperationKind::Keyboard, InputDelivery::WindowMessage),
+                    ),
+                &operation,
+            )
+            .expect("opened public native session");
+        (engine, session, target)
+    }
+
+    fn submit(session: &Session, target: TargetId, source: FrameStamp) -> InputReceipt {
+        let point =
+            Point::new(CoordinateSpace::TargetNormalized, 0.5, 0.5).expect("normalized point");
+        let sequence = InputSequence::new(vec![
+            InputEvent::PointerMove(point),
+            InputEvent::KeyPress(mado_pilot::Key::Function(6)),
+            InputEvent::KeyRelease(mado_pilot::Key::Function(6)),
+        ])
+        .expect("bounded sequence");
+        session
+            .send_input(
+                &InputRequest::new(
+                    target,
+                    sequence,
+                    DeliveryPlan::require(InputDelivery::WindowMessage),
+                )
+                .with_focus(FocusPolicy::Preserve)
+                .with_pointer_geometry(PointerGeometry::require_unchanged_since(source)),
+                &bounded(Duration::from_secs(5)),
+            )
+            .expect("public facade receipt")
+    }
+
+    fn assert_complete_queue_receipt(receipt: &InputReceipt) {
+        assert_eq!(receipt.outcome(), SequenceOutcome::Complete, "{receipt:?}");
+        assert_eq!(
+            receipt.evidence(),
+            Some(SubmissionEvidence::TargetQueueAdmission)
+        );
+        assert!(!receipt.used_fallback());
+    }
+
+    fn central_bgra(mapping: &CpuMapping) -> [u8; 3] {
+        let extent = mapping.descriptor().extent();
+        let x = usize::try_from(extent.width() / 2).expect("width fits usize");
+        let y = usize::try_from(extent.height() / 2).expect("height fits usize");
+        let offset = y
+            .checked_mul(mapping.descriptor().stride())
+            .and_then(|row| row.checked_add(x * 4))
+            .expect("central pixel offset");
+        mapping.bytes()[offset..offset + 3]
+            .try_into()
+            .expect("complete BGRA pixel")
+    }
+
+    fn bounded(timeout: Duration) -> OperationContext {
+        OperationContext::new()
+            .with_timeout(timeout)
+            .expect("representable native timeout")
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use mado_pilot::{

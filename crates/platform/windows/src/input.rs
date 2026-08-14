@@ -24,7 +24,11 @@ use crate::provider::TargetRecord;
 
 const DELAY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
-pub(crate) fn input_capability(kind: TargetKind, class_name: Option<&str>) -> InputCapability {
+pub(crate) fn input_capability(
+    kind: TargetKind,
+    class_name: Option<&str>,
+    window_message_authority: bool,
+) -> InputCapability {
     let mut capability = InputCapability::none().with_pair(
         InputOperationKind::Pointer,
         InputDelivery::System,
@@ -58,13 +62,24 @@ pub(crate) fn input_capability(kind: TargetKind, class_name: Option<&str>) -> In
                 SubmissionEvidence::SystemInputAdmission,
             )
             .with_focus_required(InputOperationKind::Text, InputDelivery::System);
-        if class_name == Some(CLASS_NAME) {
+        if window_message_authority {
+            let (support, evidence) = if class_name == Some(CLASS_NAME) {
+                (
+                    CapabilitySupport::Supported,
+                    SubmissionEvidence::TargetProtocolAcknowledgement,
+                )
+            } else {
+                (
+                    CapabilitySupport::Unknown,
+                    SubmissionEvidence::TargetQueueAdmission,
+                )
+            };
             for operation in InputOperationKind::ALL {
                 capability = capability.with_pair(
                     operation,
                     InputDelivery::WindowMessage,
-                    CapabilitySupport::Supported,
-                    SubmissionEvidence::TargetProtocolAcknowledgement,
+                    support,
+                    evidence,
                 );
             }
             for space in [
@@ -116,22 +131,31 @@ impl GeometryLedger {
             .remove(&stream);
     }
 
+    #[cfg(test)]
     pub(crate) fn source_transform(&self, source: FrameStamp) -> Option<TransformSnapshot> {
+        self.resolve_source_transform(source).ok()
+    }
+
+    pub(crate) fn resolve_source_transform(
+        &self,
+        source: FrameStamp,
+    ) -> Result<TransformSnapshot, InputFault> {
         let entry = *self
             .streams
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&source.stream())?;
-        if entry.stamp.epoch() != source.epoch()
-            || entry.stamp.geometry() != source.geometry()
-            || !matches!(
-                source.order(&entry.stamp),
-                Ok(FrameOrder::Before | FrameOrder::Same)
-            )
-        {
-            return None;
+            .get(&source.stream())
+            .ok_or(InputFault::UnsupportedCoordinate)?;
+        if entry.stamp.epoch() != source.epoch() || entry.stamp.geometry() != source.geometry() {
+            return Err(InputFault::GeometryChanged);
         }
-        Some(entry.transform)
+        if !matches!(
+            source.order(&entry.stamp),
+            Ok(FrameOrder::Before | FrameOrder::Same)
+        ) {
+            return Err(InputFault::UnsupportedCoordinate);
+        }
+        Ok(entry.transform)
     }
 }
 
@@ -145,6 +169,11 @@ pub(crate) struct GeometryFingerprint {
 pub(crate) struct PointerState {
     pub(crate) screen: (i32, i32),
     pub(crate) geometry: GeometryFingerprint,
+    /// Geometry that must still match at the irreversible native commit.
+    ///
+    /// `UseFrameSnapshot` deliberately trusts retained coordinates after a
+    /// target moves, so it carries no live-geometry equality fence.
+    pub(crate) expected_geometry: Option<GeometryFingerprint>,
 }
 
 #[derive(Debug, Default)]
@@ -158,6 +187,7 @@ pub(crate) struct DriverState {
 pub(crate) struct SystemKeyState {
     pub(crate) logical: Key,
     pub(crate) virtual_key: u16,
+    pub(crate) scan_code: u8,
     pub(crate) extended: bool,
 }
 
@@ -171,6 +201,7 @@ pub(crate) struct SystemButtonState {
 pub(crate) struct SubmissionFailure {
     pub(crate) fault: InputFault,
     pub(crate) current_event_may_have_effect: bool,
+    pub(crate) current_event_may_leave_pressed_state: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,6 +215,7 @@ impl SubmissionFailure {
         Self {
             fault,
             current_event_may_have_effect: false,
+            current_event_may_leave_pressed_state: false,
         }
     }
 
@@ -191,7 +223,13 @@ impl SubmissionFailure {
         Self {
             fault,
             current_event_may_have_effect: true,
+            current_event_may_leave_pressed_state: true,
         }
+    }
+
+    pub(crate) const fn without_pressed_state(mut self) -> Self {
+        self.current_event_may_leave_pressed_state = false;
+        self
     }
 }
 
@@ -243,8 +281,7 @@ pub(crate) struct WindowsInputController {
 }
 
 impl WindowsInputController {
-    pub(crate) fn new(record: Arc<TargetRecord>) -> Arc<Self> {
-        let descriptor = record.input_descriptor();
+    pub(crate) fn new(record: Arc<TargetRecord>, descriptor: InputDescriptor) -> Arc<Self> {
         Arc::new(Self {
             descriptor,
             driver: Arc::new(NativeInputDriver::new(record)),
@@ -339,7 +376,7 @@ impl WindowsInputController {
     ) -> InputReceipt {
         let held = request.sequence().possibly_held_after(
             stopped.submitted,
-            stopped.failure.current_event_may_have_effect,
+            stopped.failure.current_event_may_leave_pressed_state,
         );
         if held.is_empty() {
             return receipt.with_cleanup(0, 0);

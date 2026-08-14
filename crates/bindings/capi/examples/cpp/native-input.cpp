@@ -3,12 +3,13 @@
  *
  * `--check` is suitable for unattended CI: it creates the platform adapter and
  * reads only non-prompting permission/capability state. Passing one exact full
- * fixture-window title enables the end-to-end path: unique selection, capture,
- * mapping, one bounded input sequence under one activity tag, receipt inspection,
- * a newer-frame visual condition search, diagnostic drain, and explicit close.
+ * window title enables the end-to-end path: unique selection, capture, mapping,
+ * one bounded input sequence under one activity tag, receipt inspection, a
+ * newer-frame visual condition search, diagnostic drain, and explicit close.
  *
- * Full mode requires the repository's platform fixture launched with
- * `--animate-on-input`; a receipt alone is not the success oracle.
+ * On Windows, ordinary targets are unknown-but-attemptable and report queue
+ * admission; only the dedicated fixture reports protocol acknowledgement. A
+ * receipt alone is never the visual success oracle.
  */
 
 #include <chrono>
@@ -36,15 +37,16 @@ namespace {
 constexpr const char* EXAMPLE_NAME = "windows-native-input-cpp";
 constexpr std::uint64_t REQUIRED_PAIRS =
     MADOPILOT_INPUT_PAIR_POINTER_WINDOW_MESSAGE |
-    MADOPILOT_INPUT_PAIR_KEYBOARD_WINDOW_MESSAGE;
+    MADOPILOT_INPUT_PAIR_KEYBOARD_WINDOW_MESSAGE |
+    MADOPILOT_INPUT_PAIR_TEXT_WINDOW_MESSAGE;
 constexpr madopilot::InputDelivery DELIVERY =
     MADOPILOT_INPUT_DELIVERY_WINDOW_MESSAGE;
 constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
     MADOPILOT_INPUT_ADDRESS_EXACT_WINDOW;
-constexpr madopilot::SubmissionEvidence EVIDENCE =
-    MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT;
+constexpr bool ALLOWS_UNKNOWN = true;
 constexpr bool READS_PERMISSIONS = false;
 constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_PRESERVE;
+constexpr std::uint64_t EXPECTED_SUBMITTED = 16;
 
 madopilot::Source native_source()
 {
@@ -58,10 +60,10 @@ constexpr std::uint64_t REQUIRED_PAIRS =
 constexpr madopilot::InputDelivery DELIVERY = MADOPILOT_INPUT_DELIVERY_SYSTEM;
 constexpr madopilot::InputAddressScope ADDRESS_SCOPE =
     MADOPILOT_INPUT_ADDRESS_FOCUSED_SYSTEM;
-constexpr madopilot::SubmissionEvidence EVIDENCE =
-    MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY;
+constexpr bool ALLOWS_UNKNOWN = false;
 constexpr madopilot::FocusPolicy FOCUS = MADOPILOT_FOCUS_ACTIVATE_IF_REQUIRED;
 constexpr bool READS_PERMISSIONS = true;
+constexpr std::uint64_t EXPECTED_SUBMITTED = 4;
 
 madopilot::Source native_source()
 {
@@ -72,6 +74,62 @@ madopilot::Source native_source()
 #endif
 
 int failures = 0;
+enum class RouteContract {
+    platform_default,
+    ordinary_window,
+    acknowledged_fixture,
+};
+
+bool capability_matches_contract(const madopilot::InputCapability& capability,
+                                 RouteContract contract)
+{
+    if (contract == RouteContract::ordinary_window) {
+        return capability.support == MADOPILOT_CAPABILITY_UNKNOWN &&
+               capability.evidence ==
+                   MADOPILOT_SUBMISSION_EVIDENCE_TARGET_QUEUE_ADMISSION;
+    }
+    if (contract == RouteContract::acknowledged_fixture) {
+        return capability.support == MADOPILOT_CAPABILITY_SUPPORTED &&
+               capability.evidence ==
+                   MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT;
+    }
+    return capability.support == MADOPILOT_CAPABILITY_SUPPORTED ||
+           (ALLOWS_UNKNOWN &&
+            capability.support == MADOPILOT_CAPABILITY_UNKNOWN);
+}
+
+bool descriptor_matches_contract(const madopilot::InputDescriptor& descriptor,
+                                 RouteContract contract)
+{
+    if (contract == RouteContract::ordinary_window) {
+        return (descriptor.unknown_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS &&
+               (descriptor.known_pairs & REQUIRED_PAIRS) == 0 &&
+               (descriptor.supported_pairs & REQUIRED_PAIRS) == 0;
+    }
+    if (contract == RouteContract::acknowledged_fixture) {
+        return (descriptor.known_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS &&
+               (descriptor.supported_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS &&
+               (descriptor.unknown_pairs & REQUIRED_PAIRS) == 0;
+    }
+    const auto attemptable_pairs =
+        descriptor.supported_pairs |
+        (ALLOWS_UNKNOWN ? descriptor.unknown_pairs : UINT64_C(0));
+    return (attemptable_pairs & REQUIRED_PAIRS) == REQUIRED_PAIRS;
+}
+
+const char* route_contract_name(RouteContract contract)
+{
+    switch (contract) {
+    case RouteContract::ordinary_window:
+        return "ordinary";
+    case RouteContract::acknowledged_fixture:
+        return "acknowledged";
+    case RouteContract::platform_default:
+        return "platform-default";
+    }
+    return "invalid";
+}
+
 constexpr std::uint64_t DIAGNOSTIC_ACTIVITY_TAG = UINT64_C(0x4d50494e505554a1);
 constexpr std::uint32_t DIAGNOSTIC_CAPACITY = UINT32_C(256);
 std::uint64_t peak_resident_bytes()
@@ -347,7 +405,9 @@ bool probe_permissions(madopilot::Engine& engine,
 }
 
 bool select_target(madopilot::TargetList& targets, std::string_view title,
-                   std::size_t& selected, std::uint64_t& target_id)
+                   RouteContract contract, std::size_t& selected,
+                   std::uint64_t& target_id,
+                   madopilot::SubmissionEvidence& evidence)
 {
     const auto count = targets.count();
     if (!count) {
@@ -388,6 +448,9 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
     constexpr madopilot::InputOperationKind OPERATIONS[] = {
         MADOPILOT_INPUT_OPERATION_POINTER,
         MADOPILOT_INPUT_OPERATION_KEYBOARD,
+#if defined(_WIN32)
+        MADOPILOT_INPUT_OPERATION_TEXT,
+#endif
     };
     for (const auto operation : OPERATIONS) {
         const auto capability =
@@ -397,13 +460,17 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
                                   capability.error());
         }
         if (!expect(capability.value().target == target_id &&
-                        capability.value().support ==
-                            MADOPILOT_CAPABILITY_SUPPORTED,
-                    "the selected target supports the required input route") ||
+                        capability_matches_contract(capability.value(), contract),
+                    "the selected target exposes the expected input contract") ||
             !expect(capability.value().address_scope == ADDRESS_SCOPE &&
-                        capability.value().evidence.has_value() &&
-                        *capability.value().evidence == EVIDENCE,
+                        capability.value().evidence.has_value(),
                     "the route reports its scope and strongest evidence")) {
+            return false;
+        }
+        if (evidence == MADOPILOT_SUBMISSION_EVIDENCE_NONE) {
+            evidence = *capability.value().evidence;
+        } else if (!expect(evidence == *capability.value().evidence,
+                           "required pairs share one route evidence level")) {
             return false;
         }
         if (operation == MADOPILOT_INPUT_OPERATION_POINTER &&
@@ -420,7 +487,74 @@ bool select_target(madopilot::TargetList& targets, std::string_view title,
     return true;
 }
 
-bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
+#if defined(_WIN32)
+bool request_projection_matches(const madopilot::InputRequest& request,
+                                double centre_x, double centre_y)
+{
+    const auto projected = request.to_c();
+    const auto& value = projected.value();
+    if (!expect(value.event_count == EXPECTED_SUBMITTED &&
+                    value.events != nullptr &&
+                    value.event_stride == sizeof(madopilot_input_event_t),
+                "the C++ request projects all Windows event records")) {
+        return false;
+    }
+    const auto& events = value.events;
+    if (!expect(events[0].kind == MADOPILOT_INPUT_EVENT_POINTER_MOVE &&
+                    events[0].space == MADOPILOT_SPACE_CAPTURE_PIXELS &&
+                    events[0].x == centre_x && events[0].y == centre_y &&
+                    events[1].kind == MADOPILOT_INPUT_EVENT_POINTER_PRESS &&
+                    events[1].button == MADOPILOT_POINTER_BUTTON_PRIMARY &&
+                    events[2].kind == MADOPILOT_INPUT_EVENT_POINTER_RELEASE &&
+                    events[2].button == MADOPILOT_POINTER_BUTTON_PRIMARY &&
+                    events[3].kind == MADOPILOT_INPUT_EVENT_POINTER_PRESS &&
+                    events[3].button == MADOPILOT_POINTER_BUTTON_SECONDARY &&
+                    events[4].kind == MADOPILOT_INPUT_EVENT_POINTER_RELEASE &&
+                    events[4].button == MADOPILOT_POINTER_BUTTON_SECONDARY &&
+                    events[5].kind == MADOPILOT_INPUT_EVENT_POINTER_PRESS &&
+                    events[5].button == MADOPILOT_POINTER_BUTTON_MIDDLE &&
+                    events[6].kind == MADOPILOT_INPUT_EVENT_POINTER_RELEASE &&
+                    events[6].button == MADOPILOT_POINTER_BUTTON_MIDDLE &&
+                    events[7].kind == MADOPILOT_INPUT_EVENT_POINTER_SCROLL &&
+                    events[7].horizontal == -1 && events[7].vertical == 2,
+                "the C++ request preserves every pointer and wheel variant")) {
+        return false;
+    }
+    if (!expect(events[8].kind == MADOPILOT_INPUT_EVENT_KEY_PRESS &&
+                    events[8].key == MADOPILOT_KEY_FUNCTION &&
+                    events[8].key_value == 6 &&
+                    events[9].kind == MADOPILOT_INPUT_EVENT_KEY_RELEASE &&
+                    events[9].key == MADOPILOT_KEY_FUNCTION &&
+                    events[9].key_value == 6 &&
+                    events[10].kind == MADOPILOT_INPUT_EVENT_KEY_PRESS &&
+                    events[10].key == MADOPILOT_KEY_MODIFIER &&
+                    events[10].key_value == MADOPILOT_MODIFIER_CONTROL &&
+                    events[11].kind == MADOPILOT_INPUT_EVENT_KEY_PRESS &&
+                    events[11].key == MADOPILOT_KEY_CHARACTER &&
+                    events[11].key_value == static_cast<std::uint32_t>('m') &&
+                    events[12].kind == MADOPILOT_INPUT_EVENT_KEY_RELEASE &&
+                    events[12].key == MADOPILOT_KEY_CHARACTER &&
+                    events[12].key_value == static_cast<std::uint32_t>('m') &&
+                    events[13].kind == MADOPILOT_INPUT_EVENT_KEY_RELEASE &&
+                    events[13].key == MADOPILOT_KEY_MODIFIER &&
+                    events[13].key_value == MADOPILOT_MODIFIER_CONTROL,
+                "the C++ request preserves the function key and ordered chord")) {
+        return false;
+    }
+    const std::string_view expected_text{"A\xF0\x9F\x98\x80"};
+    return expect(events[14].kind == MADOPILOT_INPUT_EVENT_TEXT &&
+                      events[14].text.data != nullptr &&
+                      std::string_view(events[14].text.data,
+                                       events[14].text.len) == expected_text &&
+                      events[15].kind == MADOPILOT_INPUT_EVENT_DELAY &&
+                      events[15].delay_nanos == UINT64_C(20000000),
+                  "the C++ request preserves Unicode text and bounded delay");
+}
+#endif
+
+bool exercise_session(const madopilot::Api& api, madopilot::Session& session,
+                      madopilot::SubmissionEvidence evidence,
+                      RouteContract contract)
 {
     const auto session_info = session.describe();
     if (!session_info) {
@@ -439,9 +573,8 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
     if (!descriptor) {
         return report_failure("Session::input_descriptor", descriptor.error());
     }
-    if (!expect((descriptor.value().supported_pairs & REQUIRED_PAIRS) ==
-                    REQUIRED_PAIRS,
-                "the session retains every required input pair")) {
+    if (!expect(descriptor_matches_contract(descriptor.value(), contract),
+                "the session retains the expected required input pairs")) {
         return false;
     }
 
@@ -499,24 +632,65 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
     const double centre_x = static_cast<double>(frame_info.value().width) / 2.0;
     const double centre_y = static_cast<double>(frame_info.value().height) / 2.0;
     madopilot::InputRequest request;
+#if defined(_WIN32)
+    request.event(madopilot::InputEvent::pointer_move(
+                      MADOPILOT_SPACE_CAPTURE_PIXELS, centre_x, centre_y))
+        .event(madopilot::InputEvent::pointer_press(
+            MADOPILOT_POINTER_BUTTON_PRIMARY))
+        .event(madopilot::InputEvent::pointer_release(
+            MADOPILOT_POINTER_BUTTON_PRIMARY))
+        .event(madopilot::InputEvent::pointer_press(
+            MADOPILOT_POINTER_BUTTON_SECONDARY))
+        .event(madopilot::InputEvent::pointer_release(
+            MADOPILOT_POINTER_BUTTON_SECONDARY))
+        .event(madopilot::InputEvent::pointer_press(
+            MADOPILOT_POINTER_BUTTON_MIDDLE))
+        .event(madopilot::InputEvent::pointer_release(
+            MADOPILOT_POINTER_BUTTON_MIDDLE))
+        .event(madopilot::InputEvent::pointer_scroll(-1, 2))
+        .event(madopilot::InputEvent::key_press(MADOPILOT_KEY_FUNCTION, 6))
+        .event(madopilot::InputEvent::key_release(MADOPILOT_KEY_FUNCTION, 6))
+        .event(madopilot::InputEvent::key_press(
+            MADOPILOT_KEY_MODIFIER, MADOPILOT_MODIFIER_CONTROL))
+        .event(madopilot::InputEvent::key_press(
+            MADOPILOT_KEY_CHARACTER, static_cast<std::uint32_t>('m')))
+        .event(madopilot::InputEvent::key_release(
+            MADOPILOT_KEY_CHARACTER, static_cast<std::uint32_t>('m')))
+        .event(madopilot::InputEvent::key_release(
+            MADOPILOT_KEY_MODIFIER, MADOPILOT_MODIFIER_CONTROL))
+        .event(madopilot::InputEvent::text("A\xF0\x9F\x98\x80"))
+        .event(madopilot::InputEvent::delay(UINT64_C(20000000)));
+#else
     request.event(madopilot::InputEvent::pointer_move(
                       MADOPILOT_SPACE_CAPTURE_PIXELS, centre_x, centre_y))
         .event(madopilot::InputEvent::key_press(MADOPILOT_KEY_CHARACTER,
                                                 static_cast<std::uint32_t>('m')))
         .event(madopilot::InputEvent::key_release(MADOPILOT_KEY_CHARACTER,
                                                   static_cast<std::uint32_t>('m')))
-        .event(madopilot::InputEvent::delay(UINT64_C(20000000)))
-        .delivery(DELIVERY)
+        .event(madopilot::InputEvent::delay(UINT64_C(20000000)));
+#endif
+    request.delivery(DELIVERY)
         .focus_policy(FOCUS)
         .geometry_policy(MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED)
         .source_frame(frame);
+#if defined(_WIN32)
+    if (!request_projection_matches(request, centre_x, centre_y)) {
+        return false;
+    }
+#endif
 
     if (!bounded_operation(api, UINT64_C(2000000000), operation)) {
         return false;
     }
+    const auto send_started = std::chrono::steady_clock::now();
     auto sent = session.send_input(request, operation);
     if (!sent) {
         return report_failure("Session::send_input", sent.error());
+    }
+    if (!expect(std::chrono::steady_clock::now() - send_started >=
+                    std::chrono::milliseconds(20),
+                "the native C++ flow observes its bounded delay event")) {
+        return false;
     }
     madopilot::InputReceipt receipt = sent.take();
     const auto info = receipt.describe();
@@ -531,12 +705,12 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
                     : 0,
                 static_cast<int>(info.value().cleanup));
     if (!expect(info.value().outcome == MADOPILOT_SEQUENCE_COMPLETE &&
-                    info.value().submitted == 4 &&
+                    info.value().submitted == EXPECTED_SUBMITTED &&
                     info.value().selected_route.has_value() &&
                     *info.value().selected_route == DELIVERY &&
                     info.value().address_scope == ADDRESS_SCOPE &&
                     info.value().evidence.has_value() &&
-                    *info.value().evidence == EVIDENCE,
+                    *info.value().evidence == evidence,
                 "the bounded sequence was submitted exactly once with "
                 "truthful route evidence")) {
         return false;
@@ -549,7 +723,7 @@ bool exercise_session(const madopilot::Api& api, madopilot::Session& session)
 }
 
 bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
-                std::string_view title, bool check_only)
+                std::string_view title, bool check_only, RouteContract contract)
 {
     const auto capabilities = engine.capabilities();
     if (!capabilities) {
@@ -583,7 +757,9 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     madopilot::TargetList targets = discovered.take();
     std::size_t selected = 0;
     std::uint64_t target_id = 0;
-    if (!select_target(targets, title, selected, target_id)) {
+    madopilot::SubmissionEvidence evidence =
+        MADOPILOT_SUBMISSION_EVIDENCE_NONE;
+    if (!select_target(targets, title, contract, selected, target_id, evidence)) {
         return false;
     }
 
@@ -591,9 +767,8 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     if (!live_descriptor) {
         return report_failure("Engine::input_descriptor", live_descriptor.error());
     }
-    if (!expect((live_descriptor.value().supported_pairs & REQUIRED_PAIRS) ==
-                    REQUIRED_PAIRS,
-                "the live input descriptor retains every required pair")) {
+    if (!expect(descriptor_matches_contract(live_descriptor.value(), contract),
+                "the live descriptor retains the expected required input pairs")) {
         return false;
     }
 
@@ -611,7 +786,7 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     targets.reset();
     madopilot::Session session = opened.take();
 
-    const bool exercised = exercise_session(api, session);
+    const bool exercised = exercise_session(api, session, evidence, contract);
     bool closed = false;
     if (bounded_operation(api, UINT64_C(2000000000), operation)) {
         const auto close = session.close(operation);
@@ -631,15 +806,26 @@ int main(int argc, char** argv)
     bool check_only = false;
     bool load_only = false;
     std::string_view title;
+    RouteContract contract = RouteContract::platform_default;
     if (argc == 2 && std::string_view(argv[1]) == "--load-check") {
         load_only = true;
     } else if (argc == 2 && std::string_view(argv[1]) == "--check") {
         check_only = true;
+    } else if (argc == 3 && std::string_view(argv[1]) == "--ordinary" &&
+               argv[2][0] != '\0') {
+        contract = RouteContract::ordinary_window;
+        title = argv[2];
+    } else if (argc == 3 &&
+               std::string_view(argv[1]) == "--acknowledged" &&
+               argv[2][0] != '\0') {
+        contract = RouteContract::acknowledged_fixture;
+        title = argv[2];
     } else if (argc == 2 && argv[1][0] != '\0') {
         title = argv[1];
     } else {
         std::fprintf(stderr,
-                     "usage: %s --load-check | --check | \"<full fixture window title>\"\n",
+                     "usage: %s --load-check | --check | [--ordinary | "
+                     "--acknowledged] \"<full fixture window title>\"\n",
                      argv[0]);
         return 2;
     }
@@ -664,6 +850,9 @@ int main(int argc, char** argv)
                 static_cast<unsigned>(build.value().abi_major),
                 static_cast<unsigned>(build.value().abi_minor),
                 static_cast<unsigned>(build.value().table_size));
+    if (contract != RouteContract::platform_default) {
+        std::printf("contract: %s\n", route_contract_name(contract));
+    }
     if (load_only) {
         report_peak_resident_bytes();
         std::printf("%s complete (load check)\n", EXAMPLE_NAME);
@@ -696,7 +885,7 @@ int main(int argc, char** argv)
     }
     madopilot::DiagnosticReader diagnostics = std::move(*optional_reader);
 
-    const bool worked = run_native(api, engine, title, check_only);
+    const bool worked = run_native(api, engine, title, check_only, contract);
     engine.reset();
     const bool diagnostics_drained = drain_diagnostics(diagnostics, !check_only);
     if (!worked || !diagnostics_drained || failures != 0) {
