@@ -524,6 +524,10 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
         println!("result_correctness = {}", workload.incorrect);
         println!("latency_p50_ms = {:.6}", workload.percentile(0.50));
         println!("latency_p95_ms = {:.6}", workload.percentile(0.95));
+        println!(
+            "latency_max_ms = {:.6}",
+            workload.max_elapsed().as_secs_f64() * 1_000.0
+        );
         println!("iteration_span_ms = {:.6}", workload.iteration_span_ms());
         println!("mapped_bytes_per_result = {}", workload.mapped);
         if let Some(ratio) = workload.stale_work_ratio() {

@@ -13,7 +13,8 @@ correctness-oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budge
 now accepts the macOS diagnostic slice, and
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
 revision-bound macOS native input and public-language profile. The remaining
-native workload and target gaps stay open.
+native workload and target gaps stay open, including the unmeasured Phase 2.2
+macOS process-directed and controlled-stimulus lineage below.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -106,6 +107,7 @@ A budget names one measure. The version-one vocabulary is:
 | `memory_growth` | bytes | Signed change in resident memory across the sampled run, so a decrease is negative. A hard gate: unbounded growth is a defect, not a slow result, and its predicate bounds growth rather than demanding an exact zero. |
 | `latency_p50` | milliseconds | Median of the per-iteration samples for one workload. |
 | `latency_p95` | milliseconds | The 95th percentile of the same samples. Distinct from `capture_to_result_latency_p95`, which is end-to-end from capture to committed result rather than one operation. |
+| `latency_max` | milliseconds | Slowest retained per-iteration sample for one workload. Frozen scenario bounds use it so one outlier cannot hide behind passing percentiles. |
 | `iteration_span_ms` | milliseconds | One clock reading across the whole sampled run, divided by the sample count. It covers everything an iteration does, including the correctness check, so it is an upper bound on the operation rather than a reading of it. Use it where a per-iteration percentile is not expressible; see below. |
 | `peak_allocated_bytes` | bytes | High-water mark of live heap bytes during the sampled run, above what was live before the workload's fixture existed. |
 | `steady_allocated_bytes` | bytes | Live heap bytes when the sampled run finished, above the same baseline, with the fixture still alive. |
@@ -123,20 +125,21 @@ one, `peak_allocated_bytes` counts bytes and `_bytes` separates it from a byte
 *rate* — and omits it when the `Unit` column above is the only answer the measure
 can have. `latency_p95` is milliseconds because every latency here is.
 
-Three vocabulary names differ from the key a profile records the value under,
+Four vocabulary names differ from the key a profile records the value under,
 which is the one place a reader can be caught out:
 
 | Vocabulary name | Recorded as |
 |---|---|
 | `latency_p50` | `latency_p50_ms` |
 | `latency_p95` | `latency_p95_ms` |
+| `latency_max` | `latency_max_ms` |
 | `memory_growth` | `allocated_growth_bytes`, when the measure is live heap rather than resident memory |
 
 A budget's `measure` may name either form; committed profiles use the recorded
-key everywhere except `latency_p50` and `latency_p95`, where they use the
-vocabulary name. Renaming to one convention would move every committed profile,
-the harness that prints them, and the drift test that compares the two, so the
-mapping is documented instead.
+key everywhere except `latency_p50`, `latency_p95`, and `latency_max`, where
+they use the vocabulary name. Renaming to one convention would move every
+committed profile, the harness that prints them, and the drift test that
+compares the two, so the mapping is documented instead.
 
 ### Live heap bytes and resident memory are different measures
 
@@ -505,7 +508,44 @@ The Phase 1 profiles historically passed all applicable comparisons at their
 recorded source revisions. Release acceptance still requires rerunning them at
 the eventual final Phase 2 revision; their committed Phase 1 ceilings do not
 move. Current macOS capture and transition profiles also remain required before
-Phase 2 exit.
+Phase 2 exit; the Phase 2.2 controlled-stimulus lineage below is what will
+supply them.
+
+## Phase 2.2 macOS process-directed and controlled-stimulus lineage
+
+The macOS process-directed route changes what the `native-phase2` bench can
+truthfully measure, in two ways. Capture and transition stimulus moves from
+focus-dependent product input to acknowledged fixture-private commands, so the
+`capture` and `transitions` workload sets keep their CLI switches but start a
+new macOS profile lineage: a controlled-stimulus sample is not comparable with
+an input-stimulus sample, and the historical files above stay unchanged. And
+the route itself gains its own workload sets — `process-directed`,
+`process-directed-game-like`, and `process-diagnostics` — covering fixture
+command acknowledgement (`fixture_command_acknowledgement`), acknowledged
+stimulus to a strictly newer frame (`controlled_stimulus_to_frame`), static
+retained-latest and strictly-newer-expiry behavior, discovery/open with
+retained process authority (`discovery_open_retained_authority`), the
+per-event authority/preflight/post path (`event_authority_preflight_post`),
+release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
+overflow around process-directed events.
+
+The planned revision-bound profile identities on the approved Apple Silicon
+host are `phase-2-2-controlled-capture-aarch64-apple-darwin`,
+`phase-2-2-controlled-transitions-aarch64-apple-darwin`,
+`phase-2-2-process-directed-appkit-aarch64-apple-darwin`,
+`phase-2-2-process-directed-game-like-aarch64-apple-darwin`, and
+`phase-2-2-process-directed-diagnostics-aarch64-apple-darwin`, each committed
+under `docs/benchmarks/` when measured. None is measured yet, so this document
+records no number for them and none gates current source. The pre-measurement
+ceilings — per-workload p50/p95, hard scenario bounds, allocation growth,
+sequence/shim memory, and correctness totals — are frozen as regression gates
+in the
+[ADR 0029 qualification plan](../rasen/changes/phase-2-2-macos-owning-process-delivery/evidence/qualification-plan.md);
+they become budgets in the sense of this document only with the measured
+profiles and the accepting record, and a failing run is corrected rather than
+re-ceilinged. Game-like samples additionally record the fixture's explicit
+mode/renderer fact, so an AppKit-renderer measurement can never be filed as a
+game-like result.
 
 ## Phase 2 Windows ownership prototype
 
