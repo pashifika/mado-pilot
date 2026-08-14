@@ -209,6 +209,9 @@ impl FixtureController {
             }
             thread::sleep(WAIT_SLICE);
         };
+        stream
+            .set_nonblocking(false)
+            .map_err(|_| "the fixture control connection could not become blocking".to_owned())?;
         let _removed = std::fs::remove_file(socket.path());
         let input = stream
             .try_clone()
@@ -548,6 +551,7 @@ fn read_bounded_lines(mut stream: UnixStream, sender: &mpsc::SyncSender<ReaderMe
                 line.push(byte[0]);
             }
             Ok(_) => overflow = true,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => {
                 let _sent = sender.send(ReaderMessage::Failed);
                 return;
