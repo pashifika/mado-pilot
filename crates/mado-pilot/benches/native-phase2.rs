@@ -2051,9 +2051,7 @@ mod native {
             let Ok(mapping) = frame.map(PixelFormat::Bgra8, &operation) else {
                 return None;
             };
-            let Some(fill) = benchmark_mapping_fill(&mapping) else {
-                return None;
-            };
+            let fill = benchmark_mapping_fill(&mapping)?;
             let stamp = frame.stamp();
             if fill == expected_fill {
                 let exact = stamp.stream() == before.stamp.stream()
