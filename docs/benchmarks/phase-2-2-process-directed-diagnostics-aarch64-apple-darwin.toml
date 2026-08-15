@@ -1,6 +1,6 @@
 # Phase 2.2 macOS process-directed diagnostics, measured on aarch64-apple-darwin at source
-# b1059cf6239042107bd62373eb65211117beaab9 and tree
-# 0fffe5587d29bed8c6908e7b852617be8b381c13.
+# a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd and tree
+# f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029
 # accepts this revision-bound run and its pre-measurement qualification
@@ -15,10 +15,11 @@ phase = "2.2"
 status = "measured"
 normative = true
 measurements_recorded = true
+# A committed profile under docs/benchmarks/ carries the budgets.
 
 [profile]
-fixture = "separately linked private macOS fixture Rust, protocol-v5, header, Objective-C, and renderer sources"
-fixture_sha256 = "2252287e99fc2f14645326eb76b8c3b4a9ba4bb53f81fdf196f172d9ee3ac851"
+fixture = "separately linked private macOS fixture Rust, protocol-v9, header, Objective-C, and renderer sources"
+fixture_sha256 = "474d73530ed02b9060f065fb9df483d0a0e5a647ce14a76eab907b89bbd5f0c6"
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
@@ -27,7 +28,7 @@ warmup_iterations = 20
 sample_count = 200
 correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
 queue_policy = "diagnostics Off has no queue; Normal and Debug use capacity 64; overflow uses capacity 4; every sample drains"
-notes = "source commit b1059cf6239042107bd62373eb65211117beaab9, tree 0fffe5587d29bed8c6908e7b852617be8b381c13; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; public frame geometry: 3840x2160 logical/backing 1x at (-3840,-829), 2560x1440 logical/5120x2880 backing 2x main at (0,0), 1512x982 logical/3024x1964 backing 2x at (2560,190); mixed 2x/1x signed-origin seam and same-scale 2x/2x seam; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 1360206fc656a55385bde2c7d5f36badc869a8966731786ebd5f0b80ff47e7a2; fixture path deliberately omitted; lineage=process-directed-diagnostics; mode=default renderer=appkit-background"
+notes = "source commit a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd, tree f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; public frame geometry: 3840x2160 logical/backing 1x at (-3840,109), 2560x1440 logical/5120x2880 backing 2x main at (0,0), 1512x982 logical/3024x1964 backing 2x at (2560,268); mixed 2x/1x signed-origin seam and same-scale 2x/2x seam; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 d355de10628df7f0c938e4dc72df22b3dc3666997d9e638865b8d624cd6c8ece; executable paths deliberately omitted; lineage=process-directed-diagnostics; mode=default renderer=appkit-background"
 
 [[budget]]
 measure = "result_correctness"
@@ -53,13 +54,13 @@ rationale = "the frozen 16 MiB process-directed live Rust heap ceiling"
 workload = "event_diagnostics_off"
 correctness_oracle = "the process-directed invocation-only receipt and separate pointer observation are exact and no diagnostic reader exists"
 result_correctness = 0
-latency_p50_ms = 159.394459000
-latency_p95_ms = 165.798083000
-latency_max_ms = 170.064417000
-iteration_span_ms = 161.242073000
+latency_p50_ms = 206.393375
+latency_p95_ms = 211.258041
+latency_max_ms = 215.148667
+iteration_span_ms = 316.034696
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4674650
-steady_allocated_bytes = 4673314
+peak_allocated_bytes = 4673482
+steady_allocated_bytes = 4672340
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -88,15 +89,15 @@ allocated_growth_bytes = 0
 
 [[measurement]]
 workload = "event_diagnostics_normal"
-correctness_oracle = "the same process-directed receipt and observation hold while exactly one normal terminal record drains without loss"
+correctness_oracle = "the invocation diagnostics drain exactly before the independently observed newer frame, which emits no normal records"
 result_correctness = 0
-latency_p50_ms = 159.622375000
-latency_p95_ms = 165.047625000
-latency_max_ms = 168.632750000
-iteration_span_ms = 161.123376000
+latency_p50_ms = 206.294375
+latency_p95_ms = 213.003083
+latency_max_ms = 219.834416
+iteration_span_ms = 316.289006
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4684818
-steady_allocated_bytes = 4683786
+peak_allocated_bytes = 4684194
+steady_allocated_bytes = 4682748
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -125,15 +126,15 @@ allocated_growth_bytes = 0
 
 [[measurement]]
 workload = "event_diagnostics_debug"
-correctness_oracle = "the same process-directed receipt and observation hold while debug start, route attempt, per-event observation, and normal terminal records drain in order without loss"
+correctness_oracle = "input start, route-attempt, and terminal records drain in order before the newer-frame observation drains its debug pair separately"
 result_correctness = 0
-latency_p50_ms = 160.103625000
-latency_p95_ms = 165.193625000
-latency_max_ms = 169.715458000
-iteration_span_ms = 161.743952000
+latency_p50_ms = 207.135166
+latency_p95_ms = 212.853375
+latency_max_ms = 216.599750
+iteration_span_ms = 316.993777
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4685154
-steady_allocated_bytes = 4683850
+peak_allocated_bytes = 4683890
+steady_allocated_bytes = 4682748
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -162,15 +163,15 @@ allocated_growth_bytes = 0
 
 [[measurement]]
 workload = "event_diagnostic_overflow"
-correctness_oracle = "four complete process-directed receipts and separate pointer observations remain exact while the four-slot queue retains normal records and reports every debug loss"
+correctness_oracle = "four receipts and observations remain exact while input and subsequent newer-frame drains separately report every retained record and debug loss"
 result_correctness = 0
-latency_p50_ms = 162.511791000
-latency_p95_ms = 167.470750000
-latency_max_ms = 169.508500000
-iteration_span_ms = 640.563605000
+latency_p50_ms = 209.330125
+latency_p95_ms = 214.299917
+latency_max_ms = 219.164000
+iteration_span_ms = 930.922242
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4677674
-steady_allocated_bytes = 4674250
+peak_allocated_bytes = 4674314
+steady_allocated_bytes = 4673148
 allocated_growth_bytes = 0
 
 [[measurement.budget]]

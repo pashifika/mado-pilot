@@ -533,8 +533,8 @@ overflow around process-directed events.
 
 Five revision-bound profiles were measured on the approved Apple Silicon host
 at the final qualified source commit
-`8dd70810d60c06b298c806ffce16720d0a07e4c2` (implementation tree
-`1bc47b9cc7caa07f75f7d63f311887124a196a5b`):
+`a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd` (implementation tree
+`f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90`):
 `phase-2-2-controlled-capture-aarch64-apple-darwin`,
 `phase-2-2-controlled-transitions-aarch64-apple-darwin`,
 `phase-2-2-process-directed-appkit-aarch64-apple-darwin`,

@@ -1,36 +1,36 @@
 # Phase 2 native input and public-language common flows, measured on
-# aarch64-apple-darwin at source c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848
-# and tree f4ba20b5797e03cbea3582a750dd3f828e3d8fe4.
+# aarch64-apple-darwin at source a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd
+# and tree f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0025 accepts
-# this revision-bound replacement for the input profile invalidated by ADR 0021.
-# Measurement values are the harness output. Latency ceilings are three times
-# measured p95, rounded up; memory and mapped-byte ceilings are stated below.
-# These are target- and fixture-specific regression ceilings, not user-facing
-# latency promises.
+# the established latency, memory, and mapped-byte regression ceilings; this
+# revision-bound refresh covers the Phase 2.2 C and C++ ProcessDirected cutover.
+# Measurement values are the harness output. These are target- and
+# fixture-specific regression ceilings, not user-facing latency promises.
 
 format_version = 1
 
 [benchmark]
 id = "phase-2-native-input-aarch64-apple-darwin"
-workload = "native input and the public Rust common flow"
+workload = "native Rust System input plus released C and C++ ProcessDirected common flows"
 phase = "2"
 status = "measured"
 normative = true
 measurements_recorded = true
+# A committed profile under docs/benchmarks/ carries the budgets.
 
 [profile]
-fixture = "crates/platform/macos fixture Rust, protocol, header, and Objective-C sources"
-fixture_sha256 = "c8a14353ebd3732ba82895b85b877b5f03f623925ffa0d8b1b9d48383d06fda1"
+fixture = "separately linked private macOS fixture Rust, protocol-v9, header, Objective-C, and renderer sources"
+fixture_sha256 = "474d73530ed02b9060f065fb9df483d0a0e5a647ce14a76eab907b89bbd5f0c6"
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
-build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release --features private-fixture; signed .app launch"
 warmup_iterations = 5
 sample_count = 50
-correctness_oracle = "every retained sample checks frame identity/content, transition state, receipt/event sequence, or complete common-flow outcome as its measurement states"
-queue_policy = "session latest-wins queue depth 1; bounded input sequence executes serially"
-notes = "source commit c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848, tree f4ba20b5797e03cbea3582a750dd3f828e3d8fe4; toolchain rustc 1.97.1 (8bab26f4f 2026-07-14); C/C++ Apple clang 21.0.0; GPU/driver Apple integrated GPU; system driver stack; display topology one built-in 3024x1964 Retina display at scale 2; permissions/signing Screen Recording granted; Accessibility granted; generated fixture bundle ad-hoc signed with approved identifier; fixture path deliberately omitted; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup"
+correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
+queue_policy = "session latest-wins queue depth 1; Rust System and C/C++ explicit ProcessDirected sequences execute serially with no fallback"
+notes = "source commit a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd, tree f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; public frame geometry: 3840x2160 logical/backing 1x at (-3840,109), 2560x1440 logical/5120x2880 backing 2x main at (0,0), 1512x982 logical/3024x1964 backing 2x at (2560,268); mixed 2x/1x signed-origin seam and same-scale 2x/2x seam; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 d355de10628df7f0c938e4dc72df22b3dc3666997d9e638865b8d624cd6c8ece; C executable sha256 c47e516890e5aa69130ef988e7d3e04e1cb941c413d6f820a27df02f1c10f6aa; C++ executable sha256 481d470428c7bbff00a8125920f5f9bd3f79187a53c47e33f66f1a3e011a754f; executable paths deliberately omitted; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup; each C/C++ child has a 2 s execution bound, a 1 s termination/reap allowance, and a 65536-byte stdout/stderr cap per stream; lineage=rust-System-unchanged-cross-language-ProcessDirected-cutover; mode=default renderer=appkit-background"
 
 [[budget]]
 measure = "result_correctness"
@@ -56,15 +56,16 @@ rationale = "16 MiB is more than three times the 4635847-byte measured Rust inpu
 workload = "input_request_receipt"
 correctness_oracle = "the complete two-event receipt corresponds to exactly one fixture key-down and key-up summary"
 result_correctness = 0
-latency_p50_ms = 499.234042
-latency_p95_ms = 508.658583
-iteration_span_ms = 498.834637
+latency_p50_ms = 770.612166
+latency_p95_ms = 786.908875
+latency_max_ms = 788.477584
+iteration_span_ms = 875.414354
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4635847
-steady_allocated_bytes = 4635361
+peak_allocated_bytes = 4639261
+steady_allocated_bytes = 4637772
 allocated_growth_bytes = 0
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "latency_p95"
   kind = "absolute"
   unit = "milliseconds"
@@ -76,15 +77,16 @@ allocated_growth_bytes = 0
 workload = "rust_common_flow"
 correctness_oracle = "fresh open, frame, mapping, exact fixture input, receipt, and close all complete"
 result_correctness = 0
-latency_p50_ms = 494.324792
-latency_p95_ms = 509.486167
-iteration_span_ms = 495.253822
+latency_p50_ms = 1193.927792
+latency_p95_ms = 1358.584167
+latency_max_ms = 1372.236792
+iteration_span_ms = 1239.131459
 mapped_bytes_per_result = 4628480
-peak_allocated_bytes = 4635707
-steady_allocated_bytes = 3652
+peak_allocated_bytes = 4638125
+steady_allocated_bytes = 5039
 allocated_growth_bytes = 0
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "latency_p95"
   kind = "absolute"
   unit = "milliseconds"
@@ -104,16 +106,17 @@ allocated_growth_bytes = 0
 workload = "c_process_load"
 correctness_oracle = "a fresh C process loads and negotiates the released ABI without opening native capabilities"
 result_correctness = 0
-latency_p50_ms = 231.143583
-latency_p95_ms = 233.150334
-iteration_span_ms = 231.151292
+latency_p50_ms = 240.558459
+latency_p95_ms = 247.701500
+latency_max_ms = 248.644917
+iteration_span_ms = 240.748103
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 551
+peak_allocated_bytes = 131655
 steady_allocated_bytes = 104
 allocated_growth_bytes = 0
-peak_resident_bytes = 51757056
+peak_resident_bytes = 51724288
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "latency_p95"
   kind = "absolute"
   unit = "milliseconds"
@@ -131,18 +134,19 @@ peak_resident_bytes = 51757056
 
 [[measurement]]
 workload = "c_common_flow"
-correctness_oracle = "the released C ABI performs the same bounded fixture flow in a fresh process"
+correctness_oracle = "the released C ABI uses explicit ProcessDirected delivery and checks its invocation-only receipt separately from exact owned-fixture events"
 result_correctness = 0
-latency_p50_ms = 1578.462125
-latency_p95_ms = 1626.194959
-iteration_span_ms = 1719.351610
+latency_p50_ms = 1609.435167
+latency_p95_ms = 1812.596500
+latency_max_ms = 1819.217542
+iteration_span_ms = 1970.626412
 mapped_bytes_per_result = 4628480
-peak_allocated_bytes = 27465
+peak_allocated_bytes = 170241
 steady_allocated_bytes = 104
 allocated_growth_bytes = 0
-peak_resident_bytes = 94437376
+peak_resident_bytes = 96059392
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "latency_p95"
   kind = "absolute"
   unit = "milliseconds"
@@ -170,16 +174,17 @@ peak_resident_bytes = 94437376
 workload = "cpp_process_load"
 correctness_oracle = "a fresh C++ process loads its wrapper and negotiates the released ABI without opening native capabilities"
 result_correctness = 0
-latency_p50_ms = 233.145750
-latency_p95_ms = 236.377875
-iteration_span_ms = 233.318395
+latency_p50_ms = 242.425041
+latency_p95_ms = 247.534000
+latency_max_ms = 248.245708
+iteration_span_ms = 242.330854
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 563
+peak_allocated_bytes = 131667
 steady_allocated_bytes = 108
 allocated_growth_bytes = 0
-peak_resident_bytes = 51773440
+peak_resident_bytes = 51757056
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "latency_p95"
   kind = "absolute"
   unit = "milliseconds"
@@ -197,18 +202,19 @@ peak_resident_bytes = 51773440
 
 [[measurement]]
 workload = "cpp_common_flow"
-correctness_oracle = "the released C++ wrapper performs the same bounded fixture flow in a fresh process"
+correctness_oracle = "the released C++ wrapper uses explicit ProcessDirected delivery and checks its invocation-only receipt separately from exact owned-fixture events"
 result_correctness = 0
-latency_p50_ms = 1590.732208
-latency_p95_ms = 1676.453750
-iteration_span_ms = 1734.619520
+latency_p50_ms = 1819.164833
+latency_p95_ms = 1974.578792
+latency_max_ms = 1980.698541
+iteration_span_ms = 2201.321180
 mapped_bytes_per_result = 4628480
-peak_allocated_bytes = 27477
+peak_allocated_bytes = 172301
 steady_allocated_bytes = 108
 allocated_growth_bytes = 0
-peak_resident_bytes = 94617600
+peak_resident_bytes = 96239616
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "latency_p95"
   kind = "absolute"
   unit = "milliseconds"
