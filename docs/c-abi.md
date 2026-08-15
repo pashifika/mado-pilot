@@ -294,10 +294,14 @@ receipt is already the operation's terminal outcome, so a late interruption
 cannot replace it with a second result.
 
 `MADOPILOT_OPERATION_HAS_ACTIVITY_TAG` makes the nonzero `activity_tag` available
-on every diagnostic record that operation produces. The value is opaque:
-changing or omitting it cannot affect admission, ordering, deadline,
-cancellation, identity, or result semantics. It correlates observations; it does
-not establish causality.
+on every diagnostic record that operation produces. The value is opaque
+correlation metadata, not a confidentiality boundary; callers must not place
+secrets in it. A platform route may carry it in documented native observational
+metadata. In particular, macOS `ProcessDirected` copies it to the Core Graphics
+event-source user-data field so the addressed process can correlate an observed
+event. Changing or omitting it cannot affect admission, ordering, deadline,
+cancellation, identity, posting, or result semantics. It correlates observations;
+it does not establish causality.
 
 ## Statuses, owned errors, and admitted receipts
 

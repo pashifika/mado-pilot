@@ -5,11 +5,12 @@
 //! window by that process-qualified title, confirms deterministic captured content,
 //! then submits input only through the production Adapter route.
 //!
-//! Commands carry only a version, monotonic nonce, and fixed action. Results carry
-//! the same identity, a bounded status, and before/after native window numbers.
-//! No command or observation contains typed text, pixels, a path, or another
-//! application's identity. The event receiver likewise reports only an event kind
-//! and UTF-16 unit count.
+//! Commands carry only a version, monotonic nonce, fixed action, and an optional
+//! row token accepted only by the event-reset command. Results carry the same
+//! identity, a bounded status, and before/after native window numbers. No command
+//! or observation contains typed text, pixels, a path, or another application's
+//! identity. The event receiver likewise reports only an event kind and UTF-16
+//! unit count.
 //!
 //! Selection never rests on a title alone. A candidate must be the only window
 //! with the exact title belonging to the owned child, advertise the qualified
@@ -20,7 +21,7 @@ use std::fmt;
 
 use mado_pilot_core::{
     CapabilitySupport, InputAddressScope, InputDelivery, InputOperationKind, PixelExtent,
-    SubmissionEvidence, TargetKind,
+    SubmissionEvidence, TargetId, TargetKind,
 };
 
 /// The bundle identifier the fixture claims when it is run from an app bundle.
@@ -59,7 +60,7 @@ pub const MAX_EVENT_TEXT_UNITS: u32 = 256;
 pub const MAX_READY_LINE_BYTES: usize = 1_024;
 
 /// Version of the private harness-to-fixture control protocol.
-pub const FIXTURE_CONTROL_VERSION: u32 = 5;
+pub const FIXTURE_CONTROL_VERSION: u32 = 9;
 
 /// Largest command or result record accepted by either endpoint.
 pub const MAX_CONTROL_LINE_BYTES: usize = 512;
@@ -184,8 +185,14 @@ pub enum FixtureCommandKind {
     Close,
     /// Move the main window to the next deterministically ordered public display.
     MoveToNextDisplay,
+    /// Move the main window wholly outside the current public display union.
+    MoveOffscreen,
+    /// Restore a window moved off-screen to its exact prior origin.
+    RestoreOnscreen,
     /// Return foreground ownership to the application active before fixture launch.
     YieldForeground,
+    /// Make this fixture's application and primary window own the foreground.
+    TakeForeground,
     /// Clear the bounded process-wide event summary.
     ResetEvents,
     /// Snapshot the bounded process-wide event summary.
@@ -204,12 +211,15 @@ impl FixtureCommandKind {
             Self::Minimize => "minimize",
             Self::Restore => "restore",
             Self::YieldForeground => "yield-foreground",
+            Self::TakeForeground => "take-foreground",
             Self::Move => "move",
             Self::Resize => "resize",
             Self::OpenAuxiliary => "open-auxiliary",
             Self::CloseAuxiliary => "close-auxiliary",
             Self::Close => "close",
             Self::MoveToNextDisplay => "move-to-next-display",
+            Self::MoveOffscreen => "move-offscreen",
+            Self::RestoreOnscreen => "restore-onscreen",
             Self::ResetEvents => "reset-events",
             Self::ReadEvents => "read-events",
             Self::Stop => "stop",
@@ -226,8 +236,11 @@ impl FixtureCommandKind {
             "move" => Some(Self::Move),
             "resize" => Some(Self::Resize),
             "open-auxiliary" => Some(Self::OpenAuxiliary),
+            "take-foreground" => Some(Self::TakeForeground),
             "close-auxiliary" => Some(Self::CloseAuxiliary),
             "move-to-next-display" => Some(Self::MoveToNextDisplay),
+            "move-offscreen" => Some(Self::MoveOffscreen),
+            "restore-onscreen" => Some(Self::RestoreOnscreen),
             "reset-events" => Some(Self::ResetEvents),
             "read-events" => Some(Self::ReadEvents),
             "close" => Some(Self::Close),
@@ -251,6 +264,9 @@ impl FixtureCommandKind {
             Self::OpenAuxiliary => 9,
             Self::CloseAuxiliary => 10,
             Self::MoveToNextDisplay => 12,
+            Self::MoveOffscreen => 15,
+            Self::RestoreOnscreen => 16,
+            Self::TakeForeground => 17,
             Self::ResetEvents => 13,
             Self::ReadEvents => 14,
             Self::Close => 11,
@@ -265,6 +281,8 @@ pub struct FixtureCommand {
     pub run_nonce: u64,
     /// Monotonic harness-issued command identity. Zero is never valid.
     pub nonce: u64,
+    /// Private expected-payload token for `ResetEvents`; zero for every other action.
+    pub event_payload_tag: u64,
     /// The fixed transition to perform.
     pub kind: FixtureCommandKind,
 }
@@ -319,6 +337,10 @@ pub struct FixtureCommandResult {
     pub before_window: u64,
     /// Window identity after the action, or zero when unavailable.
     pub after_window: u64,
+    /// High half of the activity tag shared by every event in the current row.
+    pub event_correlation: u32,
+    /// Whether exact observed payloads and order match the digest in that tag.
+    pub event_payload_matches: bool,
     /// Process-wide input summary at this command boundary.
     pub events: EventTotals,
 }
@@ -354,6 +376,92 @@ pub struct EventSummary {
     pub kind: u32,
     /// UTF-16 units the event carried. The characters are never reported.
     pub text_units: u32,
+    /// High half of the caller's opaque activity tag.
+    pub correlation: u32,
+}
+
+const EVENT_FINGERPRINT_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const EVENT_FINGERPRINT_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fingerprint_u64(mut state: u64, value: u64) -> u64 {
+    for byte in value.to_le_bytes() {
+        state ^= u64::from(byte);
+        state = state.wrapping_mul(EVENT_FINGERPRINT_PRIME);
+    }
+    state
+}
+
+/// Fingerprints one exact native event payload without retaining text content.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn event_payload_fingerprint(
+    kind: u32,
+    event_type: u64,
+    flags: u64,
+    button: u64,
+    click_state: u64,
+    x: f64,
+    y: f64,
+    horizontal: i64,
+    vertical: i64,
+    key_code: u64,
+    text: &[u16],
+) -> u64 {
+    let fields = [
+        u64::from(kind),
+        event_type,
+        flags,
+        button,
+        click_state,
+        x.to_bits(),
+        y.to_bits(),
+        horizontal.cast_unsigned(),
+        vertical.cast_unsigned(),
+        key_code,
+        text.len() as u64,
+    ];
+    let mut state = EVENT_FINGERPRINT_OFFSET;
+    for field in fields {
+        state = fingerprint_u64(state, field);
+    }
+    for unit in text {
+        state = fingerprint_u64(state, u64::from(*unit));
+    }
+    state
+}
+
+/// Starts the order-sensitive digest for one correlated event row.
+#[must_use]
+pub fn begin_event_payload_digest(correlation: u32) -> u64 {
+    fingerprint_u64(EVENT_FINGERPRINT_OFFSET, u64::from(correlation))
+}
+
+/// Adds one observed event fingerprint to a correlated row digest.
+#[must_use]
+pub fn extend_event_payload_digest(state: u64, fingerprint: u64) -> u64 {
+    fingerprint_u64(state, fingerprint)
+}
+
+/// Reduces one correlated row digest to the value carried in an activity tag.
+#[must_use]
+pub const fn finish_event_payload_digest(state: u64) -> u32 {
+    let bytes = state.to_le_bytes();
+    u32::from_le_bytes([
+        bytes[0] ^ bytes[4],
+        bytes[1] ^ bytes[5],
+        bytes[2] ^ bytes[6],
+        bytes[3] ^ bytes[7],
+    ])
+}
+
+/// Builds the activity tag that binds one row to exact native payloads and order.
+#[must_use]
+pub fn event_payload_activity_tag(correlation: u32, fingerprints: &[u64]) -> u64 {
+    let digest = fingerprints.iter().copied().fold(
+        begin_event_payload_digest(correlation),
+        extend_event_payload_digest,
+    );
+    (u64::from(correlation) << 32) | u64::from(finish_event_payload_digest(digest))
 }
 
 /// Why a check refused to choose a fixture.
@@ -399,8 +507,8 @@ pub fn fixture_title(process_id: u32) -> String {
 #[must_use]
 pub fn format_event_line(run_nonce: u64, summary: EventSummary) -> String {
     format!(
-        "event run={run_nonce} kind={} units={}",
-        summary.kind, summary.text_units
+        "event run={run_nonce} correlation={} kind={} units={}",
+        summary.correlation, summary.kind, summary.text_units
     )
 }
 
@@ -421,6 +529,7 @@ fn parse_event_record(line: &str) -> Option<(u64, EventSummary)> {
     let mut fields = line.trim_end().strip_prefix("event ")?.split(' ');
     let run_nonce = take_field(&mut fields, "run")?.parse::<u64>().ok()?;
     let summary = EventSummary {
+        correlation: take_field(&mut fields, "correlation")?.parse().ok()?,
         kind: take_field(&mut fields, "kind")?.parse().ok()?,
         text_units: take_field(&mut fields, "units")?.parse().ok()?,
     };
@@ -440,14 +549,15 @@ fn parse_event_record(line: &str) -> Option<(u64, EventSummary)> {
     .then_some((run_nonce, summary))
 }
 
-/// Formats one bounded command for the owned fixture's stdin.
+/// Formats one bounded command for the owned fixture's private control channel.
 #[must_use]
 pub fn format_command_line(command: FixtureCommand) -> String {
     format!(
-        "fixture-command version={} run={} nonce={} action={}",
+        "fixture-command version={} run={} nonce={} event-tag={} action={}",
         FIXTURE_CONTROL_VERSION,
         command.run_nonce,
         command.nonce,
+        command.event_payload_tag,
         command.kind.as_str()
     )
 }
@@ -467,13 +577,18 @@ pub fn parse_command_line(line: &str) -> Option<FixtureCommand> {
     }
     let run_nonce = take_field(&mut fields, "run")?.parse::<u64>().ok()?;
     let nonce = take_field(&mut fields, "nonce")?.parse::<u64>().ok()?;
-    if run_nonce == 0 || nonce == 0 {
+    let event_payload_tag = take_field(&mut fields, "event-tag")?.parse::<u64>().ok()?;
+    let kind = FixtureCommandKind::parse(take_field(&mut fields, "action")?)?;
+    if run_nonce == 0
+        || nonce == 0
+        || (event_payload_tag != 0 && kind != FixtureCommandKind::ResetEvents)
+    {
         return None;
     }
-    let kind = FixtureCommandKind::parse(take_field(&mut fields, "action")?)?;
     fields.next().is_none().then_some(FixtureCommand {
         run_nonce,
         nonce,
+        event_payload_tag,
         kind,
     })
 }
@@ -485,7 +600,8 @@ pub fn format_command_result_line(result: FixtureCommandResult) -> String {
     format!(
         "fixture-command-result version={} run={} nonce={} status={} before-window={} \
          after-window={} pointer-moves={} pointer-presses={} pointer-releases={} \
-         pointer-scrolls={} key-downs={} key-ups={} flags-changed={} text-units={} saturated={}",
+         pointer-scrolls={} key-downs={} key-ups={} flags-changed={} text-units={} saturated={} \
+         event-correlation={} event-payload-matches={}",
         FIXTURE_CONTROL_VERSION,
         result.run_nonce,
         result.nonce,
@@ -501,6 +617,8 @@ pub fn format_command_result_line(result: FixtureCommandResult) -> String {
         events.flags_changed,
         events.text_units,
         u8::from(events.saturated),
+        result.event_correlation,
+        u8::from(result.event_payload_matches),
     )
 }
 
@@ -537,6 +655,12 @@ pub fn parse_command_result_line(line: &str) -> Option<FixtureCommandResult> {
                 "1" => true,
                 _ => return None,
             },
+        },
+        event_correlation: take_field(&mut fields, "event-correlation")?.parse().ok()?,
+        event_payload_matches: match take_field(&mut fields, "event-payload-matches")? {
+            "0" => false,
+            "1" => true,
+            _ => return None,
         },
     };
     (result.run_nonce != 0
@@ -618,17 +742,22 @@ pub fn fixture_ready_context_is_approved(line: &str, process_id: u32) -> bool {
         .is_some_and(FixtureReadyFacts::execution_context_is_approved)
 }
 
-/// Chooses the one discovered target that is this check's own fixture.
+/// Chooses the one discovered target that is this check's authenticated fixture.
+///
+/// Title and capability matching only narrow discovery. `authenticates` must
+/// bind the snapshot-owned target to the live audit-token-authenticated control
+/// peer; it is evaluated before this function can return a target.
 ///
 /// # Errors
 ///
 /// Returns [`FixtureSelectionError::NotFound`] when nothing matches and
-/// [`FixtureSelectionError::Ambiguous`] when more than one does. Both stop the
-/// check before any input is sent, because a check that guessed would deliver
-/// real system input to whatever it guessed.
+/// [`FixtureSelectionError::Ambiguous`] when more than one authenticated target
+/// does. Both stop the check before any input is sent, because a check that
+/// guessed would deliver real system input to whatever it guessed.
 pub fn select_unique_fixture(
     targets: &[TargetDescription],
     process_id: u32,
+    mut authenticates: impl FnMut(TargetId) -> bool,
 ) -> Result<&TargetDescription, FixtureSelectionError> {
     let expected_title = fixture_title(process_id);
     let mut matches = targets.iter().filter(|target| {
@@ -647,7 +776,7 @@ pub fn select_unique_fixture(
                 && process.support() == CapabilitySupport::Unknown
                 && process.address_scope() == InputAddressScope::OwningProcess
                 && process.evidence() == Some(SubmissionEvidence::InvocationOnly)
-        })
+        }) && authenticates(target.id())
     });
     let first = matches.next().ok_or(FixtureSelectionError::NotFound)?;
     if matches.next().is_some() {
@@ -865,7 +994,8 @@ mod tests {
             described(&super::fixture_title(PROCESS + 1), TargetKind::Window),
         ];
 
-        let chosen = select_unique_fixture(&candidates, PROCESS).expect("one approved fixture");
+        let chosen =
+            select_unique_fixture(&candidates, PROCESS, |_| true).expect("one approved fixture");
 
         assert_eq!(chosen.name(), super::fixture_title(PROCESS));
     }
@@ -873,11 +1003,15 @@ mod tests {
     #[test]
     fn an_absent_or_repeated_fixture_stops_the_check_before_input() {
         assert_eq!(
-            select_unique_fixture(&[described("Some Editor", TargetKind::Window)], PROCESS),
+            select_unique_fixture(
+                &[described("Some Editor", TargetKind::Window)],
+                PROCESS,
+                |_| true,
+            ),
             Err(FixtureSelectionError::NotFound)
         );
         assert_eq!(
-            select_unique_fixture(&[fixture(), fixture()], PROCESS),
+            select_unique_fixture(&[fixture(), fixture()], PROCESS, |_| true),
             Err(FixtureSelectionError::Ambiguous),
             "two windows with the same title is exactly when guessing is worst"
         );
@@ -891,7 +1025,7 @@ mod tests {
         let named_like_the_fixture = described(&super::fixture_title(PROCESS), TargetKind::Display);
 
         assert_eq!(
-            select_unique_fixture(&[named_like_the_fixture], PROCESS),
+            select_unique_fixture(&[named_like_the_fixture], PROCESS, |_| true),
             Err(FixtureSelectionError::NotFound)
         );
     }
@@ -917,10 +1051,21 @@ mod tests {
         };
 
         assert_eq!(
-            select_unique_fixture(&[capture_only], PROCESS),
+            select_unique_fixture(&[capture_only], PROCESS, |_| true),
             Err(FixtureSelectionError::NotFound),
             "a window that merely borrowed the title accepts none of the input the \
              fixture must accept"
+        );
+    }
+
+    #[test]
+    fn a_foreign_owner_with_the_fixture_title_and_capabilities_is_not_selected() {
+        let foreign = fixture();
+
+        assert_eq!(
+            select_unique_fixture(&[foreign], PROCESS, |_| false),
+            Err(FixtureSelectionError::NotFound),
+            "observable title and capability facts cannot authorize a process"
         );
     }
 
@@ -971,7 +1116,7 @@ mod tests {
         use std::cell::Cell;
 
         let candidates = [fixture()];
-        select_unique_fixture(&candidates, PROCESS)
+        select_unique_fixture(&candidates, PROCESS, |_| true)
             .expect("the title and capability matrix deliberately match");
         let (wrong, stride, extent) = flat_frame([0x10, 0x20, 0x30]);
         let posted = Cell::new(0usize);
@@ -1006,10 +1151,11 @@ mod tests {
         let summary = EventSummary {
             kind: super::EVENT_KEY_DOWN,
             text_units: 3,
+            correlation: 42,
         };
         let line = format_event_line(99, summary);
 
-        assert_eq!(line, "event run=99 kind=5 units=3");
+        assert_eq!(line, "event run=99 correlation=42 kind=5 units=3");
         assert_eq!(parse_event_line(&line), Some(summary));
         assert_eq!(parse_event_line_for_run(&line, 99), Some(summary));
         assert_eq!(parse_event_line_for_run(&line, 100), None);
@@ -1021,12 +1167,13 @@ mod tests {
         let command = FixtureCommand {
             run_nonce: 99,
             nonce: 7,
+            event_payload_tag: 0,
             kind: FixtureCommandKind::Transition,
         };
         let command_line = format_command_line(command);
         assert_eq!(
             command_line,
-            "fixture-command version=5 run=99 nonce=7 action=transition"
+            "fixture-command version=9 run=99 nonce=7 event-tag=0 action=transition"
         );
         assert_eq!(parse_command_line(&command_line), Some(command));
 
@@ -1036,6 +1183,8 @@ mod tests {
             status: 0,
             before_window: 17,
             after_window: 17,
+            event_correlation: 42,
+            event_payload_matches: true,
             events: EventTotals {
                 pointer_moves: 1,
                 key_downs: 2,
@@ -1047,21 +1196,23 @@ mod tests {
         let result_line = format_command_result_line(result);
         assert_eq!(
             result_line,
-            "fixture-command-result version=5 run=99 nonce=7 status=0 before-window=17 \
+            "fixture-command-result version=9 run=99 nonce=7 status=0 before-window=17 \
              after-window=17 pointer-moves=1 pointer-presses=0 pointer-releases=0 \
-             pointer-scrolls=0 key-downs=2 key-ups=2 flags-changed=0 text-units=6 saturated=0"
+             pointer-scrolls=0 key-downs=2 key-ups=2 flags-changed=0 text-units=6 saturated=0 \
+             event-correlation=42 event-payload-matches=1"
         );
         assert_eq!(parse_command_result_line(&result_line), Some(result));
 
         let topology = FixtureCommand {
             run_nonce: 99,
             nonce: 8,
+            event_payload_tag: 0,
             kind: FixtureCommandKind::MoveToNextDisplay,
         };
         let topology_line = format_command_line(topology);
         assert_eq!(
             topology_line,
-            "fixture-command version=5 run=99 nonce=8 action=move-to-next-display"
+            "fixture-command version=9 run=99 nonce=8 event-tag=0 action=move-to-next-display"
         );
         assert_eq!(parse_command_line(&topology_line), Some(topology));
     }

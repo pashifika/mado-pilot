@@ -1139,6 +1139,8 @@ static void mp_shim_close_release(struct mp_shim_session *session) {
 @property(nonatomic, assign) mp_shim_target_info info;
 @property(nonatomic, copy) NSData *name;
 @property(nonatomic, strong) id nativeTarget;
+@property(nonatomic, strong) id processLifetime;
+@property(nonatomic, assign) double processLaunchTime;
 @end
 
 @implementation MPShimInventoryEntry
@@ -1458,8 +1460,7 @@ static bool mp_shim_process_window_eligible(id<MPShimWindow> window, pid_t owner
 }
 
 
-static MPShimInventoryEntry *mp_shim_window_entry(id<MPShimWindow> window,
-                                                  bool process_directed) {
+static MPShimInventoryEntry *mp_shim_window_entry(id<MPShimWindow> window) {
     CGRect frame = window.frame;
     if (CGRectIsNull(frame) || frame.size.width < 1.0 || frame.size.height < 1.0) {
         return nil;
@@ -1493,6 +1494,18 @@ static MPShimInventoryEntry *mp_shim_window_entry(id<MPShimWindow> window,
     if (owner == nil) {
         return nil;
     }
+    pid_t owner_process = ((id<MPShimRunningApplication>)owner).processID;
+    id process_lifetime = nil;
+    double process_launch_time = 0.0;
+    mp_shim_status lifetime_status = MP_SHIM_PLATFORM_FAILURE;
+    process_lifetime =
+        mp_shim_process_lifetime(owner_process, &process_launch_time, &lifetime_status);
+    if (lifetime_status != MP_SHIM_OK) {
+        process_lifetime = nil;
+        process_launch_time = 0.0;
+    }
+    bool process_directed =
+        mp_shim_process_window_eligible(window, owner_process) && process_lifetime != nil;
     NSString *title = window.title;
     NSString *name = title.length > 0 ? title : nil;
     if (name == nil) {
@@ -1505,7 +1518,7 @@ static MPShimInventoryEntry *mp_shim_window_entry(id<MPShimWindow> window,
     info.struct_size = (uint32_t)sizeof(info);
     info.kind = MP_SHIM_TARGET_WINDOW;
     info.native_id = window.windowID;
-    info.owner_process = owner == nil ? 0 : ((id<MPShimRunningApplication>)owner).processID;
+    info.owner_process = owner_process;
     info.pixel_width = pixel_width;
     info.pixel_height = pixel_height;
     info.logical_x = frame.origin.x;
@@ -1520,6 +1533,8 @@ static MPShimInventoryEntry *mp_shim_window_entry(id<MPShimWindow> window,
     entry.info = info;
     entry.name = encoded;
     entry.nativeTarget = window;
+    entry.processLifetime = process_lifetime;
+    entry.processLaunchTime = process_launch_time;
     return entry;
 }
 
@@ -1637,10 +1652,7 @@ mp_shim_status mp_shim_inventory_acquire(uint64_t timeout_nanos, mp_shim_invento
             if (!typed.onScreen || typed.windowLayer != 0) {
                 continue;
             }
-            id<MPShimRunningApplication> owner = typed.owningApplication;
-            bool process_directed =
-                owner != nil && mp_shim_process_window_eligible(typed, owner.processID);
-            MPShimInventoryEntry *entry = mp_shim_window_entry(typed, process_directed);
+            MPShimInventoryEntry *entry = mp_shim_window_entry(typed);
             if (entry != nil) {
                 [entries addObject:entry];
             }
@@ -1725,6 +1737,42 @@ mp_shim_status mp_shim_inventory_name(const mp_shim_inventory *inventory, size_t
     MP_SHIM_END
 }
 
+/*
+ * Materializes a capture target from already selected native objects. Process
+ * lifetime metadata is optional: its absence disables process-directed input
+ * but must not discard the independently valid ScreenCaptureKit filter.
+ */
+static mp_shim_status mp_shim_target_from_selected(
+    mp_shim_target_info info, id filter, id shareable_owner, id process_lifetime,
+    double process_launch_time, mp_shim_target **out) {
+    if (filter == nil ||
+        (info.kind == MP_SHIM_TARGET_WINDOW && shareable_owner == nil) ||
+        (process_lifetime != nil && !isfinite(process_launch_time))) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    struct mp_shim_target *target = calloc(1, sizeof(struct mp_shim_target));
+    if (target == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    target->magic = MP_SHIM_TARGET_MAGIC;
+    target->kind = info.kind;
+    target->native_id = info.native_id;
+    target->owner_process = info.owner_process;
+    target->filter = CFBridgingRetain(filter);
+    mp_shim_note_owned();
+    if (info.kind == MP_SHIM_TARGET_WINDOW) {
+        target->shareable_owner = CFBridgingRetain(shareable_owner);
+        mp_shim_note_owned();
+        if (process_lifetime != nil) {
+            target->process_lifetime = CFBridgingRetain(process_lifetime);
+            mp_shim_note_owned();
+            target->process_launch_time = process_launch_time;
+        }
+    }
+    *out = target;
+    return MP_SHIM_OK;
+}
+
 mp_shim_status mp_shim_inventory_target(const mp_shim_inventory *inventory, size_t index,
                                         mp_shim_target **out) {
     if (out == NULL) {
@@ -1743,8 +1791,8 @@ mp_shim_status mp_shim_inventory_target(const mp_shim_inventory *inventory, size
     mp_shim_target_info info = entry.info;
     id<MPShimContentFilterInit> filter = nil;
     id shareable_owner = nil;
-    id process_lifetime = nil;
-    double process_launch_time = 0.0;
+    id process_lifetime = entry.processLifetime;
+    double process_launch_time = entry.processLaunchTime;
     if (info.kind == MP_SHIM_TARGET_WINDOW) {
         id<MPShimWindow> window = (id<MPShimWindow>)entry.nativeTarget;
         shareable_owner = window.owningApplication;
@@ -1753,12 +1801,6 @@ mp_shim_status mp_shim_inventory_target(const mp_shim_inventory *inventory, size
                 (pid_t)info.owner_process) {
             return MP_SHIM_TARGET_LOST;
         }
-        mp_shim_status lifetime_status = MP_SHIM_PLATFORM_FAILURE;
-        process_lifetime = mp_shim_process_lifetime((pid_t)info.owner_process,
-                                                    &process_launch_time, &lifetime_status);
-        if (process_lifetime == nil) {
-            return lifetime_status;
-        }
         filter = [(id<MPShimContentFilterInit>)[framework->content_filter alloc]
             initWithDesktopIndependentWindow:entry.nativeTarget];
     } else if (info.kind == MP_SHIM_TARGET_DISPLAY) {
@@ -1766,28 +1808,8 @@ mp_shim_status mp_shim_inventory_target(const mp_shim_inventory *inventory, size
               initWithDisplay:entry.nativeTarget
              excludingWindows:@[]];
     }
-    if (filter == nil) {
-        return MP_SHIM_PLATFORM_FAILURE;
-    }
-    struct mp_shim_target *target = calloc(1, sizeof(struct mp_shim_target));
-    if (target == NULL) {
-        return MP_SHIM_PLATFORM_FAILURE;
-    }
-    target->magic = MP_SHIM_TARGET_MAGIC;
-    target->kind = info.kind;
-    target->native_id = info.native_id;
-    target->owner_process = info.owner_process;
-    target->filter = CFBridgingRetain(filter);
-    mp_shim_note_owned();
-    if (info.kind == MP_SHIM_TARGET_WINDOW) {
-        target->shareable_owner = CFBridgingRetain(shareable_owner);
-        mp_shim_note_owned();
-        target->process_lifetime = CFBridgingRetain(process_lifetime);
-        mp_shim_note_owned();
-        target->process_launch_time = process_launch_time;
-    }
-    *out = target;
-    return MP_SHIM_OK;
+    return mp_shim_target_from_selected(info, filter, shareable_owner, process_lifetime,
+                                        process_launch_time, out);
     MP_SHIM_END
 }
 
@@ -1835,6 +1857,39 @@ void mp_shim_target_release(mp_shim_target *target) {
     } @catch (...) {
     }
     free(target);
+}
+
+mp_shim_status mp_shim_testing_target_without_process_lifetime(
+    uint32_t *out_capture_metadata_retained, uint32_t *out_process_metadata_retained) {
+    if (out_capture_metadata_retained == NULL || out_process_metadata_retained == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_capture_metadata_retained = 0;
+    *out_process_metadata_retained = 0;
+    MP_SHIM_BEGIN
+    @autoreleasepool {
+        id filter = [[NSObject alloc] init];
+        id owner = [[NSObject alloc] init];
+        mp_shim_target_info info = {
+            .struct_size = (uint32_t)sizeof(mp_shim_target_info),
+            .kind = MP_SHIM_TARGET_WINDOW,
+            .native_id = 17,
+            .owner_process = 23,
+        };
+        mp_shim_target *target = NULL;
+        mp_shim_status status =
+            mp_shim_target_from_selected(info, filter, owner, nil, 0.0, &target);
+        if (status != MP_SHIM_OK || target == NULL) {
+            return status;
+        }
+        *out_capture_metadata_retained =
+            target->filter != NULL && target->shareable_owner != NULL;
+        *out_process_metadata_retained =
+            target->process_lifetime != NULL || target->process_launch_time != 0.0;
+        mp_shim_target_release(target);
+        return MP_SHIM_OK;
+    }
+    MP_SHIM_END
 }
 
 #pragma mark - Detached buffer pool
@@ -3188,6 +3243,12 @@ static const MPShimKeyboardLayoutApi *mp_shim_keyboard_layout_api(void) {
 @protocol MPShimRunningApplicationClass <NSObject>
 + (id)runningApplicationWithProcessIdentifier:(pid_t)identifier;
 @end
+@protocol MPShimWorkspace <NSObject>
+@property(readonly) id frontmostApplication;
+@end
+@protocol MPShimWorkspaceClass <NSObject>
++ (id<MPShimWorkspace>)sharedWorkspace;
+@end
 
 @protocol MPShimActivatableApplication <NSObject>
 - (BOOL)activateWithOptions:(NSUInteger)options;
@@ -3203,6 +3264,7 @@ static const MPShimKeyboardLayoutApi *mp_shim_keyboard_layout_api(void) {
 static const NSUInteger MPShimActivateAllWindows = 1u << 0;
 
 static Class mp_shim_running_application_class = Nil;
+static Class mp_shim_workspace_class = Nil;
 static pthread_once_t mp_shim_appkit_once = PTHREAD_ONCE_INIT;
 
 static void mp_shim_load_appkit(void) {
@@ -3215,6 +3277,7 @@ static void mp_shim_load_appkit(void) {
         return;
     }
     mp_shim_running_application_class = NSClassFromString(@"NSRunningApplication");
+    mp_shim_workspace_class = NSClassFromString(@"NSWorkspace");
 }
 
 static Class mp_shim_activation_class(void) {
@@ -3417,14 +3480,14 @@ static mp_shim_status mp_shim_ax_window_rect(AXUIElementRef window, uint64_t dea
 
 /*
  * Evaluates a fresh shareable-content sample without allowing numeric window or
- * process identifiers to substitute for retained object identity. Other windows
- * owned by the same process are intentionally irrelevant: process-directed input
- * addresses the retained window's current owning process, not one window within
- * that process.
+ * process identifiers to substitute for retained object identity. The retained
+ * window remains the capture and geometry authority; unrelated windows owned by
+ * the same process do not narrow the process-addressed delivery contract.
  */
 static mp_shim_status mp_shim_window_authority_from_windows(
     const struct mp_shim_target *target, NSArray *retained_windows, NSArray *current_windows,
-    mp_shim_status unavailable_status, CGRect *out_bounds, uint32_t *out_target_match_count) {
+    mp_shim_status unavailable_status, CGRect *out_bounds,
+    uint32_t *out_target_match_count) {
     *out_bounds = CGRectNull;
     if (out_target_match_count != NULL) {
         *out_target_match_count = 0;
@@ -3478,11 +3541,10 @@ static mp_shim_status mp_shim_window_authority_from_windows(
     return MP_SHIM_OK;
 }
 
-static mp_shim_status mp_shim_input_window_authority(const struct mp_shim_target *target,
-                                                     uint64_t deadline,
-                                                     mp_shim_status unavailable_status,
-                                                     CGRect *out_bounds,
-                                                     uint32_t *out_target_match_count) {
+static mp_shim_status mp_shim_input_window_authority(
+    const struct mp_shim_target *target, uint64_t deadline, bool require_process_lifetime,
+    mp_shim_status unavailable_status, CGRect *out_bounds,
+    uint32_t *out_target_match_count) {
     *out_bounds = CGRectNull;
     if (out_target_match_count != NULL) {
         *out_target_match_count = 0;
@@ -3491,9 +3553,11 @@ static mp_shim_status mp_shim_input_window_authority(const struct mp_shim_target
     if (framework == NULL) {
         return MP_SHIM_UNSUPPORTED;
     }
-    mp_shim_status lifetime = mp_shim_process_lifetime_status(target);
-    if (lifetime != MP_SHIM_OK) {
-        return lifetime;
+    if (require_process_lifetime) {
+        mp_shim_status lifetime = mp_shim_process_lifetime_status(target);
+        if (lifetime != MP_SHIM_OK) {
+            return lifetime;
+        }
     }
     uint64_t now = mp_shim_nanos_from_ticks(mach_absolute_time());
     if (now >= deadline) {
@@ -3510,12 +3574,16 @@ static mp_shim_status mp_shim_input_window_authority(const struct mp_shim_target
     mp_shim_status authority = mp_shim_window_authority_from_windows(
         target, filter.includedWindows, shareable.windows, unavailable_status, out_bounds,
         out_target_match_count);
-    return authority == MP_SHIM_OK ? mp_shim_process_lifetime_status(target) : authority;
+    if (authority != MP_SHIM_OK || !require_process_lifetime) {
+        return authority;
+    }
+    return mp_shim_process_lifetime_status(target);
 }
 
 static mp_shim_status mp_shim_input_window_rect(const struct mp_shim_target *target,
                                                 uint64_t deadline, CGRect *out_bounds) {
-    return mp_shim_input_window_authority(target, deadline, MP_SHIM_TARGET_LOST, out_bounds, NULL);
+    return mp_shim_input_window_authority(target, deadline, false, MP_SHIM_TARGET_LOST,
+                                          out_bounds, NULL);
 }
 
 mp_shim_status mp_shim_process_authority(const mp_shim_target *target,
@@ -3523,9 +3591,14 @@ mp_shim_status mp_shim_process_authority(const mp_shim_target *target,
                                          mp_shim_process_authority_report *out_authority) {
     if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || target->filter == NULL ||
         target->kind != MP_SHIM_TARGET_WINDOW || target->owner_process <= 0 ||
-        target->shareable_owner == NULL || target->process_lifetime == NULL ||
-        timeout_nanos == 0 || out_authority == NULL ||
+        target->shareable_owner == NULL || timeout_nanos == 0 || out_authority == NULL ||
         out_authority->struct_size != sizeof(mp_shim_process_authority_report)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    if (target->process_lifetime == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    if (!isfinite(target->process_launch_time)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     out_authority->target_match_count = 0;
@@ -3545,7 +3618,7 @@ mp_shim_status mp_shim_process_authority(const mp_shim_target *target,
             began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
         CGRect bounds = CGRectNull;
         mp_shim_status status = mp_shim_input_window_authority(
-            target, deadline, MP_SHIM_UNSUPPORTED, &bounds,
+            target, deadline, true, MP_SHIM_UNSUPPORTED, &bounds,
             &out_authority->target_match_count);
         if (status != MP_SHIM_OK) {
             return status;
@@ -3850,6 +3923,28 @@ mp_shim_status mp_shim_input_pointer_location(double *out_x, double *out_y) {
     MP_SHIM_END
 }
 
+mp_shim_status mp_shim_input_frontmost_process(uint32_t *out_process) {
+    if (out_process == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_process = 0;
+    MP_SHIM_BEGIN
+    (void)mp_shim_activation_class();
+    if (mp_shim_workspace_class == Nil) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    id<MPShimWorkspace> workspace =
+        [(id<MPShimWorkspaceClass>)mp_shim_workspace_class sharedWorkspace];
+    id<MPShimProcessLifetimeApplication> application =
+        (id<MPShimProcessLifetimeApplication>)workspace.frontmostApplication;
+    if (application == nil || application.processIdentifier <= 0) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_process = (uint32_t)application.processIdentifier;
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
 mp_shim_status mp_shim_input_activate_owner(int64_t owner_process) {
     if (owner_process <= 0 || owner_process > INT32_MAX) {
         return MP_SHIM_INVALID_ARGUMENT;
@@ -3971,7 +4066,8 @@ mp_shim_status mp_shim_input_resolve_character(uint32_t scalar, uint16_t *out_ke
 
 #pragma mark - Input: posting
 
-mp_shim_status mp_shim_process_event_source_create(mp_shim_process_event_source **out_source) {
+mp_shim_status mp_shim_process_event_source_create(
+    uint64_t activity_tag, mp_shim_process_event_source **out_source) {
     if (out_source == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
@@ -3984,6 +4080,7 @@ mp_shim_status mp_shim_process_event_source_create(mp_shim_process_event_source 
         if (native_source == NULL) {
             return MP_SHIM_PLATFORM_FAILURE;
         }
+        CGEventSourceSetUserData(native_source, (int64_t)activity_tag);
         source = calloc(1, sizeof(struct mp_shim_process_event_source));
         if (source == NULL) {
             return MP_SHIM_PLATFORM_FAILURE;
@@ -4307,19 +4404,27 @@ mp_shim_validate_process_post(const mp_shim_process_post_request *request,
         request->target->kind != MP_SHIM_TARGET_WINDOW || request->target->native_id == 0 ||
         request->target->owner_process <= 0 || request->target->owner_process > INT_MAX ||
         request->target->filter == NULL || request->target->shareable_owner == NULL ||
-        request->target->process_lifetime == NULL ||
-        !isfinite(request->target->process_launch_time) ||
         request->event_source == NULL ||
         request->event_source->magic != MP_SHIM_PROCESS_EVENT_SOURCE_MAGIC ||
         request->event_source->source == NULL || request->interruption_context == NULL ||
         request->interruption_callback == NULL || request->timeout_nanos == 0) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
+    if (request->target->process_lifetime == NULL) {
+        return MP_SHIM_UNSUPPORTED;
+    }
+    if (!isfinite(request->target->process_launch_time)) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
     const uint32_t valid_flags = MP_SHIM_INPUT_FLAG_SHIFT | MP_SHIM_INPUT_FLAG_CONTROL |
                                  MP_SHIM_INPUT_FLAG_ALT | MP_SHIM_INPUT_FLAG_META;
     if ((request->flags & ~valid_flags) != 0 ||
         (request->geometry_check != MP_SHIM_PROCESS_GEOMETRY_AUTHORITY_ONLY &&
-         request->geometry_check != MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT)) {
+         request->geometry_check != MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT) ||
+        (request->purpose != MP_SHIM_PROCESS_POST_INPUT &&
+         request->purpose != MP_SHIM_PROCESS_POST_RELEASE) ||
+        (request->purpose == MP_SHIM_PROCESS_POST_RELEASE &&
+         request->geometry_check != MP_SHIM_PROCESS_GEOMETRY_AUTHORITY_ONLY)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     for (size_t index = 0; index < sizeof(request->reserved); index += 1) {
@@ -4443,7 +4548,7 @@ static mp_shim_status mp_shim_production_process_authority(
     const mp_shim_target *target, uint64_t deadline, CGRect *out_bounds,
     uint32_t *out_target_match_count, void *context) {
     (void)context;
-    return mp_shim_input_window_authority(target, deadline, MP_SHIM_UNSUPPORTED, out_bounds,
+    return mp_shim_input_window_authority(target, deadline, true, MP_SHIM_UNSUPPORTED, out_bounds,
                                           out_target_match_count);
 }
 
@@ -4494,6 +4599,39 @@ static void mp_shim_process_report_reset_gate(const mp_shim_process_post_request
             : MP_SHIM_PROCESS_GEOMETRY_NOT_EVALUATED;
 }
 
+static mp_shim_status mp_shim_process_check_commit_authority(
+    const mp_shim_process_post_request *request, mp_shim_process_post_report *report,
+    const mp_shim_process_post_ops *ops, uint64_t deadline) {
+    mp_shim_status status = MP_SHIM_OK;
+    if (request->purpose == MP_SHIM_PROCESS_POST_INPUT) {
+        CGRect current_bounds = CGRectNull;
+        status = ops->authority(request->target, deadline, &current_bounds,
+                                &report->target_match_count, ops->context);
+        if (status != MP_SHIM_OK) {
+            return status;
+        }
+        if (request->geometry_check == MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT) {
+            CGRect expected =
+                CGRectMake(request->expected_x, request->expected_y,
+                           request->expected_width, request->expected_height);
+            double scale = ops->scale(current_bounds, ops->context);
+            if (!CGRectEqualToRect(current_bounds, expected) ||
+                scale != request->expected_scale) {
+                report->geometry_result = MP_SHIM_PROCESS_GEOMETRY_CHANGED;
+                return MP_SHIM_GEOMETRY_CHANGED;
+            }
+            report->geometry_result = MP_SHIM_PROCESS_GEOMETRY_PASSED;
+        }
+    }
+
+    status = ops->preflight(ops->context);
+    mp_shim_process_report_authorization(report, status);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    return ops->lifetime(request->target, ops->context);
+}
+
 static mp_shim_status
 mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
                               mp_shim_process_post_report *out_report,
@@ -4531,30 +4669,7 @@ mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
             return status;
         }
 
-        CGRect current_bounds = CGRectNull;
-        status = ops->authority(request->target, deadline, &current_bounds,
-                                &out_report->target_match_count, ops->context);
-        if (status != MP_SHIM_OK) {
-            return status;
-        }
-        if (request->geometry_check == MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT) {
-            CGRect expected =
-                CGRectMake(request->expected_x, request->expected_y,
-                           request->expected_width, request->expected_height);
-            double scale = ops->scale(current_bounds, ops->context);
-            if (!CGRectEqualToRect(current_bounds, expected) ||
-                scale != request->expected_scale) {
-                out_report->geometry_result = MP_SHIM_PROCESS_GEOMETRY_CHANGED;
-                return MP_SHIM_GEOMETRY_CHANGED;
-            }
-            out_report->geometry_result = MP_SHIM_PROCESS_GEOMETRY_PASSED;
-        }
-        status = ops->preflight(ops->context);
-        mp_shim_process_report_authorization(out_report, status);
-        if (status != MP_SHIM_OK) {
-            return status;
-        }
-        status = ops->lifetime(request->target, ops->context);
+        status = mp_shim_process_check_commit_authority(request, out_report, ops, deadline);
         if (status != MP_SHIM_OK) {
             return status;
         }
@@ -4568,9 +4683,18 @@ mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
             if (event == NULL) {
                 return MP_SHIM_PLATFORM_FAILURE;
             }
+            status =
+                mp_shim_process_check_commit_authority(request, out_report, ops, deadline);
+            if (status != MP_SHIM_OK) {
+                return status;
+            }
             now = mp_shim_nanos_from_ticks(mach_absolute_time());
             if (now == 0 || now >= deadline) {
                 return MP_SHIM_TIMED_OUT;
+            }
+            status = request->interruption_callback(request->interruption_context);
+            if (status != MP_SHIM_OK) {
+                return status;
             }
             @autoreleasepool {
                 ops->post((pid_t)request->target->owner_process, event, ops->context);
@@ -4793,6 +4917,9 @@ mp_shim_status mp_shim_testing_validate_process_post(
     case MP_SHIM_TEST_PROCESS_VALIDATE_OUTPUT_NULL:
         report_pointer = NULL;
         break;
+    case MP_SHIM_TEST_PROCESS_VALIDATE_PURPOSE:
+        request.purpose = UINT32_MAX;
+        break;
     default:
         return MP_SHIM_INVALID_ARGUMENT;
     }
@@ -4941,6 +5068,8 @@ static mp_shim_status mp_shim_testing_process_authority(
     *out_target_match_count = 1;
     if (probe->scenario == MP_SHIM_TEST_PROCESS_TARGET_LOST ||
         (probe->scenario == MP_SHIM_TEST_PROCESS_TARGET_LOST_AFTER_FIRST &&
+         probe->authority_calls >= 3) ||
+        (probe->scenario == MP_SHIM_TEST_PROCESS_TARGET_LOST_AFTER_PREPARE &&
          probe->authority_calls >= 2)) {
         *out_target_match_count = 0;
         return MP_SHIM_TARGET_LOST;
@@ -4949,7 +5078,9 @@ static mp_shim_status mp_shim_testing_process_authority(
         *out_target_match_count = 0;
         return MP_SHIM_UNSUPPORTED;
     }
-    if (probe->scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED) {
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED ||
+        (probe->scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE &&
+         probe->authority_calls >= 2)) {
         out_bounds->origin.x += 1.0;
     }
     return MP_SHIM_OK;
@@ -4960,6 +5091,8 @@ static mp_shim_status mp_shim_testing_process_preflight(void *context) {
     probe->preflight_calls += 1;
     if (probe->scenario == MP_SHIM_TEST_PROCESS_PERMISSION_DENIED ||
         (probe->scenario == MP_SHIM_TEST_PROCESS_REVOKED_AFTER_FIRST &&
+         probe->preflight_calls >= 3) ||
+        (probe->scenario == MP_SHIM_TEST_PROCESS_REVOKED_AFTER_PREPARE &&
          probe->preflight_calls >= 2)) {
         return MP_SHIM_PERMISSION_DENIED;
     }
@@ -4971,9 +5104,12 @@ static mp_shim_status mp_shim_testing_process_lifetime(const mp_shim_target *tar
     (void)target;
     mp_shim_process_test_probe *probe = context;
     probe->lifetime_calls += 1;
-    return probe->scenario == MP_SHIM_TEST_PROCESS_LIFETIME_LOST_BEFORE_POST
-               ? MP_SHIM_TARGET_LOST
-               : MP_SHIM_OK;
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_LIFETIME_LOST_BEFORE_POST ||
+        (probe->scenario == MP_SHIM_TEST_PROCESS_LIFETIME_LOST_AFTER_PREPARE &&
+         probe->lifetime_calls >= 2)) {
+        return MP_SHIM_TARGET_LOST;
+    }
+    return MP_SHIM_OK;
 }
 
 static mp_shim_status mp_shim_testing_process_interruption(void *context) {
@@ -4981,7 +5117,9 @@ static mp_shim_status mp_shim_testing_process_interruption(void *context) {
     probe->interruption_calls += 1;
     if (probe->scenario == MP_SHIM_TEST_PROCESS_INTERRUPTED_BEFORE_POST ||
         (probe->scenario == MP_SHIM_TEST_PROCESS_INTERRUPTED_AFTER_FIRST &&
-         probe->interruption_calls >= 2)) {
+         probe->post_calls >= 1) ||
+        (probe->scenario == MP_SHIM_TEST_PROCESS_INTERRUPTED_AFTER_PREPARE &&
+         probe->prepare_calls > probe->post_calls)) {
         return MP_SHIM_TIMED_OUT;
     }
     return MP_SHIM_OK;
@@ -5031,7 +5169,7 @@ mp_shim_status mp_shim_testing_process_post(
         out_target_match_count == NULL || out_authority_calls == NULL ||
         out_preflight_calls == NULL || out_lifetime_calls == NULL ||
         out_prepare_calls == NULL || out_post_calls == NULL || out_release_calls == NULL ||
-        scenario > MP_SHIM_TEST_PROCESS_INTERRUPTED_AFTER_FIRST) {
+        scenario > MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
@@ -5093,9 +5231,13 @@ mp_shim_status mp_shim_testing_process_post(
                    scenario == MP_SHIM_TEST_PROCESS_TARGET_LOST_AFTER_FIRST ||
                    scenario == MP_SHIM_TEST_PROCESS_INTERRUPTED_AFTER_FIRST) {
             request.event_kind = MP_SHIM_PROCESS_EVENT_TEXT;
-        } else if (scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED) {
+        } else if (scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED ||
+                   scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE) {
             request.geometry_check = MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT;
             request.expected_scale = 2.0;
+        }
+        if (scenario == MP_SHIM_TEST_PROCESS_RELEASE_WINDOW_UNAVAILABLE) {
+            request.purpose = MP_SHIM_PROCESS_POST_RELEASE;
         }
         const mp_shim_process_post_ops ops = {
             .authority = mp_shim_testing_process_authority,

@@ -28,8 +28,157 @@
 //! any benchmark passing them in.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::io::Read;
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, Instant};
+
+const CHILD_PROCESS_POLL: Duration = Duration::from_millis(5);
+const CHILD_PROCESS_TERMINATE_WAIT: Duration = Duration::from_secs(1);
+const CHILD_PIPE_DRAIN_WAIT: Duration = Duration::from_millis(100);
+
+/// Captured output from one benchmark child whose lifetime and output were
+/// bounded by [`bounded_child_output`].
+#[derive(Debug)]
+pub struct BoundedChildOutput {
+    /// The reaped process status, or `None` if the child could not be reaped.
+    pub status: Option<ExitStatus>,
+    /// The retained stdout prefix, never longer than the requested byte cap.
+    pub stdout: Vec<u8>,
+    /// The retained stderr prefix, never longer than the requested byte cap.
+    pub stderr: Vec<u8>,
+    /// Whether the child exited before its deadline and both streams completed
+    /// without exceeding the byte cap.
+    pub within_bounds: bool,
+}
+
+struct CappedPipe {
+    bytes: Vec<u8>,
+    overflowed: bool,
+    complete: bool,
+}
+
+fn read_capped_pipe(mut pipe: impl Read, max_bytes: usize) -> CappedPipe {
+    let mut bytes = Vec::with_capacity(max_bytes);
+    let mut chunk = [0u8; 4_096];
+    let mut overflowed = false;
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => {
+                return CappedPipe {
+                    bytes,
+                    overflowed,
+                    complete: true,
+                };
+            }
+            Ok(count) => {
+                let remaining = max_bytes.saturating_sub(bytes.len());
+                let retained = remaining.min(count);
+                bytes.extend_from_slice(&chunk[..retained]);
+                overflowed |= retained != count;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => {
+                return CappedPipe {
+                    bytes,
+                    overflowed,
+                    complete: false,
+                };
+            }
+        }
+    }
+}
+
+fn wait_for_child_exit(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(CHILD_PROCESS_POLL),
+            ),
+            Err(_) => return None,
+        }
+    }
+    child.try_wait().ok().flatten()
+}
+
+/// Runs one benchmark child with finite time and per-stream output bounds.
+///
+/// A child still running at `wait` is terminated and given one bounded second
+/// to be reaped. Output beyond `max_output_bytes` is drained so the child cannot
+/// deadlock on a full pipe, but it is not retained and makes
+/// [`BoundedChildOutput::within_bounds`] false.
+pub fn bounded_child_output(
+    command: &mut Command,
+    wait: Duration,
+    max_output_bytes: usize,
+) -> BoundedChildOutput {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let Ok(mut child) = command.spawn() else {
+        return BoundedChildOutput {
+            status: None,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            within_bounds: false,
+        };
+    };
+    let stdout = child
+        .stdout
+        .take()
+        .expect("a piped benchmark child must expose stdout");
+    let stderr = child
+        .stderr
+        .take()
+        .expect("a piped benchmark child must expose stderr");
+    let stdout_reader = thread::spawn(move || read_capped_pipe(stdout, max_output_bytes));
+    let stderr_reader = thread::spawn(move || read_capped_pipe(stderr, max_output_bytes));
+
+    let deadline = Instant::now() + wait;
+    let mut status = wait_for_child_exit(&mut child, deadline);
+    let exited_in_time = status.is_some();
+    if !exited_in_time {
+        let _killed = child.kill();
+        status = wait_for_child_exit(&mut child, Instant::now() + CHILD_PROCESS_TERMINATE_WAIT);
+    }
+
+    let drain_deadline = Instant::now() + CHILD_PIPE_DRAIN_WAIT;
+    while (!stdout_reader.is_finished() || !stderr_reader.is_finished())
+        && Instant::now() < drain_deadline
+    {
+        thread::sleep(
+            drain_deadline
+                .saturating_duration_since(Instant::now())
+                .min(CHILD_PROCESS_POLL),
+        );
+    }
+    let readers_finished = stdout_reader.is_finished() && stderr_reader.is_finished();
+    let stdout = readers_finished
+        .then(|| stdout_reader.join().ok())
+        .flatten();
+    let stderr = readers_finished
+        .then(|| stderr_reader.join().ok())
+        .flatten();
+    let within_bounds = exited_in_time
+        && status.is_some()
+        && stdout
+            .as_ref()
+            .is_some_and(|pipe| pipe.complete && !pipe.overflowed)
+        && stderr
+            .as_ref()
+            .is_some_and(|pipe| pipe.complete && !pipe.overflowed);
+    BoundedChildOutput {
+        status,
+        stdout: stdout.map_or_else(Vec::new, |pipe| pipe.bytes),
+        stderr: stderr.map_or_else(Vec::new, |pipe| pipe.bytes),
+        within_bounds,
+    }
+}
 
 /// The target triple the benchmark runs on, when it is one this project
 /// releases.
@@ -271,14 +420,20 @@ impl Workload {
     pub fn percentile(&self, percentile: f64) -> f64 {
         let mut sorted = self.elapsed.clone();
         sorted.sort_unstable();
-        let last = sorted.len().saturating_sub(1);
+        let Some(last) = sorted.len().checked_sub(1) else {
+            return 0.0;
+        };
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
-            reason = "an index into a sample vector whose length is far below the f64 mantissa"
+            reason = "the clamped nearest rank indexes this small in-memory sample vector"
         )]
-        let index = ((last as f64) * percentile).round() as usize;
-        sorted.get(index).copied().unwrap_or_default().as_secs_f64() * 1_000.0
+        let index = ((percentile.clamp(0.0, 1.0) * sorted.len() as f64)
+            .ceil()
+            .max(1.0) as usize
+            - 1)
+        .min(last);
+        sorted[index].as_secs_f64() * 1_000.0
     }
     /// Returns the slowest retained sample.
     ///
@@ -589,7 +744,114 @@ impl LatencyBudget {
     pub const fn workload(self) -> &'static str {
         self.workload
     }
+
+    /// Returns the frozen p50 ceiling.
+    #[must_use]
+    pub const fn p50(self) -> Duration {
+        self.p50
+    }
+
+    /// Returns the frozen p95 ceiling.
+    #[must_use]
+    pub const fn p95(self) -> Duration {
+        self.p95
+    }
+
+    /// Returns the frozen per-scenario maximum.
+    #[must_use]
+    pub const fn hard_max(self) -> Duration {
+        self.hard_max
+    }
 }
+
+/// Phase 2.2 controlled-capture latency ceilings frozen before qualification.
+pub const PHASE2_2_CAPTURE_LATENCY_BUDGETS: [LatencyBudget; 2] = [
+    LatencyBudget::new(
+        "fixture_command_acknowledgement",
+        Duration::from_millis(50),
+        Duration::from_millis(100),
+        Duration::from_millis(500),
+    ),
+    LatencyBudget::new(
+        "controlled_stimulus_to_frame",
+        Duration::from_millis(300),
+        Duration::from_millis(750),
+        Duration::from_secs(2),
+    ),
+];
+
+/// Phase 2.2 controlled-transition latency ceilings frozen before qualification.
+pub const PHASE2_2_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 1] = [LatencyBudget::new(
+    "close_drain",
+    Duration::from_millis(100),
+    Duration::from_millis(250),
+    Duration::from_secs(1),
+)];
+
+/// Phase 2.2 process-directed latency ceilings frozen before qualification.
+pub const PHASE2_2_PROCESS_LATENCY_BUDGETS: [LatencyBudget; 5] = [
+    LatencyBudget::new(
+        "discovery_open_retained_authority",
+        Duration::from_millis(350),
+        Duration::from_millis(750),
+        Duration::from_secs(2),
+    ),
+    LatencyBudget::new(
+        "event_authority_preflight_post",
+        Duration::from_millis(300),
+        Duration::from_millis(750),
+        Duration::from_secs(2),
+    ),
+    LatencyBudget::new(
+        "release_cleanup",
+        Duration::from_millis(100),
+        Duration::from_millis(250),
+        Duration::from_millis(250),
+    ),
+    LatencyBudget::new(
+        "session_close",
+        Duration::from_millis(100),
+        Duration::from_millis(250),
+        Duration::from_secs(1),
+    ),
+    LatencyBudget::new(
+        "fixture_controller_close",
+        Duration::from_millis(100),
+        Duration::from_millis(250),
+        Duration::from_secs(1),
+    ),
+];
+
+/// Phase 2.2 process-diagnostic latency ceilings frozen before qualification.
+pub const PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS: [LatencyBudget; 4] = [
+    LatencyBudget::new(
+        "event_diagnostics_off",
+        Duration::from_millis(300),
+        Duration::from_millis(750),
+        Duration::from_secs(2),
+    ),
+    LatencyBudget::new(
+        "event_diagnostics_normal",
+        Duration::from_millis(300),
+        Duration::from_millis(750),
+        Duration::from_secs(2),
+    ),
+    LatencyBudget::new(
+        "event_diagnostics_debug",
+        Duration::from_millis(300),
+        Duration::from_millis(750),
+        Duration::from_secs(2),
+    ),
+    LatencyBudget::new(
+        "event_diagnostic_overflow",
+        Duration::from_millis(300),
+        Duration::from_millis(750),
+        Duration::from_secs(2),
+    ),
+];
+
+/// Frozen Phase 2.2 live-Rust-heap ceiling for every process-directed workload.
+pub const PHASE2_2_PROCESS_HEAP_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
 /// Enforces frozen p50, p95, and per-scenario latency ceilings.
 ///
@@ -784,12 +1046,91 @@ fn escape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        LatencyBudget, Plan, PrefixedLineMatch, Sample, Workload, classify_prefixed_line,
-        enforce_latency_budgets, measure,
+        LatencyBudget, Plan, PrefixedLineMatch, Sample, Workload, bounded_child_output,
+        classify_prefixed_line, enforce_latency_budgets, measure,
     };
-    use std::time::Duration;
+    use std::io::Write;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
 
     fn fixture() {}
+
+    const CHILD_MODE: &str = "MADO_PILOT_TESTKIT_BOUNDED_CHILD_MODE";
+
+    fn child_command(mode: &str) -> Command {
+        let mut command =
+            Command::new(std::env::current_exe().expect("the current test executable exists"));
+        command
+            .args(["bounded_child_fixture", "--nocapture"])
+            .env(CHILD_MODE, mode);
+        command
+    }
+
+    #[test]
+    fn bounded_child_fixture() {
+        match std::env::var(CHILD_MODE).as_deref() {
+            Ok("success") => println!("bounded child completed"),
+            Ok("overflow") => {
+                let mut stdout = std::io::stdout().lock();
+                stdout
+                    .write_all(&vec![b'x'; 4_096])
+                    .expect("the child writes its oversized output");
+                stdout.flush().expect("the child flushes stdout");
+            }
+            Ok("timeout") => std::thread::sleep(Duration::from_secs(5)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn bounded_child_output_accepts_a_timely_finite_process() {
+        let output = bounded_child_output(
+            &mut child_command("success"),
+            Duration::from_secs(1),
+            16 * 1_024,
+        );
+
+        assert!(output.within_bounds);
+        assert!(output.status.is_some_and(|status| status.success()));
+        assert!(
+            String::from_utf8(output.stdout)
+                .expect("the child writes UTF-8")
+                .contains("bounded child completed")
+        );
+    }
+
+    #[test]
+    fn bounded_child_output_reaps_a_process_after_timeout() {
+        let started = Instant::now();
+        let output = bounded_child_output(
+            &mut child_command("timeout"),
+            Duration::from_millis(25),
+            16 * 1_024,
+        );
+
+        assert!(!output.within_bounds);
+        assert!(
+            output.status.is_some(),
+            "the terminated child was not reaped"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the timed-out child exceeded the bounded termination allowance"
+        );
+    }
+
+    #[test]
+    fn bounded_child_output_rejects_and_caps_oversized_stdout() {
+        let output = bounded_child_output(
+            &mut child_command("overflow"),
+            Duration::from_secs(1),
+            1_024,
+        );
+
+        assert!(!output.within_bounds);
+        assert!(output.status.is_some_and(|status| status.success()));
+        assert_eq!(output.stdout.len(), 1_024);
+    }
 
     fn stale_sample(_: &()) -> Sample {
         Sample::unmapped(Duration::from_micros(1), true).with_stale_work(1, 4)
@@ -914,5 +1255,26 @@ mod tests {
             ),
             PrefixedLineMatch::Expected
         );
+    }
+    #[test]
+    fn percentile_uses_nearest_rank_for_even_sample_counts() {
+        let workload = Workload {
+            name: "nearest-rank",
+            oracle: "the selected order statistic is exact",
+            elapsed: (1..=50).map(Duration::from_millis).collect(),
+            incorrect: 0,
+            stale: 0,
+            scheduled: 0,
+            mapped: 0,
+            iteration_span: Duration::ZERO,
+            peak_bytes: 0,
+            steady_bytes: 0,
+            peak_resident_bytes: None,
+            growth_bytes: 0,
+        };
+
+        assert_eq!(workload.percentile(0.50), 25.0);
+        assert_eq!(workload.percentile(0.95), 48.0);
+        assert_eq!(workload.percentile(1.0), 50.0);
     }
 }

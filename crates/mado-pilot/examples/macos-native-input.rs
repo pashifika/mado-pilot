@@ -13,10 +13,11 @@
 //!
 //! This program explicitly opts into [`InputDelivery::ProcessDirected`]. The
 //! route preserves focus and addresses the process that owns the selected
-//! capture window; it does not promise exact-window delivery. The Adapter
-//! revalidates that the retained open, unminimized window is the owning
-//! process's only eligible ordinary window before each irreversible event and
-//! refuses ambiguity rather than activating or guessing.
+//! capture window; it does not promise exact-window delivery. Before each
+//! irreversible event, the Adapter revalidates the exact retained `SCWindow`,
+//! its original owning process lifetime, and an unambiguous fresh snapshot.
+//! Other same-process windows may coexist; replacement or identity disagreement
+//! is refused rather than activating or guessing.
 //!
 //! A successful post API call reports [`SubmissionEvidence::InvocationOnly`].
 //! It does not prove queue admission, application consumption, or visual

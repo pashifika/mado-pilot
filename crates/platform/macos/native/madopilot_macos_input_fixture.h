@@ -30,8 +30,8 @@ extern "C" {
 #define MP_FIXTURE_PLATFORM_FAILURE 3u
 #define MP_FIXTURE_NATIVE_EXCEPTION 4u
 
-/* Versioned, payload-free commands accepted from the owned test harness. */
-#define MP_FIXTURE_CONTROL_VERSION 5u
+/* Versioned commands accepted only from the owned test harness. */
+#define MP_FIXTURE_CONTROL_VERSION 9u
 #define MP_FIXTURE_COMMAND_TRANSITION 1u
 #define MP_FIXTURE_COMMAND_REPLACE 2u
 #define MP_FIXTURE_COMMAND_MINIMIZE 3u
@@ -46,6 +46,9 @@ extern "C" {
 #define MP_FIXTURE_COMMAND_MOVE_TO_NEXT_DISPLAY 12u
 #define MP_FIXTURE_COMMAND_RESET_EVENTS 13u
 #define MP_FIXTURE_COMMAND_READ_EVENTS 14u
+#define MP_FIXTURE_COMMAND_MOVE_OFFSCREEN 15u
+#define MP_FIXTURE_COMMAND_RESTORE_ONSCREEN 16u
+#define MP_FIXTURE_COMMAND_TAKE_FOREGROUND 17u
 
 /*
  * What one observed event was.
@@ -85,7 +88,7 @@ extern "C" {
  * once after the first window is visible and reports the renderer that actually
  * initialized. `controlled` reports each accepted control nonce with the native
  * status and the exact before/after window numbers. `sink` reports bounded input
- * metadata only.
+ * metadata plus the private reset-row token supplied by the harness.
  * No callback may let a Rust panic escape.
  *
  * `mp_fixture_control` validates the per-run identity and fixed command before
@@ -112,10 +115,20 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                            uint32_t command, uint32_t status,
                                            uint64_t before_window_number,
                                            uint64_t after_window_number),
-                        void (*sink)(void *context, uint32_t kind, uint32_t text_units));
+                        void (*sink)(void *context, uint32_t kind, uint32_t text_units,
+                                     uint64_t event_payload_tag,
+                                     uint64_t payload_fingerprint));
 
 uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
-                            uint64_t nonce, uint32_t command);
+                            uint64_t nonce, uint32_t command,
+                            uint64_t event_payload_tag);
+
+/*
+ * Ends the fixture when its owning harness closes the private control channel.
+ * The run identity prevents a stale reader from terminating a later run.
+ */
+uint32_t mp_fixture_control_closed(uint32_t version, uint64_t run_nonce);
+
 
 /*
  * Fixture-binary test seam. Attempts only one fixed, deliberately absent

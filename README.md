@@ -41,10 +41,10 @@ crates/bindings/capi/examples/c/macos-native-input.c
 crates/bindings/capi/examples/cpp/native-input.cpp
 ```
 
-Release acceptance remains incomplete. The revision-bound macOS current-display
-matrix passes, but its shared external-display matrix, the macOS
-process-directed qualification matrices, and both Windows interactive matrices
-still require their approved physical topologies. macOS capture needs Screen
+Release acceptance remains incomplete. The revision-bound macOS
+current-display and process-directed qualification matrices pass, but the
+shared external-display matrix and both Windows interactive matrices still
+require their approved physical topologies. macOS capture needs Screen
 Recording and input needs event-post access; MadoPilot probes both without
 prompting. A green run that skipped a permissioned native scenario is not
 evidence that scenario ran.
@@ -64,13 +64,13 @@ Adding a package here is not a claim that its behavior exists.
 | Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
 | Native capture | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; the macOS current-display matrix passes while Windows and shared-display acceptance remain open |
-| Native input submission | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; system and exact-window routes are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
+| Native input submission | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
 | Bounded diagnostic observation | Implemented through Rust, C ABI 1.2, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and privacy-reviewed records |
 | OCR, watchers | Not implemented |
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.2 while preserving the released ABI 1.0 prefix; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.2 |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 is resolved on both targets. The Phase 2.2 input-diagnostic and native input/public-language profiles are accepted on macOS, and diagnostic hard correctness and bounded-growth gates run in both release-target CI jobs; named-host Windows timing plus the remaining macOS capture/transition and Windows native profiles stay open |
+| Numeric performance budgets | Phase 1 is resolved on both targets. The Phase 2.2 input-diagnostic, native input/public-language, and controlled-stimulus/process-directed profiles are accepted on macOS, and diagnostic hard correctness and bounded-growth gates run in both release-target CI jobs; named-host Windows timing plus the remaining Windows native profiles stay open |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled

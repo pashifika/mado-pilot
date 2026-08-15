@@ -23,7 +23,7 @@ use crate::input::{GeometryLedger, MacosInputController, input_capability};
 use crate::native::{NativeSession, SessionTarget};
 use crate::shim::{
     MAX_NATIVE_WAIT, NativeBounds, ProcessAuthority, ProcessAuthorityFailure, ProcessEventSource,
-    ProcessGeometry, ProcessPost, ProcessPostFailure, ProcessPostOutcome, ShimStatus, TargetToken,
+    ProcessPostFailure, ProcessPostOutcome, ProcessPostRequest, ShimStatus, TargetToken,
 };
 
 /// Provider name qualifying every native macOS target identity.
@@ -166,6 +166,24 @@ impl MacosCaptureProvider {
         }))
     }
 
+    /// Binds one private-fixture target to an authenticated control peer.
+    ///
+    /// PID/title matching is only a discovery hint. This check reads the
+    /// snapshot-owned target record and lets the controller authenticate that
+    /// native owner before any qualification caller opens or inputs to it.
+    #[cfg(feature = "private-fixture")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn fixture_target_has_authenticated_owner(
+        &self,
+        target: TargetId,
+        authenticates_owner: impl FnOnce(i64) -> bool,
+    ) -> bool {
+        self.registry().records.get(&target).is_some_and(|record| {
+            record.kind() == TargetKind::Window && authenticates_owner(record.owner_process())
+        })
+    }
+
     /// Returns the record an input operation names, or why it cannot be used.
     ///
     /// `TargetId` is snapshot-scoped exactly as it is for capture, so an accepted
@@ -281,10 +299,18 @@ impl InputProvider for MacosCaptureProvider {
     }
 
     fn describe(&self, target: TargetId, operation: &OperationContext) -> Result<InputDescriptor> {
-        let attempt = Operation::admit(operation)?;
+        let mut attempt = Operation::admit(operation)?;
         InputProvider::accepts_target(self, target, self.issuer.engine())?;
-        let record = self.select_input_record(target, inventory_wait(operation.remaining()))?;
+        let record = match self.select_input_record(target, inventory_wait(operation.remaining())) {
+            Ok(record) => record,
+            Err(error) => {
+                attempt.checkpoint()?;
+                return Err(error.into());
+            }
+        };
+        attempt.checkpoint()?;
         let descriptor = record.input_descriptor(inventory_wait(operation.remaining()));
+        attempt.checkpoint()?;
         Ok(attempt.commit(descriptor)?)
     }
 
@@ -294,13 +320,32 @@ impl InputProvider for MacosCaptureProvider {
         request: &InputOpenRequest,
         operation: &OperationContext,
     ) -> Result<Arc<dyn InputController>> {
-        let attempt = Operation::admit(operation)?;
+        let mut attempt = Operation::admit(operation)?;
         InputProvider::accepts_target(self, target, self.issuer.engine())?;
-        let record = self.select_input_record(target, inventory_wait(operation.remaining()))?;
+        let record = match self.select_input_record(target, inventory_wait(operation.remaining())) {
+            Ok(record) => record,
+            Err(error) => {
+                attempt.checkpoint()?;
+                return Err(error.into());
+            }
+        };
+        attempt.checkpoint()?;
         let descriptor = record.input_descriptor(inventory_wait(operation.remaining()));
+        attempt.checkpoint()?;
         request.check(descriptor.capability())?;
         let controller = MacosInputController::new(record, descriptor);
         Ok(attempt.commit(controller as Arc<dyn InputController>)?)
+    }
+}
+
+fn process_authority_supports_route(
+    authority: std::result::Result<ProcessAuthority, ProcessAuthorityFailure>,
+) -> bool {
+    match authority {
+        Ok(authority) => authority.target_match_count == 1,
+        Err(failure) => {
+            failure.status == ShimStatus::PermissionDenied && failure.target_match_count == 1
+        }
     }
 }
 
@@ -352,11 +397,8 @@ impl TargetRecord {
     }
 
     fn process_directed_available(&self, wait: Duration) -> bool {
-        if self.kind() != TargetKind::Window {
-            return false;
-        }
-        self.process_authority(wait)
-            .is_ok_and(|authority| authority.target_match_count == 1)
+        self.kind() == TargetKind::Window
+            && process_authority_supports_route(self.process_authority(wait))
     }
 
     /// Reads the retained selection's current rectangle from a fresh bounded
@@ -387,18 +429,15 @@ impl TargetRecord {
         self.selection.process_authority(wait)
     }
 
-    /// Invokes one bounded event through the retained process authority.
+    /// Invokes one bounded event through the retained owning-process authority.
     pub(crate) fn process_post(
         &self,
         event_source: &ProcessEventSource,
-        post: ProcessPost<'_>,
-        geometry: ProcessGeometry,
-        flags: u32,
-        wait: Duration,
+        request: ProcessPostRequest<'_>,
         operation: &OperationContext,
     ) -> std::result::Result<ProcessPostOutcome, ProcessPostFailure> {
         self.selection
-            .process_post(event_source, post, geometry, flags, wait, operation)
+            .process_post(event_source, request, operation)
     }
 
     /// Reads focus for this exact retained selection within `wait`.
@@ -437,7 +476,11 @@ mod tests {
     use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata};
     use crate::shim::TargetToken;
 
-    use super::{MacosCaptureProvider, RETAINED_DISCOVERY_GENERATIONS, inventory_wait};
+    use super::{
+        MacosCaptureProvider, NativeBounds, ProcessAuthority, ProcessAuthorityFailure,
+        RETAINED_DISCOVERY_GENERATIONS, ShimStatus, inventory_wait,
+        process_authority_supports_route,
+    };
 
     fn window_candidate(incarnation: u64) -> Candidate {
         let extent = PixelExtent::new(64, 48);
@@ -484,6 +527,47 @@ mod tests {
                 MonotonicInstant::ORIGIN
             }
         }
+    }
+
+    #[test]
+    fn process_directed_capability_survives_exact_match_authorization_denial() {
+        let exact_denial = Err(ProcessAuthorityFailure {
+            status: ShimStatus::PermissionDenied,
+            target_match_count: 1,
+        });
+        assert!(process_authority_supports_route(exact_denial));
+
+        let no_exact_match = Err(ProcessAuthorityFailure {
+            status: ShimStatus::PermissionDenied,
+            target_match_count: 0,
+        });
+        assert!(!process_authority_supports_route(no_exact_match));
+
+        let unavailable = Err(ProcessAuthorityFailure {
+            status: ShimStatus::Unsupported,
+            target_match_count: 1,
+        });
+        assert!(!process_authority_supports_route(unavailable));
+
+        let available = Ok(ProcessAuthority {
+            bounds: NativeBounds {
+                origin: (0.0, 0.0),
+                size: (64.0, 48.0),
+                scale: 1.0,
+            },
+            target_match_count: 1,
+        });
+        assert!(process_authority_supports_route(available));
+    }
+
+    #[cfg(feature = "private-fixture")]
+    #[test]
+    fn fixture_authorization_uses_the_snapshot_owned_native_process() {
+        let provider = MacosCaptureProvider::new(Arc::new(IdentityIssuer::new()));
+        let target = commit_candidates(&provider, vec![window_candidate(1)])[0].id();
+
+        assert!(provider.fixture_target_has_authenticated_owner(target, |owner| owner == 501));
+        assert!(!provider.fixture_target_has_authenticated_owner(target, |owner| owner == 907));
     }
 
     #[test]

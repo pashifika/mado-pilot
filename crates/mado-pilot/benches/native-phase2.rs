@@ -15,6 +15,8 @@
 #[path = "support/macos_fixture.rs"]
 mod macos_fixture;
 #[cfg(target_os = "macos")]
+use mado_pilot_platform_macos::fixture_control as macos_fixture_control;
+#[cfg(target_os = "macos")]
 use mado_pilot_platform_macos::fixture_protocol as macos_fixture_protocol;
 
 use mado_pilot_testkit::bench_harness::Accounting;
@@ -34,32 +36,58 @@ fn main() {
 mod native {
     #[cfg(windows)]
     use std::io::{BufRead, BufReader};
+    #[cfg(target_os = "macos")]
+    use std::ops::Deref;
     use std::path::{Path, PathBuf};
-    #[cfg(windows)]
-    use std::process::Child;
     use std::process::Command;
     #[cfg(windows)]
-    use std::process::Stdio;
+    use std::process::{Child, Stdio};
     use std::rc::Rc;
+    #[cfg(target_os = "macos")]
+    use std::sync::Arc;
+    #[cfg(target_os = "macos")]
+    use std::sync::atomic::{AtomicU32, Ordering};
     #[cfg(windows)]
     use std::sync::mpsc;
     use std::sync::{Mutex, OnceLock};
     use std::thread;
     use std::time::{Duration, Instant};
 
+    const MAX_LANGUAGE_OUTPUT_BYTES: usize = 64 * 1_024;
+
+    #[cfg(windows)]
+    use mado_pilot::NativeEngineRequest;
     use mado_pilot::{
-        CleanupState, ContentDigest, DeliveryPlan, Engine, FocusPolicy, Frame, FrameRequest,
-        InputDelivery, InputEvent, InputOpenRequest, InputOperationKind, InputRequest,
-        InputRequirement, InputSequence, Key, NativeEngineRequest, OpenRequest, OperationContext,
+        ActivityTag, CleanupState, ContentDigest, DeliveryPlan, Engine, FocusPolicy, Frame,
+        FrameRequest, FrameStamp, InputDelivery, InputEvent, InputOpenRequest, InputOperationKind,
+        InputRequest, InputRequirement, InputSequence, Key, OpenRequest, OperationContext,
         PixelExtent, PixelFormat, SequenceOutcome, Session, SessionRequest, Status, TargetId,
     };
     use mado_pilot_testkit::bench_harness::{
-        self, Benchmark, LatencyBudget, Plan, Profile, Sample, Workload, argument,
-        enforce_hard_budgets, enforce_latency_budgets, measure,
+        self, Benchmark, BoundedChildOutput, Plan, Profile, Sample, Workload, argument,
+        bounded_child_output, enforce_hard_budgets, enforce_latency_budgets, measure,
+    };
+    #[cfg(target_os = "macos")]
+    use mado_pilot_testkit::bench_harness::{
+        PHASE2_2_CAPTURE_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
+        PHASE2_2_PROCESS_HEAP_LIMIT_BYTES, PHASE2_2_PROCESS_LATENCY_BUDGETS,
+        PHASE2_2_TRANSITION_LATENCY_BUDGETS,
     };
 
     #[cfg(windows)]
     use mado_pilot_testkit::bench_harness::{PrefixedLineMatch, classify_prefixed_line};
+
+    #[cfg(target_os = "macos")]
+    use mado_pilot_backend_opencv::OpenCvBackend;
+    #[cfg(target_os = "macos")]
+    use mado_pilot_platform_macos::{
+        MacosCaptureProvider, MacosPermissionProbe, fixture_control::AuthenticatedFixtureProcess,
+    };
+    #[cfg(target_os = "macos")]
+    use mado_pilot_runtime::{
+        CaptureProvider, EngineOptions, EngineWiring, IdentityIssuer, InputProvider, Matcher,
+        PackageLoader, PermissionProbe,
+    };
 
     #[cfg(target_os = "macos")]
     use crate::macos_fixture_protocol as protocol;
@@ -83,6 +111,38 @@ mod native {
     use mado_pilot_platform_windows::fixture_protocol as protocol;
 
     #[cfg(target_os = "macos")]
+    struct NativeEngine {
+        engine: Engine,
+        provider: Arc<MacosCaptureProvider>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl NativeEngine {
+        fn authenticates_fixture_target(
+            &self,
+            target: TargetId,
+            process: AuthenticatedFixtureProcess,
+        ) -> bool {
+            self.provider
+                .fixture_target_has_authenticated_owner(target, |owner| {
+                    process.matches_live_owner(owner)
+                })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Deref for NativeEngine {
+        type Target = Engine;
+
+        fn deref(&self) -> &Self::Target {
+            &self.engine
+        }
+    }
+
+    #[cfg(windows)]
+    type NativeEngine = Engine;
+
+    #[cfg(target_os = "macos")]
     const FIXTURE_COMMAND_BOUND: Duration = Duration::from_millis(500);
 
     const OPERATION_WAIT: Duration = Duration::from_secs(2);
@@ -94,14 +154,17 @@ mod native {
         protocol::EventSummary {
             kind: protocol::EVENT_POINTER_MOVE,
             text_units: 0,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_DOWN,
             text_units: expected_key_units(),
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_UP,
             text_units: expected_key_units(),
+            correlation: 0,
         },
     ];
 
@@ -110,62 +173,77 @@ mod native {
         protocol::EventSummary {
             kind: protocol::EVENT_POINTER_MOVE,
             text_units: 0,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_POINTER_PRESS,
             text_units: 0,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_POINTER_RELEASE,
             text_units: 0,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_POINTER_PRESS,
             text_units: 0,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_POINTER_RELEASE,
             text_units: 0,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_POINTER_PRESS,
             text_units: 0,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_POINTER_RELEASE,
             text_units: 0,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_POINTER_SCROLL,
             text_units: 0,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_DOWN,
             text_units: expected_key_units(),
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_UP,
             text_units: expected_key_units(),
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_DOWN,
             text_units: expected_key_units(),
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_DOWN,
             text_units: expected_key_units(),
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_UP,
             text_units: expected_key_units(),
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_UP,
             text_units: expected_key_units(),
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_TEXT,
             text_units: 3,
+            correlation: 0,
         },
     ];
 
@@ -177,10 +255,12 @@ mod native {
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_DOWN,
             text_units: 1,
+            correlation: 0,
         },
         protocol::EventSummary {
             kind: protocol::EVENT_KEY_UP,
             text_units: 1,
+            correlation: 0,
         },
     ];
 
@@ -389,16 +469,32 @@ mod native {
             let display_topology = required("--display-topology")?;
             let permissions_signing = required("--permissions-signing")?;
             let language_memory = if set == WorkloadSet::Input {
-                "; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup"
+                "; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup; each C/C++ child has a 2 s execution bound, a 1 s termination/reap allowance, and a 65536-byte stdout/stderr cap per stream"
             } else {
                 ""
             };
-            let fixture_binary = ContentDigest::of(
-                &std::fs::read(&fixture_executable)
-                    .map_err(|_| "the fixture executable could not be hashed".to_owned())?,
-            );
+            let executable_digest = |path: &Path, label: &str| {
+                std::fs::read(path)
+                    .map(|bytes| ContentDigest::of(&bytes))
+                    .map_err(|_| format!("the {label} executable could not be hashed"))
+            };
+            let fixture_binary = executable_digest(&fixture_executable, "fixture")?;
+            let mut binary_hashes = format!("; fixture executable sha256 {fixture_binary}");
+            #[cfg(windows)]
+            if let Some(executable) = ordinary_fixture_executable.as_deref() {
+                let digest = executable_digest(executable, "ordinary fixture")?;
+                binary_hashes.push_str(&format!("; ordinary fixture executable sha256 {digest}"));
+            }
+            if let Some(executable) = c_executable.as_deref() {
+                let digest = executable_digest(executable, "C")?;
+                binary_hashes.push_str(&format!("; C executable sha256 {digest}"));
+            }
+            if let Some(executable) = cpp_executable.as_deref() {
+                let digest = executable_digest(executable, "C++")?;
+                binary_hashes.push_str(&format!("; C++ executable sha256 {digest}"));
+            }
             let notes = format!(
-                "source commit {source_revision}, tree {source_tree}; toolchain {toolchain}; GPU/driver {gpu_driver}; display topology {display_topology}; permissions/signing {permissions_signing}; fixture executable sha256 {fixture_binary}; fixture path deliberately omitted{language_memory}"
+                "source commit {source_revision}, tree {source_tree}; toolchain {toolchain}; GPU/driver {gpu_driver}; display topology {display_topology}; permissions/signing {permissions_signing}{binary_hashes}; executable paths deliberately omitted{language_memory}"
             );
 
             Ok(Self {
@@ -643,6 +739,10 @@ mod native {
             self.with_controller(|controller| controller.process_id())
         }
 
+        fn authenticated_process(&self) -> Option<AuthenticatedFixtureProcess> {
+            self.with_controller(|controller| controller.authenticated_process())
+        }
+
         fn title(&self) -> String {
             protocol::fixture_title(self.process_id())
         }
@@ -659,8 +759,10 @@ mod native {
             self.with_controller(|controller| controller.command(kind, wait))
         }
 
-        fn event_summaries(&self, count: usize, wait: Duration) -> Vec<protocol::EventSummary> {
-            self.with_controller(|controller| controller.event_summaries(count, wait))
+        fn begin_flow(&self, event_payload_tag: u64) -> bool {
+            self.with_controller(|controller| {
+                controller.reset_events(event_payload_tag, OPERATION_WAIT)
+            })
         }
 
         fn cancel_after_event(
@@ -675,7 +777,21 @@ mod native {
         }
 
         fn next_flow(&self, expected: &[protocol::EventSummary]) -> bool {
-            self.event_summaries(expected.len(), OPERATION_WAIT) == expected
+            self.with_controller(|controller| controller.events_are_exact(expected, OPERATION_WAIT))
+        }
+
+        fn finish_flow_after_prefix(
+            &self,
+            expected_remaining: &[protocol::EventSummary],
+            expected_total: &[protocol::EventSummary],
+        ) -> bool {
+            self.with_controller(|controller| {
+                controller.remaining_events_are_exact(
+                    expected_remaining,
+                    expected_total,
+                    OPERATION_WAIT,
+                )
+            })
         }
 
         fn close_bounded(&self, wait: Duration) -> bool {
@@ -699,10 +815,12 @@ mod native {
                 protocol::EventSummary {
                     kind: protocol::EVENT_KEY_DOWN,
                     text_units: down_units,
+                    correlation: 0,
                 },
                 protocol::EventSummary {
                     kind: protocol::EVENT_KEY_UP,
                     text_units: up_units,
+                    correlation: 0,
                 },
             ])
         }
@@ -906,14 +1024,16 @@ mod native {
     }
 
     struct Flow {
-        engine: Engine,
+        engine: NativeEngine,
         target: TargetId,
         fixture: Rc<FixtureProcess>,
     }
 
     impl Flow {
         fn from_fixture(fixture: Rc<FixtureProcess>) -> Self {
-            let process_id = fixture.process_id();
+            let process = fixture
+                .authenticated_process()
+                .expect("the benchmark fixture control peer remains authenticated");
 
             let engine = native_engine();
             require_permissions(&engine);
@@ -922,7 +1042,11 @@ mod native {
                 let targets = engine
                     .discover(&bounded(OPERATION_WAIT))
                     .expect("the benchmark fixture is discoverable");
-                if let Ok(target) = protocol::select_unique_fixture(&targets, process_id) {
+                if let Ok(target) =
+                    protocol::select_unique_fixture(&targets, process.process_id(), |target| {
+                        engine.authenticates_fixture_target(target, process)
+                    })
+                {
                     break target.id();
                 }
                 assert!(
@@ -1158,7 +1282,7 @@ mod native {
                 phase: benchmark_phase(set),
             },
             &Profile {
-                fixture: fixture.to_owned(),
+                fixture,
                 fixture_sha256: fixture_digest(set).to_string(),
                 hardware: args.hardware.clone(),
                 os_version: args.os_version.clone(),
@@ -1483,14 +1607,87 @@ mod native {
     const PROCESS_OVERFLOW_CAPACITY: usize = 4;
     #[cfg(target_os = "macos")]
     const PROCESS_OVERFLOW_SUBMISSIONS: usize = 4;
-    #[cfg(target_os = "macos")]
-    const PROCESS_HEAP_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
     #[cfg(target_os = "macos")]
     const POINTER_EVENT: protocol::EventSummary = protocol::EventSummary {
         kind: protocol::EVENT_POINTER_MOVE,
         text_units: 0,
+        correlation: 0,
     };
+
+    #[cfg(target_os = "macos")]
+    static NEXT_PROCESS_CORRELATION: AtomicU32 = AtomicU32::new(1);
+
+    #[cfg(target_os = "macos")]
+    fn process_row_activity(fingerprints: &[u64]) -> (ActivityTag, u32) {
+        let correlation = NEXT_PROCESS_CORRELATION.fetch_add(1, Ordering::Relaxed);
+        assert_ne!(correlation, 0, "benchmark row correlation exhausted");
+        let value = protocol::event_payload_activity_tag(correlation, fingerprints);
+        (
+            ActivityTag::new(value).expect("benchmark row activity tag is nonzero"),
+            correlation,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn correlated_event(
+        event: protocol::EventSummary,
+        correlation: u32,
+    ) -> protocol::EventSummary {
+        protocol::EventSummary {
+            correlation,
+            ..event
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_pointer_fingerprint(x: f64, y: f64) -> u64 {
+        protocol::event_payload_fingerprint(
+            protocol::EVENT_POINTER_MOVE,
+            5,
+            0,
+            0,
+            0,
+            x,
+            y,
+            0,
+            0,
+            0,
+            &[],
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_enter_fingerprints() -> [u64; 2] {
+        [
+            protocol::event_payload_fingerprint(
+                protocol::EVENT_KEY_DOWN,
+                10,
+                0,
+                0,
+                0,
+                0.0,
+                0.0,
+                0,
+                0,
+                0x24,
+                &[],
+            ),
+            protocol::event_payload_fingerprint(
+                protocol::EVENT_KEY_UP,
+                11,
+                0,
+                0,
+                0,
+                0.0,
+                0.0,
+                0,
+                0,
+                0x24,
+                &[],
+            ),
+        ]
+    }
 
     #[cfg(target_os = "macos")]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1556,9 +1753,9 @@ mod native {
             ),
             measure(
                 "fixture_controller_close",
-                "the private fixture controller acknowledges stop, closes its bounded channel, and reaps only its owned launcher within one shared deadline",
+                "the private fixture controller acknowledges stop, closes its bounded channel, terminates only its authenticated application when needed, and reaps its owned launcher within one shared deadline",
                 plan,
-                move || FixtureProcess::spawn(behavior),
+                move || behavior,
                 fixture_controller_close,
             ),
         ]
@@ -1600,7 +1797,7 @@ mod native {
 
     #[cfg(target_os = "macos")]
     struct ProcessDiscoveryFlow {
-        engine: Engine,
+        engine: NativeEngine,
         fixture: Rc<FixtureProcess>,
     }
 
@@ -1614,15 +1811,21 @@ mod native {
             Self { engine, fixture }
         }
     }
+    #[cfg(target_os = "macos")]
+    #[derive(Debug, Clone, Copy)]
+    struct ProcessVisualCursor {
+        stamp: FrameStamp,
+        fill: u32,
+    }
 
     #[cfg(target_os = "macos")]
     struct ProcessFlow {
-        seed: Frame,
-        fill: u32,
-        _engine: Engine,
+        visual: Mutex<ProcessVisualCursor>,
+        _engine: NativeEngine,
         fixture: Rc<FixtureProcess>,
         session: Session,
         pointer_request: InputRequest,
+        pointer_fingerprint: u64,
         reader: Option<DiagnosticReader>,
         diagnostics: ProcessDiagnosticCase,
     }
@@ -1657,6 +1860,11 @@ mod native {
                 f64::from(extent.height()) / 2.0,
             )
             .expect("the process-directed benchmark point is finite");
+            let desktop = seed
+                .transform()
+                .convert_point(centre, CoordinateSpace::DesktopLogical)
+                .expect("the process benchmark point resolves to desktop logical");
+            let pointer_fingerprint = process_pointer_fingerprint(desktop.x(), desktop.y());
             let pointer_request = InputRequest::new(
                 target,
                 InputSequence::new(vec![InputEvent::PointerMove(centre)])
@@ -1665,16 +1873,21 @@ mod native {
             )
             .with_focus(FocusPolicy::Preserve)
             .with_pointer_geometry(PointerGeometry::require_unchanged_since(seed.stamp()));
-            clear_process_diagnostics(reader.as_ref());
+            if let Some(reader) = reader.as_ref() {
+                let _ = reader.drain();
+            }
             Self {
-                seed,
-                fill,
+                visual: Mutex::new(ProcessVisualCursor {
+                    stamp: seed.stamp(),
+                    fill,
+                }),
                 _engine: engine,
                 fixture,
                 session,
                 pointer_request,
                 reader,
                 diagnostics,
+                pointer_fingerprint,
             }
         }
     }
@@ -1688,7 +1901,7 @@ mod native {
 
     #[cfg(target_os = "macos")]
     struct ProcessCloseFlow {
-        _engine: Engine,
+        _engine: NativeEngine,
         fixture: Rc<FixtureProcess>,
         target: TargetId,
     }
@@ -1728,13 +1941,20 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn discover_process_target(engine: &Engine, fixture: &FixtureProcess) -> TargetId {
+    fn discover_process_target(engine: &NativeEngine, fixture: &FixtureProcess) -> TargetId {
         let deadline = Instant::now() + FIXTURE_WAIT;
         loop {
             let targets = engine
                 .discover(&bounded(OPERATION_WAIT))
                 .expect("the process-directed benchmark fixture is discoverable");
-            if let Ok(target) = protocol::select_unique_fixture(&targets, fixture.process_id()) {
+            let process = fixture
+                .authenticated_process()
+                .expect("the process fixture control peer remains authenticated");
+            if let Ok(target) =
+                protocol::select_unique_fixture(&targets, process.process_id(), |target| {
+                    engine.authenticates_fixture_target(target, process)
+                })
+            {
                 assert!(
                     process_pairs_are_explicit(target),
                     "the process-directed descriptor is explicit and truthful"
@@ -1787,8 +2007,14 @@ mod native {
             .engine
             .discover(&operation)
             .expect("fresh retained-authority discovery completes");
-        let selected = protocol::select_unique_fixture(&targets, flow.fixture.process_id())
-            .expect("fresh discovery selects exactly the owned fixture");
+        let process = flow
+            .fixture
+            .authenticated_process()
+            .expect("the process fixture control peer remains authenticated");
+        let selected = protocol::select_unique_fixture(&targets, process.process_id(), |target| {
+            flow.engine.authenticates_fixture_target(target, process)
+        })
+        .expect("fresh discovery selects exactly the owned fixture");
         let descriptor_ok = process_pairs_are_explicit(selected);
         let session = flow
             .engine
@@ -1801,17 +2027,18 @@ mod native {
             && close(&session);
         Sample::unmapped(elapsed, correct)
     }
+
     #[cfg(target_os = "macos")]
-    fn independently_observe_controlled_visual(flow: &ProcessFlow) -> bool {
-        let before = flow.seed.stamp();
-        let expected_fill = alternate_benchmark_fill(flow.fill)
-            .expect("the process fixture starts in one approved fill");
-        if !controlled_command_ok(&flow.fixture, protocol::FixtureCommandKind::Transition) {
-            return false;
-        }
+    fn independently_observe_tagged_visual(flow: &ProcessFlow) -> bool {
+        let before = *flow
+            .visual
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let expected_fill = alternate_benchmark_fill(before.fill)
+            .expect("the process fixture remains in one approved fill");
 
         let operation = bounded(OPERATION_WAIT);
-        let mut cursor = before;
+        let mut cursor = before.stamp;
         loop {
             let Ok(frame) = flow
                 .session
@@ -1827,10 +2054,18 @@ mod native {
             };
             let stamp = frame.stamp();
             if fill == expected_fill {
-                return stamp.stream() == before.stream()
-                    && stamp.epoch() == before.epoch()
-                    && stamp.sequence() > before.sequence()
+                let exact = stamp.stream() == before.stamp.stream()
+                    && stamp.epoch() == before.stamp.epoch()
+                    && stamp.sequence() > before.stamp.sequence()
                     && mapping.stamp() == stamp;
+                if exact {
+                    *flow
+                        .visual
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        ProcessVisualCursor { stamp, fill };
+                }
+                return exact;
             }
             cursor = stamp;
         }
@@ -1838,29 +2073,46 @@ mod native {
 
     #[cfg(target_os = "macos")]
     fn event_authority_preflight_post(flow: &ProcessFlow) -> Sample {
+        let (activity_tag, correlation) = process_row_activity(&[flow.pointer_fingerprint]);
+        assert!(
+            flow.fixture.begin_flow(activity_tag.get()),
+            "the pointer sample starts with empty fixture event state"
+        );
+        let expected = correlated_event(POINTER_EVENT, correlation);
         let started = Instant::now();
         let receipt = flow
             .session
-            .send_input(&flow.pointer_request, &bounded(OPERATION_WAIT))
+            .send_input(
+                &flow.pointer_request,
+                &bounded(OPERATION_WAIT).with_activity_tag(activity_tag),
+            )
             .expect("the process-directed pointer invocation returns a receipt");
         let elapsed = started.elapsed();
-        let events = flow.fixture.event_summaries(1, OPERATION_WAIT);
-        let visual_ok = independently_observe_controlled_visual(flow);
+        let events_ok = flow.fixture.next_flow(&[expected]);
+        let visual_ok = independently_observe_tagged_visual(flow);
         Sample::unmapped(
             elapsed,
-            complete_process_receipt(&receipt, flow.session.target(), 1)
-                && events == [POINTER_EVENT]
-                && visual_ok,
+            complete_process_receipt(&receipt, flow.session.target(), 1) && events_ok && visual_ok,
         )
     }
 
     #[cfg(target_os = "macos")]
     fn release_cleanup(flow: &ProcessFlow) -> Sample {
         let cancellation = CancellationToken::new();
-        let pressed = protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: expected_key_units(),
-        };
+        let fingerprints = process_enter_fingerprints();
+        let (activity_tag, correlation) = process_row_activity(&fingerprints);
+        assert!(
+            flow.fixture.begin_flow(activity_tag.get()),
+            "the cleanup sample starts with empty fixture event state"
+        );
+        let pressed = correlated_event(
+            protocol::EventSummary {
+                kind: protocol::EVENT_KEY_DOWN,
+                text_units: expected_key_units(),
+                correlation: 0,
+            },
+            correlation,
+        );
         let observer = flow
             .fixture
             .cancel_after_event(pressed, cancellation.clone(), OPERATION_WAIT)
@@ -1877,7 +2129,9 @@ mod native {
             DeliveryPlan::require(InputDelivery::ProcessDirected),
         )
         .with_focus(FocusPolicy::Preserve);
-        let operation = bounded(OPERATION_WAIT).with_cancellation(cancellation);
+        let operation = bounded(OPERATION_WAIT)
+            .with_activity_tag(activity_tag)
+            .with_cancellation(cancellation);
         let receipt = flow.session.send_input(&request, &operation).ok();
         let observed = observer
             .join()
@@ -1886,17 +2140,23 @@ mod native {
         let elapsed = observed
             .cancelled_at()
             .map_or(OPERATION_WAIT, |cancelled| cancelled.elapsed());
-        let released = flow.fixture.event_summaries(1, OPERATION_WAIT);
-        let expected_release = protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: expected_key_units(),
-        };
-        let visual_ok = independently_observe_controlled_visual(flow);
+        let expected_release = correlated_event(
+            protocol::EventSummary {
+                kind: protocol::EVENT_KEY_UP,
+                text_units: expected_key_units(),
+                correlation: 0,
+            },
+            correlation,
+        );
+        let release_ok = flow
+            .fixture
+            .finish_flow_after_prefix(&[expected_release], &[pressed, expected_release]);
+        let visual_ok = independently_observe_tagged_visual(flow);
         let correct = observed.summary() == Some(pressed)
             && receipt
                 .as_ref()
                 .is_some_and(|receipt| cleanup_receipt_is_exact(receipt, flow.session.target()))
-            && released == [expected_release]
+            && release_ok
             && visual_ok;
         Sample::unmapped(elapsed, correct)
     }
@@ -1923,7 +2183,8 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn fixture_controller_close(fixture: &FixtureProcess) -> Sample {
+    fn fixture_controller_close(behavior: &FixtureBehavior) -> Sample {
+        let fixture = FixtureProcess::spawn(*behavior);
         let started = Instant::now();
         let correct = fixture.close_bounded(measured_close_bound());
         Sample::unmapped(started.elapsed(), correct)
@@ -1970,33 +2231,35 @@ mod native {
     #[cfg(target_os = "macos")]
     fn process_diagnostic_event(flow: &ProcessFlow) -> Sample {
         let submissions = flow.diagnostics.submissions();
+        let fingerprints = vec![flow.pointer_fingerprint; submissions];
+        let (activity_tag, correlation) = process_row_activity(&fingerprints);
+        assert!(
+            flow.fixture.begin_flow(activity_tag.get()),
+            "the diagnostic sample starts with empty fixture event state"
+        );
         let mut receipts_correct = true;
         let mut slowest = Duration::ZERO;
         for _ in 0..submissions {
             let started = Instant::now();
             let receipt = flow
                 .session
-                .send_input(&flow.pointer_request, &bounded(OPERATION_WAIT))
+                .send_input(
+                    &flow.pointer_request,
+                    &bounded(OPERATION_WAIT).with_activity_tag(activity_tag),
+                )
                 .expect("the diagnostic process-directed invocation returns a receipt");
             slowest = slowest.max(started.elapsed());
             receipts_correct &= complete_process_receipt(&receipt, flow.session.target(), 1);
         }
-        let events = flow.fixture.event_summaries(submissions, OPERATION_WAIT);
-        let events_correct =
-            events.len() == submissions && events.iter().all(|event| *event == POINTER_EVENT);
+        let expected_events = vec![correlated_event(POINTER_EVENT, correlation); submissions];
+        let events_correct = flow.fixture.next_flow(&expected_events);
+        let visual_correct = independently_observe_tagged_visual(flow);
         let diagnostics_correct =
             process_diagnostics_are_exact(flow.reader.as_ref(), flow.diagnostics, submissions);
         Sample::unmapped(
             slowest,
-            receipts_correct && events_correct && diagnostics_correct,
+            receipts_correct && events_correct && visual_correct && diagnostics_correct,
         )
-    }
-
-    #[cfg(target_os = "macos")]
-    fn clear_process_diagnostics(reader: Option<&DiagnosticReader>) {
-        if let Some(reader) = reader {
-            while matches!(reader.drain(), DiagnosticDrain::Batch(_)) {}
-        }
     }
 
     #[cfg(target_os = "macos")]
@@ -2418,6 +2681,11 @@ mod native {
     }
 
     fn input_request_receipt(active: &ActiveFlow) -> Sample {
+        #[cfg(target_os = "macos")]
+        assert!(
+            active.flow.fixture.begin_flow(0),
+            "the input receipt sample starts with empty fixture event state"
+        );
         let state = lock_state(active);
         let started = Instant::now();
         let receipt_ok = send_key_pair(&state.session);
@@ -2528,6 +2796,11 @@ mod native {
     }
 
     fn rust_common_flow(flow: &Flow) -> Sample {
+        #[cfg(target_os = "macos")]
+        assert!(
+            flow.fixture.begin_flow(0),
+            "the Rust common flow starts with empty fixture event state"
+        );
         let started = Instant::now();
         let session = flow.open_input_session();
         let frame = session
@@ -2545,21 +2818,25 @@ mod native {
     }
     fn language_process_load(program: &LanguageProgram) -> Sample {
         let started = Instant::now();
-        let output = program.command().arg("--load-check").output();
+        let mut command = program.command();
+        command.arg("--load-check");
+        let output = bounded_child_output(&mut command, OPERATION_WAIT, MAX_LANGUAGE_OUTPUT_BYTES);
         let elapsed = started.elapsed();
-        let (correct, peak_resident) = match output {
-            Ok(output) if output.status.success() && output.stderr.is_empty() => {
-                let stdout = String::from_utf8(output.stdout).ok();
-                let peak = stdout.as_deref().and_then(language_peak_resident_bytes);
-                let complete = stdout.as_deref().is_some_and(|stdout| {
-                    language_abi_line_is_present(stdout, program.example_name)
-                        && stdout.lines().any(|line| {
-                            line == format!("{} complete (load check)", program.example_name)
-                        })
-                });
-                (complete && peak.is_some_and(|bytes| bytes > 0), peak)
-            }
-            _ => (false, None),
+        let (correct, peak_resident) = if output.within_bounds
+            && output.status.is_some_and(|status| status.success())
+            && output.stderr.is_empty()
+        {
+            let stdout = String::from_utf8(output.stdout).ok();
+            let peak = stdout.as_deref().and_then(language_peak_resident_bytes);
+            let complete = stdout.as_deref().is_some_and(|stdout| {
+                language_abi_line_is_present(stdout, program.example_name)
+                    && stdout.lines().any(|line| {
+                        line == format!("{} complete (load check)", program.example_name)
+                    })
+            });
+            (complete && peak.is_some_and(|bytes| bytes > 0), peak)
+        } else {
+            (false, None)
         };
         let sample = Sample::unmapped(elapsed, correct);
         match peak_resident {
@@ -2572,15 +2849,19 @@ mod native {
         let fixture = FixtureProcess::spawn(FixtureBehavior::Animate);
         let title = fixture.title();
         let started = Instant::now();
-        let output = program.command().arg(title).output();
-        let (process_succeeded, stderr_empty, stdout) = match output {
-            Ok(output) => (
-                output.status.success(),
-                output.stderr.is_empty(),
-                String::from_utf8(output.stdout).ok(),
-            ),
-            Err(_) => (false, false, None),
-        };
+        let mut command = program.command();
+        command.arg(title);
+        let BoundedChildOutput {
+            status,
+            stdout,
+            stderr,
+            within_bounds,
+        } = bounded_child_output(&mut command, OPERATION_WAIT, MAX_LANGUAGE_OUTPUT_BYTES);
+        let process_succeeded = within_bounds && status.is_some_and(|status| status.success());
+        let stderr_empty = within_bounds && stderr.is_empty();
+        let stdout = within_bounds
+            .then(|| String::from_utf8(stdout).ok())
+            .flatten();
         let receipt_present = stdout
             .as_deref()
             .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
@@ -2819,102 +3100,19 @@ mod native {
             None
         }
     }
-    #[cfg(target_os = "macos")]
-    const CONTROLLED_CAPTURE_LATENCY_BUDGETS: [LatencyBudget; 2] = [
-        LatencyBudget::new(
-            "fixture_command_acknowledgement",
-            Duration::from_millis(50),
-            Duration::from_millis(100),
-            Duration::from_millis(500),
-        ),
-        LatencyBudget::new(
-            "controlled_stimulus_to_frame",
-            Duration::from_millis(300),
-            Duration::from_millis(750),
-            Duration::from_secs(2),
-        ),
-    ];
-
-    #[cfg(target_os = "macos")]
-    const CONTROLLED_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 1] = [LatencyBudget::new(
-        "close_drain",
-        Duration::from_millis(100),
-        Duration::from_millis(250),
-        Duration::from_secs(1),
-    )];
-
-    #[cfg(target_os = "macos")]
-    const PROCESS_LATENCY_BUDGETS: [LatencyBudget; 5] = [
-        LatencyBudget::new(
-            "discovery_open_retained_authority",
-            Duration::from_millis(350),
-            Duration::from_millis(750),
-            Duration::from_secs(2),
-        ),
-        LatencyBudget::new(
-            "event_authority_preflight_post",
-            Duration::from_millis(300),
-            Duration::from_millis(750),
-            Duration::from_secs(2),
-        ),
-        LatencyBudget::new(
-            "release_cleanup",
-            Duration::from_millis(100),
-            Duration::from_millis(250),
-            Duration::from_millis(250),
-        ),
-        LatencyBudget::new(
-            "session_close",
-            Duration::from_millis(100),
-            Duration::from_millis(250),
-            Duration::from_secs(1),
-        ),
-        LatencyBudget::new(
-            "fixture_controller_close",
-            Duration::from_millis(100),
-            Duration::from_millis(250),
-            Duration::from_secs(1),
-        ),
-    ];
-
-    #[cfg(target_os = "macos")]
-    const PROCESS_DIAGNOSTIC_LATENCY_BUDGETS: [LatencyBudget; 4] = [
-        LatencyBudget::new(
-            "event_diagnostics_off",
-            Duration::from_millis(300),
-            Duration::from_millis(750),
-            Duration::from_secs(2),
-        ),
-        LatencyBudget::new(
-            "event_diagnostics_normal",
-            Duration::from_millis(300),
-            Duration::from_millis(750),
-            Duration::from_secs(2),
-        ),
-        LatencyBudget::new(
-            "event_diagnostics_debug",
-            Duration::from_millis(300),
-            Duration::from_millis(750),
-            Duration::from_secs(2),
-        ),
-        LatencyBudget::new(
-            "event_diagnostic_overflow",
-            Duration::from_millis(300),
-            Duration::from_millis(750),
-            Duration::from_secs(2),
-        ),
-    ];
 
     #[cfg(target_os = "macos")]
     fn enforce_premeasurement_budgets(set: WorkloadSet, workloads: &[Workload]) {
         let latency = match set {
-            WorkloadSet::Capture => CONTROLLED_CAPTURE_LATENCY_BUDGETS.as_slice(),
-            WorkloadSet::Transitions => CONTROLLED_TRANSITION_LATENCY_BUDGETS.as_slice(),
+            WorkloadSet::Capture => PHASE2_2_CAPTURE_LATENCY_BUDGETS.as_slice(),
+            WorkloadSet::Transitions => PHASE2_2_TRANSITION_LATENCY_BUDGETS.as_slice(),
             WorkloadSet::Input => &[],
             WorkloadSet::ProcessDirected | WorkloadSet::ProcessDirectedGameLike => {
-                PROCESS_LATENCY_BUDGETS.as_slice()
+                PHASE2_2_PROCESS_LATENCY_BUDGETS.as_slice()
             }
-            WorkloadSet::ProcessDiagnostics => PROCESS_DIAGNOSTIC_LATENCY_BUDGETS.as_slice(),
+            WorkloadSet::ProcessDiagnostics => {
+                PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS.as_slice()
+            }
         };
         enforce_latency_budgets(workloads, latency);
         if matches!(
@@ -2925,7 +3123,7 @@ mod native {
         ) {
             for workload in workloads {
                 assert!(
-                    workload.peak_allocated_bytes() <= PROCESS_HEAP_LIMIT_BYTES,
+                    workload.peak_allocated_bytes() <= PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
                     "{} exceeded the frozen 16 MiB process-directed live Rust heap ceiling: {} bytes",
                     workload.name(),
                     workload.peak_allocated_bytes(),
@@ -3094,18 +3292,33 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn native_engine() -> Engine {
+    fn native_engine() -> NativeEngine {
         native_engine_with_diagnostics(DiagnosticOptions::off())
     }
 
     #[cfg(target_os = "macos")]
-    fn native_engine_with_diagnostics(diagnostics: DiagnosticOptions) -> Engine {
-        mado_pilot::macos_engine(NativeEngineRequest::new().with_diagnostics(diagnostics))
-            .expect("the macOS benchmark engine builds")
+    fn native_engine_with_diagnostics(diagnostics: DiagnosticOptions) -> NativeEngine {
+        let backend = OpenCvBackend::new().expect("the required OpenCV backend initializes");
+        let issuer = Arc::new(IdentityIssuer::new());
+        let engine_id = issuer.engine();
+        let provider = Arc::new(MacosCaptureProvider::new(issuer));
+        let engine = Engine::new_with_options(
+            EngineWiring {
+                engine: engine_id,
+                capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
+                matcher: Matcher::new(Arc::new(backend)),
+                loader: PackageLoader::new(),
+                input: Some(Arc::clone(&provider) as Arc<dyn InputProvider>),
+                permission: Some(Arc::new(MacosPermissionProbe::new()) as Arc<dyn PermissionProbe>),
+            },
+            EngineOptions::new().with_diagnostics(diagnostics),
+        )
+        .expect("the macOS benchmark engine builds");
+        NativeEngine { engine, provider }
     }
 
     #[cfg(windows)]
-    fn native_engine() -> Engine {
+    fn native_engine() -> NativeEngine {
         mado_pilot::windows_engine(NativeEngineRequest::new())
             .expect("the Windows benchmark engine builds")
     }
@@ -3150,7 +3363,7 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn require_permissions(engine: &Engine) {
+    fn require_permissions(engine: &NativeEngine) {
         let report = engine
             .permissions(&bounded(OPERATION_WAIT))
             .expect("the macOS benchmark reads permissions without prompting");
@@ -3163,7 +3376,7 @@ mod native {
     }
 
     #[cfg(windows)]
-    fn require_permissions(_engine: &Engine) {}
+    fn require_permissions(_engine: &NativeEngine) {}
 
     #[cfg(target_os = "macos")]
     const fn input_delivery() -> InputDelivery {
@@ -3187,7 +3400,7 @@ mod native {
 
     #[cfg(target_os = "macos")]
     const fn expected_key_units() -> u32 {
-        1
+        0
     }
 
     #[cfg(windows)]
@@ -3228,7 +3441,7 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn profile_identity(set: WorkloadSet) -> (&'static str, &'static str) {
+    fn profile_identity(set: WorkloadSet) -> (&'static str, String) {
         let id = match set {
             WorkloadSet::Capture => "phase-2-2-controlled-capture-aarch64-apple-darwin",
             WorkloadSet::Transitions => "phase-2-2-controlled-transitions-aarch64-apple-darwin",
@@ -3245,12 +3458,16 @@ mod native {
         };
         (
             id,
-            "separately linked private macOS fixture Rust, protocol-v5, header, Objective-C, and renderer sources",
+            format!(
+                "separately linked private macOS fixture Rust, protocol-v{}, header, \
+                 Objective-C, and renderer sources",
+                protocol::FIXTURE_CONTROL_VERSION
+            ),
         )
     }
 
     #[cfg(windows)]
-    fn profile_identity(set: WorkloadSet) -> (&'static str, &'static str) {
+    fn profile_identity(set: WorkloadSet) -> (&'static str, String) {
         let id = match set {
             WorkloadSet::Capture => "phase-2-native-capture-x86_64-pc-windows-msvc",
             WorkloadSet::Transitions => "phase-2-native-transitions-x86_64-pc-windows-msvc",
@@ -3261,6 +3478,6 @@ mod native {
         } else {
             "crates/platform/windows fixture Rust and protocol sources"
         };
-        (id, fixture)
+        (id, fixture.to_owned())
     }
 }

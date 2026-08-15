@@ -215,14 +215,14 @@ running.
 
 `System` cleanup deliberately does **not** revalidate focus or geometry. A
 window that stopped being frontmost is exactly when a held button matters most.
-A `ProcessDirected` release repeats the full per-event authority and
-authorization checks — retained window, original process lifetime, current
-geometry, and event-post preflight — because releasing into a replaced process
-would not be cleanup; a release those checks refuse is
-reported rather than posted. Cleanup never claims that external keyboard or
-pointer state was restored: a receipt reports `Incomplete` for a release the
-platform refused and `Exhausted` for one that was never attempted, and the two
-leave a caller with different options.
+A `ProcessDirected` release revalidates the original retained process lifetime,
+current PID relationship, route, authorization, deadline, and cancellation. It
+does not require ordinary target visibility, focus, or pointer geometry: those
+states may be why cleanup is required, and release purpose still refuses a
+replacement process. Cleanup never claims that external keyboard or pointer
+state was restored: a receipt reports `Incomplete` for a release the platform
+refused and `Exhausted` for one that was never attempted, and the two leave a
+caller with different options.
 
 ## Dedicated fixture
 
@@ -249,16 +249,21 @@ leave a caller with different options.
 The fixture accepts no input packet — everything its recorder observes arrived
 as ordinary macOS input — but it is driven by a private, versioned control
 protocol over a controller-owned socket, so capture evidence never depends on
-focus, ambient redraws, or product input. Version 3 of that newline protocol
-carries one bounded command at a time with a monotonic nonzero identifier and
-an explicit result record echoing the same identity, a bounded status, and the
-before/after native window numbers. Approved payload-free transitions are
-`transition` (fill change), `replace`, `minimize`, `restore`,
-`yield-foreground`, `move`, `resize`, `open-auxiliary`, `close-auxiliary`,
-`move-to-next-display` (unsupported with fewer than two displays), `close`, and
-`stop`; every transition executes on the fixture's AppKit main queue. Lines are
-bounded, unknown or reordered records are rejected, and EOF, repeated close,
-and controller cleanup are idempotent. The protocol and event recorder are
+focus, ambient redraws, or product input. Version 9 of that newline protocol
+carries one bounded command at a time, identified by a per-run nonce and a
+monotonic nonzero command nonce, and an explicit result record echoing the same
+identity, a bounded status, the before/after native window numbers, and a
+bounded process-wide event-count summary — per-kind counts, a bounded UTF-16
+unit total, and a saturation flag, never characters. Approved payload-free
+commands are `transition` (fill change), `replace`, `minimize`, `restore`,
+`yield-foreground`, `take-foreground`, `move`, `resize`, `open-auxiliary`,
+`close-auxiliary`, `move-to-next-display` (unsupported with fewer than two
+displays), `move-offscreen`, `restore-onscreen`, `reset-events`, `read-events`,
+`close`, and `stop`; every window transition executes on the fixture's AppKit
+main queue.
+Lines are bounded, unknown or
+reordered records are rejected, and EOF, repeated close, and controller
+cleanup are idempotent. The protocol and event recorder are
 fixture/test-only: no production artifact links them, and no fixture
 acknowledgement ever counts as a product receipt or a visual result.
 
@@ -287,13 +292,23 @@ user's keychain.
 cargo build --locked -p mado-pilot-platform-macos --features private-fixture \
   --bin mado-pilot-macos-input-fixture
 APP=target/mado-pilot-fixtures/MadoPilotInputFixture.app
-mkdir -p "$APP/Contents/MacOS"
+FOREGROUND_APP=target/mado-pilot-fixtures/MadoPilotForegroundFixture.app
+mkdir -p "$APP/Contents/MacOS" "$FOREGROUND_APP/Contents/MacOS"
 cp crates/platform/macos/bundle/Info.plist "$APP/Contents/Info.plist"
+cp crates/platform/macos/bundle/Info.plist "$FOREGROUND_APP/Contents/Info.plist"
+/usr/bin/plutil -replace CFBundleIdentifier \
+  -string dev.mado-pilot.macos-input-foreground-fixture \
+  "$FOREGROUND_APP/Contents/Info.plist"
 cp target/debug/mado-pilot-macos-input-fixture "$APP/Contents/MacOS/"
+cp target/debug/mado-pilot-macos-input-fixture "$FOREGROUND_APP/Contents/MacOS/"
 /usr/bin/codesign --force --sign - \
   --identifier dev.mado-pilot.macos-input-fixture \
   --timestamp=none "$APP"
+/usr/bin/codesign --force --sign - \
+  --identifier dev.mado-pilot.macos-input-foreground-fixture \
+  --timestamp=none "$FOREGROUND_APP"
 /usr/bin/codesign --verify --strict --verbose=2 "$APP"
+/usr/bin/codesign --verify --strict --verbose=2 "$FOREGROUND_APP"
 "$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --report-execution-context
 ```
@@ -412,26 +427,30 @@ intended to take focus from the user.
 
 ## Explicit process-directed checks
 
-Four ignored native tests qualify the process route against the owned fixture.
+Seven ignored native tests qualify the process route against the owned fixture.
 All need Screen Recording and event-post access granted to the process that
 launches `cargo test`, an interactive desktop, the `private-fixture` feature,
-and the structurally verified signed bundle. None focuses the process-directed
-target fixture: a second repository-owned fixture remains frontmost and is
-verified after every posting row.
+the structurally verified signed target bundle, and the separately identified
+foreground bundle. None focuses the process-directed target fixture: the second
+repository-owned fixture remains frontmost and is verified after every posting
+row. Export both executable paths before running the rows:
 
 ```sh
-MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
-MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY="<single|same-scale|mixed-scale>" \
-  cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input \
-  process_directed_delivery_qualifies_default_and_game_like_renderers -- \
+export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
+export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$FOREGROUND_APP/Contents/MacOS/mado-pilot-macos-input-fixture"
+export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY="<single|same-scale|mixed-scale>"
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  --test native_input process_directed_delivery_qualifies_appkit_renderer -- \
+  --ignored --exact --nocapture --test-threads=1
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  --test native_input process_directed_delivery_qualifies_game_like_renderer -- \
   --ignored --exact --nocapture --test-threads=1
 ```
 
-This test runs the positive production-route matrix first against the
-`mode=game-like renderer=opengl` fixture and then against the default AppKit
-renderer. Each half keeps desktop-independent capture active for the frozen
-dwell, opens an additional ordinary same-process window, and proves that the
+These two tests run the positive production-route matrix independently against
+the default AppKit renderer and the `mode=game-like renderer=opengl` fixture.
+Each keeps desktop-independent capture active for the frozen dwell, opens an
+additional ordinary same-process window, and proves that the
 owning-process capability remains advertised. It independently exercises
 pointer move, press, drag, release, and scroll in every public pointer coordinate
 space; current and retained geometry across move, resize, and each live display;
@@ -455,17 +474,21 @@ The controlled unrelated-activity row brackets a private redraw and one real
 process-directed target sequences:
 
 ```sh
-MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
   --test native_input \
-  controlled_unrelated_activity_remains_outside_process_evidence -- \
+  controlled_unrelated_activity_remains_outside_appkit_process_evidence -- \
+  --ignored --exact --nocapture --test-threads=1
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  --test native_input \
+  controlled_unrelated_activity_remains_outside_game_like_process_evidence -- \
   --ignored --exact --nocapture --test-threads=1
 ```
 
-It runs both renderer classes and requires exact target/foreground event
-separation, unchanged process receipts, unchanged target pixels, one separately
-observed foreground transition, foreground preservation, and physical-cursor
-invariance in each process-directed posting window.
+The two rows require exact target/foreground event separation, rejection of an
+untagged same-payload post to the target process, unchanged process receipts,
+unchanged target pixels for unrelated activity, one separately observed
+foreground transition, foreground preservation, and physical-cursor invariance
+in each process-directed posting window.
 
 The bounded soak keeps each renderer's capture stream active for at least 60
 seconds while two spaced process-directed sequences run under the unrelated
@@ -499,14 +522,51 @@ activating the target; the stale retained identity never retargets the
 replacement process/window. Foreground identity, physical cursor, bounded event
 summaries, and repeated close are checked throughout.
 
+The off-screen cleanup row moves each retained renderer target outside every
+display after a process-directed key press, proves the matching release still
+uses the original process/source without ordinary visibility admission, and
+then proves a new pointer event refuses both the off-screen and closed target
+before posting:
+
+```sh
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  --test native_input process_directed_pointer_refuses_offscreen_and_closed_targets -- \
+  --ignored --exact --nocapture --test-threads=1
+```
+
+The fixture-control lifecycle row independently proves protocol version,
+run/command nonce binding, rejection of stale or reordered commands, identity
+continuity across replacement, and idempotent teardown:
+
+```sh
+MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  --test native_input \
+  owned_fixture_control_is_versioned_idempotent_and_identity_bound -- \
+  --ignored --exact --nocapture --test-threads=1
+```
+
 Each run binds its evidence to the exact source revision and tree, fixture hash,
 host, authorization state, and live display topology recorded with the Change.
-The renderer test passed separately with `single`, `same-scale`, and
+
+For correlated process rows, the fixture reads `kCGEventSourceUserData` from
+each observed `CGEvent` and accepts event, payload-digest, or visual credit only
+when that nonzero value exactly matches the row token installed over the
+authenticated private control channel. The unrelated-source row posts the same
+keyboard payload to the same process without that tag and proves it receives no
+event or visual credit before the production sequence runs.
+
+The accepted qualification ran at source commit
+`8dd70810d60c06b298c806ffce16720d0a07e4c2` (tree
+`1bc47b9cc7caa07f75f7d63f311887124a196a5b`) under fixture control protocol
+version 5. The renderer test passed separately with `single`, `same-scale`, and
 `mixed-scale`; one topology was never substituted for another. The
 privacy-reviewed
 [observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
 records the exact qualified revision, commands, artifact and raw-output hashes,
-bounded outcomes, excluded attempts, and all fourteen per-pair decisions.
+bounded outcomes, excluded attempts, and all fourteen per-pair decisions; its
+raw logs are retained under the Change's
+`ephemera/qualification-final-8dd7081/` evidence root.
 
 ## Explicit facade check
 
@@ -605,11 +665,29 @@ replace the full current-display, shared-display, retained-frame, or
 AddressSanitizer acceptance matrices named below.
 
 The process-directed route, the fixture-controlled capture stimulus, and their
-budgets are a new profile lineage: the pre-measurement ceilings are frozen in
-the [ADR 0029](adr/0029-macos-process-directed-input.md) qualification plan,
-and no measured process-directed or controlled-stimulus profile exists yet.
-Until that lineage is measured and accepted, no process-directed performance
-claim is made, and the ADR 0025 profile does not stand in for it.
+budgets are a separate profile lineage whose pre-measurement ceilings were
+frozen in the [ADR 0029](adr/0029-macos-process-directed-input.md)
+qualification plan. That lineage is measured and accepted at source commit
+`8dd70810d60c06b298c806ffce16720d0a07e4c2` (tree
+`1bc47b9cc7caa07f75f7d63f311887124a196a5b`) in five revision-bound
+`aarch64-apple-darwin` profiles:
+[`phase-2-2-controlled-capture`](benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml),
+[`phase-2-2-controlled-transitions`](benchmarks/phase-2-2-controlled-transitions-aarch64-apple-darwin.toml),
+[`phase-2-2-process-directed-appkit`](benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml),
+[`phase-2-2-process-directed-game-like`](benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml),
+and
+[`phase-2-2-process-directed-diagnostics`](benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml).
+Their twenty-four workloads retain 2,700 passing samples in total, and every
+correctness oracle and budget passed. Allocation growth is 2,624 bytes for each
+renderer's `discovery_open_retained_authority` workload — once under the AppKit
+profile and once under the game-like profile — and zero for every other
+workload. The per-workload measurements, budgets, and artifact hashes are bound
+in the privacy-reviewed
+[observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
+rather than duplicated here. These profiles are regression ceilings for
+controlled AppKit/OpenGL fixtures on the qualified host, not user-facing
+latency promises; they claim no exact-window delivery and no application
+consumption, and the ADR 0025 profile does not stand in for them.
 
 ## Historical Phase 2 evidence
 

@@ -2230,6 +2230,10 @@ public:
         if (api_ == nullptr) {
             return detail::no_table<InputReceiptInfo>();
         }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_INPUT_RECEIPT_INFO)) {
+            return detail::unsupported<InputReceiptInfo>();
+        }
         auto value = detail::sized<::madopilot_input_receipt_info_t>();
         const Status status = api_->input_receipt_info(handle_, &value);
         if (!is_ok(status)) {
@@ -2244,6 +2248,11 @@ public:
         if (api_ == nullptr) {
             return detail::no_table<std::size_t>();
         }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_COUNT)) {
+            return detail::unsupported<std::size_t>();
+        }
         std::size_t count = 0;
         const Status status =
             api_->input_receipt_attempt_count(handle_, &count);
@@ -2255,6 +2264,10 @@ public:
     Result<InputAttempt> attempt_at(std::size_t index) const {
         if (api_ == nullptr) {
             return detail::no_table<InputAttempt>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_AT)) {
+            return detail::unsupported<InputAttempt>();
         }
         auto value = detail::sized<::madopilot_input_attempt_t>();
         const Status status =
@@ -2296,6 +2309,10 @@ public:
         if (api_ == nullptr) {
             return detail::no_table<DiagnosticBatchInfo>();
         }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_INFO)) {
+            return detail::unsupported<DiagnosticBatchInfo>();
+        }
         auto value = detail::sized<::madopilot_diagnostic_batch_info_t>();
         const Status status = api_->diagnostic_batch_info(handle_, &value);
         if (!is_ok(status)) {
@@ -2311,6 +2328,11 @@ public:
     Result<DiagnosticRecord> record_at(std::size_t index) const {
         if (api_ == nullptr) {
             return detail::no_table<DiagnosticRecord>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT)) {
+            return detail::unsupported<DiagnosticRecord>();
         }
         auto value = detail::sized<::madopilot_diagnostic_record_t>();
         const Status status =
@@ -2390,6 +2412,11 @@ public:
     Result<DiagnosticDrain> drain() const {
         if (api_ == nullptr) {
             return detail::no_table<DiagnosticDrain>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT)) {
+            return detail::unsupported<DiagnosticDrain>();
         }
         DiagnosticDrainState state = MADOPILOT_DIAGNOSTIC_DRAIN_OPEN_EMPTY;
         ::madopilot_diagnostic_batch_t* batch = nullptr;
@@ -2544,14 +2571,16 @@ public:
 
     /// Sends one sequence. Partial and unexecuted outcomes are successful
     /// receipts. Validation, an unavailable ABI entry, a pre-admission refusal,
-    /// or a contained boundary failure produces a failed `Result`.
+    /// or a contained boundary failure produces a failed `Result`. The C++
+    /// owner requires the complete receipt lifecycle/accessor suffix.
     Result<InputReceipt> send_input(const InputRequest& request,
                                     const Operation& operation) const {
         if (api_ == nullptr) {
             return detail::no_table<InputReceipt>();
         }
-        if (!detail::has_entry(api_, extent_,
-                               MADOPILOT_API_SIZE_SESSION_SEND_INPUT)) {
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_AT)) {
             return detail::unsupported<InputReceipt>();
         }
 
@@ -2617,14 +2646,15 @@ public:
 
     /// Takes the engine's single diagnostic reader.
     ///
-    /// Diagnostics-off engines and repeated takes return an empty optional.
+    /// Diagnostics-off engines and repeated takes return an empty optional. The
+    /// C++ owner requires the complete reader/batch lifecycle and accessor suffix.
     Result<std::optional<DiagnosticReader>> take_diagnostic_reader() const {
         if (api_ == nullptr) {
             return detail::no_table<std::optional<DiagnosticReader>>();
         }
         if (!detail::has_entry(
                 api_, extent_,
-                MADOPILOT_API_SIZE_ENGINE_TAKE_DIAGNOSTIC_READER)) {
+                MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT)) {
             return detail::unsupported<std::optional<DiagnosticReader>>();
         }
 

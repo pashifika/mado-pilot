@@ -88,10 +88,18 @@ if (!closed) {
 
 **An emptied owner keeps the table it came from.** Calling an operation on a
 moved-from or reset owner forwards its null handle to the C boundary, which
-refuses it with `MADOPILOT_STATUS_INVALID_ARGUMENT` — its own status, not one
-the wrapper invented. The wrapper originates a status in only two places, both
-of them "there is no library to ask": an owner that never held a table, and a
-negotiation that reported success without returning one.
+refuses it with `MADOPILOT_STATUS_INVALID_ARGUMENT`. The wrapper itself returns
+`MADOPILOT_STATUS_INVALID_ARGUMENT` when there is no table to ask and
+`MADOPILOT_STATUS_UNSUPPORTED` when the negotiated prefix omits a required
+entry.
+
+Any method that can return a new owner requires the complete negotiated
+lifecycle and accessor suffix that owner exposes before invoking the creating C
+entry. In particular, `Session::send_input` requires every `InputReceipt`
+retain/release/accessor entry, and `Engine::take_diagnostic_reader` requires the
+complete reader/batch suffix. A C caller may negotiate and use a shorter
+individual-entry prefix directly; the C++ wrapper refuses to create an owner it
+could not safely clone, inspect, and destroy.
 
 ### Parents and children
 
@@ -328,8 +336,10 @@ operation.deadline(now.value() + 30ull * 1000 * 1000 * 1000)
 
 The deadline is an **absolute instant** in the library's monotonic domain, read
 from `Api::clock_now()` and added to. It is not a duration or wall clock. The
-nonzero activity tag is opaque diagnostic correlation and changes no operation
-semantics.
+nonzero activity tag is opaque, non-secret correlation metadata and changes no
+operation semantics. A platform route may expose it through documented native
+observational metadata; macOS `ProcessDirected` carries it in Core Graphics
+event-source user data visible to the addressed process.
 
 Three request values borrow handles rather than owning them, and say so:
 
@@ -533,9 +543,9 @@ half it:
    `static_assert`s prove the move-only shape, lvalue-only view accessors, owned
    request storage, and preservation of unknown C values, while runtime checks
    prove clone independence, parent/child lifetime, error release under a
-   throwing copy, zero-match success, ABI 1.0 extent gating, owned receipt and
-   attempt behavior, diagnostic reader/batch lifetime and concurrent drains,
-   close reporting, and concurrent const access;
+   throwing copy, zero-match success, ABI 1.0 and partial ABI 1.2 owner-prefix
+   gating, owned receipt and attempt behavior, diagnostic reader/batch lifetime
+   and concurrent drains, close reporting, and concurrent const access;
 2. compiles and runs `examples/cpp/deterministic-slice.cpp` and requires the
    same match rectangles and scores as the C example;
 3. compiles and runs `examples/cpp/native-input.cpp`. The default `--check`

@@ -205,19 +205,16 @@ pub(crate) trait ProcessCommitSource {
     fn post_process(
         &self,
         event_source: Option<&shim::ProcessEventSource>,
-        post: shim::ProcessPost<'_>,
-        geometry: shim::ProcessGeometry,
-        flags: u32,
-        wait: std::time::Duration,
+        request: shim::ProcessPostRequest<'_>,
         operation: &OperationContext,
     ) -> Result<shim::ProcessPostOutcome, shim::ProcessPostFailure>;
 
     fn classify_process_failure(
         &self,
-        status: ShimStatus,
+        failure: shim::ProcessPostFailure,
         operation: &OperationContext,
     ) -> InputFault {
-        process_status_fault(status, operation)
+        process_post_failure_fault(failure, operation)
     }
 }
 
@@ -773,7 +770,7 @@ impl NativeInputDriver {
                 let (pointer, commit_geometry) =
                     self.process_pointer_for_non_move(geometry, state, operation)?;
                 let native = native_button(*button)?;
-                commit_process(
+                let result = commit_process(
                     self,
                     state.process_event_source.as_ref(),
                     commit_geometry,
@@ -785,12 +782,15 @@ impl NativeInputDriver {
                         location: pointer.desktop,
                     },
                     flags,
-                )?;
-                state.buttons.push(SystemButtonState {
-                    logical: *button,
-                    native,
-                });
-                Ok(())
+                );
+                retain_process_press(
+                    &mut state.buttons,
+                    SystemButtonState {
+                        logical: *button,
+                        native,
+                    },
+                    result,
+                )
             }
             InputEvent::PointerRelease(button) => {
                 let (pointer, commit_geometry) =
@@ -841,7 +841,7 @@ impl NativeInputDriver {
             InputEvent::KeyPress(key) => {
                 let key_code = resolve_key_code(*key)?;
                 let flags = flags | key_flag(*key);
-                commit_process(
+                let result = commit_process(
                     self,
                     state.process_event_source.as_ref(),
                     shim::ProcessGeometry::AuthorityOnly,
@@ -851,12 +851,15 @@ impl NativeInputDriver {
                         down: true,
                     },
                     flags,
-                )?;
-                state.keys.push(SystemKeyState {
-                    logical: *key,
-                    key_code,
-                });
-                Ok(())
+                );
+                retain_process_press(
+                    &mut state.keys,
+                    SystemKeyState {
+                        logical: *key,
+                        key_code,
+                    },
+                    result,
+                )
             }
             InputEvent::KeyRelease(key) => {
                 let index = state
@@ -1004,10 +1007,7 @@ impl ProcessCommitSource for NativeInputDriver {
     fn post_process(
         &self,
         event_source: Option<&shim::ProcessEventSource>,
-        post: shim::ProcessPost<'_>,
-        geometry: shim::ProcessGeometry,
-        flags: u32,
-        wait: std::time::Duration,
+        request: shim::ProcessPostRequest<'_>,
         operation: &OperationContext,
     ) -> Result<shim::ProcessPostOutcome, shim::ProcessPostFailure> {
         let Some(event_source) = event_source else {
@@ -1019,16 +1019,15 @@ impl ProcessCommitSource for NativeInputDriver {
                 geometry: shim::ProcessGeometryObservation::NotEvaluated,
             });
         };
-        self.record
-            .process_post(event_source, post, geometry, flags, wait, operation)
+        self.record.process_post(event_source, request, operation)
     }
 
     fn classify_process_failure(
         &self,
-        status: ShimStatus,
+        failure: shim::ProcessPostFailure,
         operation: &OperationContext,
     ) -> InputFault {
-        self.classify_process_status(status, operation)
+        process_post_failure_fault(failure, operation)
     }
 }
 
@@ -1084,7 +1083,7 @@ impl InputDriver for NativeInputDriver {
         state.process_event_source = match delivery {
             InputDelivery::System => None,
             InputDelivery::ProcessDirected => Some(
-                shim::ProcessEventSource::new()
+                shim::ProcessEventSource::new(operation.activity_tag().map_or(0, |tag| tag.get()))
                     .map_err(|status| self.classify_process_status(status, operation))?,
             ),
             _ => return Err(InputFault::UnsupportedCombination),
@@ -1134,18 +1133,12 @@ impl InputDriver for NativeInputDriver {
                 },
                 pending.flags,
             ),
-            InputDelivery::ProcessDirected => commit_process(
+            InputDelivery::ProcessDirected => release_pending_process(
                 self,
                 state.process_event_source.as_ref(),
-                shim::ProcessGeometry::AuthorityOnly,
+                pending,
                 operation,
-                NativePost::Key {
-                    key_code: 0,
-                    down: false,
-                },
-                pending.flags,
-            )
-            .map_err(|failure| failure.fault),
+            ),
             _ => Err(InputFault::UnsupportedCombination),
         }?;
         state.pending_text_release = None;
@@ -1233,10 +1226,46 @@ fn release_system<S: SystemCommitSource + ?Sized>(
     }
 }
 
-fn release_process(
+fn retain_process_press<T>(
+    pressed: &mut Vec<T>,
+    native_state: T,
+    result: SubmissionResult,
+) -> SubmissionResult {
+    if result.is_ok()
+        || result
+            .as_ref()
+            .is_err_and(|failure| failure.invoked_native_units != 0)
+    {
+        pressed.push(native_state);
+    }
+    result
+}
+
+fn release_pending_process<S: ProcessCommitSource + ?Sized>(
+    source: &S,
+    event_source: Option<&shim::ProcessEventSource>,
+    pending: PendingTextRelease,
+    cleanup: &OperationContext,
+) -> Result<(), InputFault> {
+    commit_process_for(
+        source,
+        event_source,
+        shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessPostPurpose::Release,
+        cleanup,
+        NativePost::Key {
+            key_code: 0,
+            down: false,
+        },
+        pending.flags,
+    )
+    .map_err(|failure| failure.fault)
+}
+
+fn release_process<S: ProcessCommitSource + ?Sized>(
     pressed: PressedState,
     state: &mut DriverState,
-    source: &NativeInputDriver,
+    source: &S,
     cleanup: &OperationContext,
 ) -> Result<(), InputFault> {
     match pressed {
@@ -1253,10 +1282,11 @@ fn release_process(
                 .ok_or(InputFault::UnsupportedCoordinate)?
                 .desktop;
             let flags = state.held_flags();
-            commit_process(
+            commit_process_for(
                 source,
                 state.process_event_source.as_ref(),
                 shim::ProcessGeometry::AuthorityOnly,
+                shim::ProcessPostPurpose::Release,
                 cleanup,
                 NativePost::Pointer {
                     action: shim::INPUT_POINTER_RELEASE,
@@ -1278,10 +1308,11 @@ fn release_process(
                 .map(|index| Ok(state.keys[index].key_code))
                 .unwrap_or_else(|| resolve_key_code(key))?;
             let flags = state.held_flags() & !key_flag(key);
-            commit_process(
+            commit_process_for(
                 source,
                 state.process_event_source.as_ref(),
                 shim::ProcessGeometry::AuthorityOnly,
+                shim::ProcessPostPurpose::Release,
                 cleanup,
                 NativePost::Key {
                     key_code,
@@ -1329,6 +1360,21 @@ fn process_status_fault(status: ShimStatus, operation: &OperationContext) -> Inp
     }
 }
 
+fn process_post_failure_fault(
+    failure: shim::ProcessPostFailure,
+    operation: &OperationContext,
+) -> InputFault {
+    if failure.status != ShimStatus::PermissionDenied {
+        return process_status_fault(failure.status, operation);
+    }
+    match failure.authorization {
+        shim::ProcessAuthorizationObservation::NotGranted => InputFault::NotAuthorized,
+        shim::ProcessAuthorizationObservation::Unknown
+        | shim::ProcessAuthorizationObservation::Granted
+        | shim::ProcessAuthorizationObservation::Unavailable => InputFault::SubmissionFailed,
+    }
+}
+
 fn commit_process<S: ProcessCommitSource + ?Sized>(
     source: &S,
     event_source: Option<&shim::ProcessEventSource>,
@@ -1337,14 +1383,37 @@ fn commit_process<S: ProcessCommitSource + ?Sized>(
     post: NativePost<'_>,
     flags: u32,
 ) -> SubmissionResult {
+    commit_process_for(
+        source,
+        event_source,
+        geometry,
+        shim::ProcessPostPurpose::Input,
+        operation,
+        post,
+        flags,
+    )
+}
+
+fn commit_process_for<S: ProcessCommitSource + ?Sized>(
+    source: &S,
+    event_source: Option<&shim::ProcessEventSource>,
+    geometry: shim::ProcessGeometry,
+    purpose: shim::ProcessPostPurpose,
+    operation: &OperationContext,
+    post: NativePost<'_>,
+    flags: u32,
+) -> SubmissionResult {
     operation_fault(operation)?;
     let expected_units = post.process_native_units();
     let result = source.post_process(
         event_source,
-        post.process_post(),
-        geometry,
-        flags,
-        process_wait(operation),
+        shim::ProcessPostRequest {
+            post: post.process_post(),
+            geometry,
+            purpose,
+            flags,
+            wait: process_wait(operation),
+        },
         operation,
     );
     let interruption = operation.interruption().map(InputFault::from);
@@ -1355,7 +1424,7 @@ fn commit_process<S: ProcessCommitSource + ?Sized>(
         )),
         Ok(outcome)
             if outcome.invoked_native_units == expected_units
-                && outcome.target_match_count == 1 =>
+                && outcome.target_match_count == purpose.expected_target_match_count() =>
         {
             Ok(())
         }
@@ -1368,7 +1437,7 @@ fn commit_process<S: ProcessCommitSource + ?Sized>(
             usize::try_from(failure.invoked_native_units).unwrap_or(usize::MAX),
         )),
         Err(failure) => Err(SubmissionFailure::after_native_units(
-            source.classify_process_failure(failure.status, operation),
+            source.classify_process_failure(failure, operation),
             usize::try_from(failure.invoked_native_units).unwrap_or(usize::MAX),
         )),
     }

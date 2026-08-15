@@ -1195,6 +1195,83 @@ void an_old_table_extent_hides_every_abi_1_2_entry(Fixture& fixture)
           "an old-prefix session cannot call session_send_input");
 }
 
+/// An ABI 1.2 prefix must include every lifecycle/accessor entry needed by an
+/// owner before the wrapper invokes the C entry that could return that owner.
+void partial_abi_1_2_owner_prefixes_are_refused(Fixture& fixture)
+{
+    auto receipt_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_SESSION_SEND_INPUT);
+    if (!check_ok(receipt_loaded, "load the partial receipt prefix")) {
+        return;
+    }
+    madopilot::Api receipt_api = receipt_loaded.take();
+
+    madopilot::ReplayFrame supplied;
+    supplied.extent(SCENE_WIDTH, SCENE_HEIGHT)
+        .format(MADOPILOT_PIXEL_FORMAT_RGBA8)
+        .continuity(MADOPILOT_CONTINUITY_CONTINUOUS)
+        .pixels(fixture.scene.data(), fixture.scene.size());
+    auto receipt_source = madopilot::Source::replay_memory("partial-receipt");
+    receipt_source.frame(supplied);
+    auto receipt_engine_result =
+        receipt_api.create_engine(receipt_source, fixture.operation);
+    if (!check_ok(receipt_engine_result, "create a partial-prefix engine")) {
+        return;
+    }
+    madopilot::Engine receipt_engine = receipt_engine_result.take();
+    auto targets_result = receipt_engine.discover(fixture.operation);
+    if (!check_ok(targets_result, "discover through the partial receipt prefix")) {
+        return;
+    }
+    madopilot::TargetList targets = targets_result.take();
+    madopilot::OpenRequest open;
+    open.require_format(MADOPILOT_PIXEL_FORMAT_RGBA8);
+    auto session_result =
+        receipt_engine.open_session(targets, 0, open, fixture.operation);
+    if (!check_ok(session_result, "open through the partial receipt prefix")) {
+        return;
+    }
+    madopilot::Session session = session_result.take();
+    madopilot::InputRequest request;
+    request.event(madopilot::InputEvent::delay(1))
+        .delivery(MADOPILOT_INPUT_DELIVERY_SYSTEM);
+    const auto receipt = session.send_input(request, fixture.operation);
+    check(!receipt && receipt.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "a partial receipt prefix is refused before session_send_input");
+    if (!receipt) {
+        check(receipt.error().category() ==
+                  MADOPILOT_ERROR_CATEGORY_UNSPECIFIED,
+              "the partial receipt refusal comes from the wrapper");
+    }
+
+    auto diagnostic_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_ENGINE_TAKE_DIAGNOSTIC_READER);
+    if (!check_ok(diagnostic_loaded, "load the partial diagnostic prefix")) {
+        return;
+    }
+    madopilot::Api diagnostic_api = diagnostic_loaded.take();
+    auto diagnostic_source = madopilot::Source::replay_memory("partial-diagnostic");
+    diagnostic_source.frame(supplied);
+    madopilot::EngineOptions options;
+    options.diagnostics(MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL, 8);
+    auto diagnostic_engine_result =
+        diagnostic_api.create_engine(diagnostic_source, options, fixture.operation);
+    if (!check_ok(diagnostic_engine_result, "create a partial diagnostic engine")) {
+        return;
+    }
+    madopilot::Engine diagnostic_engine = diagnostic_engine_result.take();
+    const auto reader = diagnostic_engine.take_diagnostic_reader();
+    check(!reader && reader.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "a partial diagnostic prefix is refused before returning a reader");
+    if (!reader) {
+        check(reader.error().category() ==
+                  MADOPILOT_ERROR_CATEGORY_UNSPECIFIED,
+              "the partial diagnostic refusal comes from the wrapper");
+    }
+}
+
 /// Diagnostics default to off and therefore expose no reader.
 void diagnostics_off_has_no_reader(Fixture& fixture)
 {
@@ -1418,6 +1495,8 @@ int main(int argc, char** argv)
         abi_1_2_requests_own_their_storage, fixture);
     run("an old table extent hides every ABI 1.2 entry",
         an_old_table_extent_hides_every_abi_1_2_entry, fixture);
+    run("partial ABI 1.2 owner prefixes are refused",
+        partial_abi_1_2_owner_prefixes_are_refused, fixture);
     run("diagnostics off has no reader", diagnostics_off_has_no_reader, fixture);
     run("diagnostic reader outlives its engine",
         diagnostic_reader_outlives_its_engine, fixture);

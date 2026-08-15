@@ -101,7 +101,10 @@ Successful macOS `System` injection is the explicit user-focused check, run on
 an interactive desktop with both grants in place:
 
 ```sh
-cargo test --locked -p mado-pilot-platform-macos --test native_input interactive_system_delivery_targets_only_the_exact_fixture -- --ignored --exact --nocapture --test-threads=1
+MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  cargo test --locked -p mado-pilot-platform-macos --test native_input \
+  interactive_system_delivery_targets_only_the_exact_fixture -- \
+  --ignored --exact --nocapture --test-threads=1
 ```
 
 It sends no click and no pointer movement, stops before input when selection is
@@ -109,23 +112,34 @@ absent or ambiguous, and refuses rather than activating anything on its own. Do
 not make it pass by requesting a permission, opening System Settings, or
 activating another application to force focus.
 
-Process-directed qualification is a separate pair of explicit tests that never
-focus the target fixture: they post through the production `ProcessDirected`
-route while an unrelated owned fixture stays frontmost, assert unchanged
-physical cursor and foreground, keep sustained capture active, and fail closed
-if the retained window or original process lifetime is lost. Additional
-same-process windows deliberately remain admitted because the route promises
-owning-process, not exact-window, scope:
+Process-directed qualification is seven explicit tests that never focus the
+target fixture. They post through the production `ProcessDirected` route while
+an unrelated, independently identified owned fixture stays frontmost; assert an
+unchanged physical cursor and foreground; keep sustained capture active; reject
+untagged same-process observation credit; and fail closed if the retained window
+or original process lifetime is lost. Additional same-process windows remain
+admitted because the route promises owning-process, not exact-window, scope.
+After building and signing both bundles as documented in
+[`docs/macos-input-verification.md`](docs/macos-input-verification.md), export
+their executable paths and the one topology being qualified:
 
 ```sh
-MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  cargo test --locked -p mado-pilot-platform-macos --test native_input \
-  process_directed_delivery_qualifies_default_and_game_like_renderers -- \
-  --ignored --exact --nocapture --test-threads=1
-MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  cargo test --locked -p mado-pilot-platform-macos --test native_input \
-  process_directed_delivery_uses_process_authority_and_revalidates_window_state -- \
-  --ignored --exact --nocapture --test-threads=1
+export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture"
+export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotForegroundFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture"
+export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY="<single|same-scale|mixed-scale>"
+for test in \
+  process_directed_delivery_qualifies_appkit_renderer \
+  process_directed_delivery_qualifies_game_like_renderer \
+  controlled_unrelated_activity_remains_outside_appkit_process_evidence \
+  controlled_unrelated_activity_remains_outside_game_like_process_evidence \
+  sustained_capture_soak_keeps_process_route_isolated \
+  process_directed_pointer_refuses_offscreen_and_closed_targets \
+  process_directed_delivery_uses_process_authority_and_revalidates_window_state
+do
+  cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+    --test native_input "$test" -- \
+    --ignored --exact --nocapture --test-threads=1
+done
 ```
 
 The capability matrix, typed outcomes, privacy bounds, and bundling step are in

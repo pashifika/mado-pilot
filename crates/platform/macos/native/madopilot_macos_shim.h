@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 9u
+#define MP_SHIM_ABI_VERSION 12u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -392,6 +392,13 @@ mp_shim_status mp_shim_testing_surface_recommendation(double logical_width,
                                                       uint32_t *out_height);
 
 /*
+ * Proves target materialization keeps its capture filter and retained owner
+ * when public AppKit process-lifetime metadata is unavailable.
+ */
+mp_shim_status mp_shim_testing_target_without_process_lifetime(
+    uint32_t *out_capture_metadata_retained, uint32_t *out_process_metadata_retained);
+
+/*
  * Runs the production text-event preparation with the second native allocation
  * forced to fail. The counters prove the first object was released and neither
  * half of the text event was configured or posted.
@@ -415,8 +422,14 @@ mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
 #define MP_SHIM_TEST_PROCESS_INTERRUPTED_BEFORE_POST 11u
 #define MP_SHIM_TEST_PROCESS_CONSTRUCTION_FAILED 12u
 #define MP_SHIM_TEST_PROCESS_INTERRUPTED_AFTER_FIRST 13u
+#define MP_SHIM_TEST_PROCESS_INTERRUPTED_AFTER_PREPARE 14u
+#define MP_SHIM_TEST_PROCESS_RELEASE_WINDOW_UNAVAILABLE 15u
+#define MP_SHIM_TEST_PROCESS_TARGET_LOST_AFTER_PREPARE 16u
+#define MP_SHIM_TEST_PROCESS_REVOKED_AFTER_PREPARE 17u
+#define MP_SHIM_TEST_PROCESS_LIFETIME_LOST_AFTER_PREPARE 18u
+#define MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE 19u
 
-/* Invalid process-post request scenarios; every row must fail before native effect. */
+/* Process-post request and capture-only target-shape validation scenarios. */
 #define MP_SHIM_TEST_PROCESS_VALIDATE_NULL_REQUEST 0u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_REQUEST_PREFIX 1u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_REPORT_PREFIX 2u
@@ -451,7 +464,8 @@ mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
 #define MP_SHIM_TEST_PROCESS_VALIDATE_TEXT_COUNT 31u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_TEXT_UTF16 32u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_EVENT_KIND 33u
-#define MP_SHIM_TEST_PROCESS_VALIDATE_OUTPUT_NULL 34u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_PURPOSE 34u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_OUTPUT_NULL 35u
 
 /*
  * Runs the production process-post state machine with deterministic authority,
@@ -472,7 +486,7 @@ mp_shim_status mp_shim_testing_validate_process_post(
     uint32_t scenario, mp_shim_status *out_delivery_status,
     uint32_t *out_target_match_count, uint64_t *out_invoked_native_units);
 
-/* Scenarios for retained process/window identity independent of process window count. */
+/* Scenarios for retained process/window identity and owning-process authority. */
 #define MP_SHIM_TEST_AUTHORITY_SUCCESS 0u
 #define MP_SHIM_TEST_AUTHORITY_PROCESS_REPLACED 1u
 #define MP_SHIM_TEST_AUTHORITY_PROCESS_RESTARTED 2u
@@ -485,7 +499,7 @@ mp_shim_status mp_shim_testing_validate_process_post(
 #define MP_SHIM_TEST_AUTHORITY_AUXILIARY_WINDOW 9u
 #define MP_SHIM_TEST_AUTHORITY_DUPLICATE_WINDOW 10u
 
-/* Deterministically evaluates the production identity/admission predicates. */
+/* Deterministically evaluates retained-window and owning-process identity. */
 mp_shim_status mp_shim_testing_process_authority_rules(
     uint32_t scenario, mp_shim_status *out_authority_status,
     uint32_t *out_target_match_count);
@@ -680,6 +694,10 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 #define MP_SHIM_PROCESS_EVENT_KEY 2u
 #define MP_SHIM_PROCESS_EVENT_TEXT 3u
 
+/* Whether one post is ordinary input or a bounded sequence-owned release. */
+#define MP_SHIM_PROCESS_POST_INPUT 0u
+#define MP_SHIM_PROCESS_POST_RELEASE 1u
+
 /* Whether the final native gate must match the geometry prepared by Rust. */
 #define MP_SHIM_PROCESS_GEOMETRY_AUTHORITY_ONLY 0u
 #define MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT 1u
@@ -727,6 +745,7 @@ typedef struct mp_shim_process_post_request {
     uint64_t timeout_nanos;
     uint32_t flags;
     uint32_t geometry_check;
+    uint32_t purpose;
     uint32_t action;
     uint32_t button;
     uint64_t click_state;
@@ -745,8 +764,9 @@ typedef struct mp_shim_process_post_request {
     double expected_height;
     double expected_scale;
     /*
-     * Synchronous caller interruption fence. The callback and context remain
-     * valid for this call and the callback must contain its own failures.
+     * Synchronous adapter-owned cancellation fence. The callback and context
+     * remain valid for this call, contain their own failures, and must not
+     * dispatch caller-provided code.
      */
     void *interruption_context;
     mp_shim_status (*interruption_callback)(void *context);
@@ -755,10 +775,12 @@ typedef struct mp_shim_process_post_request {
 /*
  * Result facts written even when a later native unit fails.
  *
- * `target_match_count` records only the retained-window match; it never
- * inventories unrelated same-process windows. `invoked_native_units` counts
- * returned `CGEventPostToPid` calls, not logical events, queue admission,
- * target observation, consumption, or visual effect.
+ * For ordinary input, `target_match_count` records only the retained-window
+ * match and never inventories unrelated same-process windows. For a sequence-
+ * owned release it is zero because visibility/window admission is deliberately
+ * not consulted. `invoked_native_units` counts returned `CGEventPostToPid`
+ * calls, not logical events, queue admission, target observation, consumption,
+ * or visual effect.
  */
 typedef struct mp_shim_process_post_report {
     uint32_t struct_size;
@@ -789,8 +811,11 @@ mp_shim_status mp_shim_process_authority(const mp_shim_target *target,
  * Creates one isolated `CGEventSourceStatePrivate` source for a selected
  * process-directed sequence. The caller owns it until release; release accepts
  * NULL. Every event and sequence-owned cleanup release passes the same source.
+ * A nonzero activity tag is copied to the documented event-source user-data
+ * field as observational, non-control-flow metadata.
  */
-mp_shim_status mp_shim_process_event_source_create(mp_shim_process_event_source **out_source);
+mp_shim_status mp_shim_process_event_source_create(
+    uint64_t activity_tag, mp_shim_process_event_source **out_source);
 void mp_shim_process_event_source_release(mp_shim_process_event_source *source);
 
 /*
@@ -838,6 +863,9 @@ mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target,
 
 /* Reads the pointer location in the same global point space. */
 mp_shim_status mp_shim_input_pointer_location(double *out_x, double *out_y);
+
+/* Reads the public AppKit frontmost process without prompting or activation. */
+mp_shim_status mp_shim_input_frontmost_process(uint32_t *out_process);
 
 /*
  * Activates the application owning `owner_process`, without presenting UI.

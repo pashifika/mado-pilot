@@ -27,6 +27,9 @@ mado-pilot-platform-macos = { path = "../platform/macos" }
 [target.'cfg(windows)'.dev-dependencies]
 windows.workspace = true
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+mado-pilot-platform-macos = { path = "../platform/macos", features = ["private-fixture"] }
+
 [dev-dependencies]
 mado-pilot-testkit = { path = "../support/testkit" }
 

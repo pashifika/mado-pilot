@@ -12,51 +12,64 @@
 //! separate unrelated activity, and include a sustained-capture soak. Every
 //! opt-in row is documented in `docs/macos-input-verification.md`.
 
+#[allow(dead_code, unreachable_pub)]
+#[path = "../src/fixture_control.rs"]
+mod fixture_control;
+
+#[allow(dead_code, unreachable_pub)]
+#[path = "../src/fixture_protocol.rs"]
+mod fixture_protocol;
+
+use fixture_control::{
+    AuthenticatedFixtureProcess, FixtureSocketDirectory, authenticate_fixture_peer,
+    next_fixture_run_nonce,
+};
+#[cfg(feature = "private-fixture")]
+use fixture_protocol::select_unique_fixture;
+use fixture_protocol::{
+    EVENT_FLAGS_CHANGED, EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE, EVENT_POINTER_PRESS,
+    EVENT_POINTER_RELEASE, EVENT_POINTER_SCROLL, EventSummary, EventTotals,
+    FIXTURE_CONTROL_VERSION, FixtureCommand, FixtureCommandKind, FixtureCommandResult, FixtureMode,
+    FixtureReadyFacts, FixtureRenderer, FixtureSelectionError, MAX_READY_LINE_BYTES,
+    MAX_RECORDED_EVENTS, event_payload_activity_tag, event_payload_fingerprint,
+    fixture_ready_facts, fixture_title, format_command_line, frame_is_fixture_content,
+    frame_is_replacement_content, parse_command_result_line, parse_event_line_for_run,
+    with_confirmed_fixture_content,
+};
 use mado_pilot_capture::{
     CaptureProvider, CaptureSession, Frame, FrameRequest, OpenRequest, PixelFormat,
     TargetDescription,
 };
 use mado_pilot_core::{
-    CancellationToken, CapabilitySupport, CoordinateSpace, FrameStamp, IdentityIssuer,
-    InputAddressScope, InputDelivery, InputOperationKind, OperationContext, PermissionKind,
-    PermissionProbe, PermissionState, Point, Status, SubmissionEvidence, TargetId, TargetKind,
+    ActivityTag, CancellationToken, CapabilitySupport, CoordinateSpace, FrameStamp,
+    GeometryRevision, IdentityIssuer, InputAddressScope, InputDelivery, InputOperationKind,
+    OperationContext, PermissionKind, PermissionProbe, PermissionState, Point, Status,
+    StreamCursor, SubmissionEvidence, TargetId, TargetKind,
 };
 use mado_pilot_input::{
-    CleanupState, DeliveryPlan, FocusPolicy, InputController, InputEvent, InputFault,
-    InputOpenRequest, InputProvider, InputRequest, InputRequirement, InputSequence, Key, Modifier,
-    PointerButton, PointerGeometry, SequenceOutcome,
+    CleanupState, DeliveryPlan, FocusPolicy, GeometryPolicy, InputController, InputEvent,
+    InputFault, InputOpenRequest, InputProvider, InputRequest, InputRequirement, InputSequence,
+    Key, Modifier, PointerButton, PointerGeometry, SequenceOutcome,
 };
-use mado_pilot_platform_macos::fixture_protocol::{
-    EVENT_FLAGS_CHANGED, EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE, EVENT_POINTER_PRESS,
-    EVENT_POINTER_RELEASE, EVENT_POINTER_SCROLL, EventSummary, EventTotals,
-    FIXTURE_CONTROL_VERSION, FixtureCommand, FixtureCommandKind, FixtureCommandResult, FixtureMode,
-    FixtureReadyFacts, FixtureRenderer, FixtureSelectionError, MAX_READY_LINE_BYTES,
-    MAX_RECORDED_EVENTS, fixture_ready_facts, fixture_title, format_command_line,
-    frame_is_fixture_content, frame_is_replacement_content, parse_command_result_line,
-    parse_event_line_for_run, select_unique_fixture, with_confirmed_fixture_content,
-};
-use mado_pilot_platform_macos::{MacosCaptureProvider, MacosPermissionProbe};
+use mado_pilot_platform_macos::{MacosCaptureProvider, MacosPermissionProbe, PROVIDER};
 use std::collections::VecDeque;
-use std::ffi::{CStr, c_int, c_void};
 use std::io::{Read, Write};
-use std::mem::size_of;
-use std::os::fd::AsRawFd;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// How long the interactive check waits for a person to focus the fixture.
 const FOCUS_WAIT: Duration = Duration::from_secs(15);
 /// How long the fail-closed content gate waits for one authoritative frame.
 const CONTENT_WAIT: Duration = Duration::from_secs(5);
+/// Quiet period proving an asynchronous ScreenCaptureKit geometry has settled.
+const GEOMETRY_SETTLE: Duration = Duration::from_millis(250);
 /// Minimum continuous-capture interval for the route-wide sustained soak.
 const SUSTAINED_CAPTURE_SOAK: Duration = Duration::from_secs(60);
 /// How long the fixture is given to publish its ready line.
@@ -65,10 +78,10 @@ const READY_WAIT: Duration = Duration::from_secs(10);
 const REPLACEMENT_WAIT: Duration = Duration::from_secs(10);
 /// Event capacity plus bounded ready, control, and lifecycle records.
 const MAX_FIXTURE_OUTPUT_RECORDS: usize = MAX_RECORDED_EVENTS + 16;
-static FIXTURE_SOCKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static FIXTURE_RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Explicit selector binding a qualification run to one frozen display row.
 const QUALIFICATION_TOPOLOGY_ENV: &str = "MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY";
+/// Unique high-half correlation for every exact native qualification row.
+static NEXT_QUALIFICATION_CORRELATION: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QualificationTopology {
@@ -207,9 +220,9 @@ fn validate_qualification_topology(
                         || (pair[0].has_scale(2.0) && pair[1].has_scale(1.0)))
                     && (pair[0].has_signed_origin() || pair[1].has_signed_origin())
             });
-            if !mixed_signed_seam {
+            if ordered.len() < 2 || !mixed_signed_seam {
                 return Err(format!(
-                    "mixed-scale requires a horizontally adjacent 2x/1x seam with a signed \
+                    "mixed-scale requires horizontally adjacent 2x/1x displays with a signed \
                      origin, observed {ordered:?}"
                 ));
             }
@@ -284,10 +297,44 @@ fn observe_qualification_topology(
     observed
 }
 
+fn display_for_window(
+    displays: &[QualificationGeometry],
+    window: QualificationGeometry,
+) -> Result<usize, String> {
+    let centre = (
+        window.origin.0 + window.logical.0 / 2.0,
+        window.origin.1 + window.logical.1 / 2.0,
+    );
+    let matches: Vec<_> = displays
+        .iter()
+        .enumerate()
+        .filter(|(_, display)| {
+            approximately(display.scale.0, window.scale.0)
+                && approximately(display.scale.1, window.scale.1)
+                && centre.0 >= display.origin.0
+                && centre.0 < display.origin.0 + display.logical.0
+                && centre.1 >= display.origin.1
+                && centre.1 < display.origin.1 + display.logical.1
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if matches.len() != 1 {
+        return Err(format!(
+            "retained window at {centre:?} with scale {:?} matched display indexes {matches:?}",
+            window.scale
+        ));
+    }
+    Ok(matches[0])
+}
+
 fn validate_window_topology(
     expected: QualificationTopology,
+    displays: &[ObservedQualificationGeometry],
     visits: &[ObservedQualificationGeometry],
 ) -> Result<(), String> {
+    let display_geometries: Vec<_> = displays.iter().map(|display| display.geometry).collect();
+    validate_qualification_topology(expected, &display_geometries)
+        .map_err(|reason| format!("display topology changed before traversal: {reason}"))?;
     if visits.is_empty() {
         return Err("no retained-window geometry was observed".to_owned());
     }
@@ -307,27 +354,63 @@ fn validate_window_topology(
             "inter-display traversal did not advance same-stream geometry: {visits:?}"
         ));
     }
+    let display_visits: Vec<_> = visits
+        .iter()
+        .map(|visit| display_for_window(&display_geometries, visit.geometry))
+        .collect::<Result<_, _>>()?;
+    let closes_mixed_cycle = expected == QualificationTopology::MixedScale && displays.len() > 1;
+    let expected_visits = displays.len() + usize::from(closes_mixed_cycle);
+    if visits.len() != expected_visits {
+        return Err(format!(
+            "retained-window traversal visited {} geometries; expected {expected_visits} for \
+             {} frozen displays",
+            visits.len(),
+            displays.len()
+        ));
+    }
+    if closes_mixed_cycle && display_visits.first() != display_visits.last() {
+        return Err(format!(
+            "mixed-scale traversal did not close its display cycle: displays={display_visits:?}"
+        ));
+    }
+    let mut covered_displays = display_visits.clone();
+    covered_displays.sort_unstable();
+    covered_displays.dedup();
+    if covered_displays != (0..displays.len()).collect::<Vec<_>>() {
+        return Err(format!(
+            "retained-window traversal did not visit every frozen display: \
+             displays={display_visits:?}"
+        ));
+    }
 
     match expected {
         QualificationTopology::Single => {
-            if visits.len() != 1 || !visits[0].geometry.has_scale(2.0) {
+            if visits.len() != 1 || !visits[0].geometry.has_scale(2.0) || display_visits != [0] {
                 return Err(format!(
-                    "single retained-window traversal must stay on one 2x display: {visits:?}"
+                    "single retained-window traversal must stay on its one 2x display: \
+                     visits={visits:?}, displays={display_visits:?}"
                 ));
             }
         }
         QualificationTopology::SameScale => {
-            if visits.len() != 2 || visits.iter().any(|visit| !visit.geometry.has_scale(2.0)) {
+            if visits.len() != 2
+                || visits.iter().any(|visit| !visit.geometry.has_scale(2.0))
+                || display_visits[0] == display_visits[1]
+            {
                 return Err(format!(
-                    "same-scale retained-window traversal must visit both 2x displays: \
-                     {visits:?}"
+                    "same-scale retained-window traversal must cross both adjacent 2x displays: \
+                     visits={visits:?}, displays={display_visits:?}"
                 ));
             }
         }
         QualificationTopology::MixedScale => {
-            let crossed_scale = visits.windows(2).any(|pair| {
-                (pair[0].geometry.has_scale(1.0) && pair[1].geometry.has_scale(2.0))
-                    || (pair[0].geometry.has_scale(2.0) && pair[1].geometry.has_scale(1.0))
+            let crossed_scale = display_visits.windows(2).any(|pair| {
+                let left = display_geometries[pair[0]];
+                let right = display_geometries[pair[1]];
+                ((left.has_scale(1.0) && right.has_scale(2.0))
+                    || (left.has_scale(2.0) && right.has_scale(1.0)))
+                    && (left.is_horizontally_adjacent_to(right)
+                        || right.is_horizontally_adjacent_to(left))
             });
             if !crossed_scale
                 || !visits
@@ -335,8 +418,9 @@ fn validate_window_topology(
                     .any(|visit| visit.geometry.has_signed_origin())
             {
                 return Err(format!(
-                    "mixed-scale retained-window traversal must cross 2x/1x and publish a \
-                     signed target origin: {visits:?}"
+                    "mixed-scale retained-window traversal must cross an adjacent 2x/1x seam, \
+                     cover every frozen display, and publish a signed target origin: \
+                     visits={visits:?}, displays={display_visits:?}"
                 ));
             }
         }
@@ -362,6 +446,11 @@ fn qualification_topology_rows_cannot_substitute_for_one_another() {
     let mixed_scale = [
         geometry((-3_840.0, -720.0), (3_840.0, 2_160.0), (3_840, 2_160), 1.0),
         geometry((0.0, 0.0), (2_560.0, 1_440.0), (5_120, 2_880), 2.0),
+    ];
+    let restored_three_display_mixed = [
+        mixed_scale[0],
+        mixed_scale[1],
+        geometry((2_560.0, 0.0), (1_512.0, 982.0), (3_024, 1_964), 2.0),
     ];
 
     assert_eq!(
@@ -389,6 +478,115 @@ fn qualification_topology_rows_cannot_substitute_for_one_another() {
     assert!(
         validate_qualification_topology(QualificationTopology::MixedScale, &same_scale).is_err()
     );
+    assert!(
+        validate_qualification_topology(
+            QualificationTopology::MixedScale,
+            &restored_three_display_mixed,
+        )
+        .is_ok(),
+        "a complete topology may include another display beyond the required mixed-scale seam"
+    );
+}
+
+#[test]
+fn window_topology_must_visit_each_frozen_display() {
+    let geometry = |origin: (f64, f64), logical: (u32, u32), scale: u32| QualificationGeometry {
+        origin,
+        logical: (f64::from(logical.0), f64::from(logical.1)),
+        backing: (
+            logical.0.checked_mul(scale).expect("backing width"),
+            logical.1.checked_mul(scale).expect("backing height"),
+        ),
+        scale: (f64::from(scale), f64::from(scale)),
+    };
+    let issuer = IdentityIssuer::new();
+    let mut cursor = StreamCursor::new(issuer.issue_stream().expect("test stream"));
+    let first_stamp = cursor
+        .publish(GeometryRevision::FIRST)
+        .expect("first geometry");
+    let second_stamp = cursor
+        .publish(GeometryRevision::FIRST.next().expect("second revision"))
+        .expect("second geometry");
+    let third_stamp = cursor
+        .publish(
+            second_stamp
+                .geometry()
+                .next()
+                .expect("third geometry revision"),
+        )
+        .expect("third geometry");
+    let displays = [
+        ObservedQualificationGeometry {
+            geometry: geometry((-1_512.0, 0.0), (1_512, 982), 2),
+            stamp: first_stamp,
+        },
+        ObservedQualificationGeometry {
+            geometry: geometry((0.0, 0.0), (2_560, 1_440), 2),
+            stamp: second_stamp,
+        },
+    ];
+    let visits = [
+        ObservedQualificationGeometry {
+            geometry: geometry((-1_400.0, 100.0), (400, 300), 2),
+            stamp: first_stamp,
+        },
+        ObservedQualificationGeometry {
+            geometry: geometry((100.0, 100.0), (400, 300), 2),
+            stamp: second_stamp,
+        },
+    ];
+    assert!(validate_window_topology(QualificationTopology::SameScale, &displays, &visits).is_ok());
+
+    let same_display_visits = [
+        visits[0],
+        ObservedQualificationGeometry {
+            geometry: geometry((-900.0, 200.0), (400, 300), 2),
+            stamp: second_stamp,
+        },
+    ];
+    assert!(
+        validate_window_topology(
+            QualificationTopology::SameScale,
+            &displays,
+            &same_display_visits,
+        )
+        .is_err(),
+        "same-stream geometry revisions on one display do not prove seam traversal"
+    );
+
+    let mixed_displays = [
+        ObservedQualificationGeometry {
+            geometry: geometry((-3_840.0, 0.0), (3_840, 2_160), 1),
+            stamp: first_stamp,
+        },
+        ObservedQualificationGeometry {
+            geometry: geometry((0.0, 0.0), (2_560, 1_440), 2),
+            stamp: second_stamp,
+        },
+    ];
+    let mixed_visits = [
+        ObservedQualificationGeometry {
+            geometry: geometry((-3_600.0, 100.0), (400, 300), 1),
+            stamp: first_stamp,
+        },
+        ObservedQualificationGeometry {
+            geometry: geometry((100.0, 100.0), (400, 300), 2),
+            stamp: second_stamp,
+        },
+        ObservedQualificationGeometry {
+            geometry: geometry((-3_500.0, 100.0), (400, 300), 1),
+            stamp: third_stamp,
+        },
+    ];
+    assert!(
+        validate_window_topology(
+            QualificationTopology::MixedScale,
+            &mixed_displays,
+            &mixed_visits,
+        )
+        .is_ok(),
+        "display adjacency, not unrelated window widths, proves the closed mixed-scale crossing"
+    );
 }
 
 /// Statuses a host without Screen Recording or without the capture framework
@@ -409,6 +607,126 @@ fn bounded(duration: Duration) -> OperationContext {
     context()
         .with_timeout(duration)
         .expect("the operation timeout is positive")
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ExpectedFixtureEvent {
+    kind: u32,
+    text_units: u32,
+    payload_fingerprint: u64,
+}
+
+fn expected_native_event_type(kind: u32, button: u32, key_down: bool) -> u64 {
+    match kind {
+        EVENT_POINTER_MOVE => match button {
+            u32::MAX => 5,
+            0 => 6,
+            1 => 7,
+            2 => 27,
+            _ => panic!("unsupported pointer button in the qualification oracle"),
+        },
+        EVENT_POINTER_PRESS => match button {
+            0 => 1,
+            1 => 3,
+            2 => 25,
+            _ => panic!("unsupported pointer button in the qualification oracle"),
+        },
+        EVENT_POINTER_RELEASE => match button {
+            0 => 2,
+            1 => 4,
+            2 => 26,
+            _ => panic!("unsupported pointer button in the qualification oracle"),
+        },
+        EVENT_POINTER_SCROLL => 22,
+        EVENT_KEY_DOWN => {
+            assert!(key_down);
+            10
+        }
+        EVENT_KEY_UP => {
+            assert!(!key_down);
+            11
+        }
+        EVENT_FLAGS_CHANGED => 12,
+        _ => panic!("unsupported event kind in the qualification oracle"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expected_fixture_event(
+    kind: u32,
+    button: u32,
+    click_state: u64,
+    x: f64,
+    y: f64,
+    horizontal: i32,
+    vertical: i32,
+    key_code: u16,
+    key_down: bool,
+    flags: u64,
+    text: &[u16],
+) -> ExpectedFixtureEvent {
+    let native_type = expected_native_event_type(kind, button, key_down);
+    let native_button = if matches!(
+        kind,
+        EVENT_POINTER_MOVE | EVENT_POINTER_PRESS | EVENT_POINTER_RELEASE
+    ) && button != u32::MAX
+    {
+        u64::from(button)
+    } else {
+        0
+    };
+    let text = if key_code == 0 { text } else { &[] };
+    let text_units = u32::try_from(text.len()).expect("fixture text length fits u32");
+    let payload_fingerprint = event_payload_fingerprint(
+        kind,
+        native_type,
+        flags,
+        native_button,
+        click_state,
+        x,
+        y,
+        i64::from(horizontal),
+        i64::from(vertical),
+        u64::from(key_code),
+        text,
+    );
+    ExpectedFixtureEvent {
+        kind,
+        text_units,
+        payload_fingerprint,
+    }
+}
+
+fn qualification_operation(
+    expected: &[ExpectedFixtureEvent],
+    duration: Duration,
+) -> (OperationContext, u32) {
+    let correlation = NEXT_QUALIFICATION_CORRELATION.fetch_add(1, Ordering::Relaxed);
+    assert_ne!(correlation, 0, "qualification row correlation exhausted");
+    let fingerprints = expected
+        .iter()
+        .map(|event| event.payload_fingerprint)
+        .collect::<Vec<_>>();
+    let activity_tag = event_payload_activity_tag(correlation, &fingerprints);
+    let operation = OperationContext::new()
+        .with_activity_tag(ActivityTag::new(activity_tag).expect("row activity tag is nonzero"))
+        .with_timeout(duration)
+        .expect("the qualification row timeout is positive");
+    (operation, correlation)
+}
+
+fn refresh_qualification_deadline(
+    setup: &OperationContext,
+    duration: Duration,
+) -> OperationContext {
+    OperationContext::new()
+        .with_activity_tag(
+            setup
+                .activity_tag()
+                .expect("the qualification setup carries its private row token"),
+        )
+        .with_timeout(duration)
+        .expect("the qualification row timeout is positive")
 }
 
 fn post_event_access_granted() -> bool {
@@ -477,7 +795,7 @@ fn a_described_target_reports_its_own_identity_and_a_foreign_one_is_refused() {
     assert_eq!(descriptor.capability(), first.capability().input());
 
     let foreign: TargetId = IdentityIssuer::new()
-        .issue_target(mado_pilot_platform_macos::PROVIDER)
+        .issue_target(PROVIDER)
         .expect("issued elsewhere");
     let error = InputProvider::describe(&provider, foreign, &context())
         .expect_err("another engine's identity is refused");
@@ -606,149 +924,13 @@ fn a_target_that_no_longer_exists_is_reported_lost_rather_than_delivered_to() {
     let issuer = Arc::new(IdentityIssuer::new());
     let own = MacosCaptureProvider::new(Arc::clone(&issuer));
     let absent = issuer
-        .issue_target(mado_pilot_platform_macos::PROVIDER)
+        .issue_target(PROVIDER)
         .expect("issued by this engine for this provider");
 
     let error = InputProvider::describe(&own, absent, &context())
         .expect_err("an accepted identity that was never discovered is not live");
 
     assert_eq!(error.status(), Status::TargetLost);
-}
-
-const SOL_LOCAL: c_int = 0;
-const LOCAL_PEERPID: c_int = 0x002;
-const LOCAL_PEERTOKEN: c_int = 0x006;
-const SIGTERM: c_int = 15;
-const PROC_PIDPATHINFO_MAXSIZE: usize = 4 * 1_024;
-
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct AuditToken {
-    values: [u32; 8],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FixturePeerIdentity {
-    effective_user_id: u32,
-    process_id: u32,
-    executable: PathBuf,
-    audit_token: AuditToken,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct AuthenticatedFixtureProcess {
-    process_id: u32,
-    audit_token: AuditToken,
-}
-
-fn fixture_peer_is_expected(
-    peer: &FixturePeerIdentity,
-    current_effective_user_id: u32,
-    expected_executable: &Path,
-) -> bool {
-    peer.effective_user_id == current_effective_user_id
-        && peer.process_id > 0
-        && peer.executable == expected_executable
-}
-
-fn fixture_peer_identity(stream: &UnixStream) -> Option<FixturePeerIdentity> {
-    let socket = stream.as_raw_fd();
-    let mut effective_user_id = 0u32;
-    let mut effective_group_id = 0u32;
-    // SAFETY: both scalar outputs are writable and `socket` remains open for
-    // the call. `getpeereid` reads credentials already bound to this connection.
-    if unsafe {
-        getpeereid(
-            socket,
-            &raw mut effective_user_id,
-            &raw mut effective_group_id,
-        )
-    } != 0
-    {
-        return None;
-    }
-
-    let mut process_id = 0i32;
-    let mut process_id_size = u32::try_from(size_of::<c_int>()).ok()?;
-    // SAFETY: the output points to one writable `pid_t`, its exact byte extent
-    // is supplied, and LOCAL_PEERPID reads the connected Unix peer only.
-    if unsafe {
-        getsockopt(
-            socket,
-            SOL_LOCAL,
-            LOCAL_PEERPID,
-            (&raw mut process_id).cast::<c_void>(),
-            &raw mut process_id_size,
-        )
-    } != 0
-        || process_id_size as usize != size_of::<c_int>()
-        || process_id <= 0
-    {
-        return None;
-    }
-
-    let mut audit_token = AuditToken { values: [0; 8] };
-    let mut audit_token_size = u32::try_from(size_of::<AuditToken>()).ok()?;
-    // SAFETY: the output is one writable audit token with its exact extent;
-    // LOCAL_PEERTOKEN binds it to this connected peer and survives PID reuse.
-    if unsafe {
-        getsockopt(
-            socket,
-            SOL_LOCAL,
-            LOCAL_PEERTOKEN,
-            (&raw mut audit_token).cast::<c_void>(),
-            &raw mut audit_token_size,
-        )
-    } != 0
-        || audit_token_size as usize != size_of::<AuditToken>()
-    {
-        return None;
-    }
-
-    let mut executable = [0i8; PROC_PIDPATHINFO_MAXSIZE];
-    // SAFETY: the fixed buffer is writable for the declared capacity and the
-    // positive authenticated peer PID fits `proc_pidpath`'s `int` argument.
-    let executable_len = unsafe {
-        proc_pidpath(
-            process_id,
-            executable.as_mut_ptr().cast::<c_void>(),
-            u32::try_from(executable.len()).ok()?,
-        )
-    };
-    let Ok(executable_len) = usize::try_from(executable_len) else {
-        return None;
-    };
-    if executable_len >= executable.len() {
-        return None;
-    }
-    // SAFETY: the zero-initialized buffer retains a terminator beyond every
-    // accepted result length.
-    let executable = unsafe { CStr::from_ptr(executable.as_ptr()) };
-    let executable = std::fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(
-        executable.to_bytes(),
-    )))
-    .ok()?;
-    Some(FixturePeerIdentity {
-        effective_user_id,
-        process_id: u32::try_from(process_id).ok()?,
-        executable,
-        audit_token,
-    })
-}
-
-fn authenticate_fixture_peer(
-    stream: &UnixStream,
-    expected_executable: &Path,
-) -> Option<AuthenticatedFixtureProcess> {
-    let peer = fixture_peer_identity(stream)?;
-    // SAFETY: `geteuid` has no arguments and returns process-local credentials.
-    let current_effective_user_id = unsafe { geteuid() };
-    fixture_peer_is_expected(&peer, current_effective_user_id, expected_executable).then_some(
-        AuthenticatedFixtureProcess {
-            process_id: peer.process_id,
-            audit_token: peer.audit_token,
-        },
-    )
 }
 
 fn ready_process_id_for_peer(line: &str, authenticated_process_id: u32) -> Option<u32> {
@@ -773,25 +955,43 @@ impl FixtureChild {
 
 impl Drop for FixtureChild {
     fn drop(&mut self) {
-        if self.launcher.try_wait().ok().flatten().is_none() {
-            if let Some(application) = self.application.as_mut() {
-                // SAFETY: the token was obtained from the authenticated Unix
-                // peer. libproc signals that exact process lifetime, not a
-                // subsequently reused numeric PID.
-                let _terminated = unsafe {
-                    proc_signal_with_audittoken(&raw mut application.audit_token, SIGTERM)
-                };
-            }
-            let deadline = Instant::now() + Duration::from_millis(500);
-            while Instant::now() < deadline {
+        if self.launcher.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        let deadline = Instant::now() + Duration::from_secs(1);
+        if let Some(application) = self.application.as_mut() {
+            let _terminated = application.terminate();
+            let term_deadline = deadline.min(Instant::now() + Duration::from_millis(100));
+            while Instant::now() < term_deadline {
                 if self.launcher.try_wait().ok().flatten().is_some() {
                     return;
                 }
                 thread::sleep(Duration::from_millis(10));
             }
-            let _killed = self.launcher.kill();
+            let _killed = application.kill();
         }
+        while Instant::now() < deadline {
+            if self.launcher.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _killed = self.launcher.kill();
         let _reaped = self.launcher.wait();
+    }
+}
+
+enum ReaderMessage {
+    Line(String),
+    Oversized,
+    Failed,
+}
+
+fn fixture_protocol_line(message: ReaderMessage) -> String {
+    match message {
+        ReaderMessage::Line(line) => line,
+        ReaderMessage::Oversized => panic!("the fixture emitted an oversized protocol record"),
+        ReaderMessage::Failed => panic!("the fixture output protocol failed"),
     }
 }
 
@@ -799,7 +999,7 @@ impl Drop for FixtureChild {
 struct Fixture {
     child: FixtureChild,
     input: Option<UnixStream>,
-    lines: Arc<Mutex<Receiver<String>>>,
+    lines: Arc<Mutex<Receiver<ReaderMessage>>>,
     process_id: u32,
     facts: FixtureReadyFacts,
     run_nonce: u64,
@@ -830,23 +1030,40 @@ impl Fixture {
         }
     }
 
+    /// Starts the independently identified foreground fixture bundle.
+    fn start_foreground() -> Option<Self> {
+        let executable = PathBuf::from(std::env::var_os(
+            "MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE",
+        )?);
+        executable.is_file().then_some(())?;
+        Self::start_executable_with_arguments(executable, &[], FixtureMode::Default, false)
+    }
+
     fn start_with_arguments(arguments: &[&str], expected_mode: FixtureMode) -> Option<Self> {
         let executable = fixture_executable()?;
-        let expected_executable = std::fs::canonicalize(&executable).ok()?;
-        let bundle = fixture_bundle(&executable)?;
         let require_signed_bundle =
             std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some();
-        let socket_directory = fixture_socket_directory()?;
+        Self::start_executable_with_arguments(
+            executable,
+            arguments,
+            expected_mode,
+            require_signed_bundle,
+        )
+    }
+
+    fn start_executable_with_arguments(
+        executable: PathBuf,
+        arguments: &[&str],
+        expected_mode: FixtureMode,
+        require_signed_bundle: bool,
+    ) -> Option<Self> {
+        let expected_executable = std::fs::canonicalize(&executable).ok()?;
+        let bundle = fixture_bundle(&executable)?;
+        let socket_directory = FixtureSocketDirectory::new().ok()?;
         let socket_path = socket_directory.socket_path();
         let listener = UnixListener::bind(&socket_path).ok()?;
         listener.set_nonblocking(true).ok()?;
-        let sequence = FIXTURE_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| {
-                u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-            });
-        let run_nonce = (time ^ (u64::from(std::process::id()) << 32) ^ sequence).max(1);
+        let run_nonce = next_fixture_run_nonce().ok()?;
         let mut command = Command::new("/usr/bin/open");
         if arguments.contains(&"--inactive") {
             command.arg("-g");
@@ -871,6 +1088,7 @@ impl Fixture {
                 Ok((stream, _address)) => {
                     if let Some(process) = authenticate_fixture_peer(&stream, &expected_executable)
                     {
+                        child.application = Some(process);
                         break (stream, process);
                     }
                 }
@@ -897,7 +1115,7 @@ impl Fixture {
     }
 
     fn from_child(
-        mut child: FixtureChild,
+        child: FixtureChild,
         input: UnixStream,
         authenticated_process: AuthenticatedFixtureProcess,
         require_signed_bundle: bool,
@@ -905,11 +1123,14 @@ impl Fixture {
         run_nonce: u64,
         ready_wait: Duration,
     ) -> Option<Self> {
-        child.application = Some(authenticated_process);
         let lines = spawn_reader(input.try_clone().ok()?);
-        let line = wait_for(&lines, ready_wait, |line| line.starts_with("fixture-ready"))?;
-        println!("{line}");
-        let process_id = ready_process_id_for_peer(&line, authenticated_process.process_id)?;
+        let line = match lines.recv_timeout(ready_wait).ok()? {
+            ReaderMessage::Line(line) if line.starts_with("fixture-ready ") => line,
+            ReaderMessage::Line(_) | ReaderMessage::Oversized | ReaderMessage::Failed => {
+                return None;
+            }
+        };
+        let process_id = ready_process_id_for_peer(&line, authenticated_process.process_id())?;
         let facts = fixture_ready_facts(&line, process_id)?;
         assert_eq!(
             facts.run_nonce(),
@@ -923,15 +1144,21 @@ impl Fixture {
         assert_eq!(
             (facts.mode(), facts.renderer()),
             (expected_mode, expected_renderer),
-            "the fixture initialized a renderer other than the requested one: {line}"
+            "the fixture initialized a renderer other than the requested one"
         );
         if require_signed_bundle {
             assert!(
                 facts.execution_context_is_approved(),
                 "a configured fixture must truthfully report the stable signed bundle \
-                 context before any input path opens: {line}"
+                 context before any input path opens"
             );
         }
+        println!(
+            "fixture-ready-approved mode={:?} renderer={:?} execution-context-approved={}",
+            facts.mode(),
+            facts.renderer(),
+            facts.execution_context_is_approved()
+        );
         Some(Self {
             child,
             input: Some(input),
@@ -944,10 +1171,22 @@ impl Fixture {
         })
     }
 
+    #[cfg(feature = "private-fixture")]
+    fn authenticated_process(&self) -> Option<AuthenticatedFixtureProcess> {
+        self.input.as_ref()?;
+        let process = self.child.application?;
+        process
+            .matches_live_owner(i64::from(self.process_id))
+            .then_some(process)
+    }
+
     fn replacement_result(&mut self, wait: Duration) -> Option<(u32, u64, u64)> {
         let line = self.wait_for_line(wait, |line| line.starts_with("fixture-replaced "))?;
-        println!("{line}");
         let (run_nonce, status, old_window, new_window) = parse_replacement_line(&line)?;
+        println!(
+            "fixture-replacement-observed success={}",
+            status == 0 && old_window != 0 && new_window != 0
+        );
         (run_nonce == self.run_nonce).then_some((status, old_window, new_window))
     }
 
@@ -956,12 +1195,22 @@ impl Fixture {
         kind: FixtureCommandKind,
         wait: Duration,
     ) -> Option<FixtureCommandResult> {
+        self.command_with_event_payload_tag(kind, 0, wait)
+    }
+
+    fn command_with_event_payload_tag(
+        &mut self,
+        kind: FixtureCommandKind,
+        event_payload_tag: u64,
+        wait: Duration,
+    ) -> Option<FixtureCommandResult> {
         let nonce = self.next_nonce;
         self.next_nonce = self.next_nonce.checked_add(1)?;
         self.command_with_nonce(
             FixtureCommand {
                 run_nonce: self.run_nonce,
                 nonce,
+                event_payload_tag,
                 kind,
             },
             wait,
@@ -983,7 +1232,17 @@ impl Fixture {
         })?;
         let result = parse_command_result_line(&line)?;
         assert_eq!(result.run_nonce, self.run_nonce);
-        println!("{line}");
+        if command.kind == FixtureCommandKind::ResetEvents && result.status == 0 {
+            // Event lines emitted before the reset acknowledgement belong to
+            // the previous observation interval. The native snapshot remains
+            // authoritative and later reads still expose any post-reset event.
+            self.pending_events.clear();
+        }
+        println!(
+            "fixture-command-observed action={} success={}",
+            command.kind.as_str(),
+            result.status == 0
+        );
         Some(result)
     }
     fn command_is_rejected(&mut self, command: FixtureCommand, wait: Duration) -> bool {
@@ -1005,14 +1264,19 @@ impl Fixture {
             .expect("the fixture output receiver is not poisoned");
         while Instant::now() < deadline {
             match lines.recv_timeout(Duration::from_millis(100)) {
-                Ok(line) if accept(&line) => return Some(line),
-                Ok(line) => {
+                Ok(message) => {
+                    let line = fixture_protocol_line(message);
+                    if accept(&line) {
+                        return Some(line);
+                    }
                     if let Some(summary) = parse_event_line_for_run(&line, self.run_nonce) {
+                        assert!(
+                            self.pending_events.len() < MAX_RECORDED_EVENTS,
+                            "the fixture emitted more queued events than the protocol permits"
+                        );
                         self.pending_events.push_back(summary);
-                    } else if line.starts_with("fixture-command-result ")
-                        || line.starts_with("fixture-command-rejected ")
-                    {
-                        panic!("the fixture returned an unexpected control record: {line}");
+                    } else {
+                        panic!("the fixture returned an unexpected protocol record");
                     }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
@@ -1035,10 +1299,11 @@ impl Fixture {
             .expect("the fixture output receiver is not poisoned");
         while Instant::now() < deadline && kinds.len() < MAX_RECORDED_EVENTS {
             match lines.recv_timeout(Duration::from_millis(100)) {
-                Ok(line) => {
-                    if let Some(summary) = parse_event_line_for_run(&line, self.run_nonce) {
-                        kinds.push(summary.kind);
-                    }
+                Ok(message) => {
+                    let line = fixture_protocol_line(message);
+                    let summary = parse_event_line_for_run(&line, self.run_nonce)
+                        .unwrap_or_else(|| panic!("unexpected fixture event record"));
+                    kinds.push(summary.kind);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -1056,10 +1321,11 @@ impl Fixture {
             .expect("the fixture output receiver is not poisoned");
         while Instant::now() < deadline && events.len() < count {
             match lines.recv_timeout(Duration::from_millis(25)) {
-                Ok(line) => {
-                    if let Some(summary) = parse_event_line_for_run(&line, self.run_nonce) {
-                        events.push(summary);
-                    }
+                Ok(message) => {
+                    let line = fixture_protocol_line(message);
+                    let summary = parse_event_line_for_run(&line, self.run_nonce)
+                        .unwrap_or_else(|| panic!("unexpected fixture event record"));
+                    events.push(summary);
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -1067,19 +1333,21 @@ impl Fixture {
         }
         events
     }
-    /// Cancels only after the exact process-wide fixture event is observable.
+
+    /// Changes fixture window state after the exact press, then cancels.
     ///
-    /// The helper exclusively owns the receiver until joined. Callers must not
-    /// issue fixture commands or read event summaries while it is running.
-    fn cancel_after_event(
+    /// This closes the race that matters for cleanup: the bounded release must
+    /// use retained process authority even after ordinary window admission
+    /// becomes unavailable.
+    fn move_offscreen_and_cancel_after_event(
         &mut self,
         expected: EventSummary,
         cancellation: CancellationToken,
         wait: Duration,
-    ) -> thread::JoinHandle<Option<EventSummary>> {
+    ) -> thread::JoinHandle<(Option<EventSummary>, Option<FixtureCommandResult>)> {
         assert!(
             self.pending_events.is_empty(),
-            "stale fixture events precede the cancellation row"
+            "stale fixture events precede the cleanup-state transition row"
         );
         {
             let lines = self
@@ -1088,36 +1356,83 @@ impl Fixture {
                 .expect("the fixture output receiver is not poisoned");
             assert!(
                 matches!(lines.try_recv(), Err(mpsc::TryRecvError::Empty)),
-                "queued fixture output precedes the cancellation row"
+                "queued fixture output precedes the cleanup-state transition row"
             );
         }
+
+        let mut input = self
+            .input
+            .as_ref()
+            .expect("the fixture control channel remains connected")
+            .try_clone()
+            .expect("the fixture control channel is clonable");
+        let command = FixtureCommand {
+            run_nonce: self.run_nonce,
+            nonce: self.next_nonce,
+            event_payload_tag: 0,
+            kind: FixtureCommandKind::MoveOffscreen,
+        };
+        self.next_nonce = self
+            .next_nonce
+            .checked_add(1)
+            .expect("the bounded fixture command nonce does not overflow");
         let lines = Arc::clone(&self.lines);
         let run_nonce = self.run_nonce;
         thread::Builder::new()
-            .name("mado-pilot-native-input-cancellation-trigger".to_owned())
+            .name("mado-pilot-native-input-cleanup-transition".to_owned())
             .spawn(move || {
                 let deadline = Instant::now() + wait;
                 let lines = lines
                     .lock()
                     .expect("the fixture output receiver is not poisoned");
+                let mut observed = None;
                 while Instant::now() < deadline {
                     match lines.recv_timeout(Duration::from_millis(25)) {
-                        Ok(line) => {
-                            let Some(summary) = parse_event_line_for_run(&line, run_nonce) else {
-                                continue;
-                            };
+                        Ok(message) => {
+                            let line = fixture_protocol_line(message);
+                            let summary = parse_event_line_for_run(&line, run_nonce)
+                                .unwrap_or_else(|| panic!("unexpected fixture event record"));
+                            observed = Some(summary);
                             if summary == expected {
-                                cancellation.cancel();
+                                writeln!(input, "{}", format_command_line(command))
+                                    .expect("the off-screen cleanup command is writable");
+                                input
+                                    .flush()
+                                    .expect("the off-screen cleanup command is flushed");
+                                break;
                             }
-                            return Some(summary);
+                            return (observed, None);
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => {
+                            cancellation.cancel();
+                            return (observed, None);
+                        }
+                    }
+                }
+
+                let mut result = None;
+                while Instant::now() < deadline {
+                    match lines.recv_timeout(Duration::from_millis(25)) {
+                        Ok(message) => {
+                            let line = fixture_protocol_line(message);
+                            if let Some(candidate) = parse_command_result_line(&line)
+                                && candidate.run_nonce == command.run_nonce
+                                && candidate.nonce == command.nonce
+                            {
+                                result = Some(candidate);
+                                break;
+                            }
+                            panic!("unexpected fixture cleanup-transition record");
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
                 }
-                None
+                cancellation.cancel();
+                (observed, result)
             })
-            .expect("the cancellation observation helper starts")
+            .expect("the cleanup-state transition helper starts")
     }
 
     fn exact_event_summaries(&mut self, count: usize, wait: Duration) -> Vec<EventSummary> {
@@ -1154,6 +1469,37 @@ impl Fixture {
         );
     }
 
+    fn begin_correlated_event_row(&mut self, event_payload_tag: u64, wait: Duration) {
+        assert_ne!(event_payload_tag, 0, "a correlated row token is nonzero");
+        assert!(
+            self.pending_events.is_empty(),
+            "a prior row left unconsumed fixture events: {:?}",
+            self.pending_events
+        );
+        let reset = self
+            .command_with_event_payload_tag(
+                FixtureCommandKind::ResetEvents,
+                event_payload_tag,
+                wait,
+            )
+            .expect("the fixture resets its correlated event summary");
+        assert_eq!(reset.status, 0, "the fixture event reset succeeds");
+        assert_eq!(reset.events, EventTotals::default());
+        assert!(
+            self.pending_events.is_empty(),
+            "the fixture reset exposed events left by a prior row: {:?}",
+            self.pending_events
+        );
+    }
+
+    fn begin_operation_event_row(&mut self, operation: &OperationContext, wait: Duration) {
+        let event_payload_tag = operation
+            .activity_tag()
+            .expect("a qualification operation carries a private row token")
+            .get();
+        self.begin_correlated_event_row(event_payload_tag, wait);
+    }
+
     fn event_totals(&mut self, wait: Duration) -> EventTotals {
         let result = self
             .command(FixtureCommandKind::ReadEvents, wait)
@@ -1170,28 +1516,35 @@ impl Fixture {
         assert!(self.pending_events.is_empty());
     }
 
-    fn expect_text_chunks(&mut self, expected_units: &[u32], wait: Duration) {
-        let expected = expected_units
+    fn expect_exact_events(
+        &mut self,
+        expected: &[ExpectedFixtureEvent],
+        correlation: u32,
+        wait: Duration,
+    ) {
+        let observed = self.exact_event_summaries(expected.len(), wait);
+        let expected_summaries = expected
             .iter()
-            .flat_map(|units| {
-                [
-                    EventSummary {
-                        kind: EVENT_KEY_DOWN,
-                        text_units: *units,
-                    },
-                    EventSummary {
-                        kind: EVENT_KEY_UP,
-                        text_units: *units,
-                    },
-                ]
+            .map(|event| EventSummary {
+                kind: event.kind,
+                text_units: event.text_units,
+                correlation,
             })
             .collect::<Vec<_>>();
-        let observed = self.exact_event_summaries(expected.len(), wait);
         assert_eq!(
-            observed, expected,
-            "text observations expose only exact UTF-16 chunk lengths"
+            observed, expected_summaries,
+            "event kinds, lengths, and row correlation must match exactly"
         );
-        assert_eq!(self.event_totals(wait), event_totals(&observed));
+        let result = self
+            .command(FixtureCommandKind::ReadEvents, wait)
+            .expect("the fixture reads its exact event payload report");
+        assert_eq!(result.status, 0);
+        assert_eq!(result.events, event_totals(&observed));
+        assert_eq!(result.event_correlation, correlation);
+        assert!(
+            result.event_payload_matches,
+            "the privacy-safe observed payload digest differs from the submitted row"
+        );
         assert!(self.pending_events.is_empty());
     }
 }
@@ -1220,6 +1573,7 @@ impl Drop for Fixture {
             let command = FixtureCommand {
                 run_nonce: self.run_nonce,
                 nonce: self.next_nonce,
+                event_payload_tag: 0,
                 kind: FixtureCommandKind::Stop,
             };
             let _written = writeln!(input, "{}", format_command_line(command));
@@ -1229,7 +1583,7 @@ impl Drop for Fixture {
     }
 }
 
-fn spawn_reader(mut input: impl Read + Send + 'static) -> Receiver<String> {
+fn spawn_reader(mut input: impl Read + Send + 'static) -> Receiver<ReaderMessage> {
     let (sender, receiver) = mpsc::sync_channel(MAX_FIXTURE_OUTPUT_RECORDS);
     thread::spawn(move || {
         let mut line = Vec::with_capacity(MAX_READY_LINE_BYTES);
@@ -1238,33 +1592,39 @@ fn spawn_reader(mut input: impl Read + Send + 'static) -> Receiver<String> {
         loop {
             match input.read(&mut byte) {
                 Ok(0) => {
-                    if !overflow
-                        && !line.is_empty()
-                        && let Ok(line) = std::str::from_utf8(&line)
-                    {
-                        let _sent = sender.send(line.to_owned());
+                    let terminal = if overflow {
+                        Some(ReaderMessage::Oversized)
+                    } else if line.is_empty() {
+                        None
+                    } else {
+                        Some(ReaderMessage::Failed)
+                    };
+                    if let Some(message) = terminal {
+                        let _sent = sender.try_send(message);
                     }
                     break;
                 }
                 Ok(_) if byte[0] == b'\n' => {
-                    if !overflow
-                        && let Ok(line) = std::str::from_utf8(&line)
-                        && sender.send(line.to_owned()).is_err()
-                    {
+                    if overflow {
+                        let _sent = sender.try_send(ReaderMessage::Oversized);
                         break;
                     }
-                    line.clear();
-                    overflow = false;
+                    let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) else {
+                        let _sent = sender.try_send(ReaderMessage::Failed);
+                        break;
+                    };
+                    if sender.try_send(ReaderMessage::Line(decoded)).is_err() {
+                        break;
+                    }
+                    line = Vec::with_capacity(MAX_READY_LINE_BYTES);
                 }
-                Ok(_) if !overflow && line.len() < MAX_READY_LINE_BYTES => {
-                    line.push(byte[0]);
-                }
-                Ok(_) => {
-                    line.clear();
-                    overflow = true;
-                }
+                Ok(_) if line.len() < MAX_READY_LINE_BYTES - 1 => line.push(byte[0]),
+                Ok(_) => overflow = true,
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => break,
+                Err(_) => {
+                    let _sent = sender.try_send(ReaderMessage::Failed);
+                    break;
+                }
             }
         }
     });
@@ -1272,25 +1632,34 @@ fn spawn_reader(mut input: impl Read + Send + 'static) -> Receiver<String> {
 }
 
 #[test]
-fn fixture_output_reader_discards_an_overlong_record_and_recovers_at_newline() {
+fn fixture_output_reader_rejects_an_overlong_record() {
     let (mut output, input) = UnixStream::pair().expect("the private test channel opens");
     let lines = spawn_reader(input);
     output
         .write_all(&vec![b'x'; MAX_READY_LINE_BYTES + 1])
         .expect("the oversized record is written");
-    output
-        .write_all(b"\nfixture-event kind=1 units=0\n")
-        .expect("the next bounded record is written");
     drop(output);
 
-    assert_eq!(
-        lines.recv_timeout(Duration::from_secs(1)),
-        Ok(String::from("fixture-event kind=1 units=0"))
-    );
     assert!(matches!(
         lines.recv_timeout(Duration::from_secs(1)),
-        Err(RecvTimeoutError::Disconnected)
+        Ok(ReaderMessage::Oversized)
     ));
+}
+
+#[test]
+fn fixture_output_reader_rejects_invalid_utf8_and_unterminated_records() {
+    for malformed in [vec![0xFF, b'\n'], b"unterminated".to_vec()] {
+        let (mut output, input) = UnixStream::pair().expect("the private test channel opens");
+        let lines = spawn_reader(input);
+        output
+            .write_all(&malformed)
+            .expect("the malformed record is written");
+        drop(output);
+        assert!(matches!(
+            lines.recv_timeout(Duration::from_secs(1)),
+            Ok(ReaderMessage::Failed)
+        ));
+    }
 }
 
 fn ready_process_id(line: &str) -> Option<u32> {
@@ -1305,60 +1674,10 @@ fn ready_process_id(line: &str) -> Option<u32> {
 }
 
 #[test]
-fn fixture_peer_identity_requires_the_expected_user_and_canonical_executable() {
-    let expected_executable = Path::new("/private/tmp/approved-fixture");
-    let peer = FixturePeerIdentity {
-        effective_user_id: 501,
-        process_id: 42,
-        executable: expected_executable.to_path_buf(),
-        audit_token: AuditToken { values: [7; 8] },
-    };
-    assert!(fixture_peer_is_expected(&peer, 501, expected_executable));
-
-    let wrong_path = FixturePeerIdentity {
-        executable: PathBuf::from("/private/tmp/lookalike-fixture"),
-        ..peer.clone()
-    };
-    assert!(!fixture_peer_is_expected(
-        &wrong_path,
-        501,
-        expected_executable
-    ));
-    assert!(!fixture_peer_is_expected(&peer, 502, expected_executable));
-    assert!(!fixture_peer_is_expected(
-        &FixturePeerIdentity {
-            process_id: 0,
-            ..peer
-        },
-        501,
-        expected_executable
-    ));
-}
-
-#[test]
 fn ready_record_pid_must_match_the_authenticated_peer() {
     let line = format!("fixture-ready title={} pid=42 remainder", fixture_title(42));
     assert_eq!(ready_process_id_for_peer(&line, 42), Some(42));
     assert_eq!(ready_process_id_for_peer(&line, 43), None);
-}
-
-#[test]
-fn fixture_control_socket_directory_is_unique_and_private() {
-    let first = fixture_socket_directory().expect("a private fixture directory is created");
-    let second = fixture_socket_directory().expect("a second private fixture directory is created");
-    assert_ne!(first.path, second.path);
-    for directory in [&first, &second] {
-        let mode = std::fs::metadata(&directory.path)
-            .expect("the private directory exists")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o700);
-        assert_eq!(
-            directory.socket_path().parent(),
-            Some(directory.path.as_path())
-        );
-    }
 }
 
 #[test]
@@ -1388,10 +1707,7 @@ fn invalid_execution_context_output_reaps_the_owned_child() {
         Fixture::from_child(
             child,
             input,
-            AuthenticatedFixtureProcess {
-                process_id,
-                audit_token: AuditToken { values: [0; 8] },
-            },
+            AuthenticatedFixtureProcess::for_test(process_id),
             true,
             FixtureMode::Default,
             77,
@@ -1408,23 +1724,6 @@ fn invalid_execution_context_output_reaps_the_owned_child() {
         .status
         .success();
     assert!(!still_exists, "the rejected fixture child must be reaped");
-}
-
-fn wait_for(
-    lines: &Receiver<String>,
-    wait: Duration,
-    accept: impl Fn(&str) -> bool,
-) -> Option<String> {
-    let deadline = Instant::now() + wait;
-    while Instant::now() < deadline {
-        match lines.recv_timeout(Duration::from_millis(100)) {
-            Ok(line) if accept(&line) => return Some(line),
-            Ok(_other) => {}
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return None,
-        }
-    }
-    None
 }
 
 fn parse_replacement_line(line: &str) -> Option<(u64, u32, u64, u64)> {
@@ -1488,65 +1787,36 @@ fn fixture_bundle(executable: &Path) -> Option<PathBuf> {
         .then(|| bundle.to_path_buf())
 }
 
-struct FixtureSocketDirectory {
-    path: PathBuf,
-}
-
-impl FixtureSocketDirectory {
-    fn socket_path(&self) -> PathBuf {
-        self.path.join("control.sock")
-    }
-}
-
-impl Drop for FixtureSocketDirectory {
-    fn drop(&mut self) {
-        let _socket_removed = std::fs::remove_file(self.socket_path());
-        let _directory_removed = std::fs::remove_dir(&self.path);
-    }
-}
-
-fn fixture_socket_directory() -> Option<FixtureSocketDirectory> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    for _attempt in 0..32 {
-        let sequence = FIXTURE_SOCKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = PathBuf::from(format!(
-            "/tmp/mado-pilot-fixture-{}-{timestamp}-{sequence}",
-            std::process::id()
-        ));
-        let mut builder = std::fs::DirBuilder::new();
-        builder.mode(0o700);
-        match builder.create(&path) {
-            Ok(()) => {
-                let permissions = std::fs::Permissions::from_mode(0o700);
-                if std::fs::set_permissions(&path, permissions).is_err() {
-                    let _removed = std::fs::remove_dir(&path);
-                    return None;
-                }
-                return Some(FixtureSocketDirectory { path });
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return None,
-        }
-    }
-    None
-}
 fn discover_unique_fixture(
     provider: &MacosCaptureProvider,
-    process_id: u32,
+    fixture: &Fixture,
     wait: Duration,
 ) -> Result<TargetDescription, FixtureSelectionError> {
-    let started = Instant::now();
-    loop {
-        let targets = discovered(provider).ok_or(FixtureSelectionError::NotFound)?;
-        match select_unique_fixture(&targets, process_id) {
-            Ok(target) => return Ok(target.clone()),
-            Err(_) if started.elapsed() < wait => {
-                thread::sleep(Duration::from_millis(25));
+    #[cfg(not(feature = "private-fixture"))]
+    {
+        let _ = (provider, fixture, wait);
+        Err(FixtureSelectionError::NotFound)
+    }
+
+    #[cfg(feature = "private-fixture")]
+    {
+        let started = Instant::now();
+        loop {
+            let process = fixture
+                .authenticated_process()
+                .ok_or(FixtureSelectionError::NotFound)?;
+            let targets = discovered(provider).ok_or(FixtureSelectionError::NotFound)?;
+            match select_unique_fixture(&targets, process.process_id(), |target| {
+                provider.fixture_target_has_authenticated_owner(target, |owner| {
+                    process.matches_live_owner(owner)
+                })
+            }) {
+                Ok(target) => return Ok(target.clone()),
+                Err(_) if started.elapsed() < wait => {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => return Err(error),
             }
-            Err(error) => return Err(error),
         }
     }
 }
@@ -1570,7 +1840,7 @@ fn the_fixture_starts_publishes_its_title_and_is_selected_exactly_once() {
         None => panic!("the configured fixture bundle could not be started"),
     };
     let provider = provider();
-    let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+    let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
         .expect("exactly one approved fixture becomes discoverable");
 
     assert_eq!(chosen.name(), fixture_title(fixture.process_id));
@@ -1598,6 +1868,7 @@ fn owned_fixture_control_is_versioned_idempotent_and_identity_bound() {
             FixtureCommand {
                 run_nonce: other_run_nonce,
                 nonce: 1,
+                event_payload_tag: 0,
                 kind: FixtureCommandKind::Transition,
             },
             CONTENT_WAIT,
@@ -1623,6 +1894,7 @@ fn owned_fixture_control_is_versioned_idempotent_and_identity_bound() {
             FixtureCommand {
                 run_nonce: fixture.run_nonce,
                 nonce: transition.nonce,
+                event_payload_tag: 0,
                 kind: FixtureCommandKind::Transition,
             },
             CONTENT_WAIT,
@@ -1669,6 +1941,7 @@ fn owned_fixture_control_is_versioned_idempotent_and_identity_bound() {
             FixtureCommand {
                 run_nonce: fixture.run_nonce,
                 nonce: topology.nonce,
+                event_payload_tag: 0,
                 kind: FixtureCommandKind::MoveToNextDisplay,
             },
             CONTENT_WAIT,
@@ -1692,6 +1965,7 @@ fn owned_fixture_control_is_versioned_idempotent_and_identity_bound() {
             FixtureCommand {
                 run_nonce: fixture.run_nonce,
                 nonce: transition.nonce,
+                event_payload_tag: 0,
                 kind: FixtureCommandKind::Restore,
             },
             CONTENT_WAIT,
@@ -1744,7 +2018,7 @@ fn owned_window_replacement_never_retargets_the_retained_filter() {
     let mut fixture =
         Fixture::start_replacing().expect("the replacement fixture starts on this desktop");
     let provider = provider();
-    let original = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+    let original = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
         .expect("the original fixture becomes discoverable exactly once");
 
     let capture = CaptureProvider::open(
@@ -1818,7 +2092,7 @@ fn owned_window_replacement_never_retargets_the_retained_filter() {
     }
     original_close.expect("the observed original session closes");
 
-    let replacement = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+    let replacement = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
         .expect("the same-process successor becomes discoverable exactly once");
     let replacement_capture = CaptureProvider::open(
         &provider,
@@ -1874,7 +2148,7 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
     );
     let mut fixture = Fixture::start().expect("the fixture starts on an interactive desktop");
     let provider = provider();
-    let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+    let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
         .expect("selection is fail-closed: zero or several matches stop here");
 
     // Capture and map the exact selected target before obtaining anything that
@@ -1914,8 +2188,7 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
         .expect("input opens for the confirmed fixture");
 
     println!(
-        "Click the window titled `{}` within {} seconds.",
-        fixture_title(fixture.process_id),
+        "Click the controlled MadoPilot fixture window within {} seconds.",
         FOCUS_WAIT.as_secs()
     );
     // `RequireFocused` never activates anything. Until a person focuses the
@@ -1999,33 +2272,11 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
     assert!(controller.is_closed());
 }
 
-fn frontmost_application() -> Option<(String, u32)> {
-    let front = Command::new("/usr/bin/lsappinfo")
-        .arg("front")
-        .output()
-        .ok()?;
-    if !front.status.success() {
-        return None;
-    }
-    let asn = String::from_utf8(front.stdout).ok()?.trim().to_owned();
-    if asn.is_empty() {
-        return None;
-    }
-    let info = Command::new("/usr/bin/lsappinfo")
-        .args(["info", "-only", "pid"])
-        .arg(&asn)
-        .output()
-        .ok()?;
-    if !info.status.success() {
-        return None;
-    }
-    let pid = String::from_utf8(info.stdout)
-        .ok()?
-        .trim()
-        .strip_prefix("\"pid\"=")?
-        .parse()
-        .ok()?;
-    Some((asn, pid))
+fn frontmost_application() -> Option<u32> {
+    let mut process_id = 0;
+    // SAFETY: the production shim writes one `u32` and contains native exceptions.
+    let status = unsafe { mp_shim_input_frontmost_process(&raw mut process_id) };
+    (status == 0 && process_id != 0).then_some(process_id)
 }
 
 fn pointer_location() -> (f64, f64) {
@@ -2037,6 +2288,23 @@ fn pointer_location() -> (f64, f64) {
     assert!(x.is_finite() && y.is_finite());
     (x, y)
 }
+fn post_untagged_process_key_pair(process_id: u32) {
+    let process_id = i32::try_from(process_id).expect("fixture process id fits pid_t");
+    for key_down in [true, false] {
+        // SAFETY: Core Graphics accepts a null source, returns one retained event,
+        // and `CGEventPostToPid` borrows it only for the duration of the call.
+        unsafe {
+            let event = CGEventCreateKeyboardEvent(std::ptr::null(), 0x24, key_down);
+            assert!(
+                !event.is_null(),
+                "the unrelated source creates its keyboard event"
+            );
+            CGEventPostToPid(process_id, event);
+            CFRelease(event.cast_const());
+        }
+    }
+}
+#[track_caller]
 fn observe_fixture_fill(
     capture: &dyn CaptureSession,
     after: FrameStamp,
@@ -2079,6 +2347,7 @@ fn observe_fixture_fill(
     panic!("the controlled fixture transition produced no matching newer frame");
 }
 
+#[track_caller]
 fn assert_process_receipt(receipt: &mado_pilot_input::InputReceipt, submitted: usize) {
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete, "{receipt}");
     assert_eq!(receipt.submitted(), submitted);
@@ -2107,7 +2376,12 @@ fn process_key_pair(target: TargetId) -> InputRequest {
     )
     .with_focus(FocusPolicy::Preserve)
 }
-fn wait_for_process_unavailable(provider: &MacosCaptureProvider, target: TargetId, wait: Duration) {
+fn wait_for_process_unavailable(
+    provider: &MacosCaptureProvider,
+    target: TargetId,
+    kind: InputOperationKind,
+    wait: Duration,
+) {
     let deadline = Instant::now() + wait;
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -2115,7 +2389,7 @@ fn wait_for_process_unavailable(provider: &MacosCaptureProvider, target: TargetI
             Ok(descriptor)
                 if descriptor
                     .capability()
-                    .pair(InputOperationKind::Keyboard, InputDelivery::ProcessDirected)
+                    .pair(kind, InputDelivery::ProcessDirected)
                     .support()
                     == CapabilitySupport::Unsupported =>
             {
@@ -2128,7 +2402,39 @@ fn wait_for_process_unavailable(provider: &MacosCaptureProvider, target: TargetI
         }
         thread::sleep(Duration::from_millis(25));
     }
-    panic!("the minimized process remained input-eligible past the scenario deadline");
+    panic!("the unavailable process target remained input-eligible past the scenario deadline");
+}
+
+fn wait_for_process_available(
+    provider: &MacosCaptureProvider,
+    target: TargetId,
+    kind: InputOperationKind,
+    wait: Duration,
+) {
+    let deadline = Instant::now() + wait;
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match InputProvider::describe(provider, target, &bounded(remaining)) {
+            Ok(descriptor)
+                if descriptor
+                    .capability()
+                    .pair(kind, InputDelivery::ProcessDirected)
+                    .support()
+                    == CapabilitySupport::Unknown =>
+            {
+                return;
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.status(),
+                    Status::TargetLost | Status::DeadlineExceeded
+                ) => {}
+            Err(error) => panic!("process capability refresh failed: {error}"),
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    panic!("the restored process target remained unavailable past the scenario deadline");
 }
 
 fn assert_zero_effect(receipt: &mado_pilot_input::InputReceipt, fault: InputFault) {
@@ -2143,7 +2449,7 @@ fn assert_zero_effect(receipt: &mado_pilot_input::InputReceipt, fault: InputFaul
 fn assert_unrelated_desktop_state(
     fixture: &Fixture,
     foreground_fixture: &mut Fixture,
-    foreground_before: &(String, u32),
+    foreground_before: &u32,
     cursor_before: (f64, f64),
 ) {
     let foreground_events = foreground_fixture.event_totals(CONTENT_WAIT);
@@ -2175,6 +2481,7 @@ fn assert_unrelated_desktop_state(
     );
 }
 
+#[track_caller]
 fn observe_controlled_transition(
     fixture: &mut Fixture,
     capture: &dyn CaptureSession,
@@ -2188,6 +2495,22 @@ fn observe_controlled_transition(
     assert_eq!(transition.before_window, fixture.facts.window_number());
     assert_eq!(transition.after_window, fixture.facts.window_number());
     observe_fixture_fill(capture, after, replacement)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ControlledVisualObservation {
+    stamp: FrameStamp,
+    replacement_fill: bool,
+}
+
+#[track_caller]
+fn observe_tagged_input_transition(
+    capture: &dyn CaptureSession,
+    observation: &mut ControlledVisualObservation,
+) {
+    observation.replacement_fill = !observation.replacement_fill;
+    observation.stamp =
+        observe_fixture_fill(capture, observation.stamp, observation.replacement_fill);
 }
 
 const QUALIFICATION_POINTER_SPACES: [CoordinateSpace; 5] = [
@@ -2205,12 +2528,24 @@ fn pointer_qualification_rows(
     space: CoordinateSpace,
 ) -> Vec<PointerQualificationRow> {
     let extent = frame.descriptor().extent();
+    assert!(
+        extent.width() > 2 && extent.height() > 2,
+        "the qualification frame has interior endpoint coordinates"
+    );
     let capture_centre = Point::new(
         CoordinateSpace::CapturePixels,
         f64::from(extent.width()) / 2.0,
         f64::from(extent.height()) / 2.0,
     )
     .expect("the frame centre is finite");
+    let capture_leading = Point::new(CoordinateSpace::CapturePixels, 1.0, capture_centre.y())
+        .expect("the leading frame endpoint is finite");
+    let capture_trailing = Point::new(
+        CoordinateSpace::CapturePixels,
+        f64::from(extent.width() - 1),
+        capture_centre.y(),
+    )
+    .expect("the trailing frame endpoint is finite");
     let capture_drag_end = Point::new(
         CoordinateSpace::CapturePixels,
         capture_centre.x() + 24.0,
@@ -2221,6 +2556,14 @@ fn pointer_qualification_rows(
         .transform()
         .convert_point(capture_centre, space)
         .unwrap_or_else(|error| panic!("{space} centre conversion failed: {error}"));
+    let leading = frame
+        .transform()
+        .convert_point(capture_leading, space)
+        .unwrap_or_else(|error| panic!("{space} leading endpoint conversion failed: {error}"));
+    let trailing = frame
+        .transform()
+        .convert_point(capture_trailing, space)
+        .unwrap_or_else(|error| panic!("{space} trailing endpoint conversion failed: {error}"));
     let drag_end = frame
         .transform()
         .convert_point(capture_drag_end, space)
@@ -2230,6 +2573,16 @@ fn pointer_qualification_rows(
         (
             "move",
             vec![InputEvent::PointerMove(centre)],
+            vec![EVENT_POINTER_MOVE],
+        ),
+        (
+            "leading seam endpoint",
+            vec![InputEvent::PointerMove(leading)],
+            vec![EVENT_POINTER_MOVE],
+        ),
+        (
+            "trailing seam endpoint",
+            vec![InputEvent::PointerMove(trailing)],
             vec![EVENT_POINTER_MOVE],
         ),
         (
@@ -2287,22 +2640,292 @@ fn pointer_qualification_rows(
     ]
 }
 
+fn fixture_native_button(button: PointerButton) -> u32 {
+    match button {
+        PointerButton::Primary => 0,
+        PointerButton::Secondary => 1,
+        PointerButton::Middle => 2,
+        _ => panic!("unsupported button cannot form a positive qualification row"),
+    }
+}
+
+fn expected_native_pointer_location(frame: &Frame, point: Point) -> (f64, f64) {
+    let desktop = frame
+        .transform()
+        .convert_point(point, CoordinateSpace::DesktopLogical)
+        .expect("the expected pointer point converts to desktop logical");
+    let geometry = qualification_geometry(frame);
+    let snap = |value: f64, origin: f64, scale: f64| {
+        let snapped = origin + ((value - origin) * scale).round() / scale;
+        if snapped == 0.0 { 0.0 } else { snapped }
+    };
+    (
+        snap(desktop.x(), geometry.origin.0, geometry.scale.0),
+        snap(desktop.y(), geometry.origin.1, geometry.scale.1),
+    )
+}
+
+fn expected_process_pointer_events(
+    frame: &Frame,
+    events: &[InputEvent],
+) -> Vec<ExpectedFixtureEvent> {
+    let mut location = None;
+    let mut active_button = None;
+    events
+        .iter()
+        .map(|event| match event {
+            InputEvent::PointerMove(point) => {
+                let (x, y) = expected_native_pointer_location(frame, *point);
+                location = Some((x, y));
+                expected_fixture_event(
+                    EVENT_POINTER_MOVE,
+                    active_button.unwrap_or(u32::MAX),
+                    u64::from(active_button.is_some()),
+                    x,
+                    y,
+                    0,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &[],
+                )
+            }
+            InputEvent::PointerPress(button) => {
+                let native_button = fixture_native_button(*button);
+                let (x, y) = location.expect("a positive press row first positions the pointer");
+                active_button = Some(native_button);
+                expected_fixture_event(
+                    EVENT_POINTER_PRESS,
+                    native_button,
+                    1,
+                    x,
+                    y,
+                    0,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &[],
+                )
+            }
+            InputEvent::PointerRelease(button) => {
+                let native_button = fixture_native_button(*button);
+                assert_eq!(
+                    active_button,
+                    Some(native_button),
+                    "a positive release balances its row-owned press"
+                );
+                let (x, y) = location.expect("a positive release row has a pointer location");
+                active_button = None;
+                expected_fixture_event(
+                    EVENT_POINTER_RELEASE,
+                    native_button,
+                    1,
+                    x,
+                    y,
+                    0,
+                    0,
+                    0,
+                    false,
+                    0,
+                    &[],
+                )
+            }
+            InputEvent::PointerScroll {
+                horizontal,
+                vertical,
+            } => expected_fixture_event(
+                EVENT_POINTER_SCROLL,
+                u32::MAX,
+                0,
+                0.0,
+                0.0,
+                -i32::from(*horizontal),
+                -i32::from(*vertical),
+                0,
+                false,
+                0,
+                &[],
+            ),
+            _ => panic!("a pointer qualification row contains only pointer events"),
+        })
+        .collect()
+}
+const CG_EVENT_FLAG_MASK_SHIFT: u64 = 0x0002_0000;
+const CG_EVENT_FLAG_MASK_SECONDARY_FN: u64 = 0x0080_0000;
+
+const QUALIFICATION_A_TEXT: [u16; 1] = [0x0061];
+fn qualification_key_code(key: Key) -> u16 {
+    match key {
+        Key::Character('a') => 0x00,
+        Key::Character('b') => 0x0B,
+        Key::Modifier(Modifier::Shift) => 0x38,
+        Key::Enter => 0x24,
+        Key::Function(1) => 0x7A,
+        Key::ArrowRight => 0x7C,
+        _ => panic!("the positive qualification matrix has no native oracle for {key:?}"),
+    }
+}
+fn qualification_delivered_flags(key: Key, requested_flags: u64) -> u64 {
+    if matches!(key, Key::Function(_) | Key::ArrowRight) {
+        requested_flags | CG_EVENT_FLAG_MASK_SECONDARY_FN
+    } else {
+        requested_flags
+    }
+}
+
+fn expected_process_keyboard_events(events: &[InputEvent]) -> Vec<ExpectedFixtureEvent> {
+    let mut flags = 0;
+    events
+        .iter()
+        .map(|event| match event {
+            InputEvent::KeyPress(key) => {
+                if *key == Key::Modifier(Modifier::Shift) {
+                    flags |= CG_EVENT_FLAG_MASK_SHIFT;
+                }
+                expected_fixture_event(
+                    if matches!(key, Key::Modifier(_)) {
+                        EVENT_FLAGS_CHANGED
+                    } else {
+                        EVENT_KEY_DOWN
+                    },
+                    u32::MAX,
+                    0,
+                    0.0,
+                    0.0,
+                    0,
+                    0,
+                    qualification_key_code(*key),
+                    true,
+                    qualification_delivered_flags(*key, flags),
+                    if *key == Key::Character('a') {
+                        &QUALIFICATION_A_TEXT
+                    } else {
+                        &[]
+                    },
+                )
+            }
+            InputEvent::KeyRelease(key) => {
+                if *key == Key::Modifier(Modifier::Shift) {
+                    flags &= !CG_EVENT_FLAG_MASK_SHIFT;
+                }
+                expected_fixture_event(
+                    if matches!(key, Key::Modifier(_)) {
+                        EVENT_FLAGS_CHANGED
+                    } else {
+                        EVENT_KEY_UP
+                    },
+                    u32::MAX,
+                    0,
+                    0.0,
+                    0.0,
+                    0,
+                    0,
+                    qualification_key_code(*key),
+                    false,
+                    qualification_delivered_flags(*key, flags),
+                    if *key == Key::Character('a') {
+                        &QUALIFICATION_A_TEXT
+                    } else {
+                        &[]
+                    },
+                )
+            }
+            _ => panic!("a keyboard qualification row contains only key events"),
+        })
+        .collect()
+}
+
+fn expected_process_text_events(text: &str) -> Vec<ExpectedFixtureEvent> {
+    const CHUNK_UNITS: usize = 16;
+    let units = text.encode_utf16().collect::<Vec<_>>();
+    let mut events = Vec::new();
+    let mut start = 0;
+    while start < units.len() {
+        let mut end = (start + CHUNK_UNITS).min(units.len());
+        if end < units.len() && (0xD800..0xDC00).contains(&units[end - 1]) {
+            end -= 1;
+        }
+        let chunk = &units[start..end];
+        events.push(expected_fixture_event(
+            EVENT_KEY_DOWN,
+            u32::MAX,
+            0,
+            0.0,
+            0.0,
+            0,
+            0,
+            0,
+            true,
+            0,
+            chunk,
+        ));
+        events.push(expected_fixture_event(
+            EVENT_KEY_UP,
+            u32::MAX,
+            0,
+            0.0,
+            0.0,
+            0,
+            0,
+            0,
+            false,
+            0,
+            chunk,
+        ));
+        start = end;
+    }
+    events
+}
+
 #[allow(clippy::too_many_arguments)]
 fn exercise_process_pointer_rows(
     input: &dyn InputController,
     target: TargetId,
     frame: &Frame,
     geometry: PointerGeometry,
+    capture: &dyn CaptureSession,
+    visual: &mut ControlledVisualObservation,
     fixture: &mut Fixture,
     foreground_fixture: &mut Fixture,
-    foreground_before: &(String, u32),
+    foreground_before: &u32,
 ) {
     for space in QUALIFICATION_POINTER_SPACES {
-        for (label, events, expected_kinds) in pointer_qualification_rows(frame, space) {
-            fixture.begin_event_row(CONTENT_WAIT);
+        let rows = pointer_qualification_rows(frame, space);
+        for (row_index, base_row) in rows.into_iter().enumerate() {
+            // Reprojection resolves against authority at each operation, so its
+            // independent frame oracle must advance with a settling target too.
+            let current_frame = if geometry.policy() == GeometryPolicy::ReprojectCurrent {
+                Some(
+                    capture
+                        .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+                        .expect("reprojected input has a current capture-frame oracle"),
+                )
+            } else {
+                None
+            };
+            let (label, events, expected_kinds) = if let Some(current) = &current_frame {
+                pointer_qualification_rows(current, space)
+                    .into_iter()
+                    .nth(row_index)
+                    .expect("the pointer qualification row set is stable")
+            } else {
+                base_row
+            };
+            let oracle_frame = current_frame.as_ref().unwrap_or(frame);
+            let expected = expected_process_pointer_events(oracle_frame, &events);
+            assert_eq!(
+                expected.iter().map(|event| event.kind).collect::<Vec<_>>(),
+                expected_kinds,
+                "the independent native oracle preserves the declared event sequence"
+            );
+            let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+            fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
             foreground_fixture.begin_event_row(CONTENT_WAIT);
             let cursor_before = pointer_location();
             let submitted = events.len();
+            let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
             let receipt = input
                 .execute(
                     &InputRequest::new(
@@ -2313,7 +2936,7 @@ fn exercise_process_pointer_rows(
                     )
                     .with_focus(FocusPolicy::Preserve)
                     .with_pointer_geometry(geometry),
-                    &bounded(CONTENT_WAIT),
+                    &operation,
                 )
                 .unwrap_or_else(|error| {
                     panic!(
@@ -2322,21 +2945,27 @@ fn exercise_process_pointer_rows(
                     )
                 });
             assert_process_receipt(&receipt, submitted);
-            fixture.expect_event_kinds(&expected_kinds, CONTENT_WAIT);
+            fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
             assert_unrelated_desktop_state(
                 fixture,
                 foreground_fixture,
                 foreground_before,
                 cursor_before,
             );
+            observe_tagged_input_transition(capture, visual);
         }
     }
 }
 
-fn wait_for_geometry_frame(capture: &dyn CaptureSession, after: FrameStamp) -> Frame {
+fn wait_for_geometry_frame(
+    capture: &dyn CaptureSession,
+    after: FrameStamp,
+    replacement: bool,
+    context_label: &str,
+) -> Frame {
     let deadline = Instant::now() + CONTENT_WAIT;
     let mut cursor = after;
-    loop {
+    let mut frame = loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(
             !remaining.is_zero(),
@@ -2346,24 +2975,35 @@ fn wait_for_geometry_frame(capture: &dyn CaptureSession, after: FrameStamp) -> F
             .frame(&FrameRequest::newer_than(cursor), &bounded(remaining))
             .expect("capture publishes while geometry changes");
         cursor = frame.stamp();
-        if frame.stamp().geometry() == after.geometry() {
-            continue;
+        if frame.stamp().geometry() != after.geometry() {
+            break frame;
         }
-        let mapping = frame
-            .map(PixelFormat::Bgra8, &bounded(remaining))
-            .expect("the geometry-updated frame maps");
-        let descriptor = mapping.descriptor();
+    };
+    let mut geometry = qualification_geometry(&frame);
+    let mut unchanged_since = Instant::now();
+    while unchanged_since.elapsed() < GEOMETRY_SETTLE {
+        let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(
-            frame_is_fixture_content(mapping.bytes(), descriptor.stride(), descriptor.extent(),)
-                || frame_is_replacement_content(
-                    mapping.bytes(),
-                    descriptor.stride(),
-                    descriptor.extent(),
-                ),
-            "the geometry-updated frame contains only approved fixture content"
+            !remaining.is_zero(),
+            "capture geometry did not settle before the scenario deadline"
         );
-        return frame;
+        thread::sleep(
+            remaining
+                .min(Duration::from_millis(25))
+                .min(GEOMETRY_SETTLE.saturating_sub(unchanged_since.elapsed())),
+        );
+        let latest = capture
+            .frame(&FrameRequest::latest(), &bounded(remaining))
+            .expect("capture retains the latest geometry while it settles");
+        let latest_geometry = qualification_geometry(&latest);
+        if latest_geometry != geometry {
+            geometry = latest_geometry;
+            unchanged_since = Instant::now();
+        }
+        frame = latest;
     }
+    assert_fixture_frame_content(&frame, replacement, context_label);
+    frame
 }
 
 fn assert_stale_pointer_frame_refused(
@@ -2372,7 +3012,7 @@ fn assert_stale_pointer_frame_refused(
     stale_frame: &Frame,
     fixture: &mut Fixture,
     foreground_fixture: &mut Fixture,
-    foreground_before: &(String, u32),
+    foreground_before: &u32,
 ) {
     let extent = stale_frame.descriptor().extent();
     let point = Point::new(
@@ -2419,15 +3059,19 @@ fn assert_stale_pointer_frame_refused(
     );
 }
 
-fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: QualificationTopology) {
-    let mut foreground_fixture =
-        Fixture::start().expect("the unrelated foreground fixture starts first");
+fn qualify_process_directed_renderer(
+    mode: FixtureMode,
+    expected_topology: QualificationTopology,
+    observed_topology: &[ObservedQualificationGeometry],
+) {
+    let mut foreground_fixture = Fixture::start_foreground()
+        .expect("the unrelated foreground fixture starts from its independent bundle");
     let mut fixture = Fixture::start_inactive(mode)
         .expect("the owned fixture starts visible without taking foreground ownership");
 
     let provider = provider();
-    let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
-        .expect("the owned child exposes exactly one eligible fixture window");
+    let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+        .expect("the owned child exposes one uniquely selected fixture window");
     for kind in InputOperationKind::ALL {
         let pair = chosen
             .capability()
@@ -2478,15 +3122,13 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         .expect("the additional ordinary window opens");
     assert_eq!(auxiliary.status, 0);
     thread::sleep(Duration::from_secs(10));
-    let mut observed_stamp =
-        observe_controlled_transition(&mut fixture, capture.as_ref(), first.stamp(), true);
-    let multiple_window_descriptor =
-        InputProvider::describe(&provider, chosen.id(), &bounded(CONTENT_WAIT))
-            .expect("the retained target remains describable with an additional window");
+    let multiple_window_target = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+        .expect("the retained primary remains discoverable with an ordinary sibling");
     for kind in InputOperationKind::ALL {
         assert_eq!(
-            multiple_window_descriptor
+            multiple_window_target
                 .capability()
+                .input()
                 .pair(kind, InputDelivery::ProcessDirected)
                 .support(),
             CapabilitySupport::Unknown,
@@ -2494,10 +3136,14 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
             kind.as_str()
         );
     }
+    let mut visual = ControlledVisualObservation {
+        stamp: first.stamp(),
+        replacement_fill: false,
+    };
     let foreground_deadline = Instant::now() + CONTENT_WAIT;
     let foreground_before = loop {
         if let Some(foreground) = frontmost_application()
-            && foreground.1 == foreground_fixture.process_id
+            && foreground == foreground_fixture.process_id
         {
             break foreground;
         }
@@ -2508,7 +3154,7 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         thread::sleep(Duration::from_millis(25));
     };
     assert_ne!(
-        foreground_before.1, fixture.process_id,
+        foreground_before, fixture.process_id,
         "the qualification target must remain inactive"
     );
 
@@ -2544,6 +3190,8 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         chosen.id(),
         &first,
         PointerGeometry::require_unchanged_since(first.stamp()),
+        capture.as_ref(),
+        &mut visual,
         &mut fixture,
         &mut foreground_fixture,
         &foreground_before,
@@ -2553,7 +3201,13 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         .command(FixtureCommandKind::Move, CONTENT_WAIT)
         .expect("the local movement command completes");
     assert_eq!(moved.status, 0);
-    let moved_frame = wait_for_geometry_frame(capture.as_ref(), observed_stamp);
+    let moved_frame = wait_for_geometry_frame(
+        capture.as_ref(),
+        visual.stamp,
+        visual.replacement_fill,
+        "moved target",
+    );
+    visual.stamp = moved_frame.stamp();
     assert_stale_pointer_frame_refused(
         input.as_ref(),
         chosen.id(),
@@ -2562,15 +3216,19 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         &mut foreground_fixture,
         &foreground_before,
     );
+    drop(first);
     exercise_process_pointer_rows(
         input.as_ref(),
         chosen.id(),
         &moved_frame,
         PointerGeometry::reprojected(),
+        capture.as_ref(),
+        &mut visual,
         &mut fixture,
         &mut foreground_fixture,
         &foreground_before,
     );
+    drop(moved_frame);
     let moved_current = capture
         .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
         .expect("the moved fixture keeps publishing");
@@ -2579,17 +3237,24 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         chosen.id(),
         &moved_current,
         PointerGeometry::require_unchanged_since(moved_current.stamp()),
+        capture.as_ref(),
+        &mut visual,
         &mut fixture,
         &mut foreground_fixture,
         &foreground_before,
     );
-    observed_stamp = moved_current.stamp();
 
     let resized = fixture
         .command(FixtureCommandKind::Resize, CONTENT_WAIT)
         .expect("the resize command completes");
     assert_eq!(resized.status, 0);
-    let resized_frame = wait_for_geometry_frame(capture.as_ref(), observed_stamp);
+    let resized_frame = wait_for_geometry_frame(
+        capture.as_ref(),
+        visual.stamp,
+        visual.replacement_fill,
+        "resized target",
+    );
+    visual.stamp = resized_frame.stamp();
     assert_stale_pointer_frame_refused(
         input.as_ref(),
         chosen.id(),
@@ -2598,15 +3263,19 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         &mut foreground_fixture,
         &foreground_before,
     );
+    drop(moved_current);
     exercise_process_pointer_rows(
         input.as_ref(),
         chosen.id(),
         &resized_frame,
         PointerGeometry::reprojected(),
+        capture.as_ref(),
+        &mut visual,
         &mut fixture,
         &mut foreground_fixture,
         &foreground_before,
     );
+    drop(resized_frame);
     let resized_current = capture
         .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
         .expect("the resized fixture keeps publishing");
@@ -2615,17 +3284,14 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         chosen.id(),
         &resized_current,
         PointerGeometry::require_unchanged_since(resized_current.stamp()),
+        capture.as_ref(),
+        &mut visual,
         &mut fixture,
         &mut foreground_fixture,
         &foreground_before,
     );
-    observed_stamp = resized_current.stamp();
 
-    let display_count = discovered(&provider)
-        .expect("the qualifying host remains discoverable")
-        .iter()
-        .filter(|target| target.capability().kind() == Some(TargetKind::Display))
-        .count();
+    let display_count = observed_topology.len();
     assert!(
         (1..=16).contains(&display_count),
         "the bounded public display inventory is non-empty"
@@ -2635,12 +3301,24 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         geometry: qualification_geometry(&topology_frame),
         stamp: topology_frame.stamp(),
     }];
-    for _ in 1..display_count {
+    let transition_count =
+        if expected_topology == QualificationTopology::MixedScale && display_count > 1 {
+            display_count
+        } else {
+            display_count - 1
+        };
+    for _ in 0..transition_count {
         let moved_display = fixture
             .command(FixtureCommandKind::MoveToNextDisplay, CONTENT_WAIT)
             .expect("the inter-display movement command completes");
         assert_eq!(moved_display.status, 0);
-        let next_frame = wait_for_geometry_frame(capture.as_ref(), observed_stamp);
+        let next_frame = wait_for_geometry_frame(
+            capture.as_ref(),
+            visual.stamp,
+            visual.replacement_fill,
+            "inter-display target",
+        );
+        visual.stamp = next_frame.stamp();
         assert_stale_pointer_frame_refused(
             input.as_ref(),
             chosen.id(),
@@ -2649,15 +3327,19 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
             &mut foreground_fixture,
             &foreground_before,
         );
+        drop(topology_frame);
         exercise_process_pointer_rows(
             input.as_ref(),
             chosen.id(),
             &next_frame,
             PointerGeometry::reprojected(),
+            capture.as_ref(),
+            &mut visual,
             &mut fixture,
             &mut foreground_fixture,
             &foreground_before,
         );
+        drop(next_frame);
         let next_current = capture
             .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
             .expect("the inter-display fixture keeps publishing");
@@ -2666,24 +3348,26 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
             chosen.id(),
             &next_current,
             PointerGeometry::require_unchanged_since(next_current.stamp()),
+            capture.as_ref(),
+            &mut visual,
             &mut fixture,
             &mut foreground_fixture,
             &foreground_before,
         );
-        observed_stamp = next_current.stamp();
         topology_frame = next_current;
         topology_visits.push(ObservedQualificationGeometry {
             geometry: qualification_geometry(&topology_frame),
             stamp: topology_frame.stamp(),
         });
     }
-    validate_window_topology(expected_topology, &topology_visits).unwrap_or_else(|reason| {
-        panic!(
-            "{:?} {} retained-window topology refused: {reason}",
-            fixture.facts.renderer(),
-            expected_topology.label()
-        )
-    });
+    validate_window_topology(expected_topology, observed_topology, &topology_visits)
+        .unwrap_or_else(|reason| {
+            panic!(
+                "{:?} {} retained-window topology refused: {reason}",
+                fixture.facts.renderer(),
+                expected_topology.label()
+            )
+        });
     for (ordinal, visit) in topology_visits.iter().enumerate() {
         println!(
             "qualification-window-topology={} renderer={:?} visit={} logical={}x{} \
@@ -2702,8 +3386,6 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
             visit.stamp,
         );
     }
-    observed_stamp =
-        observe_controlled_transition(&mut fixture, capture.as_ref(), observed_stamp, false);
 
     let keyboard_rows = [
         (
@@ -2755,10 +3437,18 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         ),
     ];
     for (label, events, expected_kinds) in keyboard_rows {
-        fixture.begin_event_row(CONTENT_WAIT);
+        let expected = expected_process_keyboard_events(&events);
+        assert_eq!(
+            expected.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            expected_kinds,
+            "the independent native oracle preserves the declared key sequence"
+        );
+        let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+        fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
         foreground_fixture.begin_event_row(CONTENT_WAIT);
         let cursor_before = pointer_location();
         let submitted = events.len();
+        let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
         let receipt = input
             .execute(
                 &InputRequest::new(
@@ -2767,20 +3457,19 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
                     DeliveryPlan::require(InputDelivery::ProcessDirected),
                 )
                 .with_focus(FocusPolicy::Preserve),
-                &bounded(CONTENT_WAIT),
+                &operation,
             )
             .unwrap_or_else(|error| panic!("{label} process posting failed: {error}"));
         assert_process_receipt(&receipt, submitted);
-        fixture.expect_event_kinds(&expected_kinds, CONTENT_WAIT);
+        fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
         assert_unrelated_desktop_state(
             &fixture,
             &mut foreground_fixture,
             &foreground_before,
             cursor_before,
         );
+        observe_tagged_input_transition(capture.as_ref(), &mut visual);
     }
-    observed_stamp =
-        observe_controlled_transition(&mut fixture, capture.as_ref(), observed_stamp, true);
 
     const PROCESS_TEXT_CHUNK_UNITS: usize = 16;
     let process_text_chunk_units =
@@ -2807,17 +3496,33 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
             vec![15u32, 3u32],
             CONTENT_WAIT,
         ),
+        // The 4,096-character boundary expands to 512 native units. Each
+        // unit deliberately refreshes retained-window/process authority.
         (
             "maximum representable text",
             maximum_text,
             vec![process_text_chunk_units; InputEvent::MAX_TEXT_CHARS / PROCESS_TEXT_CHUNK_UNITS],
-            Duration::from_secs(30),
+            Duration::from_secs(120),
         ),
     ];
     for (label, text, expected_units, wait) in text_rows {
-        fixture.begin_event_row(wait);
+        let expected = expected_process_text_events(&text);
+        let expected_chunk_units = expected
+            .chunks_exact(2)
+            .map(|pair| {
+                assert_eq!(pair[0].text_units, pair[1].text_units);
+                pair[0].text_units
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            expected_chunk_units, expected_units,
+            "the independent native oracle preserves the declared UTF-16 chunk boundaries"
+        );
+        let (operation, correlation) = qualification_operation(&expected, wait);
+        fixture.begin_operation_event_row(&operation, wait);
         foreground_fixture.begin_event_row(wait);
         let cursor_before = pointer_location();
+        let operation = refresh_qualification_deadline(&operation, wait);
         let receipt = input
             .execute(
                 &InputRequest::new(
@@ -2827,28 +3532,37 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
                     DeliveryPlan::require(InputDelivery::ProcessDirected),
                 )
                 .with_focus(FocusPolicy::Preserve),
-                &bounded(wait),
+                &operation,
             )
             .unwrap_or_else(|error| panic!("{label} process posting failed: {error}"));
         assert_process_receipt(&receipt, 1);
-        fixture.expect_text_chunks(&expected_units, wait);
+        fixture.expect_exact_events(&expected, correlation, wait);
         assert_unrelated_desktop_state(
             &fixture,
             &mut foreground_fixture,
             &foreground_before,
             cursor_before,
         );
+        observe_tagged_input_transition(capture.as_ref(), &mut visual);
     }
-    fixture.begin_event_row(CONTENT_WAIT);
+    let cleanup_events = [
+        InputEvent::KeyPress(Key::Modifier(Modifier::Shift)),
+        InputEvent::KeyRelease(Key::Modifier(Modifier::Shift)),
+    ];
+    let expected_cleanup = expected_process_keyboard_events(&cleanup_events);
+    let (operation, correlation) = qualification_operation(&expected_cleanup, CONTENT_WAIT);
+    fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
     foreground_fixture.begin_event_row(CONTENT_WAIT);
     let pressed = EventSummary {
-        kind: EVENT_FLAGS_CHANGED,
-        text_units: 0,
+        kind: expected_cleanup[0].kind,
+        text_units: expected_cleanup[0].text_units,
+        correlation,
     };
     let cancellation = CancellationToken::new();
     let cancellation_observer =
-        fixture.cancel_after_event(pressed, cancellation.clone(), CONTENT_WAIT);
+        fixture.move_offscreen_and_cancel_after_event(pressed, cancellation.clone(), CONTENT_WAIT);
     let cursor_before = pointer_location();
+    let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
     let cancellation_receipt = input
         .execute(
             &InputRequest::new(
@@ -2862,13 +3576,22 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
                 DeliveryPlan::require(InputDelivery::ProcessDirected),
             )
             .with_focus(FocusPolicy::Preserve),
-            &bounded(CONTENT_WAIT).with_cancellation(cancellation),
+            &operation.with_cancellation(cancellation),
         )
         .expect("the cancelled process-directed row returns a receipt");
-    let observed_press = cancellation_observer
+    let (observed_press, offscreen) = cancellation_observer
         .join()
-        .expect("the cancellation observation helper remains contained");
+        .expect("the cleanup-state transition helper remains contained");
     assert_eq!(observed_press, Some(pressed));
+    let offscreen = offscreen.expect("the retained fixture moved off-screen before cancellation");
+    assert_eq!(offscreen.status, 0);
+    assert_eq!(offscreen.before_window, offscreen.after_window);
+    wait_for_process_unavailable(
+        &provider,
+        chosen.id(),
+        InputOperationKind::Keyboard,
+        CONTENT_WAIT,
+    );
     assert_eq!(
         cancellation_receipt.outcome(),
         SequenceOutcome::Partial,
@@ -2893,13 +3616,20 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
     assert_eq!(cancellation_receipt.cleanup_released(), 1);
     assert!(!cancellation_receipt.used_fallback());
     let released = EventSummary {
-        kind: EVENT_FLAGS_CHANGED,
-        text_units: 0,
+        kind: expected_cleanup[1].kind,
+        text_units: expected_cleanup[1].text_units,
+        correlation,
     };
     assert_eq!(fixture.exact_event_summaries(1, CONTENT_WAIT), [released]);
-    assert_eq!(
-        fixture.event_totals(CONTENT_WAIT),
-        event_totals(&[pressed, released])
+    let report = fixture
+        .command(FixtureCommandKind::ReadEvents, CONTENT_WAIT)
+        .expect("the fixture reports the complete cleanup event row");
+    assert_eq!(report.status, 0);
+    assert_eq!(report.events, event_totals(&[pressed, released]));
+    assert_eq!(report.event_correlation, correlation);
+    assert!(
+        report.event_payload_matches,
+        "the cleanup row payload digest must cover the exact press and bounded release"
     );
     assert_unrelated_desktop_state(
         &fixture,
@@ -2907,8 +3637,18 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         &foreground_before,
         cursor_before,
     );
-    let _final_stamp =
-        observe_controlled_transition(&mut fixture, capture.as_ref(), observed_stamp, false);
+    let onscreen = fixture
+        .command(FixtureCommandKind::RestoreOnscreen, CONTENT_WAIT)
+        .expect("the retained fixture returns to its exact prior origin after cleanup");
+    assert_eq!(onscreen.status, 0);
+    assert_eq!(onscreen.before_window, onscreen.after_window);
+    wait_for_process_available(
+        &provider,
+        chosen.id(),
+        InputOperationKind::Keyboard,
+        CONTENT_WAIT,
+    );
+    observe_tagged_input_transition(capture.as_ref(), &mut visual);
     let auxiliary_closed = fixture
         .command(FixtureCommandKind::CloseAuxiliary, CONTENT_WAIT)
         .expect("the additional ordinary window closes");
@@ -2935,10 +3675,7 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
     fixture.input = None;
 }
 
-/// Qualifies every positive operation row through both private renderer modes.
-#[test]
-#[ignore = "delivers real process-directed input on an interactive desktop"]
-fn process_directed_delivery_qualifies_default_and_game_like_renderers() {
+fn qualify_process_directed_mode(mode: FixtureMode) {
     assert!(
         std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
         "qualification requires the configured signed fixture bundle"
@@ -2949,24 +3686,39 @@ fn process_directed_delivery_qualifies_default_and_game_like_renderers() {
     );
     let expected_topology = QualificationTopology::required();
     let topology_provider = provider();
-    let _observed_topology = observe_qualification_topology(&topology_provider, expected_topology);
-    for mode in [FixtureMode::GameLike, FixtureMode::Default] {
-        qualify_process_directed_renderer(mode, expected_topology);
-    }
+    let observed_topology = observe_qualification_topology(&topology_provider, expected_topology);
+    qualify_process_directed_renderer(mode, expected_topology, &observed_topology);
 }
 
-fn assert_fixture_frame_content(frame: &Frame, replacement: bool, context_label: &str) {
+/// Qualifies every positive operation row through the AppKit renderer.
+#[test]
+#[ignore = "delivers real process-directed input on an interactive desktop"]
+fn process_directed_delivery_qualifies_appkit_renderer() {
+    qualify_process_directed_mode(FixtureMode::Default);
+}
+
+/// Qualifies every positive operation row through the game-like renderer.
+#[test]
+#[ignore = "delivers real process-directed input on an interactive desktop"]
+fn process_directed_delivery_qualifies_game_like_renderer() {
+    qualify_process_directed_mode(FixtureMode::GameLike);
+}
+
+fn fixture_frame_content_matches(frame: &Frame, replacement: bool, context_label: &str) -> bool {
     let mapping = frame
         .map(PixelFormat::Bgra8, &bounded(CONTENT_WAIT))
         .unwrap_or_else(|error| panic!("{context_label} frame maps: {error}"));
     let descriptor = mapping.descriptor();
-    let matches = if replacement {
+    if replacement {
         frame_is_replacement_content(mapping.bytes(), descriptor.stride(), descriptor.extent())
     } else {
         frame_is_fixture_content(mapping.bytes(), descriptor.stride(), descriptor.extent())
-    };
+    }
+}
+
+fn assert_fixture_frame_content(frame: &Frame, replacement: bool, context_label: &str) {
     assert!(
-        matches,
+        fixture_frame_content_matches(frame, replacement, context_label),
         "{context_label} published unexpected fixture content"
     );
 }
@@ -3002,18 +3754,59 @@ fn observe_unchanged_fixture_content(
     frame.stamp()
 }
 
-fn wait_for_frontmost_fixture(fixture: &Fixture) -> (String, u32) {
+fn wait_for_fixture_geometry(
+    capture: &dyn CaptureSession,
+    after: FrameStamp,
+    expected: QualificationGeometry,
+    replacement: bool,
+    context_label: &str,
+) -> Frame {
     let deadline = Instant::now() + CONTENT_WAIT;
-    loop {
-        if let Some(frontmost) = frontmost_application()
-            && frontmost.1 == fixture.process_id
-        {
-            return frontmost;
+    let mut cursor = after;
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match capture.frame(
+            &FrameRequest::newer_than(cursor),
+            &bounded(remaining.min(Duration::from_millis(500))),
+        ) {
+            Ok(frame) => {
+                cursor = frame.stamp();
+                if qualification_geometry(&frame) == expected
+                    && fixture_frame_content_matches(&frame, replacement, context_label)
+                {
+                    return frame;
+                }
+            }
+            Err(error) if error.status() == Status::DeadlineExceeded => {}
+            Err(error) => panic!("{context_label} frame refresh failed: {error}"),
         }
+    }
+    panic!("{context_label} did not republish the retained target geometry and content");
+}
+
+fn wait_for_frontmost_fixture(fixture: &mut Fixture) -> u32 {
+    let deadline = Instant::now() + CONTENT_WAIT;
+    let mut observed = None;
+    loop {
+        if let Some(frontmost) = frontmost_application() {
+            observed = Some(frontmost);
+            if frontmost == fixture.process_id {
+                return frontmost;
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(
-            Instant::now() < deadline,
-            "the owned foreground fixture did not remain frontmost"
+            !remaining.is_zero(),
+            "the owned foreground fixture {} did not become frontmost; observed {observed:?}",
+            fixture.process_id
         );
+        let foregrounded = fixture
+            .command(
+                FixtureCommandKind::TakeForeground,
+                remaining.min(Duration::from_millis(500)),
+            )
+            .expect("the unrelated fixture takes foreground ownership");
+        assert_eq!(foregrounded.status, 0);
         thread::sleep(Duration::from_millis(25));
     }
 }
@@ -3021,38 +3814,65 @@ fn wait_for_frontmost_fixture(fixture: &Fixture) -> (String, u32) {
 fn post_isolated_process_key_pair(
     input: &dyn InputController,
     target: TargetId,
+    capture: &dyn CaptureSession,
+    visual: &mut ControlledVisualObservation,
     fixture: &mut Fixture,
     foreground_fixture: &mut Fixture,
-    foreground_before: &(String, u32),
+    foreground_before: &u32,
 ) -> mado_pilot_input::InputReceipt {
-    fixture.begin_event_row(CONTENT_WAIT);
+    let expected = expected_process_keyboard_events(&[
+        InputEvent::KeyPress(Key::Enter),
+        InputEvent::KeyRelease(Key::Enter),
+    ]);
+    let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+    fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
     foreground_fixture.begin_event_row(CONTENT_WAIT);
+    post_untagged_process_key_pair(fixture.process_id);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        fixture.event_totals(CONTENT_WAIT),
+        EventTotals::default(),
+        "an untagged same-process source received correlated event credit"
+    );
+    assert!(
+        fixture.pending_events.is_empty(),
+        "an untagged same-process source received correlated event records"
+    );
+    let after_untagged = capture
+        .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+        .expect("the retained fixture remains capturable after unrelated input");
+    assert_fixture_frame_content(
+        &after_untagged,
+        visual.replacement_fill,
+        "qualification target after untagged same-process input",
+    );
     let cursor_before = pointer_location();
+    let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
     let receipt = input
-        .execute(&process_key_pair(target), &bounded(CONTENT_WAIT))
+        .execute(&process_key_pair(target), &operation)
         .expect("the bracketed process-directed key pair returns a receipt");
     assert_process_receipt(&receipt, 2);
-    fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+    fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
     assert_unrelated_desktop_state(
         fixture,
         foreground_fixture,
         foreground_before,
         cursor_before,
     );
+    observe_tagged_input_transition(capture, visual);
     receipt
 }
 
 fn qualify_controlled_unrelated_activity(mode: FixtureMode) {
-    let mut foreground_fixture =
-        Fixture::start().expect("the owned unrelated foreground fixture starts first");
+    let mut foreground_fixture = Fixture::start_foreground()
+        .expect("the unrelated foreground fixture starts from its independent bundle");
     let mut fixture = Fixture::start_inactive(mode)
         .expect("the qualification target starts without taking foreground");
     let provider = provider();
-    let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
+    let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
         .expect("the qualification target is selected exactly once");
-    let foreground =
-        discover_unique_fixture(&provider, foreground_fixture.process_id, CONTENT_WAIT)
-            .expect("the foreground fixture is selected exactly once");
+    let foreground = discover_unique_fixture(&provider, &foreground_fixture, CONTENT_WAIT)
+        .expect("the foreground fixture is selected exactly once");
 
     let capture = CaptureProvider::open(
         &provider,
@@ -3107,25 +3927,25 @@ fn qualify_controlled_unrelated_activity(mode: FixtureMode) {
     )
     .expect("process-directed keyboard input opens for the inactive target");
 
-    let foreground_before = wait_for_frontmost_fixture(&foreground_fixture);
+    let foreground_before = wait_for_frontmost_fixture(&mut foreground_fixture);
     assert_ne!(
-        foreground_before.1, fixture.process_id,
+        foreground_before, fixture.process_id,
         "the qualification target must remain inactive"
     );
     thread::sleep(Duration::from_secs(10));
+    let mut target_visual = ControlledVisualObservation {
+        stamp: target_initial.stamp(),
+        replacement_fill: false,
+    };
 
     let before_receipt = post_isolated_process_key_pair(
         process_input.as_ref(),
         chosen.id(),
+        capture.as_ref(),
+        &mut target_visual,
         &mut fixture,
         &mut foreground_fixture,
         &foreground_before,
-    );
-    let mut target_stamp = observe_unchanged_fixture_content(
-        capture.as_ref(),
-        target_initial.stamp(),
-        false,
-        "qualification target after first process row",
     );
 
     fixture.begin_event_row(CONTENT_WAIT);
@@ -3136,10 +3956,10 @@ fn qualify_controlled_unrelated_activity(mode: FixtureMode) {
         foreground_initial.stamp(),
         true,
     );
-    target_stamp = observe_unchanged_fixture_content(
+    target_visual.stamp = observe_unchanged_fixture_content(
         capture.as_ref(),
-        target_stamp,
-        false,
+        target_visual.stamp,
+        true,
         "qualification target during unrelated foreground redraw",
     );
     assert_eq!(
@@ -3189,10 +4009,10 @@ fn qualify_controlled_unrelated_activity(mode: FixtureMode) {
         EventTotals::default(),
         "the target process observed the scripted foreground action"
     );
-    target_stamp = observe_unchanged_fixture_content(
+    target_visual.stamp = observe_unchanged_fixture_content(
         capture.as_ref(),
-        target_stamp,
-        false,
+        target_visual.stamp,
+        true,
         "qualification target during scripted foreground action",
     );
     let foreground_stamp = observe_unchanged_fixture_content(
@@ -3210,6 +4030,8 @@ fn qualify_controlled_unrelated_activity(mode: FixtureMode) {
     let after_receipt = post_isolated_process_key_pair(
         process_input.as_ref(),
         chosen.id(),
+        capture.as_ref(),
+        &mut target_visual,
         &mut fixture,
         &mut foreground_fixture,
         &foreground_before,
@@ -3218,16 +4040,11 @@ fn qualify_controlled_unrelated_activity(mode: FixtureMode) {
         after_receipt, before_receipt,
         "unrelated foreground activity changed the process-directed receipt"
     );
-    target_stamp = observe_unchanged_fixture_content(
-        capture.as_ref(),
-        target_stamp,
-        false,
-        "qualification target after second process row",
-    );
+    let target_stamp = target_visual.stamp;
     println!(
         "qualification-unrelated-activity renderer={:?} process-sequences=2 \
          process-logical-events=4 foreground-system-logical-events=2 \
-         foreground-private-transitions=1 target-visual-transitions=0 \
+         foreground-private-transitions=1 target-visual-transitions=2 \
          process-window-cursor-invariance=true foreground-preserved=true \
          receipts-unchanged=true target-frame={target_stamp:?} \
          foreground-frame={foreground_stamp:?}",
@@ -3259,10 +4076,10 @@ fn qualify_controlled_unrelated_activity(mode: FixtureMode) {
 }
 
 /// Proves scripted foreground redraw and System input cannot contaminate the
-/// process-directed target's receipts, events, or visual correlation.
+/// AppKit process-directed target's receipts, events, or visual correlation.
 #[test]
 #[ignore = "delivers scripted System and process-directed input on an interactive desktop"]
-fn controlled_unrelated_activity_remains_outside_process_evidence() {
+fn controlled_unrelated_activity_remains_outside_appkit_process_evidence() {
     assert!(
         std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
         "qualification requires the configured signed fixture bundle"
@@ -3271,9 +4088,23 @@ fn controlled_unrelated_activity_remains_outside_process_evidence() {
         post_event_access_granted(),
         "qualification requires non-prompting post-event authorization to be granted"
     );
-    for mode in [FixtureMode::GameLike, FixtureMode::Default] {
-        qualify_controlled_unrelated_activity(mode);
-    }
+    qualify_controlled_unrelated_activity(FixtureMode::Default);
+}
+
+/// Proves scripted foreground redraw and System input cannot contaminate the
+/// game-like process-directed target's receipts, events, or visual correlation.
+#[test]
+#[ignore = "delivers scripted System and process-directed input on an interactive desktop"]
+fn controlled_unrelated_activity_remains_outside_game_like_process_evidence() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "qualification requires the configured signed fixture bundle"
+    );
+    assert!(
+        post_event_access_granted(),
+        "qualification requires non-prompting post-event authorization to be granted"
+    );
+    qualify_controlled_unrelated_activity(FixtureMode::GameLike);
 }
 
 /// Keeps capture active beyond the indicator dwell while two renderer modes
@@ -3290,14 +4121,14 @@ fn sustained_capture_soak_keeps_process_route_isolated() {
         "qualification requires non-prompting post-event authorization to be granted"
     );
 
+    let mut foreground_fixture = Fixture::start_foreground()
+        .expect("the unrelated foreground fixture starts from its independent bundle");
     for mode in [FixtureMode::GameLike, FixtureMode::Default] {
-        let mut foreground_fixture =
-            Fixture::start().expect("the unrelated foreground fixture starts first");
         let mut fixture = Fixture::start_inactive(mode)
             .expect("the owned fixture starts visible without taking foreground ownership");
         let provider = provider();
-        let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
-            .expect("the owned child exposes exactly one eligible fixture window");
+        let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+            .expect("the owned child exposes one uniquely selected fixture window");
         let capture = CaptureProvider::open(
             &provider,
             chosen.id(),
@@ -3314,20 +4145,12 @@ fn sustained_capture_soak_keeps_process_route_isolated() {
             .expect("the additional ordinary window opens");
         assert_eq!(auxiliary.status, 0);
         thread::sleep(Duration::from_secs(10));
-
-        let foreground_deadline = Instant::now() + CONTENT_WAIT;
-        let foreground_before = loop {
-            if let Some(foreground) = frontmost_application()
-                && foreground.1 == foreground_fixture.process_id
-            {
-                break foreground;
-            }
-            assert!(
-                Instant::now() < foreground_deadline,
-                "the inactive soak target stole foreground ownership"
-            );
-            thread::sleep(Duration::from_millis(25));
+        let mut visual = ControlledVisualObservation {
+            stamp: first.stamp(),
+            replacement_fill: false,
         };
+
+        let foreground_before = wait_for_frontmost_fixture(&mut foreground_fixture);
 
         let input = InputProvider::open(
             &provider,
@@ -3348,7 +4171,15 @@ fn sustained_capture_soak_keeps_process_route_isolated() {
                 .into_iter()
                 .next()
                 .expect("the pointer soak row exists");
+        let expected = expected_process_pointer_events(&first, &pointer_events);
+        assert_eq!(
+            expected.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            expected_pointer_events
+        );
+        let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+        fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
         let submitted = pointer_events.len();
+        let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
         let first_receipt = input
             .execute(
                 &InputRequest::new(
@@ -3358,19 +4189,19 @@ fn sustained_capture_soak_keeps_process_route_isolated() {
                 )
                 .with_focus(FocusPolicy::Preserve)
                 .with_pointer_geometry(PointerGeometry::require_unchanged_since(first.stamp())),
-                &bounded(CONTENT_WAIT),
+                &operation,
             )
             .expect("the first spaced process-directed sequence posts");
         assert_process_receipt(&first_receipt, submitted);
-        fixture.expect_event_kinds(&expected_pointer_events, CONTENT_WAIT);
+        fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
         assert_unrelated_desktop_state(
             &fixture,
             &mut foreground_fixture,
             &foreground_before,
             cursor_before,
         );
-        let first_transition =
-            observe_controlled_transition(&mut fixture, capture.as_ref(), first.stamp(), true);
+        observe_tagged_input_transition(capture.as_ref(), &mut visual);
+        let first_transition = visual.stamp;
 
         let soak_deadline = capture_started + SUSTAINED_CAPTURE_SOAK;
         while Instant::now() < soak_deadline {
@@ -3403,19 +4234,25 @@ fn sustained_capture_soak_keeps_process_route_isolated() {
         fixture.begin_event_row(CONTENT_WAIT);
         foreground_fixture.begin_event_row(CONTENT_WAIT);
         let cursor_before = pointer_location();
+        let expected = expected_process_keyboard_events(&[
+            InputEvent::KeyPress(Key::Enter),
+            InputEvent::KeyRelease(Key::Enter),
+        ]);
+        let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+        fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
+        let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
         let second_receipt = input
-            .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
+            .execute(&process_key_pair(chosen.id()), &operation)
             .expect("the second spaced process-directed sequence posts");
         assert_process_receipt(&second_receipt, 2);
-        fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+        fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
         assert_unrelated_desktop_state(
             &fixture,
             &mut foreground_fixture,
             &foreground_before,
             cursor_before,
         );
-        let _second_transition =
-            observe_controlled_transition(&mut fixture, capture.as_ref(), first_transition, false);
+        observe_tagged_input_transition(capture.as_ref(), &mut visual);
         assert!(
             capture_started.elapsed() >= SUSTAINED_CAPTURE_SOAK,
             "the capture soak ended before its frozen minimum"
@@ -3439,13 +4276,234 @@ fn sustained_capture_soak_keeps_process_route_isolated() {
             .command(FixtureCommandKind::Stop, CONTENT_WAIT)
             .expect("owned fixture stop is acknowledged");
         assert_eq!(stopped.status, 0);
-        let foreground_stopped = foreground_fixture
-            .command(FixtureCommandKind::Stop, CONTENT_WAIT)
-            .expect("the unrelated foreground fixture stop is acknowledged");
-        assert_eq!(foreground_stopped.status, 0);
         fixture.input = None;
-        foreground_fixture.input = None;
     }
+    let foreground_stopped = foreground_fixture
+        .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+        .expect("the unrelated foreground fixture stop is acknowledged");
+    assert_eq!(foreground_stopped.status, 0);
+    foreground_fixture.input = None;
+}
+
+/// Moves each retained renderer target outside every display and then closes it,
+/// proving pointer delivery refuses before posting in both target-loss states.
+#[test]
+#[ignore = "moves and closes real fixture windows"]
+fn process_directed_pointer_refuses_offscreen_and_closed_targets() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "qualification requires the configured signed fixture bundle"
+    );
+    let mut foreground_fixture = Fixture::start_foreground()
+        .expect("the unrelated foreground fixture starts from its independent bundle");
+    for mode in [FixtureMode::Default, FixtureMode::GameLike] {
+        let mut fixture = Fixture::start_inactive(mode)
+            .expect("the owned target fixture starts without taking foreground");
+        let provider = provider();
+        let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+            .expect("the owned child exposes one uniquely selected primary window");
+        let capture = CaptureProvider::open(
+            &provider,
+            chosen.id(),
+            &OpenRequest::new().require_format(PixelFormat::Bgra8),
+            &bounded(CONTENT_WAIT),
+        )
+        .expect("desktop-independent capture opens for the retained target");
+        let first = capture
+            .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+            .expect("the retained target publishes before it leaves the display union");
+        assert_fixture_frame_content(&first, false, "off-screen target baseline");
+        let first_geometry = qualification_geometry(&first);
+        let extent = first.descriptor().extent();
+        let point = Point::new(
+            CoordinateSpace::CapturePixels,
+            f64::from(extent.width()) / 2.0,
+            f64::from(extent.height()) / 2.0,
+        )
+        .expect("the retained frame centre is finite");
+        let request = InputRequest::new(
+            chosen.id(),
+            InputSequence::new(vec![InputEvent::PointerMove(point)])
+                .expect("the target-loss pointer row is bounded"),
+            DeliveryPlan::require(InputDelivery::ProcessDirected),
+        )
+        .with_focus(FocusPolicy::Preserve)
+        .with_pointer_geometry(PointerGeometry::require_unchanged_since(first.stamp()));
+        let input = InputProvider::open(
+            &provider,
+            chosen.id(),
+            &InputOpenRequest::new()
+                .with_requirement(InputRequirement::Required)
+                .requiring(InputOperationKind::Pointer, InputDelivery::ProcessDirected),
+            &bounded(CONTENT_WAIT),
+        )
+        .expect("the process-directed pointer pair opens");
+        let foreground_before = wait_for_frontmost_fixture(&mut foreground_fixture);
+
+        let offscreen = fixture
+            .command(FixtureCommandKind::MoveOffscreen, CONTENT_WAIT)
+            .expect("the retained fixture moves wholly outside the display union");
+        assert_eq!(offscreen.status, 0);
+        assert_eq!(offscreen.before_window, offscreen.after_window);
+        wait_for_process_unavailable(
+            &provider,
+            chosen.id(),
+            InputOperationKind::Pointer,
+            CONTENT_WAIT,
+        );
+        fixture.begin_event_row(CONTENT_WAIT);
+        foreground_fixture.begin_event_row(CONTENT_WAIT);
+        let cursor_before = pointer_location();
+        let receipt = input
+            .execute(&request, &bounded(CONTENT_WAIT))
+            .expect("an off-screen target returns a receipt");
+        let fault = receipt
+            .fault()
+            .expect("an off-screen target reports why admission stopped");
+        assert!(
+            matches!(
+                fault,
+                InputFault::TargetLost | InputFault::UnsupportedCombination
+            ),
+            "off-screen refusal reported {fault}"
+        );
+        assert_zero_effect(&receipt, fault);
+        assert!(
+            fixture
+                .event_summaries(1, Duration::from_millis(200))
+                .is_empty(),
+            "an off-screen target received input before refusal"
+        );
+        assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+        assert_unrelated_desktop_state(
+            &fixture,
+            &mut foreground_fixture,
+            &foreground_before,
+            cursor_before,
+        );
+
+        let onscreen = fixture
+            .command(FixtureCommandKind::RestoreOnscreen, CONTENT_WAIT)
+            .expect("the retained fixture returns to its exact prior origin");
+        assert_eq!(onscreen.status, 0);
+        assert_eq!(onscreen.before_window, onscreen.after_window);
+        wait_for_process_available(
+            &provider,
+            chosen.id(),
+            InputOperationKind::Pointer,
+            CONTENT_WAIT,
+        );
+        let restored_frame = wait_for_fixture_geometry(
+            capture.as_ref(),
+            first.stamp(),
+            first_geometry,
+            false,
+            "restored off-screen target",
+        );
+        let recovery_events = vec![InputEvent::PointerMove(point)];
+        let expected = expected_process_pointer_events(&restored_frame, &recovery_events);
+        let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+        let recovery_request = InputRequest::new(
+            chosen.id(),
+            InputSequence::new(recovery_events)
+                .expect("the restored-target pointer row is bounded"),
+            DeliveryPlan::require(InputDelivery::ProcessDirected),
+        )
+        .with_focus(FocusPolicy::Preserve)
+        .with_pointer_geometry(PointerGeometry::require_unchanged_since(
+            restored_frame.stamp(),
+        ));
+        fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
+        foreground_fixture.begin_event_row(CONTENT_WAIT);
+        let cursor_before = pointer_location();
+        let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
+        let recovery_receipt = input
+            .execute(&recovery_request, &operation)
+            .expect("the restored exact target accepts process-directed pointer input");
+        assert_process_receipt(&recovery_receipt, 1);
+        fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
+        assert_unrelated_desktop_state(
+            &fixture,
+            &mut foreground_fixture,
+            &foreground_before,
+            cursor_before,
+        );
+        let recovered_frame = wait_for_fixture_geometry(
+            capture.as_ref(),
+            restored_frame.stamp(),
+            first_geometry,
+            true,
+            "restored target after pointer delivery",
+        );
+        assert!(
+            recovered_frame
+                .stamp()
+                .is_same_stream(&restored_frame.stamp())
+        );
+        assert_eq!(
+            recovered_frame.stamp().epoch(),
+            restored_frame.stamp().epoch(),
+            "pointer delivery changed the restored capture epoch"
+        );
+
+        let closed = fixture
+            .command(FixtureCommandKind::Close, CONTENT_WAIT)
+            .expect("the retained fixture window closes");
+        assert_eq!(closed.status, 0);
+        assert_eq!(closed.before_window, onscreen.after_window);
+        assert_eq!(closed.after_window, 0);
+        wait_for_process_unavailable(
+            &provider,
+            chosen.id(),
+            InputOperationKind::Pointer,
+            CONTENT_WAIT,
+        );
+        fixture.begin_event_row(CONTENT_WAIT);
+        foreground_fixture.begin_event_row(CONTENT_WAIT);
+        let cursor_before = pointer_location();
+        let receipt = input
+            .execute(&request, &bounded(CONTENT_WAIT))
+            .expect("a closed target returns a receipt");
+        let fault = receipt
+            .fault()
+            .expect("a closed target reports why admission stopped");
+        assert!(
+            matches!(
+                fault,
+                InputFault::TargetLost | InputFault::UnsupportedCombination
+            ),
+            "closed-target refusal reported {fault}"
+        );
+        assert_zero_effect(&receipt, fault);
+        assert!(
+            fixture
+                .event_summaries(1, Duration::from_millis(200))
+                .is_empty(),
+            "a closed target received input before refusal"
+        );
+        assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+        assert_unrelated_desktop_state(
+            &fixture,
+            &mut foreground_fixture,
+            &foreground_before,
+            cursor_before,
+        );
+
+        input.close(&bounded(CONTENT_WAIT)).expect("input closes");
+        capture
+            .close(&bounded(CONTENT_WAIT))
+            .expect("capture closes");
+        let stopped = fixture
+            .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+            .expect("owned fixture stop is acknowledged");
+        assert_eq!(stopped.status, 0);
+        fixture.input = None;
+    }
+    let foreground_stopped = foreground_fixture
+        .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+        .expect("the unrelated foreground fixture stop is acknowledged");
+    assert_eq!(foreground_stopped.status, 0);
+    foreground_fixture.input = None;
 }
 
 /// Keeps capture active with multiple same-process windows, then proves every
@@ -3461,13 +4519,13 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         post_event_access_granted(),
         "qualification requires non-prompting post-event authorization to be granted"
     );
-    let mut foreground_fixture =
-        Fixture::start().expect("the unrelated foreground fixture starts first");
+    let mut foreground_fixture = Fixture::start_foreground()
+        .expect("the unrelated foreground fixture starts from its independent bundle");
     let mut fixture = Fixture::start_inactive(FixtureMode::Default)
         .expect("the owned target fixture starts without taking foreground");
     let provider = provider();
-    let chosen = discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
-        .expect("the owned child exposes exactly one eligible primary window");
+    let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+        .expect("the owned child exposes one uniquely selected primary window");
     let capture = CaptureProvider::open(
         &provider,
         chosen.id(),
@@ -3487,31 +4545,25 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         &bounded(CONTENT_WAIT),
     )
     .expect("the process-directed keyboard pair opens");
-
-    let foreground_deadline = Instant::now() + CONTENT_WAIT;
-    let foreground_before = loop {
-        if let Some(foreground) = frontmost_application()
-            && foreground.1 == foreground_fixture.process_id
-        {
-            break foreground;
-        }
-        assert!(
-            Instant::now() < foreground_deadline,
-            "the inactive qualification target stole foreground ownership"
-        );
-        thread::sleep(Duration::from_millis(25));
-    };
+    let foreground_before = wait_for_frontmost_fixture(&mut foreground_fixture);
+    assert_ne!(
+        foreground_before, fixture.process_id,
+        "the qualification target must remain inactive"
+    );
 
     let auxiliary = fixture
         .command(FixtureCommandKind::OpenAuxiliary, CONTENT_WAIT)
         .expect("the auxiliary-window transition completes");
     assert_eq!(auxiliary.status, 0);
     thread::sleep(Duration::from_secs(10));
-    let _active_capture_stamp =
+    let active_capture_stamp =
         observe_controlled_transition(&mut fixture, capture.as_ref(), first.stamp(), true);
-    let multiple_window_target =
-        discover_unique_fixture(&provider, fixture.process_id, CONTENT_WAIT)
-            .expect("additional same-process windows do not revoke process scope");
+    let mut visual = ControlledVisualObservation {
+        stamp: active_capture_stamp,
+        replacement_fill: true,
+    };
+    let multiple_window_target = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+        .expect("additional same-process windows do not revoke process scope");
     for kind in InputOperationKind::ALL {
         assert_eq!(
             multiple_window_target
@@ -3527,17 +4579,25 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
     fixture.begin_event_row(CONTENT_WAIT);
     foreground_fixture.begin_event_row(CONTENT_WAIT);
     let cursor_before = pointer_location();
+    let expected = expected_process_keyboard_events(&[
+        InputEvent::KeyPress(Key::Enter),
+        InputEvent::KeyRelease(Key::Enter),
+    ]);
+    let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+    fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
+    let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
     let multiple_window = input
-        .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
+        .execute(&process_key_pair(chosen.id()), &operation)
         .expect("the multi-window process returns a receipt");
     assert_process_receipt(&multiple_window, 2);
-    fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+    fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
     assert_unrelated_desktop_state(
         &fixture,
         &mut foreground_fixture,
         &foreground_before,
         cursor_before,
     );
+    observe_tagged_input_transition(capture.as_ref(), &mut visual);
 
     let closed_auxiliary = fixture
         .command(FixtureCommandKind::CloseAuxiliary, CONTENT_WAIT)
@@ -3546,23 +4606,36 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
     fixture.begin_event_row(CONTENT_WAIT);
     foreground_fixture.begin_event_row(CONTENT_WAIT);
     let cursor_before = pointer_location();
+    let expected = expected_process_keyboard_events(&[
+        InputEvent::KeyPress(Key::Enter),
+        InputEvent::KeyRelease(Key::Enter),
+    ]);
+    let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+    fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
+    let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
     let ordinary = input
-        .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
-        .expect("the single-window process returns a receipt");
+        .execute(&process_key_pair(chosen.id()), &operation)
+        .expect("the retained process returns a receipt");
     assert_process_receipt(&ordinary, 2);
-    fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+    fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
     assert_unrelated_desktop_state(
         &fixture,
         &mut foreground_fixture,
         &foreground_before,
         cursor_before,
     );
+    observe_tagged_input_transition(capture.as_ref(), &mut visual);
 
     let minimized = fixture
         .command(FixtureCommandKind::Minimize, CONTENT_WAIT)
         .expect("the fixture minimizes");
     assert_eq!(minimized.status, 0);
-    wait_for_process_unavailable(&provider, chosen.id(), CONTENT_WAIT);
+    wait_for_process_unavailable(
+        &provider,
+        chosen.id(),
+        InputOperationKind::Keyboard,
+        CONTENT_WAIT,
+    );
     fixture.begin_event_row(CONTENT_WAIT);
     foreground_fixture.begin_event_row(CONTENT_WAIT);
     let cursor_before = pointer_location();
@@ -3599,12 +4672,18 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         .expect("the fixture restores");
     assert_eq!(restored.status, 0);
     let restore_deadline = Instant::now() + CONTENT_WAIT;
-    fixture.begin_event_row(CONTENT_WAIT);
+    let expected = expected_process_keyboard_events(&[
+        InputEvent::KeyPress(Key::Enter),
+        InputEvent::KeyRelease(Key::Enter),
+    ]);
+    let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+    fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
     foreground_fixture.begin_event_row(CONTENT_WAIT);
     let cursor_before = pointer_location();
+    let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
     let restored_receipt = loop {
         let receipt = input
-            .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
+            .execute(&process_key_pair(chosen.id()), &operation)
             .expect("the restored target returns a receipt");
         if receipt.outcome() == SequenceOutcome::Complete {
             break receipt;
@@ -3621,13 +4700,14 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         thread::sleep(Duration::from_millis(25));
     };
     assert_process_receipt(&restored_receipt, 2);
-    fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+    fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
     assert_unrelated_desktop_state(
         &fixture,
         &mut foreground_fixture,
         &foreground_before,
         cursor_before,
     );
+    observe_tagged_input_transition(capture.as_ref(), &mut visual);
 
     for kind in [FixtureCommandKind::Move, FixtureCommandKind::Resize] {
         let transition = fixture
@@ -3637,25 +4717,92 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         fixture.begin_event_row(CONTENT_WAIT);
         foreground_fixture.begin_event_row(CONTENT_WAIT);
         let cursor_before = pointer_location();
+        let expected = expected_process_keyboard_events(&[
+            InputEvent::KeyPress(Key::Enter),
+            InputEvent::KeyRelease(Key::Enter),
+        ]);
+        let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+        fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
+        let operation = refresh_qualification_deadline(&operation, CONTENT_WAIT);
         let receipt = input
-            .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
+            .execute(&process_key_pair(chosen.id()), &operation)
             .expect("the geometry-updated target returns a receipt");
         assert_process_receipt(&receipt, 2);
-        fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+        fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
         assert_unrelated_desktop_state(
             &fixture,
             &mut foreground_fixture,
             &foreground_before,
             cursor_before,
         );
+        observe_tagged_input_transition(capture.as_ref(), &mut visual);
     }
+
+    let offscreen = fixture
+        .command(FixtureCommandKind::MoveOffscreen, CONTENT_WAIT)
+        .expect("the retained fixture moves wholly outside the display union");
+    assert_eq!(offscreen.status, 0);
+    assert_eq!(offscreen.before_window, offscreen.after_window);
+    wait_for_process_unavailable(
+        &provider,
+        chosen.id(),
+        InputOperationKind::Keyboard,
+        CONTENT_WAIT,
+    );
+    fixture.begin_event_row(CONTENT_WAIT);
+    foreground_fixture.begin_event_row(CONTENT_WAIT);
+    let cursor_before = pointer_location();
+    let offscreen_receipt = input
+        .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
+        .expect("an off-screen target returns a receipt");
+    let offscreen_fault = offscreen_receipt
+        .fault()
+        .expect("an off-screen target reports why admission stopped");
+    assert!(
+        matches!(
+            offscreen_fault,
+            InputFault::TargetLost | InputFault::UnsupportedCombination
+        ),
+        "off-screen refusal reported {offscreen_fault}"
+    );
+    assert_zero_effect(&offscreen_receipt, offscreen_fault);
+    assert!(
+        fixture
+            .event_summaries(1, Duration::from_millis(200))
+            .is_empty(),
+        "an off-screen target received input before refusal"
+    );
+    assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+    assert_unrelated_desktop_state(
+        &fixture,
+        &mut foreground_fixture,
+        &foreground_before,
+        cursor_before,
+    );
+
+    let onscreen = fixture
+        .command(FixtureCommandKind::RestoreOnscreen, CONTENT_WAIT)
+        .expect("the retained fixture returns to its exact prior origin");
+    assert_eq!(onscreen.status, 0);
+    assert_eq!(onscreen.before_window, onscreen.after_window);
+    wait_for_process_available(
+        &provider,
+        chosen.id(),
+        InputOperationKind::Keyboard,
+        CONTENT_WAIT,
+    );
 
     let replacement = fixture
         .command(FixtureCommandKind::Replace, CONTENT_WAIT)
         .expect("the owned fixture replaces its window");
     assert_eq!(replacement.status, 0);
     assert_ne!(replacement.before_window, replacement.after_window);
-    wait_for_process_unavailable(&provider, chosen.id(), CONTENT_WAIT);
+    wait_for_process_unavailable(
+        &provider,
+        chosen.id(),
+        InputOperationKind::Keyboard,
+        CONTENT_WAIT,
+    );
     fixture.begin_event_row(CONTENT_WAIT);
     foreground_fixture.begin_event_row(CONTENT_WAIT);
     let cursor_before = pointer_location();
@@ -3710,20 +4857,13 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
 }
 
 unsafe extern "C" {
+    fn CFRelease(value: *const std::ffi::c_void);
+    fn CGEventCreateKeyboardEvent(
+        source: *const std::ffi::c_void,
+        virtual_key: u16,
+        key_down: bool,
+    ) -> *mut std::ffi::c_void;
+    fn CGEventPostToPid(process_id: i32, event: *const std::ffi::c_void);
     fn mp_shim_input_pointer_location(out_x: *mut f64, out_y: *mut f64) -> u32;
-    fn getpeereid(socket: c_int, effective_user: *mut u32, effective_group: *mut u32) -> c_int;
-    fn geteuid() -> u32;
-    fn getsockopt(
-        socket: c_int,
-        level: c_int,
-        option: c_int,
-        value: *mut c_void,
-        value_len: *mut u32,
-    ) -> c_int;
-}
-
-#[link(name = "proc")]
-unsafe extern "C" {
-    fn proc_pidpath(process_id: c_int, buffer: *mut c_void, buffer_size: u32) -> c_int;
-    fn proc_signal_with_audittoken(audit_token: *mut AuditToken, signal: c_int) -> c_int;
+    fn mp_shim_input_frontmost_process(out_process: *mut u32) -> u32;
 }

@@ -65,7 +65,11 @@
 mod availability;
 #[cfg(target_os = "macos")]
 mod discovery;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "private-fixture"))]
+#[doc(hidden)]
+#[allow(missing_docs)]
+pub mod fixture_control;
+#[cfg(all(target_os = "macos", feature = "private-fixture"))]
 #[doc(hidden)]
 #[allow(missing_docs)]
 pub mod fixture_protocol;

@@ -16,7 +16,11 @@
 //! The files are read at compile time with `include_str!`, so a profile that is
 //! renamed or removed fails the build rather than the assertion.
 
-use mado_pilot_testkit::bench_harness::{Benchmark, benchmark_block};
+use mado_pilot_testkit::bench_harness::{
+    Benchmark, LatencyBudget, PHASE2_2_CAPTURE_LATENCY_BUDGETS,
+    PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS, PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
+    PHASE2_2_PROCESS_LATENCY_BUDGETS, PHASE2_2_TRANSITION_LATENCY_BUDGETS, benchmark_block,
+};
 
 /// Every committed benchmark profile, by repository path and content.
 ///
@@ -121,6 +125,67 @@ const PROFILES: [(&str, &str); 17] = [
     ),
 ];
 
+/// The Phase 2.2 profiles and the latency ceilings enforced by their benchmark.
+const PHASE2_2_PROFILES: [(&str, &str, &[LatencyBudget]); 5] = [
+    (
+        "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml"
+        ),
+        &PHASE2_2_CAPTURE_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-2-controlled-transitions-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-controlled-transitions-aarch64-apple-darwin.toml"
+        ),
+        &PHASE2_2_TRANSITION_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml"
+        ),
+        &PHASE2_2_PROCESS_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml"
+        ),
+        &PHASE2_2_PROCESS_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml"
+        ),
+        &PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
+    ),
+];
+
+/// The process-directed profiles governed by the shared live-heap ceiling.
+const PHASE2_2_PROCESS_PROFILES: [(&str, &str); 3] = [
+    (
+        "docs/benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml"
+        ),
+    ),
+];
+
 /// Returns the assigned keys of `profile`'s `[benchmark]` table, in file order.
 ///
 /// A line reader rather than a TOML parser, as in `hard_budget_drift.rs`: the
@@ -147,6 +212,125 @@ fn benchmark_keys(profile: &str) -> Vec<&str> {
     keys
 }
 
+/// One profile budget reduced to the fields needed to compare recorded and
+/// enforced absolute ceilings.
+#[derive(Debug, PartialEq)]
+struct BudgetBlock<'a> {
+    workload: Option<&'a str>,
+    measure: Option<&'a str>,
+    kind: Option<&'a str>,
+    unit: Option<&'a str>,
+    direction: Option<&'a str>,
+    limit: Option<f64>,
+}
+
+impl<'a> BudgetBlock<'a> {
+    const fn new(workload: Option<&'a str>) -> Self {
+        Self {
+            workload,
+            measure: None,
+            kind: None,
+            unit: None,
+            direction: None,
+            limit: None,
+        }
+    }
+}
+
+/// Returns every top-level or measurement-local budget in file order.
+fn budget_blocks(profile: &str) -> Vec<BudgetBlock<'_>> {
+    let mut blocks = Vec::new();
+    let mut workload = None;
+    let mut in_measurement = false;
+    let mut in_budget = false;
+
+    for line in profile.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_budget = line == "[[budget]]" || line == "[[measurement.budget]]";
+            match line {
+                "[[measurement]]" => {
+                    workload = None;
+                    in_measurement = true;
+                }
+                "[[measurement.budget]]" => {
+                    assert!(
+                        in_measurement,
+                        "a measurement budget must follow its measurement"
+                    );
+                    blocks.push(BudgetBlock::new(workload));
+                }
+                "[[budget]]" => {
+                    workload = None;
+                    in_measurement = false;
+                    blocks.push(BudgetBlock::new(None));
+                }
+                _ => {
+                    in_measurement = false;
+                }
+            }
+            continue;
+        }
+
+        if in_measurement && !in_budget && workload.is_none() {
+            workload = quoted_assignment(line, "workload");
+        }
+        if !in_budget {
+            continue;
+        }
+
+        let block = blocks.last_mut().expect("a budget block was started");
+        block.measure = block.measure.or_else(|| quoted_assignment(line, "measure"));
+        block.kind = block.kind.or_else(|| quoted_assignment(line, "kind"));
+        block.unit = block.unit.or_else(|| quoted_assignment(line, "unit"));
+        block.direction = block
+            .direction
+            .or_else(|| quoted_assignment(line, "direction"));
+        block.limit = block.limit.or_else(|| number_assignment(line, "limit"));
+    }
+
+    blocks
+}
+
+fn quoted_assignment<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    line.strip_prefix(key)?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim()
+        .strip_prefix('"')?
+        .strip_suffix('"')
+}
+
+fn number_assignment(line: &str, key: &str) -> Option<f64> {
+    line.strip_prefix(key)?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn expected_latency_blocks(budgets: &[LatencyBudget]) -> Vec<BudgetBlock<'static>> {
+    budgets
+        .iter()
+        .flat_map(|budget| {
+            [
+                ("latency_p50", budget.p50()),
+                ("latency_p95", budget.p95()),
+                ("latency_max", budget.hard_max()),
+            ]
+            .map(|(measure, limit)| BudgetBlock {
+                workload: Some(budget.workload()),
+                measure: Some(measure),
+                kind: Some("absolute"),
+                unit: Some("milliseconds"),
+                direction: Some("at_most"),
+                limit: Some(limit.as_secs_f64() * 1_000.0),
+            })
+        })
+        .collect()
+}
+
 /// A benchmark identity, so the block can be built. Its values are not read.
 fn benchmark() -> Benchmark {
     Benchmark {
@@ -169,6 +353,55 @@ fn the_harness_emits_exactly_the_benchmark_keys_a_committed_profile_carries() {
             emitted,
             "{path} and the harness disagree about the `[benchmark]` block, so \
              the harness's output is not that file with budgets added"
+        );
+    }
+}
+
+#[test]
+fn phase2_2_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
+    for (path, profile, enforced) in PHASE2_2_PROFILES {
+        let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| {
+                budget
+                    .measure
+                    .is_some_and(|measure| measure.starts_with("latency_"))
+            })
+            .collect();
+        assert_eq!(
+            recorded,
+            expected_latency_blocks(enforced),
+            "{path} must record every frozen p50, p95, and maximum latency \
+             ceiling enforced by `native-phase2`, with no stale extra ceiling"
+        );
+    }
+}
+
+#[test]
+fn process_profiles_state_the_same_live_heap_ceiling_the_harness_enforces() {
+    let limit = f64::from(
+        u32::try_from(PHASE2_2_PROCESS_HEAP_LIMIT_BYTES)
+            .expect("the frozen process heap limit fits u32"),
+    );
+    for (path, profile) in PHASE2_2_PROCESS_PROFILES {
+        let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| {
+                budget.workload.is_none() && budget.measure == Some("peak_allocated_bytes")
+            })
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![BudgetBlock {
+                workload: None,
+                measure: Some("peak_allocated_bytes"),
+                kind: Some("absolute"),
+                unit: Some("bytes"),
+                direction: Some("at_most"),
+                limit: Some(limit),
+            }],
+            "{path} must record the frozen process-directed live-heap ceiling \
+             enforced by `native-phase2`"
         );
     }
 }

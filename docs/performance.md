@@ -10,11 +10,12 @@ for a workload is gate [`G-013`](validation-gates.md#g-013), which is resolved
 per workload and target rather than once. Phase 1 is resolved. ADR 0021
 invalidated the three historical macOS Phase 2 native profiles after source and
 correctness-oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
-now accepts the macOS diagnostic slice, and
+now accepts the macOS diagnostic slice,
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
-revision-bound macOS native input and public-language profile. The remaining
-native workload and target gaps stay open, including the unmeasured Phase 2.2
-macOS process-directed and controlled-stimulus lineage below.
+revision-bound macOS native input and public-language profile, and accepted
+[ADR 0029](adr/0029-macos-process-directed-input.md) binds the measured
+Phase 2.2 macOS process-directed and controlled-stimulus lineage below. The
+remaining native workload and target gaps stay open.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -531,16 +532,20 @@ release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
 overflow around process-directed events.
 
 Five revision-bound profiles were measured on the approved Apple Silicon host
-at source commit `b1059cf6239042107bd62373eb65211117beaab9`:
+at the final qualified source commit
+`8dd70810d60c06b298c806ffce16720d0a07e4c2` (implementation tree
+`1bc47b9cc7caa07f75f7d63f311887124a196a5b`):
 `phase-2-2-controlled-capture-aarch64-apple-darwin`,
 `phase-2-2-controlled-transitions-aarch64-apple-darwin`,
 `phase-2-2-process-directed-appkit-aarch64-apple-darwin`,
 `phase-2-2-process-directed-game-like-aarch64-apple-darwin`, and
 `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin`. Their committed
 records under `docs/benchmarks/` are normative. Across 2,700 retained samples,
-every workload correctness oracle passed, post-warmup allocation growth was
-zero, and every frozen p50, p95, hard-maximum, mapped-byte, stale-work,
-peak-live-heap, and diagnostic-capacity gate passed.
+every workload correctness oracle passed; post-warmup allocation growth was
+2,624 bytes for each renderer's `discovery_open_retained_authority` workload
+and zero for every other workload, within the frozen growth budgets; and
+every frozen p50, p95, hard-maximum, mapped-byte, stale-work, peak-live-heap,
+and diagnostic-capacity gate passed.
 
 The pre-measurement ceilings remain the regression budgets; they were not
 re-ceilinged from the result. The

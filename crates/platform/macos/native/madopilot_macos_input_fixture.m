@@ -31,6 +31,7 @@
 #include <dispatch/dispatch.h>
 #include <math.h>
 #include <stdatomic.h>
+#include <string.h>
 
 #include "madopilot_macos_input_fixture.h"
 
@@ -111,8 +112,13 @@ static const NSUInteger MPFixtureOtherMouseDragged = 27;
 @property(readonly) id frontmostApplication;
 @end
 
+@protocol MPFixtureRunningApplicationClass <NSObject>
++ (id)currentApplication;
+@end
+
 @protocol MPFixtureRunningApplication <NSObject>
 - (BOOL)activateWithOptions:(NSUInteger)options;
+@property(readonly) pid_t processIdentifier;
 @end
 
 @protocol MPFixtureColorClass <NSObject>
@@ -133,6 +139,7 @@ static const NSUInteger MPFixtureOtherMouseDragged = 27;
 - (void)center;
 - (void)makeKeyAndOrderFront:(id)sender;
 - (void)orderFrontRegardless;
+- (void)orderOut:(id)sender;
 - (void)miniaturize:(id)sender;
 - (void)deminiaturize:(id)sender;
 - (void)setContentSize:(CGSize)size;
@@ -288,6 +295,90 @@ static bool mp_fixture_classify(NSUInteger type, uint32_t *out_kind) {
     return false;
 }
 
+static uint64_t mp_fixture_fingerprint_u64(uint64_t state, uint64_t value) {
+    const uint64_t prime = UINT64_C(0x00000100000001b3);
+    for (uint32_t shift = 0; shift < 64; shift += 8) {
+        state ^= (value >> shift) & UINT64_C(0xff);
+        state *= prime;
+    }
+    return state;
+}
+
+static uint64_t mp_fixture_double_bits(double value) {
+    uint64_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+
+static uint64_t mp_fixture_event_fingerprint(uint32_t kind, CGEventRef event,
+                                             uint32_t *out_text_units) {
+    const uint64_t offset = UINT64_C(0xcbf29ce484222325);
+    const UniCharCount capacity = 256;
+    UniChar text[256] = {0};
+    UniCharCount text_units = 0;
+    uint64_t button = 0;
+    uint64_t click_state = 0;
+    double x = 0.0;
+    double y = 0.0;
+    int64_t horizontal = 0;
+    int64_t vertical = 0;
+    uint64_t key_code = 0;
+    if (kind == MP_FIXTURE_EVENT_POINTER_MOVE ||
+        kind == MP_FIXTURE_EVENT_POINTER_PRESS ||
+        kind == MP_FIXTURE_EVENT_POINTER_RELEASE) {
+        CGPoint location = CGEventGetLocation(event);
+        x = location.x;
+        y = location.y;
+        button = (uint64_t)CGEventGetIntegerValueField(
+            event, kCGMouseEventButtonNumber);
+        click_state = (uint64_t)CGEventGetIntegerValueField(
+            event, kCGMouseEventClickState);
+    } else if (kind == MP_FIXTURE_EVENT_POINTER_SCROLL) {
+        horizontal = CGEventGetIntegerValueField(
+            event, kCGScrollWheelEventDeltaAxis2);
+        vertical = CGEventGetIntegerValueField(
+            event, kCGScrollWheelEventDeltaAxis1);
+    } else {
+        key_code = (uint64_t)CGEventGetIntegerValueField(
+            event, kCGKeyboardEventKeycode);
+        /*
+         * A zero virtual key is the production text route and is also the
+         * qualifying layout key. Other key rows are identified exactly by their
+         * virtual key and flags; excluding their layout-derived characters keeps
+         * this privacy-safe oracle deterministic.
+         */
+        if (key_code == 0) {
+            CGEventKeyboardGetUnicodeString(event, capacity, &text_units, text);
+        }
+    }
+    *out_text_units =
+        text_units > UINT32_MAX ? UINT32_MAX : (uint32_t)text_units;
+    uint64_t state = offset;
+    const uint64_t fields[] = {
+        (uint64_t)kind,
+        (uint64_t)CGEventGetType(event),
+        (uint64_t)CGEventGetFlags(event),
+        button,
+        click_state,
+        mp_fixture_double_bits(x),
+        mp_fixture_double_bits(y),
+        (uint64_t)horizontal,
+        (uint64_t)vertical,
+        key_code,
+        (uint64_t)text_units,
+    };
+    for (size_t index = 0; index < sizeof(fields) / sizeof(fields[0]); index += 1) {
+        state = mp_fixture_fingerprint_u64(state, fields[index]);
+    }
+    UniCharCount bounded = text_units < capacity ? text_units : capacity;
+    for (UniCharCount index = 0; index < bounded; index += 1) {
+        state = mp_fixture_fingerprint_u64(state, (uint64_t)text[index]);
+    }
+    return state;
+}
+
+
 /*
  * The fixture has one primary window and at most one ordinary auxiliary
  * window. Every object below is owned by the fixture binary and touched only
@@ -304,6 +395,7 @@ static __strong id<MPFixtureWindow> mp_fixture_window = nil;
 static __strong id<MPFixtureWindow> mp_fixture_auxiliary_window = nil;
 static __strong id<MPFixtureApplication> mp_fixture_application = nil;
 static __strong id<MPFixtureRunningApplication> mp_fixture_prior_application = nil;
+static __strong id<MPFixtureRunningApplication> mp_fixture_current_application = nil;
 static __strong NSString *mp_fixture_window_title = nil;
 static Class mp_fixture_window_class = Nil;
 static Class mp_fixture_color_class = Nil;
@@ -317,11 +409,15 @@ static double mp_fixture_height = 0.0;
 static bool mp_fixture_alternate_fill = false;
 static bool mp_fixture_moved = false;
 static bool mp_fixture_resized = false;
+static bool mp_fixture_offscreen = false;
+static CGPoint mp_fixture_onscreen_origin = {0.0, 0.0};
 static bool mp_fixture_activate = false;
 static void *mp_fixture_control_context = NULL;
 static MPFixtureControlledCallback mp_fixture_controlled = NULL;
-static uint64_t mp_fixture_run_nonce = 0;
+static _Atomic uint64_t mp_fixture_run_nonce = 0;
 static uint64_t mp_fixture_last_nonce = 0;
+static uint64_t mp_fixture_last_event_payload_tag = 0;
+static _Atomic uint64_t mp_fixture_event_payload_tag = 0;
 static uint32_t mp_fixture_last_command = 0;
 static uint32_t mp_fixture_last_status = MP_FIXTURE_OK;
 static uint64_t mp_fixture_last_before = 0;
@@ -580,12 +676,19 @@ static uint32_t mp_fixture_move_to_next_display(void) {
 
     CGRect source = frames[current];
     CGRect destination = frames[(current + 1) % count];
-    double relative_x = window_frame.origin.x - source.origin.x;
     double relative_y = window_frame.origin.y - source.origin.y;
-    double max_x = fmax(destination.size.width - window_frame.size.width, 0.0);
     double max_y = fmax(destination.size.height - window_frame.size.height, 0.0);
+    double destination_x = destination.origin.x;
+    if (destination.origin.x < source.origin.x) {
+        destination_x =
+            CGRectGetMaxX(destination) - fmin(window_frame.size.width, destination.size.width);
+    } else if (destination.origin.x == source.origin.x) {
+        double relative_x = window_frame.origin.x - source.origin.x;
+        double max_x = fmax(destination.size.width - window_frame.size.width, 0.0);
+        destination_x = destination.origin.x + fmin(fmax(relative_x, 0.0), max_x);
+    }
     CGPoint destination_origin =
-        CGPointMake(destination.origin.x + fmin(fmax(relative_x, 0.0), max_x),
+        CGPointMake(destination_x,
                     destination.origin.y + fmin(fmax(relative_y, 0.0), max_y));
     [mp_fixture_window setFrameOrigin:destination_origin];
     if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
@@ -595,12 +698,78 @@ static uint32_t mp_fixture_move_to_next_display(void) {
     return MP_FIXTURE_OK;
 }
 
+/*
+ * Moves wholly beyond the right edge of every current public display without
+ * ordering or activating the window. The exact prior origin is restored by a
+ * separate command so the target-loss row remains reversible.
+ */
+static uint32_t mp_fixture_move_offscreen(void) {
+    if (mp_fixture_window == nil || mp_fixture_offscreen) {
+        return MP_FIXTURE_INVALID_ARGUMENT;
+    }
+    Class screen_class = NSClassFromString(@"NSScreen");
+    if (screen_class == Nil) {
+        return MP_FIXTURE_UNSUPPORTED;
+    }
+    NSArray *screens = [(id<MPFixtureScreenClass>)screen_class screens];
+    NSUInteger count = screens.count;
+    if (count == 0 || count > MPFixtureMaxScreens) {
+        return MP_FIXTURE_PLATFORM_FAILURE;
+    }
+
+    double display_max_x = -INFINITY;
+    for (NSUInteger index = 0; index < count; index++) {
+        CGRect frame = [(id<MPFixtureScreen>)[screens objectAtIndex:index] frame];
+        if (!mp_fixture_frame_is_valid(frame)) {
+            return MP_FIXTURE_PLATFORM_FAILURE;
+        }
+        display_max_x = fmax(display_max_x, CGRectGetMaxX(frame));
+    }
+    CGRect window_frame = [mp_fixture_window frame];
+    if (!mp_fixture_frame_is_valid(window_frame)) {
+        return MP_FIXTURE_PLATFORM_FAILURE;
+    }
+    CGPoint destination =
+        CGPointMake(display_max_x + window_frame.size.width + 4096.0,
+                    window_frame.origin.y);
+    if (!isfinite(destination.x) || !isfinite(destination.y)) {
+        return MP_FIXTURE_PLATFORM_FAILURE;
+    }
+
+    mp_fixture_onscreen_origin = window_frame.origin;
+    [mp_fixture_window orderOut:nil];
+    [mp_fixture_window setFrameOrigin:destination];
+    if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+        !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+        [mp_fixture_window setFrameOrigin:mp_fixture_onscreen_origin];
+        [mp_fixture_window orderFrontRegardless];
+        return MP_FIXTURE_PLATFORM_FAILURE;
+    }
+    mp_fixture_offscreen = true;
+    return MP_FIXTURE_OK;
+}
+
+static uint32_t mp_fixture_restore_onscreen(void) {
+    if (mp_fixture_window == nil || !mp_fixture_offscreen) {
+        return MP_FIXTURE_INVALID_ARGUMENT;
+    }
+    [mp_fixture_window setFrameOrigin:mp_fixture_onscreen_origin];
+    [mp_fixture_window orderFrontRegardless];
+    if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+        !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+        return MP_FIXTURE_PLATFORM_FAILURE;
+    }
+    mp_fixture_offscreen = false;
+    return MP_FIXTURE_OK;
+}
+
 static void mp_fixture_reset_state(void) {
     atomic_store_explicit(&mp_fixture_control_active, false, memory_order_release);
     mp_fixture_window = nil;
     mp_fixture_auxiliary_window = nil;
     mp_fixture_application = nil;
     mp_fixture_prior_application = nil;
+    mp_fixture_current_application = nil;
     mp_fixture_window_title = nil;
     mp_fixture_window_class = Nil;
     mp_fixture_color_class = Nil;
@@ -614,12 +783,16 @@ static void mp_fixture_reset_state(void) {
     mp_fixture_alternate_fill = false;
     mp_fixture_moved = false;
     mp_fixture_resized = false;
+    mp_fixture_offscreen = false;
+    mp_fixture_onscreen_origin = CGPointMake(0.0, 0.0);
     mp_fixture_activate = false;
     mp_fixture_control_context = NULL;
     mp_fixture_controlled = NULL;
-    mp_fixture_run_nonce = 0;
+    atomic_store_explicit(&mp_fixture_run_nonce, 0, memory_order_relaxed);
     mp_fixture_last_nonce = 0;
     mp_fixture_last_command = 0;
+    mp_fixture_last_event_payload_tag = 0;
+    atomic_store_explicit(&mp_fixture_event_payload_tag, 0, memory_order_relaxed);
     mp_fixture_last_status = MP_FIXTURE_OK;
     mp_fixture_last_before = 0;
     mp_fixture_last_after = 0;
@@ -636,27 +809,36 @@ static void mp_fixture_emit_control(uint64_t nonce, uint32_t command,
 
 static bool mp_fixture_valid_command(uint32_t command) {
     return command >= MP_FIXTURE_COMMAND_TRANSITION &&
-           command <= MP_FIXTURE_COMMAND_READ_EVENTS;
+           command <= MP_FIXTURE_COMMAND_TAKE_FOREGROUND;
 }
 
 uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
-                            uint64_t nonce, uint32_t command) {
-    if (version != MP_FIXTURE_CONTROL_VERSION || run_nonce == 0 ||
-        run_nonce != mp_fixture_run_nonce || nonce == 0 ||
-        !mp_fixture_valid_command(command)) {
+                            uint64_t nonce, uint32_t command,
+                            uint64_t event_payload_tag) {
+    if (version != MP_FIXTURE_CONTROL_VERSION || run_nonce == 0 || nonce == 0 ||
+        !mp_fixture_valid_command(command) ||
+        (event_payload_tag != 0 && command != MP_FIXTURE_COMMAND_RESET_EVENTS)) {
         return MP_FIXTURE_INVALID_ARGUMENT;
     }
     if (!atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire)) {
         return MP_FIXTURE_PLATFORM_FAILURE;
     }
+    if (run_nonce !=
+        atomic_load_explicit(&mp_fixture_run_nonce, memory_order_relaxed)) {
+        return MP_FIXTURE_INVALID_ARGUMENT;
+    }
 
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire) ||
-          mp_fixture_controlled == NULL || run_nonce != mp_fixture_run_nonce) {
+          mp_fixture_controlled == NULL ||
+          run_nonce !=
+              atomic_load_explicit(&mp_fixture_run_nonce, memory_order_relaxed)) {
           return;
       }
       if (nonce < mp_fixture_last_nonce ||
-          (nonce == mp_fixture_last_nonce && command != mp_fixture_last_command)) {
+          (nonce == mp_fixture_last_nonce &&
+           (command != mp_fixture_last_command ||
+            event_payload_tag != mp_fixture_last_event_payload_tag))) {
           uint64_t current = mp_fixture_window_number();
           mp_fixture_emit_control(nonce, command, MP_FIXTURE_INVALID_ARGUMENT,
                                   current, current);
@@ -726,6 +908,13 @@ uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
                   ![mp_fixture_prior_application activateWithOptions:2u]) {
                   status = MP_FIXTURE_PLATFORM_FAILURE;
               }
+          } else if (command == MP_FIXTURE_COMMAND_TAKE_FOREGROUND) {
+              if (mp_fixture_current_application == nil || mp_fixture_window == nil ||
+                  ![mp_fixture_current_application activateWithOptions:3u]) {
+                  status = MP_FIXTURE_PLATFORM_FAILURE;
+              } else {
+                  [mp_fixture_window makeKeyAndOrderFront:nil];
+              }
           } else if (command == MP_FIXTURE_COMMAND_MOVE) {
               if (mp_fixture_window == nil) {
                   status = MP_FIXTURE_PLATFORM_FAILURE;
@@ -783,8 +972,14 @@ uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
               }
           } else if (command == MP_FIXTURE_COMMAND_MOVE_TO_NEXT_DISPLAY) {
               status = mp_fixture_move_to_next_display();
-          } else if (command == MP_FIXTURE_COMMAND_RESET_EVENTS ||
-                     command == MP_FIXTURE_COMMAND_READ_EVENTS) {
+          } else if (command == MP_FIXTURE_COMMAND_MOVE_OFFSCREEN) {
+              status = mp_fixture_move_offscreen();
+          } else if (command == MP_FIXTURE_COMMAND_RESTORE_ONSCREEN) {
+              status = mp_fixture_restore_onscreen();
+          } else if (command == MP_FIXTURE_COMMAND_RESET_EVENTS) {
+              atomic_store_explicit(&mp_fixture_event_payload_tag, event_payload_tag,
+                                    memory_order_release);
+          } else if (command == MP_FIXTURE_COMMAND_READ_EVENTS) {
               /* The Rust callback owns the bounded process-wide summary. */
           } else if (command == MP_FIXTURE_COMMAND_STOP) {
               should_stop = true;
@@ -801,6 +996,7 @@ uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
       uint64_t after = mp_fixture_window_number();
       mp_fixture_last_nonce = nonce;
       mp_fixture_last_command = command;
+      mp_fixture_last_event_payload_tag = event_payload_tag;
       mp_fixture_last_status = status;
       mp_fixture_last_before = before;
       mp_fixture_last_after = after;
@@ -811,6 +1007,30 @@ uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
     });
     return MP_FIXTURE_OK;
 }
+
+uint32_t mp_fixture_control_closed(uint32_t version, uint64_t run_nonce) {
+    if (version != MP_FIXTURE_CONTROL_VERSION || run_nonce == 0) {
+        return MP_FIXTURE_INVALID_ARGUMENT;
+    }
+    if (!atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire)) {
+        return MP_FIXTURE_PLATFORM_FAILURE;
+    }
+    if (run_nonce !=
+        atomic_load_explicit(&mp_fixture_run_nonce, memory_order_relaxed)) {
+        return MP_FIXTURE_INVALID_ARGUMENT;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire) &&
+          run_nonce ==
+              atomic_load_explicit(&mp_fixture_run_nonce, memory_order_relaxed) &&
+          mp_fixture_application != nil) {
+          [mp_fixture_application terminate:nil];
+      }
+    });
+    return MP_FIXTURE_OK;
+}
+
 
 uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                         uint32_t replacement_fill, uint32_t behavior, uint32_t renderer,
@@ -830,7 +1050,9 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                            uint32_t command, uint32_t status,
                                            uint64_t before_window_number,
                                            uint64_t after_window_number),
-                        void (*sink)(void *context, uint32_t kind, uint32_t text_units)) {
+                        void (*sink)(void *context, uint32_t kind, uint32_t text_units,
+                                     uint64_t event_payload_tag,
+                                     uint64_t payload_fingerprint)) {
     const uint32_t behavior_mask = MP_FIXTURE_BEHAVIOR_ANIMATE_ON_KEY_DOWN |
                                    MP_FIXTURE_BEHAVIOR_RESIZE_ON_KEY_DOWN;
     if (title == NULL || run_nonce == 0 || ready == NULL || replaced == NULL ||
@@ -865,7 +1087,9 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
     Class window_class = NSClassFromString(@"NSWindow");
     Class color_class = NSClassFromString(@"NSColor");
     Class event_class = NSClassFromString(@"NSEvent");
-    if (application_class == Nil || workspace_class == Nil || window_class == Nil ||
+    Class running_application_class = NSClassFromString(@"NSRunningApplication");
+    if (application_class == Nil || workspace_class == Nil ||
+        running_application_class == Nil || window_class == Nil ||
         color_class == Nil || event_class == Nil) {
         return MP_FIXTURE_UNSUPPORTED;
     }
@@ -885,12 +1109,18 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
     }
     (void)[application setActivationPolicy:MPFixtureActivationRegular];
     [application finishLaunching];
+    id<MPFixtureRunningApplication> current_application =
+        [(id<MPFixtureRunningApplicationClass>)running_application_class currentApplication];
+    if (current_application == nil) {
+        return MP_FIXTURE_PLATFORM_FAILURE;
+    }
     if (activate != 0u) {
         [application activateIgnoringOtherApps:YES];
     }
 
     mp_fixture_application = application;
     mp_fixture_prior_application = prior_application;
+    mp_fixture_current_application = current_application;
     mp_fixture_window_title = window_title;
     mp_fixture_window_class = window_class;
     mp_fixture_color_class = color_class;
@@ -903,15 +1133,19 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
     mp_fixture_width = width;
     mp_fixture_height = height;
     mp_fixture_control_context = context;
-    mp_fixture_run_nonce = run_nonce;
+    atomic_store_explicit(&mp_fixture_run_nonce, run_nonce, memory_order_relaxed);
     mp_fixture_controlled = controlled;
     mp_fixture_window =
         mp_fixture_create_window(window_class, window_title, fill, width, height);
     if (mp_fixture_window == nil) {
         return MP_FIXTURE_PLATFORM_FAILURE;
     }
+    if (activate == 0u &&
+        (prior_application == nil || ![prior_application activateWithOptions:3u])) {
+        return MP_FIXTURE_PLATFORM_FAILURE;
+    }
 
-    __block bool alternate_fill = false;
+    __block uint32_t visualized_correlation = 0;
     __block bool alternate_size = false;
     id monitor = [(id<MPFixtureEventClass>)event_class
         addLocalMonitorForEventsMatchingMask:MPFixtureEventMaskAny
@@ -921,25 +1155,39 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                            id<MPFixtureEvent> observed = (id<MPFixtureEvent>)event;
                                            if (mp_fixture_classify(observed.type, &kind)) {
                                                uint32_t units = 0;
-                                               if (kind == MP_FIXTURE_EVENT_KEY_DOWN ||
-                                                   kind == MP_FIXTURE_EVENT_KEY_UP) {
-                                                   /*
-                                                    * Ask the immutable CGEvent for
-                                                    * its length with a null output
-                                                    * buffer. No character payload is
-                                                    * copied, retained, or printed.
-                                                    */
-                                                   CGEventRef native_event = observed.CGEvent;
-                                                   UniCharCount native_units = 0;
-                                                   if (native_event != NULL) {
-                                                       CGEventKeyboardGetUnicodeString(
-                                                           native_event, 0, &native_units, NULL);
-                                                   }
-                                                   units = native_units > UINT32_MAX
-                                                               ? UINT32_MAX
-                                                               : (uint32_t)native_units;
+                                               uint64_t expected_event_payload_tag =
+                                                   atomic_load_explicit(
+                                                       &mp_fixture_event_payload_tag,
+                                                       memory_order_acquire);
+                                               uint64_t observed_event_payload_tag = 0;
+                                               uint64_t payload_fingerprint = 0;
+                                               CGEventRef native_event = observed.CGEvent;
+                                               if (native_event != NULL) {
+                                                   observed_event_payload_tag =
+                                                       (uint64_t)CGEventGetIntegerValueField(
+                                                           native_event,
+                                                           kCGEventSourceUserData);
+                                                   payload_fingerprint =
+                                                       mp_fixture_event_fingerprint(
+                                                           kind, native_event, &units);
                                                }
-                                               sink(context, kind, units);
+                                               if (expected_event_payload_tag != 0 &&
+                                                   (observed_event_payload_tag == 0 ||
+                                                    observed_event_payload_tag !=
+                                                        expected_event_payload_tag)) {
+                                                   return event;
+                                               }
+                                               uint64_t event_payload_tag =
+                                                   expected_event_payload_tag == 0
+                                                       ? 0
+                                                       : observed_event_payload_tag;
+                                               sink(context, kind, units, event_payload_tag,
+                                                    payload_fingerprint);
+                                               uint32_t correlation =
+                                                   (uint32_t)(event_payload_tag >> 32);
+                                               bool tagged_visual_event =
+                                                   correlation != 0u &&
+                                                   correlation != visualized_correlation;
                                                bool animates =
                                                    (behavior &
                                                     MP_FIXTURE_BEHAVIOR_ANIMATE_ON_KEY_DOWN) != 0u;
@@ -947,18 +1195,22 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                                    (behavior &
                                                     MP_FIXTURE_BEHAVIOR_RESIZE_ON_KEY_DOWN) != 0u;
                                                bool animation_event =
-                                                   animates &&
-                                                   kind == MP_FIXTURE_EVENT_KEY_DOWN &&
-                                                   (!resizes ||
-                                                    units == MPFixtureAnimateTextUnits);
+                                                   tagged_visual_event ||
+                                                   (animates &&
+                                                    kind == MP_FIXTURE_EVENT_KEY_DOWN &&
+                                                    (!resizes ||
+                                                     units == MPFixtureAnimateTextUnits));
                                                if (animation_event) {
-                                                   bool next_fill = !alternate_fill;
+                                                   bool next_fill =
+                                                       !mp_fixture_alternate_fill;
                                                    uint32_t benchmark_fill =
                                                        next_fill ? replacement_fill : fill;
                                                    if (mp_fixture_apply_fill(mp_fixture_window,
                                                                              benchmark_fill)) {
-                                                       alternate_fill = next_fill;
                                                        mp_fixture_alternate_fill = next_fill;
+                                                       if (tagged_visual_event) {
+                                                           visualized_correlation = correlation;
+                                                       }
                                                    }
                                                }
                                                bool resize_event =

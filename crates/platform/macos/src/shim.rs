@@ -22,10 +22,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mado_pilot_capture::CaptureFault;
-use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
+use mado_pilot_core::{CancellationToken, OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 9;
+pub(crate) const ABI_VERSION: u32 = 12;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -489,11 +489,15 @@ pub(crate) struct ProcessEventSource {
 
 impl ProcessEventSource {
     /// Creates a private-state source without posting or prompting.
-    pub(crate) fn new() -> Result<Self, ShimStatus> {
+    ///
+    /// A nonzero activity tag is copied to the source's documented event
+    /// user-data field. It remains observational metadata and never affects
+    /// admission, posting, or receipt accounting.
+    pub(crate) fn new(activity_tag: u64) -> Result<Self, ShimStatus> {
         let mut source = std::ptr::null_mut();
         // SAFETY: `source` is writable for one opaque handle and the native
         // boundary either leaves it null or transfers exactly one owned handle.
-        let status = unsafe { mp_shim_process_event_source_create(&raw mut source) };
+        let status = unsafe { mp_shim_process_event_source_create(activity_tag, &raw mut source) };
         ShimStatus::from_raw(status).into_result()?;
         NonNull::new(source)
             .map(|handle| Self { handle })
@@ -613,20 +617,18 @@ impl TargetToken {
         process_target_authority(self, wait)
     }
 
-    /// Posts one bounded event to the retained target's current owning process.
+    /// Posts one bounded event to the retained target's owning process.
     ///
+    /// `purpose` selects whether current retained-window admission is required.
     /// The returned unit count is invocation-only evidence. A nonzero count on
     /// failure means this logical event may already have native effect.
     pub(crate) fn process_post(
         &self,
         source: &ProcessEventSource,
-        post: ProcessPost<'_>,
-        geometry: ProcessGeometry,
-        flags: u32,
-        wait: Duration,
+        request: ProcessPostRequest<'_>,
         operation: &OperationContext,
     ) -> Result<ProcessPostOutcome, ProcessPostFailure> {
-        process_post(self, source, post, geometry, flags, wait, operation)
+        process_post(self, source, request, operation)
     }
 }
 
@@ -1201,11 +1203,47 @@ pub(crate) enum ProcessPost<'units> {
     Text(&'units [u16]),
 }
 
+/// Why one process-directed native post is being attempted.
+///
+/// Ordinary input requires current retained-window admission. A bounded release
+/// preserves only sequence-owned state, so it revalidates the original process
+/// lifetime and authorization without requiring the window to remain visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessPostPurpose {
+    Input,
+    Release,
+}
+
+impl ProcessPostPurpose {
+    const fn as_raw(self) -> u32 {
+        match self {
+            Self::Input => 0,
+            Self::Release => 1,
+        }
+    }
+
+    pub(crate) const fn expected_target_match_count(self) -> u32 {
+        match self {
+            Self::Input => 1,
+            Self::Release => 0,
+        }
+    }
+}
 /// Geometry repeated at the final native authority boundary.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ProcessGeometry {
     AuthorityOnly,
     RequireCurrent(NativeBounds),
+}
+
+/// One bounded process-directed post and its final authority policy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ProcessPostRequest<'units> {
+    pub(crate) post: ProcessPost<'units>,
+    pub(crate) geometry: ProcessGeometry,
+    pub(crate) purpose: ProcessPostPurpose,
+    pub(crate) flags: u32,
+    pub(crate) wait: Duration,
 }
 
 /// One successful fresh process/window authority observation.
@@ -1398,12 +1436,16 @@ fn process_target_authority(
 fn process_post(
     target: &TargetToken,
     source: &ProcessEventSource,
-    post: ProcessPost<'_>,
-    geometry: ProcessGeometry,
-    flags: u32,
-    wait: Duration,
+    request: ProcessPostRequest<'_>,
     operation: &OperationContext,
 ) -> Result<ProcessPostOutcome, ProcessPostFailure> {
+    let ProcessPostRequest {
+        post,
+        geometry,
+        purpose,
+        flags,
+        wait,
+    } = request;
     let Some(handle) = target.inner.handle else {
         #[cfg(test)]
         {
@@ -1418,7 +1460,7 @@ fn process_post(
             }
             return Ok(ProcessPostOutcome {
                 invoked_native_units: u64::from(matches!(post, ProcessPost::Text(_))) + 1,
-                target_match_count: 1,
+                target_match_count: purpose.expected_target_match_count(),
                 authorization: ProcessAuthorizationObservation::Granted,
                 geometry: match geometry {
                     ProcessGeometry::AuthorityOnly => ProcessGeometryObservation::NotApplicable,
@@ -1526,7 +1568,10 @@ fn process_post(
         ),
         ProcessGeometry::RequireCurrent(expected) => (1, expected),
     };
-    let interruption_context = std::ptr::from_ref(operation).cast_mut().cast::<c_void>();
+    let interruption = ProcessCancellationFence::new(operation);
+    let interruption_context = std::ptr::from_ref(&interruption)
+        .cast_mut()
+        .cast::<c_void>();
     let request = NativeProcessPostRequest {
         struct_size: u32::try_from(size_of::<NativeProcessPostRequest>())
             .expect("structure size fits u32"),
@@ -1536,6 +1581,7 @@ fn process_post(
         timeout_nanos: nanos(wait),
         flags,
         geometry_check,
+        purpose: purpose.as_raw(),
         action,
         button,
         click_state,
@@ -1905,7 +1951,24 @@ pub(crate) type FrameCommitCallback = unsafe extern "C" fn(*mut c_void) -> u32;
 /// The producer-stopped callback signature the shim invokes.
 pub(crate) type StoppedCallback = unsafe extern "C" fn(*mut c_void, u32);
 
-/// Synchronously reports whether the owning Rust operation was interrupted.
+/// Adapter-owned cancellation state read by the synchronous native fence.
+///
+/// Owning a token clone keeps the concrete atomic flag alive through the call
+/// without exposing [`OperationContext`] or its caller-provided clock to native
+/// commit-time callbacks.
+#[derive(Debug)]
+struct ProcessCancellationFence {
+    cancellation: Option<CancellationToken>,
+}
+
+impl ProcessCancellationFence {
+    fn new(operation: &OperationContext) -> Self {
+        Self {
+            cancellation: operation.cancellation().cloned(),
+        }
+    }
+}
+
 type ProcessInterruptionCallback = unsafe extern "C" fn(*mut c_void) -> u32;
 
 unsafe extern "C" fn process_interruption_callback(context: *mut c_void) -> u32 {
@@ -1913,12 +1976,18 @@ unsafe extern "C" fn process_interruption_callback(context: *mut c_void) -> u32 
         return ShimStatus::InvalidArgument.as_raw();
     }
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // SAFETY: `process_post` passes a reference that outlives its synchronous
-        // native call. The shim never stores or invokes it after returning.
-        let operation = unsafe { &*context.cast::<OperationContext>() };
-        operation
-            .interruption()
-            .map_or(ShimStatus::Ok, |_| ShimStatus::TimedOut)
+        // SAFETY: `process_post` passes a stack-owned fence that outlives its
+        // synchronous native call. The shim never stores the pointer.
+        let fence = unsafe { &*context.cast::<ProcessCancellationFence>() };
+        if fence
+            .cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            ShimStatus::TimedOut
+        } else {
+            ShimStatus::Ok
+        }
     }));
     outcome.map_or(ShimStatus::PlatformFailure.as_raw(), ShimStatus::as_raw)
 }
@@ -2080,6 +2149,25 @@ fn testing_surface_recommendation(
 }
 
 #[cfg(test)]
+fn testing_target_without_process_lifetime() -> Result<(bool, bool), ShimStatus> {
+    let mut capture_metadata_retained = u32::MAX;
+    let mut process_metadata_retained = u32::MAX;
+    // SAFETY: both outputs are writable. The native seam uses retained NSObject
+    // instances and the same target materialization helper as discovery.
+    let status = unsafe {
+        mp_shim_testing_target_without_process_lifetime(
+            &raw mut capture_metadata_retained,
+            &raw mut process_metadata_retained,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((
+        capture_metadata_retained == 1,
+        process_metadata_retained == 1,
+    ))
+}
+
+#[cfg(test)]
 fn testing_input_text_second_allocation_failure() -> Result<(ShimStatus, [usize; 5]), ShimStatus> {
     let mut delivery = u32::MAX;
     let mut observations = [usize::MAX; 5];
@@ -2227,6 +2315,7 @@ struct NativeProcessPostRequest {
     timeout_nanos: u64,
     flags: u32,
     geometry_check: u32,
+    purpose: u32,
     action: u32,
     button: u32,
     click_state: u64,
@@ -2333,6 +2422,11 @@ unsafe extern "C" {
         out_height: *mut u32,
     ) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_target_without_process_lifetime(
+        out_capture_metadata_retained: *mut u32,
+        out_process_metadata_retained: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_input_text_second_allocation_failure(
         out_delivery_status: *mut u32,
         out_allocations: *mut usize,
@@ -2432,7 +2526,10 @@ unsafe extern "C" {
         timeout_nanos: u64,
         out_authority: *mut NativeProcessAuthority,
     ) -> u32;
-    fn mp_shim_process_event_source_create(out_source: *mut *mut OpaqueProcessEventSource) -> u32;
+    fn mp_shim_process_event_source_create(
+        activity_tag: u64,
+        out_source: *mut *mut OpaqueProcessEventSource,
+    ) -> u32;
     fn mp_shim_process_event_source_release(source: *mut OpaqueProcessEventSource);
     fn mp_shim_process_post(
         request: *const NativeProcessPostRequest,
@@ -2468,23 +2565,27 @@ mod tests {
     use std::ffi::c_void;
     use std::panic;
     use std::ptr::NonNull;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::Duration;
 
     use super::{
         ABI_VERSION, DEFAULT_NATIVE_WAIT, ExecutionContext, FrameInfo, KIND_DISPLAY, KIND_WINDOW,
         LaunchContext, MAX_NATIVE_WAIT, MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest,
-        ProcessAuthorization, ProcessEventSource, ShimStatus, SignatureMode, TargetToken,
-        contained_frame_callback, contained_frame_commit_callback, contained_stopped_callback,
-        declared_layout, declared_process_offsets, execution_context, linked_layout, live_objects,
-        monotonic_nanos, nanos, process_interruption_callback, testing_classify_signature,
-        testing_gate_retries, testing_input_text_second_allocation_failure,
-        testing_process_authority_rules, testing_process_post, testing_stop_completion_exception,
-        testing_surface_recommendation, testing_terminalize_twice, testing_validate_process_post,
-        validate_open_shape_and_metadata,
+        ProcessAuthorization, ProcessCancellationFence, ProcessEventSource, ShimStatus,
+        SignatureMode, TargetToken, contained_frame_callback, contained_frame_commit_callback,
+        contained_stopped_callback, declared_layout, declared_process_offsets, execution_context,
+        linked_layout, live_objects, monotonic_nanos, nanos, process_interruption_callback,
+        testing_classify_signature, testing_gate_retries,
+        testing_input_text_second_allocation_failure, testing_process_authority_rules,
+        testing_process_post, testing_stop_completion_exception, testing_surface_recommendation,
+        testing_target_without_process_lifetime, testing_terminalize_twice,
+        testing_validate_process_post, validate_open_shape_and_metadata,
     };
     use mado_pilot_capture::CaptureFault;
-    use mado_pilot_core::{CancellationToken, OperationContext, PixelExtent};
+    use mado_pilot_core::{
+        CancellationToken, Clock, MonotonicInstant, OperationContext, PixelExtent,
+    };
 
     /// Runs `body` with panic reporting suppressed, so a deliberately panicking
     /// callback does not print a backtrace over the test output.
@@ -2507,8 +2608,8 @@ mod tests {
 
     #[test]
     fn process_event_source_has_an_owned_native_lifecycle() {
-        let source =
-            ProcessEventSource::new().expect("this host can create a private Core Graphics source");
+        let source = ProcessEventSource::new(0)
+            .expect("this host can create a private Core Graphics source");
         drop(source);
     }
 
@@ -2632,6 +2733,18 @@ mod tests {
     }
 
     #[test]
+    fn missing_public_process_lifetime_keeps_capture_target_materialized() {
+        let (capture_metadata_retained, process_metadata_retained) =
+            testing_target_without_process_lifetime()
+                .expect("the native target-materialization seam runs");
+        assert!(capture_metadata_retained);
+        assert!(
+            !process_metadata_retained,
+            "capture identity survives without inventing process-post authority"
+        );
+    }
+
+    #[test]
     fn text_posts_nothing_when_the_release_event_cannot_be_allocated() {
         let (delivery, [allocations, configurations, posts, releases, posted]) =
             testing_input_text_second_allocation_failure().expect("native text failure seam runs");
@@ -2648,16 +2761,29 @@ mod tests {
     }
 
     #[test]
-    fn process_interruption_callback_tracks_the_owning_operation() {
-        let cancellation = CancellationToken::new();
-        let operation = OperationContext::new().with_cancellation(cancellation.clone());
-        let context = std::ptr::from_ref(&operation).cast_mut().cast::<c_void>();
+    fn process_interruption_callback_reads_only_adapter_owned_cancellation() {
+        #[derive(Debug)]
+        struct PanickingClock;
 
-        // SAFETY: `context` points to the live operation for this synchronous call.
+        impl Clock for PanickingClock {
+            fn now(&self) -> MonotonicInstant {
+                panic!("the native commit fence must not dispatch a caller clock")
+            }
+        }
+
+        let cancellation = CancellationToken::new();
+        let operation = OperationContext::new()
+            .with_clock(Arc::new(PanickingClock))
+            .with_deadline(MonotonicInstant::ORIGIN)
+            .with_cancellation(cancellation.clone());
+        let fence = ProcessCancellationFence::new(&operation);
+        let context = std::ptr::from_ref(&fence).cast_mut().cast::<c_void>();
+
+        // SAFETY: `context` points to the live fence for this synchronous call.
         let observed = unsafe { process_interruption_callback(context) };
         assert_eq!(observed, ShimStatus::Ok.as_raw());
         cancellation.cancel();
-        // SAFETY: `context` still points to the live operation for this synchronous call.
+        // SAFETY: `context` still points to the live fence for this synchronous call.
         let observed = unsafe { process_interruption_callback(context) };
         assert_eq!(observed, ShimStatus::TimedOut.as_raw());
     }
@@ -2671,8 +2797,22 @@ mod tests {
         assert_eq!(observed.target_match_count, 1);
         assert_eq!(
             observed.calls,
-            [1, 1, 1, 1, 1, 1],
-            "authority, direct authorization, and retained lifetime are the final gates before one bounded construction and post"
+            [2, 2, 2, 1, 1, 1],
+            "authority, direct authorization, geometry, and retained lifetime are checked both before construction and immediately before one bounded post"
+        );
+    }
+
+    #[test]
+    fn process_release_uses_lifetime_and_authorization_without_window_visibility() {
+        let observed = testing_process_post(15).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::Ok);
+        assert_eq!(observed.invoked_native_units, 1);
+        assert_eq!(observed.target_match_count, 0);
+        assert_eq!(
+            observed.calls,
+            [0, 2, 2, 1, 1, 1],
+            "release skips current window admission but rechecks authorization and process lifetime after construction before posting"
         );
     }
 
@@ -2688,6 +2828,28 @@ mod tests {
             (10, ShimStatus::TargetLost, 1, [1, 1, 1, 0, 0, 0]),
             (11, ShimStatus::TimedOut, 0, [0, 0, 0, 0, 0, 0]),
             (12, ShimStatus::PlatformFailure, 1, [1, 1, 1, 1, 0, 0]),
+            (14, ShimStatus::TimedOut, 1, [2, 2, 2, 1, 0, 1]),
+        ];
+
+        for (scenario, delivery, target_count, calls) in rows {
+            let observed = testing_process_post(scenario).expect("native process-post seam runs");
+            assert_eq!(observed.delivery, delivery, "scenario {scenario}");
+            assert_eq!(observed.invoked_native_units, 0, "scenario {scenario}");
+            assert_eq!(
+                observed.target_match_count, target_count,
+                "scenario {scenario}"
+            );
+            assert_eq!(observed.calls, calls, "scenario {scenario}");
+        }
+    }
+
+    #[test]
+    fn process_post_refuses_authority_changes_after_event_preparation() {
+        let rows = [
+            (16, ShimStatus::TargetLost, 0, [2, 1, 1, 1, 0, 1]),
+            (17, ShimStatus::PermissionDenied, 1, [2, 2, 1, 1, 0, 1]),
+            (18, ShimStatus::TargetLost, 1, [2, 2, 2, 1, 0, 1]),
+            (19, ShimStatus::GeometryChanged, 1, [2, 1, 1, 1, 0, 1]),
         ];
 
         for (scenario, delivery, target_count, calls) in rows {
@@ -2739,19 +2901,20 @@ mod tests {
             "text count",
             "text UTF-16",
             "event kind",
+            "post purpose",
             "null output",
         ];
-
         for (scenario, description) in scenarios.into_iter().enumerate() {
             let scenario = u32::try_from(scenario).expect("validation scenario index fits u32");
             let (delivery, target_count, invoked_units) = testing_validate_process_post(scenario)
                 .expect("native request-validation seam runs");
-            assert_eq!(
-                delivery,
-                ShimStatus::InvalidArgument,
-                "scenario {scenario}: {description}"
-            );
-            if !matches!(scenario, 2 | 34) {
+            let expected = if scenario == 10 {
+                ShimStatus::Unsupported
+            } else {
+                ShimStatus::InvalidArgument
+            };
+            assert_eq!(delivery, expected, "scenario {scenario}: {description}");
+            if !matches!(scenario, 2 | 35) {
                 assert_eq!(target_count, 0, "scenario {scenario}: {description}");
                 assert_eq!(invoked_units, 0, "scenario {scenario}: {description}");
             }
@@ -2772,21 +2935,21 @@ mod tests {
         let revoked = testing_process_post(7).expect("native process-post seam runs");
         assert_eq!(revoked.delivery, ShimStatus::PermissionDenied);
         assert_eq!(revoked.invoked_native_units, 1);
-        assert_eq!(revoked.calls, [2, 2, 1, 1, 1, 1]);
+        assert_eq!(revoked.calls, [3, 3, 2, 1, 1, 1]);
 
         let lost = testing_process_post(9).expect("native process-post seam runs");
         assert_eq!(lost.delivery, ShimStatus::TargetLost);
         assert_eq!(lost.invoked_native_units, 1);
-        assert_eq!(lost.calls, [2, 1, 1, 1, 1, 1]);
+        assert_eq!(lost.calls, [3, 2, 2, 1, 1, 1]);
 
         let interrupted = testing_process_post(13).expect("native process-post seam runs");
         assert_eq!(interrupted.delivery, ShimStatus::TimedOut);
         assert_eq!(interrupted.invoked_native_units, 1);
-        assert_eq!(interrupted.calls, [1, 1, 1, 1, 1, 1]);
+        assert_eq!(interrupted.calls, [2, 2, 2, 1, 1, 1]);
     }
 
     #[test]
-    fn process_authority_preserves_exact_identity_without_rejecting_other_owned_windows() {
+    fn process_authority_preserves_scope_with_additional_same_process_windows() {
         let expected = [
             (0, ShimStatus::Ok, 1),
             (1, ShimStatus::TargetLost, 0),

@@ -9,18 +9,25 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
+use crate::macos_fixture_control::{
+    AuthenticatedFixtureProcess, FixtureSocketDirectory, authenticate_fixture_peer,
+    next_fixture_run_nonce,
+};
 use crate::macos_fixture_protocol::{
-    self as protocol, EventSummary, FixtureCommand, FixtureCommandKind, FixtureCommandResult,
-    FixtureMode, FixtureRenderer, MAX_CONTROL_LINE_BYTES, MAX_RECORDED_EVENTS, fixture_ready_facts,
-    format_command_line, parse_command_result_line, parse_event_line_for_run,
+    self as protocol, EVENT_FLAGS_CHANGED, EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE,
+    EVENT_POINTER_PRESS, EVENT_POINTER_RELEASE, EVENT_POINTER_SCROLL, EventSummary, EventTotals,
+    FixtureCommand, FixtureCommandKind, FixtureCommandResult, FixtureMode, FixtureRenderer,
+    MAX_CONTROL_LINE_BYTES, MAX_RECORDED_EVENTS, fixture_ready_facts, format_command_line,
+    parse_command_result_line, parse_event_line_for_run,
 };
 use mado_pilot::CancellationToken;
 
@@ -28,9 +35,8 @@ const MAX_OUTPUT_LINE_BYTES: usize = 1_024;
 const READER_QUEUE_CAPACITY: usize = MAX_RECORDED_EVENTS + 16;
 const WAIT_SLICE: Duration = Duration::from_millis(25);
 const DROP_WAIT: Duration = Duration::from_secs(1);
-
-static SOCKET_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const GRACEFUL_CLOSE_WAIT: Duration = Duration::from_millis(100);
+const EVENT_QUIET_WAIT: Duration = Duration::from_millis(100);
 
 /// How the independently linked fixture renders and whether product input also
 /// drives its legacy interactive animation.
@@ -126,15 +132,17 @@ enum ReaderMessage {
 /// One owned fixture application and its bounded command/event channel.
 pub struct FixtureController {
     launcher: Child,
-    application_pid: u32,
+    application: AuthenticatedFixtureProcess,
     input: Option<UnixStream>,
     lines: Arc<Mutex<mpsc::Receiver<ReaderMessage>>>,
     reader: Option<thread::JoinHandle<()>>,
+    reader_failed: Arc<AtomicBool>,
     pending_events: VecDeque<EventSummary>,
     run_nonce: u64,
     next_nonce: u64,
     launch_mode: LaunchMode,
     stopped: bool,
+    finish_result: Option<bool>,
 }
 
 impl fmt::Debug for FixtureController {
@@ -152,7 +160,7 @@ impl fmt::Debug for FixtureController {
 
 impl FixtureController {
     /// Launches one signed app bundle derived from `executable` and waits for its
-    /// exact protocol-v5 ready facts.
+    /// exact protocol-v6 ready facts.
     pub fn start(
         executable: &Path,
         launch_mode: LaunchMode,
@@ -164,9 +172,10 @@ impl FixtureController {
         let bundle = fixture_bundle(&executable).ok_or_else(|| {
             "the fixture executable is not inside a .app/Contents/MacOS bundle".to_owned()
         })?;
-        let socket = SocketPath::new();
-        let run_nonce = next_run_nonce();
-        let listener = UnixListener::bind(socket.path())
+        let socket_directory = FixtureSocketDirectory::new()?;
+        let socket_path = socket_directory.socket_path();
+        let run_nonce = next_fixture_run_nonce()?;
+        let listener = UnixListener::bind(&socket_path)
             .map_err(|_| "the fixture control listener could not bind".to_owned())?;
         listener
             .set_nonblocking(true)
@@ -179,7 +188,7 @@ impl FixtureController {
             .arg(&bundle)
             .arg("--args")
             .arg("--control-socket")
-            .arg(socket.path())
+            .arg(&socket_path)
             .arg("--run-nonce")
             .arg(run_nonce.to_string())
             .stdin(Stdio::null())
@@ -193,9 +202,14 @@ impl FixtureController {
             .map_err(|_| "the fixture application launcher could not start".to_owned())?;
         let mut launch_guard = LaunchGuard::new(child);
         let deadline = Instant::now() + wait;
-        let stream = loop {
+        let (stream, application) = loop {
             match listener.accept() {
-                Ok((stream, _address)) => break stream,
+                Ok((stream, _address)) => {
+                    if let Some(application) = authenticate_fixture_peer(&stream, &executable) {
+                        launch_guard.application = Some(application);
+                        break (stream, application);
+                    }
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(_) => return Err("the fixture control listener failed".to_owned()),
             }
@@ -209,26 +223,26 @@ impl FixtureController {
             }
             thread::sleep(WAIT_SLICE);
         };
+        let process_id = application.process_id();
         stream
             .set_nonblocking(false)
             .map_err(|_| "the fixture control connection could not become blocking".to_owned())?;
-        let _removed = std::fs::remove_file(socket.path());
+        drop(listener);
+        drop(socket_directory);
         let input = stream
             .try_clone()
             .map_err(|_| "the fixture control connection could not be cloned".to_owned())?;
         let (sender, receiver) = mpsc::sync_channel(READER_QUEUE_CAPACITY);
+        let reader_failed = Arc::new(AtomicBool::new(false));
+        let reader_failure = Arc::clone(&reader_failed);
         let reader = thread::Builder::new()
             .name("mado-pilot-benchmark-fixture-reader".to_owned())
-            .spawn(move || read_bounded_lines(stream, &sender))
+            .spawn(move || read_bounded_lines(stream, &sender, &reader_failure))
             .map_err(|_| "the fixture output reader could not start".to_owned())?;
         let lines = Arc::new(Mutex::new(receiver));
-        let ready = wait_for_ready(&lines, deadline)?;
-        let process_id = ready_process_id(&ready).ok_or_else(|| {
-            "the fixture ready record omitted its owned process identity".to_owned()
-        })?;
-        launch_guard.application_pid = Some(process_id);
+        let ready = wait_for_ready(&lines, &reader_failed, deadline)?;
         let facts = fixture_ready_facts(&ready, process_id)
-            .ok_or_else(|| "the fixture ready record did not match protocol v5".to_owned())?;
+            .ok_or_else(|| "the fixture ready record did not match protocol v6".to_owned())?;
         let expected = launch_mode.expected_facts();
         if !facts.execution_context_is_approved()
             || facts.run_nonce() != run_nonce
@@ -242,23 +256,41 @@ impl FixtureController {
             );
         }
 
+        let (launcher, application) = launch_guard.take();
         Ok(Self {
-            launcher: launch_guard.take(),
-            application_pid: process_id,
+            launcher,
+            application,
             input: Some(input),
             lines,
             reader: Some(reader),
+            reader_failed,
             pending_events: VecDeque::new(),
             run_nonce,
             next_nonce: 1,
             launch_mode,
             stopped: false,
+            finish_result: None,
         })
     }
 
     /// Owned application process identity used only for fail-closed fixture selection.
     pub const fn process_id(&self) -> u32 {
-        self.application_pid
+        self.application.process_id()
+    }
+
+    /// Returns the still-live audit-token identity only while the authenticated
+    /// control connection remains usable.
+    pub fn authenticated_process(&self) -> Option<AuthenticatedFixtureProcess> {
+        if self.stopped
+            || self.input.is_none()
+            || self.reader_failed.load(Ordering::Acquire)
+            || !self
+                .application
+                .matches_live_owner(i64::from(self.application.process_id()))
+        {
+            return None;
+        }
+        Some(self.application)
     }
 
     /// The explicit renderer/mode fact validated from the ready record.
@@ -270,6 +302,15 @@ impl FixtureController {
     pub fn command(
         &mut self,
         kind: FixtureCommandKind,
+        wait: Duration,
+    ) -> Result<CommandAcknowledgement, String> {
+        self.send_command(kind, 0, wait)
+    }
+
+    fn send_command(
+        &mut self,
+        kind: FixtureCommandKind,
+        event_payload_tag: u64,
         wait: Duration,
     ) -> Result<CommandAcknowledgement, String> {
         if self.stopped {
@@ -284,6 +325,7 @@ impl FixtureController {
         let encoded = format_command_line(FixtureCommand {
             run_nonce: self.run_nonce,
             nonce,
+            event_payload_tag,
             kind,
         });
         if encoded.len().saturating_add(1) > MAX_CONTROL_LINE_BYTES {
@@ -299,7 +341,7 @@ impl FixtureController {
             .map_err(|_| "the fixture command could not be written".to_owned())?;
         let deadline = started + wait;
         loop {
-            let message = recv_message(&self.lines, deadline)?;
+            let message = recv_message(&self.lines, &self.reader_failed, deadline)?;
             match message {
                 ReaderMessage::Line(line) => {
                     if let Some(event) = parse_event_line_for_run(&line, self.run_nonce) {
@@ -320,6 +362,8 @@ impl FixtureController {
                         });
                     } else if line.starts_with("fixture-command-") {
                         return Err("the fixture rejected or malformed a command".to_owned());
+                    } else {
+                        return Err("the fixture emitted an unexpected protocol record".to_owned());
                     }
                 }
                 ReaderMessage::Oversized => {
@@ -330,6 +374,87 @@ impl FixtureController {
                 }
             }
         }
+    }
+    /// Resets the fixture's bounded event counters and refuses queued prior-run output.
+    pub fn reset_events(&mut self, event_payload_tag: u64, wait: Duration) -> bool {
+        if !self.pending_events.is_empty() {
+            return false;
+        }
+        self.send_command(FixtureCommandKind::ResetEvents, event_payload_tag, wait)
+            .is_ok_and(|ack| {
+                ack.result.status == 0
+                    && ack.result.events == EventTotals::default()
+                    && self.pending_events.is_empty()
+            })
+    }
+
+    /// Reads one exact event row and verifies the fixture's independent totals.
+    pub fn events_are_exact(&mut self, expected: &[EventSummary], wait: Duration) -> bool {
+        self.remaining_events_are_exact(expected, expected, wait)
+    }
+
+    /// Reads an exact suffix after an exclusive observer consumed a known prefix,
+    /// then verifies the fixture's cumulative independent totals for the full row.
+    pub fn remaining_events_are_exact(
+        &mut self,
+        expected_remaining: &[EventSummary],
+        expected_total: &[EventSummary],
+        wait: Duration,
+    ) -> bool {
+        let deadline = Instant::now() + wait;
+        let observed = self.event_summaries(
+            expected_remaining.len(),
+            deadline.saturating_duration_since(Instant::now()),
+        );
+        let Some(totals) = event_totals(expected_total) else {
+            return false;
+        };
+        let expected_correlation = expected_total.first().map_or(0, |event| event.correlation);
+        let correlation_is_exact = expected_total
+            .iter()
+            .all(|event| event.correlation == expected_correlation);
+        let observed_report = self
+            .command(
+                FixtureCommandKind::ReadEvents,
+                deadline.saturating_duration_since(Instant::now()),
+            )
+            .ok()
+            .filter(|ack| ack.result.status == 0)
+            .map(|ack| ack.result);
+        let report_is_exact = observed_report.is_some_and(|report| {
+            report.events == totals
+                && (expected_correlation == 0
+                    || (correlation_is_exact
+                        && report.event_correlation == expected_correlation
+                        && report.event_payload_matches))
+        });
+        let quiet = Instant::now()
+            .checked_add(EVENT_QUIET_WAIT)
+            .filter(|quiet_deadline| *quiet_deadline <= deadline)
+            .is_some_and(|quiet_deadline| self.output_remains_quiet(quiet_deadline));
+        observed == expected_remaining && report_is_exact && self.pending_events.is_empty() && quiet
+    }
+
+    fn output_remains_quiet(&self, deadline: Instant) -> bool {
+        while Instant::now() < deadline {
+            if self.reader_failed.load(Ordering::Acquire) {
+                return false;
+            }
+            let received = self
+                .lines
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .recv_timeout(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(WAIT_SLICE),
+                );
+            match received {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+        !self.reader_failed.load(Ordering::Acquire)
     }
 
     /// Returns exactly `count` bounded event summaries or fewer on timeout/failure.
@@ -344,18 +469,22 @@ impl FixtureController {
         }
         let deadline = Instant::now() + wait;
         while events.len() < count && Instant::now() < deadline {
-            let Ok(message) = recv_message(&self.lines, deadline) else {
+            let Ok(message) = recv_message(&self.lines, &self.reader_failed, deadline) else {
                 break;
             };
             match message {
                 ReaderMessage::Line(line) => {
                     if let Some(event) = parse_event_line_for_run(&line, self.run_nonce) {
                         events.push(event);
-                    } else if line.starts_with("fixture-command-") {
+                    } else {
+                        self.reader_failed.store(true, Ordering::Release);
                         break;
                     }
                 }
-                ReaderMessage::Oversized | ReaderMessage::Failed => break,
+                ReaderMessage::Oversized | ReaderMessage::Failed => {
+                    self.reader_failed.store(true, Ordering::Release);
+                    break;
+                }
             }
         }
         events
@@ -374,6 +503,9 @@ impl FixtureController {
         if !self.pending_events.is_empty() {
             return Err("stale fixture events precede the cleanup sample".to_owned());
         }
+        if self.reader_failed.load(Ordering::Acquire) {
+            return Err("the fixture output protocol already failed".to_owned());
+        }
         {
             let receiver = self
                 .lines
@@ -389,121 +521,210 @@ impl FixtureController {
         }
         let lines = Arc::clone(&self.lines);
         let run_nonce = self.run_nonce;
+        let reader_failed = Arc::clone(&self.reader_failed);
         thread::Builder::new()
             .name("mado-pilot-benchmark-cleanup-trigger".to_owned())
             .spawn(move || {
                 let deadline = Instant::now() + wait;
-                while Instant::now() < deadline {
-                    let Ok(message) = recv_message(&lines, deadline) else {
-                        break;
+                let Ok(message) = recv_message(&lines, &reader_failed, deadline) else {
+                    return CancellationObservation {
+                        summary: None,
+                        cancelled_at: None,
                     };
-                    let ReaderMessage::Line(line) = message else {
-                        break;
+                };
+                let ReaderMessage::Line(line) = message else {
+                    return CancellationObservation {
+                        summary: None,
+                        cancelled_at: None,
                     };
-                    let Some(summary) = parse_event_line_for_run(&line, run_nonce) else {
-                        continue;
+                };
+                let Some(summary) = parse_event_line_for_run(&line, run_nonce) else {
+                    reader_failed.store(true, Ordering::Release);
+                    return CancellationObservation {
+                        summary: None,
+                        cancelled_at: None,
                     };
-                    if summary != expected {
-                        return CancellationObservation {
-                            summary: Some(summary),
-                            cancelled_at: None,
-                        };
-                    }
-                    let cancelled_at = Instant::now();
-                    cancellation.cancel();
+                };
+                if summary != expected {
                     return CancellationObservation {
                         summary: Some(summary),
-                        cancelled_at: Some(cancelled_at),
+                        cancelled_at: None,
                     };
                 }
+                let cancelled_at = Instant::now();
+                cancellation.cancel();
                 CancellationObservation {
-                    summary: None,
-                    cancelled_at: None,
+                    summary: Some(summary),
+                    cancelled_at: Some(cancelled_at),
                 }
             })
             .map_err(|_| "the cleanup observation helper could not start".to_owned())
     }
-    /// Stops the private fixture, reaps only the owned launcher, and verifies no
-    /// unconsumed event remained. Idempotent.
+    /// Stops the private fixture, terminates its authenticated application when
+    /// needed, reaps the owned launcher, and verifies no event remained. Idempotent.
     pub fn finish(&mut self, wait: Duration) -> bool {
-        if self.stopped {
-            return true;
+        if let Some(result) = self.finish_result {
+            return result;
         }
         let deadline = Instant::now() + wait;
         let acknowledged = self
-            .command(FixtureCommandKind::Stop, wait)
+            .command(
+                FixtureCommandKind::Stop,
+                deadline.saturating_duration_since(Instant::now()),
+            )
             .is_ok_and(|ack| ack.result.status == 0);
-        self.input = None;
-        self.stopped = true;
-        let reaped = wait_for_exit(&mut self.launcher, deadline);
+        self.shutdown_input();
+        let graceful_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
+        let mut reaped = wait_for_exit(&mut self.launcher, graceful_deadline);
         if !reaped {
-            self.terminate_owned();
-            return false;
+            reaped = terminate_authenticated_application(
+                &mut self.application,
+                &mut self.launcher,
+                deadline,
+            );
         }
-        let mut no_trailing_event = self.pending_events.is_empty();
-        while let Ok(message) = self
-            .lines
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .try_recv()
-        {
-            if let ReaderMessage::Line(line) = message
-                && parse_event_line_for_run(&line, self.run_nonce).is_some()
-            {
-                no_trailing_event = false;
-            }
+        let bounded = reaped && Instant::now() <= deadline;
+        if !reaped {
+            let _killed = self.launcher.kill();
+            reaped = wait_for_exit(&mut self.launcher, Instant::now() + DROP_WAIT);
         }
-        let reader_ok = self
-            .reader
-            .take()
-            .is_none_or(|reader| reader.join().is_ok());
-        acknowledged && no_trailing_event && reader_ok
+        self.stopped = reaped;
+
+        let output_clean = finish_reader_output_is_clean(
+            self.reader.take(),
+            &self.lines,
+            &self.reader_failed,
+            self.pending_events.is_empty(),
+            deadline,
+        );
+        let result = acknowledged && reaped && bounded && output_clean;
+        self.finish_result = Some(result);
+        result
+    }
+
+    fn shutdown_input(&mut self) {
+        if let Some(input) = self.input.take() {
+            let _shutdown = input.shutdown(Shutdown::Both);
+        }
     }
 
     fn terminate_owned(&mut self) {
-        self.input = None;
-        terminate_application(self.application_pid);
+        self.shutdown_input();
         let deadline = Instant::now() + DROP_WAIT;
-        if !wait_for_exit(&mut self.launcher, deadline) {
+        let mut reaped = terminate_authenticated_application(
+            &mut self.application,
+            &mut self.launcher,
+            deadline,
+        );
+        if !reaped {
             let _killed = self.launcher.kill();
-            let _reaped = self.launcher.wait();
+            reaped = wait_for_exit(&mut self.launcher, Instant::now() + DROP_WAIT);
         }
-        self.stopped = true;
-        if let Some(reader) = self.reader.take() {
-            let _joined = reader.join();
-        }
+        self.stopped = reaped;
+        self.finish_result = Some(false);
+        let _output_clean = finish_reader_output_is_clean(
+            self.reader.take(),
+            &self.lines,
+            &self.reader_failed,
+            self.pending_events.is_empty(),
+            deadline,
+        );
     }
+}
+fn event_totals(events: &[EventSummary]) -> Option<EventTotals> {
+    let mut totals = EventTotals::default();
+    for event in events {
+        let count = match event.kind {
+            EVENT_POINTER_MOVE => &mut totals.pointer_moves,
+            EVENT_POINTER_PRESS => &mut totals.pointer_presses,
+            EVENT_POINTER_RELEASE => &mut totals.pointer_releases,
+            EVENT_POINTER_SCROLL => &mut totals.pointer_scrolls,
+            EVENT_KEY_DOWN => &mut totals.key_downs,
+            EVENT_KEY_UP => &mut totals.key_ups,
+            EVENT_FLAGS_CHANGED => &mut totals.flags_changed,
+            _ => return None,
+        };
+        *count = count.checked_add(1)?;
+        totals.text_units = totals.text_units.checked_add(u64::from(event.text_units))?;
+    }
+    Some(totals)
 }
 
 impl Drop for FixtureController {
     fn drop(&mut self) {
         if !self.stopped {
-            let _finished = self.finish(DROP_WAIT);
+            self.terminate_owned();
         }
     }
 }
 
+fn finish_reader_output_is_clean(
+    reader: Option<thread::JoinHandle<()>>,
+    lines: &Arc<Mutex<mpsc::Receiver<ReaderMessage>>>,
+    reader_failed: &AtomicBool,
+    pending_events_empty: bool,
+    deadline: Instant,
+) -> bool {
+    let mut output_clean = pending_events_empty && !reader_failed.load(Ordering::Acquire);
+    if let Some(reader) = reader {
+        while !reader.is_finished() && Instant::now() < deadline {
+            let received = lines
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .recv_timeout(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(WAIT_SLICE),
+                );
+            match received {
+                Ok(_message) => output_clean = false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        if reader.is_finished() {
+            output_clean &= reader.join().is_ok();
+        } else {
+            output_clean = false;
+        }
+    }
+    loop {
+        let received = lines
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .try_recv();
+        match received {
+            Ok(_message) => output_clean = false,
+            Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
+        }
+    }
+    output_clean && !reader_failed.load(Ordering::Acquire)
+}
+
 fn wait_for_ready(
     lines: &Arc<Mutex<mpsc::Receiver<ReaderMessage>>>,
+    reader_failed: &AtomicBool,
     deadline: Instant,
 ) -> Result<String, String> {
-    loop {
-        match recv_message(lines, deadline)? {
-            ReaderMessage::Line(line) if line.starts_with("fixture-ready ") => return Ok(line),
-            ReaderMessage::Line(_other) => {}
-            ReaderMessage::Oversized => {
-                return Err("the fixture emitted an oversized ready record".to_owned());
-            }
-            ReaderMessage::Failed => return Err("the fixture output reader failed".to_owned()),
+    match recv_message(lines, reader_failed, deadline)? {
+        ReaderMessage::Line(line) if line.starts_with("fixture-ready ") => Ok(line),
+        ReaderMessage::Line(_other) => {
+            Err("the fixture emitted a protocol record before readiness".to_owned())
         }
+        ReaderMessage::Oversized => Err("the fixture emitted an oversized ready record".to_owned()),
+        ReaderMessage::Failed => Err("the fixture output reader failed".to_owned()),
     }
 }
 
 fn recv_message(
     lines: &Arc<Mutex<mpsc::Receiver<ReaderMessage>>>,
+    reader_failed: &AtomicBool,
     deadline: Instant,
 ) -> Result<ReaderMessage, String> {
     loop {
+        if reader_failed.load(Ordering::Acquire) {
+            return Err("the fixture output protocol failed".to_owned());
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err("the fixture protocol operation exceeded its deadline".to_owned());
@@ -525,27 +746,39 @@ fn recv_message(
     }
 }
 
-fn read_bounded_lines(mut stream: UnixStream, sender: &mpsc::SyncSender<ReaderMessage>) {
+fn read_bounded_lines(
+    mut stream: UnixStream,
+    sender: &mpsc::SyncSender<ReaderMessage>,
+    reader_failed: &AtomicBool,
+) {
     let mut line = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
     let mut byte = [0u8; 1];
     let mut overflow = false;
     loop {
         match stream.read(&mut byte) {
-            Ok(0) => return,
+            Ok(0) => {
+                if overflow || !line.is_empty() {
+                    reader_failed.store(true, Ordering::Release);
+                    let _sent = sender.try_send(ReaderMessage::Failed);
+                }
+                return;
+            }
             Ok(_) if byte[0] == b'\n' => {
-                let message = if overflow {
-                    ReaderMessage::Oversized
-                } else {
-                    match String::from_utf8(std::mem::take(&mut line)) {
-                        Ok(line) => ReaderMessage::Line(line),
-                        Err(_) => ReaderMessage::Failed,
-                    }
-                };
-                line = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
-                overflow = false;
-                if sender.send(message).is_err() {
+                if overflow {
+                    reader_failed.store(true, Ordering::Release);
+                    let _sent = sender.try_send(ReaderMessage::Oversized);
                     return;
                 }
+                let Ok(decoded) = String::from_utf8(std::mem::take(&mut line)) else {
+                    reader_failed.store(true, Ordering::Release);
+                    let _sent = sender.try_send(ReaderMessage::Failed);
+                    return;
+                };
+                if sender.try_send(ReaderMessage::Line(decoded)).is_err() {
+                    reader_failed.store(true, Ordering::Release);
+                    return;
+                }
+                line = Vec::with_capacity(MAX_OUTPUT_LINE_BYTES);
             }
             Ok(_) if !overflow && line.len() < MAX_OUTPUT_LINE_BYTES.saturating_sub(1) => {
                 line.push(byte[0]);
@@ -553,32 +786,12 @@ fn read_bounded_lines(mut stream: UnixStream, sender: &mpsc::SyncSender<ReaderMe
             Ok(_) => overflow = true,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => {
-                let _sent = sender.send(ReaderMessage::Failed);
+                reader_failed.store(true, Ordering::Release);
+                let _sent = sender.try_send(ReaderMessage::Failed);
                 return;
             }
         }
     }
-}
-
-fn next_run_nonce() -> u64 {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-        });
-    let sequence = RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    (timestamp ^ (u64::from(std::process::id()) << 32) ^ sequence).max(1)
-}
-
-fn ready_process_id(line: &str) -> Option<u32> {
-    let (_prefix, remainder) = line.split_once(" pid=")?;
-    let (process_id, _suffix) = remainder.split_once(' ')?;
-    let process_id = process_id.parse().ok()?;
-    line.starts_with(&format!(
-        "fixture-ready title={} ",
-        protocol::fixture_title(process_id)
-    ))
-    .then_some(process_id)
 }
 
 fn fixture_bundle(executable: &Path) -> Option<PathBuf> {
@@ -594,58 +807,37 @@ fn fixture_bundle(executable: &Path) -> Option<PathBuf> {
 fn wait_for_exit(child: &mut Child, deadline: Instant) -> bool {
     loop {
         match child.try_wait() {
-            Ok(Some(_status)) => {
-                let _reaped = child.wait();
-                return true;
-            }
+            Ok(Some(_status)) => return true,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
             Ok(None) | Err(_) => return false,
         }
     }
 }
 
-fn terminate_application(process_id: u32) {
-    let _terminated = Command::new("/bin/kill")
-        .arg("-TERM")
-        .arg(process_id.to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-struct SocketPath(PathBuf);
-
-impl SocketPath {
-    fn new() -> Self {
-        let sequence = SOCKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        Self(PathBuf::from(format!(
-            "/tmp/mado-pilot-bench-{}-{sequence}.sock",
-            std::process::id()
-        )))
+fn terminate_authenticated_application(
+    application: &mut AuthenticatedFixtureProcess,
+    launcher: &mut Child,
+    deadline: Instant,
+) -> bool {
+    let _terminated = application.terminate();
+    let term_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
+    if wait_for_exit(launcher, term_deadline) {
+        return true;
     }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for SocketPath {
-    fn drop(&mut self) {
-        let _removed = std::fs::remove_file(&self.0);
-    }
+    let _killed = application.kill();
+    wait_for_exit(launcher, deadline)
 }
 
 struct LaunchGuard {
     child: Option<Child>,
-    application_pid: Option<u32>,
+    application: Option<AuthenticatedFixtureProcess>,
 }
 
 impl LaunchGuard {
     fn new(child: Child) -> Self {
         Self {
             child: Some(child),
-            application_pid: None,
+            application: None,
         }
     }
 
@@ -658,22 +850,28 @@ impl LaunchGuard {
             .map_err(|_| "the fixture launcher state could not be read".to_owned())
     }
 
-    fn take(mut self) -> Child {
-        self.application_pid = None;
-        self.child.take().expect("the guarded launcher exists")
+    fn take(mut self) -> (Child, AuthenticatedFixtureProcess) {
+        let application = self
+            .application
+            .take()
+            .expect("the authenticated fixture process exists");
+        let child = self.child.take().expect("the guarded launcher exists");
+        (child, application)
     }
 }
 
 impl Drop for LaunchGuard {
     fn drop(&mut self) {
-        if let Some(process_id) = self.application_pid {
-            terminate_application(process_id);
+        let deadline = Instant::now() + DROP_WAIT;
+        let mut reaped = false;
+        if let (Some(application), Some(child)) = (self.application.as_mut(), self.child.as_mut()) {
+            reaped = terminate_authenticated_application(application, child, deadline);
         }
-        if let Some(child) = self.child.as_mut() {
-            if child.try_wait().ok().flatten().is_none() {
-                let _killed = child.kill();
-            }
-            let _reaped = child.wait();
+        if let Some(child) = self.child.as_mut()
+            && !reaped
+        {
+            let _killed = child.kill();
+            let _reaped = wait_for_exit(child, Instant::now() + DROP_WAIT);
         }
     }
 }
@@ -681,14 +879,17 @@ impl Drop for LaunchGuard {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_OUTPUT_LINE_BYTES, ReaderMessage, fixture_bundle, read_bounded_lines, ready_process_id,
+        MAX_OUTPUT_LINE_BYTES, ReaderMessage, finish_reader_output_is_clean, fixture_bundle,
+        read_bounded_lines,
     };
-    use crate::macos_fixture_protocol::fixture_title;
+    use crate::macos_fixture_protocol::{EVENT_KEY_DOWN, EventSummary, format_event_line};
     use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
-    use std::sync::mpsc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn fixture_bundle_derivation_accepts_only_the_expected_layout() {
@@ -705,25 +906,42 @@ mod tests {
     }
 
     #[test]
-    fn ready_process_identity_requires_the_matching_process_qualified_title() {
-        let process_id = 42;
-        let line = format!(
-            "fixture-ready title={} pid={process_id} window=7 run=91 control-version=5 \
-             mode=default renderer=appkit-background",
-            fixture_title(process_id)
-        );
-        assert_eq!(ready_process_id(&line), Some(process_id));
-        assert_eq!(
-            ready_process_id(&line.replace(&fixture_title(process_id), "unrelated")),
-            None
-        );
+    fn finish_drains_an_event_enqueued_before_reader_eof() {
+        let run_nonce = 91;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            sender
+                .send(ReaderMessage::Line("fixture-log".to_owned()))
+                .expect("the first line is queued");
+            sender
+                .send(ReaderMessage::Line(format_event_line(
+                    run_nonce,
+                    EventSummary {
+                        kind: EVENT_KEY_DOWN,
+                        text_units: 0,
+                        correlation: 0,
+                    },
+                )))
+                .expect("the trailing event is queued");
+        });
+        let lines = Arc::new(Mutex::new(receiver));
+
+        assert!(!finish_reader_output_is_clean(
+            Some(reader),
+            &lines,
+            &AtomicBool::new(false),
+            true,
+            Instant::now() + Duration::from_secs(1),
+        ));
     }
 
     #[test]
     fn output_lines_are_bounded_including_the_newline() {
         let (reader, mut writer) = UnixStream::pair().expect("private socket pair opens");
         let (sender, receiver) = mpsc::sync_channel(2);
-        let task = thread::spawn(move || read_bounded_lines(reader, &sender));
+        let reader_failed = Arc::new(AtomicBool::new(false));
+        let task_failed = Arc::clone(&reader_failed);
+        let task = thread::spawn(move || read_bounded_lines(reader, &sender, &task_failed));
         writeln!(writer, "{}", "x".repeat(MAX_OUTPUT_LINE_BYTES - 1))
             .expect("the maximum line is written");
         writeln!(writer, "{}", "x".repeat(MAX_OUTPUT_LINE_BYTES))

@@ -3,7 +3,8 @@
 - **Status:** Accepted — the complete revision-bound native matrix in the
   [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
   qualifies all fourteen controlled operation/target/coordinate-space pairs on
-  source commit `b1059cf6239042107bd62373eb65211117beaab9`
+  source commit `8dd70810d60c06b298c806ffce16720d0a07e4c2`, source tree
+  `1bc47b9cc7caa07f75f7d63f311887124a196a5b`
 - **Date:** 2026-08-15
 - **Resolves gate:** macOS owning-process `ProcessDirected` publication through
   the recorded native matrix
@@ -64,8 +65,11 @@ owning-process scope, on these rules:
 4. **One private event source per sequence.** Each sequence owns one
    `CGEventSourceStatePrivate` source, reused for every ordinary and
    sequence-owned release event and disposed exactly once on every terminal
-   path. Cleanup releases only state its sequence pressed, through the same
-   route and source, and never posts to a replacement process.
+   path. A nonzero caller activity tag is copied to the source's documented
+   `kCGEventSourceUserData` field as non-secret observational metadata; it does
+   not participate in authority, admission, posting, or receipt accounting.
+   Cleanup releases only state its sequence pressed, through the same route and
+   source, and never posts to a replacement process.
 5. **Permission and focus are separate.** The public `InputControl` observation
    derives from the non-prompting event-post access check that both macOS
    routes need. Accessibility focus/activation remains a `System`-route

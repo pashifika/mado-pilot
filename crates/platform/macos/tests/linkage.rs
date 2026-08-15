@@ -42,54 +42,40 @@ fn link_the_shim() {
     let _report = MacosPermissionProbe::new().report(&OperationContext::new());
 }
 
-fn load_commands() -> Option<String> {
+fn inspect_executable(tool: &str, arguments: &[&str]) -> String {
     link_the_shim();
-    let executable = std::env::current_exe().ok()?;
-    let output = Command::new("otool")
-        .arg("-L")
+    let executable = std::env::current_exe().expect("the test executable path is available");
+    let output = Command::new(tool)
+        .args(arguments)
         .arg(&executable)
         .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
+        .unwrap_or_else(|error| panic!("{tool} must inspect {}: {error}", executable.display()));
+    assert!(
+        output.status.success(),
+        "{tool} {:?} failed for {}: {}",
+        arguments,
+        executable.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap_or_else(|error| panic!("{tool} returned non-UTF-8 output: {error}"))
 }
 
-fn build_commands() -> Option<String> {
-    link_the_shim();
-    let executable = std::env::current_exe().ok()?;
-    let output = Command::new("otool")
-        .arg("-l")
-        .arg(&executable)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
+fn load_commands() -> String {
+    inspect_executable("/usr/bin/otool", &["-L"])
 }
 
-fn linked_symbols() -> Option<String> {
-    link_the_shim();
-    let executable = std::env::current_exe().ok()?;
-    let output = Command::new("/usr/bin/nm")
-        .arg("-g")
-        .arg(&executable)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
+fn build_commands() -> String {
+    inspect_executable("/usr/bin/otool", &["-l"])
+}
+
+fn linked_symbols() -> String {
+    inspect_executable("/usr/bin/nm", &["-g"])
 }
 
 #[test]
 fn the_final_artifact_declares_the_qualified_deployment_floor() {
-    let Some(commands) = build_commands() else {
-        println!("skipped: otool is unavailable, so build metadata cannot be inspected");
-        return;
-    };
+    let commands = build_commands();
 
     assert!(
         commands.lines().any(|line| line.trim() == "minos 26.5.2"),
@@ -99,10 +85,7 @@ fn the_final_artifact_declares_the_qualified_deployment_floor() {
 
 #[test]
 fn controlled_frameworks_are_not_eager_dependencies() {
-    let Some(commands) = load_commands() else {
-        println!("skipped: otool is unavailable, so load commands cannot be inspected");
-        return;
-    };
+    let commands = load_commands();
 
     for framework in DEFERRED_FRAMEWORKS {
         assert!(
@@ -115,10 +98,7 @@ fn controlled_frameworks_are_not_eager_dependencies() {
 
 #[test]
 fn the_frameworks_the_shim_needs_at_load_are_declared_by_its_build_script() {
-    let Some(commands) = load_commands() else {
-        println!("skipped: otool is unavailable, so load commands cannot be inspected");
-        return;
-    };
+    let commands = load_commands();
 
     for framework in EXPECTED_FRAMEWORKS {
         assert!(
@@ -131,10 +111,7 @@ fn the_frameworks_the_shim_needs_at_load_are_declared_by_its_build_script() {
 
 #[test]
 fn process_post_symbols_are_not_eager_link_dependencies() {
-    let Some(symbols) = linked_symbols() else {
-        println!("skipped: nm is unavailable, so linked symbols cannot be inspected");
-        return;
-    };
+    let symbols = linked_symbols();
 
     for symbol in DEFERRED_PROCESS_SYMBOLS {
         assert!(
@@ -148,10 +125,7 @@ fn process_post_symbols_are_not_eager_link_dependencies() {
 
 #[test]
 fn the_fixture_control_archive_is_absent_from_a_production_shim_consumer() {
-    let Some(symbols) = linked_symbols() else {
-        println!("skipped: nm is unavailable, so linked symbols cannot be inspected");
-        return;
-    };
+    let symbols = linked_symbols();
 
     assert!(
         !symbols.contains("_mp_fixture_"),
