@@ -1,6 +1,6 @@
 # Phase 2.2 controlled-stimulus transitions, measured on aarch64-apple-darwin at source
-# ee3f5e022c46160348f74602d57567a16a9e0abe and tree
-# de7f152f74d8b41d223d0af23585c44a2fa19ad7.
+# b1059cf6239042107bd62373eb65211117beaab9 and tree
+# 0fffe5587d29bed8c6908e7b852617be8b381c13.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029
 # accepts this revision-bound run and its pre-measurement qualification
@@ -18,7 +18,7 @@ measurements_recorded = true
 
 [profile]
 fixture = "separately linked private macOS fixture Rust, protocol-v5, header, Objective-C, and renderer sources"
-fixture_sha256 = "c5cc796060477cd4aac8a7db95b0a9dab553b6cdbd21edf7a3f5eadfd69fca93"
+fixture_sha256 = "2252287e99fc2f14645326eb76b8c3b4a9ba4bb53f81fdf196f172d9ee3ac851"
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
@@ -27,7 +27,7 @@ warmup_iterations = 5
 sample_count = 50
 correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
 queue_policy = "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
-notes = "source commit a774de53b05b0715f6b222f0c6b271f3daf94329, tree f801b2e7eaf1b219668da0159c275632272d3689; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays: MSI 2560x1440 logical/5120x2880 backing 2x main, built-in 1512x982 logical/3024x1964 backing 2x, Dell 3840x2160 logical/backing 1x; same-scale and mixed-scale horizontal seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 72e407e154482435a279a6990b829fdbc2b4a7beb9601bcb082ed48f077331e9; fixture path deliberately omitted; lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
+notes = "source commit b1059cf6239042107bd62373eb65211117beaab9, tree 0fffe5587d29bed8c6908e7b852617be8b381c13; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; public frame geometry: 3840x2160 logical/backing 1x at (-3840,-829), 2560x1440 logical/5120x2880 backing 2x main at (0,0), 1512x982 logical/3024x1964 backing 2x at (2560,190); mixed 2x/1x signed-origin seam and same-scale 2x/2x seam; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 1360206fc656a55385bde2c7d5f36badc869a8966731786ebd5f0b80ff47e7a2; fixture path deliberately omitted; lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
 
 [[budget]]
 measure = "result_correctness"
@@ -53,27 +53,29 @@ rationale = "the retained ADR 0025 ceiling permits one transient resized-frame c
 workload = "resize_recreation"
 correctness_oracle = "one acknowledged private resize advances epoch and geometry and returns the resized extent independently of the acknowledgement"
 result_correctness = 0
-latency_p50_ms = 52.227125
-latency_p95_ms = 68.659292
-iteration_span_ms = 52.814494
+latency_p50_ms = 51.460583000
+latency_p95_ms = 52.916083000
+latency_max_ms = 54.095250000
+iteration_span_ms = 50.490887000
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 8448
-steady_allocated_bytes = 7336
+peak_allocated_bytes = 9130
+steady_allocated_bytes = 8018
 allocated_growth_bytes = 0
 
 [[measurement]]
 workload = "open_first_frame"
 correctness_oracle = "each fresh capture-only session returns a correctly identified deterministic first frame and closes"
 result_correctness = 0
-latency_p50_ms = 101.960917
-latency_p95_ms = 111.464458
-iteration_span_ms = 156.288787
+latency_p50_ms = 103.262875000
+latency_p95_ms = 113.477667000
+latency_max_ms = 118.326084000
+iteration_span_ms = 165.443825000
 mapped_bytes_per_result = 5327872
-peak_allocated_bytes = 5335432
-steady_allocated_bytes = 4811
+peak_allocated_bytes = 5336114
+steady_allocated_bytes = 5493
 allocated_growth_bytes = 0
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "mapped_bytes_per_result"
   kind = "absolute"
   unit = "bytes"
@@ -85,12 +87,13 @@ allocated_growth_bytes = 0
 workload = "retained_pressure_resume"
 correctness_oracle = "controlled publications fill the reported retained limit; releasing one slot resumes with an observable sequence gap"
 result_correctness = 0
-latency_p50_ms = 3.615583
-latency_p95_ms = 17.168750
-iteration_span_ms = 1013.142898
+latency_p50_ms = 3.269750000
+latency_p95_ms = 16.618500000
+latency_max_ms = 19.168375000
+iteration_span_ms = 1040.597210000
 mapped_bytes_per_result = 0
-stale_work_ratio = 0.836065574
-peak_allocated_bytes = 4672014
+stale_work_ratio = 0.835526316
+peak_allocated_bytes = 4672695
 steady_allocated_bytes = 0
 allocated_growth_bytes = 0
 
@@ -98,15 +101,16 @@ allocated_growth_bytes = 0
 workload = "close_drain"
 correctness_oracle = "explicit capture-session close reaches the closed state and remains idempotent"
 result_correctness = 0
-latency_p50_ms = 55.841209
-latency_p95_ms = 66.907917
-iteration_span_ms = 157.960886
+latency_p50_ms = 60.519916000
+latency_p95_ms = 71.387750000
+latency_max_ms = 77.966958000
+iteration_span_ms = 161.309776000
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 7400
-steady_allocated_bytes = 4811
+peak_allocated_bytes = 8082
+steady_allocated_bytes = 5493
 allocated_growth_bytes = 0
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "latency_p50"
   kind = "absolute"
   unit = "milliseconds"

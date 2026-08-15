@@ -505,11 +505,12 @@ Windows. ADR 0026 records the probes and the bounded repairs. Production capture
 and input semantics were not changed to make a benchmark pass.
 
 The Phase 1 profiles historically passed all applicable comparisons at their
-recorded source revisions. Release acceptance still requires rerunning them at
-the eventual final Phase 2 revision; their committed Phase 1 ceilings do not
-move. Current macOS capture and transition profiles also remain required before
-Phase 2 exit; the Phase 2.2 controlled-stimulus lineage below is what will
-supply them.
+recorded source revisions. Release acceptance still requires final-source
+regression reruns; their committed Phase 1 ceilings do not move. The accepted
+Phase 2.2 controlled-stimulus lineage below now supplies the current macOS
+capture, transition, and owning-process-route measurements without treating
+them as comparable to the invalidated input-stimulus lineage. The broader
+production-capture acceptance matrix remains open under `G-013`.
 
 ## Phase 2.2 macOS process-directed and controlled-stimulus lineage
 
@@ -529,22 +530,26 @@ per-event authority/preflight/post path (`event_authority_preflight_post`),
 release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
 overflow around process-directed events.
 
-The planned revision-bound profile identities on the approved Apple Silicon
-host are `phase-2-2-controlled-capture-aarch64-apple-darwin`,
+Five revision-bound profiles were measured on the approved Apple Silicon host
+at source commit `b1059cf6239042107bd62373eb65211117beaab9`:
+`phase-2-2-controlled-capture-aarch64-apple-darwin`,
 `phase-2-2-controlled-transitions-aarch64-apple-darwin`,
 `phase-2-2-process-directed-appkit-aarch64-apple-darwin`,
 `phase-2-2-process-directed-game-like-aarch64-apple-darwin`, and
-`phase-2-2-process-directed-diagnostics-aarch64-apple-darwin`, each committed
-under `docs/benchmarks/` when measured. None is measured yet, so this document
-records no number for them and none gates current source. The pre-measurement
-ceilings — per-workload p50/p95, hard scenario bounds, allocation growth,
-sequence/shim memory, and correctness totals — are frozen as regression gates
-in the
-[ADR 0029 qualification plan](../rasen/changes/phase-2-2-macos-owning-process-delivery/evidence/qualification-plan.md);
-they become budgets in the sense of this document only with the measured
-profiles and the accepting record, and a failing run is corrected rather than
-re-ceilinged. Game-like samples additionally record the fixture's explicit
-mode/renderer fact, so an AppKit-renderer measurement can never be filed as a
+`phase-2-2-process-directed-diagnostics-aarch64-apple-darwin`. Their committed
+records under `docs/benchmarks/` are normative. Across 2,700 retained samples,
+every workload correctness oracle passed, post-warmup allocation growth was
+zero, and every frozen p50, p95, hard-maximum, mapped-byte, stale-work,
+peak-live-heap, and diagnostic-capacity gate passed.
+
+The pre-measurement ceilings remain the regression budgets; they were not
+re-ceilinged from the result. The
+[ADR 0029](adr/0029-macos-process-directed-input.md) defines those ceilings,
+and the separate privacy-reviewed
+[observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
+records the exact measurements, hashes, excluded pre-sampling setup failure,
+and acceptance decision. Game-like samples carry the fixture's explicit
+mode/renderer fact, so an AppKit-renderer measurement cannot be filed as a
 game-like result.
 
 ## Phase 2 Windows ownership prototype

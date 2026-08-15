@@ -66,7 +66,7 @@ owns and where they genuinely differ.
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; input re-reads the public `CGPreflightPostEventAccess` decision before every irreversible event, and the legacy Accessibility observation is retained as a paired qualification-only fact that can neither grant nor demote it (implemented) |
 | Native verification host | `windows-2025` CI plus the ADR 0026 named interactive Core i7-12700KF / RTX 4080 Windows 11 Pro 26200 host | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | unresolved | macOS 26.5.2; older versions unsupported |
-| Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) production-capture acceptance matrix and budgets; [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts diagnostic timing and the original `native-phase2` workload sets; [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` timing, memory, queue-pressure, and cleanup ceilings | [`G-013`](validation-gates.md#g-013) macOS capture/transition and final-source Phase 2 regression profiles; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics and [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts native input/public-language costs; the [ADR 0029](adr/0029-macos-process-directed-input.md) process-directed qualification, topology, and performance matrices remain pending on the approved host |
+| Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) production-capture acceptance matrix and budgets; [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts diagnostic timing and the original `native-phase2` workload sets; [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` timing, memory, queue-pressure, and cleanup ceilings | [`G-013`](validation-gates.md#g-013) broader production-capture acceptance and final-source Phase 2 regression reruns; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the earlier native input/public-language costs, and accepted [ADR 0029](adr/0029-macos-process-directed-input.md) binds the current owning-process, topology, controlled-capture/transition, and process-route matrices |
 
 Detailed capabilities, permission outcomes, coordinate transforms, native
 resource ownership, and unsupported-system behavior are added by the changes
@@ -838,7 +838,7 @@ responsibilities a later phase takes on.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.2 as a header-only adapter, including typed native capability, permission, input policy, owned receipt/attempt views, diagnostics, and partial-failure values; decided in [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) and extended without a second ABI |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Set for all Phase 1 workloads on both release targets by [ADR 0008](adr/0008-phase-1-performance-budgets.md). [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) keeps historical macOS capture and transition profiles non-normative after source and oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts macOS Phase 2.2 diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts macOS native input/public-language costs, [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts Windows diagnostics plus the original `native-phase2` workload sets, and [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary exact-window submission latency/memory plus queue-pressure and cleanup ceilings. Windows production-capture acceptance, macOS capture/transitions, and final-source regression reruns stay open under [`G-013`](validation-gates.md#g-013) |
+| Numeric performance budgets | Set for all Phase 1 workloads on both release targets by [ADR 0008](adr/0008-phase-1-performance-budgets.md). [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) keeps the historical macOS input-stimulus capture and transition profiles non-normative after source and oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts macOS Phase 2.2 diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the earlier macOS native input/public-language costs, accepted [ADR 0029](adr/0029-macos-process-directed-input.md) adds the current controlled-stimulus capture/transition and owning-process route profiles, [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts Windows diagnostics plus the original `native-phase2` workload sets, and [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary exact-window submission latency/memory plus queue-pressure and cleanup ceilings. Broader production-capture acceptance and final-source regression reruns stay open under [`G-013`](validation-gates.md#g-013) |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for the frozen ABI 1.0 header and current ABI 1.2 surface. The ABI 1.0 caller compiles against its immutable header, negotiates only its declared table extent, and runs against the current library. The unreleased 1.1 fixture is removed; current-header C and Rust checks refuse minimum minor 1 and oversized minor-zero extents |
@@ -1586,9 +1586,12 @@ Adapter budgets. ADR 0020 recorded macOS capture, mapping, lifecycle, and Rust
 input/common-flow costs for an earlier tree. Source drift and repaired liveness
 and benchmark oracles invalidated those numbers under
 [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md).
-[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) requalifies the
-native input and public-language profile only; the macOS capture and transition
-workloads remain open under Phase 2 [`G-013`](validation-gates.md#g-013).
+[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) requalified
+the earlier native input and public-language profile. Accepted
+[ADR 0029](adr/0029-macos-process-directed-input.md) now binds the current
+controlled-stimulus capture/transition and owning-process route profiles; the
+broader production-capture matrix and final-source regression reruns remain open
+under Phase 2 [`G-013`](validation-gates.md#g-013).
 
 CPU conversion is not part of the detach. The detached buffer keeps the native row
 padding, and a mapping produces the caller's bytes at exactly the packed stride the
@@ -2168,10 +2171,11 @@ The source-defined diagnostic benchmark measures capture/mapping, input
 submission, and explicit close/drain with diagnostics `Off`, `Normal`, `Debug`,
 and under four-slot pressure. ADR 0024 accepts the `aarch64-apple-darwin`
 diagnostic regression ceilings; release-target CI runs the correctness and
-bounded-growth smoke plan. ADR 0025 separately accepts the revision-bound
-macOS native input and Rust/C/C++ public-language profile. Windows diagnostic
-timing, every Windows native profile, and the macOS capture and transition
-profiles remain explicit `G-013` gaps.
+bounded-growth smoke plan. ADR 0025 accepts the earlier revision-bound macOS
+native input and Rust/C/C++ public-language profile; accepted ADR 0029 adds the
+current controlled-stimulus capture/transition and owning-process route
+profiles. Broader final-source Phase 2 and production-capture reruns remain
+explicit `G-013` gaps.
 
 ### Phase 0 completion contract
 

@@ -1,25 +1,24 @@
 # ADR 0029: macOS owning-process input delivery
 
-- **Status:** Proposed — resolved to Accepted or Rejected only by the complete
-  revision-bound native matrix of the
-  [qualification plan](../../rasen/changes/phase-2-2-macos-owning-process-delivery/evidence/qualification-plan.md);
-  while Proposed, macOS release support remains system-only under
-  [ADR 0016](0016-macos-input-delivery-surface-and-focus-authority.md)
+- **Status:** Accepted — the complete revision-bound native matrix in the
+  [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
+  qualifies all fourteen controlled operation/target/coordinate-space pairs on
+  source commit `b1059cf6239042107bd62373eb65211117beaab9`
 - **Date:** 2026-08-15
-- **Resolves gate:** _none_
-- **Supersedes:** on acceptance, only ADR 0016's macOS system-only
-  delivery-surface decision; its controlled-linkage, non-prompting permission,
-  `System` focus-authority, no-private-window-control, and no-implicit-fallback
-  rules remain in force
+- **Resolves gate:** macOS owning-process `ProcessDirected` publication through
+  the recorded native matrix
+- **Supersedes:** only ADR 0016's macOS system-only delivery-surface decision;
+  its controlled-linkage, non-prompting permission, `System` focus-authority,
+  no-private-window-control, and no-implicit-fallback rules remain in force
 
 ## Context
 
 The platform-neutral input contract and public C ABI 1.2 already carry
 `InputDelivery::ProcessDirected`, `InputAddressScope::OwningProcess`,
 `CapabilitySupport::Unknown`, and `SubmissionEvidence::InvocationOnly`
-(ADR 0023). The macOS Adapter nevertheless advertises `System` only, the
-decision ADR 0016 records: macOS has no supported exact-window channel, and
-`CGEventPost` reaches whatever is focused.
+(ADR 0023). Before this decision, the macOS Adapter advertised `System` only
+under ADR 0016: macOS has no supported exact-window channel, and `CGEventPost`
+reaches whatever is focused.
 
 The rejected `phase-2-2-macos-process-directed-delivery` Change tried to make
 public `CGEventPostToPid` safe by admitting a target only while its owning
@@ -36,7 +35,7 @@ delivery.
 
 ## Decision
 
-macOS may additionally advertise input through `ProcessDirected` with
+macOS additionally advertises input through `ProcessDirected` with
 owning-process scope, on these rules:
 
 1. **Process address scope is explicit and caller-owned.** A qualified pair is
@@ -101,9 +100,9 @@ owning-process scope, on these rules:
 
 ### Supersession scope
 
-This record supersedes, only after qualification resolves it to Accepted, the
-single ADR 0016 decision that no macOS target advertises `ProcessDirected` for
-any operation. Everything else ADR 0016 records stays normative: controlled
+This record supersedes the single ADR 0016 decision that no macOS target
+advertises `ProcessDirected` for any operation.
+Everything else ADR 0016 records stays normative: controlled
 loading of AppKit, HIToolbox, and Security.framework from absolute system
 paths; non-prompting authorization with no permission request or settings UI;
 the `System` route's read-only focus authority and activation limits; the
@@ -162,12 +161,13 @@ the existing no-fallback contract after possible effect.
   native address is its owning process; a multi-window target process can
   consume events anywhere inside itself, and MadoPilot will not claim
   otherwise.
-- No public support claim, support table, example, package note, or migration
-  statement changes until a pair's complete mandatory matrix passes on the
-  implementation revision; unqualified pairs remain unavailable in production
-  descriptors. A route-wide failure blocks every pair; a pair failure blocks
-  only that pair; missing mixed-scale evidence is never replaced by same-scale
-  evidence.
+- The accepted support claim is bound to the fourteen exact pairs in the
+  revision-bound observed report. The qualified source advertises each as
+  `Unknown`, owning-process scoped, invocation-only, and foreground-preserving.
+  Future operation, target-class, coordinate-space, or topology pairs remain
+  unavailable until their own mandatory rows pass. A route-wide failure blocks
+  every pair; a pair failure blocks only that pair; missing mixed-scale evidence
+  is never replaced by same-scale evidence.
 - The internal shim gains a size-versioned process-post request and sequence
   source lifecycle, extending the existing layout/version/containment test
   obligations; the released C ABI and its frozen prefixes are unchanged.
@@ -175,22 +175,22 @@ the existing no-fallback contract after possible effect.
   approved Apple Silicon host across single-display, same-scale, mixed-scale,
   and signed-origin topologies, under sustained active capture, plus the frozen
   pre-measurement performance ceilings.
-- Changed together with this decision when it resolves: macOS adapter and shim
-  input paths, capability mapping, fixture protocol and harness,
-  `docs/architecture.md`, `docs/macos-input-verification.md`,
-  `docs/performance.md`, Rust/C/C++ examples and migration guidance, and
-  ADR 0016's status line.
+- Changed together with this decision: the macOS adapter and shim input paths,
+  capability mapping, fixture protocol and harness, `docs/architecture.md`,
+  `docs/macos-input-verification.md`, `docs/performance.md`, Rust/C/C++ examples
+  and migration guidance, and ADR 0016's status line.
 
 ## Verification
 
-- The frozen
-  [qualification plan](../../rasen/changes/phase-2-2-macos-owning-process-delivery/evidence/qualification-plan.md)
-  defines the route-wide rows, pair matrix, evidence schema, stop rules, frozen
-  budgets, and per-pair release decisions; the
-  [verification procedure](../../rasen/changes/phase-2-2-macos-owning-process-delivery/evidence/verification-procedure.md)
-  binds the runnable commands, controlled stimulus, and provenance recording.
-  This record resolves from Proposed using only those revision-bound rows, and
-  a privacy-reviewed observed report will record one decision per pair.
+- The frozen route-wide rows, pair matrix, evidence schema, stop rules, budgets,
+  and release-decision rule are reproduced by the runnable commands in the
+  [macOS input verification guide](../macos-input-verification.md). The separate
+  privacy-reviewed
+  [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
+  binds those commands to the qualified source and artifacts and records
+  RW-01–RW-14 passed, all mandatory single-display, same-scale, and mixed-scale
+  rows passed, 14 pairs qualified, zero rejected, zero unexecuted, and every
+  frozen benchmark gate passed.
 - Deterministic controller, native-double, shim layout/version, containment,
   protocol, privacy, linkage, and C/C++ contract suites must cover every
   commit-seam ordering — cancellation, revocation, geometry change, target

@@ -91,8 +91,9 @@ input. The migration probe reads it beside the event-post preflight so
 qualification evidence records both, and it can neither grant nor demote the
 direct preflight; a disagreement between the two is an evidence fact to
 investigate, never an admission input. On the qualified host, 100 quiet
-pre-implementation samples observed both granted with zero disagreements;
-denied and revocation transitions remain pending qualification rows.
+pre-implementation samples observed both granted with zero disagreements.
+Deterministic denial, revocation, symbol-unavailability, and disagreement rows
+then passed fail-closed without prompting or implicit fallback.
 
 Window liveness comes from a fresh, bounded shareable-content snapshot. PID and
 window number only narrow that snapshot; the resulting logical `SCWindow` must
@@ -500,9 +501,12 @@ summaries, and repeated close are checked throughout.
 
 Each run binds its evidence to the exact source revision and tree, fixture hash,
 host, authorization state, and live display topology recorded with the Change.
-Run the renderer test separately with `single`, `same-scale`, and `mixed-scale`;
-disconnect or rearrange displays until its mandatory selector accepts the exact
-row. One topology cannot substitute for another.
+The renderer test passed separately with `single`, `same-scale`, and
+`mixed-scale`; one topology was never substituted for another. The
+privacy-reviewed
+[observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
+records the exact qualified revision, commands, artifact and raw-output hashes,
+bounded outcomes, excluded attempts, and all fourteen per-pair decisions.
 
 ## Explicit facade check
 

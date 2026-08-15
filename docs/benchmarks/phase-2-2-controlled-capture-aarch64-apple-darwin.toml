@@ -1,6 +1,6 @@
 # Phase 2.2 controlled-stimulus capture, measured on aarch64-apple-darwin at source
-# ee3f5e022c46160348f74602d57567a16a9e0abe and tree
-# de7f152f74d8b41d223d0af23585c44a2fa19ad7.
+# b1059cf6239042107bd62373eb65211117beaab9 and tree
+# 0fffe5587d29bed8c6908e7b852617be8b381c13.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029
 # accepts this revision-bound run and its pre-measurement qualification
@@ -18,7 +18,7 @@ measurements_recorded = true
 
 [profile]
 fixture = "separately linked private macOS fixture Rust, protocol-v5, header, Objective-C, and renderer sources"
-fixture_sha256 = "c5cc796060477cd4aac8a7db95b0a9dab553b6cdbd21edf7a3f5eadfd69fca93"
+fixture_sha256 = "2252287e99fc2f14645326eb76b8c3b4a9ba4bb53f81fdf196f172d9ee3ac851"
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
@@ -27,7 +27,7 @@ warmup_iterations = 20
 sample_count = 200
 correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
 queue_policy = "fixture command queue depth 1; session latest-wins queue depth 1; adapter finite retained-storage limit"
-notes = "source commit a774de53b05b0715f6b222f0c6b271f3daf94329, tree f801b2e7eaf1b219668da0159c275632272d3689; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays: MSI 2560x1440 logical/5120x2880 backing 2x main, built-in 1512x982 logical/3024x1964 backing 2x, Dell 3840x2160 logical/backing 1x; same-scale and mixed-scale horizontal seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 72e407e154482435a279a6990b829fdbc2b4a7beb9601bcb082ed48f077331e9; fixture path deliberately omitted; lineage=controlled-private-command-capture; mode=default renderer=appkit-background"
+notes = "source commit b1059cf6239042107bd62373eb65211117beaab9, tree 0fffe5587d29bed8c6908e7b852617be8b381c13; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; public frame geometry: 3840x2160 logical/backing 1x at (-3840,-829), 2560x1440 logical/5120x2880 backing 2x main at (0,0), 1512x982 logical/3024x1964 backing 2x at (2560,190); mixed 2x/1x signed-origin seam and same-scale 2x/2x seam; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 1360206fc656a55385bde2c7d5f36badc869a8966731786ebd5f0b80ff47e7a2; fixture path deliberately omitted; lineage=controlled-private-command-capture; mode=default renderer=appkit-background"
 
 [[budget]]
 measure = "result_correctness"
@@ -53,15 +53,16 @@ rationale = "the retained ADR 0025 ceiling rejects an added accumulation of full
 workload = "fixture_command_acknowledgement"
 correctness_oracle = "one correlated private command acknowledgement has status success and stable window identity; it is neither a product receipt nor a visual outcome"
 result_correctness = 0
-latency_p50_ms = 0.163584
-latency_p95_ms = 0.221042
-iteration_span_ms = 0.201250
+latency_p50_ms = 0.161209000
+latency_p95_ms = 0.208667000
+latency_max_ms = 1.582708000
+iteration_span_ms = 0.201200000
 mapped_bytes_per_result = 0
 peak_allocated_bytes = 36775
 steady_allocated_bytes = 35663
 allocated_growth_bytes = 0
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "latency_p50"
   kind = "absolute"
   unit = "milliseconds"
@@ -89,16 +90,17 @@ allocated_growth_bytes = 0
 workload = "controlled_stimulus_to_frame"
 correctness_oracle = "one private command acknowledgement is followed independently by a strictly newer same-stream frame carrying exactly the requested approved fill"
 result_correctness = 0
-latency_p50_ms = 16.657375
-latency_p95_ms = 17.520083
-iteration_span_ms = 17.328844
+latency_p50_ms = 16.515042000
+latency_p95_ms = 17.521792000
+latency_max_ms = 18.654458000
+iteration_span_ms = 17.291899000
 mapped_bytes_per_result = 4628480
 stale_work_ratio = 0.000000000
-peak_allocated_bytes = 9300487
-steady_allocated_bytes = 4671527
+peak_allocated_bytes = 9301169
+steady_allocated_bytes = 4672209
 allocated_growth_bytes = 0
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "latency_p50"
   kind = "absolute"
   unit = "milliseconds"
@@ -134,15 +136,16 @@ allocated_growth_bytes = 0
 workload = "static_latest_retained"
 correctness_oracle = "without a private transition, latest returns a same-stream frame no older than the retained frame and preserves the declared pixels"
 result_correctness = 0
-latency_p50_ms = 0.000125
-latency_p95_ms = 0.000167
-iteration_span_ms = 0.000524
+latency_p50_ms = 0.000125000
+latency_p95_ms = 0.000167000
+latency_max_ms = 0.000958000
+iteration_span_ms = 0.000467000
 mapped_bytes_per_result = 4628480
-peak_allocated_bytes = 4671543
-steady_allocated_bytes = 4671527
+peak_allocated_bytes = 4672225
+steady_allocated_bytes = 4672209
 allocated_growth_bytes = 0
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "mapped_bytes_per_result"
   kind = "absolute"
   unit = "bytes"
@@ -154,15 +157,16 @@ allocated_growth_bytes = 0
 workload = "static_newer_repeated_pixels"
 correctness_oracle = "without a private transition, a bounded strictly-newer request evaluates the exact later frame and observes the same declared pixels"
 result_correctness = 0
-latency_p50_ms = 17.511000
-latency_p95_ms = 36.192458
-iteration_span_ms = 22.101189
+latency_p50_ms = 17.190208000
+latency_p95_ms = 19.919250000
+latency_max_ms = 24.748084000
+iteration_span_ms = 17.561712000
 mapped_bytes_per_result = 4628480
-peak_allocated_bytes = 9300487
-steady_allocated_bytes = 4671527
+peak_allocated_bytes = 9301169
+steady_allocated_bytes = 4672209
 allocated_growth_bytes = 0
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "mapped_bytes_per_result"
   kind = "absolute"
   unit = "bytes"
@@ -174,28 +178,30 @@ allocated_growth_bytes = 0
 workload = "latest_acquisition"
 correctness_oracle = "after an acknowledged controlled publication advances the producer, latest returns a same-stream frame no older than that publication and reports the observed sequence gap"
 result_correctness = 0
-latency_p50_ms = 0.000583
-latency_p95_ms = 0.000750
-iteration_span_ms = 17.419454
+latency_p50_ms = 0.000500000
+latency_p95_ms = 0.000666000
+latency_max_ms = 0.001125000
+iteration_span_ms = 17.413151000
 mapped_bytes_per_result = 0
 stale_work_ratio = 0.004975124
-peak_allocated_bytes = 9300791
-steady_allocated_bytes = 4671527
+peak_allocated_bytes = 9301473
+steady_allocated_bytes = 4672209
 allocated_growth_bytes = 0
 
 [[measurement]]
 workload = "cpu_map_bgra8"
 correctness_oracle = "the independently observed newer frame maps once to exact-size BGRA8 bytes carrying one declared fixture fill"
 result_correctness = 0
-latency_p50_ms = 0.185583
-latency_p95_ms = 0.201000
-iteration_span_ms = 17.345701
+latency_p50_ms = 0.187708000
+latency_p95_ms = 0.204125000
+latency_max_ms = 0.229375000
+iteration_span_ms = 17.311380000
 mapped_bytes_per_result = 4628480
-peak_allocated_bytes = 9300487
-steady_allocated_bytes = 4671527
+peak_allocated_bytes = 9301169
+steady_allocated_bytes = 4672209
 allocated_growth_bytes = 0
 
-  [[measurement.budget]]
+[[measurement.budget]]
   measure = "mapped_bytes_per_result"
   kind = "absolute"
   unit = "bytes"
