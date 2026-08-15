@@ -22,9 +22,8 @@ use mado_pilot_core::{
     SubmissionEvidence, TargetKind, TargetPlacement, TransformSnapshot,
 };
 use mado_pilot_input::{
-    Admission, FocusPolicy, InputAttempt, InputController, InputDescriptor, InputEvent,
-    InputEventObservation, InputExecution, InputFault, InputReceipt, InputRequest, Key,
-    PointerButton, PointerGeometry, PressedState,
+    Admission, FocusPolicy, InputAttempt, InputController, InputDescriptor, InputEvent, InputFault,
+    InputReceipt, InputRequest, Key, PointerButton, PointerGeometry, PressedState,
 };
 
 use crate::native_input::NativeInputDriver;
@@ -353,18 +352,6 @@ pub(crate) trait InputDriver: fmt::Debug + Send + Sync {
         operation: &OperationContext,
     ) -> Result<(), SubmissionFailure>;
 
-    fn begin_event_observation(&self) {}
-
-    fn finish_event_observation(
-        &self,
-        _route: InputDelivery,
-        _event_index: u64,
-        _operation: InputOperationKind,
-        _fault: Option<InputFault>,
-    ) -> Option<InputEventObservation> {
-        None
-    }
-
     fn release(
         &self,
         route: InputDelivery,
@@ -416,27 +403,18 @@ impl MacosInputController {
         &self,
         request: &InputRequest,
         operation: &OperationContext,
-        observe_events: bool,
-    ) -> mado_pilot_core::Result<InputExecution> {
+    ) -> mado_pilot_core::Result<InputReceipt> {
         self.descriptor.validate(request)?;
         let _guard = self.admission.admit(operation)?;
         let mut state = DriverState::default();
         let (route, evidence, prior_attempts) =
             match self.select_route(request, &mut state, operation) {
                 Ok(selected) => selected,
-                Err(receipt) => return Ok(InputExecution::new(receipt, Vec::new())),
+                Err(receipt) => return Ok(receipt),
             };
 
-        let mut observations = Vec::new();
         let mut submitted = 0usize;
-        for (index, event) in request.sequence().events().iter().enumerate() {
-            let operation_kind = event.operation_kind();
-            let observe_event = observe_events
-                && route == InputDelivery::ProcessDirected
-                && operation_kind.is_some();
-            if observe_event {
-                self.driver.begin_event_observation();
-            }
+        for event in request.sequence().events() {
             let result = if let InputEvent::Delay(delay) = event {
                 wait_delay(*delay, operation).map_err(SubmissionFailure::from)
             } else {
@@ -454,20 +432,8 @@ impl MacosInputController {
                     ),
                 }
             };
-            if observe_event {
-                let event_index = u64::try_from(index).unwrap_or(u64::MAX);
-                let fault = result.as_ref().err().map(|failure| failure.fault);
-                if let Some(observation) = self.driver.finish_event_observation(
-                    route,
-                    event_index,
-                    operation_kind.expect("observe_event requires an operation kind"),
-                    fault,
-                ) {
-                    observations.push(observation);
-                }
-            }
             if let Err(failure) = result {
-                let receipt = self.stopped_receipt(
+                return Ok(self.stopped_receipt(
                     request,
                     StoppedSubmission {
                         route,
@@ -478,14 +444,14 @@ impl MacosInputController {
                     },
                     &mut state,
                     operation,
-                );
-                return Ok(InputExecution::new(receipt, observations));
+                ));
             }
             submitted += 1;
         }
-        let receipt = InputReceipt::complete(request.target(), route, evidence, submitted)
-            .with_prior_attempts(prior_attempts);
-        Ok(InputExecution::new(receipt, observations))
+        Ok(
+            InputReceipt::complete(request.target(), route, evidence, submitted)
+                .with_prior_attempts(prior_attempts),
+        )
     }
 
     fn select_route(
@@ -636,16 +602,7 @@ impl InputController for MacosInputController {
         request: &InputRequest,
         operation: &OperationContext,
     ) -> mado_pilot_core::Result<InputReceipt> {
-        self.execute_inner(request, operation, false)
-            .map(|execution| execution.into_parts().0)
-    }
-
-    fn execute_with_observations(
-        &self,
-        request: &InputRequest,
-        operation: &OperationContext,
-    ) -> mado_pilot_core::Result<InputExecution> {
-        self.execute_inner(request, operation, true)
+        self.execute_inner(request, operation)
     }
 
     fn close(&self, operation: &OperationContext) -> mado_pilot_core::Result<()> {

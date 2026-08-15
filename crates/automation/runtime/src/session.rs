@@ -24,9 +24,8 @@ use mado_pilot_vision::{MatchRequest, Matcher};
 
 use crate::diagnostic::{
     DetachedObservation, DiagnosticEmitter, DiagnosticOperationKind, DiagnosticPayload,
-    DiagnosticSink, FrameDiagnostic, InputDiagnostic, InputEventDiagnostic, LifecycleDiagnostic,
-    MappingDiagnostic, ObservedOperation, RouteAttemptDiagnostic, SearchDiagnostic,
-    SearchDiagnosticOutcome,
+    DiagnosticSink, FrameDiagnostic, InputDiagnostic, LifecycleDiagnostic, MappingDiagnostic,
+    ObservedOperation, RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome,
 };
 use crate::find::{FindOutcome, FindRequest, SearchFrame};
 
@@ -485,11 +484,6 @@ impl Session {
         operation: &OperationContext,
     ) -> Result<InputReceipt> {
         let observed = self.observe(operation, DiagnosticOperationKind::InputSubmission)?;
-        let retain_event_observations = self
-            .diagnostics
-            .as_ref()
-            .is_some_and(DiagnosticSink::is_debug);
-        let mut event_observations = Vec::new();
         let result: Result<InputReceipt> = (|| {
             let mut attempt = Operation::admit(operation)?;
             let Some(controller) = self.input.as_ref() else {
@@ -508,14 +502,7 @@ impl Session {
             }
             attempt.checkpoint()?;
 
-            let receipt = if retain_event_observations {
-                let execution = controller.execute_with_observations(request, operation)?;
-                let (receipt, observations) = execution.into_parts();
-                event_observations = observations;
-                receipt
-            } else {
-                controller.execute(request, operation)?
-            };
+            let receipt = controller.execute(request, operation)?;
             if receipt.outcome() == SequenceOutcome::Unexecuted {
                 return Ok(attempt.commit(receipt)?);
             }
@@ -529,14 +516,6 @@ impl Session {
                     DiagnosticPayload::RouteAttempt(RouteAttemptDiagnostic::from_attempt(
                         receipt.target(),
                         attempt,
-                    ))
-                });
-            }
-            for event in event_observations.iter().copied() {
-                self.debug(observed, operation, || {
-                    DiagnosticPayload::InputEvent(InputEventDiagnostic::from_observation(
-                        receipt.target(),
-                        event,
                     ))
                 });
             }
@@ -614,14 +593,8 @@ mod tests {
 
     use mado_pilot_capture::{CaptureProvider, Continuity, FrameRequest, OpenRequest, PixelFormat};
     use mado_pilot_core::{
-        ClipPolicy, IdentityIssuer, InputCapability, InputDelivery, InputOperationKind, Lifecycle,
-        MonotonicInstant, OperationContext, PermissionState, PixelExtent, PixelRect, Result,
-        Status, SubmissionEvidence, TargetId,
-    };
-    use mado_pilot_input::{
-        DeliveryPlan, InputController, InputDescriptor, InputEvent, InputEventObservation,
-        InputExecution, InputGeometryResult, InputReceipt, InputRequest, InputRevalidationCategory,
-        InputSequence, Key,
+        ClipPolicy, IdentityIssuer, Lifecycle, MonotonicInstant, OperationContext, PixelExtent,
+        PixelRect, Status,
     };
     use mado_pilot_testkit::{ControlledCapture, ControlledMatcher, ManualClock, match_fixtures};
     use mado_pilot_vision::{
@@ -637,61 +610,6 @@ mod tests {
     use super::Session;
 
     const EXTENT: PixelExtent = PixelExtent::new(32, 24);
-
-    #[derive(Debug)]
-    struct ObservedInputController {
-        descriptor: InputDescriptor,
-    }
-
-    impl InputController for ObservedInputController {
-        fn descriptor(&self) -> InputDescriptor {
-            self.descriptor.clone()
-        }
-
-        fn execute(
-            &self,
-            request: &InputRequest,
-            _operation: &OperationContext,
-        ) -> Result<InputReceipt> {
-            Ok(InputReceipt::complete(
-                request.target(),
-                InputDelivery::ProcessDirected,
-                SubmissionEvidence::InvocationOnly,
-                request.sequence().len(),
-            ))
-        }
-
-        fn execute_with_observations(
-            &self,
-            request: &InputRequest,
-            operation: &OperationContext,
-        ) -> Result<InputExecution> {
-            let receipt = self.execute(request, operation)?;
-            Ok(InputExecution::new(
-                receipt,
-                vec![InputEventObservation {
-                    route: InputDelivery::ProcessDirected,
-                    event_index: 0,
-                    operation: InputOperationKind::Keyboard,
-                    revalidation: InputRevalidationCategory::Passed,
-                    candidate_count: Some(1),
-                    authorization: PermissionState::Granted,
-                    geometry: InputGeometryResult::NotApplicable,
-                    expected_native_units: 1,
-                    invoked_native_units: 1,
-                    fault: None,
-                }],
-            ))
-        }
-
-        fn close(&self, _operation: &OperationContext) -> Result<()> {
-            Ok(())
-        }
-
-        fn lifecycle(&self) -> Lifecycle {
-            Lifecycle::Open
-        }
-    }
 
     /// One session over controlled doubles, with the backend still reachable.
     struct Fixture {
@@ -761,89 +679,6 @@ mod tests {
                 other => panic!("expected diagnostic batch, got {other:?}"),
             }
         }
-    }
-
-    fn input_session(level: DiagnosticLevel) -> (Session, DiagnosticReader, TargetId) {
-        let issuer = Arc::new(IdentityIssuer::new());
-        let capture = Arc::new(
-            ControlledCapture::new(issuer, EXTENT, PixelFormat::Rgba8)
-                .expect("a valid controlled provider"),
-        );
-        let operation = OperationContext::new();
-        let target = capture.discover(&operation).expect("discovered").remove(0);
-        let opened = capture
-            .open(target.id(), &OpenRequest::new(), &operation)
-            .expect("opened");
-        let matcher = Matcher::new(
-            Arc::new(ControlledMatcher::new(PixelFormat::Rgba8)) as Arc<dyn MatchBackend>
-        );
-        let controller = Arc::new(ObservedInputController {
-            descriptor: InputDescriptor::new(target.id(), InputCapability::none()),
-        }) as Arc<dyn InputController>;
-        let options = match level {
-            DiagnosticLevel::Debug => DiagnosticOptions::debug(16).expect("valid"),
-            DiagnosticLevel::Normal => DiagnosticOptions::normal(16).expect("valid"),
-            _ => unreachable!("test enables diagnostics"),
-        };
-        let (sink, reader) = DiagnosticSink::create(options).expect("enabled diagnostics");
-        (
-            Session::new(opened, matcher, Some(controller), Some(sink)),
-            reader,
-            target.id(),
-        )
-    }
-
-    fn one_key(target: TargetId) -> InputRequest {
-        InputRequest::new(
-            target,
-            InputSequence::new(vec![InputEvent::KeyPress(Key::Enter)]).expect("valid"),
-            DeliveryPlan::require(InputDelivery::ProcessDirected),
-        )
-    }
-
-    #[test]
-    fn debug_input_emits_per_event_facts_and_normal_input_does_not() {
-        let operation = OperationContext::new();
-        let (debug_session, debug_reader, target) = input_session(DiagnosticLevel::Debug);
-        debug_session
-            .send_input(&one_key(target), &operation)
-            .expect("debug input succeeds");
-        let debug_batch = match debug_reader.drain() {
-            DiagnosticDrain::Batch(batch) => batch,
-            other => panic!("expected debug records, got {other:?}"),
-        };
-        let events: Vec<_> = debug_batch
-            .records()
-            .iter()
-            .filter_map(|record| match record.payload() {
-                DiagnosticPayload::InputEvent(event) => Some(event),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].target, target);
-        assert_eq!(events[0].event_index, 0);
-        assert_eq!(events[0].operation, InputOperationKind::Keyboard);
-        assert_eq!(events[0].candidate_count, Some(1));
-        assert_eq!(events[0].authorization, PermissionState::Granted);
-        assert_eq!(events[0].expected_native_units, 1);
-        assert_eq!(events[0].invoked_native_units, 1);
-
-        let (normal_session, normal_reader, target) = input_session(DiagnosticLevel::Normal);
-        normal_session
-            .send_input(&one_key(target), &operation)
-            .expect("normal input succeeds");
-        let normal_batch = match normal_reader.drain() {
-            DiagnosticDrain::Batch(batch) => batch,
-            other => panic!("expected normal records, got {other:?}"),
-        };
-        assert!(
-            normal_batch
-                .records()
-                .iter()
-                .all(|record| !matches!(record.payload(), DiagnosticPayload::InputEvent(_))),
-            "per-event facts stay debug-only"
-        );
     }
 
     /// An operation whose deadline has already passed on its own clock.

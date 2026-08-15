@@ -92,8 +92,6 @@ using DiagnosticLevel = ::madopilot_diagnostic_level_t;
 using DiagnosticDrainState = ::madopilot_diagnostic_drain_state_t;
 using DiagnosticKind = ::madopilot_diagnostic_kind_t;
 using DiagnosticOperationKind = ::madopilot_diagnostic_operation_kind_t;
-using InputRevalidationCategory = ::madopilot_input_revalidation_category_t;
-using InputGeometryResult = ::madopilot_input_geometry_result_t;
 using SearchDiagnosticOutcome = ::madopilot_search_diagnostic_outcome_t;
 using Lifecycle = ::madopilot_lifecycle_t;
 
@@ -1359,10 +1357,6 @@ struct DiagnosticRecord {
     SearchDiagnosticOutcome search_outcome =
         MADOPILOT_SEARCH_DIAGNOSTIC_NO_MATCH;
     std::uint32_t input_operations = 0;
-    InputRevalidationCategory input_revalidation = 0;
-    InputGeometryResult input_geometry = 0;
-    std::uint64_t input_event_index = 0;
-    std::optional<std::uint64_t> candidate_count;
     bool partial_native_effect = false;
     bool used_fallback = false;
     std::uint64_t requested = 0;
@@ -2354,24 +2348,6 @@ public:
         out.input_operations = value.input_operations;
         out.partial_native_effect = value.partial_native_effect != 0;
         out.used_fallback = value.used_fallback != 0;
-        if (value.kind == MADOPILOT_DIAGNOSTIC_KIND_INPUT_EVENT) {
-            out.input_event_index = value.cleanup_released;
-        }
-        if ((value.flags &
-             MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_EVENT_DETAIL) != 0u) {
-            out.input_revalidation =
-                static_cast<InputRevalidationCategory>(
-                    value.reserved &
-                    MADOPILOT_DIAGNOSTIC_INPUT_EVENT_REVALIDATION_MASK);
-            out.input_geometry = static_cast<InputGeometryResult>(
-                (value.reserved &
-                 MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_MASK) >>
-                MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_SHIFT);
-        }
-        if ((value.flags &
-             MADOPILOT_DIAGNOSTIC_RECORD_HAS_CANDIDATE_COUNT) != 0u) {
-            out.candidate_count = value.result_count;
-        }
         out.requested = value.requested;
         out.submitted = value.submitted;
         out.result_count = value.result_count;

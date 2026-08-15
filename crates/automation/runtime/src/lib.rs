@@ -146,7 +146,7 @@ pub use diagnostic::{
     DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticLosses,
     DiagnosticOperationId, DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload,
     DiagnosticReader, DiagnosticRecord, DiagnosticRecordSequence, DiagnosticTemplateId,
-    FrameDiagnostic, InputDiagnostic, InputEventDiagnostic, InputOperationSet, LifecycleDiagnostic,
+    FrameDiagnostic, InputDiagnostic, InputOperationSet, LifecycleDiagnostic,
     MAX_DIAGNOSTIC_CAPACITY, MappingDiagnostic, OperationStartedDiagnostic, PermissionDiagnostic,
     RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome,
 };
@@ -176,9 +176,8 @@ pub use mado_pilot_core::{
 };
 pub use mado_pilot_input::{
     CleanupBudget, CleanupState, DeliveryPlan, FocusPolicy, GeometryPolicy, InputAttempt,
-    InputController, InputDescriptor, InputEvent, InputEventObservation, InputExecution,
-    InputFault, InputGeometryResult, InputOpenRequest, InputProvider, InputReceipt, InputRequest,
-    InputRequirement, InputRevalidationCategory, InputSequence, Key, Modifier, PointerButton,
+    InputController, InputDescriptor, InputEvent, InputFault, InputOpenRequest, InputProvider,
+    InputReceipt, InputRequest, InputRequirement, InputSequence, Key, Modifier, PointerButton,
     PointerGeometry, PressedState, SequenceLimits, SequenceOutcome,
 };
 pub use mado_pilot_vision::{

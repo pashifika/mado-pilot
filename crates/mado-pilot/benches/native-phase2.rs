@@ -1583,7 +1583,7 @@ mod native {
             ),
             measure(
                 "event_diagnostics_debug",
-                "the same process-directed receipt and observation hold while debug start, route attempt, per-event observation, and normal terminal records drain in order without loss",
+                "the same process-directed receipt and observation hold while debug start, route-attempt, and normal terminal records drain in order without loss",
                 plan,
                 || ProcessFlow::new(FixtureBehavior::Static, ProcessDiagnosticCase::Debug),
                 process_diagnostic_event,
@@ -2007,7 +2007,6 @@ mod native {
         input_records: usize,
         attempt_records: usize,
         started_records: usize,
-        event_records: usize,
     }
 
     #[cfg(target_os = "macos")]
@@ -2027,19 +2026,17 @@ mod native {
                     input_records: submissions,
                     attempt_records: 0,
                     started_records: 0,
-                    event_records: 0,
                 },
             ),
             ProcessDiagnosticCase::Debug => process_drain_matches(
                 reader,
                 ExpectedProcessDrain {
-                    records: submissions * 4,
+                    records: submissions * 3,
                     normal_losses: 0,
                     debug_losses: 0,
                     input_records: submissions,
                     attempt_records: submissions,
                     started_records: submissions,
-                    event_records: submissions,
                 },
             ),
             ProcessDiagnosticCase::Overflow => process_drain_matches(
@@ -2047,11 +2044,10 @@ mod native {
                 ExpectedProcessDrain {
                     records: PROCESS_OVERFLOW_CAPACITY,
                     normal_losses: 0,
-                    debug_losses: (submissions * 3) as u64,
+                    debug_losses: (submissions * 2) as u64,
                     input_records: PROCESS_OVERFLOW_CAPACITY,
                     attempt_records: 0,
                     started_records: 0,
-                    event_records: 0,
                 },
             ),
         }
@@ -2093,11 +2089,6 @@ mod native {
                 })
                 .count()
                 == expected.started_records
-            && retained
-                .iter()
-                .filter(|record| record.kind() == DiagnosticKind::InputEvent)
-                .count()
-                == expected.event_records
             && sequences_increase
             && matches!(reader.drain(), DiagnosticDrain::OpenEmpty)
     }

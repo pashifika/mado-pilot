@@ -8,8 +8,8 @@ use std::mem::size_of;
 
 use mado_pilot::{
     DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticOperationKind,
-    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord, InputGeometryResult,
-    InputOperationKind, InputRevalidationCategory, Lifecycle, SearchDiagnosticOutcome,
+    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord, Lifecycle,
+    SearchDiagnosticOutcome,
 };
 
 use crate::boundary::{self, Out, Versioned, inputs, prefixes};
@@ -18,8 +18,7 @@ use crate::error::Fault;
 use crate::handle::opaque;
 use crate::input::{
     cleanup_state_code, input_address_scope_code, input_delivery_code, input_fault_code,
-    input_operation_code, permission_kind_code, permission_state_code, sequence_outcome_code,
-    submission_evidence_code,
+    permission_kind_code, permission_state_code, sequence_outcome_code, submission_evidence_code,
 };
 use crate::status::{
     MADOPILOT_ERROR_CATEGORY_ENGINE, MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK,
@@ -479,7 +478,6 @@ fn record(
                 value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT;
             }
         }
-        DiagnosticPayload::InputEvent(payload) => project_input_event(&mut value, payload),
         DiagnosticPayload::Lifecycle(payload) => {
             value.lifecycle = lifecycle_code(payload.lifecycle);
             if let Some(target) = payload.target {
@@ -511,31 +509,6 @@ fn record(
     }
     Ok(value)
 }
-fn project_input_event(
-    value: &mut madopilot_diagnostic_record_t,
-    payload: mado_pilot::InputEventDiagnostic,
-) {
-    value.target = payload.target.get();
-    value.route = input_delivery_code(payload.route);
-    value.input_operations = input_operation_bit(payload.operation);
-    value.requested = payload.expected_native_units;
-    value.submitted = payload.invoked_native_units;
-    value.cleanup_released = payload.event_index;
-    value.permission_state = permission_state_code(payload.authorization);
-    value.reserved = input_event_detail(payload.revalidation, payload.geometry);
-    value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET
-        | MADOPILOT_DIAGNOSTIC_RECORD_HAS_ROUTE
-        | MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE
-        | MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_EVENT_DETAIL;
-    if let Some(candidate_count) = payload.candidate_count {
-        value.result_count = u64::from(candidate_count);
-        value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_CANDIDATE_COUNT;
-    }
-    if let Some(fault) = payload.fault {
-        value.input_fault = input_fault_code(fault);
-        value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT;
-    }
-}
 
 fn boundary_frame(frame: mado_pilot::FrameStamp) -> madopilot_frame_stamp_t {
     crate::capture::stamp(
@@ -564,7 +537,6 @@ const fn diagnostic_kind_code(kind: DiagnosticKind) -> madopilot_diagnostic_kind
         DiagnosticKind::RouteAttempt => MADOPILOT_DIAGNOSTIC_KIND_ROUTE_ATTEMPT,
         DiagnosticKind::Lifecycle => MADOPILOT_DIAGNOSTIC_KIND_LIFECYCLE,
         DiagnosticKind::Permission => MADOPILOT_DIAGNOSTIC_KIND_PERMISSION,
-        DiagnosticKind::InputEvent => MADOPILOT_DIAGNOSTIC_KIND_INPUT_EVENT,
         _ => 0,
     }
 }
@@ -597,112 +569,5 @@ const fn lifecycle_code(lifecycle: Lifecycle) -> madopilot_lifecycle_t {
         Lifecycle::Open => MADOPILOT_LIFECYCLE_OPEN,
         Lifecycle::Closing => MADOPILOT_LIFECYCLE_CLOSING,
         Lifecycle::Closed => MADOPILOT_LIFECYCLE_CLOSED,
-    }
-}
-
-const fn input_operation_bit(kind: InputOperationKind) -> u32 {
-    let code = input_operation_code(kind);
-    if code > 0 { 1 << (code - 1) } else { 0 }
-}
-
-const fn input_event_detail(
-    revalidation: InputRevalidationCategory,
-    geometry: InputGeometryResult,
-) -> u32 {
-    let revalidation = (match revalidation {
-        InputRevalidationCategory::Passed => MADOPILOT_INPUT_REVALIDATION_PASSED,
-        InputRevalidationCategory::TargetLost => MADOPILOT_INPUT_REVALIDATION_TARGET_LOST,
-        InputRevalidationCategory::Ambiguous => MADOPILOT_INPUT_REVALIDATION_AMBIGUOUS,
-        InputRevalidationCategory::Interrupted => MADOPILOT_INPUT_REVALIDATION_INTERRUPTED,
-        InputRevalidationCategory::Unavailable => MADOPILOT_INPUT_REVALIDATION_UNAVAILABLE,
-        _ => 0,
-    })
-    .cast_unsigned();
-    let geometry = (match geometry {
-        InputGeometryResult::NotApplicable => MADOPILOT_INPUT_GEOMETRY_NOT_APPLICABLE,
-        InputGeometryResult::Passed => MADOPILOT_INPUT_GEOMETRY_PASSED,
-        InputGeometryResult::Changed => MADOPILOT_INPUT_GEOMETRY_CHANGED,
-        InputGeometryResult::NotEvaluated => MADOPILOT_INPUT_GEOMETRY_NOT_EVALUATED,
-        _ => 0,
-    })
-    .cast_unsigned();
-    (revalidation & MADOPILOT_DIAGNOSTIC_INPUT_EVENT_REVALIDATION_MASK)
-        | ((geometry << MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_SHIFT)
-            & MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_MASK)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::mem::size_of;
-
-    use mado_pilot::{
-        InputDelivery, InputEventDiagnostic, InputFault, InputGeometryResult, InputOperationKind,
-        InputRevalidationCategory, PermissionState,
-    };
-    use mado_pilot_runtime::{IdentityIssuer, ProviderId};
-
-    use super::{project_input_event, *};
-    use crate::boundary::Versioned;
-
-    #[test]
-    fn input_event_projection_preserves_every_bounded_gate_fact_without_abi_growth() {
-        let target = IdentityIssuer::new()
-            .issue_target(ProviderId::new("c-diagnostic-test"))
-            .expect("issued");
-        let mut record = <madopilot_diagnostic_record_t as Versioned>::failure(
-            u32::try_from(size_of::<madopilot_diagnostic_record_t>()).expect("record size fits"),
-        );
-
-        project_input_event(
-            &mut record,
-            InputEventDiagnostic {
-                target,
-                route: InputDelivery::ProcessDirected,
-                event_index: 7,
-                operation: InputOperationKind::Text,
-                revalidation: InputRevalidationCategory::Ambiguous,
-                candidate_count: Some(2),
-                authorization: PermissionState::Granted,
-                geometry: InputGeometryResult::Changed,
-                expected_native_units: 4,
-                invoked_native_units: 1,
-                fault: Some(InputFault::GeometryChanged),
-            },
-        );
-
-        assert_eq!(record.target, target.get());
-        assert_eq!(record.route, MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED);
-        assert_eq!(
-            record.input_operations,
-            1 << (MADOPILOT_INPUT_OPERATION_TEXT - 1)
-        );
-        assert_eq!(record.cleanup_released, 7);
-        assert_eq!(record.requested, 4);
-        assert_eq!(record.submitted, 1);
-        assert_eq!(record.result_count, 2);
-        assert_eq!(record.permission_state, MADOPILOT_PERMISSION_STATE_GRANTED);
-        assert_eq!(record.input_fault, MADOPILOT_INPUT_FAULT_GEOMETRY_CHANGED);
-        assert_eq!(
-            record.reserved & MADOPILOT_DIAGNOSTIC_INPUT_EVENT_REVALIDATION_MASK,
-            MADOPILOT_INPUT_REVALIDATION_AMBIGUOUS as u32
-        );
-        assert_eq!(
-            (record.reserved & MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_MASK)
-                >> MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_SHIFT,
-            MADOPILOT_INPUT_GEOMETRY_CHANGED as u32
-        );
-        assert_eq!(
-            record.flags,
-            MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET
-                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_ROUTE
-                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT
-                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE
-                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_CANDIDATE_COUNT
-                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_EVENT_DETAIL
-        );
-        assert_eq!(record.activity_tag, 0);
-        assert_eq!(record.address_scope, MADOPILOT_INPUT_ADDRESS_NONE);
-        assert_eq!(record.evidence, MADOPILOT_SUBMISSION_EVIDENCE_NONE);
-        assert_eq!(record.cleanup_owed, 0);
     }
 }

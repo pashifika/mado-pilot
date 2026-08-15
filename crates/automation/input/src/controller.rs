@@ -11,7 +11,7 @@ use mado_pilot_core::{
 
 use crate::descriptor::InputDescriptor;
 use crate::fault::InputFault;
-use crate::receipt::{InputExecution, InputReceipt};
+use crate::receipt::InputReceipt;
 use crate::request::InputRequest;
 
 /// How long a waiting sequence sleeps before re-checking its operation context.
@@ -253,20 +253,6 @@ pub trait InputController: Debug + Send + Sync {
     /// route-threshold accounting.
     fn execute(&self, request: &InputRequest, operation: &OperationContext)
     -> Result<InputReceipt>;
-
-    /// Executes `request` and retains optional privacy-reviewed route facts.
-    ///
-    /// The default preserves the normal execution contract without allocating
-    /// observation storage. Adapters override this only for a caller that has
-    /// explicitly enabled Debug diagnostics.
-    fn execute_with_observations(
-        &self,
-        request: &InputRequest,
-        operation: &OperationContext,
-    ) -> Result<InputExecution> {
-        self.execute(request, operation)
-            .map(|receipt| InputExecution::new(receipt, Vec::new()))
-    }
 
     /// Stops admitting sequences and drains the one in flight.
     ///

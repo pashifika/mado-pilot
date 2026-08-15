@@ -223,16 +223,6 @@ static_assert(std::is_same_v<decltype(madopilot::DiagnosticRecord::region),
                              madopilot::Rect>,
               "search diagnostics expose the exact pixel rectangle");
 static_assert(
-    std::is_same_v<decltype(madopilot::DiagnosticRecord::input_revalidation),
-                   madopilot::InputRevalidationCategory> &&
-        std::is_same_v<decltype(madopilot::DiagnosticRecord::input_geometry),
-                       madopilot::InputGeometryResult> &&
-        std::is_same_v<decltype(madopilot::DiagnosticRecord::input_event_index),
-                       std::uint64_t> &&
-        std::is_same_v<decltype(madopilot::DiagnosticRecord::candidate_count),
-                       std::optional<std::uint64_t>>,
-    "input-event diagnostics expose bounded gate facts without borrowed payloads");
-static_assert(
     std::is_same_v<decltype(&madopilot::InputReceipt::attempt_count),
                    madopilot::Result<std::size_t> (
                        madopilot::InputReceipt::*)() const> &&

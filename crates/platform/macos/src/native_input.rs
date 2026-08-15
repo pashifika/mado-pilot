@@ -9,17 +9,15 @@
 //! delivery with the exact completed-event count; invocation-only evidence never
 //! implies target observation or application consumption.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use mado_pilot_core::{
     CoordinateSpace, GeometryRevision, InputDelivery, OperationContext, PermissionState,
     PixelExtent, Point, Scale, TargetKind, TransformSnapshot,
 };
 use mado_pilot_input::{
-    FocusPolicy, GeometryPolicy, InputEvent, InputEventObservation, InputFault,
-    InputGeometryResult, InputRevalidationCategory, Key, Modifier, PointerButton, PointerGeometry,
-    PressedState,
+    FocusPolicy, GeometryPolicy, InputEvent, InputFault, Key, Modifier, PointerButton,
+    PointerGeometry, PressedState,
 };
 
 use crate::discovery::placement_from_points;
@@ -203,16 +201,6 @@ pub(crate) trait SystemCommitSource {
     fn classify_post_failure(&self, status: ShimStatus) -> InputFault;
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ProcessCommitObservation {
-    expected_native_units: u64,
-    invoked_native_units: u64,
-    target_match_count: u32,
-    authorization: shim::ProcessAuthorizationObservation,
-    geometry: shim::ProcessGeometryObservation,
-    status: Option<ShimStatus>,
-}
-
 pub(crate) trait ProcessCommitSource {
     fn post_process(
         &self,
@@ -231,23 +219,15 @@ pub(crate) trait ProcessCommitSource {
     ) -> InputFault {
         process_status_fault(status, operation)
     }
-
-    fn record_process_observation(&self, _observation: ProcessCommitObservation) {}
 }
 
 pub(crate) struct NativeInputDriver {
     record: Arc<TargetRecord>,
-    observing_event: AtomicBool,
-    process_observations: Mutex<Vec<ProcessCommitObservation>>,
 }
 
 impl NativeInputDriver {
     pub(crate) fn new(record: Arc<TargetRecord>) -> Self {
-        Self {
-            record,
-            observing_event: AtomicBool::new(false),
-            process_observations: Mutex::new(Vec::new()),
-        }
+        Self { record }
     }
 
     /// Reads public post-event access without requesting it.
@@ -1050,16 +1030,6 @@ impl ProcessCommitSource for NativeInputDriver {
     ) -> InputFault {
         self.classify_process_status(status, operation)
     }
-
-    fn record_process_observation(&self, observation: ProcessCommitObservation) {
-        if !self.observing_event.load(Ordering::Acquire) {
-            return;
-        }
-        self.process_observations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(observation);
-    }
 }
 
 impl std::fmt::Debug for NativeInputDriver {
@@ -1139,45 +1109,6 @@ impl InputDriver for NativeInputDriver {
             }
             _ => Err(InputFault::UnsupportedCombination.into()),
         }
-    }
-
-    fn begin_event_observation(&self) {
-        let mut observations = self
-            .process_observations
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        observations.clear();
-        self.observing_event.store(true, Ordering::Release);
-    }
-
-    fn finish_event_observation(
-        &self,
-        route: InputDelivery,
-        event_index: u64,
-        operation: mado_pilot_core::InputOperationKind,
-        fault: Option<InputFault>,
-    ) -> Option<InputEventObservation> {
-        if route != InputDelivery::ProcessDirected {
-            self.observing_event.store(false, Ordering::Release);
-            self.process_observations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clear();
-            return None;
-        }
-        self.observing_event.store(false, Ordering::Release);
-        let commits = std::mem::take(
-            &mut *self
-                .process_observations
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
-        Some(summarize_process_event(
-            event_index,
-            operation,
-            fault,
-            &commits,
-        ))
     }
 
     fn release_pending(
@@ -1383,64 +1314,6 @@ const fn process_permission_denied_fault(post_event_access: PermissionState) -> 
         _ => InputFault::SubmissionFailed,
     }
 }
-fn summarize_process_event(
-    event_index: u64,
-    operation: mado_pilot_core::InputOperationKind,
-    fault: Option<InputFault>,
-    commits: &[ProcessCommitObservation],
-) -> InputEventObservation {
-    let last = commits.last().copied();
-    let target_match_count = last.map(|observation| observation.target_match_count);
-    let revalidation = if matches!(
-        fault,
-        Some(InputFault::Cancelled | InputFault::DeadlineExceeded)
-    ) {
-        InputRevalidationCategory::Interrupted
-    } else if fault == Some(InputFault::TargetLost)
-        || last.is_some_and(|observation| observation.status == Some(ShimStatus::TargetLost))
-    {
-        InputRevalidationCategory::TargetLost
-    } else if target_match_count == Some(1) {
-        InputRevalidationCategory::Passed
-    } else {
-        InputRevalidationCategory::Unavailable
-    };
-    let authorization = last.map_or(PermissionState::Unknown, |observation| {
-        match observation.authorization {
-            shim::ProcessAuthorizationObservation::Unknown => PermissionState::Unknown,
-            shim::ProcessAuthorizationObservation::Granted => PermissionState::Granted,
-            shim::ProcessAuthorizationObservation::NotGranted => PermissionState::NotGranted,
-            shim::ProcessAuthorizationObservation::Unavailable => PermissionState::Unavailable,
-        }
-    });
-    let geometry = last.map_or(
-        InputGeometryResult::NotEvaluated,
-        |observation| match observation.geometry {
-            shim::ProcessGeometryObservation::NotApplicable => InputGeometryResult::NotApplicable,
-            shim::ProcessGeometryObservation::NotEvaluated => InputGeometryResult::NotEvaluated,
-            shim::ProcessGeometryObservation::Passed => InputGeometryResult::Passed,
-            shim::ProcessGeometryObservation::Changed => InputGeometryResult::Changed,
-        },
-    );
-    let expected_native_units = commits.iter().fold(0u64, |total, observation| {
-        total.saturating_add(observation.expected_native_units)
-    });
-    let invoked_native_units = commits.iter().fold(0u64, |total, observation| {
-        total.saturating_add(observation.invoked_native_units)
-    });
-    InputEventObservation {
-        route: InputDelivery::ProcessDirected,
-        event_index,
-        operation,
-        revalidation,
-        candidate_count: target_match_count,
-        authorization,
-        geometry,
-        expected_native_units,
-        invoked_native_units,
-        fault,
-    }
-}
 
 fn process_status_fault(status: ShimStatus, operation: &OperationContext) -> InputFault {
     match status {
@@ -1474,24 +1347,6 @@ fn commit_process<S: ProcessCommitSource + ?Sized>(
         process_wait(operation),
         operation,
     );
-    match result {
-        Ok(outcome) => source.record_process_observation(ProcessCommitObservation {
-            expected_native_units: expected_units,
-            invoked_native_units: outcome.invoked_native_units,
-            target_match_count: outcome.target_match_count,
-            authorization: outcome.authorization,
-            geometry: outcome.geometry,
-            status: None,
-        }),
-        Err(failure) => source.record_process_observation(ProcessCommitObservation {
-            expected_native_units: expected_units,
-            invoked_native_units: failure.invoked_native_units,
-            target_match_count: failure.target_match_count,
-            authorization: failure.authorization,
-            geometry: failure.geometry,
-            status: Some(failure.status),
-        }),
-    }
     let interruption = operation.interruption().map(InputFault::from);
     match result {
         Ok(outcome) if interruption.is_some() => Err(SubmissionFailure::after_native_units(

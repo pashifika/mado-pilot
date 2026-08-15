@@ -11,22 +11,20 @@ use std::time::Duration;
 
 use mado_pilot_core::{
     CancellationToken, CoordinateSpace, GeometryRevision, IdentityIssuer, InputDelivery,
-    InputOperationKind, OperationContext, PermissionState, Point, ProviderId, TargetId, TargetKind,
-    TransformSnapshot,
+    OperationContext, PermissionState, Point, ProviderId, TargetId, TargetKind, TransformSnapshot,
 };
 use mado_pilot_input::{
     CleanupState, DeliveryPlan, FocusPolicy, GeometryPolicy, InputController, InputDescriptor,
-    InputEvent, InputFault, InputGeometryResult, InputRequest, InputRevalidationCategory,
-    InputSequence, Key, Modifier, PointerButton, PointerGeometry, PressedState, SequenceOutcome,
+    InputEvent, InputFault, InputRequest, InputSequence, Key, Modifier, PointerButton,
+    PointerGeometry, PressedState, SequenceOutcome,
 };
 
 use super::{
     CommitGeometry, DriverState, FUNCTION_KEYS, GeometryFingerprint, NativePost, PointerState,
-    ProcessCommitObservation, ProcessCommitSource, SystemButtonState, SystemCommitSource,
-    SystemKeyState, commit_geometry, commit_prepared, commit_process, contains_desktop_point,
-    extent_from_points, focus_wait, key_flag, modifier_flag, native_button, placement_for,
-    process_permission_denied_fault, process_status_fault, release_system, resolve_key_code,
-    summarize_process_event, text_chunks,
+    ProcessCommitSource, SystemButtonState, SystemCommitSource, SystemKeyState, commit_geometry,
+    commit_prepared, commit_process, contains_desktop_point, extent_from_points, focus_wait,
+    key_flag, modifier_flag, native_button, placement_for, process_permission_denied_fault,
+    process_status_fault, release_system, resolve_key_code, text_chunks,
 };
 use crate::input::{InputDriver, MacosInputController, SubmissionFailure, input_capability};
 use crate::shim::{self, ShimStatus};
@@ -729,45 +727,6 @@ fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
     .expect_err("authorization changed after native effect");
     assert_eq!(revoked.fault, InputFault::NotAuthorized);
     assert!(revoked.current_event_may_have_effect);
-}
-#[test]
-fn process_event_summary_retains_final_gate_facts_and_saturating_native_counts() {
-    let commits = [
-        ProcessCommitObservation {
-            expected_native_units: 1,
-            invoked_native_units: 1,
-            target_match_count: 1,
-            authorization: shim::ProcessAuthorizationObservation::Granted,
-            geometry: shim::ProcessGeometryObservation::Passed,
-            status: None,
-        },
-        ProcessCommitObservation {
-            expected_native_units: 2,
-            invoked_native_units: 1,
-            target_match_count: 1,
-            authorization: shim::ProcessAuthorizationObservation::NotGranted,
-            geometry: shim::ProcessGeometryObservation::Changed,
-            status: Some(ShimStatus::PermissionDenied),
-        },
-    ];
-
-    let observation = summarize_process_event(
-        4,
-        InputOperationKind::Text,
-        Some(InputFault::NotAuthorized),
-        &commits,
-    );
-
-    assert_eq!(observation.route, InputDelivery::ProcessDirected);
-    assert_eq!(observation.event_index, 4);
-    assert_eq!(observation.operation, InputOperationKind::Text);
-    assert_eq!(observation.revalidation, InputRevalidationCategory::Passed);
-    assert_eq!(observation.candidate_count, Some(1));
-    assert_eq!(observation.authorization, PermissionState::NotGranted);
-    assert_eq!(observation.geometry, InputGeometryResult::Changed);
-    assert_eq!(observation.expected_native_units, 3);
-    assert_eq!(observation.invoked_native_units, 2);
-    assert_eq!(observation.fault, Some(InputFault::NotAuthorized));
 }
 
 #[test]

@@ -10,14 +10,13 @@ use std::time::Duration;
 
 use mado_pilot_core::{
     CancellationToken, CapabilitySupport, Clock, CoordinateSpace, IdentityIssuer, InputCapability,
-    InputDelivery, InputOperationKind, Lifecycle, MonotonicInstant, OperationContext,
-    PermissionState, Point, ProviderId, Status, SubmissionEvidence, TargetId, TargetKind,
+    InputDelivery, InputOperationKind, Lifecycle, MonotonicInstant, OperationContext, Point,
+    ProviderId, Status, SubmissionEvidence, TargetId, TargetKind,
 };
 use mado_pilot_input::{
     CleanupBudget, CleanupState, DeliveryPlan, FocusPolicy, InputController, InputDescriptor,
-    InputEvent, InputEventObservation, InputFault, InputGeometryResult, InputRequest,
-    InputRevalidationCategory, InputSequence, Key, Modifier, PointerButton, PointerGeometry,
-    PressedState, SequenceOutcome,
+    InputEvent, InputFault, InputRequest, InputSequence, Key, Modifier, PointerButton,
+    PointerGeometry, PressedState, SequenceOutcome,
 };
 
 use super::{
@@ -270,27 +269,6 @@ impl InputDriver for ScriptedDriver {
         Ok(())
     }
 
-    fn finish_event_observation(
-        &self,
-        route: InputDelivery,
-        event_index: u64,
-        operation: InputOperationKind,
-        fault: Option<InputFault>,
-    ) -> Option<InputEventObservation> {
-        (route == InputDelivery::ProcessDirected).then_some(InputEventObservation {
-            route,
-            event_index,
-            operation,
-            revalidation: InputRevalidationCategory::Passed,
-            candidate_count: None,
-            authorization: PermissionState::Granted,
-            geometry: InputGeometryResult::NotApplicable,
-            expected_native_units: 1,
-            invoked_native_units: u64::from(fault.is_none()),
-            fault,
-        })
-    }
-
     fn release_pending(
         &self,
         delivery: InputDelivery,
@@ -411,32 +389,6 @@ fn an_unqualified_process_sequence_reaches_only_the_process_route() {
         vec![InputDelivery::ProcessDirected],
         "one sequence creates route-private state exactly once"
     );
-}
-
-#[test]
-fn debug_execution_retains_one_payload_free_observation_per_process_event() {
-    let target = target();
-    let driver = ScriptedDriver::new();
-    let controller =
-        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
-
-    let execution = controller
-        .execute_with_observations(&process_directed(target, click()), &OperationContext::new())
-        .expect("the process route returns its debug observations");
-
-    assert_eq!(execution.receipt().outcome(), SequenceOutcome::Complete);
-    assert_eq!(execution.observations().len(), 3);
-    for (index, observation) in execution.observations().iter().enumerate() {
-        assert_eq!(observation.route, InputDelivery::ProcessDirected);
-        assert_eq!(observation.event_index, index as u64);
-        assert_eq!(observation.operation, InputOperationKind::Pointer);
-        assert_eq!(observation.revalidation, InputRevalidationCategory::Passed);
-        assert_eq!(observation.candidate_count, None);
-        assert_eq!(observation.authorization, PermissionState::Granted);
-        assert_eq!(observation.expected_native_units, 1);
-        assert_eq!(observation.invoked_native_units, 1);
-        assert_eq!(observation.fault, None);
-    }
 }
 
 #[test]

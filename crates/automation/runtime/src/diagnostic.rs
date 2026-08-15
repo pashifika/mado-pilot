@@ -16,8 +16,7 @@ use mado_pilot_core::{
     PermissionState, PixelRect, Status, SubmissionEvidence, TargetId,
 };
 use mado_pilot_input::{
-    CleanupState, InputAttempt, InputEventObservation, InputFault, InputGeometryResult,
-    InputReceipt, InputRequest, InputRevalidationCategory, SequenceOutcome,
+    CleanupState, InputAttempt, InputFault, InputReceipt, InputRequest, SequenceOutcome,
 };
 use mado_pilot_vision::prepared::{PreparedTemplate, PreparedTemplateInstance};
 
@@ -196,8 +195,6 @@ pub enum DiagnosticKind {
     Input,
     /// One route attempt was made or refused.
     RouteAttempt,
-    /// One privacy-reviewed process-directed logical-event boundary.
-    InputEvent,
     /// A lifecycle operation failed or completed.
     Lifecycle,
     /// A permission state was observed or failed.
@@ -336,54 +333,6 @@ impl RouteAttemptDiagnostic {
     }
 }
 
-/// One process-directed event's bounded revalidation and invocation facts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InputEventDiagnostic {
-    /// The selected public target.
-    pub target: TargetId,
-    /// Attempted route.
-    pub route: InputDelivery,
-    /// Zero-based logical-event index.
-    pub event_index: u64,
-    /// Payload-free operation category.
-    pub operation: InputOperationKind,
-    /// Retained authority result.
-    pub revalidation: InputRevalidationCategory,
-    /// Bounded exact retained-target match count from the final native gate.
-    pub candidate_count: Option<u32>,
-    /// Public authorization state from the final native gate.
-    pub authorization: PermissionState,
-    /// Geometry-policy result.
-    pub geometry: InputGeometryResult,
-    /// Native units required for this logical event.
-    pub expected_native_units: u64,
-    /// Native units whose invocation returned.
-    pub invoked_native_units: u64,
-    /// Typed terminal fault, if this event stopped the route.
-    pub fault: Option<InputFault>,
-}
-
-impl InputEventDiagnostic {
-    pub(crate) const fn from_observation(
-        target: TargetId,
-        observation: InputEventObservation,
-    ) -> Self {
-        Self {
-            target,
-            route: observation.route,
-            event_index: observation.event_index,
-            operation: observation.operation,
-            revalidation: observation.revalidation,
-            candidate_count: observation.candidate_count,
-            authorization: observation.authorization,
-            geometry: observation.geometry,
-            expected_native_units: observation.expected_native_units,
-            invoked_native_units: observation.invoked_native_units,
-            fault: observation.fault,
-        }
-    }
-}
-
 /// A terminal input summary without text, keys, or native identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InputDiagnostic {
@@ -508,8 +457,6 @@ pub enum DiagnosticPayload {
     Input(InputDiagnostic),
     /// Per-route attempt detail.
     RouteAttempt(RouteAttemptDiagnostic),
-    /// Per-event process-directed revalidation and invocation detail.
-    InputEvent(InputEventDiagnostic),
     /// Lifecycle summary.
     Lifecycle(LifecycleDiagnostic),
     /// Permission summary.
@@ -527,7 +474,6 @@ impl DiagnosticPayload {
             Self::Search(_) => DiagnosticKind::Search,
             Self::Input(_) => DiagnosticKind::Input,
             Self::RouteAttempt(_) => DiagnosticKind::RouteAttempt,
-            Self::InputEvent(_) => DiagnosticKind::InputEvent,
             Self::Lifecycle(_) => DiagnosticKind::Lifecycle,
             Self::Permission(_) => DiagnosticKind::Permission,
         }
@@ -943,10 +889,6 @@ impl DiagnosticSink {
             },
             DiagnosticReader { stream },
         ))
-    }
-
-    pub(crate) fn is_debug(&self) -> bool {
-        self.stream.level == DiagnosticLevel::Debug
     }
 
     pub(crate) fn emitter(&self) -> DiagnosticEmitter {
@@ -1379,19 +1321,6 @@ mod tests {
                     format!("{:?}", value.partial_native_effect),
                     format!("{:?}", value.fault),
                 ],
-                DiagnosticPayload::InputEvent(value) => vec![
-                    format!("{:?}", value.target),
-                    format!("{:?}", value.route),
-                    format!("{:?}", value.event_index),
-                    format!("{:?}", value.operation),
-                    format!("{:?}", value.revalidation),
-                    format!("{:?}", value.candidate_count),
-                    format!("{:?}", value.authorization),
-                    format!("{:?}", value.geometry),
-                    format!("{:?}", value.expected_native_units),
-                    format!("{:?}", value.invoked_native_units),
-                    format!("{:?}", value.fault),
-                ],
                 DiagnosticPayload::Lifecycle(value) => vec![
                     format!("{:?}", value.target),
                     format!("{:?}", value.lifecycle),
@@ -1510,22 +1439,6 @@ mod tests {
                 )),
             ),
             (
-                DiagnosticKind::InputEvent,
-                DiagnosticPayload::InputEvent(InputEventDiagnostic {
-                    target,
-                    route: InputDelivery::ProcessDirected,
-                    event_index: 1,
-                    operation: InputOperationKind::Text,
-                    revalidation: InputRevalidationCategory::Passed,
-                    candidate_count: Some(1),
-                    authorization: PermissionState::Granted,
-                    geometry: InputGeometryResult::NotApplicable,
-                    expected_native_units: 3,
-                    invoked_native_units: 3,
-                    fault: None,
-                }),
-            ),
-            (
                 DiagnosticKind::Lifecycle,
                 DiagnosticPayload::Lifecycle(LifecycleDiagnostic {
                     target: Some(target),
@@ -1543,7 +1456,7 @@ mod tests {
             ),
         ];
 
-        assert_eq!(matrix.len(), 9);
+        assert_eq!(matrix.len(), 8);
         let input_key = INPUT_KEY.to_string();
         let sensitive = [
             TEMPLATE_NAME,
