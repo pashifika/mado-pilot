@@ -233,10 +233,8 @@ impl NativeInputDriver {
     /// qualification only. It cannot promote a denied post-event result or demote
     /// a granted one.
     fn ensure_authorized(&self) -> Result<(), InputFault> {
-        match shim::process_authorization() {
-            Ok(observed) if observed.post_event_access == PermissionState::Granted => Ok(()),
-            _ => Err(InputFault::NotAuthorized),
-        }
+        let observed = shim::process_authorization().map_err(|_| InputFault::SubmissionFailed)?;
+        require_post_event_access(observed.post_event_access)
     }
 
     /// Distinguishes direct post-event denial from capture-query denial.
@@ -693,9 +691,9 @@ impl NativeInputDriver {
     /// happening *during* the event and the receipt says so.
     ///
     /// A text chunk is a balanced native key-down/key-up pair. If the down call
-    /// returns and a later gate refuses the up, the driver records one private
-    /// pending release so the controller's bounded cleanup can report and attempt
-    /// it without retaining caller text.
+    /// may have reached the irreversible posting threshold and the up call is
+    /// not known to have returned, the driver records one private pending release
+    /// so bounded cleanup can report and attempt it without retaining caller text.
     fn deliver_text(
         &self,
         text: &str,
@@ -716,7 +714,7 @@ impl NativeInputDriver {
                 flags,
             );
             if let Err(mut failure) = result {
-                if failure.invoked_native_units == 1 {
+                if text_release_may_be_pending(failure) {
                     state.pending_text_release = Some(PendingTextRelease {
                         route: InputDelivery::System,
                         flags,
@@ -750,7 +748,7 @@ impl NativeInputDriver {
                 let button = state
                     .dragging()
                     .map_or(Ok(shim::INPUT_BUTTON_NONE), native_button)?;
-                commit_process(
+                let result = commit_process(
                     self,
                     state.process_event_source.as_ref(),
                     commit_geometry,
@@ -762,9 +760,8 @@ impl NativeInputDriver {
                         location: resolved.desktop,
                     },
                     flags,
-                )?;
-                state.pointer = Some(resolved);
-                Ok(())
+                );
+                retain_process_pointer(&mut state.pointer, resolved, result)
             }
             InputEvent::PointerPress(button) => {
                 let (pointer, commit_geometry) =
@@ -911,7 +908,7 @@ impl NativeInputDriver {
                 flags,
             );
             if let Err(mut failure) = result {
-                if failure.invoked_native_units == 1 {
+                if text_release_may_be_pending(failure) {
                     state.pending_text_release = Some(PendingTextRelease {
                         route: InputDelivery::ProcessDirected,
                         flags,
@@ -997,8 +994,10 @@ impl SystemCommitSource for NativeInputDriver {
             ShimStatus::TargetLost => InputFault::TargetLost,
             ShimStatus::PermissionDenied => InputFault::NotAuthorized,
             ShimStatus::Unsupported => InputFault::UnsupportedCombination,
-            _ if self.ensure_authorized().is_err() => InputFault::NotAuthorized,
-            _ => InputFault::SubmissionFailed,
+            _ => self
+                .ensure_authorized()
+                .err()
+                .unwrap_or(InputFault::SubmissionFailed),
         }
     }
 }
@@ -1014,6 +1013,7 @@ impl ProcessCommitSource for NativeInputDriver {
             return Err(shim::ProcessPostFailure {
                 status: ShimStatus::InvalidArgument,
                 invoked_native_units: 0,
+                native_effect_may_have_occurred: false,
                 target_match_count: 0,
                 authorization: shim::ProcessAuthorizationObservation::Unknown,
                 geometry: shim::ProcessGeometryObservation::NotEvaluated,
@@ -1234,11 +1234,30 @@ fn retain_process_press<T>(
     if result.is_ok()
         || result
             .as_ref()
-            .is_err_and(|failure| failure.invoked_native_units != 0)
+            .is_err_and(|failure| failure.current_event_may_have_effect)
     {
         pressed.push(native_state);
     }
     result
+}
+
+fn retain_process_pointer(
+    pointer: &mut Option<PointerState>,
+    resolved: PointerState,
+    result: SubmissionResult,
+) -> SubmissionResult {
+    if result.is_ok()
+        || result
+            .as_ref()
+            .is_err_and(|failure| failure.current_event_may_have_effect)
+    {
+        *pointer = Some(resolved);
+    }
+    result
+}
+
+fn text_release_may_be_pending(failure: SubmissionFailure) -> bool {
+    failure.current_event_may_have_effect && failure.invoked_native_units < 2
 }
 
 fn release_pending_process<S: ProcessCommitSource + ?Sized>(
@@ -1327,6 +1346,17 @@ fn release_process<S: ProcessCommitSource + ?Sized>(
             Ok(())
         }
         _ => Err(InputFault::UnsupportedCombination),
+    }
+}
+
+fn require_post_event_access(access: PermissionState) -> Result<(), InputFault> {
+    match access {
+        PermissionState::Granted => Ok(()),
+        PermissionState::NotGranted => Err(InputFault::NotAuthorized),
+        PermissionState::Unavailable | PermissionState::Unknown => {
+            Err(InputFault::SubmissionFailed)
+        }
+        _ => Err(InputFault::SubmissionFailed),
     }
 }
 
@@ -1432,13 +1462,15 @@ fn commit_process_for<S: ProcessCommitSource + ?Sized>(
             InputFault::SubmissionFailed,
             usize::try_from(outcome.invoked_native_units).unwrap_or(usize::MAX),
         )),
-        Err(failure) if interruption.is_some() => Err(SubmissionFailure::after_native_units(
+        Err(failure) if interruption.is_some() => Err(SubmissionFailure::after_native_attempt(
             interruption.expect("matched Some"),
             usize::try_from(failure.invoked_native_units).unwrap_or(usize::MAX),
+            failure.native_effect_may_have_occurred,
         )),
-        Err(failure) => Err(SubmissionFailure::after_native_units(
+        Err(failure) => Err(SubmissionFailure::after_native_attempt(
             source.classify_process_failure(failure, operation),
             usize::try_from(failure.invoked_native_units).unwrap_or(usize::MAX),
+            failure.native_effect_may_have_occurred,
         )),
     }
 }

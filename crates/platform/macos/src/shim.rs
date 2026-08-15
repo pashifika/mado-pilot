@@ -25,7 +25,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{CancellationToken, OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 12;
+pub(crate) const ABI_VERSION: u32 = 13;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -1309,11 +1309,13 @@ pub(crate) struct ProcessPostOutcome {
     pub(crate) geometry: ProcessGeometryObservation,
 }
 
-/// A process-directed request failure plus any irreversible prefix.
+/// A process-directed request failure plus its exact returned-call prefix and
+/// conservative irreversible-threshold state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProcessPostFailure {
     pub(crate) status: ShimStatus,
     pub(crate) invoked_native_units: u64,
+    pub(crate) native_effect_may_have_occurred: bool,
     pub(crate) target_match_count: u32,
     pub(crate) authorization: ProcessAuthorizationObservation,
     pub(crate) geometry: ProcessGeometryObservation,
@@ -1453,6 +1455,7 @@ fn process_post(
                 return Err(ProcessPostFailure {
                     status,
                     invoked_native_units: 0,
+                    native_effect_may_have_occurred: false,
                     target_match_count: 0,
                     authorization: ProcessAuthorizationObservation::Unknown,
                     geometry: ProcessGeometryObservation::NotEvaluated,
@@ -1472,6 +1475,7 @@ fn process_post(
         return Err(ProcessPostFailure {
             status: ShimStatus::InvalidArgument,
             invoked_native_units: 0,
+            native_effect_may_have_occurred: false,
             target_match_count: 0,
             authorization: ProcessAuthorizationObservation::Unknown,
             geometry: ProcessGeometryObservation::NotEvaluated,
@@ -1607,6 +1611,7 @@ fn process_post(
             .expect("structure size fits u32"),
         target_match_count: 0,
         invoked_native_units: 0,
+        native_effect_may_have_occurred: 0,
         authorization: 0,
         geometry_result: 1,
     };
@@ -1625,6 +1630,7 @@ fn process_post(
         Err(ProcessPostFailure {
             status,
             invoked_native_units: report.invoked_native_units,
+            native_effect_may_have_occurred: report.native_effect_may_have_occurred != 0,
             target_match_count: report.target_match_count,
             authorization: ProcessAuthorizationObservation::from_raw(report.authorization),
             geometry: ProcessGeometryObservation::from_raw(report.geometry_result),
@@ -2189,10 +2195,27 @@ fn testing_input_text_second_allocation_failure() -> Result<(ShimStatus, [usize;
 }
 
 #[cfg(test)]
+fn testing_process_event_source_release_exception() -> Result<(u32, bool), ShimStatus> {
+    let mut release_calls = u32::MAX;
+    let mut cleanup_completed = u32::MAX;
+    // SAFETY: both outputs are writable scalars. The native seam uses a sentinel
+    // source consumed only by an injected release callback.
+    let status = unsafe {
+        mp_shim_testing_process_event_source_release_exception(
+            &raw mut release_calls,
+            &raw mut cleanup_completed,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((release_calls, cleanup_completed == 1))
+}
+
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProcessPostTestObservation {
     delivery: ShimStatus,
     invoked_native_units: u64,
+    native_effect_may_have_occurred: bool,
     target_match_count: u32,
     calls: [u64; 6],
 }
@@ -2201,6 +2224,7 @@ struct ProcessPostTestObservation {
 fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, ShimStatus> {
     let mut delivery = u32::MAX;
     let mut invoked_native_units = u64::MAX;
+    let mut native_effect_may_have_occurred = u32::MAX;
     let mut target_match_count = u32::MAX;
     let mut calls = [u64::MAX; 6];
     let [authority, preflight, lifetime, prepare, post, release] = &mut calls;
@@ -2212,6 +2236,7 @@ fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, Shi
             scenario,
             &raw mut delivery,
             &raw mut invoked_native_units,
+            &raw mut native_effect_may_have_occurred,
             &raw mut target_match_count,
             &raw mut *authority,
             &raw mut *preflight,
@@ -2225,16 +2250,18 @@ fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, Shi
     Ok(ProcessPostTestObservation {
         delivery: ShimStatus::from_raw(delivery),
         invoked_native_units,
+        native_effect_may_have_occurred: native_effect_may_have_occurred == 1,
         target_match_count,
         calls,
     })
 }
 
 #[cfg(test)]
-fn testing_validate_process_post(scenario: u32) -> Result<(ShimStatus, u32, u64), ShimStatus> {
+fn testing_validate_process_post(scenario: u32) -> Result<(ShimStatus, u32, u64, u32), ShimStatus> {
     let mut delivery = u32::MAX;
     let mut target_match_count = u32::MAX;
     let mut invoked_native_units = u64::MAX;
+    let mut native_effect_may_have_occurred = u32::MAX;
     // SAFETY: every output is writable. Every native scenario fails validation
     // before dereferencing sentinel retained objects or invoking Core Graphics.
     let status = unsafe {
@@ -2243,6 +2270,7 @@ fn testing_validate_process_post(scenario: u32) -> Result<(ShimStatus, u32, u64)
             &raw mut delivery,
             &raw mut target_match_count,
             &raw mut invoked_native_units,
+            &raw mut native_effect_may_have_occurred,
         )
     };
     ShimStatus::from_raw(status).into_result()?;
@@ -2250,6 +2278,7 @@ fn testing_validate_process_post(scenario: u32) -> Result<(ShimStatus, u32, u64)
         ShimStatus::from_raw(delivery),
         target_match_count,
         invoked_native_units,
+        native_effect_may_have_occurred,
     ))
 }
 
@@ -2345,6 +2374,7 @@ struct NativeProcessPostReport {
     invoked_native_units: u64,
     authorization: u32,
     geometry_result: u32,
+    native_effect_may_have_occurred: u32,
 }
 
 unsafe extern "C" {
@@ -2436,10 +2466,16 @@ unsafe extern "C" {
         out_posted: *mut usize,
     ) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_process_event_source_release_exception(
+        out_release_calls: *mut u32,
+        out_cleanup_completed: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_process_post(
         scenario: u32,
         out_delivery_status: *mut u32,
         out_invoked_native_units: *mut u64,
+        out_native_effect_may_have_occurred: *mut u32,
         out_target_match_count: *mut u32,
         out_authority_calls: *mut u64,
         out_preflight_calls: *mut u64,
@@ -2454,6 +2490,7 @@ unsafe extern "C" {
         out_delivery_status: *mut u32,
         out_target_match_count: *mut u32,
         out_invoked_native_units: *mut u64,
+        out_native_effect_may_have_occurred: *mut u32,
     ) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_process_authority_rules(
@@ -2578,7 +2615,8 @@ mod tests {
         linked_layout, live_objects, monotonic_nanos, nanos, process_interruption_callback,
         testing_classify_signature, testing_gate_retries,
         testing_input_text_second_allocation_failure, testing_process_authority_rules,
-        testing_process_post, testing_stop_completion_exception, testing_surface_recommendation,
+        testing_process_event_source_release_exception, testing_process_post,
+        testing_stop_completion_exception, testing_surface_recommendation,
         testing_target_without_process_lifetime, testing_terminalize_twice,
         testing_validate_process_post, validate_open_shape_and_metadata,
     };
@@ -2611,6 +2649,15 @@ mod tests {
         let source = ProcessEventSource::new(0)
             .expect("this host can create a private Core Graphics source");
         drop(source);
+    }
+
+    #[test]
+    fn process_event_source_release_contains_exceptions_and_finishes_cleanup() {
+        let (release_calls, cleanup_completed) = testing_process_event_source_release_exception()
+            .expect("the native release boundary contains its injected exception");
+
+        assert_eq!(release_calls, 1);
+        assert!(cleanup_completed);
     }
 
     #[test]
@@ -2906,8 +2953,9 @@ mod tests {
         ];
         for (scenario, description) in scenarios.into_iter().enumerate() {
             let scenario = u32::try_from(scenario).expect("validation scenario index fits u32");
-            let (delivery, target_count, invoked_units) = testing_validate_process_post(scenario)
-                .expect("native request-validation seam runs");
+            let (delivery, target_count, invoked_units, native_effect) =
+                testing_validate_process_post(scenario)
+                    .expect("native request-validation seam runs");
             let expected = if scenario == 10 {
                 ShimStatus::Unsupported
             } else {
@@ -2917,6 +2965,7 @@ mod tests {
             if !matches!(scenario, 2 | 35) {
                 assert_eq!(target_count, 0, "scenario {scenario}: {description}");
                 assert_eq!(invoked_units, 0, "scenario {scenario}: {description}");
+                assert_eq!(native_effect, 0, "scenario {scenario}: {description}");
             }
         }
     }
@@ -2927,7 +2976,18 @@ mod tests {
 
         assert_eq!(observed.delivery, ShimStatus::NativeException);
         assert_eq!(observed.invoked_native_units, 0);
+        assert!(!observed.native_effect_may_have_occurred);
         assert_eq!(observed.calls, [1, 1, 1, 1, 0, 1]);
+    }
+
+    #[test]
+    fn process_post_separates_possible_effect_from_returned_call_count() {
+        let observed = testing_process_post(20).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::NativeException);
+        assert_eq!(observed.invoked_native_units, 0);
+        assert!(observed.native_effect_may_have_occurred);
+        assert_eq!(observed.calls, [2, 2, 2, 1, 1, 1]);
     }
 
     #[test]

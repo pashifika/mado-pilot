@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 12u
+#define MP_SHIM_ABI_VERSION 13u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -407,6 +407,13 @@ mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
     mp_shim_status *out_delivery_status, size_t *out_allocations, size_t *out_configurations,
     size_t *out_posts, size_t *out_releases, size_t *out_posted);
 
+/*
+ * Raises from the native event-source release operation and proves the opaque
+ * wrapper still completes its ownership cleanup without crossing the C boundary.
+ */
+mp_shim_status mp_shim_testing_process_event_source_release_exception(
+    uint32_t *out_release_calls, uint32_t *out_cleanup_completed);
+
 /* Scenarios for the deterministic process-post state-machine seam. */
 #define MP_SHIM_TEST_PROCESS_SUCCESS 0u
 #define MP_SHIM_TEST_PROCESS_PERMISSION_DENIED 1u
@@ -428,6 +435,7 @@ mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
 #define MP_SHIM_TEST_PROCESS_REVOKED_AFTER_PREPARE 17u
 #define MP_SHIM_TEST_PROCESS_LIFETIME_LOST_AFTER_PREPARE 18u
 #define MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE 19u
+#define MP_SHIM_TEST_PROCESS_POST_EXCEPTION 20u
 
 /* Process-post request and capture-only target-shape validation scenarios. */
 #define MP_SHIM_TEST_PROCESS_VALIDATE_NULL_REQUEST 0u
@@ -474,9 +482,10 @@ mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
  */
 mp_shim_status mp_shim_testing_process_post(
     uint32_t scenario, mp_shim_status *out_delivery_status, uint64_t *out_invoked_native_units,
-    uint32_t *out_target_match_count, uint64_t *out_authority_calls,
-    uint64_t *out_preflight_calls, uint64_t *out_lifetime_calls,
-    uint64_t *out_prepare_calls, uint64_t *out_post_calls, uint64_t *out_release_calls);
+    uint32_t *out_native_effect_may_have_occurred, uint32_t *out_target_match_count,
+    uint64_t *out_authority_calls, uint64_t *out_preflight_calls,
+    uint64_t *out_lifetime_calls, uint64_t *out_prepare_calls, uint64_t *out_post_calls,
+    uint64_t *out_release_calls);
 
 /*
  * Runs one invalid request through the public native entry point. A valid report
@@ -484,7 +493,8 @@ mp_shim_status mp_shim_testing_process_post(
  */
 mp_shim_status mp_shim_testing_validate_process_post(
     uint32_t scenario, mp_shim_status *out_delivery_status,
-    uint32_t *out_target_match_count, uint64_t *out_invoked_native_units);
+    uint32_t *out_target_match_count, uint64_t *out_invoked_native_units,
+    uint32_t *out_native_effect_may_have_occurred);
 
 /* Scenarios for retained process/window identity and owning-process authority. */
 #define MP_SHIM_TEST_AUTHORITY_SUCCESS 0u
@@ -780,7 +790,9 @@ typedef struct mp_shim_process_post_request {
  * owned release it is zero because visibility/window admission is deliberately
  * not consulted. `invoked_native_units` counts returned `CGEventPostToPid`
  * calls, not logical events, queue admission, target observation, consumption,
- * or visual effect.
+ * or visual effect. `native_effect_may_have_occurred` becomes one immediately
+ * before a post call; it closes unsafe fallback and drives bounded cleanup but
+ * is not evidence that the call returned or produced an effect.
  */
 typedef struct mp_shim_process_post_report {
     uint32_t struct_size;
@@ -788,6 +800,7 @@ typedef struct mp_shim_process_post_report {
     uint64_t invoked_native_units;
     uint32_t authorization;
     uint32_t geometry_result;
+    uint32_t native_effect_may_have_occurred;
 } mp_shim_process_post_report;
 
 /*

@@ -4103,16 +4103,76 @@ mp_shim_status mp_shim_process_event_source_create(
     MP_SHIM_END
 }
 
-void mp_shim_process_event_source_release(mp_shim_process_event_source *source) {
+typedef void (*mp_shim_process_event_source_release_op)(CGEventSourceRef source, void *context);
+
+static void mp_shim_production_process_event_source_release(CGEventSourceRef source,
+                                                            void *context) {
+    (void)context;
+    CFRelease(source);
+}
+
+static bool mp_shim_process_event_source_release_with_op(
+    mp_shim_process_event_source *source, mp_shim_process_event_source_release_op release,
+    void *context) {
     if (source == NULL || source->magic != MP_SHIM_PROCESS_EVENT_SOURCE_MAGIC ||
-        source->source == NULL) {
-        return;
+        source->source == NULL || release == NULL) {
+        return false;
     }
+    CGEventSourceRef native_source = source->source;
     source->magic = 0;
-    CFRelease(source->source);
     source->source = NULL;
-    free(source);
-    mp_shim_note_released();
+    @try {
+        release(native_source, context);
+    } @catch (NSException *exception) {
+        (void)exception;
+    } @catch (...) {
+    } @finally {
+        free(source);
+        mp_shim_note_released();
+    }
+    return true;
+}
+
+void mp_shim_process_event_source_release(mp_shim_process_event_source *source) {
+    (void)mp_shim_process_event_source_release_with_op(
+        source, mp_shim_production_process_event_source_release, NULL);
+}
+
+typedef struct {
+    uint32_t release_calls;
+} mp_shim_process_event_source_release_probe;
+
+static void mp_shim_testing_raise_process_event_source_release(CGEventSourceRef source,
+                                                               void *context) {
+    (void)source;
+    mp_shim_process_event_source_release_probe *probe = context;
+    probe->release_calls += 1;
+    [NSException raise:@"MPShimInjectedFailure" format:@"process event source release"];
+}
+
+mp_shim_status mp_shim_testing_process_event_source_release_exception(
+    uint32_t *out_release_calls, uint32_t *out_cleanup_completed) {
+    if (out_release_calls == NULL || out_cleanup_completed == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_release_calls = 0;
+    *out_cleanup_completed = 0;
+    MP_SHIM_BEGIN
+    mp_shim_process_event_source *source =
+        calloc(1, sizeof(mp_shim_process_event_source));
+    if (source == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    source->magic = MP_SHIM_PROCESS_EVENT_SOURCE_MAGIC;
+    source->source = (CGEventSourceRef)(uintptr_t)1;
+    mp_shim_note_owned();
+    mp_shim_process_event_source_release_probe probe = {0};
+    bool cleanup_completed = mp_shim_process_event_source_release_with_op(
+        source, mp_shim_testing_raise_process_event_source_release, &probe);
+    *out_release_calls = probe.release_calls;
+    *out_cleanup_completed = cleanup_completed ? 1u : 0u;
+    return MP_SHIM_OK;
+    MP_SHIM_END
 }
 
 static CGEventFlags mp_shim_input_event_flags(uint32_t flags) {
@@ -4647,6 +4707,7 @@ mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
     }
     out_report->target_match_count = 0;
     out_report->invoked_native_units = 0;
+    out_report->native_effect_may_have_occurred = 0;
     mp_shim_process_report_reset_gate(request, out_report);
 
     uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
@@ -4697,9 +4758,15 @@ mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
                 return status;
             }
             @autoreleasepool {
+                /*
+                 * Entering the void call is the irreversible threshold, even if
+                 * Objective-C unwinding prevents a normal return. Keep that
+                 * conservative fact separate from the exact returned-call count.
+                 */
+                out_report->native_effect_may_have_occurred = 1;
                 ops->post((pid_t)request->target->owner_process, event, ops->context);
+                out_report->invoked_native_units += 1;
             }
-            out_report->invoked_native_units += 1;
         } @finally {
             if (event != NULL) {
                 ops->release(event, ops->context);
@@ -4716,6 +4783,7 @@ mp_shim_status mp_shim_process_post(const mp_shim_process_post_request *request,
         out_report->invoked_native_units = 0;
         out_report->authorization = MP_SHIM_PROCESS_AUTHORIZATION_UNKNOWN;
         out_report->geometry_result = MP_SHIM_PROCESS_GEOMETRY_NOT_EVALUATED;
+        out_report->native_effect_may_have_occurred = 0;
     }
     mp_shim_status valid = mp_shim_validate_process_post(request, out_report);
     if (valid != MP_SHIM_OK) {
@@ -4748,14 +4816,16 @@ static mp_shim_status mp_shim_testing_validation_interruption(void *context) {
 
 mp_shim_status mp_shim_testing_validate_process_post(
     uint32_t scenario, mp_shim_status *out_delivery_status,
-    uint32_t *out_target_match_count, uint64_t *out_invoked_native_units) {
+    uint32_t *out_target_match_count, uint64_t *out_invoked_native_units,
+    uint32_t *out_native_effect_may_have_occurred) {
     if (out_delivery_status == NULL || out_target_match_count == NULL ||
-        out_invoked_native_units == NULL) {
+        out_invoked_native_units == NULL || out_native_effect_may_have_occurred == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
     *out_target_match_count = UINT32_MAX;
     *out_invoked_native_units = UINT64_MAX;
+    *out_native_effect_may_have_occurred = UINT32_MAX;
 
     struct mp_shim_target target = {
         .magic = MP_SHIM_TARGET_MAGIC,
@@ -4791,6 +4861,7 @@ mp_shim_status mp_shim_testing_validate_process_post(
         .struct_size = sizeof(mp_shim_process_post_report),
         .target_match_count = UINT32_MAX,
         .invoked_native_units = UINT64_MAX,
+        .native_effect_may_have_occurred = UINT32_MAX,
     };
     const mp_shim_process_post_request *request_pointer = &request;
     mp_shim_process_post_report *report_pointer = &report;
@@ -4927,6 +4998,7 @@ mp_shim_status mp_shim_testing_validate_process_post(
     *out_delivery_status = mp_shim_process_post(request_pointer, report_pointer);
     *out_target_match_count = report.target_match_count;
     *out_invoked_native_units = report.invoked_native_units;
+    *out_native_effect_may_have_occurred = report.native_effect_may_have_occurred;
     return MP_SHIM_OK;
 }
 
@@ -5152,6 +5224,9 @@ static void mp_shim_testing_process_post_event(pid_t process, CGEventRef event, 
     (void)event;
     mp_shim_process_test_probe *probe = context;
     probe->post_calls += 1;
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_POST_EXCEPTION) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"process event posting"];
+    }
 }
 
 static void mp_shim_testing_process_release_event(CGEventRef event, void *context) {
@@ -5162,18 +5237,20 @@ static void mp_shim_testing_process_release_event(CGEventRef event, void *contex
 
 mp_shim_status mp_shim_testing_process_post(
     uint32_t scenario, mp_shim_status *out_delivery_status, uint64_t *out_invoked_native_units,
-    uint32_t *out_target_match_count, uint64_t *out_authority_calls,
-    uint64_t *out_preflight_calls, uint64_t *out_lifetime_calls,
-    uint64_t *out_prepare_calls, uint64_t *out_post_calls, uint64_t *out_release_calls) {
+    uint32_t *out_native_effect_may_have_occurred, uint32_t *out_target_match_count,
+    uint64_t *out_authority_calls, uint64_t *out_preflight_calls,
+    uint64_t *out_lifetime_calls, uint64_t *out_prepare_calls, uint64_t *out_post_calls,
+    uint64_t *out_release_calls) {
     if (out_delivery_status == NULL || out_invoked_native_units == NULL ||
-        out_target_match_count == NULL || out_authority_calls == NULL ||
-        out_preflight_calls == NULL || out_lifetime_calls == NULL ||
-        out_prepare_calls == NULL || out_post_calls == NULL || out_release_calls == NULL ||
-        scenario > MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE) {
+        out_native_effect_may_have_occurred == NULL || out_target_match_count == NULL ||
+        out_authority_calls == NULL || out_preflight_calls == NULL ||
+        out_lifetime_calls == NULL || out_prepare_calls == NULL || out_post_calls == NULL ||
+        out_release_calls == NULL || scenario > MP_SHIM_TEST_PROCESS_POST_EXCEPTION) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
     *out_invoked_native_units = 0;
+    *out_native_effect_may_have_occurred = 0;
     *out_target_match_count = 0;
     *out_authority_calls = 0;
     *out_preflight_calls = 0;
@@ -5258,6 +5335,7 @@ mp_shim_status mp_shim_testing_process_post(
     }
     *out_delivery_status = delivery;
     *out_invoked_native_units = report.invoked_native_units;
+    *out_native_effect_may_have_occurred = report.native_effect_may_have_occurred;
     *out_target_match_count = report.target_match_count;
     *out_authority_calls = probe.authority_calls;
     *out_preflight_calls = probe.preflight_calls;

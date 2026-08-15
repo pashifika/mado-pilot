@@ -303,6 +303,19 @@ impl SubmissionFailure {
             invoked_native_units,
         }
     }
+
+    pub(crate) const fn after_native_attempt(
+        fault: InputFault,
+        invoked_native_units: usize,
+        current_event_may_have_effect: bool,
+    ) -> Self {
+        Self {
+            fault,
+            current_event_may_have_effect: current_event_may_have_effect
+                || invoked_native_units != 0,
+            invoked_native_units,
+        }
+    }
 }
 
 impl From<InputFault> for SubmissionFailure {

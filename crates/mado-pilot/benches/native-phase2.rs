@@ -1773,21 +1773,21 @@ mod native {
             ),
             measure(
                 "event_diagnostics_normal",
-                "the same process-directed receipt and observation hold while exactly one normal terminal record drains without loss",
+                "the invocation diagnostics drain exactly before the independently observed newer frame, which emits no normal records",
                 plan,
                 || ProcessFlow::new(FixtureBehavior::Static, ProcessDiagnosticCase::Normal),
                 process_diagnostic_event,
             ),
             measure(
                 "event_diagnostics_debug",
-                "the same process-directed receipt and observation hold while debug start, route-attempt, and normal terminal records drain in order without loss",
+                "input start, route-attempt, and terminal records drain in order before the newer-frame observation drains its debug pair separately",
                 plan,
                 || ProcessFlow::new(FixtureBehavior::Static, ProcessDiagnosticCase::Debug),
                 process_diagnostic_event,
             ),
             measure(
                 "event_diagnostic_overflow",
-                "four complete process-directed receipts and separate pointer observations remain exact while the four-slot queue retains normal records and reports every debug loss",
+                "four receipts and observations remain exact while input and subsequent newer-frame drains separately report every retained record and debug loss",
                 plan,
                 || ProcessFlow::new(FixtureBehavior::Static, ProcessDiagnosticCase::Overflow),
                 process_diagnostic_event,
@@ -2029,7 +2029,7 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn independently_observe_tagged_visual(flow: &ProcessFlow) -> bool {
+    fn independently_observe_tagged_visual(flow: &ProcessFlow) -> Option<usize> {
         let before = *flow
             .visual
             .lock()
@@ -2039,18 +2039,20 @@ mod native {
 
         let operation = bounded(OPERATION_WAIT);
         let mut cursor = before.stamp;
+        let mut observed_frames = 0usize;
         loop {
             let Ok(frame) = flow
                 .session
                 .acquire_frame(&FrameRequest::newer_than(cursor), &operation)
             else {
-                return false;
+                return None;
             };
+            observed_frames = observed_frames.checked_add(1)?;
             let Ok(mapping) = frame.map(PixelFormat::Bgra8, &operation) else {
-                return false;
+                return None;
             };
             let Some(fill) = benchmark_mapping_fill(&mapping) else {
-                return false;
+                return None;
             };
             let stamp = frame.stamp();
             if fill == expected_fill {
@@ -2065,7 +2067,7 @@ mod native {
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) =
                         ProcessVisualCursor { stamp, fill };
                 }
-                return exact;
+                return exact.then_some(observed_frames);
             }
             cursor = stamp;
         }
@@ -2089,7 +2091,7 @@ mod native {
             .expect("the process-directed pointer invocation returns a receipt");
         let elapsed = started.elapsed();
         let events_ok = flow.fixture.next_flow(&[expected]);
-        let visual_ok = independently_observe_tagged_visual(flow);
+        let visual_ok = independently_observe_tagged_visual(flow).is_some();
         Sample::unmapped(
             elapsed,
             complete_process_receipt(&receipt, flow.session.target(), 1) && events_ok && visual_ok,
@@ -2151,7 +2153,7 @@ mod native {
         let release_ok = flow
             .fixture
             .finish_flow_after_prefix(&[expected_release], &[pressed, expected_release]);
-        let visual_ok = independently_observe_tagged_visual(flow);
+        let visual_ok = independently_observe_tagged_visual(flow).is_some();
         let correct = observed.summary() == Some(pressed)
             && receipt
                 .as_ref()
@@ -2253,12 +2255,21 @@ mod native {
         }
         let expected_events = vec![correlated_event(POINTER_EVENT, correlation); submissions];
         let events_correct = flow.fixture.next_flow(&expected_events);
-        let visual_correct = independently_observe_tagged_visual(flow);
         let diagnostics_correct =
             process_diagnostics_are_exact(flow.reader.as_ref(), flow.diagnostics, submissions);
+        let observed_frames = independently_observe_tagged_visual(flow);
+        let visual_diagnostics_correct = process_visual_diagnostics_are_exact(
+            flow.reader.as_ref(),
+            flow.diagnostics,
+            observed_frames,
+        );
         Sample::unmapped(
             slowest,
-            receipts_correct && events_correct && visual_correct && diagnostics_correct,
+            receipts_correct
+                && events_correct
+                && diagnostics_correct
+                && observed_frames.is_some()
+                && visual_diagnostics_correct,
         )
     }
 
@@ -2353,6 +2364,70 @@ mod native {
                 .count()
                 == expected.started_records
             && sequences_increase
+            && matches!(reader.drain(), DiagnosticDrain::OpenEmpty)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_visual_diagnostics_are_exact(
+        reader: Option<&DiagnosticReader>,
+        diagnostics: ProcessDiagnosticCase,
+        observed_frames: Option<usize>,
+    ) -> bool {
+        let Some(observed_frames) = observed_frames else {
+            if let Some(reader) = reader {
+                let _ = reader.drain();
+            }
+            return false;
+        };
+        match diagnostics {
+            ProcessDiagnosticCase::Off => reader.is_none(),
+            ProcessDiagnosticCase::Normal => {
+                reader.is_some_and(|reader| matches!(reader.drain(), DiagnosticDrain::OpenEmpty))
+            }
+            ProcessDiagnosticCase::Debug => {
+                process_visual_drain_matches(reader, observed_frames, PROCESS_DIAGNOSTIC_CAPACITY)
+            }
+            ProcessDiagnosticCase::Overflow => {
+                process_visual_drain_matches(reader, observed_frames, PROCESS_OVERFLOW_CAPACITY)
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_visual_drain_matches(
+        reader: Option<&DiagnosticReader>,
+        observed_frames: usize,
+        capacity: usize,
+    ) -> bool {
+        let Some(generated_records) = observed_frames
+            .checked_mul(2)
+            .filter(|generated| *generated > 0)
+        else {
+            return false;
+        };
+        let Some(reader) = reader else {
+            return false;
+        };
+        let DiagnosticDrain::Batch(batch) = reader.drain() else {
+            return false;
+        };
+        let expected_records = generated_records.min(capacity);
+        let expected_debug_losses =
+            u64::try_from(generated_records - expected_records).unwrap_or(u64::MAX);
+        let retained = batch.records();
+        retained.len() == expected_records
+            && batch.losses().normal() == 0
+            && batch.losses().debug() == expected_debug_losses
+            && retained
+                .windows(2)
+                .all(|pair| pair[0].sequence() < pair[1].sequence())
+            && retained.chunks_exact(2).all(|pair| {
+                pair[0].level() == DiagnosticLevel::Debug
+                    && pair[0].kind() == DiagnosticKind::OperationStarted
+                    && pair[1].level() == DiagnosticLevel::Debug
+                    && pair[1].kind() == DiagnosticKind::Frame
+                    && pair[0].operation() == pair[1].operation()
+            })
             && matches!(reader.drain(), DiagnosticDrain::OpenEmpty)
     }
 

@@ -25,7 +25,8 @@ use super::{
     commit_prepared, commit_process, contains_desktop_point, extent_from_points, focus_wait,
     key_flag, modifier_flag, native_button, placement_for, process_permission_denied_fault,
     process_status_fault, release_pending_process, release_process, release_system,
-    resolve_key_code, retain_process_press, text_chunks,
+    require_post_event_access, resolve_key_code, retain_process_pointer, retain_process_press,
+    text_chunks, text_release_may_be_pending,
 };
 use crate::input::{
     InputDriver, MacosInputController, PendingTextRelease, SubmissionFailure, input_capability,
@@ -156,9 +157,17 @@ impl ProcessCommitSource for FakeProcessSource {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct RecordedPointerPost {
+    action: u32,
+    button: u32,
+    location: (f64, f64),
+}
+
 #[derive(Debug, Default)]
 struct RecordingProcessSource {
     keys: Mutex<Vec<(u16, bool)>>,
+    pointers: Mutex<Vec<RecordedPointerPost>>,
     purposes: Mutex<Vec<shim::ProcessPostPurpose>>,
 }
 
@@ -171,13 +180,28 @@ impl ProcessCommitSource for RecordingProcessSource {
     ) -> Result<shim::ProcessPostOutcome, shim::ProcessPostFailure> {
         let shim::ProcessPostRequest { post, purpose, .. } = request;
         self.purposes.lock().expect("uncontended").push(purpose);
-        let shim::ProcessPost::Key { key_code, down } = post else {
-            panic!("the cleanup must post the retained key")
-        };
-        self.keys
-            .lock()
-            .expect("uncontended")
-            .push((key_code, down));
+        match post {
+            shim::ProcessPost::Key { key_code, down } => self
+                .keys
+                .lock()
+                .expect("uncontended")
+                .push((key_code, down)),
+            shim::ProcessPost::Pointer {
+                action,
+                button,
+                location,
+                ..
+            } => self
+                .pointers
+                .lock()
+                .expect("uncontended")
+                .push(RecordedPointerPost {
+                    action,
+                    button,
+                    location,
+                }),
+            unexpected => panic!("unexpected cleanup post: {unexpected:?}"),
+        }
         Ok(shim::ProcessPostOutcome {
             invoked_native_units: 1,
             target_match_count: purpose.expected_target_match_count(),
@@ -205,6 +229,7 @@ impl ProcessCommitSource for UnavailableAfterPartialTextSource {
                 Err(shim::ProcessPostFailure {
                     status: ShimStatus::PlatformFailure,
                     invoked_native_units: 1,
+                    native_effect_may_have_occurred: true,
                     target_match_count: 1,
                     authorization: shim::ProcessAuthorizationObservation::Granted,
                     geometry: shim::ProcessGeometryObservation::NotApplicable,
@@ -231,6 +256,7 @@ impl ProcessCommitSource for UnavailableAfterPartialTextSource {
             ) => Err(shim::ProcessPostFailure {
                 status: ShimStatus::TargetLost,
                 invoked_native_units: 0,
+                native_effect_may_have_occurred: false,
                 target_match_count: 0,
                 authorization: shim::ProcessAuthorizationObservation::Unknown,
                 geometry: shim::ProcessGeometryObservation::NotEvaluated,
@@ -440,13 +466,14 @@ fn a_synthesized_event_carries_only_the_modifiers_this_sequence_is_holding() {
     assert_eq!(modifier_flag(Modifier::Alt), shim::INPUT_FLAG_ALT);
 }
 #[test]
-fn a_partially_posted_process_key_releases_the_exact_resolved_key_code() {
+fn a_possibly_posted_process_key_releases_the_exact_resolved_key_code() {
     let logical = Key::Enter;
     let exact_key_code = 0x7F;
     let mut state = DriverState::default();
-    let partial = Err(SubmissionFailure::after_native_units(
+    let partial = Err(SubmissionFailure::after_native_attempt(
         InputFault::SubmissionFailed,
-        1,
+        0,
+        true,
     ));
     let result = retain_process_press(
         &mut state.keys,
@@ -477,6 +504,74 @@ fn a_partially_posted_process_key_releases_the_exact_resolved_key_code() {
         *source.purposes.lock().expect("uncontended"),
         vec![shim::ProcessPostPurpose::Release]
     );
+}
+
+#[test]
+fn an_ambiguous_drag_move_releases_at_its_possible_destination() {
+    let geometry = fingerprint((0.0, 0.0), (640.0, 420.0), 2.0);
+    let destination = PointerState {
+        desktop: (320.0, 210.0),
+        geometry,
+    };
+    let mut state = DriverState {
+        pointer: Some(PointerState {
+            desktop: (20.0, 30.0),
+            geometry,
+        }),
+        ..DriverState::default()
+    };
+    state.buttons.push(SystemButtonState {
+        logical: PointerButton::Primary,
+        native: shim::INPUT_BUTTON_PRIMARY,
+    });
+
+    let failure = retain_process_pointer(
+        &mut state.pointer,
+        destination,
+        Err(SubmissionFailure::after_native_attempt(
+            InputFault::SubmissionFailed,
+            0,
+            true,
+        )),
+    )
+    .expect_err("the drag move entered native posting before its failure");
+    assert!(failure.current_event_may_have_effect);
+    assert_eq!(state.pointer, Some(destination));
+
+    let source = RecordingProcessSource::default();
+    release_process(
+        PressedState::Button(PointerButton::Primary),
+        &mut state,
+        &source,
+        &OperationContext::new(),
+    )
+    .expect("cleanup releases the possibly moved drag at its destination");
+
+    assert!(state.buttons.is_empty());
+    assert_eq!(
+        *source.pointers.lock().expect("uncontended"),
+        vec![RecordedPointerPost {
+            action: shim::INPUT_POINTER_RELEASE,
+            button: shim::INPUT_BUTTON_PRIMARY,
+            location: destination.desktop,
+        }]
+    );
+}
+
+#[test]
+fn text_cleanup_tracks_an_entered_down_call_without_overstating_returned_calls() {
+    assert!(text_release_may_be_pending(
+        SubmissionFailure::after_native_attempt(InputFault::SubmissionFailed, 0, true)
+    ));
+    assert!(text_release_may_be_pending(
+        SubmissionFailure::after_native_units(InputFault::SubmissionFailed, 1)
+    ));
+    assert!(!text_release_may_be_pending(
+        SubmissionFailure::after_native_units(InputFault::SubmissionFailed, 2)
+    ));
+    assert!(!text_release_may_be_pending(
+        SubmissionFailure::before_event(InputFault::SubmissionFailed)
+    ));
 }
 #[test]
 fn partial_process_text_cleanup_uses_release_authority_after_target_becomes_unavailable() {
@@ -807,6 +902,22 @@ fn capture_query_denial_does_not_masquerade_as_input_denial() {
 }
 
 #[test]
+fn post_event_access_distinguishes_denial_from_probe_failure() {
+    assert_eq!(require_post_event_access(PermissionState::Granted), Ok(()));
+    assert_eq!(
+        require_post_event_access(PermissionState::NotGranted),
+        Err(InputFault::NotAuthorized)
+    );
+    for access in [PermissionState::Unavailable, PermissionState::Unknown] {
+        assert_eq!(
+            require_post_event_access(access),
+            Err(InputFault::SubmissionFailed),
+            "{access:?}"
+        );
+    }
+}
+
+#[test]
 fn every_native_process_status_maps_to_an_existing_input_fault() {
     let operation = OperationContext::new();
     let cases = [
@@ -851,20 +962,24 @@ fn a_post_that_reached_nothing_is_classified_by_what_the_platform_said() {
 
 #[test]
 fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
-    let failure = |status, invoked_native_units, authorization| FakeProcessSource {
-        result: Err(shim::ProcessPostFailure {
-            status,
-            invoked_native_units,
-            target_match_count: 1,
-            authorization,
-            geometry: shim::ProcessGeometryObservation::NotEvaluated,
-        }),
+    let failure = |status, invoked_native_units, native_effect_may_have_occurred, authorization| {
+        FakeProcessSource {
+            result: Err(shim::ProcessPostFailure {
+                status,
+                invoked_native_units,
+                native_effect_may_have_occurred,
+                target_match_count: 1,
+                authorization,
+                geometry: shim::ProcessGeometryObservation::NotEvaluated,
+            }),
+        }
     };
 
     let geometry_changed = commit_process(
         &failure(
             ShimStatus::GeometryChanged,
             0,
+            false,
             shim::ProcessAuthorizationObservation::Unknown,
         ),
         None,
@@ -881,6 +996,7 @@ fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
         &failure(
             ShimStatus::PermissionDenied,
             1,
+            true,
             shim::ProcessAuthorizationObservation::NotGranted,
         ),
         None,
@@ -893,10 +1009,28 @@ fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
     assert_eq!(revoked.fault, InputFault::NotAuthorized);
     assert!(revoked.current_event_may_have_effect);
 
+    let possible_effect = commit_process(
+        &failure(
+            ShimStatus::NativeException,
+            0,
+            true,
+            shim::ProcessAuthorizationObservation::Granted,
+        ),
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("an entered native call can fail before returning");
+    assert_eq!(possible_effect.invoked_native_units, 0);
+    assert!(possible_effect.current_event_may_have_effect);
+
     let contradictory_denial = commit_process(
         &failure(
             ShimStatus::PermissionDenied,
             0,
+            false,
             shim::ProcessAuthorizationObservation::Granted,
         ),
         None,
@@ -992,6 +1126,7 @@ fn process_commit_arbitrates_cancellation_again_after_the_blocking_post() {
         result: Err(shim::ProcessPostFailure {
             status: ShimStatus::PlatformFailure,
             invoked_native_units: 0,
+            native_effect_may_have_occurred: false,
             target_match_count: 1,
             authorization: shim::ProcessAuthorizationObservation::Unknown,
             geometry: shim::ProcessGeometryObservation::NotEvaluated,
