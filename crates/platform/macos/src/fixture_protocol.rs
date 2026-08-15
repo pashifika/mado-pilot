@@ -756,7 +756,7 @@ mod tests {
         parse_command_result_line, parse_event_line, parse_event_line_for_run,
         select_unique_fixture, with_confirmed_fixture_content,
     };
-    use mado_pilot_platform_macos::PROVIDER;
+    use crate::PROVIDER;
 
     const PROCESS: u32 = 4242;
 

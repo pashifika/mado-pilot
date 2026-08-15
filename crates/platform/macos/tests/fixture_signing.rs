@@ -1,6 +1,3 @@
-#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
-#![cfg(all(target_os = "macos", feature = "private-fixture"))]
-
 //! Keychain-independent structural verification for the dedicated input fixture.
 //!
 //! The test copies generated build output into a private temporary bundle, ad-hoc
@@ -8,16 +5,15 @@
 //! metadata-only reporting mode. It never creates a window, requests permission,
 //! reads TCC, changes focus, or posts input.
 
-#[allow(dead_code, unreachable_pub, unused_imports)]
-#[path = "../src/fixture_protocol.rs"]
-mod fixture_protocol;
+#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
+#![cfg(all(target_os = "macos", feature = "private-fixture"))]
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fixture_protocol::BUNDLE_IDENTIFIER;
+use mado_pilot_platform_macos::fixture_protocol::BUNDLE_IDENTIFIER;
 
 struct GeneratedBundle(PathBuf);
 

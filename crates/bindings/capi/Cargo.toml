@@ -35,7 +35,6 @@ harness = false
 mado-pilot = { path = "../../mado-pilot" }
 
 [dev-dependencies]
-mado-pilot-core = { path = "../../automation/core" }
 mado-pilot-testkit = { path = "../../support/testkit" }
 mado-pilot-runtime = { path = "../../automation/runtime" }
 

@@ -2653,17 +2653,13 @@ mod tests {
         let operation = OperationContext::new().with_cancellation(cancellation.clone());
         let context = std::ptr::from_ref(&operation).cast_mut().cast::<c_void>();
 
-        // SAFETY: `context` points to the live operation for both synchronous calls.
-        assert_eq!(
-            unsafe { process_interruption_callback(context) },
-            ShimStatus::Ok.as_raw()
-        );
+        // SAFETY: `context` points to the live operation for this synchronous call.
+        let observed = unsafe { process_interruption_callback(context) };
+        assert_eq!(observed, ShimStatus::Ok.as_raw());
         cancellation.cancel();
-        // SAFETY: `context` still points to the live operation.
-        assert_eq!(
-            unsafe { process_interruption_callback(context) },
-            ShimStatus::TimedOut.as_raw()
-        );
+        // SAFETY: `context` still points to the live operation for this synchronous call.
+        let observed = unsafe { process_interruption_callback(context) };
+        assert_eq!(observed, ShimStatus::TimedOut.as_raw());
     }
 
     #[test]
@@ -2747,9 +2743,9 @@ mod tests {
         ];
 
         for (scenario, description) in scenarios.into_iter().enumerate() {
-            let (delivery, target_count, invoked_units) =
-                testing_validate_process_post(scenario as u32)
-                    .expect("native request-validation seam runs");
+            let scenario = u32::try_from(scenario).expect("validation scenario index fits u32");
+            let (delivery, target_count, invoked_units) = testing_validate_process_post(scenario)
+                .expect("native request-validation seam runs");
             assert_eq!(
                 delivery,
                 ShimStatus::InvalidArgument,

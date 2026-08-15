@@ -28,8 +28,6 @@ mado-pilot-platform-macos = { path = "../platform/macos" }
 windows.workspace = true
 
 [dev-dependencies]
-mado-pilot-capture = { path = "../automation/capture" }
-mado-pilot-core = { path = "../automation/core" }
 mado-pilot-testkit = { path = "../support/testkit" }
 
 [[bench]]

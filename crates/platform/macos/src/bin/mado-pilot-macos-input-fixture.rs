@@ -17,9 +17,7 @@ fn main() {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(dead_code, unreachable_pub, unused_imports)]
-#[path = "../fixture_protocol.rs"]
-mod fixture_protocol;
+use mado_pilot_platform_macos::fixture_protocol;
 
 #[cfg(target_os = "macos")]
 fn main() {

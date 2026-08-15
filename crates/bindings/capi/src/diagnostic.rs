@@ -609,21 +609,23 @@ const fn input_event_detail(
     revalidation: InputRevalidationCategory,
     geometry: InputGeometryResult,
 ) -> u32 {
-    let revalidation = match revalidation {
+    let revalidation = (match revalidation {
         InputRevalidationCategory::Passed => MADOPILOT_INPUT_REVALIDATION_PASSED,
         InputRevalidationCategory::TargetLost => MADOPILOT_INPUT_REVALIDATION_TARGET_LOST,
         InputRevalidationCategory::Ambiguous => MADOPILOT_INPUT_REVALIDATION_AMBIGUOUS,
         InputRevalidationCategory::Interrupted => MADOPILOT_INPUT_REVALIDATION_INTERRUPTED,
         InputRevalidationCategory::Unavailable => MADOPILOT_INPUT_REVALIDATION_UNAVAILABLE,
         _ => 0,
-    } as u32;
-    let geometry = match geometry {
+    })
+    .cast_unsigned();
+    let geometry = (match geometry {
         InputGeometryResult::NotApplicable => MADOPILOT_INPUT_GEOMETRY_NOT_APPLICABLE,
         InputGeometryResult::Passed => MADOPILOT_INPUT_GEOMETRY_PASSED,
         InputGeometryResult::Changed => MADOPILOT_INPUT_GEOMETRY_CHANGED,
         InputGeometryResult::NotEvaluated => MADOPILOT_INPUT_GEOMETRY_NOT_EVALUATED,
         _ => 0,
-    } as u32;
+    })
+    .cast_unsigned();
     (revalidation & MADOPILOT_DIAGNOSTIC_INPUT_EVENT_REVALIDATION_MASK)
         | ((geometry << MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_SHIFT)
             & MADOPILOT_DIAGNOSTIC_INPUT_EVENT_GEOMETRY_MASK)
@@ -637,7 +639,7 @@ mod tests {
         InputDelivery, InputEventDiagnostic, InputFault, InputGeometryResult, InputOperationKind,
         InputRevalidationCategory, PermissionState,
     };
-    use mado_pilot_core::{IdentityIssuer, ProviderId};
+    use mado_pilot_runtime::{IdentityIssuer, ProviderId};
 
     use super::{project_input_event, *};
     use crate::boundary::Versioned;

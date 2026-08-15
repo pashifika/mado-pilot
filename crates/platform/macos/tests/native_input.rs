@@ -12,19 +12,6 @@
 //! separate unrelated activity, and include a sustained-capture soak. Every
 //! opt-in row is documented in `docs/macos-input-verification.md`.
 
-#[allow(dead_code, unreachable_pub, unused_imports)]
-#[path = "../src/fixture_protocol.rs"]
-mod fixture_protocol;
-
-use fixture_protocol::{
-    EVENT_FLAGS_CHANGED, EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE, EVENT_POINTER_PRESS,
-    EVENT_POINTER_RELEASE, EVENT_POINTER_SCROLL, EventSummary, EventTotals,
-    FIXTURE_CONTROL_VERSION, FixtureCommand, FixtureCommandKind, FixtureCommandResult, FixtureMode,
-    FixtureReadyFacts, FixtureRenderer, FixtureSelectionError, MAX_READY_LINE_BYTES,
-    MAX_RECORDED_EVENTS, fixture_ready_facts, fixture_title, format_command_line,
-    frame_is_fixture_content, frame_is_replacement_content, parse_command_result_line,
-    parse_event_line_for_run, select_unique_fixture, with_confirmed_fixture_content,
-};
 use mado_pilot_capture::{
     CaptureProvider, CaptureSession, Frame, FrameRequest, OpenRequest, PixelFormat,
     TargetDescription,
@@ -38,6 +25,15 @@ use mado_pilot_input::{
     CleanupState, DeliveryPlan, FocusPolicy, InputController, InputEvent, InputFault,
     InputOpenRequest, InputProvider, InputRequest, InputRequirement, InputSequence, Key, Modifier,
     PointerButton, PointerGeometry, SequenceOutcome,
+};
+use mado_pilot_platform_macos::fixture_protocol::{
+    EVENT_FLAGS_CHANGED, EVENT_KEY_DOWN, EVENT_KEY_UP, EVENT_POINTER_MOVE, EVENT_POINTER_PRESS,
+    EVENT_POINTER_RELEASE, EVENT_POINTER_SCROLL, EventSummary, EventTotals,
+    FIXTURE_CONTROL_VERSION, FixtureCommand, FixtureCommandKind, FixtureCommandResult, FixtureMode,
+    FixtureReadyFacts, FixtureRenderer, FixtureSelectionError, MAX_READY_LINE_BYTES,
+    MAX_RECORDED_EVENTS, fixture_ready_facts, fixture_title, format_command_line,
+    frame_is_fixture_content, frame_is_replacement_content, parse_command_result_line,
+    parse_event_line_for_run, select_unique_fixture, with_confirmed_fixture_content,
 };
 use mado_pilot_platform_macos::{MacosCaptureProvider, MacosPermissionProbe};
 use std::collections::VecDeque;
@@ -350,20 +346,22 @@ fn validate_window_topology(
 
 #[test]
 fn qualification_topology_rows_cannot_substitute_for_one_another() {
-    let geometry = |origin: (f64, f64), logical: (f64, f64), scale: f64| QualificationGeometry {
-        origin,
-        logical,
-        backing: ((logical.0 * scale) as u32, (logical.1 * scale) as u32),
-        scale: (scale, scale),
+    let geometry = |origin: (f64, f64), logical: (f64, f64), backing: (u32, u32), scale: f64| {
+        QualificationGeometry {
+            origin,
+            logical,
+            backing,
+            scale: (scale, scale),
+        }
     };
-    let single = [geometry((0.0, 0.0), (1_512.0, 982.0), 2.0)];
+    let single = [geometry((0.0, 0.0), (1_512.0, 982.0), (3_024, 1_964), 2.0)];
     let same_scale = [
-        geometry((-1_512.0, 0.0), (1_512.0, 982.0), 2.0),
-        geometry((0.0, 0.0), (2_560.0, 1_440.0), 2.0),
+        geometry((-1_512.0, 0.0), (1_512.0, 982.0), (3_024, 1_964), 2.0),
+        geometry((0.0, 0.0), (2_560.0, 1_440.0), (5_120, 2_880), 2.0),
     ];
     let mixed_scale = [
-        geometry((-3_840.0, -720.0), (3_840.0, 2_160.0), 1.0),
-        geometry((0.0, 0.0), (2_560.0, 1_440.0), 2.0),
+        geometry((-3_840.0, -720.0), (3_840.0, 2_160.0), (3_840, 2_160), 1.0),
+        geometry((0.0, 0.0), (2_560.0, 1_440.0), (5_120, 2_880), 2.0),
     ];
 
     assert_eq!(
@@ -717,7 +715,10 @@ fn fixture_peer_identity(stream: &UnixStream) -> Option<FixturePeerIdentity> {
             u32::try_from(executable.len()).ok()?,
         )
     };
-    if executable_len <= 0 || executable_len as usize >= executable.len() {
+    let Ok(executable_len) = usize::try_from(executable_len) else {
+        return None;
+    };
+    if executable_len >= executable.len() {
         return None;
     }
     // SAFETY: the zero-initialized buffer retains a terminator beyond every
@@ -842,7 +843,9 @@ impl Fixture {
         let sequence = FIXTURE_RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos() as u64);
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+            });
         let run_nonce = (time ^ (u64::from(std::process::id()) << 32) ^ sequence).max(1);
         let mut command = Command::new("/usr/bin/open");
         if arguments.contains(&"--inactive") {
@@ -1727,7 +1730,6 @@ fn owned_fixture_control_is_versioned_idempotent_and_identity_bound() {
 }
 
 /// Proves a retained `SCContentFilter` never starts publishing a same-process,
-
 /// same-title successor after its exact owned window is destroyed. If
 /// ScreenCaptureKit reports an explicit terminal outcome, it must be target loss;
 /// a quiescent stream is not relabeled from frame-request timeouts.
@@ -2781,6 +2783,8 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         observe_controlled_transition(&mut fixture, capture.as_ref(), observed_stamp, true);
 
     const PROCESS_TEXT_CHUNK_UNITS: usize = 16;
+    let process_text_chunk_units =
+        u32::try_from(PROCESS_TEXT_CHUNK_UNITS).expect("text chunk size fits u32");
     let mut boundary_text = "x".repeat(PROCESS_TEXT_CHUNK_UNITS - 1);
     boundary_text.push('\u{1F642}');
     boundary_text.push('y');
@@ -2806,10 +2810,7 @@ fn qualify_process_directed_renderer(mode: FixtureMode, expected_topology: Quali
         (
             "maximum representable text",
             maximum_text,
-            vec![
-                PROCESS_TEXT_CHUNK_UNITS as u32;
-                InputEvent::MAX_TEXT_CHARS / PROCESS_TEXT_CHUNK_UNITS
-            ],
+            vec![process_text_chunk_units; InputEvent::MAX_TEXT_CHARS / PROCESS_TEXT_CHUNK_UNITS],
             Duration::from_secs(30),
         ),
     ];

@@ -66,6 +66,10 @@ mod availability;
 #[cfg(target_os = "macos")]
 mod discovery;
 #[cfg(target_os = "macos")]
+#[doc(hidden)]
+#[allow(missing_docs)]
+pub mod fixture_protocol;
+#[cfg(target_os = "macos")]
 mod input;
 #[cfg(target_os = "macos")]
 mod native;

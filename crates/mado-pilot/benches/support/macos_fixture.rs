@@ -563,7 +563,9 @@ fn read_bounded_lines(mut stream: UnixStream, sender: &mpsc::SyncSender<ReaderMe
 fn next_run_nonce() -> u64 {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos() as u64);
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+        });
     let sequence = RUN_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     (timestamp ^ (u64::from(std::process::id()) << 32) ^ sequence).max(1)
 }
