@@ -75,6 +75,15 @@ are documented below; see
 [windows-input-verification.md](windows-input-verification.md) and
 [macos-input-verification.md](macos-input-verification.md).
 
+A process-directed macOS candidate was rejected on the declared release host.
+The caller-selected window could not retain the candidate's required one-window
+process authority while its ScreenCaptureKit stream was active: public discovery
+reported a second same-process, on-screen, layer-zero window. Enforcing the bound
+refused before posting; relaxing or heuristically filtering it could route an
+irreversible event to different same-process UI. The macOS row therefore remains
+`System` only. See the
+[Phase 2.2 No-Go evidence](evidence/phase-2-native/macos-process-directed-no-go.md).
+
 One limit on reading the macOS row applies to every macOS capture claim in this
 document. macOS grants Screen Recording per application, and this Adapter will not
 prompt, so a host that has neither granted nor denied it — a continuous-integration
@@ -812,7 +821,7 @@ responsibilities a later phase takes on.
 | Windows native capture ownership policy | Implemented for the production Adapter's two-frame WGC pool, extent-derived process-shared retained maximum capped at 40, 128 MiB surface / 2 GiB session / 4 GiB process safety ceilings, lease-safe reuse, resize retirement, callback fence, and teardown. [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts the `native-phase2` capture/transition profiles, while the separate revision-bound 1280×720/dual-4K acceptance matrix and callback-copy/staging/resident budgets remain open under `G-013` |
 | macOS shim language and containment rules | Decided in [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the retained `G-003` measurements, and implemented in `mado-pilot-platform-macos` with the containment, ownership, autorelease, fence, teardown, panic, and linkage tests the record named. The containment and ownership cases need a host that has granted Screen Recording and report a skip elsewhere |
 | macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, reference-counted native session lifetime, and idempotent teardown. The lifetime is verified by running the ownership scenarios with the shim compiled under AddressSanitizer, which is step 10 of the [contributing](../CONTRIBUTING.md) sequence and needs the same granted host those scenarios do. The detached budget remains a reviewed bound; ADR 0021 invalidated the historical native performance acceptance pending revision-bound requalification |
-| macOS input route and focus authority | Decided in [ADR 0016](adr/0016-macos-input-delivery-surface-and-focus-authority.md) and refined by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md): `System` only with no exact-window or process-directed pair on any macOS target, Accessibility re-read before every irreversible event, application-level activation followed by bounded public Accessibility read-back of the exact retained window, and AppKit and HIToolbox loaded rather than linked |
+| macOS input route and focus authority | Decided in [ADR 0016](adr/0016-macos-input-delivery-surface-and-focus-authority.md) and refined by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md): `System` only with no exact-window or process-directed pair on any macOS target, Accessibility re-read before every irreversible event, application-level activation followed by bounded public Accessibility read-back of the exact retained window, and AppKit and HIToolbox loaded rather than linked. The 2026-08-14 [process-directed requalification](evidence/phase-2-native/macos-process-directed-no-go.md) remains No-Go because active capture violates the candidate's required one-window admission bound. |
 | Native window and display capture | Implemented on both targets, and reachable from the public composition root through the target-specific facade constructors |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |

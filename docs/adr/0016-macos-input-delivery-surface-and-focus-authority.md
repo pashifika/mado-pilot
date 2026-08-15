@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-02
-- **Amended:** 2026-08-10
+- **Amended:** 2026-08-14
 - **Resolves gate:** _none_
 - **Supersedes:** _none_
 
@@ -43,6 +43,16 @@ window ahead of the selected window. Window-server compositing order therefore
 cannot, by itself, answer which application window owns keyboard focus. On the
 qualified host, the public Accessibility model continued to report the selected
 window as focused and the auxiliary window as unfocused.
+
+The 2026-08-14 process-directed requalification tested whether public
+`CGEventPostToPid` could add a truthful process-scoped route while retaining a
+single-window admission rule. Active capture again produced a second
+same-process ordinary-layer window, so restoring the frozen one-window predicate
+changed admission from `Unknown` to `Unsupported` before posting. An earlier
+candidate matrix had passed only after allowing additional same-process windows
+and therefore did not qualify the intended contract. The negative result and its
+privacy-bounded observations are retained in
+[`../evidence/phase-2-native/macos-process-directed-no-go.md`](../evidence/phase-2-native/macos-process-directed-no-go.md).
 
 ## Decision
 
@@ -106,6 +116,17 @@ nothing could implement it. A fixture could receive a Mach or socket message, bu
 that would test a private channel this Adapter invented rather than the input path
 a caller gets. Advertising a capability whose implementation is a test-only
 side-channel makes the descriptor a claim about the fixture, not about macOS.
+
+**Advertise `CGEventPostToPid` as a process-directed route.** Rejected by native
+qualification. The caller still selects one retained window, while the native
+call addresses its owning process and does not identify the window or responder
+that consumes an event. Requiring exactly one eligible ordinary window was the
+candidate's fail-closed bound, but ScreenCaptureKit capture itself caused the
+qualified process to publish a second on-screen, layer-zero window. Relaxing the
+bound admits wrong-window routing; excluding the additional window by mutable
+title, rectangle, layer, visibility, or owner cannot prove its provenance and can
+also exclude a real application dialog or overlay. The linked No-Go evidence
+records the observed two-window state and the rejected workarounds.
 
 **Fall back to system input when background delivery is requested.** Rejected for
 the reason `mado-pilot-input` states in its own contract: substituting system

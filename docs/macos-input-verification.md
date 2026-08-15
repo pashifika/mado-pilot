@@ -24,6 +24,26 @@ after a preceding route was refused without possible native effect. The Adapter
 never substitutes system input on its own: doing so would focus a window the
 caller asked not to disturb.
 
+### Why process-directed delivery remains unsupported
+
+A 2026-08-14 native qualification attempted to add public
+`CGEventPostToPid` with process address scope and invocation-only evidence. The
+caller would still select one retained window, so the candidate required exactly
+one current eligible ordinary window in that process before every event. Starting
+the retained ScreenCaptureKit stream caused the fixture process itself to publish
+a second on-screen, layer-zero window. Strict authority then refused before
+posting.
+
+Allowing the second window would qualify a weaker contract: a same-process modal
+dialog, panel, launcher surface, or game overlay could become the event receiver
+while capture and result correlation still name the selected window. Filtering
+the observed 66×20 window by title, size, position, layer, visibility, or owner is
+not an authority check because ordinary application UI can reproduce those
+mutable fields and public `SCWindow` metadata supplies no unforgeable provenance.
+The observation, concrete misuse scenario, rejected workarounds, and reopening
+criteria are recorded in
+[`evidence/phase-2-native/macos-process-directed-no-go.md`](evidence/phase-2-native/macos-process-directed-no-go.md).
+
 Every target names `PermissionKind::InputControl` — Accessibility — as the
 authorization input needs, separately from the Screen Recording that capture
 needs. Naming it is not a claim that it is held.

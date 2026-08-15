@@ -63,7 +63,7 @@ Adding a package here is not a claim that its behavior exists.
 | Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
 | Native capture | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; the macOS current-display matrix passes while Windows and shared-display acceptance remain open |
-| Native input submission | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; system and exact-window routes are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
+| Native input submission | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; macOS exposes `System` only, Windows additionally exposes exact-window `WindowMessage`, receipts state submission evidence rather than application consumption, and the [macOS process-directed candidate remains No-Go](docs/evidence/phase-2-native/macos-process-directed-no-go.md) |
 | Bounded diagnostic observation | Implemented through Rust, C ABI 1.2, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and privacy-reviewed records |
 | OCR, watchers | Not implemented |
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.2 while preserving the released ABI 1.0 prefix; the unreleased 1.1 draft is intentionally unsupported |
