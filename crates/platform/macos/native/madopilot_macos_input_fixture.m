@@ -1201,8 +1201,16 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                                     (!resizes ||
                                                      units == MPFixtureAnimateTextUnits));
                                                if (animation_event) {
+                                                   /*
+                                                    * A correlated qualification sequence toggles
+                                                    * once per tag. Legacy untagged example flows
+                                                    * latch the expected fill so a later key-down
+                                                    * cannot erase their visual observation.
+                                                    */
                                                    bool next_fill =
-                                                       !mp_fixture_alternate_fill;
+                                                       tagged_visual_event
+                                                           ? !mp_fixture_alternate_fill
+                                                           : true;
                                                    uint32_t benchmark_fill =
                                                        next_fill ? replacement_fill : fill;
                                                    if (mp_fixture_apply_fill(mp_fixture_window,
