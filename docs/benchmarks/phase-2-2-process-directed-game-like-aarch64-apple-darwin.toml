@@ -106,8 +106,8 @@ allocated_growth_bytes = 0
   kind = "absolute"
   unit = "milliseconds"
   direction = "at_most"
-  limit = 300.0
-  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+  limit = 112.18
+  rationale = "equal to the frozen p95 ceiling because a valid sample distribution has p50 at most p95"
 
   [[measurement.budget]]
   measure = "latency_p95"

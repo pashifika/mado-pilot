@@ -798,7 +798,7 @@ const fn phase2_2_process_latency_budgets(event_p95: Duration) -> [LatencyBudget
         ),
         LatencyBudget::new(
             "event_authority_preflight_post",
-            Duration::from_millis(300),
+            event_p95,
             event_p95,
             Duration::from_secs(2),
         ),
