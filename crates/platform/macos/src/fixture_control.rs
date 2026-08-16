@@ -7,6 +7,7 @@
 //! numeric PID.
 
 use std::ffi::{CStr, c_int, c_void};
+use std::fmt;
 use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
@@ -143,6 +144,14 @@ pub struct DesktopInputState {
     process_launch_time: u64,
     pointer_x: u64,
     pointer_y: u64,
+}
+
+impl fmt::Debug for DesktopInputState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DesktopInputState")
+            .finish_non_exhaustive()
+    }
 }
 
 /// Samples the current foreground-process lifetime and physical cursor without
