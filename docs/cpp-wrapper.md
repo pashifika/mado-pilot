@@ -571,6 +571,9 @@ route: the wrapper flow requires `ProcessDirected` with owning-process scope,
 unknown compatibility, and invocation-only evidence, preserves foreground, and
 permits no fallback. Run real input only against a target you own and have
 selected exactly, as described in the platform verification documents.
+This macOS mode exercises topic-branch candidate behavior; it is not a current
+release support claim while exact single-display and same-scale qualification
+rows remain unexecuted.
 
 The check needs a C++ compiler and **CMake 3.22 or later** in addition to the C
 compiler. Both are the release target's own on both hosts; set `CXX` or `CMAKE`

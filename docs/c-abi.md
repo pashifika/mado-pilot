@@ -504,12 +504,14 @@ Windows advertises exact-window `WindowMessage` for ordinary retained
 top-level windows as unknown-but-attemptable with target-queue-admission
 evidence. The dedicated fixture raises the same route to supported with
 target-protocol acknowledgement. Both remain separate from Windows system
-routes. macOS advertises system routes plus qualified process-directed routes
-with owning-process scope, unknown compatibility, and invocation-only evidence
-for retained top-level windows. Additional windows in the same process do not
-revoke that scope, and no exact-window route exists on macOS. The negotiated
-capability report, not a platform guess in the caller, decides what may be
-admitted.
+routes. The topic-branch macOS implementation can report system routes plus
+qualification-gated process-directed candidates with owning-process scope,
+unknown compatibility, and invocation-only evidence for retained top-level
+windows. Additional windows in the same process do not revoke that scope, and
+no exact-window route exists on macOS. The corrected source currently has no
+release-qualified process-directed pair because exact single-display and
+same-scale rows remain unexecuted. The negotiated capability report, not a
+platform guess in the caller, decides what may be admitted.
 
 ## Bounded diagnostic stream
 

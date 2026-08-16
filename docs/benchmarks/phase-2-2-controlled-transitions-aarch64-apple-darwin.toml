@@ -1,10 +1,10 @@
 # Phase 2.2 controlled-stimulus transitions, measured on aarch64-apple-darwin at source
-# 8309a05c3e7696f3081c5afef6dd6979ea1bb084 and tree
-# 27fe879e0c4bb55fe4850d9a50737b568936cc10.
+# 850b7b26dde49035dd5759685ab6f0c7d996167f and tree
+# 3562f60ccaac62a778ffaf5af7ff26af19feed53.
 #
-# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029
-# accepts this revision-bound run and its pre-measurement qualification
-# budgets. These are regression ceilings, not user-facing promises.
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029 sets
+# the frozen pre-measurement budgets. This corrected-revision profile passes
+# those budgets; release publication still awaits the missing topology rows.
 
 format_version = 1
 
@@ -18,8 +18,8 @@ measurements_recorded = true
 # A committed profile under docs/benchmarks/ carries the budgets.
 
 [profile]
-fixture = "separately linked private macOS fixture Rust, protocol-v9, header, Objective-C, and renderer sources"
-fixture_sha256 = "474d73530ed02b9060f065fb9df483d0a0e5a647ce14a76eab907b89bbd5f0c6"
+fixture = "separately linked private macOS fixture Rust, protocol-v10, header, Objective-C, and renderer sources"
+fixture_sha256 = "51c6f991a942d30440f18a8b06e105ebb3bc15511a9e909ef696b300ba8d4c7b"
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
@@ -28,7 +28,7 @@ warmup_iterations = 5
 sample_count = 50
 correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
 queue_policy = "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
-notes = "source commit 8309a05c3e7696f3081c5afef6dd6979ea1bb084, tree 27fe879e0c4bb55fe4850d9a50737b568936cc10; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; public frame geometry: 3840x2160 logical/backing 1x at (-3840,109), 2560x1440 logical/5120x2880 backing 2x main at (0,0), 1512x982 logical/3024x1964 backing 2x at (2560,268); mixed 2x/1x signed-origin seam and same-scale 2x/2x seam; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 d355de10628df7f0c938e4dc72df22b3dc3666997d9e638865b8d624cd6c8ece; executable paths deliberately omitted; lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
+notes = "source commit 850b7b26dde49035dd5759685ab6f0c7d996167f, tree 3562f60ccaac62a778ffaf5af7ff26af19feed53; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; 3840x2160 logical/backing 1x at signed negative origin, 2560x1440 logical/5120x2880 backing 2x main, 1512x982 logical/3024x1964 backing 2x; mixed 2x/1x and same-scale 2x/2x seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundles ad-hoc signed with approved identifiers; fixture executable sha256 34277ec97b134ddedff38930c72f9b9588b762c2828f02f05e761f40d8ae78d5; executable paths deliberately omitted; lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
 
 [[budget]]
 measure = "result_correctness"
@@ -54,26 +54,26 @@ rationale = "the retained ADR 0025 ceiling permits one transient resized-frame c
 workload = "resize_recreation"
 correctness_oracle = "one acknowledged private resize advances epoch and geometry and returns the resized extent independently of the acknowledgement"
 result_correctness = 0
-latency_p50_ms = 51.864000
-latency_p95_ms = 65.297417
-latency_max_ms = 68.836708
-iteration_span_ms = 50.765624
+latency_p50_ms = 51.805417
+latency_p95_ms = 53.924083
+latency_max_ms = 54.518834
+iteration_span_ms = 50.038895
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 8328
-steady_allocated_bytes = 7194
+peak_allocated_bytes = 8981
+steady_allocated_bytes = 7847
 allocated_growth_bytes = 0
 
 [[measurement]]
 workload = "open_first_frame"
 correctness_oracle = "each fresh capture-only session returns a correctly identified deterministic first frame and closes"
 result_correctness = 0
-latency_p50_ms = 103.177458
-latency_p95_ms = 111.884583
-latency_max_ms = 116.651958
-iteration_span_ms = 162.256762
+latency_p50_ms = 104.268833
+latency_p95_ms = 114.179083
+latency_max_ms = 116.080958
+iteration_span_ms = 167.988162
 mapped_bytes_per_result = 5327872
-peak_allocated_bytes = 5335290
-steady_allocated_bytes = 4669
+peak_allocated_bytes = 5335943
+steady_allocated_bytes = 5322
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -88,13 +88,13 @@ allocated_growth_bytes = 0
 workload = "retained_pressure_resume"
 correctness_oracle = "controlled publications fill the reported retained limit; releasing one slot resumes with an observable sequence gap"
 result_correctness = 0
-latency_p50_ms = 3.372792
-latency_p95_ms = 17.096834
-latency_max_ms = 17.683000
-iteration_span_ms = 1032.893175
+latency_p50_ms = 3.858083
+latency_p95_ms = 17.724750
+latency_max_ms = 18.894625
+iteration_span_ms = 1059.535392
 mapped_bytes_per_result = 0
-stale_work_ratio = 0.834983498
-peak_allocated_bytes = 4671943
+stale_work_ratio = 0.837662338
+peak_allocated_bytes = 4672597
 steady_allocated_bytes = 0
 allocated_growth_bytes = 0
 
@@ -102,13 +102,13 @@ allocated_growth_bytes = 0
 workload = "close_drain"
 correctness_oracle = "explicit capture-session close reaches the closed state and remains idempotent"
 result_correctness = 0
-latency_p50_ms = 55.533500
-latency_p95_ms = 68.959166
-latency_max_ms = 70.590334
-iteration_span_ms = 161.211054
+latency_p50_ms = 59.643875
+latency_p95_ms = 71.861083
+latency_max_ms = 75.761333
+iteration_span_ms = 165.001539
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 7258
-steady_allocated_bytes = 4669
+peak_allocated_bytes = 7911
+steady_allocated_bytes = 5322
 allocated_growth_bytes = 0
 
 [[measurement.budget]]

@@ -12,10 +12,12 @@ invalidated the three historical macOS Phase 2 native profiles after source and
 correctness-oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
 now accepts the macOS diagnostic slice,
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
-revision-bound macOS native input and public-language profile, and accepted
+revision-bound macOS native input and public-language profile. Accepted-design
 [ADR 0029](adr/0029-macos-process-directed-input.md) binds the measured
-Phase 2.2 macOS process-directed and controlled-stimulus lineage below. The
-remaining native workload and target gaps stay open.
+Phase 2.2 macOS process-directed and controlled-stimulus lineage below, while
+its corrected-source release pair decisions remain blocked by unexecuted
+single-display and same-scale rows. The remaining native workload and target
+gaps stay open.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -531,29 +533,30 @@ per-event authority/preflight/post path (`event_authority_preflight_post`),
 release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
 overflow around process-directed events.
 
-Five revision-bound profiles were measured on the approved Apple Silicon host
-at the final qualified source commit
-`8309a05c3e7696f3081c5afef6dd6979ea1bb084` (implementation tree
-`27fe879e0c4bb55fe4850d9a50737b568936cc10`):
+Five revision-bound profiles were remeasured on the approved Apple Silicon host
+at corrected source commit `850b7b26dde49035dd5759685ab6f0c7d996167f`
+(implementation tree `3562f60ccaac62a778ffaf5af7ff26af19feed53`):
 `phase-2-2-controlled-capture-aarch64-apple-darwin`,
 `phase-2-2-controlled-transitions-aarch64-apple-darwin`,
 `phase-2-2-process-directed-appkit-aarch64-apple-darwin`,
 `phase-2-2-process-directed-game-like-aarch64-apple-darwin`, and
 `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin`. Their committed
-records under `docs/benchmarks/` are normative. Across 2,700 retained samples,
-every workload correctness oracle passed; post-warmup allocation growth was
-2,624 bytes for each renderer's `discovery_open_retained_authority` workload
-and zero for every other workload, within the frozen growth budgets; and
-every frozen p50, p95, hard-maximum, mapped-byte, stale-work, peak-live-heap,
-and diagnostic-capacity gate passed.
+records under `docs/benchmarks/` are normative performance records. Across
+2,700 retained samples, every workload correctness oracle passed; post-warmup
+allocation growth was 2,624 bytes for the AppKit
+`discovery_open_retained_authority` workload and zero for every other workload,
+within the frozen growth budgets; and every frozen p50, p95, hard-maximum,
+mapped-byte, stale-work, peak-live-heap, and diagnostic-capacity gate passed.
+These passing budgets do not substitute for the unexecuted topology rows and do
+not qualify any current-source process-directed pair for release.
 
 The pre-measurement ceilings remain the regression budgets; they were not
 re-ceilinged from the result. The
 [ADR 0029](adr/0029-macos-process-directed-input.md) defines those ceilings,
 and the separate privacy-reviewed
 [observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
-records the exact measurements, hashes, excluded pre-sampling setup failure,
-and acceptance decision. Game-like samples carry the fixture's explicit
+records the exact measurements, hashes, excluded stopped attempt, and partial
+qualification decision. Game-like samples carry the fixture's explicit
 mode/renderer fact, so an AppKit-renderer measurement cannot be filed as a
 game-like result.
 

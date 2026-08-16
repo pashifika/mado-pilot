@@ -1,13 +1,15 @@
 # ADR 0029: macOS owning-process input delivery
 
-- **Status:** Accepted — the complete revision-bound native matrix in the
-  [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
-  qualifies all fourteen controlled operation/target/coordinate-space pairs on
-  source commit `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, source tree
-  `27fe879e0c4bb55fe4850d9a50737b568936cc10`
+- **Status:** Accepted design; release qualification suspended — the historical
+  complete matrix qualified all fourteen controlled pairs on source commit
+  `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, but the later product correction
+  at `850b7b26dde49035dd5759685ab6f0c7d996167f` invalidated those pair decisions.
+  The [current observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
+  records passing route-wide and mixed-scale rows, with exact single-display
+  and same-scale rows still unexecuted.
 - **Date:** 2026-08-16
-- **Resolves gate:** macOS owning-process `ProcessDirected` publication through
-  the recorded native matrix
+- **Release gate:** blocked for the corrected source until its complete
+  revision-bound native matrix passes
 - **Supersedes:** only ADR 0016's macOS system-only delivery-surface decision;
   its controlled-linkage, non-prompting permission, `System` focus-authority,
   no-private-window-control, and no-implicit-fallback rules remain in force
@@ -171,13 +173,15 @@ the existing no-fallback contract after possible effect.
   native address is its owning process; a multi-window target process can
   consume events anywhere inside itself, and MadoPilot will not claim
   otherwise.
-- The accepted support claim is bound to the fourteen exact pairs in the
-  revision-bound observed report. The qualified source advertises each as
-  `Unknown`, owning-process scoped, invocation-only, and foreground-preserving.
-  Future operation, target-class, coordinate-space, or topology pairs remain
-  unavailable until their own mandatory rows pass. A route-wide failure blocks
-  every pair; a pair failure blocks only that pair; missing mixed-scale evidence
-  is never replaced by same-scale evidence.
+- The support claim is bound to fourteen exact pairs in one revision-bound
+  observed report. The historical qualified source advertised each as
+  `Unknown`, owning-process scoped, invocation-only, and foreground-preserving;
+  the corrected source advertises none for release while its exact
+  single-display and same-scale rows remain unexecuted. Future operation,
+  target-class, coordinate-space, or topology pairs remain unavailable until
+  their own mandatory rows pass. A route-wide failure blocks every pair; a pair
+  failure blocks only that pair; missing topology evidence is never replaced by
+  another topology.
 - The internal shim gains a size-versioned process-post request and sequence
   source lifecycle, extending the existing layout/version/containment test
   obligations; the released C ABI and its frozen prefixes are unchanged.

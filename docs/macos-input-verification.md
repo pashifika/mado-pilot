@@ -6,6 +6,12 @@ C ABI and header-only C++ wrapper consume that same facade-owned engine. Release
 acceptance consists of the explicit native checks below; ordinary test runs never
 send desktop input or open the opt-in fixture window.
 
+Current release status: **blocked**. The corrected source passes route-wide,
+mixed-scale, performance, sanitizer, repository, and CI checks, but its exact
+single-display and same-scale renderer rows are unexecuted. Therefore none of
+the fourteen process-directed pairs is currently release-qualified. The
+historical complete matrix remains provenance only.
+
 ## Capability boundary
 
 Capabilities are operation-and-route pairs. macOS publishes two routes with
@@ -15,7 +21,7 @@ process that owns the retained window without focusing it.
 
 | Discovered target | `System` | `WindowMessage` | `ProcessDirected` |
 |---|---|---|---|
-| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Qualified pointer, keyboard, and text pairs; foreground-preserving; owning-process scope; `Unknown` compatibility; invocation-only evidence |
+| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Qualification-gated pointer, keyboard, and text candidates; foreground-preserving; owning-process scope; `Unknown` compatibility; invocation-only evidence; no pair currently release-qualified |
 | Additional same-process windows | Same target contract | Unsupported | Do not revoke process scope; no exact-window or responder-selection guarantee |
 | Display | Pointer only; no focusable target is implied; invocation-only evidence | Unsupported | Unsupported |
 
@@ -34,6 +40,10 @@ only when its mandatory revision-bound native rows in the
 `CapabilitySupport::Unknown` is the strongest publishable compatibility claim,
 and a failed or unexecuted route-wide row removes every dependent pair. The
 negotiated target descriptor, not a platform guess, is the admission authority.
+For the corrected source, the first rule currently yields zero advertised
+release pairs because exact single-display and same-scale rows remain
+unexecuted. Topic-branch binaries expose the candidate implementation for the
+controlled checks below; that is not a release support statement.
 
 Every target names `PermissionKind::InputControl` as the authorization input
 needs, separately from the Screen Recording that capture needs. `InputControl`
@@ -572,18 +582,22 @@ authenticated private control channel. The unrelated-source row posts the same
 keyboard payload to the same process without that tag and proves it receives no
 event or visual credit before the production sequence runs.
 
-The accepted qualification ran at source commit
+The historical complete qualification ran at source commit
 `8309a05c3e7696f3081c5afef6dd6979ea1bb084` (tree
-`27fe879e0c4bb55fe4850d9a50737b568936cc10`) under fixture control protocol
-version 9. The AppKit and game-like renderer tests each passed separately with
-`single`, `same-scale`, and `mixed-scale`; one topology was never substituted
-for another. The
-privacy-reviewed
+`27fe879e0c4bb55fe4850d9a50737b568936cc10`) under fixture protocol version 9.
+Its AppKit and game-like rows passed `single`, `same-scale`, and `mixed-scale`
+separately, but the later product correction invalidated every pair decision.
+
+The corrected source commit `850b7b26dde49035dd5759685ab6f0c7d996167f`
+(tree `3562f60ccaac62a778ffaf5af7ff26af19feed53`) uses fixture protocol version
+10. Its route-wide and complete mixed-scale AppKit/OpenGL rows pass, while exact
+`single` and `same-scale` renderer rows remain unexecuted. The privacy-reviewed
 [observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
-records the exact qualified revision, commands, artifact and raw-output hashes,
-bounded outcomes, excluded attempts, and all fourteen per-pair decisions; its
-raw logs are retained under the Change's
-`ephemera/qualification-final-8309a05/` evidence root.
+records both the current partial decision and the superseded complete run,
+including commands, artifact and raw-output hashes, bounded outcomes, excluded
+attempts, and all fourteen current `unexecuted` pair decisions. Current raw logs
+remain ignored under the Change's
+`ephemera/qualification-final-850b7b2/` evidence root.
 
 ## Explicit facade check
 
@@ -684,9 +698,9 @@ AddressSanitizer acceptance matrices named below.
 The process-directed route, the fixture-controlled capture stimulus, and their
 budgets are a separate profile lineage whose pre-measurement ceilings were
 frozen in the [ADR 0029](adr/0029-macos-process-directed-input.md)
-qualification plan. That lineage is measured and accepted at source commit
-`8309a05c3e7696f3081c5afef6dd6979ea1bb084` (tree
-`27fe879e0c4bb55fe4850d9a50737b568936cc10`) in five revision-bound
+qualification plan. That lineage was remeasured at corrected source commit
+`850b7b26dde49035dd5759685ab6f0c7d996167f` (tree
+`3562f60ccaac62a778ffaf5af7ff26af19feed53`) in five revision-bound
 `aarch64-apple-darwin` profiles:
 [`phase-2-2-controlled-capture`](benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml),
 [`phase-2-2-controlled-transitions`](benchmarks/phase-2-2-controlled-transitions-aarch64-apple-darwin.toml),
@@ -695,20 +709,20 @@ qualification plan. That lineage is measured and accepted at source commit
 and
 [`phase-2-2-process-directed-diagnostics`](benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml).
 Their twenty-four workloads retain 2,700 passing samples in total, and every
-correctness oracle and budget passed. Allocation growth is 2,624 bytes for each
-renderer's `discovery_open_retained_authority` workload — once under the AppKit
-profile and once under the game-like profile — and zero for every other
-workload. The per-workload measurements, budgets, and artifact hashes are bound
-in the privacy-reviewed
+correctness oracle and frozen budget passed. Allocation growth is 2,624 bytes
+for the AppKit `discovery_open_retained_authority` workload and zero for every
+other workload. The per-workload measurements, budgets, and artifact hashes are
+bound in the privacy-reviewed
 [observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
 rather than duplicated here. These profiles are regression ceilings for
 controlled AppKit/OpenGL fixtures on the qualified host, not user-facing
-latency promises. The accepted single-event authority/preflight/post workloads
-measured about 229–230 ms at p95, so this release makes no real-time input
-latency claim. The `game-like` label identifies the controlled OpenGL renderer
-used by the matrix; it does not establish general game compatibility. Receipts
-claim neither exact-window delivery nor application consumption, and the ADR
-0025 profile does not stand in for these route-specific measurements.
+latency promises. The corrected event-authority/preflight/post workloads
+measured about 232–239 ms at p95, so this release makes no real-time input
+latency claim. The `game-like` label identifies the controlled OpenGL renderer;
+it does not establish general game compatibility. Receipts claim neither
+exact-window delivery nor application consumption. Passing performance profiles
+do not substitute for missing topology rows and therefore do not qualify a
+process-directed pair.
 
 ## Historical Phase 2 evidence
 

@@ -1,10 +1,10 @@
 # Phase 2.2 macOS process-directed diagnostics, measured on aarch64-apple-darwin at source
-# 8309a05c3e7696f3081c5afef6dd6979ea1bb084 and tree
-# 27fe879e0c4bb55fe4850d9a50737b568936cc10.
+# 850b7b26dde49035dd5759685ab6f0c7d996167f and tree
+# 3562f60ccaac62a778ffaf5af7ff26af19feed53.
 #
-# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029
-# accepts this revision-bound run and its pre-measurement qualification
-# budgets. These are regression ceilings, not user-facing promises.
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029 sets
+# the frozen pre-measurement budgets. This corrected-revision profile passes
+# those budgets; release publication still awaits the missing topology rows.
 
 format_version = 1
 
@@ -18,8 +18,8 @@ measurements_recorded = true
 # A committed profile under docs/benchmarks/ carries the budgets.
 
 [profile]
-fixture = "separately linked private macOS fixture Rust, protocol-v9, header, Objective-C, and renderer sources"
-fixture_sha256 = "474d73530ed02b9060f065fb9df483d0a0e5a647ce14a76eab907b89bbd5f0c6"
+fixture = "separately linked private macOS fixture Rust, protocol-v10, header, Objective-C, and renderer sources"
+fixture_sha256 = "51c6f991a942d30440f18a8b06e105ebb3bc15511a9e909ef696b300ba8d4c7b"
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
@@ -28,7 +28,7 @@ warmup_iterations = 20
 sample_count = 200
 correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
 queue_policy = "diagnostics Off has no queue; Normal and Debug use capacity 64; overflow uses capacity 4; every sample drains"
-notes = "source commit 8309a05c3e7696f3081c5afef6dd6979ea1bb084, tree 27fe879e0c4bb55fe4850d9a50737b568936cc10; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; public frame geometry: 3840x2160 logical/backing 1x at (-3840,109), 2560x1440 logical/5120x2880 backing 2x main at (0,0), 1512x982 logical/3024x1964 backing 2x at (2560,268); mixed 2x/1x signed-origin seam and same-scale 2x/2x seam; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 d355de10628df7f0c938e4dc72df22b3dc3666997d9e638865b8d624cd6c8ece; executable paths deliberately omitted; lineage=process-directed-diagnostics; mode=default renderer=appkit-background"
+notes = "source commit 850b7b26dde49035dd5759685ab6f0c7d996167f, tree 3562f60ccaac62a778ffaf5af7ff26af19feed53; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; 3840x2160 logical/backing 1x at signed negative origin, 2560x1440 logical/5120x2880 backing 2x main, 1512x982 logical/3024x1964 backing 2x; mixed 2x/1x and same-scale 2x/2x seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundles ad-hoc signed with approved identifiers; fixture executable sha256 34277ec97b134ddedff38930c72f9b9588b762c2828f02f05e761f40d8ae78d5; executable paths deliberately omitted; lineage=process-directed-diagnostics; mode=default renderer=appkit-background"
 
 [[budget]]
 measure = "result_correctness"
@@ -54,13 +54,13 @@ rationale = "the frozen 16 MiB process-directed live Rust heap ceiling"
 workload = "event_diagnostics_off"
 correctness_oracle = "the process-directed invocation-only receipt and separate pointer observation are exact and no diagnostic reader exists"
 result_correctness = 0
-latency_p50_ms = 224.030250
-latency_p95_ms = 229.019834
-latency_max_ms = 297.820208
-iteration_span_ms = 334.603871
+latency_p50_ms = 225.912417
+latency_p95_ms = 229.972625
+latency_max_ms = 232.025958
+iteration_span_ms = 336.391957
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4673480
-steady_allocated_bytes = 4672338
+peak_allocated_bytes = 4674438
+steady_allocated_bytes = 4672992
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -91,13 +91,13 @@ allocated_growth_bytes = 0
 workload = "event_diagnostics_normal"
 correctness_oracle = "the invocation diagnostics drain exactly before the independently observed newer frame, which emits no normal records"
 result_correctness = 0
-latency_p50_ms = 223.253667
-latency_p95_ms = 228.602625
-latency_max_ms = 236.941833
-iteration_span_ms = 333.179534
+latency_p50_ms = 225.600333
+latency_p95_ms = 230.721292
+latency_max_ms = 236.434584
+iteration_span_ms = 336.108492
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4683888
-steady_allocated_bytes = 4682746
+peak_allocated_bytes = 4684542
+steady_allocated_bytes = 4683400
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -128,13 +128,13 @@ allocated_growth_bytes = 0
 workload = "event_diagnostics_debug"
 correctness_oracle = "input start, route-attempt, and terminal records drain in order before the newer-frame observation drains its debug pair separately"
 result_correctness = 0
-latency_p50_ms = 223.155583
-latency_p95_ms = 227.883541
-latency_max_ms = 230.188000
-iteration_span_ms = 333.045122
+latency_p50_ms = 226.301250
+latency_p95_ms = 230.556625
+latency_max_ms = 234.786958
+iteration_span_ms = 336.676604
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4683888
-steady_allocated_bytes = 4682746
+peak_allocated_bytes = 4684846
+steady_allocated_bytes = 4683400
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -165,13 +165,13 @@ allocated_growth_bytes = 0
 workload = "event_diagnostic_overflow"
 correctness_oracle = "four receipts and observations remain exact while input and subsequent newer-frame drains separately report every retained record and debug loss"
 result_correctness = 0
-latency_p50_ms = 225.369959
-latency_p95_ms = 229.631625
-latency_max_ms = 241.537792
-iteration_span_ms = 995.517741
+latency_p50_ms = 227.567709
+latency_p95_ms = 231.767750
+latency_max_ms = 235.045125
+iteration_span_ms = 1003.009556
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4674312
-steady_allocated_bytes = 4673146
+peak_allocated_bytes = 4674966
+steady_allocated_bytes = 4673800
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
