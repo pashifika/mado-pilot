@@ -3,9 +3,9 @@
 - **Status:** Accepted — the complete revision-bound native matrix in the
   [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
   qualifies all fourteen controlled operation/target/coordinate-space pairs on
-  source commit `a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd`, source tree
-  `f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90`
-- **Date:** 2026-08-15
+  source commit `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, source tree
+  `27fe879e0c4bb55fe4850d9a50737b568936cc10`
+- **Date:** 2026-08-16
 - **Resolves gate:** macOS owning-process `ProcessDirected` publication through
   the recorded native matrix
 - **Supersedes:** only ADR 0016's macOS system-only delivery-surface decision;

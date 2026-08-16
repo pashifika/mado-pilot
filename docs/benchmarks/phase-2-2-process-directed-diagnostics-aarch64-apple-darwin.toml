@@ -1,6 +1,6 @@
 # Phase 2.2 macOS process-directed diagnostics, measured on aarch64-apple-darwin at source
-# a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd and tree
-# f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90.
+# 8309a05c3e7696f3081c5afef6dd6979ea1bb084 and tree
+# 27fe879e0c4bb55fe4850d9a50737b568936cc10.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029
 # accepts this revision-bound run and its pre-measurement qualification
@@ -28,7 +28,7 @@ warmup_iterations = 20
 sample_count = 200
 correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
 queue_policy = "diagnostics Off has no queue; Normal and Debug use capacity 64; overflow uses capacity 4; every sample drains"
-notes = "source commit a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd, tree f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; public frame geometry: 3840x2160 logical/backing 1x at (-3840,109), 2560x1440 logical/5120x2880 backing 2x main at (0,0), 1512x982 logical/3024x1964 backing 2x at (2560,268); mixed 2x/1x signed-origin seam and same-scale 2x/2x seam; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 d355de10628df7f0c938e4dc72df22b3dc3666997d9e638865b8d624cd6c8ece; executable paths deliberately omitted; lineage=process-directed-diagnostics; mode=default renderer=appkit-background"
+notes = "source commit 8309a05c3e7696f3081c5afef6dd6979ea1bb084, tree 27fe879e0c4bb55fe4850d9a50737b568936cc10; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; public frame geometry: 3840x2160 logical/backing 1x at (-3840,109), 2560x1440 logical/5120x2880 backing 2x main at (0,0), 1512x982 logical/3024x1964 backing 2x at (2560,268); mixed 2x/1x signed-origin seam and same-scale 2x/2x seam; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundle ad-hoc signed with approved identifier; fixture executable sha256 d355de10628df7f0c938e4dc72df22b3dc3666997d9e638865b8d624cd6c8ece; executable paths deliberately omitted; lineage=process-directed-diagnostics; mode=default renderer=appkit-background"
 
 [[budget]]
 measure = "result_correctness"
@@ -54,13 +54,13 @@ rationale = "the frozen 16 MiB process-directed live Rust heap ceiling"
 workload = "event_diagnostics_off"
 correctness_oracle = "the process-directed invocation-only receipt and separate pointer observation are exact and no diagnostic reader exists"
 result_correctness = 0
-latency_p50_ms = 206.393375
-latency_p95_ms = 211.258041
-latency_max_ms = 215.148667
-iteration_span_ms = 316.034696
+latency_p50_ms = 224.030250
+latency_p95_ms = 229.019834
+latency_max_ms = 297.820208
+iteration_span_ms = 334.603871
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4673482
-steady_allocated_bytes = 4672340
+peak_allocated_bytes = 4673480
+steady_allocated_bytes = 4672338
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -91,13 +91,13 @@ allocated_growth_bytes = 0
 workload = "event_diagnostics_normal"
 correctness_oracle = "the invocation diagnostics drain exactly before the independently observed newer frame, which emits no normal records"
 result_correctness = 0
-latency_p50_ms = 206.294375
-latency_p95_ms = 213.003083
-latency_max_ms = 219.834416
-iteration_span_ms = 316.289006
+latency_p50_ms = 223.253667
+latency_p95_ms = 228.602625
+latency_max_ms = 236.941833
+iteration_span_ms = 333.179534
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4684194
-steady_allocated_bytes = 4682748
+peak_allocated_bytes = 4683888
+steady_allocated_bytes = 4682746
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -128,13 +128,13 @@ allocated_growth_bytes = 0
 workload = "event_diagnostics_debug"
 correctness_oracle = "input start, route-attempt, and terminal records drain in order before the newer-frame observation drains its debug pair separately"
 result_correctness = 0
-latency_p50_ms = 207.135166
-latency_p95_ms = 212.853375
-latency_max_ms = 216.599750
-iteration_span_ms = 316.993777
+latency_p50_ms = 223.155583
+latency_p95_ms = 227.883541
+latency_max_ms = 230.188000
+iteration_span_ms = 333.045122
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4683890
-steady_allocated_bytes = 4682748
+peak_allocated_bytes = 4683888
+steady_allocated_bytes = 4682746
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -165,13 +165,13 @@ allocated_growth_bytes = 0
 workload = "event_diagnostic_overflow"
 correctness_oracle = "four receipts and observations remain exact while input and subsequent newer-frame drains separately report every retained record and debug loss"
 result_correctness = 0
-latency_p50_ms = 209.330125
-latency_p95_ms = 214.299917
-latency_max_ms = 219.164000
-iteration_span_ms = 930.922242
+latency_p50_ms = 225.369959
+latency_p95_ms = 229.631625
+latency_max_ms = 241.537792
+iteration_span_ms = 995.517741
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4674314
-steady_allocated_bytes = 4673148
+peak_allocated_bytes = 4674312
+steady_allocated_bytes = 4673146
 allocated_growth_bytes = 0
 
 [[measurement.budget]]

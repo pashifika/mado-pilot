@@ -2,7 +2,7 @@
 
 ## Decision
 
-The Phase 2.2 native qualification matrix passes on source commit `a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd` and source tree `f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90`.
+The Phase 2.2 native qualification matrix passes on source commit `8309a05c3e7696f3081c5afef6dd6979ea1bb084` and source tree `27fe879e0c4bb55fe4850d9a50737b568936cc10`.
 
 All fourteen in-scope operation/target/coordinate-space pairs are `qualified` under the frozen qualification plan:
 
@@ -20,13 +20,13 @@ This decision does not claim exact-window delivery, responder selection, queue a
 
 ## Qualified provenance
 
-The final source-bound native rows were recorded on 2026-08-15 JST. Product, fixture, and qualification-oracle source remained unchanged during all accepted rows. Benchmark profiles and this report were produced afterward as evidence artifacts and do not alter the qualified implementation tree.
+The final source-bound native rows were recorded on 2026-08-16 JST. Product, fixture, and qualification source remained unchanged during all accepted rows. Benchmark profiles and this report were produced afterward as evidence artifacts and do not alter the qualified implementation tree.
 
 | Field | Observed value |
 |---|---|
 | Base revision | `ffb1823b68ba632b4fc8e7725361ea4596e220f0` |
-| Qualified source commit | `a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd` |
-| Qualified source tree | `f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90` |
+| Qualified source commit | `8309a05c3e7696f3081c5afef6dd6979ea1bb084` |
+| Qualified source tree | `27fe879e0c4bb55fe4850d9a50737b568936cc10` |
 | Branch | `feat/phase-2-2-macos-process-directed-delivery` |
 | Host | `MacBookPro18,3`; Apple M1 Pro, 10 cores, 32 GiB, `arm64` |
 | OS | macOS 26.5.2, build 25F84 |
@@ -47,59 +47,33 @@ Qualification executable hashes:
 |---|---:|---|
 | Native input integration test executable | 4,541,104 | `04d2c35362fc1c2435b2365c7a4e5bda7ee45f33979e5c24113bd287e05f1a5e` |
 | macOS unit/scenario test executable | 4,860,344 | `0f235eb767e2dae7b9da7cbfa3545d63700833ed19feccb8d4048b301a3f2094` |
-| native-phase2 benchmark executable | 1,377,840 | `c8b4148a227d55a5e672afb338ebd6f491f7aab554dc5e4df02b877e9c0faef6` |
+| native-phase2 benchmark executable | 1,377,840 | `fef853d80bee20276a3dfa7037ff4a2338a47510f1514bd5cfabd7a177df4056` |
 | Release fixture executable | 599,936 | `d355de10628df7f0c938e4dc72df22b3dc3666997d9e638865b8d624cd6c8ece` |
 | C common-flow executable | 34,880 | `c47e516890e5aa69130ef988e7d3e04e1cb941c413d6f820a27df02f1c10f6aa` |
 | C++ common-flow executable | 327,960 | `481d470428c7bbff00a8125920f5f9bd3f79187a53c47e33f66f1a3e011a754f` |
 
 ## Executed command manifest
 
-`$APP` denotes the repository-generated target fixture bundle and `$FOREGROUND_APP` a separately launched bundle of the same qualified executable. Absolute workstation paths are omitted. The three topology blocks were run only after the live arrangement matched their exact selector.
+`$APP` denotes the repository-generated target fixture bundle and `$FOREGROUND_APP` a separately launched role of the same qualified executable. Absolute workstation paths are omitted. Each topology block ran only after the live arrangement matched its exact selector.
 
 ```sh
 cargo build --locked -p mado-pilot-platform-macos \
   --features private-fixture --bin mado-pilot-macos-input-fixture
-# Assemble $APP and $FOREGROUND_APP, copy the debug executable, and sign both
-# ad hoc with the approved identifier.
+# Assemble $APP, copy the debug executable, and sign it ad hoc with the
+# approved identifier.
 /usr/bin/codesign --verify --strict --verbose=2 "$APP"
 "$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --report-execution-context
 
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture
+cargo test --locked -p mado-pilot-platform-macos \
+  --features private-fixture -- --nocapture
 cargo run --locked -p mado-pilot-capi --example c-abi-check -- \
-  --label "macOS Apple Silicon a4b12ff"
+  --label "macOS Apple Silicon 8309a05"
 
 export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
-export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$FOREGROUND_APP/Contents/MacOS/mado-pilot-macos-input-fixture"
+export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
 
-# Run after configuring exactly one 2× display.
-export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=single
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  scenarios::every_attached_display_carries_same_frame_desktop_conversion -- \
-  --exact --nocapture
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input process_directed_delivery_qualifies_appkit_renderer -- \
-  --ignored --exact --nocapture --test-threads=1
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input process_directed_delivery_qualifies_game_like_renderer -- \
-  --ignored --exact --nocapture --test-threads=1
-
-# Run after configuring exactly two horizontally adjacent 2× displays.
-export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=same-scale
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  scenarios::every_attached_display_carries_same_frame_desktop_conversion -- \
-  --exact --nocapture
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  scenarios::horizontally_adjacent_displays_share_one_desktop_seam -- \
-  --exact --nocapture
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input process_directed_delivery_qualifies_appkit_renderer -- \
-  --ignored --exact --nocapture --test-threads=1
-cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
-  --test native_input process_directed_delivery_qualifies_game_like_renderer -- \
-  --ignored --exact --nocapture --test-threads=1
-
-# Run after restoring the recorded 2×/2×/1× signed-origin arrangement.
+# The standing mixed-scale topology ran first.
 export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale
 cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
   scenarios::every_attached_display_carries_same_frame_desktop_conversion -- \
@@ -132,6 +106,46 @@ do
     --ignored --exact --nocapture --test-threads=1
 done
 
+# Run after configuring exactly one 2× display.
+export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=single
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  scenarios::every_attached_display_carries_same_frame_desktop_conversion -- \
+  --exact --nocapture
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  --test native_input process_directed_delivery_qualifies_appkit_renderer -- \
+  --ignored --exact --nocapture --test-threads=1
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  --test native_input process_directed_delivery_qualifies_game_like_renderer -- \
+  --ignored --exact --nocapture --test-threads=1
+
+# Run after configuring exactly two horizontally adjacent 2× displays.
+export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=same-scale
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  scenarios::every_attached_display_carries_same_frame_desktop_conversion -- \
+  --exact --nocapture
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  scenarios::horizontally_adjacent_displays_share_one_desktop_seam -- \
+  --exact --nocapture
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  --test native_input process_directed_delivery_qualifies_appkit_renderer -- \
+  --ignored --exact --nocapture --test-threads=1
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  --test native_input process_directed_delivery_qualifies_game_like_renderer -- \
+  --ignored --exact --nocapture --test-threads=1
+
+# Restore the recorded 2×/2×/1× signed-origin arrangement and rerun all
+# public display-frame scenarios.
+export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  scenarios::every_attached_display_carries_same_frame_desktop_conversion -- \
+  --exact --nocapture
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  scenarios::horizontally_adjacent_displays_share_one_desktop_seam -- \
+  --exact --nocapture
+cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+  scenarios::mixed_scale_displays_publish_their_own_frame_geometry -- \
+  --exact --nocapture
+
 cargo build --locked --release -p mado-pilot-platform-macos \
   --features private-fixture --bin mado-pilot-macos-input-fixture
 # Reassemble and verify the release $APP before benchmarking.
@@ -140,8 +154,8 @@ cargo build --locked --release -p mado-pilot-platform-macos \
 cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --workload-set <capture|transitions|process-directed|process-directed-game-like|process-diagnostics> \
   --fixture-executable "$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  --source-revision a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd \
-  --source-tree f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90 \
+  --source-revision 8309a05c3e7696f3081c5afef6dd6979ea1bb084 \
+  --source-tree 27fe879e0c4bb55fe4850d9a50737b568936cc10 \
   --toolchain "rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5" \
   --gpu-driver "Apple integrated GPU; system driver stack" \
   --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
@@ -154,32 +168,41 @@ cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --fixture-executable "$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --c-executable "<c-abi-check>/macos-native-input" \
   --cpp-executable "<c-abi-check>/macos-native-input-cpp" \
-  --source-revision a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd --source-tree f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90 \
+  --source-revision 8309a05c3e7696f3081c5afef6dd6979ea1bb084 --source-tree 27fe879e0c4bb55fe4850d9a50737b568936cc10 \
   <the same recorded host, toolchain, topology, and permission options>
 
 cargo run --locked --package mado-pilot-dependency-check
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets
+cargo test --locked --workspace --doc
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
+cargo deny --locked check
+cargo clippy --locked --target x86_64-pc-windows-msvc \
+  -p mado-pilot-platform-macos --all-targets -- -D warnings
+MADO_PILOT_MACOS_ASAN=1 cargo test --locked \
+  -p mado-pilot-platform-macos --target-dir target/asan --lib -- \
+  --test-threads=1
 cargo test --locked -p mado-pilot-testkit \
   --test benchmark_block_drift --test hard_budget_drift
+rasen validate phase-2-2-macos-owning-process-delivery --strict --json
 ```
 
 ## Display topology outcomes
 
-All topologies were non-mirrored. The display-frame and renderer rows were run separately for each exact selector; one topology was never substituted for another.
+All topologies were non-mirrored. Display-frame and renderer rows ran separately for each exact selector; one topology was never substituted for another.
 
 | Selector | Live public geometry | Renderer window frame summary | Outcome |
 |---|---|---|---|
-| `single` | one display: 1512×982 logical / 3024×1964 backing at `(0,0)`, 2× | AppKit: sequence 1121, geometry 3; OpenGL: sequence 1100, geometry 3; both 688×484 logical / 1376×968 backing at 2× | passed |
-| `same-scale` | 2560×1440 logical / 5120×2880 backing at `(0,0)` and 1512×982 logical / 3024×1964 backing at `(2560,170)`; both 2× and horizontally adjacent | AppKit: sequence 1137, geometry 3 → sequence 3427, geometry 4; OpenGL: sequence 1136, geometry 3 → sequence 3416, geometry 4 | passed |
-| `mixed-scale` | 3840×2160 logical/backing at signed origin `(-3840,109)`, 1×; 2560×1440 logical / 5120×2880 backing at `(0,0)`, 2×; 1512×982 logical / 3024×1964 backing at `(2560,268)`, 2× | AppKit visits: sequence 1172/3503/1153/1190, geometry 3/4/5/6, epoch 2/2/3/4; OpenGL visits: sequence 1210/3551/1166/1177 with the same geometry/epoch progression; both closed the 2×→2×→1×→2× cycle | passed |
+| `single` | one display: 1512×982 logical / 3024×1964 backing at `(0,0)`, 2× | AppKit: sequence 1080, geometry 3; OpenGL: sequence 1095, geometry 3; both 688×484 logical / 1376×968 backing at 2× | passed |
+| `same-scale` | 2560×1440 logical / 5120×2880 backing at `(0,0)` and 1512×982 logical / 3024×1964 backing at `(2560,170)`; both 2× and horizontally adjacent | AppKit: sequence 1170, geometry 3 → sequence 3447, geometry 4; OpenGL: sequence 1131, geometry 3 → sequence 3346, geometry 4 | passed after one zero-effect deadline retry |
+| `mixed-scale` | 3840×2160 logical/backing at signed origin `(-3840,109)`, 1×; 2560×1440 logical / 5120×2880 backing at `(0,0)`, 2×; 1512×982 logical / 3024×1964 backing at `(2560,268)`, 2× | AppKit visits: sequence 1110/3353/1123/1142, geometry 3/4/5/6, epoch 2/2/3/4; OpenGL visits: sequence 1135/3380/1125/1118 with the same geometry/epoch progression; both closed the 2×→2×→1×→2× cycle | passed |
 
 The three-display mixed-scale arrangement was restored after qualification. Final display-frame scenarios passed in that restored arrangement, and no fixture process remained after cleanup.
 
 ## Bounded native row outcomes
 
-The default `private-fixture` macOS suite recorded 249 passing tests and ten interactive tests ignored by default. All ten ignored tests were then executed explicitly. Each renderer matrix completed under each mandatory topology selector on the clean qualified source.
+The default `private-fixture` macOS suite recorded 249 passing tests and ten interactive tests ignored by default. All ten ignored tests were then executed explicitly. Each renderer matrix completed under each mandatory topology selector on the qualified source. The complete workspace recorded 1,212 passing tests and eleven ignored opt-in tests; doctests recorded eight passes and one ignored example; the dedicated ASAN macOS library run recorded 184 passes.
 
 The positive renderer matrix contained these exact bounded row counts, derived from the fixed test matrix:
 
@@ -213,7 +236,7 @@ The sustained-capture row passed for both renderer classes. Each retained stream
 | RW-11 | passed | Sequence-owned private sources, newest-first bounded cleanup, conservative possible-effect accounting, close/drain, and repeated close passed. Cleanup retained exact key/button identity and possible drag destination. |
 | RW-12 | passed | Owned-child identity, run nonce, provider/target identity, process lifetime, malformed/duplicate/stale record refusal, audit-token teardown, and idempotent controller close passed. Fixture acknowledgements never counted as product evidence. |
 | RW-13 | passed | Off/Normal/Debug/overflow diagnostics remained bounded and privacy-safe with exact loss accounting. Tracked evidence passed the privacy review below. |
-| RW-14 | passed | Native pointer/size/range validation, Objective-C exception and Rust panic containment, queue pressure, diagnostic overflow, and allocation bounds passed. |
+| RW-14 | passed | Native pointer/size/range validation, Objective-C exception and Rust panic containment, queue pressure, diagnostic overflow, allocation bounds, and the 184-test ASAN run passed. |
 
 No route-wide row is failed or unexecuted in the accepted matrix.
 
@@ -246,124 +269,125 @@ All 2,700 retained Phase 2.2 benchmark samples across twenty-four workloads sati
 
 | Profile / workload | p50 ms | p95 ms | max ms | Peak live Rust bytes |
 |---|---:|---:|---:|---:|
-| capture / `fixture_command_acknowledgement` | 0.183542 | 0.256208 | 1.513083 | 36,933 |
-| capture / `controlled_stimulus_to_frame` | 16.673500 | 17.437166 | 19.015917 | 9,300,418 |
-| capture / `static_latest_retained` | 0.000125 | 0.000167 | 0.000250 | 4,671,474 |
-| capture / `static_newer_repeated_pixels` | 17.367458 | 34.821459 | 39.915375 | 9,300,418 |
-| capture / `latest_acquisition` | 0.000791 | 0.001000 | 0.001375 | 9,300,418 |
-| capture / `cpu_map_bgra8` | 0.183000 | 0.201166 | 0.268625 | 9,300,418 |
-| transitions / `resize_recreation` | 51.764500 | 60.338791 | 62.029792 | 8,329 |
-| transitions / `open_first_frame` | 99.399000 | 107.193875 | 110.687083 | 5,335,291 |
-| transitions / `retained_pressure_resume` | 3.758875 | 16.887041 | 18.114666 | 4,671,945 |
-| transitions / `close_drain` | 55.802709 | 65.890667 | 67.838875 | 7,259 |
-| AppKit / `discovery_open_retained_authority` | 322.378167 | 395.168875 | 419.255000 | 51,195 |
-| AppKit / `event_authority_preflight_post` | 206.456125 | 213.065250 | 215.856541 | 4,673,362 |
-| AppKit / `release_cleanup` | 1.722458 | 2.190792 | 2.462459 | 4,673,386 |
-| AppKit / `session_close` | 57.619833 | 63.784750 | 65.616167 | 43,619 |
-| AppKit / `fixture_controller_close` | 54.012375 | 58.990042 | 65.185459 | 37,401 |
-| game-like / `discovery_open_retained_authority` | 316.509667 | 408.370834 | 440.772917 | 51,195 |
-| game-like / `event_authority_preflight_post` | 206.814958 | 212.258917 | 215.157042 | 4,673,362 |
-| game-like / `release_cleanup` | 1.762291 | 2.654000 | 2.725458 | 4,673,386 |
-| game-like / `session_close` | 57.908250 | 65.329875 | 67.543917 | 43,619 |
-| game-like / `fixture_controller_close` | 20.820125 | 31.409500 | 34.344541 | 37,413 |
-| diagnostics / `event_diagnostics_off` | 206.393375 | 211.258041 | 215.148667 | 4,673,482 |
-| diagnostics / `event_diagnostics_normal` | 206.294375 | 213.003083 | 219.834416 | 4,684,194 |
-| diagnostics / `event_diagnostics_debug` | 207.135166 | 212.853375 | 216.599750 | 4,683,890 |
-| diagnostics / `event_diagnostic_overflow` | 209.330125 | 214.299917 | 219.164000 | 4,674,314 |
+| capture / `fixture_command_acknowledgement` | 0.174834 | 0.247125 | 1.517500 | 36,933 |
+| capture / `controlled_stimulus_to_frame` | 16.675708 | 17.456125 | 18.408250 | 9,300,417 |
+| capture / `static_latest_retained` | 0.000125 | 0.000167 | 0.000250 | 4,671,473 |
+| capture / `static_newer_repeated_pixels` | 17.681583 | 36.310166 | 70.723583 | 9,300,417 |
+| capture / `latest_acquisition` | 0.000500 | 0.000709 | 0.003250 | 9,300,417 |
+| capture / `cpu_map_bgra8` | 0.185208 | 0.200333 | 0.242125 | 9,300,417 |
+| transitions / `resize_recreation` | 51.864000 | 65.297417 | 68.836708 | 8,328 |
+| transitions / `open_first_frame` | 103.177458 | 111.884583 | 116.651958 | 5,335,290 |
+| transitions / `retained_pressure_resume` | 3.372792 | 17.096834 | 17.683000 | 4,671,943 |
+| transitions / `close_drain` | 55.533500 | 68.959166 | 70.590334 | 7,258 |
+| AppKit / `discovery_open_retained_authority` | 338.025417 | 363.706833 | 402.802417 | 51,187 |
+| AppKit / `event_authority_preflight_post` | 223.885334 | 228.749375 | 232.166125 | 4,673,360 |
+| AppKit / `release_cleanup` | 1.670959 | 2.538083 | 2.833375 | 4,673,384 |
+| AppKit / `session_close` | 61.321916 | 69.602833 | 71.502958 | 43,617 |
+| AppKit / `fixture_controller_close` | 53.454667 | 64.851708 | 69.106458 | 37,398 |
+| game-like / `discovery_open_retained_authority` | 336.899958 | 390.206208 | 399.066417 | 51,187 |
+| game-like / `event_authority_preflight_post` | 224.161417 | 230.348167 | 233.705125 | 4,673,360 |
+| game-like / `release_cleanup` | 1.696125 | 2.670750 | 2.861458 | 4,673,384 |
+| game-like / `session_close` | 60.453625 | 70.455542 | 78.822292 | 43,617 |
+| game-like / `fixture_controller_close` | 20.588917 | 23.784250 | 34.664667 | 37,410 |
+| diagnostics / `event_diagnostics_off` | 224.030250 | 229.019834 | 297.820208 | 4,673,480 |
+| diagnostics / `event_diagnostics_normal` | 223.253667 | 228.602625 | 236.941833 | 4,683,888 |
+| diagnostics / `event_diagnostics_debug` | 223.155583 | 227.883541 | 230.188000 | 4,683,888 |
+| diagnostics / `event_diagnostic_overflow` | 225.369959 | 229.631625 | 241.537792 | 4,674,312 |
 
-The controlled capture profile retained the exact 4,628,480-byte BGRA8 mapping bound. Its acquisition workloads recorded a `0.000000000` stale-work ratio. The controlled transition profile recorded the expected `0.836601307` retained-pressure stale-work ratio and passed its frozen `0.95` ceiling. Process-directed profiles stayed below the frozen 16 MiB peak-live-heap limit.
+The controlled capture profile retained the exact 4,628,480-byte BGRA8 mapping bound. Its acquisition workloads recorded a `0.000000000` stale-work ratio. The controlled transition profile recorded a `0.834983498` retained-pressure stale-work ratio and passed its frozen `0.95` ceiling. Process-directed profiles stayed below the frozen 16 MiB peak-live-heap limit.
 
-The separately accepted ADR 0025 native-input/public-language profile was also refreshed on the same source with 300 retained samples. Its Rust common flow passed; fresh C and C++ process-load checks passed; and the explicit C and C++ `ProcessDirected` common flows completed with p95 values of 1812.596500 ms and 1974.578792 ms respectively. Receipt evidence and owned-fixture event observation remained separate in both language consumers.
+The separately accepted ADR 0025 native-input/public-language profile was also refreshed on the same source with 300 retained samples. Its Rust common flow passed; fresh C and C++ process-load checks passed; and the explicit C and C++ `ProcessDirected` common flows completed with p95 values of 1842.148958 ms and 2056.563250 ms respectively. Receipt evidence and owned-fixture event observation remained separate in both language consumers. Its process-load resident-memory ceilings and all shared latency, mapping, heap, and correctness budgets passed.
 
 Committed profile hashes:
 
 | Profile | SHA-256 |
 |---|---|
-| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `6c82867e2cb2568af692835f418c0a6dbc666152feec2bed75cddefd12d5c7e9` |
-| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `11dd0617da73859fc48dd2bcbdbc818266d3426333fd894cd9e52051d6bf4407` |
-| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `364b2202830a14702a69b6ecca46b6c376a8c5e978bd1c468ee5405392efb7da` |
-| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `18f0c1602a5f6f95565d2976bb60e6b0e5301998ae6fe12011ff70b3965650d2` |
-| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `d761af47e804c50c3a73539466ea2ca9af171242c7031194273fb8f60e7dfb8f` |
+| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `f59f42fb003bb9c145a8bdf3006cd0c71cb9ea0d6dc5a502cb4341e37cbaae4b` |
+| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `c58ac65fd08bcb7f8d8df864cf0baf185259cebf71c8c9c0dbb07a9a8b056dd7` |
+| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `d98201b5cafc5dc6cff6c3518280c0ab94e4d9864806ff9eaee617bdde64cad0` |
+| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `ac4e9cb130f15cba5dbaaa04cdebd8498335d5d2efb8db6b79c6f820c1092705` |
+| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `e5863b5c93a8242de6d754cd1f008ded675fb63bd8611e025a2346c38d0d67d6` |
+| `phase-2-native-input-aarch64-apple-darwin.toml` | `248fa715f7ac3a3b3c50fcf6ddfdf2718000c4fe2ac8f7028370b5f74daf267b` |
 
 ## Failed, excluded, and superseded attempts
 
-The accepted matrix has no failed or unexecuted pair row. Earlier complete matrices on source commits `8dd70810d60c06b298c806ffce16720d0a07e4c2` and `b1059cf6239042107bd62373eb65211117beaab9` were invalidated by later product, fixture, and oracle changes and contribute no final decision.
+The accepted matrix has no failed or unexecuted pair row. Complete matrices on source commits `8dd70810d60c06b298c806ffce16720d0a07e4c2`, `b1059cf6239042107bd62373eb65211117beaab9`, and `a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd` were invalidated by later product, fixture, qualification, evidence, or benchmark-oracle changes and contribute no final decision. The final rerun was required even though the last source change only replaced an equivalent benchmark mapping `let...else` with `?`; the frozen plan binds qualification to an exact revision.
 
-During the first final-revision benchmark attempt, the operator disclosed possible host interaction. All six outputs from that attempt were excluded before any profile promotion. After the operator reported no further activity, every workload set was rerun unattended and captured as complete raw output. One intermediate filtered game-like benchmark attempt failed before sampling with `configured capture source is invalid`; the final raw isolated run passed and is the only promoted measurement.
-
-An additional back-to-back mixed-scale game-like renderer rerun on the final source returned `Unexecuted` with zero submitted events after its five-second operation deadline. It reported no possible effect and contributes to no pair result. After fixture cleanup and a ten-second idle interval, the same isolated full renderer matrix passed. The excluded deadline attempt remains hash-bound below rather than hidden.
+The first same-scale AppKit renderer attempt on the final source reached its five-second operation deadline after 208 seconds. Its receipt was `Unexecuted` with zero submitted events, so it had no possible native effect and contributes to no pair result. The raw output was retained, the owned fixtures were confirmed stopped, a ten-second idle interval elapsed, and the same isolated full renderer matrix then passed. No failed output was overwritten or promoted.
 
 Excluded attempt hashes:
 
 | Excluded raw artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `capture-possible-operator-interaction-attempt.log` | 5,158 | `04020e21f40270f4fed051f62271a39a6263af25d8e20c9543407b4146ed7a28` |
-| `transitions-possible-operator-interaction-attempt.log` | 4,029 | `b7498b0140fd807b36037a2c4babd5a24e57f1e9b92cbaeeb136f7c3e756c7f9` |
-| `input-possible-operator-interaction-attempt.log` | 5,262 | `ba46b7230f86b0bc073c888c6cd427ddf27e5eca5f075fe8518baa3293ff9cef` |
-| `process-directed-possible-operator-interaction-attempt.log` | 5,112 | `ec533a8322474724e14505fa3d0d64f29101491e3177e0e0eaffb5ce1c4a448c` |
-| `process-directed-game-like-possible-operator-interaction-attempt.log` | 5,125 | `d58adfe7cb3dc79027422c46d1e4a7aab8c359dd86236868c7fae1cfbaecfff7` |
-| `process-diagnostics-possible-operator-interaction-attempt.log` | 4,129 | `ff42f477b966039396e2f60e8e28d79872f26945bfdda15b852ef821046a0e5e` |
-| `process-directed-game-like-unattended-attempt1.log` | 583 | `9591c948e39219ddce5a35b11c78733e9193d0bc60c5ca85eb18c86ca23255c1` |
-| `mixed-game-like-renderer-matrix-deadline-attempt.log` | 93,174 | `d30a155efbff5d178a9bb96ee60faf348805e76c5c10e09f51167418109b7764` |
+| `same-scale-appkit-renderer-matrix-deadline-attempt.log` | 59,536 | `ccc945bf91b71c0ff7291bf00fccb4e8acd935dcf689a8827354b2fa01f4bc4d` |
 
 ## Raw-output provenance
 
-Accepted raw logs remain ignored under `.rasen/changes/phase-2-2-macos-owning-process-delivery/ephemera/qualification-final-a4b12ff/`. They contain native identifiers and fixture-private records and must not be committed. The tracked binding is limited to file size and SHA-256.
+Accepted raw logs remain ignored under `.rasen/changes/phase-2-2-macos-owning-process-delivery/ephemera/qualification-final-8309a05/`. They contain native identifiers and fixture-private records and must not be committed. The tracked binding is limited to file size and SHA-256.
 
 | Accepted raw artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `source-commit.log` | 66 | `f7c82ca8a4fbf3f82d80f280f2c22fa9c2bae366efbfda83da8d1bd99f4e40fc` |
-| `source-tree.log` | 66 | `70b23de943f2153ea7ab481a3a868241606c77757f51780009cc35a4d071e584` |
-| `host-status.log` | 90 | `969d0d6df53615ba27cc8a31ffc221ddf6429195992e872be71d01afb69c12e9` |
-| `sdk.log` | 30 | `b0594ffe6b4818051966ad4e173420477863c282e17b427ce43476d6c7b1c309` |
-| `rustc.log` | 61 | `a4824ad4a769e76236f8ee4f2cc26a4d1081187de1513261e19d8e92a34a0f8b` |
+| `source-commit.log` | 66 | `c763b5ed9c862aac3bd4caad058445f861e53dada3964c821e7ec0d106057700` |
+| `source-tree.log` | 66 | `7348f51c292d804dee8663fb75cc102cbcaedd75d37ba9fd3e8d249f5e4d4141` |
+| `host-status.log` | 105 | `075cce1c47922989e2518568b95912fd93aa55f13b0709800db1716ef1b85b69` |
+| `rustc.log` | 61 | `df42bc3daf5b3d7cc0c6cb898c89b82f835ae233c1b13e1eb4316863f3398fbd` |
 | `cargo.log` | 61 | `a278cac6e8410e251ab18613144ca74413b8d8926b0bba8b27f566b016cd430c` |
 | `cc.log` | 184 | `0f0f5071e4ce01a4e5ce4c26b1671b7837b458493e259f42d04dff856bcda6ac` |
-| `hardware.log` | 53 | `4027c1933fed7318378b4eb29a9b1a311cba991c2de2827ca6eeba06d7cfd110` |
-| `displays.log` | 508 | `82afdfbc44d60370a988c1e33b3f639892d09a19d62145c6b495fe3caad9728b` |
-| `single-host-baseline.log` | 1,925 | `d9a1f6cd706bac4cfcf3ecefe7a1641a1a9124c234cde16e441616ec1439e242` |
-| `same-scale-host-baseline.log` | 2,612 | `3edc5b5b4045657e9822339a96fa365fdccb09cfa04d9a818379026aea33f11c` |
-| `restored-mixed-host-baseline.log` | 3,362 | `45437379987c244805aa66f30ae5529641c5bc387b50beee9a56f6dc398443e7` |
-| `fixture-build-debug.log` | 97 | `1fc299b7cc5e6b68bcae7735af90c6cfdb6d8101170c251df5f06292f35ba7f5` |
-| `fixture-debug-verification.log` | 534 | `ad1f5ba7e7e01e8a69379bd151063504251c9c5875c23c4a59720b5b96a117fa` |
-| `deterministic-macos.log` | 26,524 | `2818705bdb7ce862d4c624b6333762769bbdd01e62de2306079395207ac75494` |
-| `c-abi-check.log` | 24,668 | `7e821749607c6bc4fcd6f7fafd163a56a31c3b732c7953a663bb3019444c13e6` |
-| `single-display-conversion.log` | 1,716 | `1e25903157f924c106cf21892e031696589eabfa9f8b09ef58d73b9141ce30f4` |
-| `same-scale-display-conversion.log` | 1,642 | `2f0c24f3485fc7caba7dd646f5d3a81caf61dbed10814f2667cf0457e39e2dfe` |
-| `same-scale-display-seam.log` | 1,747 | `ffbe0f664ab38f62f85c374e328ca07315d3cadc428a9d949a8a4b9ff77eadaa` |
-| `mixed-display-conversion.log` | 1,617 | `4934ea901110b28bf8d7e1fe68aacdb387551cb6a14c080645a69b76bba8aa50` |
-| `mixed-display-seam.log` | 1,659 | `744c1feda4efedcb5629a6a5ee293b734a90d06e3aefb73318a1734eb53c3bb4` |
-| `mixed-display-scale.log` | 1,610 | `b9fba20e73c52378748110ae65221628c3bd0660e05d94ff8d202cad1a428cfe` |
-| `restored-mixed-display-conversion.log` | 1,642 | `04d24030e695a23c73e91563dbb34a75ec38c96d487049488bac5e28880a589f` |
-| `restored-mixed-display-seam.log` | 1,684 | `f9081d7cbce0ba0a2d24ef99c8a812ed8f9d7abcd0da7d20474bdc372c3174e1` |
-| `restored-mixed-display-scale.log` | 1,635 | `e81f0d10d27b9a58685857548539d9d83c4276b6f4df153c08957682508fd01e` |
-| `single-appkit-renderer-matrix.log` | 44,261 | `d282372d983ff9c499bf14b2fa7e3766d5c8e42990281a26b95be17714a07f0e` |
-| `single-game-like-renderer-matrix.log` | 44,245 | `6a879bb75c2b828396b2ab0d25497a27054c8f3ec95800b3283e0901928dd9b6` |
-| `same-scale-appkit-renderer-matrix.log` | 61,225 | `b695e1cf54ede485b24e647f1aa2c62b5217d564a7076cd7d93daabd27a0b579` |
-| `same-scale-game-like-renderer-matrix.log` | 61,199 | `102e22c1bc9794cee2eedd33964c3a980cc653a7ffc4ab05d1c0d815bb91ea35` |
-| `mixed-appkit-renderer-matrix.log` | 94,876 | `7aba1bb0ade90a92e48ca93f96381f3f3d7d20e72ff41b909241922450220474` |
-| `mixed-game-like-renderer-matrix.log` | 94,830 | `02e6816c59b151ae5c5d0487fc158170b3ebd250516ad506171a111413c2446e` |
-| `unrelated-appkit.log` | 2,354 | `7b1fee7f87de24550cb2d8c97a478286988c1eebdaf31b6f01f9ba671d990ae8` |
-| `unrelated-game-like.log` | 2,338 | `d2490d602bfb5dfa20acc11a99e0d7ec947564be5f98d26a12fac1c7988b5503` |
-| `sustained-capture-soak.log` | 2,154 | `4db780b0b8ebdfd144fb8a6f8e05e9815784096527db48232d3f428f2b858ce1` |
-| `offscreen-cleanup.log` | 2,494 | `0354cf9ae3029cb1f7ed34afee91967038c520ef097a868646059f88d8157684` |
-| `retained-authority-lifecycle.log` | 3,283 | `dd4646c00a85ada5c2321094750b74fcde693edacc27f004f9758541638a8e9f` |
-| `fixture-control.log` | 1,401 | `3d228efe5c08730092d86f656fb9b77c0f79469352e87c852f63d4e8dcc9ff0f` |
-| `retained-filter-replacement.log` | 646 | `a1f567e81a5f1d951708e33efa31c7ad37217708167918c51f382ea7e862e7e1` |
-| `system-route.log` | 526 | `ed1e6ce46bcf364f5091145a417abbf4083abee3237fd1beac0fdccbed60e053` |
-| `fixture-build-release.log` | 87 | `2a497654e77e53515cdbee79aba1cd119c3e80bc45f80cef6d6439dadb1eb9ee` |
-| `fixture-release-verification.log` | 534 | `780a966d47c8ea99f15cdd4d2c18fc3afc2af652100657531f162b8edd60ca1a` |
+| `hardware.log` | 622 | `403dde7a3e891a294b448a9014569ff1e5871e2440df5078d0e30b6539163bf0` |
+| `sdk.log` | 30 | `b0594ffe6b4818051966ad4e173420477863c282e17b427ce43476d6c7b1c309` |
+| `displays.log` | 2,721 | `ac897e7fbe3fa40efe517d78ac54fe1f259336202067abbea85365dd23bfabe6` |
+| `mixed-host-baseline.log` | 460 | `dfcee14003efe55e3a422411f84cca14488dfd0b3f8a49f6f6cde8d11e06390a` |
+| `fixture-build-debug.log` | 97 | `eef5190aa50f234a560f41b58147dea7f191b4886d686022b8696179d34d34f0` |
+| `fixture-debug-verification.log` | 369 | `2a5ed7f73edc6efec7f6e6393daaa76be5da950c62722fe71f0d260278e5c26e` |
+| `deterministic-macos.log` | 26,606 | `a842411d5623d1a5a218472dedfb60c40374f3fd4b5929ed6071452386c381c5` |
+| `c-abi-check.log` | 24,788 | `0fa13f443da3de9c2f1225d54156ad17f90ec92b90f645cd12d2127e04387187` |
+| `mixed-display-conversion.log` | 1,617 | `5836910dee6e4524f7e57183e3df42488388ca89e3bf9e2528ead1cde6f9ad40` |
+| `mixed-display-seam.log` | 1,659 | `c1b850fa4ac05121b464c62b13a45917b0ccd9aacf6eb8b00c978271e6931e02` |
+| `mixed-display-scale.log` | 1,610 | `3257ecb941574bf99a5109aada097a97722a104aeaaf4388d94b9cdf78d1ca95` |
+| `mixed-appkit-renderer-matrix.log` | 94,849 | `da11c96d05c6deb720aa4cd9c93657325cda4accf4ca8209cc58a09b33521445` |
+| `mixed-game-like-renderer-matrix.log` | 94,803 | `5cf71ea2b85f18499a7adcea8b49b4a2b826c8a4a2e485a892de2190af186fd4` |
+| `unrelated-appkit.log` | 2,354 | `b06cb1476c7b09a45c9f94833004cfcc2d7dd9faa63048c026304638af51a665` |
+| `unrelated-game-like.log` | 2,338 | `6d20228253f41ad0a7d2120feb892ef0ff46d0d30b5d606ba6ea7ef914258a09` |
+| `sustained-capture-soak.log` | 2,154 | `f240707de952ee0e28e6d2b876c465936ab2a5b4635543f1d393e235b4d75d77` |
+| `offscreen-cleanup.log` | 2,494 | `1278c3b6a0b62369d5c0ce62c50cd2277d3f479b7640645a36c3792057cac784` |
+| `retained-authority-lifecycle.log` | 3,283 | `f0b34c985ab30bb0d04b882a7828aff72b71ce966af1f849174176f98c5b14b6` |
+| `fixture-control.log` | 1,401 | `2996726a2825515246a02fd667327b103df9e594742b2329b14c7f280976cff9` |
+| `retained-filter-replacement.log` | 646 | `3767b29d5c4af16a738490ee601f10b72e559147faa8774e48074913deb9aa1d` |
+| `system-route.log` | 526 | `aa0af0004211f95aee1395c87872cd20d73aa92d7d016b6be268b3bfba778f45` |
+| `single-host-baseline.log` | 175 | `7465f411a1038f598a0fd951ede4c134e74988ea69fd02fe4731b299d0e0310b` |
+| `single-display-conversion.log` | 1,691 | `f27c8c97ec59a2243fa1ba0aafdc5e5c90113693a8253768483581ea8612c942` |
+| `single-appkit-renderer-matrix.log` | 44,234 | `e16248aff97e9b94fde5d50bc38afd816daadd82cc82b1b28eaf011428f7d38c` |
+| `single-game-like-renderer-matrix.log` | 44,218 | `58caaba98cc376d39d953085323d9b7a7b766104ccc7a67c8d58c69820c5d485` |
+| `same-scale-host-baseline.log` | 318 | `fc77243622d0107a45cf195a72bd9013ecd2934d524c5213fb781e59c3c7ceab` |
+| `same-scale-display-conversion.log` | 1,617 | `fbe75878e8f7e6014ad88cb64b8630cb38ba3cb98820d1573d5ee0a0292d8379` |
+| `same-scale-display-seam.log` | 1,722 | `deb5840d7a5ec61d9b78ed8d0c4a741ef8f630eb45add476bc6a01b34d4c8e04` |
+| `same-scale-appkit-renderer-matrix.log` | 61,198 | `ce80df0a99f768a2ab2d950399ac54f4ccbf69d4003603dadde6fc8c91104bf4` |
+| `same-scale-game-like-renderer-matrix.log` | 61,172 | `43702638e6c579baa8b11cf78d0d6968a8f42917aea18b7d5e2fb7a0a562dff9` |
+| `restored-mixed-host-baseline.log` | 460 | `69ed4ea698d1805ca8b652d5fd8afdb9cce6b14d2226ca63eab83a51e008015b` |
+| `restored-mixed-display-conversion.log` | 1,617 | `5836910dee6e4524f7e57183e3df42488388ca89e3bf9e2528ead1cde6f9ad40` |
+| `restored-mixed-display-seam.log` | 1,659 | `c1b850fa4ac05121b464c62b13a45917b0ccd9aacf6eb8b00c978271e6931e02` |
+| `restored-mixed-display-scale.log` | 1,610 | `597cc02de05239e8c0dbe0bd58071b7054fd7e43a0b05126c437d69982671a23` |
+| `fixture-build-release.log` | 87 | `7e95865620916ddfb379fc9afac8ac0db7394da1b1e0b49f5c2476a1691fac50` |
+| `fixture-release-verification.log` | 369 | `93a463da8dbb7c5e7785d2564ec0fca5cd3cb8e195f986d6ffa12acd95e58994` |
+| `capture.log` | 5,218 | `71b6fc2dcb79ce40a16ab474fe2d9082dc1b0d833023ebad4329a3c7fe7f734c` |
+| `transitions.log` | 4,094 | `69b8ce7b6dd77b2d0949ca6e976e0a70a724b1d76b0a80b87f505a44f00cd638` |
+| `process-directed.log` | 5,161 | `0d6af1e3a4ae95bf3521dde0a6cc30319b52a5dddbde06342eab334226061697` |
+| `process-directed-game-like.log` | 5,168 | `dbc865ac0209a79522ebbcbcf9e4d2d8ab2800344a1c99ad66382f45ac04aec4` |
+| `process-diagnostics.log` | 4,183 | `10577a7a6cfdd98789e992ba8da70ac65eb98e28fc0577349707ad236df82a16` |
+| `input.log` | 5,580 | `95809c334a765491b2dd33e523e075c9e672dbeb3170aa9bb93b383d0264ca1e` |
 | `dependency-check.log` | 3,276 | `8b7a14ea0f1e9316a1140b7d3cbbb48d27c37fe5f9ba980c7f8bb49877650c8b` |
-| `cargo-fmt.log` | 36 | `31908f9d1f394e141d5a965a10109ad013c1d87ab6301208db1cb7ae1fe599e7` |
-| `cargo-clippy.log` | 1,268 | `c4127ae6c32f81a3c5d8a880e3c378d6fc9c7d40caa3537256c5fe7401f33c0c` |
-| `cargo-test-workspace.log` | 108,424 | `fca205781b76c3c952f8496f8238efcc767d137afe90dbf2ae2ddacfb47c9854` |
-| `capture.log` | 5,218 | `ed881b0d5851f3ab5caad32f041cb2347fa089e07704b3fcf53b863b6e4fe89c` |
-| `transitions.log` | 4,092 | `b0f822d02b07c8f8bee62849551e59d9d4a84a05786185d0a5ec8d9f1c886cb9` |
-| `process-directed.log` | 5,161 | `cfdbbd58f4116ea588dada57eed1b7d83d6bd4f73a1695b1bdffafdfd5aa2e99` |
-| `process-directed-game-like.log` | 5,168 | `bf83511271801d56a579b41fa92e997c42c0c85cd7ab60ce7a3149bdb1020ced` |
-| `process-diagnostics.log` | 4,183 | `356e7d77c45b58ee96208f6e07cdee4686e595a877ae62a5a3c73ade95a80270` |
-| `input.log` | 5,580 | `9a307d066517fa5899d08e8bdb841b5d1fb898ca05c7c2bbb1b9b2d005c6dfb7` |
-| `fixture-process-final.log` | 61 | `02c723f42cf515a06f51e362b8999a0d90c61b12f7c0b8965be20ee1bf2907ea` |
+| `cargo-fmt.log` | 36 | `7a65ac0e89615c8f5b5efd327e2ee1111be27c07054e4f1690a70d9f8e282b1d` |
+| `cargo-clippy.log` | 222 | `8c98463f16ab03f01b07ec11ed471abba050d583a45e808cb24d401a3199ac0f` |
+| `cargo-test-workspace.log` | 112,438 | `1d4f480baa1f280302bf563ea19771af44f745a5d3f5c82a920b2ccf565d7d08` |
+| `cargo-test-doc.log` | 3,467 | `5a1a2cc58bc836f6d3979bdd6d73433c37b4f3e4c1ac726a6d34e9cf753312a6` |
+| `cargo-doc.log` | 829 | `c35521990fa03f7a72e1e218e7edfb554551e9ed81f9b756212c5f0dac0230be` |
+| `cargo-deny.log` | 2,082 | `76771058c8a54401a329cf02aea57383bec7129726af67ed6141159892626aa9` |
+| `cargo-clippy-macos-cross-target.log` | 228 | `9ca64fd66edd80e6b370dd8dcb1adbb258f7bbb73452e594f98f017a8a75c540` |
+| `cargo-test-macos-asan.log` | 17,268 | `65ec1f1c31496786bee4f48f59770d383a2ba220d7d081a0e5f6bcaa64ee473b` |
+| `benchmark-profile-gates.log` | 1,467 | `ad5219ce01fff39dc632a2d04f561d2111f76bf7c92c9807eb34e0b3485fcae3` |
+| `git-diff-check.log` | 36 | `eaf22227b66af4ffbe44c0fe205fe50ecab5ff99cd24cf2340321c7ba5c265b5` |
+| `fixture-process-final.log` | 70 | `2a29eb907c14ad607e7011d2e32608f5ee97fc0e151e949c324b744b94a04b54` |
+| `rasen-validate.log` | 544 | `c5811f049c3710081e6d8ed03bcf5cf134e580a1e2a5a4dc4b68d25a66101686` |
 
 ## Privacy review
 
@@ -373,4 +397,4 @@ This tracked report contains no captured pixels, recognized or submitted text, w
 
 Every route-wide row and every mandatory accepted row for each of the fourteen exact pairs passed on the qualified source revision. The single-display, same-scale, and mixed-scale results are independently recorded. Therefore ADR 0029 remains Accepted for these controlled pair contracts, and public descriptors and documentation may advertise them with `Unknown` compatibility, `OwningProcess` address scope, `InvocationOnly` evidence, foreground-preserving behavior, and explicit caller opt-in.
 
-No support statement may broaden this result to exact-window delivery, arbitrary applications, arbitrary games, display targets, minimized/off-screen targets, application consumption, or visual success. Any later product, fixture, qualification-oracle, budget, or mandatory-documentation change invalidates the affected acceptance rows and requires a new revision-bound report.
+No support statement may broaden this result to exact-window delivery, arbitrary applications, arbitrary games, display targets, minimized/off-screen targets, application consumption, or visual success. Any later product, fixture, qualification, budget, or mandatory-documentation change invalidates the affected acceptance rows and requires a new revision-bound report.

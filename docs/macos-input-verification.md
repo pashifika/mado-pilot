@@ -557,8 +557,8 @@ keyboard payload to the same process without that tag and proves it receives no
 event or visual credit before the production sequence runs.
 
 The accepted qualification ran at source commit
-`a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd` (tree
-`f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90`) under fixture control protocol
+`8309a05c3e7696f3081c5afef6dd6979ea1bb084` (tree
+`27fe879e0c4bb55fe4850d9a50737b568936cc10`) under fixture control protocol
 version 9. The AppKit and game-like renderer tests each passed separately with
 `single`, `same-scale`, and `mixed-scale`; one topology was never substituted
 for another. The
@@ -567,7 +567,7 @@ privacy-reviewed
 records the exact qualified revision, commands, artifact and raw-output hashes,
 bounded outcomes, excluded attempts, and all fourteen per-pair decisions; its
 raw logs are retained under the Change's
-`ephemera/qualification-final-a4b12ff/` evidence root.
+`ephemera/qualification-final-8309a05/` evidence root.
 
 ## Explicit facade check
 
@@ -669,8 +669,8 @@ The process-directed route, the fixture-controlled capture stimulus, and their
 budgets are a separate profile lineage whose pre-measurement ceilings were
 frozen in the [ADR 0029](adr/0029-macos-process-directed-input.md)
 qualification plan. That lineage is measured and accepted at source commit
-`a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd` (tree
-`f928a7059b47ce5b8e2dbdd970317c0e5e4c1b90`) in five revision-bound
+`8309a05c3e7696f3081c5afef6dd6979ea1bb084` (tree
+`27fe879e0c4bb55fe4850d9a50737b568936cc10`) in five revision-bound
 `aarch64-apple-darwin` profiles:
 [`phase-2-2-controlled-capture`](benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml),
 [`phase-2-2-controlled-transitions`](benchmarks/phase-2-2-controlled-transitions-aarch64-apple-darwin.toml),
