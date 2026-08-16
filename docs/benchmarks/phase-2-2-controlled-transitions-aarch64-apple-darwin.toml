@@ -1,6 +1,6 @@
 # Phase 2.2 controlled-stimulus transitions, measured on aarch64-apple-darwin at source
-# 850b7b26dde49035dd5759685ab6f0c7d996167f and tree
-# 3562f60ccaac62a778ffaf5af7ff26af19feed53.
+# 086448f4f37f060b4ce42a887bc63d20f0c240a7 and tree
+# c3c4e9969448cc34e89018f699d055f747c7427e.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029 sets
 # the frozen pre-measurement budgets. This corrected-revision profile passes
@@ -28,7 +28,7 @@ warmup_iterations = 5
 sample_count = 50
 correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
 queue_policy = "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
-notes = "source commit 850b7b26dde49035dd5759685ab6f0c7d996167f, tree 3562f60ccaac62a778ffaf5af7ff26af19feed53; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; 3840x2160 logical/backing 1x at signed negative origin, 2560x1440 logical/5120x2880 backing 2x main, 1512x982 logical/3024x1964 backing 2x; mixed 2x/1x and same-scale 2x/2x seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundles ad-hoc signed with approved identifiers; fixture executable sha256 34277ec97b134ddedff38930c72f9b9588b762c2828f02f05e761f40d8ae78d5; executable paths deliberately omitted; lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
+notes = "source commit 086448f4f37f060b4ce42a887bc63d20f0c240a7, tree c3c4e9969448cc34e89018f699d055f747c7427e; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; 3840x2160 logical/backing 1x at signed negative origin, 2560x1440 logical/5120x2880 backing 2x main, 1512x982 logical/3024x1964 backing 2x; mixed 2x/1x and same-scale 2x/2x seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundles ad-hoc signed with approved identifiers; fixture executable sha256 fcecc1f820764605d5ca7fa1553d8084411b912f1fc7050230ecc402498c0cdb; executable paths deliberately omitted; lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
 
 [[budget]]
 measure = "result_correctness"
@@ -54,26 +54,26 @@ rationale = "the retained ADR 0025 ceiling permits one transient resized-frame c
 workload = "resize_recreation"
 correctness_oracle = "one acknowledged private resize advances epoch and geometry and returns the resized extent independently of the acknowledgement"
 result_correctness = 0
-latency_p50_ms = 51.805417
-latency_p95_ms = 53.924083
-latency_max_ms = 54.518834
-iteration_span_ms = 50.038895
+latency_p50_ms = 51.709708
+latency_p95_ms = 71.010167
+latency_max_ms = 88.733208
+iteration_span_ms = 50.690170
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 8981
-steady_allocated_bytes = 7847
+peak_allocated_bytes = 8294
+steady_allocated_bytes = 7160
 allocated_growth_bytes = 0
 
 [[measurement]]
 workload = "open_first_frame"
 correctness_oracle = "each fresh capture-only session returns a correctly identified deterministic first frame and closes"
 result_correctness = 0
-latency_p50_ms = 104.268833
-latency_p95_ms = 114.179083
-latency_max_ms = 116.080958
-iteration_span_ms = 167.988162
+latency_p50_ms = 97.363500
+latency_p95_ms = 106.136750
+latency_max_ms = 113.065250
+iteration_span_ms = 159.126695
 mapped_bytes_per_result = 5327872
-peak_allocated_bytes = 5335943
-steady_allocated_bytes = 5322
+peak_allocated_bytes = 5335256
+steady_allocated_bytes = 4635
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -88,13 +88,13 @@ allocated_growth_bytes = 0
 workload = "retained_pressure_resume"
 correctness_oracle = "controlled publications fill the reported retained limit; releasing one slot resumes with an observable sequence gap"
 result_correctness = 0
-latency_p50_ms = 3.858083
-latency_p95_ms = 17.724750
-latency_max_ms = 18.894625
-iteration_span_ms = 1059.535392
+latency_p50_ms = 2.852083
+latency_p95_ms = 16.288125
+latency_max_ms = 18.403459
+iteration_span_ms = 957.104985
 mapped_bytes_per_result = 0
 stale_work_ratio = 0.837662338
-peak_allocated_bytes = 4672597
+peak_allocated_bytes = 4671910
 steady_allocated_bytes = 0
 allocated_growth_bytes = 0
 
@@ -102,13 +102,13 @@ allocated_growth_bytes = 0
 workload = "close_drain"
 correctness_oracle = "explicit capture-session close reaches the closed state and remains idempotent"
 result_correctness = 0
-latency_p50_ms = 59.643875
-latency_p95_ms = 71.861083
-latency_max_ms = 75.761333
-iteration_span_ms = 165.001539
+latency_p50_ms = 59.905916
+latency_p95_ms = 73.023250
+latency_max_ms = 77.693375
+iteration_span_ms = 159.939285
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 7911
-steady_allocated_bytes = 5322
+peak_allocated_bytes = 7224
+steady_allocated_bytes = 4635
 allocated_growth_bytes = 0
 
 [[measurement.budget]]

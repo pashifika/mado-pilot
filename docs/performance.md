@@ -534,8 +534,8 @@ release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
 overflow around process-directed events.
 
 Five revision-bound profiles were remeasured on the approved Apple Silicon host
-at corrected source commit `850b7b26dde49035dd5759685ab6f0c7d996167f`
-(implementation tree `3562f60ccaac62a778ffaf5af7ff26af19feed53`):
+at corrected source commit `086448f4f37f060b4ce42a887bc63d20f0c240a7`
+(implementation tree `c3c4e9969448cc34e89018f699d055f747c7427e`):
 `phase-2-2-controlled-capture-aarch64-apple-darwin`,
 `phase-2-2-controlled-transitions-aarch64-apple-darwin`,
 `phase-2-2-process-directed-appkit-aarch64-apple-darwin`,
@@ -543,9 +543,8 @@ at corrected source commit `850b7b26dde49035dd5759685ab6f0c7d996167f`
 `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin`. Their committed
 records under `docs/benchmarks/` are normative performance records. Across
 2,700 retained samples, every workload correctness oracle passed; post-warmup
-allocation growth was 2,624 bytes for the AppKit
-`discovery_open_retained_authority` workload and zero for every other workload,
-within the frozen growth budgets; and every frozen p50, p95, hard-maximum,
+allocation growth was zero for every workload, within the frozen growth
+budgets; and every frozen p50, p95, hard-maximum,
 mapped-byte, stale-work, peak-live-heap, and diagnostic-capacity gate passed.
 These passing budgets do not substitute for the unexecuted topology rows and do
 not qualify any current-source process-directed pair for release.

@@ -1255,7 +1255,7 @@ consumption, so a caller verifies intended effect on strictly newer frames from
 the retained capture stream. Publication is governed by
 [ADR 0029](adr/0029-macos-process-directed-input.md).
 
-The accepted controlled-fixture profile measures roughly 229–230 ms p95 for one
+The accepted controlled-fixture profile measures roughly 204–212 ms p95 for one
 authority/preflight/post workload. It is a regression ceiling, not a real-time
 latency or general game-compatibility claim; applications with a stricter input
 latency requirement must treat that use case as unqualified.
@@ -1627,7 +1627,7 @@ and benchmark oracles invalidated those numbers under
 earlier native input and public-language profile. Accepted-design
 [ADR 0029](adr/0029-macos-process-directed-input.md) carries remeasured
 controlled-stimulus capture/transition and owning-process route profiles for
-corrected source commit `850b7b26dde49035dd5759685ab6f0c7d996167f`.
+corrected source commit `086448f4f37f060b4ce42a887bc63d20f0c240a7`.
 Those performance gates pass, but they do not substitute for the unexecuted
 single-display and same-scale native rows, so release qualification remains
 blocked. The broader production-capture matrix and final-source regression
@@ -2216,7 +2216,7 @@ bounded-growth smoke plan. ADR 0025 accepts the earlier revision-bound macOS
 native input and Rust/C/C++ public-language profile. Accepted-design ADR 0029
 carries passing corrected-source controlled-stimulus capture/transition and
 owning-process route profiles at commit
-`850b7b26dde49035dd5759685ab6f0c7d996167f`; its release pair decisions remain
+`086448f4f37f060b4ce42a887bc63d20f0c240a7`; its release pair decisions remain
 blocked by unexecuted single-display and same-scale rows. The
 production-capture matrix and final-source reruns outside that lineage remain
 explicit `G-013` gaps.

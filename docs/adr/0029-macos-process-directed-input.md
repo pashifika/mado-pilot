@@ -2,8 +2,9 @@
 
 - **Status:** Accepted design; release qualification suspended — the historical
   complete matrix qualified all fourteen controlled pairs on source commit
-  `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, but the later product correction
-  at `850b7b26dde49035dd5759685ab6f0c7d996167f` invalidated those pair decisions.
+  `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, but the later product corrections
+  ending at `086448f4f37f060b4ce42a887bc63d20f0c240a7` invalidated those pair
+  decisions.
   The [current observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
   records passing route-wide and mixed-scale rows, with exact single-display
   and same-scale rows still unexecuted.
