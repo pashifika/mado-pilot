@@ -512,13 +512,18 @@ impl MacosInputController {
                     prior_attempts.push(InputAttempt::refused(route, fault));
                     last_fault = fault;
                     *state = DriverState::default();
+                    let early_process_target_loss_allows_fallback = matches!(
+                        (route, fault),
+                        (InputDelivery::ProcessDirected, InputFault::TargetLost)
+                    ) && index + 1 < routes.len();
                     if matches!(
                         fault,
                         InputFault::Cancelled
                             | InputFault::DeadlineExceeded
                             | InputFault::TargetLost
                             | InputFault::ControllerClosed
-                    ) {
+                    ) && !early_process_target_loss_allows_fallback
+                    {
                         break;
                     }
                 }

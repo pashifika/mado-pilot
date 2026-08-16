@@ -591,6 +591,8 @@ pub struct Profile {
     pub fixture: String,
     /// One digest pinning all of it.
     pub fixture_sha256: String,
+    /// Digest of the executable that performed the measurement, when retained.
+    pub benchmark_executable_sha256: Option<String>,
     /// The machine, as the operator stated it.
     pub hardware: String,
     /// Its operating-system version, as the operator stated it.
@@ -659,6 +661,9 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
     println!("[profile]");
     println!("fixture = \"{}\"", escape(&profile.fixture));
     println!("fixture_sha256 = \"{}\"", escape(&profile.fixture_sha256));
+    if let Some(digest) = &profile.benchmark_executable_sha256 {
+        println!("benchmark_executable_sha256 = \"{}\"", escape(digest));
+    }
     println!("release_target = \"{RELEASE_TARGET}\"");
     println!("hardware = \"{}\"", escape(&profile.hardware));
     println!("os_version = \"{}\"", escape(&profile.os_version));

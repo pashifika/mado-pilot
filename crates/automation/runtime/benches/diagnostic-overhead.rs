@@ -280,6 +280,7 @@ fn main() {
             &Profile {
                 fixture: "source-defined controlled capture/input fixture in crates/automation/runtime/benches/diagnostic-overhead.rs".to_owned(),
                 fixture_sha256: ContentDigest::of(FIXTURE_DESCRIPTION.as_bytes()).to_string(),
+                benchmark_executable_sha256: None,
                 hardware,
                 os_version,
                 build_profile: format!(

@@ -2302,6 +2302,23 @@ fn testing_process_event_source_release_exception() -> Result<(u32, bool), ShimS
 }
 
 #[cfg(test)]
+fn testing_target_release_exception(raise_slot: u32) -> Result<(u32, bool), ShimStatus> {
+    let mut release_calls = u32::MAX;
+    let mut cleanup_completed = u32::MAX;
+    // SAFETY: both outputs are writable scalars. The native seam uses sentinel
+    // target objects consumed only by an injected release callback.
+    let status = unsafe {
+        mp_shim_testing_target_release_exception(
+            raise_slot,
+            &raw mut release_calls,
+            &raw mut cleanup_completed,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((release_calls, cleanup_completed == 1))
+}
+
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ProcessPostTestObservation {
     delivery: ShimStatus,
@@ -2583,6 +2600,12 @@ unsafe extern "C" {
         out_cleanup_completed: *mut u32,
     ) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_target_release_exception(
+        raise_slot: u32,
+        out_release_calls: *mut u32,
+        out_cleanup_completed: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_process_post(
         scenario: u32,
         out_delivery_status: *mut u32,
@@ -2732,8 +2755,8 @@ mod tests {
         testing_input_activation_lifetime_loss, testing_input_text_second_allocation_failure,
         testing_process_authority_rules, testing_process_event_source_release_exception,
         testing_process_post, testing_stop_completion_exception, testing_surface_recommendation,
-        testing_target_without_process_lifetime, testing_terminalize_twice,
-        testing_validate_process_post, validate_open_shape_and_metadata,
+        testing_target_release_exception, testing_target_without_process_lifetime,
+        testing_terminalize_twice, testing_validate_process_post, validate_open_shape_and_metadata,
     };
     use mado_pilot_capture::CaptureFault;
     use mado_pilot_core::{
@@ -2773,6 +2796,17 @@ mod tests {
 
         assert_eq!(release_calls, 1);
         assert!(cleanup_completed);
+    }
+
+    #[test]
+    fn target_release_contains_each_object_exception_and_finishes_cleanup() {
+        for raise_slot in 0..3 {
+            let (release_calls, cleanup_completed) = testing_target_release_exception(raise_slot)
+                .expect("the native target release boundary contains its injected exception");
+
+            assert_eq!(release_calls, 3, "raise slot {raise_slot}");
+            assert!(cleanup_completed, "raise slot {raise_slot}");
+        }
     }
 
     #[test]

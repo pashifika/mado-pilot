@@ -354,6 +354,7 @@ mod native {
         cpp_executable: Option<PathBuf>,
         hardware: String,
         os_version: String,
+        benchmark_executable_sha256: String,
         notes: String,
     }
 
@@ -416,6 +417,10 @@ mod native {
                     .map(|bytes| ContentDigest::of(&bytes))
                     .map_err(|_| format!("the {label} executable could not be hashed"))
             };
+            let benchmark_executable = std::env::current_exe()
+                .map_err(|_| "the benchmark executable path is unavailable".to_owned())?;
+            let benchmark_executable_sha256 =
+                executable_digest(&benchmark_executable, "benchmark")?.to_string();
             let fixture_binary = executable_digest(&fixture_executable, "fixture")?;
             let mut binary_hashes = format!("; fixture executable sha256 {fixture_binary}");
             #[cfg(windows)]
@@ -444,6 +449,7 @@ mod native {
                 os_version,
                 c_executable,
                 cpp_executable,
+                benchmark_executable_sha256,
                 notes,
             })
         }
@@ -1239,6 +1245,7 @@ mod native {
             &Profile {
                 fixture,
                 fixture_sha256: fixture_digest(set).to_string(),
+                benchmark_executable_sha256: Some(args.benchmark_executable_sha256.clone()),
                 hardware: args.hardware.clone(),
                 os_version: args.os_version.clone(),
                 build_profile: format!(

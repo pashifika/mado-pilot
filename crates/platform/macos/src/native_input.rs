@@ -345,6 +345,7 @@ impl NativeInputDriver {
     /// The retained window must still match the active application's focused
     /// Accessibility window one-to-one before delivery is accepted.
     fn activate(&self, operation: &OperationContext) -> Result<(), InputFault> {
+        operation_fault(operation)?;
         match self.record.activate_owner() {
             Ok(()) => {}
             Err(ShimStatus::TargetLost) => return Err(InputFault::TargetLost),

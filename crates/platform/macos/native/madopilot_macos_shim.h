@@ -426,6 +426,13 @@ mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
 mp_shim_status mp_shim_testing_process_event_source_release_exception(
     uint32_t *out_release_calls, uint32_t *out_cleanup_completed);
 
+/*
+ * Raises while releasing one retained target object and proves every later
+ * object and the opaque wrapper still complete their ownership cleanup.
+ */
+mp_shim_status mp_shim_testing_target_release_exception(
+    uint32_t raise_slot, uint32_t *out_release_calls, uint32_t *out_cleanup_completed);
+
 /* Scenarios for the deterministic process-post state-machine seam. */
 #define MP_SHIM_TEST_PROCESS_SUCCESS 0u
 #define MP_SHIM_TEST_PROCESS_PERMISSION_DENIED 1u

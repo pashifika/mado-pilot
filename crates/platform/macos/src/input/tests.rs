@@ -510,6 +510,41 @@ fn explicit_process_fallback_uses_system_only_after_zero_effect_refusal() {
 }
 
 #[test]
+fn early_process_target_loss_can_use_explicit_zero_effect_fallback() {
+    let target = target();
+    let driver = ScriptedDriver::new()
+        .refusing_route_preflight(InputDelivery::ProcessDirected, InputFault::TargetLost);
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let request = InputRequest::new(
+        target,
+        click(),
+        DeliveryPlan::ordered(vec![InputDelivery::ProcessDirected, InputDelivery::System])
+            .expect("valid"),
+    )
+    .with_focus(FocusPolicy::RequireFocused);
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("early target loss has no effect, so explicit fallback remains available");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+    assert!(receipt.used_fallback());
+    assert_eq!(receipt.attempts()[0].fault(), Some(InputFault::TargetLost));
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Preflight(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+        ],
+    );
+}
+
+#[test]
 fn a_selected_process_route_never_reopens_ordered_fallback() {
     let target = target();
     let driver =

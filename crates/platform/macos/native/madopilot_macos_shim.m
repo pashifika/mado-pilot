@@ -1831,32 +1831,93 @@ void mp_shim_inventory_release(mp_shim_inventory *inventory) {
     free(inventory);
 }
 
-void mp_shim_target_release(mp_shim_target *target) {
-    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC) {
-        return;
+typedef void (*mp_shim_target_release_op)(CFTypeRef value, uint32_t slot, void *context);
+
+static void mp_shim_production_target_release(CFTypeRef value, uint32_t slot, void *context) {
+    (void)slot;
+    (void)context;
+    CFRelease(value);
+}
+
+static bool mp_shim_target_release_with_op(mp_shim_target *target,
+                                           mp_shim_target_release_op release,
+                                           void *context) {
+    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || release == NULL) {
+        return false;
     }
-    @try {
-        if (target->process_lifetime != NULL) {
-            CFRelease(target->process_lifetime);
-            target->process_lifetime = NULL;
+    CFTypeRef released[3] = {
+        target->process_lifetime,
+        target->shareable_owner,
+        target->filter,
+    };
+    target->process_lifetime = NULL;
+    target->shareable_owner = NULL;
+    target->filter = NULL;
+    target->magic = 0;
+    for (uint32_t slot = 0; slot < 3; slot += 1) {
+        if (released[slot] == NULL) {
+            continue;
+        }
+        @try {
+            release(released[slot], slot, context);
+        } @catch (NSException *exception) {
+            (void)exception;
+        } @catch (...) {
+        } @finally {
             mp_shim_note_released();
         }
-        if (target->shareable_owner != NULL) {
-            CFRelease(target->shareable_owner);
-            target->shareable_owner = NULL;
-            mp_shim_note_released();
-        }
-        if (target->filter != NULL) {
-            CFRelease(target->filter);
-            target->filter = NULL;
-            mp_shim_note_released();
-        }
-        target->magic = 0;
-    } @catch (NSException *exception) {
-        (void)exception;
-    } @catch (...) {
     }
     free(target);
+    return true;
+}
+
+void mp_shim_target_release(mp_shim_target *target) {
+    (void)mp_shim_target_release_with_op(target, mp_shim_production_target_release, NULL);
+}
+
+typedef struct {
+    uint32_t raise_slot;
+    uint32_t release_calls;
+} mp_shim_target_release_probe;
+
+static void mp_shim_testing_raise_target_release(CFTypeRef value, uint32_t slot, void *context) {
+    (void)value;
+    mp_shim_target_release_probe *probe = context;
+    probe->release_calls += 1;
+    if (slot == probe->raise_slot) {
+        [NSException raise:@"MPShimInjectedFailure" format:@"target release"];
+    }
+}
+
+mp_shim_status mp_shim_testing_target_release_exception(
+    uint32_t raise_slot, uint32_t *out_release_calls, uint32_t *out_cleanup_completed) {
+    if (raise_slot >= 3 || out_release_calls == NULL || out_cleanup_completed == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_release_calls = 0;
+    *out_cleanup_completed = 0;
+    MP_SHIM_BEGIN
+    mp_shim_target *target = calloc(1, sizeof(mp_shim_target));
+    if (target == NULL) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    target->magic = MP_SHIM_TARGET_MAGIC;
+    target->process_lifetime = (CFTypeRef)(uintptr_t)1;
+    target->shareable_owner = (CFTypeRef)(uintptr_t)2;
+    target->filter = (CFTypeRef)(uintptr_t)3;
+    mp_shim_note_owned();
+    mp_shim_note_owned();
+    mp_shim_note_owned();
+    mp_shim_target_release_probe probe = {
+        .raise_slot = raise_slot,
+        .release_calls = 0,
+    };
+    bool cleanup_completed =
+        mp_shim_target_release_with_op(target, mp_shim_testing_raise_target_release, &probe);
+    *out_release_calls = probe.release_calls;
+    *out_cleanup_completed = cleanup_completed ? 1u : 0u;
+    return MP_SHIM_OK;
+    MP_SHIM_END
 }
 
 mp_shim_status mp_shim_testing_target_without_process_lifetime(

@@ -160,7 +160,7 @@ impl fmt::Debug for FixtureController {
 
 impl FixtureController {
     /// Launches one signed app bundle derived from `executable` and waits for its
-    /// exact protocol-v6 ready facts.
+    /// exact version-10 protocol ready facts.
     pub fn start(
         executable: &Path,
         launch_mode: LaunchMode,
@@ -241,8 +241,12 @@ impl FixtureController {
             .map_err(|_| "the fixture output reader could not start".to_owned())?;
         let lines = Arc::new(Mutex::new(receiver));
         let ready = wait_for_ready(&lines, &reader_failed, deadline)?;
-        let facts = fixture_ready_facts(&ready, process_id)
-            .ok_or_else(|| "the fixture ready record did not match protocol v6".to_owned())?;
+        let facts = fixture_ready_facts(&ready, process_id).ok_or_else(|| {
+            format!(
+                "the fixture ready record did not match protocol v{}",
+                protocol::FIXTURE_CONTROL_VERSION
+            )
+        })?;
         let expected = launch_mode.expected_facts();
         if !facts.execution_context_is_approved()
             || facts.run_nonce() != run_nonce
@@ -284,9 +288,7 @@ impl FixtureController {
         if self.stopped
             || self.input.is_none()
             || self.reader_failed.load(Ordering::Acquire)
-            || !self
-                .application
-                .matches_live_owner(i64::from(self.application.process_id()))
+            || !self.application.is_live()
         {
             return None;
         }
@@ -575,20 +577,29 @@ impl FixtureController {
             .is_ok_and(|ack| ack.result.status == 0);
         self.shutdown_input();
         let graceful_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
-        let mut reaped = wait_for_exit(&mut self.launcher, graceful_deadline);
-        if !reaped {
-            reaped = terminate_authenticated_application(
-                &mut self.application,
+        let mut stopped =
+            if wait_for_authenticated_application_exit(&self.application, graceful_deadline) {
+                reap_launcher_after_application_exit(
+                    &self.application,
+                    &mut self.launcher,
+                    deadline,
+                )
+            } else {
+                terminate_authenticated_application(
+                    &mut self.application,
+                    &mut self.launcher,
+                    deadline,
+                )
+            };
+        if !stopped && !self.application.is_live() {
+            stopped = reap_launcher_after_application_exit(
+                &self.application,
                 &mut self.launcher,
                 deadline,
             );
         }
-        let bounded = reaped && Instant::now() <= deadline;
-        if !reaped {
-            let _killed = self.launcher.kill();
-            reaped = wait_for_exit(&mut self.launcher, Instant::now() + DROP_WAIT);
-        }
-        self.stopped = reaped;
+        let bounded = stopped && Instant::now() <= deadline;
+        self.stopped = stopped;
 
         let output_clean = finish_reader_output_is_clean(
             self.reader.take(),
@@ -597,7 +608,7 @@ impl FixtureController {
             self.pending_events.is_empty(),
             deadline,
         );
-        let result = acknowledged && reaped && bounded && output_clean;
+        let result = acknowledged && stopped && bounded && output_clean;
         self.finish_result = Some(result);
         result
     }
@@ -611,16 +622,11 @@ impl FixtureController {
     fn terminate_owned(&mut self) {
         self.shutdown_input();
         let deadline = Instant::now() + DROP_WAIT;
-        let mut reaped = terminate_authenticated_application(
+        self.stopped = terminate_authenticated_application(
             &mut self.application,
             &mut self.launcher,
             deadline,
         );
-        if !reaped {
-            let _killed = self.launcher.kill();
-            reaped = wait_for_exit(&mut self.launcher, Instant::now() + DROP_WAIT);
-        }
-        self.stopped = reaped;
         self.finish_result = Some(false);
         let _output_clean = finish_reader_output_is_clean(
             self.reader.take(),
@@ -814,6 +820,40 @@ fn wait_for_exit(child: &mut Child, deadline: Instant) -> bool {
     }
 }
 
+fn wait_for_authenticated_application_exit(
+    application: &AuthenticatedFixtureProcess,
+    deadline: Instant,
+) -> bool {
+    loop {
+        if !application.is_live() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn reap_launcher_after_application_exit(
+    application: &AuthenticatedFixtureProcess,
+    launcher: &mut Child,
+    deadline: Instant,
+) -> bool {
+    if application.is_live() {
+        return false;
+    }
+    let graceful_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
+    if wait_for_exit(launcher, graceful_deadline) {
+        return true;
+    }
+    if application.is_live() || Instant::now() >= deadline {
+        return false;
+    }
+    let _killed = launcher.kill();
+    wait_for_exit(launcher, deadline) && !application.is_live()
+}
+
 fn terminate_authenticated_application(
     application: &mut AuthenticatedFixtureProcess,
     launcher: &mut Child,
@@ -821,11 +861,12 @@ fn terminate_authenticated_application(
 ) -> bool {
     let _terminated = application.terminate();
     let term_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
-    if wait_for_exit(launcher, term_deadline) {
-        return true;
+    if wait_for_authenticated_application_exit(application, term_deadline) {
+        return reap_launcher_after_application_exit(application, launcher, deadline);
     }
     let _killed = application.kill();
-    wait_for_exit(launcher, deadline)
+    wait_for_authenticated_application_exit(application, deadline)
+        && reap_launcher_after_application_exit(application, launcher, deadline)
 }
 
 struct LaunchGuard {
@@ -863,15 +904,13 @@ impl LaunchGuard {
 impl Drop for LaunchGuard {
     fn drop(&mut self) {
         let deadline = Instant::now() + DROP_WAIT;
-        let mut reaped = false;
         if let (Some(application), Some(child)) = (self.application.as_mut(), self.child.as_mut()) {
-            reaped = terminate_authenticated_application(application, child, deadline);
+            let _stopped = terminate_authenticated_application(application, child, deadline);
+            return;
         }
-        if let Some(child) = self.child.as_mut()
-            && !reaped
-        {
+        if let Some(child) = self.child.as_mut() {
             let _killed = child.kill();
-            let _reaped = wait_for_exit(child, Instant::now() + DROP_WAIT);
+            let _reaped = wait_for_exit(child, deadline);
         }
     }
 }

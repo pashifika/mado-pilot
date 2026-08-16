@@ -93,6 +93,12 @@ impl AuthenticatedFixtureProcess {
         self.process_id
     }
 
+    /// Confirms that this exact authenticated process lifetime still exists.
+    #[must_use]
+    pub fn is_live(self) -> bool {
+        self.matches_live_owner(i64::from(self.process_id))
+    }
+
     /// Confirms that one discovered owner PID is this still-live authenticated
     /// peer lifetime. The audit-token lookup refuses a reused numeric PID.
     #[must_use]

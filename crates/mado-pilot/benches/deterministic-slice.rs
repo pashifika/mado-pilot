@@ -130,6 +130,7 @@ fn main() {
                           mado-pilot-testkit match_fixtures for the scene"
                     .to_owned(),
                 fixture_sha256: fixture_digest().to_string(),
+                benchmark_executable_sha256: None,
                 hardware,
                 os_version,
                 build_profile: format!(
