@@ -3925,6 +3925,7 @@ fn wait_for_fixture_geometry(
 ) -> Frame {
     let deadline = Instant::now() + CONTENT_WAIT;
     let mut cursor = after;
+    let mut matching_since = None;
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match capture.frame(
@@ -3933,9 +3934,14 @@ fn wait_for_fixture_geometry(
         ) {
             Ok(frame) => {
                 cursor = frame.stamp();
-                if qualification_geometry(&frame) == expected
-                    && fixture_frame_content_matches(&frame, replacement, context_label)
+                if qualification_geometry(&frame) != expected
+                    || !fixture_frame_content_matches(&frame, replacement, context_label)
                 {
+                    matching_since = None;
+                    continue;
+                }
+                let stable_since = matching_since.get_or_insert_with(Instant::now);
+                if stable_since.elapsed() >= GEOMETRY_SETTLE {
                     return frame;
                 }
             }
@@ -3943,7 +3949,7 @@ fn wait_for_fixture_geometry(
             Err(error) => panic!("{context_label} frame refresh failed: {error}"),
         }
     }
-    panic!("{context_label} did not republish the retained target geometry and content");
+    panic!("{context_label} did not republish and retain the expected geometry and content");
 }
 
 fn wait_until_frontmost_fixture(fixture: &Fixture) -> u32 {
