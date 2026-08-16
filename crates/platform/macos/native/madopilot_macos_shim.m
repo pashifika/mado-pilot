@@ -4741,6 +4741,36 @@ static mp_shim_status mp_shim_process_check_prepare_eligibility(
 }
 
 /*
+ * Compares the geometry identity a captured frame can preserve.
+ *
+ * A source transform stores the exact desktop origin and backing scale, but its
+ * logical size is the captured pixel extent divided by that scale. The raw
+ * ScreenCaptureKit point size can differ from this normalized size by less than
+ * one point because the pixel extent is integral. Comparing raw CGRect sizes
+ * would therefore reject an unchanged fractional-size window. Equal origins,
+ * scales, and rounded pixel extents are the same capture geometry fingerprint.
+ */
+static bool mp_shim_process_geometry_matches(
+    const mp_shim_process_post_request *request, CGRect current_bounds, double current_scale) {
+    if (current_bounds.origin.x != request->expected_x ||
+        current_bounds.origin.y != request->expected_y ||
+        current_scale != request->expected_scale) {
+        return false;
+    }
+    uint32_t current_width =
+        mp_shim_pixels_from_points(current_bounds.size.width, current_scale);
+    uint32_t current_height =
+        mp_shim_pixels_from_points(current_bounds.size.height, current_scale);
+    uint32_t expected_width =
+        mp_shim_pixels_from_points(request->expected_width, request->expected_scale);
+    uint32_t expected_height =
+        mp_shim_pixels_from_points(request->expected_height, request->expected_scale);
+    return current_width != 0 && current_height != 0 && expected_width != 0 &&
+           expected_height != 0 && current_width == expected_width &&
+           current_height == expected_height;
+}
+
+/*
  * Confirms everything that authorizes one irreversible native unit.
  *
  * Ordinary input revalidates the exact retained window, its geometry policy,
@@ -4762,12 +4792,8 @@ static mp_shim_status mp_shim_process_check_commit_authority(
             return status;
         }
         if (request->geometry_check == MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT) {
-            CGRect expected =
-                CGRectMake(request->expected_x, request->expected_y,
-                           request->expected_width, request->expected_height);
             double scale = ops->scale(current_bounds, ops->context);
-            if (!CGRectEqualToRect(current_bounds, expected) ||
-                scale != request->expected_scale) {
+            if (!mp_shim_process_geometry_matches(request, current_bounds, scale)) {
                 report->geometry_result = MP_SHIM_PROCESS_GEOMETRY_CHANGED;
                 return MP_SHIM_GEOMETRY_CHANGED;
             }
@@ -5264,6 +5290,9 @@ static mp_shim_status mp_shim_testing_process_authority(
     mp_shim_process_test_probe *probe = context;
     probe->authority_calls += 1;
     *out_bounds = CGRectMake(100.0, 100.0, 320.0, 240.0);
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_FRACTIONAL_GEOMETRY_NORMALIZED) {
+        out_bounds->size.width = 320.4;
+    }
     *out_target_match_count = 1;
     if (probe->scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT) {
         if (!probe->geometry_was_transiently_changed) {
@@ -5402,7 +5431,7 @@ mp_shim_status mp_shim_testing_process_post(
         out_focus_result == NULL || out_authority_calls == NULL || out_preflight_calls == NULL ||
         out_lifetime_calls == NULL || out_focus_calls == NULL || out_prepare_calls == NULL ||
         out_post_calls == NULL || out_release_calls == NULL ||
-        scenario > MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT) {
+        scenario > MP_SHIM_TEST_PROCESS_FRACTIONAL_GEOMETRY_NORMALIZED) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
@@ -5469,9 +5498,17 @@ mp_shim_status mp_shim_testing_process_post(
             request.event_kind = MP_SHIM_PROCESS_EVENT_TEXT;
         } else if (scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED ||
                    scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE ||
-                   scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT) {
+                   scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT ||
+                   scenario == MP_SHIM_TEST_PROCESS_FRACTIONAL_GEOMETRY_NORMALIZED) {
             request.geometry_check = MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT;
             request.expected_scale = 2.0;
+            if (scenario == MP_SHIM_TEST_PROCESS_FRACTIONAL_GEOMETRY_NORMALIZED) {
+                /*
+                 * A 320.4-point capture at 2x contains 641 pixels, so the exact
+                 * source-frame transform covers 320.5 logical points.
+                 */
+                request.expected_width = 320.5;
+            }
         }
         if (scenario == MP_SHIM_TEST_PROCESS_RELEASE_WINDOW_UNAVAILABLE) {
             request.purpose = MP_SHIM_PROCESS_POST_RELEASE;

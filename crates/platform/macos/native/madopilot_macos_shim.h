@@ -443,6 +443,7 @@ mp_shim_status mp_shim_testing_process_event_source_release_exception(
 #define MP_SHIM_TEST_PROCESS_FOCUS_UNAVAILABLE 23u
 #define MP_SHIM_TEST_PROCESS_FOCUS_REQUIRED_SUCCESS 24u
 #define MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT 25u
+#define MP_SHIM_TEST_PROCESS_FRACTIONAL_GEOMETRY_NORMALIZED 26u
 
 /* Process-post request and capture-only target-shape validation scenarios. */
 #define MP_SHIM_TEST_PROCESS_VALIDATE_NULL_REQUEST 0u

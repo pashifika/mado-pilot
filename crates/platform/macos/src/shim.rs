@@ -3012,6 +3012,20 @@ mod tests {
     }
 
     #[test]
+    fn process_post_compares_fractional_windows_in_capture_geometry() {
+        let observed = testing_process_post(26).expect("native process-post seam runs");
+
+        assert_eq!(
+            observed.delivery,
+            ShimStatus::Ok,
+            "the exact 641-pixel source transform must match its unchanged 320.4-point native window"
+        );
+        assert_eq!(observed.invoked_native_units, 1);
+        assert_eq!(observed.target_match_count, 1);
+        assert_eq!(observed.calls, [1, 2, 2, 0, 1, 1, 1]);
+    }
+
+    #[test]
     fn process_post_rejects_every_invalid_native_request_before_effect() {
         let scenarios = [
             "null request",

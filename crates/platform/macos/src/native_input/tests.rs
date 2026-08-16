@@ -1576,6 +1576,15 @@ fn process_commit_bounds_reuse_the_capture_authoritative_rectangle() {
     assert_eq!(bounds.origin, (-120.0, 80.0));
     assert_eq!(bounds.size, (640.0, 420.0));
     assert_eq!(bounds.scale, 2.0);
+
+    let fractional = fingerprint((-120.0, 80.0), (320.4, 240.0), 2.0);
+    let normalized =
+        process_bounds(fractional).expect("fractional native points normalize to frame pixels");
+    assert_eq!(
+        normalized.size,
+        (320.5, 240.0),
+        "the 641-pixel source transform, not the lossy raw point size, is authoritative"
+    );
 }
 
 #[test]
