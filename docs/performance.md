@@ -534,8 +534,8 @@ release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
 overflow around process-directed events.
 
 Five revision-bound profiles were remeasured on the approved Apple Silicon host
-at corrected source commit `086448f4f37f060b4ce42a887bc63d20f0c240a7`
-(implementation tree `c3c4e9969448cc34e89018f699d055f747c7427e`):
+at corrected source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426`
+(implementation tree `f4a707501748303adcec577df5f18fcd18f13f45`):
 `phase-2-2-controlled-capture-aarch64-apple-darwin`,
 `phase-2-2-controlled-transitions-aarch64-apple-darwin`,
 `phase-2-2-process-directed-appkit-aarch64-apple-darwin`,

@@ -1,35 +1,22 @@
-## Invalidation notice
-
-A review of `086448f4f37f060b4ce42a887bc63d20f0c240a7` found that the native
-focus-refusal status reached the public receipt as an unexplained submission
-failure instead of the typed focus refusal, because the process-directed status
-conversion still had a wildcard arm. The native gate was correct and posted no
-event, but the caller-visible fault classification was wrong, so the fix is a
-product-code change.
-
-Every native row, benchmark profile, and pair decision recorded below is
-therefore bound to a superseded product revision. The complete matrix, including
-the mixed-scale rows that had passed, must be rerun on the corrected revision
-before any part of this report describes current source. Until that rerun and
-rebind complete, this document states no current-source qualification.
-
 ## Current decision
 
-The corrected implementation at source commit `086448f4f37f060b4ce42a887bc63d20f0c240a7` and source tree `c3c4e9969448cc34e89018f699d055f747c7427e` is **not yet release-qualified**.
+The corrected implementation at source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` and source tree `f4a707501748303adcec577df5f18fcd18f13f45` is **not yet release-qualified**.
 
-The route-wide rows, the complete mixed-scale AppKit and controlled OpenGL renderer rows, the five Phase 2.2 performance profiles, AddressSanitizer, repository verification, and pull request CI pass on that revision. The exact `single` and `same-scale` renderer rows have not been run on it. Because the frozen plan requires every topology for each dependent pair, the current decision is 0 `qualified`, 0 `rejected`, and 14 `unexecuted`. Draft pull request #36 remains draft.
+The route-wide rows, the complete mixed-scale AppKit and controlled OpenGL renderer rows, all ten opt-in native rows, the five Phase 2.2 performance profiles, AddressSanitizer, repository verification, and pull request CI pass on that revision. The exact `single` and `same-scale` renderer rows have not been run on it. Because the frozen plan requires every topology for each dependent pair, the current decision is 0 `qualified`, 0 `rejected`, and 14 `unexecuted`. Draft pull request #36 remains draft.
 
-This revision adds the final-gate focus authority correction: a caller-selected `RequireFocused` predicate now travels in the internal process-post request and is observed inside the same bounded native operation as retained-window authority, geometry, event-post access, and process lifetime, immediately before `CGEventPostToPid`. The internal shim surface moved from 13 to 14, which also covers the earlier scroll-location signature change. Both earlier matrices at `8309a05c3e7696f3081c5afef6dd6979ea1bb084` and `850b7b26dde49035dd5759685ab6f0c7d996167f` are historical only; none of their pair passes may be applied to this source.
+This revision carries two corrections. The final-gate focus authority change makes a caller-selected `RequireFocused` predicate travel in the internal process-post request and be observed inside the same bounded native operation as retained-window authority, geometry, event-post access, and process lifetime, immediately before `CGEventPostToPid`; the internal shim surface moved from 13 to 14, which also covers the earlier scroll-location signature change. The fault-conversion change reports that native focus refusal as a typed focus refusal at the public boundary instead of an unexplained submission failure, and matches every native status so a later addition cannot fall through silently.
+
+The earlier matrices at `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, `850b7b26dde49035dd5759685ab6f0c7d996167f`, and `086448f4f37f060b4ce42a887bc63d20f0c240a7` are historical only; none of their pair passes may be applied to this source.
 
 ## Current corrected-revision provenance
 
-The current partial rerun was recorded on 2026-08-16 JST. Product, fixture, test, and benchmark source remained fixed at the source commit above. The five benchmark profiles and this report were produced afterward and do not change the measured implementation tree; the recorded working-tree status counts exactly those five profile files.
+The current partial rerun was recorded on 2026-08-16 JST. Product, fixture, test, and benchmark source remained fixed at the source commit above. The five benchmark profiles and this report were produced afterward and do not change the measured implementation tree; the recorded working-tree status counts exactly those five profile files. The release fixture executable is byte-identical to the previous revision's, because the corrected conversion is not reachable from the fixture binary.
 
 | Field | Observed value |
 |---|---|
 | Base revision | `ffb1823b68ba632b4fc8e7725361ea4596e220f0` |
-| Corrected source commit | `086448f4f37f060b4ce42a887bc63d20f0c240a7` |
-| Corrected source tree | `c3c4e9969448cc34e89018f699d055f747c7427e` |
+| Corrected source commit | `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` |
+| Corrected source tree | `f4a707501748303adcec577df5f18fcd18f13f45` |
 | Branch / pull request | `feat/phase-2-2-macos-process-directed-delivery`; draft PR #36 against `dev/0.2.1` |
 | Host | `MacBookPro18,3`; Apple M1 Pro, 10 physical cores, 32 GiB, `arm64` |
 | OS / SDK | macOS 26.5.2 build 25F84; macOS SDK 26.5 |
@@ -48,9 +35,9 @@ Current executable hashes:
 
 | Artifact role | Bytes | SHA-256 |
 |---|---:|---|
-| Native input integration test executable | 4,561,376 | `66d6b4c8af1644c54d5329223f32f019180374b337e9a931b5cdd249808203a3` |
-| macOS unit/scenario test executable | 4,911,288 | `294bfba642edd2ce5791e16fea397f092df789d0607ead737b018c210808aa2b` |
-| native-phase2 benchmark executable | 1,378,384 | `4723ef6a558072ed93af993d6d9f75656b2d965b9608885b790ed1a96b7e6812` |
+| Native input integration test executable | 4,561,376 | `3a5eaacadbcd6512b5593b11a11807e2da5fbe8cb3371f5ac95f1ebbc420400c` |
+| macOS unit/scenario test executable | 4,912,104 | `2f82c48c783f56c917476e8651c32b4aa3737386527c2aff7eb1c5ff20832a18` |
+| native-phase2 benchmark executable | 1,378,384 | `60c499079d6632177eada2fd08f79c0d0e8a4c6e63d7a84598c8b8d6c3b9d096` |
 | Release fixture executable | 599,936 | `fcecc1f820764605d5ca7fa1553d8084411b912f1fc7050230ecc402498c0cdb` |
 | C common-flow executable | 34,880 | `c47e516890e5aa69130ef988e7d3e04e1cb941c413d6f820a27df02f1c10f6aa` |
 | C++ common-flow executable | 327,960 | `481d470428c7bbff00a8125920f5f9bd3f79187a53c47e33f66f1a3e011a754f` |
@@ -93,8 +80,8 @@ cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
 cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --workload-set <capture|transitions|process-directed|process-directed-game-like|process-diagnostics> \
   --fixture-executable "$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
-  --source-revision 086448f4f37f060b4ce42a887bc63d20f0c240a7 \
-  --source-tree c3c4e9969448cc34e89018f699d055f747c7427e <recorded host options>
+  --source-revision a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426 \
+  --source-tree f4a707501748303adcec577df5f18fcd18f13f45 <recorded host options>
 
 cargo run --locked --package mado-pilot-dependency-check
 cargo fmt --all --check
@@ -123,9 +110,9 @@ cargo test --locked -p mado-pilot-testkit \
 | `single` renderer rows | **unexecuted**: the corrected source has not been run with exactly one 2× display online |
 | `same-scale` renderer rows | **unexecuted**: the corrected source has not been run with exactly two horizontally adjacent 2× displays online |
 
-Each completed mixed-scale renderer test executed its fixed matrix of five pointer coordinate spaces, seven pointer sequences over eleven authoritative geometry stages, five keyboard cases, three Unicode text cases, cancellation/cleanup, caller-selected `RequireFocused` success and inactive refusal, foreground/cursor invariance, independent process observation, and strictly newer controlled visual confirmation. AppKit frame sequences for the four visits were 1,152 / 3,335 / 1,028 / 1,157; controlled OpenGL sequences were 1,220 / 3,528 / 1,113 / 1,203. These values identify capture progress only; they do not claim input-caused visual effect.
+Each completed mixed-scale renderer test executed its fixed matrix of five pointer coordinate spaces, seven pointer sequences over eleven authoritative geometry stages, five keyboard cases, three Unicode text cases, cancellation/cleanup, caller-selected `RequireFocused` success and inactive refusal, foreground/cursor invariance, independent process observation, and strictly newer controlled visual confirmation. AppKit frame sequences for the four visits were 1,178 / 3,462 / 1,103 / 1,174; controlled OpenGL sequences were 1,180 / 3,443 / 1,090 / 1,173. These values identify capture progress only; they do not claim input-caused visual effect.
 
-The default private-fixture suite recorded 252 passes and ten deliberately ignored interactive rows; all ten ignored rows were executed separately on the corrected revision, including the operator-clicked `System` route row. The complete workspace recorded 1215 passes and 11 ignored opt-in tests. Doctests recorded 8 passes and 1 ignored example. The dedicated native-shim AddressSanitizer run recorded 187 passes with no sanitizer finding. Draft PR #36 passed repository policy, branch flow, Windows, and macOS CI jobs on this revision.
+The default private-fixture suite recorded 253 passes and ten deliberately ignored interactive rows; all ten ignored rows were executed separately on the corrected revision, including the operator-clicked `System` route row. The complete workspace recorded 1216 passes and 11 ignored opt-in tests. Doctests recorded 8 passes and 1 ignored example. The dedicated native-shim AddressSanitizer run recorded 188 passes with no sanitizer finding. Draft PR #36 passed repository policy, branch flow, Windows, and macOS CI jobs on this revision.
 
 ### Route-wide decisions
 
@@ -175,94 +162,100 @@ The five Phase 2.2 profiles were remeasured on the corrected source. All 2,700 r
 
 | Profile / workload | p50 ms | p95 ms | max ms | Peak live Rust bytes |
 |---|---:|---:|---:|---:|
-| capture / `fixture_command_acknowledgement` | 0.169917 | 0.219959 | 1.489458 | 36,933 |
-| capture / `controlled_stimulus_to_frame` | 16.553000 | 17.283542 | 22.173500 | 9,300,383 |
-| capture / `static_latest_retained` | 0.000125 | 0.000125 | 0.000208 | 4,671,439 |
-| capture / `static_newer_repeated_pixels` | 18.395584 | 36.464041 | 53.894458 | 9,300,383 |
-| capture / `latest_acquisition` | 0.000625 | 0.000875 | 0.001000 | 9,300,383 |
-| capture / `cpu_map_bgra8` | 0.187167 | 0.207791 | 0.256833 | 9,300,383 |
-| transitions / `resize_recreation` | 51.709708 | 71.010167 | 88.733208 | 8,294 |
-| transitions / `open_first_frame` | 97.363500 | 106.136750 | 113.065250 | 5,335,256 |
-| transitions / `retained_pressure_resume` | 2.852083 | 16.288125 | 18.403459 | 4,671,910 |
-| transitions / `close_drain` | 59.905916 | 73.023250 | 77.693375 | 7,224 |
-| AppKit / `discovery_open_retained_authority` | 314.669416 | 352.811667 | 374.007875 | 51,055 |
-| AppKit / `event_authority_preflight_post` | 204.121666 | 208.971250 | 210.760584 | 4,673,327 |
-| AppKit / `release_cleanup` | 1.723625 | 2.747000 | 2.773875 | 4,673,351 |
-| AppKit / `session_close` | 64.088292 | 73.663833 | 77.099417 | 43,584 |
-| AppKit / `fixture_controller_close` | 51.541125 | 55.919708 | 59.933916 | 37,401 |
-| game-like / `discovery_open_retained_authority` | 313.802875 | 371.752958 | 379.814625 | 51,055 |
-| game-like / `event_authority_preflight_post` | 204.882500 | 211.230792 | 216.500209 | 4,673,327 |
-| game-like / `release_cleanup` | 1.763708 | 2.611416 | 2.703167 | 4,673,351 |
-| game-like / `session_close` | 65.680542 | 70.784375 | 74.851250 | 43,584 |
-| game-like / `fixture_controller_close` | 20.915083 | 26.439875 | 33.242208 | 37,413 |
-| diagnostics / `event_diagnostics_off` | 204.396125 | 209.158334 | 213.124042 | 4,673,447 |
-| diagnostics / `event_diagnostics_normal` | 203.103209 | 208.690958 | 215.558541 | 4,683,855 |
-| diagnostics / `event_diagnostics_debug` | 203.078959 | 209.701792 | 227.195292 | 4,683,855 |
-| diagnostics / `event_diagnostic_overflow` | 206.405709 | 211.661625 | 226.198125 | 4,674,279 |
+| capture / `fixture_command_acknowledgement` | 0.175541 | 0.248958 | 1.413042 | 36,933 |
+| capture / `controlled_stimulus_to_frame` | 16.604166 | 17.434709 | 18.569125 | 9,300,405 |
+| capture / `static_latest_retained` | 0.000125 | 0.000167 | 0.000167 | 4,671,461 |
+| capture / `static_newer_repeated_pixels` | 17.482458 | 35.539792 | 55.728583 | 9,300,405 |
+| capture / `latest_acquisition` | 0.000500 | 0.000750 | 0.001292 | 9,300,405 |
+| capture / `cpu_map_bgra8` | 0.185125 | 0.206250 | 0.247417 | 9,300,405 |
+| transitions / `resize_recreation` | 52.555834 | 61.353917 | 69.669959 | 8,316 |
+| transitions / `open_first_frame` | 98.200417 | 109.305875 | 115.946083 | 5,335,278 |
+| transitions / `retained_pressure_resume` | 3.743334 | 17.520750 | 17.898917 | 4,671,932 |
+| transitions / `close_drain` | 65.151709 | 74.761417 | 79.895917 | 7,246 |
+| AppKit / `discovery_open_retained_authority` | 311.514042 | 387.611417 | 395.485833 | 51,143 |
+| AppKit / `event_authority_preflight_post` | 207.483584 | 212.674625 | 213.684958 | 4,673,349 |
+| AppKit / `release_cleanup` | 1.629375 | 2.452042 | 2.867166 | 4,673,373 |
+| AppKit / `session_close` | 62.575042 | 72.372375 | 74.834708 | 43,606 |
+| AppKit / `fixture_controller_close` | 32.183208 | 54.893166 | 56.674875 | 37,401 |
+| game-like / `discovery_open_retained_authority` | 315.287375 | 371.193583 | 389.543875 | 51,143 |
+| game-like / `event_authority_preflight_post` | 207.938166 | 224.368667 | 231.991584 | 4,673,349 |
+| game-like / `release_cleanup` | 1.741334 | 2.671834 | 2.892750 | 4,673,373 |
+| game-like / `session_close` | 64.954500 | 75.559042 | 78.040875 | 43,606 |
+| game-like / `fixture_controller_close` | 20.868334 | 33.520208 | 35.951292 | 37,413 |
+| diagnostics / `event_diagnostics_off` | 204.886500 | 211.246083 | 216.556541 | 4,673,469 |
+| diagnostics / `event_diagnostics_normal` | 204.548666 | 210.178084 | 213.286416 | 4,683,877 |
+| diagnostics / `event_diagnostics_debug` | 204.995584 | 211.942083 | 232.486083 | 4,683,877 |
+| diagnostics / `event_diagnostic_overflow` | 207.117459 | 212.318916 | 223.287667 | 4,674,301 |
 
-The controlled capture profile retained the exact 4,628,480-byte BGRA8 mapping bound and a zero stale-work ratio for acquisition workloads. The transition profile recorded its measured retained-pressure ratio below the frozen 0.95 ceiling. Both process-directed renderer profiles remained below the frozen 16 MiB live-Rust-heap ceiling. The authority/preflight/post workload measured roughly 204–212 ms p95 across the three process-directed profiles, below the frozen 750 ms budget. These are controlled-fixture regression measurements, not real-time guarantees or general game compatibility evidence; the focus predicate is not part of that workload, because the benchmark posts under the default preserving policy.
+The controlled capture profile retained the exact 4,628,480-byte BGRA8 mapping bound and a zero stale-work ratio for acquisition workloads. The transition profile recorded its measured retained-pressure ratio below the frozen 0.95 ceiling. Both process-directed renderer profiles remained below the frozen 16 MiB live-Rust-heap ceiling. The authority/preflight/post workloads measured roughly 210–224 ms p95 across the three process-directed profiles, below the frozen 750 ms budget. These are controlled-fixture regression measurements, not real-time guarantees or general game compatibility evidence; the focus predicate is not part of that workload, because the benchmark posts under the default preserving policy.
 
-The separately versioned ADR 0025 native-input/public-language profile remains bound to the historical `8309a05` source. One earlier corrected-source refresh attempt stopped before the first retained sample because the fixture controller found non-empty pending event state at reset. No measurement from that attempt was accepted, and the historical input profile is not represented as current-source evidence.
+The separately versioned ADR 0025 native-input/public-language profile remains bound to the historical `8309a05` source and is not represented as current-source evidence.
 
 Current committed profile hashes:
 
 | Profile | SHA-256 |
 |---|---|
-| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `1586a75702b7de82326e45087567e6c5ac8a7316196054790b8c66a409b2fcac` |
-| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `05f8d23299581d9a2ab65e9bb080cf613a3b1647a85dc5654ad1bbd7ccc22979` |
-| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `2204caeb8437ab9923595ba870788641a00fff915c24f37be76b1e16bdb294c3` |
-| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `15eb753ca8340edb915958aa1fc7d98cb7bf2663a23b17e591e064107229f144` |
-| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `c7c7d8be05885f028f7f43e9ffe8c0fcc95e9d9b50ea7feeeafff65fd818137a` |
+| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `f9c8c5d22c8ce87d48d4c2447bd9a93b6503ad06b655568934e888770c845e9f` |
+| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `148cf6c7cd0ef3ce8b4a221fbb088070857c1e92071749ca9af028ee8cfda149` |
+| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `7361a807f00349d77781573332bef77156f5499eb59829b6cd9b69aeecbf1032` |
+| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `d1108ebcd1e4eda1785e18f74df76b3c09b88b472a951b46bdffde6ac6ac72d8` |
+| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `dca05ca26874a6438845ab9a43a9fe9833c3d43ace21bb2cc274d140e6ef4273` |
 
 ## Current raw-output provenance
 
-Accepted current-revision raw logs remain ignored under `.rasen/changes/phase-2-2-macos-owning-process-delivery/ephemera/qualification-final-086448f/`. They may contain native identifiers or fixture-private records and must not be committed. The tracked binding is limited to file size and SHA-256.
+Accepted current-revision raw logs remain ignored under `.rasen/changes/phase-2-2-macos-owning-process-delivery/ephemera/qualification-final-a1eee9c/`. They may contain native identifiers or fixture-private records and must not be committed. The tracked binding is limited to file size and SHA-256.
 
 | Accepted raw artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `benchmark-profile-gates.log` | 1,342 | `e8b752d78e19df81cb485253ab33d09d900e0be494dcd5ee92d384729173ffdb` |
-| `c-abi-check.log` | 24,782 | `d8f9e581ae76170dc9c8cb6175d3bc463b34e6069c55722ff7c38aab15359c7e` |
-| `capture.log` | 4,991 | `3c1dcbde345f531512a4164778d6c7bf187fbf7efcf84d198ad51ba06af63748` |
+| `benchmark-profile-gates.log` | 1,467 | `b867baf60e0ea594d555905604bf578f09595200103eeca4f4d22f0b6c60a464` |
+| `c-abi-check.log` | 24,782 | `4470ca7f9901ab94a743f25993ab6566de6dcebd891b5b767261c7e5bb6c16d6` |
+| `capture.log` | 4,991 | `d3a1d6d8a70228a46dfa3bee57b799ca25627899fe619de7c6bb46b346577028` |
 | `cargo-clippy-macos-cross-target.log` | 72 | `59639588a6f1826f129cbcd121edc07279dab94786f5fa5bde6b3439b2e845cc` |
-| `cargo-clippy.log` | 197 | `ccf32af401aea84583ef30870e141c8b27922ba28967023b621c4c8da27dcf36` |
+| `cargo-clippy.log` | 197 | `821585a2630f0db9903c3662bde56f2bfff8ce7eafa5591b81fbaafe08e8af76` |
 | `cargo-deny.log` | 2,057 | `56d153a74401bff3d2f1ec6b638b5e4dd59f823921fec4e2c09a04bbefa0115f` |
-| `cargo-doc.log` | 198 | `b8e562e3ce48b3ab2d15fd4b60c649f708f8b9861cd6319f7e4d52977acb90c4` |
+| `cargo-doc.log` | 198 | `8c90a22142b60cad3497ce7253ca13cbb0dd1d06a4084366238cf598bd604928` |
 | `cargo-fmt.log` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
-| `cargo-test-doc.log` | 3,467 | `aadc39a0f7d9a022bcc0bf2ebdd3328e5fcb135b57587e480ff822def17e7a53` |
-| `cargo-test-macos-asan.log` | 17,411 | `60fc132e7c83a3da3b83f1166c41efdd2458f03655ee2ee455ab2e596bb8cd17` |
-| `cargo-test-private-fixture.log` | 25,835 | `3ce79ff599f885d6cb08effda139853b62073734f3d6fb394e06fec3f985e273` |
-| `cargo-test-workspace.log` | 112,601 | `94f9bfd30c226be6fead0d994bfa5c0f45c059e053d6036451e6b1625d668307` |
+| `cargo-test-doc.log` | 3,467 | `5768a27ff3c3427dfd5a503ab9dffef010d81a73c60e9eda73bf339ddcafd215` |
+| `cargo-test-macos-asan.log` | 17,513 | `a99a39039ee3f901fd24337ba7cebe0c8acd5d400e2c94cae198a0770c2dd7b0` |
+| `cargo-test-private-fixture.log` | 25,938 | `d82f2ef9a294323dcfc8b30d5edcfc4fb8c5c66042c67e197b354a29355d02be` |
+| `cargo-test-workspace.log` | 112,703 | `00bf20821a50b8986f596f6d3f63993136a5dc92101c087e52d21cbbaa0d5c29` |
 | `cargo.log` | 192 | `53d3dc8115abfdc08d1d740fe5c1ac16528c4a9ba91c92f98bf77db672cb771b` |
 | `cc.log` | 159 | `76a924f59997fb65051981eb13105e0a8c151f16cd9c3e45e0f7c27ecefdb839` |
-| `ci-pr36.log` | 464 | `629fb584c473f065b1fa68b389c01210ef165297dc59dc94758d7c459a613428` |
-| `dependency-check.log` | 3,276 | `066169d29508bfc697be756d09a689debf75dd9a8411ae10b07a4ff92771befd` |
+| `ci-pr36.log` | 464 | `e84ca689f881e0fa6df76d05a24e066b8f4fb5fdb7dbeeabca072454a418ea8f` |
+| `dependency-check.log` | 3,276 | `37ef477774acde7205a0e581a9bdaf1f41918c09eb870f6e5b08b6eb6f6b21e1` |
 | `displays.log` | 927 | `825d943436d53865e0cc5dd3fb8f2eb0157e56ee5781dea25b24a6b53ed625bc` |
 | `fixture-build-release.log` | 62 | `222a02ed477d249a21359df8cae975864a62d848f4739cadc5b00b6190a963c6` |
-| `fixture-control.log` | 1,401 | `158d3a6a01fbf39caf966b1cd40ad3e66ce386ab9a5b619b3dff1590325ad9c1` |
+| `fixture-control.log` | 1,401 | `12c32ec0ec45a046689971b6f312bc7b4a4abfff87b3c32b79644b15eb002989` |
 | `fixture-release-verification.log` | 430 | `a5fdf19fafd4915f420adf7e8a218fa9a9293deae2628b02eeda96622faef67d` |
 | `hardware.log` | 43 | `aaa406159e8d01e903ad19b8d9e86d6a055f2d4a88090c2004c92f8da09afcbe` |
 | `host-status.log` | 9 | `30179a803d48be87dfe0857a82b26d66e8c866dcbdc7c8b50aa3d24dff84f81e` |
-| `mixed-appkit-renderer-matrix.log` | 95,339 | `5ded39905a0a4cfa5a0aacc6bd582114b60e6856a6b3baa9ab3a510d8c629ba1` |
-| `mixed-display-conversion.log` | 1,617 | `bc61056b9b90c36641dd3287e51505851bbc18837f256b63371bfefd43e9616c` |
-| `mixed-display-scale.log` | 1,610 | `9f432fc571c0b4e64a4d142f7afd8da3c7aab29e762832966010da07810be25f` |
-| `mixed-display-seam.log` | 1,659 | `4f5bd08f8f21666852863801fd7f27d1d08b44141cf9d36673b7c387123b4562` |
-| `mixed-game-like-renderer-matrix.log` | 95,284 | `aefd49478a7c03edbc18fd2ad218c3136c6c33411da3711c661000355d5ff282` |
-| `offscreen-cleanup.log` | 2,496 | `25794a561134af993a647a92ef6192062493ac9036d93097fae23d1fe0e7fe45` |
+| `mixed-appkit-renderer-matrix.log` | 95,339 | `dab8707fc826aa5b015853961cf69ae5428cfef401d49cd1c4a67e32bc346175` |
+| `mixed-display-conversion.log` | 1,617 | `517e8e6094655942607f2dcdc1f2a2a8358bfe47e63b909b60fe202a4f210981` |
+| `mixed-display-scale.log` | 1,610 | `137022fc0a52af9ecb0b0f1bc90d91f932f5f0149c7ebc032bd9cbf82d8f6c4c` |
+| `mixed-display-seam.log` | 1,659 | `6fc4290f5f25b6891af139a4f17c8f7db5f3b6f85fecba61af71437acc94f630` |
+| `mixed-game-like-renderer-matrix.log` | 95,284 | `2843b95f64751f534346679a6eb50a289de80a03c3c814a606901e725d51549e` |
+| `offscreen-cleanup.log` | 2,496 | `031af5c5cd4fc60480f879ac934522c9881efe018757a50075f33e705d9954fa` |
 | `os.log` | 65 | `9a27ea4f1e11f7b9a4f7573d8729db037a10ce2e457f97cb73f646a96a550b16` |
-| `process-diagnostics.log` | 3,955 | `3bd9120031c63dc5709625fb5287ab18c8735aedf6618b6c9bdcb00094d29b0c` |
-| `process-directed-game-like.log` | 4,941 | `314bf543f10c22b44b67cd2430b54b66d6c557eff8e0b453fbc7c79bf5d0cf04` |
-| `process-directed.log` | 4,934 | `37e8e792e5c27551ee4fa19e87ca5095850088ab8aaf22760a4a9818c23847ea` |
-| `retained-authority-lifecycle.log` | 3,284 | `750bf70ec1549eb352140c4f9deeb97ee3f431f5728f30d6d4cfe4883efb3073` |
-| `retained-filter-replacement.log` | 620 | `37df3f03670da64adee11e83184237cd26a1dac5b770207ceab0c00346f0156c` |
+| `process-diagnostics.log` | 3,955 | `f35e336e4b53427445c4fbd97c42fcec8bf4e834a3ff4a97ce7e51387ef7afec` |
+| `process-directed-game-like.log` | 4,941 | `9ff3ce310048c4cd55c03107583fb0bdac06ff50e4d36251747f43a6729256e1` |
+| `process-directed.log` | 4,934 | `5ee25c49684bebc358a2ba71864ff1ffabdff0389a990cbf96f6e2e82650dfa0` |
+| `retained-authority-lifecycle.log` | 3,284 | `a664b1de3cfaf0c86ecdf0a85e9dfebcaf6a52665ff2402033769cd97ffd8974` |
+| `retained-filter-replacement.log` | 620 | `5196693bbbeb7e1a8d1f5d0141e5b8cd251611c5bf055f580bf3e4ad0447dc18` |
 | `rustc.log` | 72 | `cdd372f49763b7ad6faf8210706bc4f7212e18ebbd1abee8ab874ebbd588c4a3` |
 | `sdk.log` | 5 | `25205f2e2f02dc71036ee827e19c49b893b231a3d1af240e35a3ac55aa8cdcb6` |
-| `source-commit.log` | 41 | `0c826cd856f23c485ffcd43230303f213e1d2ef2841b786012295a201e7a0fa7` |
-| `source-tree.log` | 41 | `dfb8fd7590804a0385b475490e87b46d17eb104225dbb764147a38d4570e304b` |
-| `sustained-capture-soak.log` | 2,155 | `ad32d67f235c4aa9780d4aa44783c11414c6857087f7814be7cc0d4a986afb96` |
-| `system-route.log` | 501 | `8d7a191b1bfacdfacd584ba8ad9d793ec9157d8505588b5e9652090ca9d2a2bd` |
-| `transitions.log` | 3,865 | `4c938ed44847f5a35874c9f067bd66c59557b094ed705d0164c21d26e70ff288` |
-| `unrelated-appkit.log` | 2,355 | `7ae8077f345a2c74c7dda143be302ee18865e147811fbab3d85ca9349b5994c4` |
-| `unrelated-game-like.log` | 2,339 | `8bea9177e60ac8db0325e39ab28fea40a9796913396431d1a7bc8ac0034434bf` |
+| `source-commit.log` | 41 | `5d3a3ea58b57894f8d66505d6366a6b2bc6b230b5a4a4a5e7fd055df177cffb8` |
+| `source-tree.log` | 41 | `3e20c5e96f68fa9bcb561113aed15e3ec1800c2c26f46ab1ff0e826e9b417803` |
+| `sustained-capture-soak.log` | 2,155 | `ff606a2fe2a5140903cfa272d57a3ebc804656a557f5e791d7863656119e6cff` |
+| `system-route.log` | 501 | `b03f841488a9acb20349cacb6a735a4314a992d08e98c85eeea3102cf14cb4ef` |
+| `transitions.log` | 3,865 | `063fa039b7b3896acffa8f50b7e75383f2ce9c8285fc743e3fce1ec9b77223d8` |
+| `unrelated-appkit.log` | 2,355 | `4e4be6a6b2d546d5dd4bca82da24df73ad731a0eeb01a352e3c3c2194b9d530d` |
+| `unrelated-game-like.log` | 2,339 | `a3a0b8b3c72988917f793d8dc01d4e9ec56cf88f3f325da718c159ef8cd5f6db` |
+
+Stopped attempt:
+
+| Excluded raw artifact | Bytes | SHA-256 | Reason |
+|---|---:|---|---|
+| `process-directed-stopped-attempt.log` | 518 | `05bef12b84c83cc5e4ef0389dfcc57cd2cb46799847072bb48b300ca7cfc6d90` | the first AppKit process-directed benchmark attempt stopped before its first retained sample because opening the freshly discovered fixture window reported an invalid capture source; no owned fixture remained running, and the isolated set then passed after an idle interval. It contributes no performance or pair decision, and no failed output was overwritten. |
 
 ## Current privacy review
 
@@ -578,11 +571,11 @@ Committed profile hashes:
 
 | Profile | SHA-256 |
 |---|---|
-| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `f59f42fb003bb9c145a8bdf3006cd0c71cb9ea0d6dc5a502cb4341e37cbaae4b` |
-| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `c58ac65fd08bcb7f8d8df864cf0baf185259cebf71c8c9c0dbb07a9a8b056dd7` |
-| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `d98201b5cafc5dc6cff6c3518280c0ab94e4d9864806ff9eaee617bdde64cad0` |
-| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `ac4e9cb130f15cba5dbaaa04cdebd8498335d5d2efb8db6b79c6f820c1092705` |
-| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `e5863b5c93a8242de6d754cd1f008ded675fb63bd8611e025a2346c38d0d67d6` |
+| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `f9c8c5d22c8ce87d48d4c2447bd9a93b6503ad06b655568934e888770c845e9f` |
+| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `148cf6c7cd0ef3ce8b4a221fbb088070857c1e92071749ca9af028ee8cfda149` |
+| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `7361a807f00349d77781573332bef77156f5499eb59829b6cd9b69aeecbf1032` |
+| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `d1108ebcd1e4eda1785e18f74df76b3c09b88b472a951b46bdffde6ac6ac72d8` |
+| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `dca05ca26874a6438845ab9a43a9fe9833c3d43ace21bb2cc274d140e6ef4273` |
 | `phase-2-native-input-aarch64-apple-darwin.toml` | `248fa715f7ac3a3b3c50fcf6ddfdf2718000c4fe2ac8f7028370b5f74daf267b` |
 
 ### Failed, excluded, and superseded attempts

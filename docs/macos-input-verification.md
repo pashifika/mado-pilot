@@ -594,8 +594,8 @@ The historical complete qualification ran at source commit
 Its AppKit and game-like rows passed `single`, `same-scale`, and `mixed-scale`
 separately, but the later product correction invalidated every pair decision.
 
-The corrected source commit `086448f4f37f060b4ce42a887bc63d20f0c240a7`
-(tree `c3c4e9969448cc34e89018f699d055f747c7427e`) uses internal shim surface
+The corrected source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426`
+(tree `f4a707501748303adcec577df5f18fcd18f13f45`) uses internal shim surface
 version 14 and fixture protocol version 10. Its route-wide and complete
 mixed-scale AppKit/OpenGL rows pass, while exact
 `single` and `same-scale` renderer rows remain unexecuted. The privacy-reviewed
@@ -604,7 +604,7 @@ records both the current partial decision and the superseded complete run,
 including commands, artifact and raw-output hashes, bounded outcomes, excluded
 attempts, and all fourteen current `unexecuted` pair decisions. Current raw logs
 remain ignored under the Change's
-`ephemera/qualification-final-086448f/` evidence root.
+`ephemera/qualification-final-a1eee9c/` evidence root.
 
 ## Explicit facade check
 
@@ -706,8 +706,8 @@ The process-directed route, the fixture-controlled capture stimulus, and their
 budgets are a separate profile lineage whose pre-measurement ceilings were
 frozen in the [ADR 0029](adr/0029-macos-process-directed-input.md)
 qualification plan. That lineage was remeasured at corrected source commit
-`086448f4f37f060b4ce42a887bc63d20f0c240a7` (tree
-`c3c4e9969448cc34e89018f699d055f747c7427e`) in five revision-bound
+`a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (tree
+`f4a707501748303adcec577df5f18fcd18f13f45`) in five revision-bound
 `aarch64-apple-darwin` profiles:
 [`phase-2-2-controlled-capture`](benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml),
 [`phase-2-2-controlled-transitions`](benchmarks/phase-2-2-controlled-transitions-aarch64-apple-darwin.toml),
@@ -723,7 +723,7 @@ bound in the privacy-reviewed
 rather than duplicated here. These profiles are regression ceilings for
 controlled AppKit/OpenGL fixtures on the qualified host, not user-facing
 latency promises. The corrected event-authority/preflight/post workloads
-measured about 204–212 ms at p95, so this release makes no real-time input
+measured about 210–224 ms at p95, so this release makes no real-time input
 latency claim. The `game-like` label identifies the controlled OpenGL renderer;
 it does not establish general game compatibility. Receipts claim neither
 exact-window delivery nor application consumption. Passing performance profiles
