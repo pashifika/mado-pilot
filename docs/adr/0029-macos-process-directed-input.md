@@ -24,7 +24,7 @@ reaches whatever is focused.
 The rejected `phase-2-2-macos-process-directed-delivery` Change tried to make
 public `CGEventPostToPid` safe by admitting a target only while its owning
 process had exactly one eligible ordinary window. Its
-[observed No-Go report](../../rasen/changes/phase-2-2-macos-process-directed-delivery/evidence/observed-report.md)
+[observed No-Go report](../../rasen/changes/archive/2026-08-16-phase-2-2-macos-process-directed-delivery/evidence/observed-report.md)
 proved on 2026-08-14 that starting the required desktop-independent
 ScreenCaptureKit stream makes the same target process publish a second
 on-screen, layer-zero 66×20 capture-indicator window, so the one-window gate
@@ -62,6 +62,9 @@ owning-process scope, on these rules:
    without returning to caller-controlled code in between. macOS offers no
    atomic validate-and-post, so this minimizes rather than eliminates
    target-exit races.
+   A pointer scroll carries the sequence's last resolved global desktop location
+   alongside its wheel deltas; it never inherits an ambient Core Graphics
+   location.
 4. **One private event source per sequence.** Each sequence owns one
    `CGEventSourceStatePrivate` source, reused for every ordinary and
    sequence-owned release event and disposed exactly once on every terminal
@@ -71,11 +74,14 @@ owning-process scope, on these rules:
    Cleanup releases only state its sequence pressed, through the same route and
    source, and never posts to a replacement process.
 5. **Permission and focus are separate.** The public `InputControl` observation
-   derives from the non-prompting event-post access check that both macOS
-   routes need. Accessibility focus/activation remains a `System`-route
-   precondition evaluated only when that route's focus policy requires it; it
-   is not a `ProcessDirected` prerequisite. Nothing requests permission,
-   presents UI, or opens System Settings.
+   derives from the non-prompting event-post access check both macOS routes need;
+   the settings-pane label does not make legacy Accessibility trust the posting
+   authority. `System` retains its route-level focus precondition.
+   `ProcessDirected` imposes none by default, but a caller-selected
+   `RequireFocused` policy performs the same exact retained-window focus
+   read-back without activating and refuses before posting when it is false or
+   unavailable. `ActivateIfRequired` never activates on `ProcessDirected`.
+   Nothing requests permission, presents UI, or opens System Settings.
 6. **Receipts report invocation only.** `CGEventPostToPid` returns `void`, so a
    returned call records `InvocationOnly` and the exact invoked prefix, never
    queue admission, exact-window delivery, consumption, or visual success.
@@ -203,8 +209,10 @@ the existing no-fallback contract after possible effect.
   evidence, or a fallback follows possible effect.
 - The pre-measurement latency, memory, cleanup, and diagnostic ceilings are
   enforced in-process by the `native-phase2` process-directed workload sets;
-  measured profiles become normative budgets only with a committed profile and
-  an accepting record, per `docs/performance.md` and ADR 0024/0025 precedent.
+  measured profiles become normative regression budgets only with a committed
+  profile and an accepting record, per `docs/performance.md` and ADR 0024/0025
+  precedent. They qualify the controlled fixture and do not establish real-time
+  latency or general game compatibility.
 - Violations that automation cannot catch — foreground changes, physical-cursor
   movement, privacy leaks in retained evidence — are named stop conditions in
   the procedure and invalidate the run rather than the contract.

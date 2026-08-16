@@ -335,6 +335,9 @@ static uint64_t mp_fixture_event_fingerprint(uint32_t kind, CGEventRef event,
         click_state = (uint64_t)CGEventGetIntegerValueField(
             event, kCGMouseEventClickState);
     } else if (kind == MP_FIXTURE_EVENT_POINTER_SCROLL) {
+        CGPoint location = CGEventGetLocation(event);
+        x = location.x;
+        y = location.y;
         horizontal = CGEventGetIntegerValueField(
             event, kCGScrollWheelEventDeltaAxis2);
         vertical = CGEventGetIntegerValueField(
@@ -809,7 +812,7 @@ static void mp_fixture_emit_control(uint64_t nonce, uint32_t command,
 
 static bool mp_fixture_valid_command(uint32_t command) {
     return command >= MP_FIXTURE_COMMAND_TRANSITION &&
-           command <= MP_FIXTURE_COMMAND_TAKE_FOREGROUND;
+           command <= MP_FIXTURE_COMMAND_RESTORE_ONSCREEN;
 }
 
 uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
@@ -907,13 +910,6 @@ uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
               if (mp_fixture_prior_application == nil ||
                   ![mp_fixture_prior_application activateWithOptions:2u]) {
                   status = MP_FIXTURE_PLATFORM_FAILURE;
-              }
-          } else if (command == MP_FIXTURE_COMMAND_TAKE_FOREGROUND) {
-              if (mp_fixture_current_application == nil || mp_fixture_window == nil ||
-                  ![mp_fixture_current_application activateWithOptions:3u]) {
-                  status = MP_FIXTURE_PLATFORM_FAILURE;
-              } else {
-                  [mp_fixture_window makeKeyAndOrderFront:nil];
               }
           } else if (command == MP_FIXTURE_COMMAND_MOVE) {
               if (mp_fixture_window == nil) {

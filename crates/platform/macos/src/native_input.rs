@@ -121,6 +121,7 @@ pub(crate) enum NativePost<'units> {
     Scroll {
         horizontal: i32,
         vertical: i32,
+        location: (f64, f64),
     },
     Key {
         key_code: u16,
@@ -146,9 +147,11 @@ impl<'units> NativePost<'units> {
             NativePost::Scroll {
                 horizontal,
                 vertical,
+                location,
             } => shim::ProcessPost::Scroll {
                 horizontal,
                 vertical,
+                location,
             },
             NativePost::Key { key_code, down } => shim::ProcessPost::Key { key_code, down },
             NativePost::Text(units) => shim::ProcessPost::Text(units),
@@ -288,11 +291,20 @@ impl NativeInputDriver {
         }
     }
 
-    fn ensure_process_focus(&self, policy: FocusPolicy) -> Result<(), InputFault> {
+    fn ensure_process_focus(
+        &self,
+        policy: FocusPolicy,
+        operation: &OperationContext,
+    ) -> Result<(), InputFault> {
         match policy {
-            // Process posting neither depends on nor changes the foreground
-            // application. Accessibility focus is therefore not consulted.
             FocusPolicy::Preserve | FocusPolicy::ActivateIfRequired => Ok(()),
+            FocusPolicy::RequireFocused => {
+                if self.is_focused(operation)? {
+                    Ok(())
+                } else {
+                    Err(InputFault::FocusRequired)
+                }
+            }
             _ => Err(InputFault::UnsupportedCombination),
         }
     }
@@ -625,6 +637,7 @@ impl NativeInputDriver {
                     NativePost::Scroll {
                         horizontal: i32::from(*horizontal),
                         vertical: i32::from(*vertical),
+                        location: pointer.desktop,
                     },
                     flags,
                 )
@@ -738,7 +751,7 @@ impl NativeInputDriver {
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> SubmissionResult {
-        self.ensure_process_focus(focus)?;
+        self.ensure_process_focus(focus, operation)?;
         let flags = state.held_flags();
 
         match event {
@@ -821,7 +834,7 @@ impl NativeInputDriver {
                 horizontal,
                 vertical,
             } => {
-                let (_pointer, commit_geometry) =
+                let (pointer, commit_geometry) =
                     self.process_pointer_for_non_move(geometry, state, operation)?;
                 commit_process(
                     self,
@@ -831,6 +844,7 @@ impl NativeInputDriver {
                     NativePost::Scroll {
                         horizontal: i32::from(*horizontal),
                         vertical: i32::from(*vertical),
+                        location: pointer.desktop,
                     },
                     flags,
                 )
@@ -981,7 +995,9 @@ impl SystemCommitSource for NativeInputDriver {
             NativePost::Scroll {
                 horizontal,
                 vertical,
-            } => shim::input_post_scroll(horizontal, vertical, flags).map_err(|status| (status, 0)),
+                location,
+            } => shim::input_post_scroll(horizontal, vertical, location, flags)
+                .map_err(|status| (status, 0)),
             NativePost::Key { key_code, down } => {
                 shim::input_post_key(key_code, down, flags).map_err(|status| (status, 0))
             }
@@ -1067,7 +1083,7 @@ impl InputDriver for NativeInputDriver {
                 if authority.target_match_count != 1 {
                     return Err(InputFault::UnsupportedCombination);
                 }
-                self.ensure_process_focus(focus)
+                self.ensure_process_focus(focus, operation)
             }
             _ => Err(InputFault::UnsupportedCombination),
         }

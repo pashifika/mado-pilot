@@ -63,7 +63,7 @@ owns and where they genuinely differ.
 | Adapter package | `mado-pilot-platform-windows` | `mado-pilot-platform-macos` |
 | Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and Core Video frame lifetime (implemented) |
 | Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus explicit owning-process `ProcessDirected`: qualified pairs are unknown-but-attemptable with invocation-only evidence, additional same-process windows do not revoke process scope, and no `WindowMessage` route exists (implemented in the platform package) |
-| Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; input re-reads the public `CGPreflightPostEventAccess` decision before every irreversible event, and the legacy Accessibility observation is retained as a paired qualification-only fact that can neither grant nor demote it (implemented) |
+| Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
 | Native verification host | `windows-2025` CI plus the ADR 0026 named interactive Core i7-12700KF / RTX 4080 Windows 11 Pro 26200 host | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | unresolved | macOS 26.5.2; older versions unsupported |
 | Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) production-capture acceptance matrix and budgets; [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts diagnostic timing and the original `native-phase2` workload sets; [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` timing, memory, queue-pressure, and cleanup ceilings | [`G-013`](validation-gates.md#g-013) broader production-capture acceptance and the final-source regression reruns outside the requalified process-directed/controlled-stimulus lineage; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the earlier native input/public-language costs, and accepted [ADR 0029](adr/0029-macos-process-directed-input.md) binds the current owning-process, topology, controlled-capture/transition, and process-route matrices, requalified in full at final source commit `8309a05c3e7696f3081c5afef6dd6979ea1bb084` |
@@ -1197,9 +1197,11 @@ same snapshot-scoped identity. A window advertises pointer, keyboard, and text
 over `InputDelivery::System` and requires focus; a display advertises pointer only
 and requires none. A retained, currently eligible window additionally advertises
 pointer, keyboard, and text over explicit `InputDelivery::ProcessDirected` with
-`InputAddressScope::OwningProcess`, `CapabilitySupport::Unknown`,
-`SubmissionEvidence::InvocationOnly`, and no focus requirement. Additional
-windows in the same process do not revoke that process-scoped capability.
+`InputAddressScope::OwningProcess`, `CapabilitySupport::Unknown`, and
+`SubmissionEvidence::InvocationOnly`. The route imposes no focus requirement by
+default, but a caller-selected `RequireFocused` predicate is honored without
+activation. Additional windows in the same process do not revoke that
+process-scoped capability.
 No macOS target advertises `WindowMessage`, because macOS exposes no exact-window channel. A
 request that requires an unavailable route fails admission before any event, and
 nothing substitutes system input for it: `System` is attempted only when the
@@ -1211,11 +1213,14 @@ invokes `CGEventPostToPid` against the owning process. macOS discards a
 synthesized event from an unauthorized process rather than failing the call, so
 the public non-prompting `CGPreflightPostEventAccess` decision is read again
 immediately before every irreversible event on both routes, together with target
-liveness, focus or process authority, and — for a pointer event — the geometry
-the coordinate was resolved against. The legacy `AXIsProcessTrusted` observation
-is retained only as a paired qualification fact and can neither grant nor demote
-that preflight. A revocation observed mid-sequence stops submission with the
-count already invoked.
+liveness, route authority, any caller-selected focus predicate, and — for a
+pointer event — the geometry the coordinate was resolved against. The contract
+name `InputControl` denotes that post-event authority even when macOS groups the
+grant under an Accessibility-labelled settings pane. Legacy
+`AXIsProcessTrusted` is not post authority; it remains a paired qualification
+fact and is consulted separately only when focus must be established. A
+revocation observed mid-sequence stops submission with the count already
+invoked.
 
 `ProcessDirected` truthfully addresses a process, not one exact window. Before
 every irreversible ordinary post, the adapter re-joins the retained logical
@@ -1238,23 +1243,34 @@ consumption, so a caller verifies intended effect on strictly newer frames from
 the retained capture stream. Publication is governed by
 [ADR 0029](adr/0029-macos-process-directed-input.md).
 
+The accepted controlled-fixture profile measures roughly 229–230 ms p95 for one
+authority/preflight/post workload. It is a regression ceiling, not a real-time
+latency or general game-compatibility claim; applications with a stricter input
+latency requirement must treat that use case as unqualified.
+
 Coordinates resolve into the global point plane `CGEvent` accepts, which is the
 same top-left-origin plane macOS capture publishes placement in, so a Retina or
-signed multi-display coordinate is posted without rounding. Input first queries
-current shareable content, narrows by the discovery PID and window number, and
-requires logical equality with the `SCWindow` retained by the discovery filter.
-Focus then requires the owning application's public Accessibility object to be
-frontmost and its focused window to correspond one-to-one with that freshly
-verified frame through `kAXPositionAttribute` and `kAXSizeAttribute`. The
-shareable-content identity and frame are read again after the Accessibility
-snapshot; missing attributes, changed geometry, an unequal window, or zero or
-multiple matches establish no focus. Numeric metadata and geometry only narrow
-and join live observations; neither can select a replacement.
-`ActivateIfRequired` activates the owning *application* and repeats that bounded
+signed multi-display coordinate is posted without rounding. Pointer scroll
+events carry the sequence's last resolved global pointer location as well as
+their wheel deltas; they do not inherit an ambient or stale Core Graphics
+location. Input first queries current shareable content, narrows by the discovery
+PID and window number, and requires logical equality with the `SCWindow`
+retained by the discovery filter.
+
+Focus is mandatory for `System` windows and is evaluated for
+`ProcessDirected` when the caller selects `RequireFocused`. The owning
+application's public Accessibility object must be frontmost and its focused
+window must correspond one-to-one with the freshly verified frame through
+`kAXPositionAttribute` and `kAXSizeAttribute`. The shareable-content identity
+and frame are read again after the Accessibility snapshot; missing authority or
+attributes, changed geometry, an unequal window, or zero or multiple matches
+fail before posting. Numeric metadata and geometry only narrow and join live
+observations; neither can select a replacement. `ActivateIfRequired` activates
+the owning application only for the `System` route and repeats that bounded
 read-back, reporting `FocusRefused` when the exact retained window cannot be
-established as focused. It does not pass
-`NSApplicationActivateIgnoringOtherApps`, use a private Accessibility window
-identifier, or move another application's windows. A same-process replacement
+established as focused. `ProcessDirected` never activates. Neither route passes
+`NSApplicationActivateIgnoringOtherApps`, uses a private Accessibility window
+identifier, or moves another application's windows. A same-process replacement
 that recycles the number makes the old public `TargetId` report `TargetLost`.
 
 Pressed buttons and keys belong only to the sequence that pressed them, and a
@@ -1268,15 +1284,19 @@ process-qualified title, one flat fill colour, and a bounded report of event kin
 and UTF-16 unit counts; it never retains characters. Its reproducible OSS bundle
 mode uses an ad-hoc signature with the stable signing identifier
 `dev.mado-pilot.macos-input-fixture` and no certificate identity. The generated
-bundle is structurally verified without a keychain. A private version-9 control
+bundle is structurally verified without a keychain. A private version-10 control
 protocol drives bounded deterministic window, foreground, recorder, and
 termination transitions and an opt-in game-like OpenGL renderer mode reported
-as an explicit ready fact, so capture evidence never depends on focus,
-ambient redraws, or product input. `System` submission remains an explicit
-user-focused check; `ProcessDirected` qualification calls the production route
-against the deliberately unfocused fixture and keeps the receipt, the bounded
-fixture observation, and the newer-frame visual result separate. Structural
-signature validity proves neither a TCC decision nor an application consuming
+as an explicit ready fact, so capture evidence never depends on focus, ambient
+redraws, or product input. `System` submission remains an explicit user-focused
+check. Each `ProcessDirected` renderer matrix first runs a target-only launch
+that proves `RequireFocused` succeeds while that retained window is already
+focused, then terminates it. The main lifecycle starts the independently
+identified foreground bundle before an inactive target; its focus-policy row
+proves `RequireFocused` refuses without effect. No input request activates either
+target. Receipt, bounded fixture observation, and newer-frame visual result
+remain separate facts.
+Structural signature validity proves neither a TCC decision nor an application
 input.
 The capability matrix, commands, privacy limits, bundling/signing step, and manual
 procedure are in [macos-input-verification.md](macos-input-verification.md).

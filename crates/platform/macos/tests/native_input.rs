@@ -1010,7 +1010,17 @@ struct Fixture {
 impl Fixture {
     /// Starts the ordinary fixture and waits for its ready record.
     fn start() -> Option<Self> {
-        Self::start_with_arguments(&[], FixtureMode::Default)
+        Self::start_active(FixtureMode::Default)
+    }
+
+    /// Starts one visible fixture as the foreground application.
+    fn start_active(mode: FixtureMode) -> Option<Self> {
+        match mode {
+            FixtureMode::Default => Self::start_with_arguments(&[], FixtureMode::Default),
+            FixtureMode::GameLike => {
+                Self::start_with_arguments(&["--game-like"], FixtureMode::GameLike)
+            }
+        }
     }
 
     /// Starts the fixture mode that destroys and replaces its own window.
@@ -2288,6 +2298,7 @@ fn pointer_location() -> (f64, f64) {
     assert!(x.is_finite() && y.is_finite());
     (x, y)
 }
+
 fn post_untagged_process_key_pair(process_id: u32) {
     let process_id = i32::try_from(process_id).expect("fixture process id fits pid_t");
     for key_down in [true, false] {
@@ -2735,19 +2746,22 @@ fn expected_process_pointer_events(
             InputEvent::PointerScroll {
                 horizontal,
                 vertical,
-            } => expected_fixture_event(
-                EVENT_POINTER_SCROLL,
-                u32::MAX,
-                0,
-                0.0,
-                0.0,
-                -i32::from(*horizontal),
-                -i32::from(*vertical),
-                0,
-                false,
-                0,
-                &[],
-            ),
+            } => {
+                let (x, y) = location.expect("a positive scroll row first positions the pointer");
+                expected_fixture_event(
+                    EVENT_POINTER_SCROLL,
+                    u32::MAX,
+                    0,
+                    x,
+                    y,
+                    -i32::from(*horizontal),
+                    -i32::from(*vertical),
+                    0,
+                    false,
+                    0,
+                    &[],
+                )
+            }
             _ => panic!("a pointer qualification row contains only pointer events"),
         })
         .collect()
@@ -3059,15 +3073,172 @@ fn assert_stale_pointer_frame_refused(
     );
 }
 
+fn exercise_process_require_focused_success_row(
+    input: &dyn InputController,
+    target: TargetId,
+    capture: &dyn CaptureSession,
+    visual: &mut ControlledVisualObservation,
+    fixture: &mut Fixture,
+) {
+    assert_eq!(
+        frontmost_application(),
+        Some(fixture.process_id),
+        "the positive RequireFocused row starts with the target in front"
+    );
+    let _ = fixture.summaries(Duration::from_millis(250));
+    let events = vec![
+        InputEvent::KeyPress(Key::Enter),
+        InputEvent::KeyRelease(Key::Enter),
+    ];
+    let expected = expected_process_keyboard_events(&events);
+    let (operation, correlation) = qualification_operation(&expected, CONTENT_WAIT);
+    fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
+    let cursor_before = pointer_location();
+    let submitted = events.len();
+    let receipt = input
+        .execute(
+            &InputRequest::new(
+                target,
+                InputSequence::new(events).expect("the focused key pair is balanced"),
+                DeliveryPlan::require(InputDelivery::ProcessDirected),
+            )
+            .with_focus(FocusPolicy::RequireFocused),
+            &refresh_qualification_deadline(&operation, CONTENT_WAIT),
+        )
+        .expect("the focused RequireFocused process request succeeds");
+    assert_process_receipt(&receipt, submitted);
+    fixture.expect_exact_events(&expected, correlation, CONTENT_WAIT);
+    assert_eq!(
+        frontmost_application(),
+        Some(fixture.process_id),
+        "RequireFocused changed the already-focused target application"
+    );
+    assert_eq!(
+        pointer_location(),
+        cursor_before,
+        "the focused keyboard row moved the physical cursor"
+    );
+    observe_tagged_input_transition(capture, visual);
+}
+
+fn exercise_process_require_focused_refusal_row(
+    input: &dyn InputController,
+    target: TargetId,
+    fixture: &mut Fixture,
+    foreground_fixture: &mut Fixture,
+    foreground_before: &u32,
+) {
+    assert_eq!(
+        frontmost_application(),
+        Some(*foreground_before),
+        "the refusal row starts with the unrelated fixture in front"
+    );
+    let _ = fixture.summaries(Duration::from_millis(250));
+    let _ = foreground_fixture.summaries(Duration::from_millis(250));
+    let events = vec![
+        InputEvent::KeyPress(Key::Enter),
+        InputEvent::KeyRelease(Key::Enter),
+    ];
+    let expected = expected_process_keyboard_events(&events);
+    let (operation, _) = qualification_operation(&expected, CONTENT_WAIT);
+    fixture.begin_operation_event_row(&operation, CONTENT_WAIT);
+    foreground_fixture.begin_event_row(CONTENT_WAIT);
+    let cursor_before = pointer_location();
+    let receipt = input
+        .execute(
+            &InputRequest::new(
+                target,
+                InputSequence::new(events).expect("the focus probe key pair is balanced"),
+                DeliveryPlan::require(InputDelivery::ProcessDirected),
+            )
+            .with_focus(FocusPolicy::RequireFocused),
+            &refresh_qualification_deadline(&operation, CONTENT_WAIT),
+        )
+        .expect("an inactive RequireFocused process request returns a receipt");
+    assert_zero_effect(&receipt, InputFault::FocusRequired);
+    assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+    assert!(
+        fixture
+            .event_summaries(1, Duration::from_millis(150))
+            .is_empty(),
+        "the inactive RequireFocused process request reached the target fixture"
+    );
+    assert_unrelated_desktop_state(
+        fixture,
+        foreground_fixture,
+        foreground_before,
+        cursor_before,
+    );
+}
+
+fn qualify_process_require_focused_success(mode: FixtureMode) {
+    let mut fixture = Fixture::start_active(mode)
+        .expect("the focused-row fixture starts as the foreground application");
+    assert_eq!(
+        wait_until_frontmost_fixture(&fixture),
+        fixture.process_id,
+        "the positive focus row requires the target's launch activation"
+    );
+    let provider = provider();
+    let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+        .expect("the focused-row child exposes one uniquely selected fixture window");
+    let capture = CaptureProvider::open(
+        &provider,
+        chosen.id(),
+        &OpenRequest::new().require_format(PixelFormat::Bgra8),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("capture opens for the focused-row fixture");
+    let first = capture
+        .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+        .expect("the focused-row fixture publishes its initial frame");
+    assert_fixture_frame_content(&first, false, "focused-row initial frame");
+    let mut visual = ControlledVisualObservation {
+        stamp: first.stamp(),
+        replacement_fill: false,
+    };
+    let input = InputProvider::open(
+        &provider,
+        chosen.id(),
+        &InputOpenRequest::new()
+            .with_requirement(InputRequirement::Required)
+            .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("the focused process-directed keyboard pair opens");
+    exercise_process_require_focused_success_row(
+        input.as_ref(),
+        chosen.id(),
+        capture.as_ref(),
+        &mut visual,
+        &mut fixture,
+    );
+    input.close(&bounded(CONTENT_WAIT)).expect("input closes");
+    capture
+        .close(&bounded(CONTENT_WAIT))
+        .expect("focused-row capture closes");
+    let stopped = fixture
+        .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+        .expect("the focused-row fixture stop is acknowledged");
+    assert_eq!(stopped.status, 0);
+    fixture.input = None;
+}
+
 fn qualify_process_directed_renderer(
     mode: FixtureMode,
     expected_topology: QualificationTopology,
     observed_topology: &[ObservedQualificationGeometry],
 ) {
+    qualify_process_require_focused_success(mode);
     let mut foreground_fixture = Fixture::start_foreground()
         .expect("the unrelated foreground fixture starts from its independent bundle");
+    let foreground_before = wait_until_frontmost_fixture(&foreground_fixture);
     let mut fixture = Fixture::start_inactive(mode)
         .expect("the owned fixture starts visible without taking foreground ownership");
+    assert_ne!(
+        foreground_before, fixture.process_id,
+        "the qualification target must remain inactive"
+    );
 
     let provider = provider();
     let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
@@ -3140,23 +3311,17 @@ fn qualify_process_directed_renderer(
         stamp: first.stamp(),
         replacement_fill: false,
     };
-    let foreground_deadline = Instant::now() + CONTENT_WAIT;
-    let foreground_before = loop {
-        if let Some(foreground) = frontmost_application()
-            && foreground == foreground_fixture.process_id
-        {
-            break foreground;
-        }
-        assert!(
-            Instant::now() < foreground_deadline,
-            "the inactive qualification target stole foreground ownership"
-        );
-        thread::sleep(Duration::from_millis(25));
-    };
-    assert_ne!(
-        foreground_before, fixture.process_id,
-        "the qualification target must remain inactive"
-    );
+    let input = InputProvider::open(
+        &provider,
+        chosen.id(),
+        &InputOpenRequest::new()
+            .with_requirement(InputRequirement::Required)
+            .requiring(InputOperationKind::Pointer, InputDelivery::ProcessDirected)
+            .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected)
+            .requiring(InputOperationKind::Text, InputDelivery::ProcessDirected),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("all candidate process-directed pairs open for qualification");
 
     let inactive_descriptor =
         InputProvider::describe(&provider, chosen.id(), &bounded(CONTENT_WAIT))
@@ -3173,17 +3338,13 @@ fn qualify_process_directed_renderer(
         );
     }
 
-    let input = InputProvider::open(
-        &provider,
+    exercise_process_require_focused_refusal_row(
+        input.as_ref(),
         chosen.id(),
-        &InputOpenRequest::new()
-            .with_requirement(InputRequirement::Required)
-            .requiring(InputOperationKind::Pointer, InputDelivery::ProcessDirected)
-            .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected)
-            .requiring(InputOperationKind::Text, InputDelivery::ProcessDirected),
-        &bounded(CONTENT_WAIT),
-    )
-    .expect("all candidate process-directed pairs open for qualification");
+        &mut fixture,
+        &mut foreground_fixture,
+        &foreground_before,
+    );
 
     exercise_process_pointer_rows(
         input.as_ref(),
@@ -3673,6 +3834,7 @@ fn qualify_process_directed_renderer(
         .expect("the unrelated foreground fixture stop is acknowledged");
     assert_eq!(foreground_stopped.status, 0);
     fixture.input = None;
+    foreground_fixture.input = None;
 }
 
 fn qualify_process_directed_mode(mode: FixtureMode) {
@@ -3784,7 +3946,7 @@ fn wait_for_fixture_geometry(
     panic!("{context_label} did not republish the retained target geometry and content");
 }
 
-fn wait_for_frontmost_fixture(fixture: &mut Fixture) -> u32 {
+fn wait_until_frontmost_fixture(fixture: &Fixture) -> u32 {
     let deadline = Instant::now() + CONTENT_WAIT;
     let mut observed = None;
     loop {
@@ -3794,19 +3956,11 @@ fn wait_for_frontmost_fixture(fixture: &mut Fixture) -> u32 {
                 return frontmost;
             }
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
         assert!(
-            !remaining.is_zero(),
-            "the owned foreground fixture {} did not become frontmost; observed {observed:?}",
+            Instant::now() < deadline,
+            "fixture {} did not become frontmost; observed {observed:?}",
             fixture.process_id
         );
-        let foregrounded = fixture
-            .command(
-                FixtureCommandKind::TakeForeground,
-                remaining.min(Duration::from_millis(500)),
-            )
-            .expect("the unrelated fixture takes foreground ownership");
-        assert_eq!(foregrounded.status, 0);
         thread::sleep(Duration::from_millis(25));
     }
 }
@@ -3927,7 +4081,7 @@ fn qualify_controlled_unrelated_activity(mode: FixtureMode) {
     )
     .expect("process-directed keyboard input opens for the inactive target");
 
-    let foreground_before = wait_for_frontmost_fixture(&mut foreground_fixture);
+    let foreground_before = wait_until_frontmost_fixture(&foreground_fixture);
     assert_ne!(
         foreground_before, fixture.process_id,
         "the qualification target must remain inactive"
@@ -4150,7 +4304,7 @@ fn sustained_capture_soak_keeps_process_route_isolated() {
             replacement_fill: false,
         };
 
-        let foreground_before = wait_for_frontmost_fixture(&mut foreground_fixture);
+        let foreground_before = wait_until_frontmost_fixture(&foreground_fixture);
 
         let input = InputProvider::open(
             &provider,
@@ -4338,7 +4492,7 @@ fn process_directed_pointer_refuses_offscreen_and_closed_targets() {
             &bounded(CONTENT_WAIT),
         )
         .expect("the process-directed pointer pair opens");
-        let foreground_before = wait_for_frontmost_fixture(&mut foreground_fixture);
+        let foreground_before = wait_until_frontmost_fixture(&foreground_fixture);
 
         let offscreen = fixture
             .command(FixtureCommandKind::MoveOffscreen, CONTENT_WAIT)
@@ -4545,7 +4699,7 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         &bounded(CONTENT_WAIT),
     )
     .expect("the process-directed keyboard pair opens");
-    let foreground_before = wait_for_frontmost_fixture(&mut foreground_fixture);
+    let foreground_before = wait_until_frontmost_fixture(&foreground_fixture);
     assert_ne!(
         foreground_before, fixture.process_id,
         "the qualification target must remain inactive"

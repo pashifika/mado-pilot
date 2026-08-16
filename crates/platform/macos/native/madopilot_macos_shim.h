@@ -474,6 +474,7 @@ mp_shim_status mp_shim_testing_process_event_source_release_exception(
 #define MP_SHIM_TEST_PROCESS_VALIDATE_EVENT_KIND 33u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_PURPOSE 34u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_OUTPUT_NULL 35u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_SCROLL_COORDINATE 36u
 
 /*
  * Runs the production process-post state machine with deterministic authority,
@@ -877,7 +878,7 @@ mp_shim_status mp_shim_input_target_bounds(const mp_shim_target *target,
 /* Reads the pointer location in the same global point space. */
 mp_shim_status mp_shim_input_pointer_location(double *out_x, double *out_y);
 
-/* Reads the public AppKit frontmost process without prompting or activation. */
+/* Synchronously reads the public system foreground process without prompting. */
 mp_shim_status mp_shim_input_frontmost_process(uint32_t *out_process);
 
 /*
@@ -910,8 +911,9 @@ mp_shim_status mp_shim_input_resolve_character(uint32_t scalar, uint16_t *out_ke
 mp_shim_status mp_shim_input_post_pointer(uint32_t action, uint32_t button, uint64_t click_state,
                                           double x, double y, uint32_t flags);
 
-/* Posts one line-unit scroll. Positive `vertical` scrolls the content down. */
-mp_shim_status mp_shim_input_post_scroll(int32_t horizontal, int32_t vertical, uint32_t flags);
+/* Posts one line-unit scroll at a finite global desktop location. */
+mp_shim_status mp_shim_input_post_scroll(int32_t horizontal, int32_t vertical, double x, double y,
+                                         uint32_t flags);
 
 /* Posts one key event for a hardware key code. */
 mp_shim_status mp_shim_input_post_key(uint16_t key_code, bool down, uint32_t flags);

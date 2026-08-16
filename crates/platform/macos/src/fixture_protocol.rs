@@ -60,7 +60,7 @@ pub const MAX_EVENT_TEXT_UNITS: u32 = 256;
 pub const MAX_READY_LINE_BYTES: usize = 1_024;
 
 /// Version of the private harness-to-fixture control protocol.
-pub const FIXTURE_CONTROL_VERSION: u32 = 9;
+pub const FIXTURE_CONTROL_VERSION: u32 = 10;
 
 /// Largest command or result record accepted by either endpoint.
 pub const MAX_CONTROL_LINE_BYTES: usize = 512;
@@ -191,8 +191,6 @@ pub enum FixtureCommandKind {
     RestoreOnscreen,
     /// Return foreground ownership to the application active before fixture launch.
     YieldForeground,
-    /// Make this fixture's application and primary window own the foreground.
-    TakeForeground,
     /// Clear the bounded process-wide event summary.
     ResetEvents,
     /// Snapshot the bounded process-wide event summary.
@@ -211,7 +209,6 @@ impl FixtureCommandKind {
             Self::Minimize => "minimize",
             Self::Restore => "restore",
             Self::YieldForeground => "yield-foreground",
-            Self::TakeForeground => "take-foreground",
             Self::Move => "move",
             Self::Resize => "resize",
             Self::OpenAuxiliary => "open-auxiliary",
@@ -236,7 +233,6 @@ impl FixtureCommandKind {
             "move" => Some(Self::Move),
             "resize" => Some(Self::Resize),
             "open-auxiliary" => Some(Self::OpenAuxiliary),
-            "take-foreground" => Some(Self::TakeForeground),
             "close-auxiliary" => Some(Self::CloseAuxiliary),
             "move-to-next-display" => Some(Self::MoveToNextDisplay),
             "move-offscreen" => Some(Self::MoveOffscreen),
@@ -266,7 +262,6 @@ impl FixtureCommandKind {
             Self::MoveToNextDisplay => 12,
             Self::MoveOffscreen => 15,
             Self::RestoreOnscreen => 16,
-            Self::TakeForeground => 17,
             Self::ResetEvents => 13,
             Self::ReadEvents => 14,
             Self::Close => 11,
@@ -1173,7 +1168,7 @@ mod tests {
         let command_line = format_command_line(command);
         assert_eq!(
             command_line,
-            "fixture-command version=9 run=99 nonce=7 event-tag=0 action=transition"
+            "fixture-command version=10 run=99 nonce=7 event-tag=0 action=transition"
         );
         assert_eq!(parse_command_line(&command_line), Some(command));
 
@@ -1196,7 +1191,7 @@ mod tests {
         let result_line = format_command_result_line(result);
         assert_eq!(
             result_line,
-            "fixture-command-result version=9 run=99 nonce=7 status=0 before-window=17 \
+            "fixture-command-result version=10 run=99 nonce=7 status=0 before-window=17 \
              after-window=17 pointer-moves=1 pointer-presses=0 pointer-releases=0 \
              pointer-scrolls=0 key-downs=2 key-ups=2 flags-changed=0 text-units=6 saturated=0 \
              event-correlation=42 event-payload-matches=1"
@@ -1212,7 +1207,8 @@ mod tests {
         let topology_line = format_command_line(topology);
         assert_eq!(
             topology_line,
-            "fixture-command version=9 run=99 nonce=8 event-tag=0 action=move-to-next-display"
+            "fixture-command version=10 run=99 nonce=8 event-tag=0 \
+             action=move-to-next-display"
         );
         assert_eq!(parse_command_line(&topology_line), Some(topology));
     }
@@ -1220,14 +1216,15 @@ mod tests {
     #[test]
     fn malformed_or_unbounded_control_records_fail_closed() {
         for line in [
-            "fixture-command version=4 run=9 nonce=1 action=transition",
-            "fixture-command run=9 version=5 nonce=1 action=transition",
-            "fixture-command version=5 run=0 nonce=1 action=transition",
-            "fixture-command version=5 run=9 nonce=0 action=transition",
-            "fixture-command version=5 run=9 nonce=1 action=unknown",
-            "fixture-command version=5 run=9 nonce=1 action=transition extra=1",
-            "fixture-command-result version=5 run=9 nonce=1 status=0 before-window=17",
-            "fixture-command-result version=5 run=9 nonce=1 status=0 before-window=17 after-window=17 extra=1",
+            "fixture-command version=9 run=9 nonce=1 event-tag=0 action=transition",
+            "fixture-command run=9 version=10 nonce=1 event-tag=0 action=transition",
+            "fixture-command version=10 run=0 nonce=1 event-tag=0 action=transition",
+            "fixture-command version=10 run=9 nonce=0 event-tag=0 action=transition",
+            "fixture-command version=10 run=9 nonce=1 event-tag=1 action=transition",
+            "fixture-command version=10 run=9 nonce=1 event-tag=0 action=unknown",
+            "fixture-command version=10 run=9 nonce=1 event-tag=0 action=transition extra=1",
+            "fixture-command-result version=10 run=9 nonce=1 status=0 before-window=17",
+            "fixture-command-result version=10 run=9 nonce=1 status=0 before-window=17 after-window=17 extra=1",
         ] {
             assert!(
                 parse_command_line(line).is_none() && parse_command_result_line(line).is_none(),

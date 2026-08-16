@@ -383,6 +383,24 @@ fn a_focus_observation_never_outlives_the_callers_budget() {
 }
 
 #[test]
+fn a_process_scroll_keeps_the_resolved_pointer_location() {
+    let post = NativePost::Scroll {
+        horizontal: 3,
+        vertical: -4,
+        location: (-1920.5, 240.25),
+    };
+
+    assert_eq!(
+        post.process_post(),
+        shim::ProcessPost::Scroll {
+            horizontal: 3,
+            vertical: -4,
+            location: (-1920.5, 240.25),
+        }
+    );
+}
+
+#[test]
 fn every_fixed_key_resolves_to_a_code_and_no_two_share_one() {
     let keys = [
         Key::Enter,

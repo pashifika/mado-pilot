@@ -31,7 +31,7 @@ extern "C" {
 #define MP_FIXTURE_NATIVE_EXCEPTION 4u
 
 /* Versioned commands accepted only from the owned test harness. */
-#define MP_FIXTURE_CONTROL_VERSION 9u
+#define MP_FIXTURE_CONTROL_VERSION 10u
 #define MP_FIXTURE_COMMAND_TRANSITION 1u
 #define MP_FIXTURE_COMMAND_REPLACE 2u
 #define MP_FIXTURE_COMMAND_MINIMIZE 3u
@@ -48,7 +48,6 @@ extern "C" {
 #define MP_FIXTURE_COMMAND_READ_EVENTS 14u
 #define MP_FIXTURE_COMMAND_MOVE_OFFSCREEN 15u
 #define MP_FIXTURE_COMMAND_RESTORE_ONSCREEN 16u
-#define MP_FIXTURE_COMMAND_TAKE_FOREGROUND 17u
 
 /*
  * What one observed event was.

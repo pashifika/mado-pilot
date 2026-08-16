@@ -1195,6 +1195,7 @@ pub(crate) enum ProcessPost<'units> {
     Scroll {
         horizontal: i32,
         vertical: i32,
+        location: (f64, f64),
     },
     Key {
         key_code: u16,
@@ -1518,13 +1519,14 @@ fn process_post(
         ProcessPost::Scroll {
             horizontal,
             vertical,
+            location,
         } => (
             1,
             0,
             0,
             0,
-            0.0,
-            0.0,
+            location.0,
+            location.1,
             horizontal,
             vertical,
             0,
@@ -1682,11 +1684,14 @@ pub(crate) fn input_post_pointer(
 pub(crate) fn input_post_scroll(
     horizontal: i32,
     vertical: i32,
+    location: (f64, f64),
     flags: u32,
 ) -> Result<(), ShimStatus> {
     // SAFETY: the call takes scalars only and writes nothing.
-    ShimStatus::from_raw(unsafe { mp_shim_input_post_scroll(horizontal, vertical, flags) })
-        .into_result()
+    ShimStatus::from_raw(unsafe {
+        mp_shim_input_post_scroll(horizontal, vertical, location.0, location.1, flags)
+    })
+    .into_result()
 }
 
 /// Posts one key event for a hardware key code.
@@ -2583,7 +2588,8 @@ unsafe extern "C" {
         y: f64,
         flags: u32,
     ) -> u32;
-    fn mp_shim_input_post_scroll(horizontal: i32, vertical: i32, flags: u32) -> u32;
+    fn mp_shim_input_post_scroll(horizontal: i32, vertical: i32, x: f64, y: f64, flags: u32)
+    -> u32;
     fn mp_shim_input_post_key(key_code: u16, down: bool, flags: u32) -> u32;
     fn mp_shim_input_post_text(
         units: *const u16,
@@ -2950,6 +2956,7 @@ mod tests {
             "event kind",
             "post purpose",
             "null output",
+            "scroll coordinate",
         ];
         for (scenario, description) in scenarios.into_iter().enumerate() {
             let scenario = u32::try_from(scenario).expect("validation scenario index fits u32");

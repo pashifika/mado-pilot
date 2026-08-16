@@ -3929,18 +3929,20 @@ mp_shim_status mp_shim_input_frontmost_process(uint32_t *out_process) {
     }
     *out_process = 0;
     MP_SHIM_BEGIN
-    (void)mp_shim_activation_class();
-    if (mp_shim_workspace_class == Nil) {
-        return MP_SHIM_UNSUPPORTED;
+    ProcessSerialNumber process = {0, 0};
+    pid_t process_id = 0;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    OSStatus status = GetFrontProcess(&process);
+    if (status == noErr) {
+        status = GetProcessPID(&process, &process_id);
     }
-    id<MPShimWorkspace> workspace =
-        [(id<MPShimWorkspaceClass>)mp_shim_workspace_class sharedWorkspace];
-    id<MPShimProcessLifetimeApplication> application =
-        (id<MPShimProcessLifetimeApplication>)workspace.frontmostApplication;
-    if (application == nil || application.processIdentifier <= 0) {
+#pragma clang diagnostic pop
+    if (status != noErr || process_id <= 0 ||
+        (uint64_t)process_id > UINT32_MAX) {
         return MP_SHIM_PLATFORM_FAILURE;
     }
-    *out_process = (uint32_t)application.processIdentifier;
+    *out_process = (uint32_t)process_id;
     return MP_SHIM_OK;
     MP_SHIM_END
 }
@@ -4280,8 +4282,11 @@ mp_shim_status mp_shim_input_post_pointer(uint32_t action, uint32_t button, uint
     MP_SHIM_END
 }
 
-mp_shim_status mp_shim_input_post_scroll(int32_t horizontal, int32_t vertical, uint32_t flags) {
-    if (horizontal == 0 && vertical == 0) {
+mp_shim_status mp_shim_input_post_scroll(int32_t horizontal, int32_t vertical, double x, double y,
+                                         uint32_t flags) {
+    if ((horizontal == 0 && vertical == 0) || !isfinite(x) || !isfinite(y) ||
+        fabs(x) > MP_SHIM_MAX_DESKTOP_COORDINATE ||
+        fabs(y) > MP_SHIM_MAX_DESKTOP_COORDINATE) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     if (horizontal < -MP_SHIM_INPUT_MAX_SCROLL_LINES ||
@@ -4299,6 +4304,7 @@ mp_shim_status mp_shim_input_post_scroll(int32_t horizontal, int32_t vertical, u
     if (event == NULL) {
         return MP_SHIM_PLATFORM_FAILURE;
     }
+    CGEventSetLocation(event, CGPointMake(x, y));
     CGEventSetFlags(event, mp_shim_input_event_flags(flags));
     CGEventPost(kCGHIDEventTap, event);
     CFRelease(event);
@@ -4519,7 +4525,9 @@ mp_shim_validate_process_post(const mp_shim_process_post_request *request,
             request->horizontal < -MP_SHIM_INPUT_MAX_SCROLL_LINES ||
             request->horizontal > MP_SHIM_INPUT_MAX_SCROLL_LINES ||
             request->vertical < -MP_SHIM_INPUT_MAX_SCROLL_LINES ||
-            request->vertical > MP_SHIM_INPUT_MAX_SCROLL_LINES) {
+            request->vertical > MP_SHIM_INPUT_MAX_SCROLL_LINES || !isfinite(request->x) ||
+            !isfinite(request->y) || fabs(request->x) > MP_SHIM_MAX_DESKTOP_COORDINATE ||
+            fabs(request->y) > MP_SHIM_MAX_DESKTOP_COORDINATE) {
             return MP_SHIM_INVALID_ARGUMENT;
         }
         break;
@@ -4580,6 +4588,9 @@ mp_shim_prepare_process_event(const mp_shim_process_post_request *request,
         event = CGEventCreateScrollWheelEvent2(
             request->event_source->source, kCGScrollEventUnitLine, 2, -request->vertical,
             -request->horizontal, 0);
+        if (event != NULL) {
+            CGEventSetLocation(event, CGPointMake(request->x, request->y));
+        }
         break;
     case MP_SHIM_PROCESS_EVENT_KEY:
         event = CGEventCreateKeyboardEvent(
@@ -4990,6 +5001,11 @@ mp_shim_status mp_shim_testing_validate_process_post(
         break;
     case MP_SHIM_TEST_PROCESS_VALIDATE_PURPOSE:
         request.purpose = UINT32_MAX;
+        break;
+    case MP_SHIM_TEST_PROCESS_VALIDATE_SCROLL_COORDINATE:
+        request.event_kind = MP_SHIM_PROCESS_EVENT_SCROLL;
+        request.horizontal = 1;
+        request.x = NAN;
         break;
     default:
         return MP_SHIM_INVALID_ARGUMENT;

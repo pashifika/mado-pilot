@@ -36,10 +36,12 @@ and a failed or unexecuted route-wide row removes every dependent pair. The
 negotiated target descriptor, not a platform guess, is the admission authority.
 
 Every target names `PermissionKind::InputControl` as the authorization input
-needs, separately from the Screen Recording that capture needs. On macOS that
-permission reads the public non-prompting `CGPreflightPostEventAccess`
-decision — event-post access — not the legacy Accessibility trust check.
-Naming it is not a claim that it is held.
+needs, separately from the Screen Recording that capture needs. `InputControl`
+is the MadoPilot contract name; on macOS its authority is the public,
+non-prompting `CGPreflightPostEventAccess` decision. macOS may group that grant
+under an Accessibility-labelled Privacy & Security pane, but the legacy
+`AXIsProcessTrusted` result is not the input-post authorization source. Naming
+the permission is not a claim that it is held.
 
 Every refused or undetermined permission report names two independent execution
 axes. Bundle launch is `bundled`, `unbundled`, or `unknown`; signature mode is
@@ -101,28 +103,33 @@ equal the object retained by the discovery `SCContentFilter`, and its current
 frame supplies the geometry. This matters because the retained object's
 `isOnScreen` and `frame` values remain unchanged after the source window closes.
 
-Focus — required only by `System` window delivery — is then read through
-public, read-only Accessibility attributes. The owning application must be
-active, its focused window must appear in its public window list, and exactly
-one Accessibility window's top-left global position and size must equal the
-freshly verified frame. The shareable-content and focus observations are
-repeated after that join. Missing attributes, changed geometry, or zero or
-multiple matches establish no focus and deliver nothing. Titles and private
-Accessibility window identifiers are not read, and a same-PID replacement that
-recycles numeric metadata still makes the old `TargetId` report `TargetLost`.
-Every native observation is bounded by the caller's remaining operation budget.
+Focus is a `System`-route precondition and an optional caller predicate on
+`ProcessDirected`. Both use public, read-only Accessibility attributes: the
+owning application must be active, its focused window must appear in its public
+window list, and exactly one Accessibility window's top-left global position
+and size must equal the freshly verified frame. The shareable-content and focus
+observations are repeated after that join. Missing attributes, changed geometry,
+or zero or multiple matches establish no focus and deliver nothing. Titles and
+private Accessibility window identifiers are not read, and a same-PID
+replacement that recycles numeric metadata still makes the old `TargetId`
+report `TargetLost`. Every native observation is bounded by the caller's
+remaining operation budget.
 
 - `Preserve` cannot satisfy a focus-requiring system path, so a window request
-  using it fails admission; it is the meaningful policy for `ProcessDirected`,
-  which has no focus requirement.
-- `RequireFocused` never activates anything.
-- `ActivateIfRequired` asks macOS to activate the *owning application* through
-  `NSRunningApplication`, then repeats the exact public focus read-back for a
-  bounded period and reports `FocusRefused` if the retained window cannot be
-  established as focused. It never claims to have raised one particular window,
-  never passes `NSApplicationActivateIgnoringOtherApps`, and never uses the
-  Accessibility API to move another application's windows. It does not activate
-  for `ProcessDirected`, because that route requires no focus.
+  using it fails admission. It is the default meaningful policy for
+  `ProcessDirected`, which imposes no route-level focus requirement and does not
+  consult Accessibility under this policy.
+- `RequireFocused` never activates anything. On either window route it performs
+  the exact focus read above; an unfocused retained window returns
+  `FocusRequired`, and unavailable Accessibility authority returns
+  `NotAuthorized`, before any event is posted.
+- `ActivateIfRequired` asks macOS to activate the owning application only for
+  `System`, then repeats the exact public focus read-back for a bounded period
+  and reports `FocusRefused` if the retained window cannot be established as
+  focused. It never claims to have raised one particular window, never passes
+  `NSApplicationActivateIgnoringOtherApps`, and never uses Accessibility to
+  move another application's windows. `ProcessDirected` does not activate:
+  callers that need a focus predicate select `RequireFocused`.
 
 A display target has no focus requirement, because nothing about a display is
 focusable.
@@ -249,18 +256,18 @@ caller with different options.
 The fixture accepts no input packet — everything its recorder observes arrived
 as ordinary macOS input — but it is driven by a private, versioned control
 protocol over a controller-owned socket, so capture evidence never depends on
-focus, ambient redraws, or product input. Version 9 of that newline protocol
+focus, ambient redraws, or product input. Version 10 of that newline protocol
 carries one bounded command at a time, identified by a per-run nonce and a
 monotonic nonzero command nonce, and an explicit result record echoing the same
 identity, a bounded status, the before/after native window numbers, and a
 bounded process-wide event-count summary — per-kind counts, a bounded UTF-16
 unit total, and a saturation flag, never characters. Approved payload-free
 commands are `transition` (fill change), `replace`, `minimize`, `restore`,
-`yield-foreground`, `take-foreground`, `move`, `resize`, `open-auxiliary`,
-`close-auxiliary`, `move-to-next-display` (unsupported with fewer than two
-displays), `move-offscreen`, `restore-onscreen`, `reset-events`, `read-events`,
-`close`, and `stop`; every window transition executes on the fixture's AppKit
-main queue.
+`yield-foreground`, `move`, `resize`, `open-auxiliary`, `close-auxiliary`,
+`move-to-next-display` (unsupported with fewer than two displays),
+`move-offscreen`, `restore-onscreen`, `reset-events`, `read-events`, `close`,
+and `stop`; every window transition executes on the fixture's AppKit main
+queue.
 Lines are bounded, unknown or
 reordered records are rejected, and EOF, repeated close, and controller
 cleanup are idempotent. The protocol and event recorder are
@@ -390,10 +397,12 @@ change. The accepted result was rerun at commit
 ## Explicit system-input check
 
 Run this only on an interactive Apple Silicon desktop with Screen Recording and
-event-post access granted to the process that launches `cargo test` — macOS
-surfaces the latter grant in the Accessibility privacy pane. Build and verify
-the generated signed bundle above first, then deliberately select that exact
-executable:
+event-post access granted to the process that launches `cargo test`. macOS may
+surface the latter grant in an Accessibility-labelled privacy pane; that UI
+grouping does not make `AXIsProcessTrusted` the Adapter's authorization source.
+The non-prompting probe output, not the pane label, is the execution truth.
+Build and verify the generated signed bundle above first, then deliberately
+select that exact executable:
 
 ```sh
 MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
@@ -431,9 +440,13 @@ Seven ignored native tests qualify the process route against the owned fixture.
 All need Screen Recording and event-post access granted to the process that
 launches `cargo test`, an interactive desktop, the `private-fixture` feature,
 the structurally verified signed target bundle, and the separately identified
-foreground bundle. None focuses the process-directed target fixture: the second
-repository-owned fixture remains frontmost and is verified after every posting
-row. Export both executable paths before running the rows:
+foreground bundle. Each renderer matrix first launches its target alone, proves
+`RequireFocused` succeeds while the retained window is already focused without
+the input request changing foreground, and terminates that process. It then
+launches the independent foreground bundle before an inactive target; the
+refusal subrow proves `RequireFocused` returns zero-effect `FocusRequired`.
+Ordinary posting rows keep that unrelated bundle frontmost. Export both
+executable paths before running the rows:
 
 ```sh
 export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
@@ -460,6 +473,9 @@ pressed modifier with bounded release; repeated input/capture close; foreground
 and physical-cursor preservation; target-process observation; unrelated-process
 non-observation; and strictly newer controlled visual transitions. Receipts,
 fixture observations, and visual results remain separate facts.
+The scroll oracle fingerprints the resolved global desktop location together
+with both wheel deltas. A row therefore fails if Core Graphics inherits a stale
+or ambient cursor location instead of the sequence's last pointer position.
 
 The topology selector is mandatory and fail-closed. `single` accepts exactly one
 2× display; `same-scale` accepts exactly two horizontally adjacent 2× displays;
@@ -687,8 +703,12 @@ in the privacy-reviewed
 [observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
 rather than duplicated here. These profiles are regression ceilings for
 controlled AppKit/OpenGL fixtures on the qualified host, not user-facing
-latency promises; they claim no exact-window delivery and no application
-consumption, and the ADR 0025 profile does not stand in for them.
+latency promises. The accepted single-event authority/preflight/post workloads
+measured about 229–230 ms at p95, so this release makes no real-time input
+latency claim. The `game-like` label identifies the controlled OpenGL renderer
+used by the matrix; it does not establish general game compatibility. Receipts
+claim neither exact-window delivery nor application consumption, and the ADR
+0025 profile does not stand in for these route-specific measurements.
 
 ## Historical Phase 2 evidence
 
