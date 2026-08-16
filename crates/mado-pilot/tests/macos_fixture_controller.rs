@@ -1,3 +1,4 @@
+#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
 #![cfg(target_os = "macos")]
 //! Deterministic regressions for the benchmark-only macOS fixture controller.
 

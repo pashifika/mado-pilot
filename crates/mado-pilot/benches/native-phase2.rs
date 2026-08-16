@@ -57,21 +57,23 @@ mod native {
 
     #[cfg(windows)]
     use mado_pilot::NativeEngineRequest;
+    #[cfg(target_os = "macos")]
+    use mado_pilot::{ActivityTag, FrameStamp};
     use mado_pilot::{
-        ActivityTag, CleanupState, ContentDigest, DeliveryPlan, Engine, FocusPolicy, Frame,
-        FrameRequest, FrameStamp, InputDelivery, InputEvent, InputOpenRequest, InputOperationKind,
-        InputRequest, InputRequirement, InputSequence, Key, OpenRequest, OperationContext,
-        PixelExtent, PixelFormat, SequenceOutcome, Session, SessionRequest, Status, TargetId,
+        CleanupState, ContentDigest, DeliveryPlan, Engine, FocusPolicy, Frame, FrameRequest,
+        InputDelivery, InputEvent, InputOpenRequest, InputOperationKind, InputRequest,
+        InputRequirement, InputSequence, Key, OpenRequest, OperationContext, PixelExtent,
+        PixelFormat, SequenceOutcome, Session, SessionRequest, Status, TargetId,
     };
     use mado_pilot_testkit::bench_harness::{
         self, Benchmark, BoundedChildOutput, Plan, Profile, Sample, Workload, argument,
-        bounded_child_output, enforce_hard_budgets, enforce_latency_budgets, measure,
+        bounded_child_output, enforce_hard_budgets, measure,
     };
     #[cfg(target_os = "macos")]
     use mado_pilot_testkit::bench_harness::{
         PHASE2_2_CAPTURE_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
         PHASE2_2_PROCESS_HEAP_LIMIT_BYTES, PHASE2_2_PROCESS_LATENCY_BUDGETS,
-        PHASE2_2_TRANSITION_LATENCY_BUDGETS,
+        PHASE2_2_TRANSITION_LATENCY_BUDGETS, enforce_latency_budgets,
     };
 
     #[cfg(windows)]
@@ -150,101 +152,43 @@ mod native {
     const PRESSURE_WAIT: Duration = Duration::from_millis(100);
     const FIXTURE_WAIT: Duration = Duration::from_secs(10);
 
+    #[cfg(windows)]
+    const fn language_event(kind: u32, text_units: u32) -> protocol::EventSummary {
+        protocol::EventSummary { kind, text_units }
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn language_event(kind: u32, text_units: u32) -> protocol::EventSummary {
+        protocol::EventSummary {
+            kind,
+            text_units,
+            correlation: 0,
+        }
+    }
+
     const COMMON_LANGUAGE_EVENTS: [protocol::EventSummary; 3] = [
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_MOVE,
-            text_units: 0,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: expected_key_units(),
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: expected_key_units(),
-            correlation: 0,
-        },
+        language_event(protocol::EVENT_POINTER_MOVE, 0),
+        language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
+        language_event(protocol::EVENT_KEY_UP, expected_key_units()),
     ];
 
     #[cfg(windows)]
     const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 15] = [
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_MOVE,
-            text_units: 0,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_PRESS,
-            text_units: 0,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_RELEASE,
-            text_units: 0,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_PRESS,
-            text_units: 0,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_RELEASE,
-            text_units: 0,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_PRESS,
-            text_units: 0,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_RELEASE,
-            text_units: 0,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_SCROLL,
-            text_units: 0,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: expected_key_units(),
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: expected_key_units(),
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: expected_key_units(),
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: expected_key_units(),
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: expected_key_units(),
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: expected_key_units(),
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_TEXT,
-            text_units: 3,
-            correlation: 0,
-        },
+        language_event(protocol::EVENT_POINTER_MOVE, 0),
+        language_event(protocol::EVENT_POINTER_PRESS, 0),
+        language_event(protocol::EVENT_POINTER_RELEASE, 0),
+        language_event(protocol::EVENT_POINTER_PRESS, 0),
+        language_event(protocol::EVENT_POINTER_RELEASE, 0),
+        language_event(protocol::EVENT_POINTER_PRESS, 0),
+        language_event(protocol::EVENT_POINTER_RELEASE, 0),
+        language_event(protocol::EVENT_POINTER_SCROLL, 0),
+        language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
+        language_event(protocol::EVENT_KEY_UP, expected_key_units()),
+        language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
+        language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
+        language_event(protocol::EVENT_KEY_UP, expected_key_units()),
+        language_event(protocol::EVENT_KEY_UP, expected_key_units()),
+        language_event(protocol::EVENT_TEXT, 3),
     ];
 
     #[cfg(target_os = "macos")]
@@ -252,16 +196,8 @@ mod native {
         COMMON_LANGUAGE_EVENTS[0],
         COMMON_LANGUAGE_EVENTS[1],
         COMMON_LANGUAGE_EVENTS[2],
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: 1,
-            correlation: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: 1,
-            correlation: 0,
-        },
+        language_event(protocol::EVENT_KEY_DOWN, 1),
+        language_event(protocol::EVENT_KEY_UP, 1),
     ];
 
     static ARGUMENTS: OnceLock<Arguments> = OnceLock::new();
@@ -1031,6 +967,7 @@ mod native {
 
     impl Flow {
         fn from_fixture(fixture: Rc<FixtureProcess>) -> Self {
+            #[cfg(target_os = "macos")]
             let process = fixture
                 .authenticated_process()
                 .expect("the benchmark fixture control peer remains authenticated");
@@ -1042,11 +979,14 @@ mod native {
                 let targets = engine
                     .discover(&bounded(OPERATION_WAIT))
                     .expect("the benchmark fixture is discoverable");
-                if let Ok(target) =
+                #[cfg(windows)]
+                let selected = protocol::select_unique_fixture(&targets, fixture.process_id());
+                #[cfg(target_os = "macos")]
+                let selected =
                     protocol::select_unique_fixture(&targets, process.process_id(), |target| {
                         engine.authenticates_fixture_target(target, process)
-                    })
-                {
+                    });
+                if let Ok(target) = selected {
                     break target.id();
                 }
                 assert!(
@@ -1091,6 +1031,7 @@ mod native {
             assert!(close(&session), "the fixture confirmation session closes");
         }
 
+        #[cfg(target_os = "macos")]
         fn open_capture_session(&self) -> Session {
             self.engine
                 .open_session(
@@ -1137,6 +1078,7 @@ mod native {
             Self::from_open_session(flow, session)
         }
 
+        #[cfg(target_os = "macos")]
         fn from_capture_fixture(fixture: Rc<FixtureProcess>) -> Self {
             let flow = Flow::from_fixture(fixture);
             #[cfg(target_os = "macos")]
@@ -2865,7 +2807,7 @@ mod native {
             && !receipt.used_fallback()
             && !receipt.partial_native_effect()
             && receipt.fault().is_none()
-            && receipt.cleanup() == mado_pilot::CleanupState::NotNeeded
+            && receipt.cleanup() == CleanupState::NotNeeded
     }
 
     fn rust_common_flow(flow: &Flow) -> Sample {
