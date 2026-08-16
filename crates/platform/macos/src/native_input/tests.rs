@@ -169,6 +169,7 @@ struct RecordingProcessSource {
     keys: Mutex<Vec<(u16, bool)>>,
     pointers: Mutex<Vec<RecordedPointerPost>>,
     purposes: Mutex<Vec<shim::ProcessPostPurpose>>,
+    focuses: Mutex<Vec<shim::ProcessFocusRequirement>>,
 }
 
 impl ProcessCommitSource for RecordingProcessSource {
@@ -178,8 +179,14 @@ impl ProcessCommitSource for RecordingProcessSource {
         request: shim::ProcessPostRequest<'_>,
         _operation: &OperationContext,
     ) -> Result<shim::ProcessPostOutcome, shim::ProcessPostFailure> {
-        let shim::ProcessPostRequest { post, purpose, .. } = request;
+        let shim::ProcessPostRequest {
+            post,
+            purpose,
+            focus,
+            ..
+        } = request;
         self.purposes.lock().expect("uncontended").push(purpose);
+        self.focuses.lock().expect("uncontended").push(focus);
         match post {
             shim::ProcessPost::Key { key_code, down } => self
                 .keys
@@ -207,6 +214,12 @@ impl ProcessCommitSource for RecordingProcessSource {
             target_match_count: purpose.expected_target_match_count(),
             authorization: shim::ProcessAuthorizationObservation::Granted,
             geometry: shim::ProcessGeometryObservation::NotApplicable,
+            focus: match focus {
+                shim::ProcessFocusRequirement::None => shim::ProcessFocusObservation::NotApplicable,
+                shim::ProcessFocusRequirement::RequireFocused => {
+                    shim::ProcessFocusObservation::Passed
+                }
+            },
         })
     }
 }
@@ -233,6 +246,7 @@ impl ProcessCommitSource for UnavailableAfterPartialTextSource {
                     target_match_count: 1,
                     authorization: shim::ProcessAuthorizationObservation::Granted,
                     geometry: shim::ProcessGeometryObservation::NotApplicable,
+                    focus: shim::ProcessFocusObservation::NotApplicable,
                 })
             }
             (
@@ -246,6 +260,7 @@ impl ProcessCommitSource for UnavailableAfterPartialTextSource {
                 target_match_count: 0,
                 authorization: shim::ProcessAuthorizationObservation::Granted,
                 geometry: shim::ProcessGeometryObservation::NotApplicable,
+                focus: shim::ProcessFocusObservation::NotApplicable,
             }),
             (
                 shim::ProcessPostPurpose::Input,
@@ -260,6 +275,7 @@ impl ProcessCommitSource for UnavailableAfterPartialTextSource {
                 target_match_count: 0,
                 authorization: shim::ProcessAuthorizationObservation::Unknown,
                 geometry: shim::ProcessGeometryObservation::NotEvaluated,
+                focus: shim::ProcessFocusObservation::NotEvaluated,
             }),
             unexpected => panic!("unexpected process post: {unexpected:?}"),
         }
@@ -576,6 +592,64 @@ fn an_ambiguous_drag_move_releases_at_its_possible_destination() {
     );
 }
 
+/// A caller that selected `RequireFocused` gets that predicate confirmed by the
+/// native gate that posts, while the release that ends a pressed state does not:
+/// a target that lost the foreground is exactly when a held key most needs one.
+#[test]
+fn a_required_focus_predicate_reaches_ordinary_posts_and_never_cleanup() {
+    let source = RecordingProcessSource::default();
+    let mut state = DriverState::default();
+    state.keys.push(SystemKeyState {
+        logical: Key::Enter,
+        key_code: 0x24,
+    });
+
+    commit_process(
+        &source,
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::RequireFocused,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect("a focused ordinary post commits");
+    release_process(
+        PressedState::Key(Key::Enter),
+        &mut state,
+        &source,
+        &OperationContext::new(),
+    )
+    .expect("cleanup releases the pressed key");
+    release_pending_process(
+        &source,
+        None,
+        PendingTextRelease {
+            route: InputDelivery::ProcessDirected,
+            flags: 0,
+        },
+        &OperationContext::new(),
+    )
+    .expect("cleanup releases a pending text half");
+
+    assert_eq!(
+        *source.purposes.lock().expect("uncontended"),
+        vec![
+            shim::ProcessPostPurpose::Input,
+            shim::ProcessPostPurpose::Release,
+            shim::ProcessPostPurpose::Release,
+        ]
+    );
+    assert_eq!(
+        *source.focuses.lock().expect("uncontended"),
+        vec![
+            shim::ProcessFocusRequirement::RequireFocused,
+            shim::ProcessFocusRequirement::None,
+            shim::ProcessFocusRequirement::None,
+        ]
+    );
+}
+
 #[test]
 fn text_cleanup_tracks_an_entered_down_call_without_overstating_returned_calls() {
     assert!(text_release_may_be_pending(
@@ -599,6 +673,7 @@ fn partial_process_text_cleanup_uses_release_authority_after_target_becomes_unav
         &source,
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &OperationContext::new(),
         NativePost::Text(&units),
         shim::INPUT_FLAG_SHIFT,
@@ -989,6 +1064,7 @@ fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
                 target_match_count: 1,
                 authorization,
                 geometry: shim::ProcessGeometryObservation::NotEvaluated,
+                focus: shim::ProcessFocusObservation::NotEvaluated,
             }),
         }
     };
@@ -1002,6 +1078,7 @@ fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
         ),
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &OperationContext::new(),
         key_post(0x24, true),
         0,
@@ -1019,6 +1096,7 @@ fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
         ),
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &OperationContext::new(),
         key_post(0x24, true),
         0,
@@ -1036,6 +1114,7 @@ fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
         ),
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &OperationContext::new(),
         key_post(0x24, true),
         0,
@@ -1053,6 +1132,7 @@ fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
         ),
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &OperationContext::new(),
         key_post(0x24, true),
         0,
@@ -1073,6 +1153,7 @@ fn process_commit_requires_exact_native_unit_and_target_match_counts() {
             target_match_count,
             authorization: shim::ProcessAuthorizationObservation::Granted,
             geometry: shim::ProcessGeometryObservation::NotApplicable,
+            focus: shim::ProcessFocusObservation::NotApplicable,
         }),
     };
 
@@ -1080,6 +1161,7 @@ fn process_commit_requires_exact_native_unit_and_target_match_counts() {
         &source(1, 1),
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &OperationContext::new(),
         key_post(0x24, true),
         0,
@@ -1090,6 +1172,7 @@ fn process_commit_requires_exact_native_unit_and_target_match_counts() {
         &source(0, 2),
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &OperationContext::new(),
         key_post(0x24, true),
         0,
@@ -1103,6 +1186,7 @@ fn process_commit_requires_exact_native_unit_and_target_match_counts() {
         &source(1, 1),
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &OperationContext::new(),
         NativePost::Text(&units),
         0,
@@ -1121,6 +1205,7 @@ fn process_commit_arbitrates_cancellation_again_after_the_blocking_post() {
             target_match_count: 1,
             authorization: shim::ProcessAuthorizationObservation::Granted,
             geometry: shim::ProcessGeometryObservation::NotApplicable,
+            focus: shim::ProcessFocusObservation::NotApplicable,
         }),
         cancellation,
     };
@@ -1129,6 +1214,7 @@ fn process_commit_arbitrates_cancellation_again_after_the_blocking_post() {
         &invoked,
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &context,
         key_post(0x24, true),
         0,
@@ -1148,6 +1234,7 @@ fn process_commit_arbitrates_cancellation_again_after_the_blocking_post() {
             target_match_count: 1,
             authorization: shim::ProcessAuthorizationObservation::Unknown,
             geometry: shim::ProcessGeometryObservation::NotEvaluated,
+            focus: shim::ProcessFocusObservation::NotEvaluated,
         }),
         cancellation,
     };
@@ -1156,6 +1243,7 @@ fn process_commit_arbitrates_cancellation_again_after_the_blocking_post() {
         &untouched,
         None,
         shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
         &context,
         key_post(0x24, true),
         0,

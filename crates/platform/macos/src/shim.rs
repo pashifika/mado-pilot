@@ -25,7 +25,7 @@ use mado_pilot_capture::CaptureFault;
 use mado_pilot_core::{CancellationToken, OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 13;
+pub(crate) const ABI_VERSION: u32 = 14;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -1230,6 +1230,48 @@ impl ProcessPostPurpose {
         }
     }
 }
+
+/// Whether the caller's focus predicate must hold at the final native gate.
+///
+/// The route imposes no focus requirement of its own. Only a caller that
+/// selected `RequireFocused` sets this, and a sequence-owned release never does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessFocusRequirement {
+    None,
+    RequireFocused,
+}
+
+impl ProcessFocusRequirement {
+    const fn as_raw(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::RequireFocused => 1,
+        }
+    }
+}
+
+/// Focus-predicate result from the last native per-unit gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessFocusObservation {
+    NotApplicable,
+    NotEvaluated,
+    Passed,
+    Refused,
+    Unavailable,
+}
+
+impl ProcessFocusObservation {
+    const fn from_raw(raw: u32) -> Self {
+        match raw {
+            0 => Self::NotApplicable,
+            2 => Self::Passed,
+            3 => Self::Refused,
+            4 => Self::Unavailable,
+            _ => Self::NotEvaluated,
+        }
+    }
+}
+
 /// Geometry repeated at the final native authority boundary.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ProcessGeometry {
@@ -1243,6 +1285,7 @@ pub(crate) struct ProcessPostRequest<'units> {
     pub(crate) post: ProcessPost<'units>,
     pub(crate) geometry: ProcessGeometry,
     pub(crate) purpose: ProcessPostPurpose,
+    pub(crate) focus: ProcessFocusRequirement,
     pub(crate) flags: u32,
     pub(crate) wait: Duration,
 }
@@ -1308,6 +1351,7 @@ pub(crate) struct ProcessPostOutcome {
     pub(crate) target_match_count: u32,
     pub(crate) authorization: ProcessAuthorizationObservation,
     pub(crate) geometry: ProcessGeometryObservation,
+    pub(crate) focus: ProcessFocusObservation,
 }
 
 /// A process-directed request failure plus its exact returned-call prefix and
@@ -1320,6 +1364,7 @@ pub(crate) struct ProcessPostFailure {
     pub(crate) target_match_count: u32,
     pub(crate) authorization: ProcessAuthorizationObservation,
     pub(crate) geometry: ProcessGeometryObservation,
+    pub(crate) focus: ProcessFocusObservation,
 }
 
 /// One target's live rectangle in the global point space, with its backing scale.
@@ -1446,6 +1491,7 @@ fn process_post(
         post,
         geometry,
         purpose,
+        focus,
         flags,
         wait,
     } = request;
@@ -1460,6 +1506,7 @@ fn process_post(
                     target_match_count: 0,
                     authorization: ProcessAuthorizationObservation::Unknown,
                     geometry: ProcessGeometryObservation::NotEvaluated,
+                    focus: ProcessFocusObservation::NotEvaluated,
                 });
             }
             return Ok(ProcessPostOutcome {
@@ -1469,6 +1516,10 @@ fn process_post(
                 geometry: match geometry {
                     ProcessGeometry::AuthorityOnly => ProcessGeometryObservation::NotApplicable,
                     ProcessGeometry::RequireCurrent(_) => ProcessGeometryObservation::Passed,
+                },
+                focus: match focus {
+                    ProcessFocusRequirement::None => ProcessFocusObservation::NotApplicable,
+                    ProcessFocusRequirement::RequireFocused => ProcessFocusObservation::Passed,
                 },
             });
         }
@@ -1480,6 +1531,7 @@ fn process_post(
             target_match_count: 0,
             authorization: ProcessAuthorizationObservation::Unknown,
             geometry: ProcessGeometryObservation::NotEvaluated,
+            focus: ProcessFocusObservation::NotEvaluated,
         });
     };
 
@@ -1597,7 +1649,8 @@ fn process_post(
         vertical,
         key_code,
         key_down,
-        reserved: [0; 5],
+        focus_requirement: focus.as_raw(),
+        reserved: [0; 4],
         text_units,
         text_unit_count,
         expected_x: expected.origin.0,
@@ -1616,6 +1669,7 @@ fn process_post(
         native_effect_may_have_occurred: 0,
         authorization: 0,
         geometry_result: 1,
+        focus_result: 1,
     };
     // SAFETY: the target and optional text slice outlive the call; request and
     // report match the C layout and the report is exclusively writable.
@@ -1627,6 +1681,7 @@ fn process_post(
             target_match_count: report.target_match_count,
             authorization: ProcessAuthorizationObservation::from_raw(report.authorization),
             geometry: ProcessGeometryObservation::from_raw(report.geometry_result),
+            focus: ProcessFocusObservation::from_raw(report.focus_result),
         })
     } else {
         Err(ProcessPostFailure {
@@ -1636,6 +1691,7 @@ fn process_post(
             target_match_count: report.target_match_count,
             authorization: ProcessAuthorizationObservation::from_raw(report.authorization),
             geometry: ProcessGeometryObservation::from_raw(report.geometry_result),
+            focus: ProcessFocusObservation::from_raw(report.focus_result),
         })
     }
 }
@@ -1847,6 +1903,8 @@ pub(crate) enum ShimStatus {
     StoppedBySystem,
     /// Authoritative target geometry changed after event preparation.
     GeometryChanged,
+    /// A caller-selected focus predicate was false at the final authority gate.
+    FocusRequired,
     /// A status this build does not know about.
     Unrecognized(u32),
 }
@@ -1870,6 +1928,7 @@ impl ShimStatus {
             11 => ShimStatus::StoppedByUser,
             12 => ShimStatus::StoppedBySystem,
             13 => ShimStatus::GeometryChanged,
+            14 => ShimStatus::FocusRequired,
             other => ShimStatus::Unrecognized(other),
         }
     }
@@ -1891,6 +1950,7 @@ impl ShimStatus {
             ShimStatus::StoppedByUser => 11,
             ShimStatus::StoppedBySystem => 12,
             ShimStatus::GeometryChanged => 13,
+            ShimStatus::FocusRequired => 14,
             ShimStatus::Unrecognized(other) => other,
         }
     }
@@ -1927,9 +1987,9 @@ impl ShimStatus {
             ShimStatus::StoppedBySystem => CaptureFault::StreamEnded,
             ShimStatus::TimedOut => CaptureFault::SourceInvalid,
             ShimStatus::BudgetExhausted => CaptureFault::StorageBudgetExhausted,
-            ShimStatus::FrameIncomplete | ShimStatus::GeometryChanged => {
-                CaptureFault::SourceInvalid
-            }
+            ShimStatus::FrameIncomplete
+            | ShimStatus::GeometryChanged
+            | ShimStatus::FocusRequired => CaptureFault::SourceInvalid,
         }
     }
 }
@@ -2222,7 +2282,8 @@ struct ProcessPostTestObservation {
     invoked_native_units: u64,
     native_effect_may_have_occurred: bool,
     target_match_count: u32,
-    calls: [u64; 6],
+    focus: ProcessFocusObservation,
+    calls: [u64; 7],
 }
 
 #[cfg(test)]
@@ -2231,8 +2292,17 @@ fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, Shi
     let mut invoked_native_units = u64::MAX;
     let mut native_effect_may_have_occurred = u32::MAX;
     let mut target_match_count = u32::MAX;
-    let mut calls = [u64::MAX; 6];
-    let [authority, preflight, lifetime, prepare, post, release] = &mut calls;
+    let mut focus_result = u32::MAX;
+    let mut calls = [u64::MAX; 7];
+    let [
+        authority,
+        preflight,
+        lifetime,
+        focus,
+        prepare,
+        post,
+        release,
+    ] = &mut calls;
     // SAFETY: every output is writable for its declared scalar type. The native
     // seam uses sentinel events handled only by injected callbacks and never
     // invokes Core Graphics posting.
@@ -2243,9 +2313,11 @@ fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, Shi
             &raw mut invoked_native_units,
             &raw mut native_effect_may_have_occurred,
             &raw mut target_match_count,
+            &raw mut focus_result,
             &raw mut *authority,
             &raw mut *preflight,
             &raw mut *lifetime,
+            &raw mut *focus,
             &raw mut *prepare,
             &raw mut *post,
             &raw mut *release,
@@ -2257,6 +2329,7 @@ fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, Shi
         invoked_native_units,
         native_effect_may_have_occurred: native_effect_may_have_occurred == 1,
         target_match_count,
+        focus: ProcessFocusObservation::from_raw(focus_result),
         calls,
     })
 }
@@ -2359,7 +2432,8 @@ struct NativeProcessPostRequest {
     vertical: i32,
     key_code: u16,
     key_down: bool,
-    reserved: [u8; 5],
+    focus_requirement: u8,
+    reserved: [u8; 4],
     text_units: *const u16,
     text_unit_count: usize,
     expected_x: f64,
@@ -2379,6 +2453,7 @@ struct NativeProcessPostReport {
     invoked_native_units: u64,
     authorization: u32,
     geometry_result: u32,
+    focus_result: u32,
     native_effect_may_have_occurred: u32,
 }
 
@@ -2482,9 +2557,11 @@ unsafe extern "C" {
         out_invoked_native_units: *mut u64,
         out_native_effect_may_have_occurred: *mut u32,
         out_target_match_count: *mut u32,
+        out_focus_result: *mut u32,
         out_authority_calls: *mut u64,
         out_preflight_calls: *mut u64,
         out_lifetime_calls: *mut u64,
+        out_focus_calls: *mut u64,
         out_prepare_calls: *mut u64,
         out_post_calls: *mut u64,
         out_release_calls: *mut u64,
@@ -2615,11 +2692,11 @@ mod tests {
     use super::{
         ABI_VERSION, DEFAULT_NATIVE_WAIT, ExecutionContext, FrameInfo, KIND_DISPLAY, KIND_WINDOW,
         LaunchContext, MAX_NATIVE_WAIT, MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest,
-        ProcessAuthorization, ProcessCancellationFence, ProcessEventSource, ShimStatus,
-        SignatureMode, TargetToken, contained_frame_callback, contained_frame_commit_callback,
-        contained_stopped_callback, declared_layout, declared_process_offsets, execution_context,
-        linked_layout, live_objects, monotonic_nanos, nanos, process_interruption_callback,
-        testing_classify_signature, testing_gate_retries,
+        ProcessAuthorization, ProcessCancellationFence, ProcessEventSource,
+        ProcessFocusObservation, ShimStatus, SignatureMode, TargetToken, contained_frame_callback,
+        contained_frame_commit_callback, contained_stopped_callback, declared_layout,
+        declared_process_offsets, execution_context, linked_layout, live_objects, monotonic_nanos,
+        nanos, process_interruption_callback, testing_classify_signature, testing_gate_retries,
         testing_input_text_second_allocation_failure, testing_process_authority_rules,
         testing_process_event_source_release_exception, testing_process_post,
         testing_stop_completion_exception, testing_surface_recommendation,
@@ -2848,10 +2925,11 @@ mod tests {
         assert_eq!(observed.delivery, ShimStatus::Ok);
         assert_eq!(observed.invoked_native_units, 1);
         assert_eq!(observed.target_match_count, 1);
+        assert_eq!(observed.focus, ProcessFocusObservation::NotApplicable);
         assert_eq!(
             observed.calls,
-            [2, 2, 2, 1, 1, 1],
-            "authority, direct authorization, geometry, and retained lifetime are checked both before construction and immediately before one bounded post"
+            [2, 2, 2, 0, 1, 1, 1],
+            "authority, direct authorization, geometry, and retained lifetime are checked both before construction and immediately before one bounded post, and a request with no focus predicate observes none"
         );
     }
 
@@ -2862,26 +2940,27 @@ mod tests {
         assert_eq!(observed.delivery, ShimStatus::Ok);
         assert_eq!(observed.invoked_native_units, 1);
         assert_eq!(observed.target_match_count, 0);
+        assert_eq!(observed.focus, ProcessFocusObservation::NotApplicable);
         assert_eq!(
             observed.calls,
-            [0, 2, 2, 1, 1, 1],
-            "release skips current window admission but rechecks authorization and process lifetime after construction before posting"
+            [0, 2, 2, 0, 1, 1, 1],
+            "release skips current window admission and focus but rechecks authorization and process lifetime after construction before posting"
         );
     }
 
     #[test]
     fn process_post_fails_closed_before_native_effect() {
         let rows = [
-            (1, ShimStatus::PermissionDenied, 1, [1, 1, 0, 0, 0, 0]),
-            (2, ShimStatus::TargetLost, 0, [1, 0, 0, 0, 0, 0]),
-            (3, ShimStatus::Unsupported, 0, [1, 0, 0, 0, 0, 0]),
-            (4, ShimStatus::InvalidArgument, 0, [0, 0, 0, 0, 0, 0]),
-            (6, ShimStatus::Unsupported, 0, [0, 0, 0, 0, 0, 0]),
-            (8, ShimStatus::GeometryChanged, 1, [1, 0, 0, 0, 0, 0]),
-            (10, ShimStatus::TargetLost, 1, [1, 1, 1, 0, 0, 0]),
-            (11, ShimStatus::TimedOut, 0, [0, 0, 0, 0, 0, 0]),
-            (12, ShimStatus::PlatformFailure, 1, [1, 1, 1, 1, 0, 0]),
-            (14, ShimStatus::TimedOut, 1, [2, 2, 2, 1, 0, 1]),
+            (1, ShimStatus::PermissionDenied, 1, [1, 1, 0, 0, 0, 0, 0]),
+            (2, ShimStatus::TargetLost, 0, [1, 0, 0, 0, 0, 0, 0]),
+            (3, ShimStatus::Unsupported, 0, [1, 0, 0, 0, 0, 0, 0]),
+            (4, ShimStatus::InvalidArgument, 0, [0, 0, 0, 0, 0, 0, 0]),
+            (6, ShimStatus::Unsupported, 0, [0, 0, 0, 0, 0, 0, 0]),
+            (8, ShimStatus::GeometryChanged, 1, [1, 0, 0, 0, 0, 0, 0]),
+            (10, ShimStatus::TargetLost, 1, [1, 1, 1, 0, 0, 0, 0]),
+            (11, ShimStatus::TimedOut, 0, [0, 0, 0, 0, 0, 0, 0]),
+            (12, ShimStatus::PlatformFailure, 1, [1, 1, 1, 0, 1, 0, 0]),
+            (14, ShimStatus::TimedOut, 1, [2, 2, 2, 0, 1, 0, 1]),
         ];
 
         for (scenario, delivery, target_count, calls) in rows {
@@ -2899,10 +2978,10 @@ mod tests {
     #[test]
     fn process_post_refuses_authority_changes_after_event_preparation() {
         let rows = [
-            (16, ShimStatus::TargetLost, 0, [2, 1, 1, 1, 0, 1]),
-            (17, ShimStatus::PermissionDenied, 1, [2, 2, 1, 1, 0, 1]),
-            (18, ShimStatus::TargetLost, 1, [2, 2, 2, 1, 0, 1]),
-            (19, ShimStatus::GeometryChanged, 1, [2, 1, 1, 1, 0, 1]),
+            (16, ShimStatus::TargetLost, 0, [2, 1, 1, 0, 1, 0, 1]),
+            (17, ShimStatus::PermissionDenied, 1, [2, 2, 1, 0, 1, 0, 1]),
+            (18, ShimStatus::TargetLost, 1, [2, 2, 2, 0, 1, 0, 1]),
+            (19, ShimStatus::GeometryChanged, 1, [2, 1, 1, 0, 1, 0, 1]),
         ];
 
         for (scenario, delivery, target_count, calls) in rows {
@@ -2957,6 +3036,8 @@ mod tests {
             "post purpose",
             "null output",
             "scroll coordinate",
+            "focus requirement",
+            "release focus requirement",
         ];
         for (scenario, description) in scenarios.into_iter().enumerate() {
             let scenario = u32::try_from(scenario).expect("validation scenario index fits u32");
@@ -2984,7 +3065,7 @@ mod tests {
         assert_eq!(observed.delivery, ShimStatus::NativeException);
         assert_eq!(observed.invoked_native_units, 0);
         assert!(!observed.native_effect_may_have_occurred);
-        assert_eq!(observed.calls, [1, 1, 1, 1, 0, 1]);
+        assert_eq!(observed.calls, [1, 1, 1, 0, 1, 0, 1]);
     }
 
     #[test]
@@ -2994,7 +3075,7 @@ mod tests {
         assert_eq!(observed.delivery, ShimStatus::NativeException);
         assert_eq!(observed.invoked_native_units, 0);
         assert!(observed.native_effect_may_have_occurred);
-        assert_eq!(observed.calls, [2, 2, 2, 1, 1, 1]);
+        assert_eq!(observed.calls, [2, 2, 2, 0, 1, 1, 1]);
     }
 
     #[test]
@@ -3002,17 +3083,67 @@ mod tests {
         let revoked = testing_process_post(7).expect("native process-post seam runs");
         assert_eq!(revoked.delivery, ShimStatus::PermissionDenied);
         assert_eq!(revoked.invoked_native_units, 1);
-        assert_eq!(revoked.calls, [3, 3, 2, 1, 1, 1]);
+        assert_eq!(revoked.calls, [3, 3, 2, 0, 1, 1, 1]);
 
         let lost = testing_process_post(9).expect("native process-post seam runs");
         assert_eq!(lost.delivery, ShimStatus::TargetLost);
         assert_eq!(lost.invoked_native_units, 1);
-        assert_eq!(lost.calls, [3, 2, 2, 1, 1, 1]);
+        assert_eq!(lost.calls, [3, 2, 2, 0, 1, 1, 1]);
 
         let interrupted = testing_process_post(13).expect("native process-post seam runs");
         assert_eq!(interrupted.delivery, ShimStatus::TimedOut);
         assert_eq!(interrupted.invoked_native_units, 1);
-        assert_eq!(interrupted.calls, [2, 2, 2, 1, 1, 1]);
+        assert_eq!(interrupted.calls, [2, 2, 2, 0, 1, 1, 1]);
+    }
+
+    /// A caller-selected focus predicate is authority only if the last gate
+    /// before the post observes it. The route's bounded authority queries take
+    /// long enough for a person to change the foreground application, so an
+    /// observation made before them cannot stand in for one made after them.
+    #[test]
+    fn process_post_requires_caller_selected_focus_at_the_final_gate() {
+        let focused = testing_process_post(24).expect("native process-post seam runs");
+        assert_eq!(focused.delivery, ShimStatus::Ok);
+        assert_eq!(focused.invoked_native_units, 1);
+        assert_eq!(focused.focus, ProcessFocusObservation::Passed);
+        assert_eq!(
+            focused.calls,
+            [2, 2, 2, 2, 1, 1, 1],
+            "a focused target observes the predicate in both per-unit gates"
+        );
+
+        let unfocused = testing_process_post(21).expect("native process-post seam runs");
+        assert_eq!(unfocused.delivery, ShimStatus::FocusRequired);
+        assert_eq!(unfocused.invoked_native_units, 0);
+        assert!(!unfocused.native_effect_may_have_occurred);
+        assert_eq!(unfocused.focus, ProcessFocusObservation::Refused);
+        assert_eq!(
+            unfocused.calls,
+            [1, 1, 1, 1, 0, 0, 0],
+            "an unfocused target refuses before any event is constructed"
+        );
+
+        let lost_late = testing_process_post(22).expect("native process-post seam runs");
+        assert_eq!(lost_late.delivery, ShimStatus::FocusRequired);
+        assert_eq!(lost_late.invoked_native_units, 0);
+        assert!(!lost_late.native_effect_may_have_occurred);
+        assert_eq!(lost_late.focus, ProcessFocusObservation::Refused);
+        assert_eq!(
+            lost_late.calls,
+            [2, 2, 2, 2, 1, 0, 1],
+            "focus lost only after event preparation still refuses and releases the prepared event"
+        );
+
+        let unobservable = testing_process_post(23).expect("native process-post seam runs");
+        assert_eq!(unobservable.delivery, ShimStatus::PermissionDenied);
+        assert_eq!(unobservable.invoked_native_units, 0);
+        assert!(!unobservable.native_effect_may_have_occurred);
+        assert_eq!(unobservable.focus, ProcessFocusObservation::Unavailable);
+        assert_eq!(
+            unobservable.calls,
+            [1, 1, 1, 1, 0, 0, 0],
+            "an unobservable focus predicate fails closed rather than posting"
+        );
     }
 
     #[test]

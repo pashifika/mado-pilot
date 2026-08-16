@@ -1235,8 +1235,17 @@ narrow the lookup and cannot authorize a replacement. Additional windows owned
 by the same process, including fixture or ScreenCaptureKit auxiliary windows, do
 not revoke process scope and may receive or otherwise react to the event; callers
 that require exact-window consumption reject this capability before input.
+A caller-selected `RequireFocused` predicate travels in the size-versioned
+process-post request and is observed inside the same bounded native operation as
+that final authority check, immediately before `CGEventPostToPid`. An early
+adapter-side observation is a cheap refusal, not authority: the authority
+queries in between take long enough for a person to change the foreground
+application. An unfocused retained window refuses with `FocusRequired` and an
+unobservable predicate with `NotAuthorized`, both before any event is created.
 Cleanup revalidates the original process lifetime, route, and authorization but
-does not require ordinary target visibility or pointer geometry. A missing,
+requires no focus predicate, ordinary target visibility, or pointer geometry: a
+window that stopped being frontmost is exactly when a held key or button most
+needs releasing. A missing,
 duplicate, replaced, minimized, or unavailable retained-target observation
 refuses before ordinary posting, and a reused PID cannot satisfy the retained
 lifetime token. The route never activates or raises the target, never reads or

@@ -82,8 +82,14 @@ owning-process scope, on these rules:
    `ProcessDirected` imposes none by default, but a caller-selected
    `RequireFocused` policy performs the same exact retained-window focus
    read-back without activating and refuses before posting when it is false or
-   unavailable. `ActivateIfRequired` never activates on `ProcessDirected`.
-   Nothing requests permission, presents UI, or opens System Settings.
+   unavailable. That predicate is carried in the process-post request and
+   observed inside the same bounded native operation as the last retained-window
+   authority, geometry, event-post, and process-lifetime checks: an
+   adapter-side observation taken before those queries is an early refusal, not
+   authority, because the foreground can change while they run. A sequence-owned
+   release carries no focus requirement. `ActivateIfRequired` never activates on
+   `ProcessDirected`. Nothing requests permission, presents UI, or opens System
+   Settings.
 6. **Receipts report invocation only.** `CGEventPostToPid` returns `void`, so a
    returned call records `InvocationOnly` and the exact invoked prefix, never
    queue admission, exact-window delivery, consumption, or visual success.
@@ -182,9 +188,12 @@ the existing no-fallback contract after possible effect.
   their own mandatory rows pass. A route-wide failure blocks every pair; a pair
   failure blocks only that pair; missing topology evidence is never replaced by
   another topology.
-- The internal shim gains a size-versioned process-post request and sequence
-  source lifecycle, extending the existing layout/version/containment test
-  obligations; the released C ABI and its frozen prefixes are unchanged.
+- The internal shim gains a size-versioned process-post request carrying the
+  caller's focus requirement, one focus-result report field, a dedicated
+  focus-refusal status, and a sequence source lifecycle, extending the existing
+  layout/version/containment test obligations. Its internal surface version moves
+  from 13 to 14, which also covers the scroll-location signature change made
+  during correction; the released C ABI and its frozen prefixes are unchanged.
 - Qualification cost is real: route-wide and per-pair native rows on the
   approved Apple Silicon host across single-display, same-scale, mixed-scale,
   and signed-origin topologies, under sustained active capture, plus the frozen

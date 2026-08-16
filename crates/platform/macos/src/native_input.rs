@@ -291,16 +291,24 @@ impl NativeInputDriver {
         }
     }
 
+    /// Refuses early when a caller-selected focus predicate already fails, and
+    /// returns the requirement the final native gate must confirm again.
+    ///
+    /// This observation is not authority: the foreground can change while the
+    /// bounded authority queries that follow are running, so the native gate
+    /// re-evaluates the same predicate immediately before it posts.
     fn ensure_process_focus(
         &self,
         policy: FocusPolicy,
         operation: &OperationContext,
-    ) -> Result<(), InputFault> {
+    ) -> Result<shim::ProcessFocusRequirement, InputFault> {
         match policy {
-            FocusPolicy::Preserve | FocusPolicy::ActivateIfRequired => Ok(()),
+            FocusPolicy::Preserve | FocusPolicy::ActivateIfRequired => {
+                Ok(shim::ProcessFocusRequirement::None)
+            }
             FocusPolicy::RequireFocused => {
                 if self.is_focused(operation)? {
-                    Ok(())
+                    Ok(shim::ProcessFocusRequirement::RequireFocused)
                 } else {
                     Err(InputFault::FocusRequired)
                 }
@@ -751,7 +759,7 @@ impl NativeInputDriver {
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> SubmissionResult {
-        self.ensure_process_focus(focus, operation)?;
+        let focus = self.ensure_process_focus(focus, operation)?;
         let flags = state.held_flags();
 
         match event {
@@ -765,6 +773,7 @@ impl NativeInputDriver {
                     self,
                     state.process_event_source.as_ref(),
                     commit_geometry,
+                    focus,
                     operation,
                     NativePost::Pointer {
                         action: shim::INPUT_POINTER_MOVE,
@@ -784,6 +793,7 @@ impl NativeInputDriver {
                     self,
                     state.process_event_source.as_ref(),
                     commit_geometry,
+                    focus,
                     operation,
                     NativePost::Pointer {
                         action: shim::INPUT_POINTER_PRESS,
@@ -816,6 +826,7 @@ impl NativeInputDriver {
                     self,
                     state.process_event_source.as_ref(),
                     commit_geometry,
+                    focus,
                     operation,
                     NativePost::Pointer {
                         action: shim::INPUT_POINTER_RELEASE,
@@ -840,6 +851,7 @@ impl NativeInputDriver {
                     self,
                     state.process_event_source.as_ref(),
                     commit_geometry,
+                    focus,
                     operation,
                     NativePost::Scroll {
                         horizontal: i32::from(*horizontal),
@@ -856,6 +868,7 @@ impl NativeInputDriver {
                     self,
                     state.process_event_source.as_ref(),
                     shim::ProcessGeometry::AuthorityOnly,
+                    focus,
                     operation,
                     NativePost::Key {
                         key_code,
@@ -885,6 +898,7 @@ impl NativeInputDriver {
                     self,
                     state.process_event_source.as_ref(),
                     shim::ProcessGeometry::AuthorityOnly,
+                    focus,
                     operation,
                     NativePost::Key {
                         key_code,
@@ -897,7 +911,9 @@ impl NativeInputDriver {
                 }
                 Ok(())
             }
-            InputEvent::Text(text) => self.deliver_process_text(text, state, operation, flags),
+            InputEvent::Text(text) => {
+                self.deliver_process_text(text, focus, state, operation, flags)
+            }
             InputEvent::Delay(_) => Err(InputFault::UnsupportedCombination.into()),
             _ => Err(InputFault::UnsupportedCombination.into()),
         }
@@ -906,6 +922,7 @@ impl NativeInputDriver {
     fn deliver_process_text(
         &self,
         text: &str,
+        focus: shim::ProcessFocusRequirement,
         state: &mut DriverState,
         operation: &OperationContext,
         flags: u32,
@@ -917,6 +934,7 @@ impl NativeInputDriver {
                 self,
                 state.process_event_source.as_ref(),
                 shim::ProcessGeometry::AuthorityOnly,
+                focus,
                 operation,
                 NativePost::Text(&units[chunk.clone()]),
                 flags,
@@ -1033,6 +1051,7 @@ impl ProcessCommitSource for NativeInputDriver {
                 target_match_count: 0,
                 authorization: shim::ProcessAuthorizationObservation::Unknown,
                 geometry: shim::ProcessGeometryObservation::NotEvaluated,
+                focus: shim::ProcessFocusObservation::NotEvaluated,
             });
         };
         self.record.process_post(event_source, request, operation)
@@ -1083,7 +1102,7 @@ impl InputDriver for NativeInputDriver {
                 if authority.target_match_count != 1 {
                     return Err(InputFault::UnsupportedCombination);
                 }
-                self.ensure_process_focus(focus, operation)
+                self.ensure_process_focus(focus, operation).map(|_| ())
             }
             _ => Err(InputFault::UnsupportedCombination),
         }
@@ -1285,14 +1304,12 @@ fn release_pending_process<S: ProcessCommitSource + ?Sized>(
     commit_process_for(
         source,
         event_source,
-        shim::ProcessGeometry::AuthorityOnly,
-        shim::ProcessPostPurpose::Release,
+        ProcessCommit::release(pending.flags),
         cleanup,
         NativePost::Key {
             key_code: 0,
             down: false,
         },
-        pending.flags,
     )
     .map_err(|failure| failure.fault)
 }
@@ -1320,8 +1337,7 @@ fn release_process<S: ProcessCommitSource + ?Sized>(
             commit_process_for(
                 source,
                 state.process_event_source.as_ref(),
-                shim::ProcessGeometry::AuthorityOnly,
-                shim::ProcessPostPurpose::Release,
+                ProcessCommit::release(flags),
                 cleanup,
                 NativePost::Pointer {
                     action: shim::INPUT_POINTER_RELEASE,
@@ -1329,7 +1345,6 @@ fn release_process<S: ProcessCommitSource + ?Sized>(
                     click_state: shim::INPUT_SINGLE_CLICK,
                     location,
                 },
-                flags,
             )
             .map_err(|failure| failure.fault)?;
             if let Some(index) = index {
@@ -1346,14 +1361,12 @@ fn release_process<S: ProcessCommitSource + ?Sized>(
             commit_process_for(
                 source,
                 state.process_event_source.as_ref(),
-                shim::ProcessGeometry::AuthorityOnly,
-                shim::ProcessPostPurpose::Release,
+                ProcessCommit::release(flags),
                 cleanup,
                 NativePost::Key {
                     key_code,
                     down: false,
                 },
-                flags,
             )
             .map_err(|failure| failure.fault)?;
             if let Some(index) = index {
@@ -1406,12 +1419,20 @@ fn process_status_fault(status: ShimStatus, operation: &OperationContext) -> Inp
     }
 }
 
+/// Names the fault behind one native process-post failure.
+///
+/// A denial reported after event-post access was granted is the caller's focus
+/// predicate that could not be observed at all, which is an authorization
+/// answer rather than an unexplained submission failure.
 fn process_post_failure_fault(
     failure: shim::ProcessPostFailure,
     operation: &OperationContext,
 ) -> InputFault {
     if failure.status != ShimStatus::PermissionDenied {
         return process_status_fault(failure.status, operation);
+    }
+    if failure.focus == shim::ProcessFocusObservation::Unavailable {
+        return InputFault::NotAuthorized;
     }
     match failure.authorization {
         shim::ProcessAuthorizationObservation::NotGranted => InputFault::NotAuthorized,
@@ -1421,10 +1442,54 @@ fn process_post_failure_fault(
     }
 }
 
+/// The policy one process-directed native unit is committed under.
+///
+/// Grouped rather than passed positionally because geometry, purpose, focus, and
+/// modifier state are all read together by the final native gate, and a release
+/// differs from ordinary input in more than one of them at once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ProcessCommit {
+    pub(crate) geometry: shim::ProcessGeometry,
+    pub(crate) purpose: shim::ProcessPostPurpose,
+    pub(crate) focus: shim::ProcessFocusRequirement,
+    pub(crate) flags: u32,
+}
+
+impl ProcessCommit {
+    /// Names one ordinary input commit under the caller's focus predicate.
+    const fn input(
+        geometry: shim::ProcessGeometry,
+        focus: shim::ProcessFocusRequirement,
+        flags: u32,
+    ) -> Self {
+        Self {
+            geometry,
+            purpose: shim::ProcessPostPurpose::Input,
+            focus,
+            flags,
+        }
+    }
+
+    /// Names one sequence-owned release.
+    ///
+    /// A release requires no focus predicate and no ordinary window admission: a
+    /// window that stopped being frontmost is exactly when a held key or button
+    /// most needs releasing.
+    pub(crate) const fn release(flags: u32) -> Self {
+        Self {
+            geometry: shim::ProcessGeometry::AuthorityOnly,
+            purpose: shim::ProcessPostPurpose::Release,
+            focus: shim::ProcessFocusRequirement::None,
+            flags,
+        }
+    }
+}
+
 fn commit_process<S: ProcessCommitSource + ?Sized>(
     source: &S,
     event_source: Option<&shim::ProcessEventSource>,
     geometry: shim::ProcessGeometry,
+    focus: shim::ProcessFocusRequirement,
     operation: &OperationContext,
     post: NativePost<'_>,
     flags: u32,
@@ -1432,23 +1497,26 @@ fn commit_process<S: ProcessCommitSource + ?Sized>(
     commit_process_for(
         source,
         event_source,
-        geometry,
-        shim::ProcessPostPurpose::Input,
+        ProcessCommit::input(geometry, focus, flags),
         operation,
         post,
-        flags,
     )
 }
 
+/// Posts one prepared native unit through the process-directed route.
 fn commit_process_for<S: ProcessCommitSource + ?Sized>(
     source: &S,
     event_source: Option<&shim::ProcessEventSource>,
-    geometry: shim::ProcessGeometry,
-    purpose: shim::ProcessPostPurpose,
+    commit: ProcessCommit,
     operation: &OperationContext,
     post: NativePost<'_>,
-    flags: u32,
 ) -> SubmissionResult {
+    let ProcessCommit {
+        geometry,
+        purpose,
+        focus,
+        flags,
+    } = commit;
     operation_fault(operation)?;
     let expected_units = post.process_native_units();
     let result = source.post_process(
@@ -1457,6 +1525,7 @@ fn commit_process_for<S: ProcessCommitSource + ?Sized>(
             post: post.process_post(),
             geometry,
             purpose,
+            focus,
             flags,
             wait: process_wait(operation),
         },

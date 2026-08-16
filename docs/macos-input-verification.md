@@ -132,7 +132,13 @@ remaining operation budget.
 - `RequireFocused` never activates anything. On either window route it performs
   the exact focus read above; an unfocused retained window returns
   `FocusRequired`, and unavailable Accessibility authority returns
-  `NotAuthorized`, before any event is posted.
+  `NotAuthorized`, before any event is posted. On `ProcessDirected` the
+  requirement travels with the request and is read again inside the same bounded
+  native operation that revalidates retained-window authority, geometry,
+  event-post access, and process lifetime, so a foreground change during those
+  queries refuses instead of posting. A sequence-owned release never carries the
+  predicate, because a target that lost the foreground is exactly when a held
+  key or button most needs releasing.
 - `ActivateIfRequired` asks macOS to activate the owning application only for
   `System`, then repeats the exact public focus read-back for a bounded period
   and reports `FocusRefused` if the retained window cannot be established as

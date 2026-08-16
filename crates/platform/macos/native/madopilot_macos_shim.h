@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 13u
+#define MP_SHIM_ABI_VERSION 14u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
@@ -108,6 +108,8 @@ typedef uint32_t mp_shim_status;
 #define MP_SHIM_STOPPED_BY_SYSTEM 12u
 /* Authoritative target geometry changed after event preparation. */
 #define MP_SHIM_GEOMETRY_CHANGED 13u
+/* A caller-selected focus predicate was false at the final authority gate. */
+#define MP_SHIM_FOCUS_REQUIRED 14u
 
 /* What a non-prompting authorization probe established. */
 #define MP_SHIM_PERMISSION_GRANTED 0u
@@ -436,6 +438,10 @@ mp_shim_status mp_shim_testing_process_event_source_release_exception(
 #define MP_SHIM_TEST_PROCESS_LIFETIME_LOST_AFTER_PREPARE 18u
 #define MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE 19u
 #define MP_SHIM_TEST_PROCESS_POST_EXCEPTION 20u
+#define MP_SHIM_TEST_PROCESS_FOCUS_REFUSED 21u
+#define MP_SHIM_TEST_PROCESS_FOCUS_LOST_AFTER_PREPARE 22u
+#define MP_SHIM_TEST_PROCESS_FOCUS_UNAVAILABLE 23u
+#define MP_SHIM_TEST_PROCESS_FOCUS_REQUIRED_SUCCESS 24u
 
 /* Process-post request and capture-only target-shape validation scenarios. */
 #define MP_SHIM_TEST_PROCESS_VALIDATE_NULL_REQUEST 0u
@@ -475,6 +481,8 @@ mp_shim_status mp_shim_testing_process_event_source_release_exception(
 #define MP_SHIM_TEST_PROCESS_VALIDATE_PURPOSE 34u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_OUTPUT_NULL 35u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_SCROLL_COORDINATE 36u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_FOCUS_REQUIREMENT 37u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_RELEASE_FOCUS 38u
 
 /*
  * Runs the production process-post state machine with deterministic authority,
@@ -484,9 +492,9 @@ mp_shim_status mp_shim_testing_process_event_source_release_exception(
 mp_shim_status mp_shim_testing_process_post(
     uint32_t scenario, mp_shim_status *out_delivery_status, uint64_t *out_invoked_native_units,
     uint32_t *out_native_effect_may_have_occurred, uint32_t *out_target_match_count,
-    uint64_t *out_authority_calls, uint64_t *out_preflight_calls,
-    uint64_t *out_lifetime_calls, uint64_t *out_prepare_calls, uint64_t *out_post_calls,
-    uint64_t *out_release_calls);
+    uint32_t *out_focus_result, uint64_t *out_authority_calls, uint64_t *out_preflight_calls,
+    uint64_t *out_lifetime_calls, uint64_t *out_focus_calls, uint64_t *out_prepare_calls,
+    uint64_t *out_post_calls, uint64_t *out_release_calls);
 
 /*
  * Runs one invalid request through the public native entry point. A valid report
@@ -713,6 +721,14 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 #define MP_SHIM_PROCESS_GEOMETRY_AUTHORITY_ONLY 0u
 #define MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT 1u
 
+/*
+ * Whether the final native gate must also observe the exact retained-window
+ * focus predicate. The route itself imposes no focus requirement; only a
+ * caller that selected it sets this, and a sequence-owned release never does.
+ */
+#define MP_SHIM_PROCESS_FOCUS_NONE 0u
+#define MP_SHIM_PROCESS_FOCUS_REQUIRE_FOCUSED 1u
+
 /* Privacy-safe facts from the final per-unit process-directed gate. */
 #define MP_SHIM_PROCESS_AUTHORIZATION_UNKNOWN 0u
 #define MP_SHIM_PROCESS_AUTHORIZATION_GRANTED 1u
@@ -722,6 +738,11 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 #define MP_SHIM_PROCESS_GEOMETRY_NOT_EVALUATED 1u
 #define MP_SHIM_PROCESS_GEOMETRY_PASSED 2u
 #define MP_SHIM_PROCESS_GEOMETRY_CHANGED 3u
+#define MP_SHIM_PROCESS_FOCUS_NOT_APPLICABLE 0u
+#define MP_SHIM_PROCESS_FOCUS_NOT_EVALUATED 1u
+#define MP_SHIM_PROCESS_FOCUS_PASSED 2u
+#define MP_SHIM_PROCESS_FOCUS_REFUSED 3u
+#define MP_SHIM_PROCESS_FOCUS_UNAVAILABLE 4u
 
 /*
  * One fresh retained-window/process-authority observation.
@@ -746,7 +767,9 @@ typedef struct mp_shim_process_authority_report {
  *
  * Fields not selected by `event_kind` are ignored after their containing
  * structure and reserved bytes are validated. Text is a borrowed pointer-length
- * view valid only for the call. No native framework type crosses this boundary.
+ * view valid only for the call. `focus_requirement` is the caller's focus
+ * predicate, not a route requirement, and a release purpose must leave it
+ * `MP_SHIM_PROCESS_FOCUS_NONE`. No native framework type crosses this boundary.
  */
 typedef struct mp_shim_process_post_request {
     uint32_t struct_size;
@@ -766,7 +789,8 @@ typedef struct mp_shim_process_post_request {
     int32_t vertical;
     uint16_t key_code;
     bool key_down;
-    uint8_t reserved[5];
+    uint8_t focus_requirement;
+    uint8_t reserved[4];
     const uint16_t *text_units;
     size_t text_unit_count;
     double expected_x;
@@ -794,6 +818,9 @@ typedef struct mp_shim_process_post_request {
  * or visual effect. `native_effect_may_have_occurred` becomes one immediately
  * before a post call; it closes unsafe fallback and drives bounded cleanup but
  * is not evidence that the call returned or produced an effect.
+ * `focus_result` distinguishes an observed unfocused target from a focus
+ * predicate that could not be observed at all, and stays
+ * `MP_SHIM_PROCESS_FOCUS_NOT_APPLICABLE` when the caller required no focus.
  */
 typedef struct mp_shim_process_post_report {
     uint32_t struct_size;
@@ -801,6 +828,7 @@ typedef struct mp_shim_process_post_report {
     uint64_t invoked_native_units;
     uint32_t authorization;
     uint32_t geometry_result;
+    uint32_t focus_result;
     uint32_t native_effect_may_have_occurred;
 } mp_shim_process_post_report;
 
@@ -835,8 +863,9 @@ void mp_shim_process_event_source_release(mp_shim_process_event_source *source);
 /*
  * Repeats retained-window/process authority and authorization, creates every
  * balanced native event from `request->event_source` before posting, performs a
- * final post-event preflight, and invokes `CGEventPostToPid`. It never activates
- * the process or reads/moves the cursor.
+ * final post-event preflight, evaluates the caller's focus predicate when one
+ * was selected, and invokes `CGEventPostToPid`. It never activates the process
+ * or reads/moves the cursor.
  */
 mp_shim_status mp_shim_process_post(const mp_shim_process_post_request *request,
                                     mp_shim_process_post_report *out_report);

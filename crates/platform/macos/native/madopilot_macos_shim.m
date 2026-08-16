@@ -3641,21 +3641,20 @@ mp_shim_status mp_shim_process_authority(const mp_shim_target *target,
     MP_SHIM_END
 }
 
-mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
-                                            uint64_t timeout_nanos, bool *out_focused) {
-    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || target->filter == NULL ||
-        target->kind != MP_SHIM_TARGET_WINDOW || target->owner_process <= 0 ||
-        timeout_nanos == 0 || out_focused == NULL) {
-        return MP_SHIM_INVALID_ARGUMENT;
-    }
+/*
+ * Observes the focus predicate against an absolute deadline.
+ *
+ * The public entry point and the final process-post authority gate share this
+ * one definition, so a caller-selected focus requirement is evaluated by the
+ * same rules wherever it is checked. Exception containment belongs to the
+ * caller, which already establishes it.
+ */
+static mp_shim_status mp_shim_input_focus_observation(const struct mp_shim_target *target,
+                                                     uint64_t deadline, bool *out_focused) {
     *out_focused = false;
-    MP_SHIM_BEGIN
     if (!AXIsProcessTrusted()) {
         return MP_SHIM_PERMISSION_DENIED;
     }
-    uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
-    uint64_t deadline =
-        began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
     CGRect target_before = CGRectNull;
     mp_shim_status status = mp_shim_input_window_rect(target, deadline, &target_before);
     if (status != MP_SHIM_OK) {
@@ -3817,6 +3816,21 @@ mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
         }
     }
     return status;
+}
+
+mp_shim_status mp_shim_input_target_focused(const mp_shim_target *target,
+                                            uint64_t timeout_nanos, bool *out_focused) {
+    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC || target->filter == NULL ||
+        target->kind != MP_SHIM_TARGET_WINDOW || target->owner_process <= 0 ||
+        timeout_nanos == 0 || out_focused == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_focused = false;
+    MP_SHIM_BEGIN
+    uint64_t began = mp_shim_nanos_from_ticks(mach_absolute_time());
+    uint64_t deadline =
+        began > UINT64_MAX - timeout_nanos ? UINT64_MAX : began + timeout_nanos;
+    return mp_shim_input_focus_observation(target, deadline, out_focused);
     MP_SHIM_END
 }
 
@@ -4425,6 +4439,8 @@ typedef struct {
                                 void *context);
     mp_shim_status (*preflight)(void *context);
     mp_shim_status (*lifetime)(const mp_shim_target *target, void *context);
+    mp_shim_status (*focus)(const mp_shim_target *target, uint64_t deadline, bool *out_focused,
+                            void *context);
     double (*scale)(CGRect bounds, void *context);
     mp_shim_status (*prepare)(const mp_shim_process_post_request *request,
                               size_t native_unit_index, CGEventRef *out_event,
@@ -4490,7 +4506,11 @@ mp_shim_validate_process_post(const mp_shim_process_post_request *request,
         (request->purpose != MP_SHIM_PROCESS_POST_INPUT &&
          request->purpose != MP_SHIM_PROCESS_POST_RELEASE) ||
         (request->purpose == MP_SHIM_PROCESS_POST_RELEASE &&
-         request->geometry_check != MP_SHIM_PROCESS_GEOMETRY_AUTHORITY_ONLY)) {
+         request->geometry_check != MP_SHIM_PROCESS_GEOMETRY_AUTHORITY_ONLY) ||
+        (request->focus_requirement != MP_SHIM_PROCESS_FOCUS_NONE &&
+         request->focus_requirement != MP_SHIM_PROCESS_FOCUS_REQUIRE_FOCUSED) ||
+        (request->purpose == MP_SHIM_PROCESS_POST_RELEASE &&
+         request->focus_requirement != MP_SHIM_PROCESS_FOCUS_NONE)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     for (size_t index = 0; index < sizeof(request->reserved); index += 1) {
@@ -4633,6 +4653,13 @@ static mp_shim_status mp_shim_production_process_lifetime(const mp_shim_target *
     return mp_shim_process_lifetime_status(target);
 }
 
+static mp_shim_status mp_shim_production_process_focus(const mp_shim_target *target,
+                                                       uint64_t deadline, bool *out_focused,
+                                                       void *context) {
+    (void)context;
+    return mp_shim_input_focus_observation(target, deadline, out_focused);
+}
+
 static double mp_shim_production_process_scale(CGRect bounds, void *context) {
     (void)context;
     return mp_shim_scale_for_frame(bounds);
@@ -4668,8 +4695,21 @@ static void mp_shim_process_report_reset_gate(const mp_shim_process_post_request
         request->geometry_check == MP_SHIM_PROCESS_GEOMETRY_AUTHORITY_ONLY
             ? MP_SHIM_PROCESS_GEOMETRY_NOT_APPLICABLE
             : MP_SHIM_PROCESS_GEOMETRY_NOT_EVALUATED;
+    report->focus_result = request->focus_requirement == MP_SHIM_PROCESS_FOCUS_NONE
+                               ? MP_SHIM_PROCESS_FOCUS_NOT_APPLICABLE
+                               : MP_SHIM_PROCESS_FOCUS_NOT_EVALUATED;
 }
 
+/*
+ * Confirms everything that authorizes one irreversible native unit.
+ *
+ * Ordinary input revalidates the exact retained window, its geometry policy,
+ * event-post access, the original process lifetime, and, when the caller
+ * selected it, the exact retained-window focus predicate. Focus is last so the
+ * observation is the newest fact before the post, and it is skipped entirely for
+ * a sequence-owned release: a window that lost the foreground is exactly when a
+ * held key or button most needs releasing.
+ */
 static mp_shim_status mp_shim_process_check_commit_authority(
     const mp_shim_process_post_request *request, mp_shim_process_post_report *report,
     const mp_shim_process_post_ops *ops, uint64_t deadline) {
@@ -4700,7 +4740,26 @@ static mp_shim_status mp_shim_process_check_commit_authority(
     if (status != MP_SHIM_OK) {
         return status;
     }
-    return ops->lifetime(request->target, ops->context);
+    status = ops->lifetime(request->target, ops->context);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    if (request->purpose != MP_SHIM_PROCESS_POST_INPUT ||
+        request->focus_requirement != MP_SHIM_PROCESS_FOCUS_REQUIRE_FOCUSED) {
+        return MP_SHIM_OK;
+    }
+    bool focused = false;
+    status = ops->focus(request->target, deadline, &focused, ops->context);
+    if (status != MP_SHIM_OK) {
+        report->focus_result = MP_SHIM_PROCESS_FOCUS_UNAVAILABLE;
+        return status;
+    }
+    if (!focused) {
+        report->focus_result = MP_SHIM_PROCESS_FOCUS_REFUSED;
+        return MP_SHIM_FOCUS_REQUIRED;
+    }
+    report->focus_result = MP_SHIM_PROCESS_FOCUS_PASSED;
+    return MP_SHIM_OK;
 }
 
 static mp_shim_status
@@ -4712,8 +4771,8 @@ mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
         return valid;
     }
     if (ops == NULL || ops->authority == NULL || ops->preflight == NULL ||
-        ops->lifetime == NULL || ops->scale == NULL || ops->prepare == NULL ||
-        ops->post == NULL || ops->release == NULL) {
+        ops->lifetime == NULL || ops->focus == NULL || ops->scale == NULL ||
+        ops->prepare == NULL || ops->post == NULL || ops->release == NULL) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     out_report->target_match_count = 0;
@@ -4794,6 +4853,7 @@ mp_shim_status mp_shim_process_post(const mp_shim_process_post_request *request,
         out_report->invoked_native_units = 0;
         out_report->authorization = MP_SHIM_PROCESS_AUTHORIZATION_UNKNOWN;
         out_report->geometry_result = MP_SHIM_PROCESS_GEOMETRY_NOT_EVALUATED;
+        out_report->focus_result = MP_SHIM_PROCESS_FOCUS_NOT_EVALUATED;
         out_report->native_effect_may_have_occurred = 0;
     }
     mp_shim_status valid = mp_shim_validate_process_post(request, out_report);
@@ -4809,6 +4869,7 @@ mp_shim_status mp_shim_process_post(const mp_shim_process_post_request *request,
         .authority = mp_shim_production_process_authority,
         .preflight = mp_shim_production_process_preflight,
         .lifetime = mp_shim_production_process_lifetime,
+        .focus = mp_shim_production_process_focus,
         .scale = mp_shim_production_process_scale,
         .prepare = mp_shim_prepare_process_event,
         .post = mp_shim_production_process_post,
@@ -4873,6 +4934,7 @@ mp_shim_status mp_shim_testing_validate_process_post(
         .target_match_count = UINT32_MAX,
         .invoked_native_units = UINT64_MAX,
         .native_effect_may_have_occurred = UINT32_MAX,
+        .focus_result = UINT32_MAX,
     };
     const mp_shim_process_post_request *request_pointer = &request;
     mp_shim_process_post_report *report_pointer = &report;
@@ -5007,6 +5069,13 @@ mp_shim_status mp_shim_testing_validate_process_post(
         request.horizontal = 1;
         request.x = NAN;
         break;
+    case MP_SHIM_TEST_PROCESS_VALIDATE_FOCUS_REQUIREMENT:
+        request.focus_requirement = UINT8_MAX;
+        break;
+    case MP_SHIM_TEST_PROCESS_VALIDATE_RELEASE_FOCUS:
+        request.purpose = MP_SHIM_PROCESS_POST_RELEASE;
+        request.focus_requirement = MP_SHIM_PROCESS_FOCUS_REQUIRE_FOCUSED;
+        break;
     default:
         return MP_SHIM_INVALID_ARGUMENT;
     }
@@ -5140,6 +5209,7 @@ typedef struct {
     uint64_t authority_calls;
     uint64_t preflight_calls;
     uint64_t lifetime_calls;
+    uint64_t focus_calls;
     uint64_t prepare_calls;
     uint64_t post_calls;
     uint64_t release_calls;
@@ -5200,6 +5270,26 @@ static mp_shim_status mp_shim_testing_process_lifetime(const mp_shim_target *tar
     return MP_SHIM_OK;
 }
 
+static mp_shim_status mp_shim_testing_process_focus(const mp_shim_target *target,
+                                                    uint64_t deadline, bool *out_focused,
+                                                    void *context) {
+    (void)target;
+    (void)deadline;
+    mp_shim_process_test_probe *probe = context;
+    probe->focus_calls += 1;
+    *out_focused = false;
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_FOCUS_UNAVAILABLE) {
+        return MP_SHIM_PERMISSION_DENIED;
+    }
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_FOCUS_REFUSED ||
+        (probe->scenario == MP_SHIM_TEST_PROCESS_FOCUS_LOST_AFTER_PREPARE &&
+         probe->focus_calls >= 2)) {
+        return MP_SHIM_OK;
+    }
+    *out_focused = true;
+    return MP_SHIM_OK;
+}
+
 static mp_shim_status mp_shim_testing_process_interruption(void *context) {
     mp_shim_process_test_probe *probe = context;
     probe->interruption_calls += 1;
@@ -5254,23 +5344,26 @@ static void mp_shim_testing_process_release_event(CGEventRef event, void *contex
 mp_shim_status mp_shim_testing_process_post(
     uint32_t scenario, mp_shim_status *out_delivery_status, uint64_t *out_invoked_native_units,
     uint32_t *out_native_effect_may_have_occurred, uint32_t *out_target_match_count,
-    uint64_t *out_authority_calls, uint64_t *out_preflight_calls,
-    uint64_t *out_lifetime_calls, uint64_t *out_prepare_calls, uint64_t *out_post_calls,
-    uint64_t *out_release_calls) {
+    uint32_t *out_focus_result, uint64_t *out_authority_calls, uint64_t *out_preflight_calls,
+    uint64_t *out_lifetime_calls, uint64_t *out_focus_calls, uint64_t *out_prepare_calls,
+    uint64_t *out_post_calls, uint64_t *out_release_calls) {
     if (out_delivery_status == NULL || out_invoked_native_units == NULL ||
         out_native_effect_may_have_occurred == NULL || out_target_match_count == NULL ||
-        out_authority_calls == NULL || out_preflight_calls == NULL ||
-        out_lifetime_calls == NULL || out_prepare_calls == NULL || out_post_calls == NULL ||
-        out_release_calls == NULL || scenario > MP_SHIM_TEST_PROCESS_POST_EXCEPTION) {
+        out_focus_result == NULL || out_authority_calls == NULL || out_preflight_calls == NULL ||
+        out_lifetime_calls == NULL || out_focus_calls == NULL || out_prepare_calls == NULL ||
+        out_post_calls == NULL || out_release_calls == NULL ||
+        scenario > MP_SHIM_TEST_PROCESS_FOCUS_REQUIRED_SUCCESS) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
     *out_invoked_native_units = 0;
     *out_native_effect_may_have_occurred = 0;
     *out_target_match_count = 0;
+    *out_focus_result = UINT32_MAX;
     *out_authority_calls = 0;
     *out_preflight_calls = 0;
     *out_lifetime_calls = 0;
+    *out_focus_calls = 0;
     *out_prepare_calls = 0;
     *out_post_calls = 0;
     *out_release_calls = 0;
@@ -5332,10 +5425,17 @@ mp_shim_status mp_shim_testing_process_post(
         if (scenario == MP_SHIM_TEST_PROCESS_RELEASE_WINDOW_UNAVAILABLE) {
             request.purpose = MP_SHIM_PROCESS_POST_RELEASE;
         }
+        if (scenario == MP_SHIM_TEST_PROCESS_FOCUS_REFUSED ||
+            scenario == MP_SHIM_TEST_PROCESS_FOCUS_LOST_AFTER_PREPARE ||
+            scenario == MP_SHIM_TEST_PROCESS_FOCUS_UNAVAILABLE ||
+            scenario == MP_SHIM_TEST_PROCESS_FOCUS_REQUIRED_SUCCESS) {
+            request.focus_requirement = MP_SHIM_PROCESS_FOCUS_REQUIRE_FOCUSED;
+        }
         const mp_shim_process_post_ops ops = {
             .authority = mp_shim_testing_process_authority,
             .preflight = mp_shim_testing_process_preflight,
             .lifetime = mp_shim_testing_process_lifetime,
+            .focus = mp_shim_testing_process_focus,
             .scale = mp_shim_testing_process_scale,
             .prepare = mp_shim_testing_prepare_process_event,
             .post = mp_shim_testing_process_post_event,
@@ -5353,9 +5453,11 @@ mp_shim_status mp_shim_testing_process_post(
     *out_invoked_native_units = report.invoked_native_units;
     *out_native_effect_may_have_occurred = report.native_effect_may_have_occurred;
     *out_target_match_count = report.target_match_count;
+    *out_focus_result = report.focus_result;
     *out_authority_calls = probe.authority_calls;
     *out_preflight_calls = probe.preflight_calls;
     *out_lifetime_calls = probe.lifetime_calls;
+    *out_focus_calls = probe.focus_calls;
     *out_prepare_calls = probe.prepare_calls;
     *out_post_calls = probe.post_calls;
     *out_release_calls = probe.release_calls;
