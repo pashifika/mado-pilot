@@ -788,39 +788,48 @@ pub const PHASE2_2_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 1] = [LatencyBudg
     Duration::from_secs(1),
 )];
 
-/// Phase 2.2 process-directed latency ceilings frozen before qualification.
-pub const PHASE2_2_PROCESS_LATENCY_BUDGETS: [LatencyBudget; 5] = [
-    LatencyBudget::new(
-        "discovery_open_retained_authority",
-        Duration::from_millis(350),
-        Duration::from_millis(750),
-        Duration::from_secs(2),
-    ),
-    LatencyBudget::new(
-        "event_authority_preflight_post",
-        Duration::from_millis(300),
-        Duration::from_millis(750),
-        Duration::from_secs(2),
-    ),
-    LatencyBudget::new(
-        "release_cleanup",
-        Duration::from_millis(100),
-        Duration::from_millis(250),
-        Duration::from_millis(250),
-    ),
-    LatencyBudget::new(
-        "session_close",
-        Duration::from_millis(100),
-        Duration::from_millis(250),
-        Duration::from_secs(1),
-    ),
-    LatencyBudget::new(
-        "fixture_controller_close",
-        Duration::from_millis(100),
-        Duration::from_millis(250),
-        Duration::from_secs(1),
-    ),
-];
+const fn phase2_2_process_latency_budgets(event_p95: Duration) -> [LatencyBudget; 5] {
+    [
+        LatencyBudget::new(
+            "discovery_open_retained_authority",
+            Duration::from_millis(350),
+            Duration::from_millis(750),
+            Duration::from_secs(2),
+        ),
+        LatencyBudget::new(
+            "event_authority_preflight_post",
+            Duration::from_millis(300),
+            event_p95,
+            Duration::from_secs(2),
+        ),
+        LatencyBudget::new(
+            "release_cleanup",
+            Duration::from_millis(100),
+            Duration::from_millis(250),
+            Duration::from_millis(250),
+        ),
+        LatencyBudget::new(
+            "session_close",
+            Duration::from_millis(100),
+            Duration::from_millis(250),
+            Duration::from_secs(1),
+        ),
+        LatencyBudget::new(
+            "fixture_controller_close",
+            Duration::from_millis(100),
+            Duration::from_millis(250),
+            Duration::from_secs(1),
+        ),
+    ]
+}
+
+/// Phase 2.2 AppKit process-directed latency ceilings frozen before qualification.
+pub const PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS: [LatencyBudget; 5] =
+    phase2_2_process_latency_budgets(Duration::from_micros(106_340));
+
+/// Phase 2.2 controlled game-like process-directed latency ceilings.
+pub const PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS: [LatencyBudget; 5] =
+    phase2_2_process_latency_budgets(Duration::from_micros(112_180));
 
 /// Phase 2.2 process-diagnostic latency ceilings frozen before qualification.
 pub const PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS: [LatencyBudget; 4] = [

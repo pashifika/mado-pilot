@@ -1,11 +1,11 @@
 # Phase 2.2 macOS OpenGL game-like process-directed delivery, measured on aarch64-apple-darwin at source
-# a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426 and tree
-# f4a707501748303adcec577df5f18fcd18f13f45.
+# f412227d8fbe13de3f049f9631bbe9e6a8ac9bd8 and tree
+# 75cf27dd8258384b3e01cdb3063bbe81ce0db6d9.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029 sets
-# the frozen pre-measurement budgets. This corrected-revision profile passes
-# those budgets alongside the passing single, same-scale, and mixed-scale
-# native rows behind the accepted pair decisions.
+# the frozen pre-measurement budgets. This optimized-revision profile passes
+# those budgets with the current three-display mixed-scale native row; the
+# disconnected single and exact-two-display rows remain supplemental.
 
 format_version = 1
 
@@ -29,7 +29,7 @@ warmup_iterations = 5
 sample_count = 50
 correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
 queue_policy = "one fixture command outstanding; one process-directed sequence admitted; no fallback"
-notes = "source commit a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426, tree f4a707501748303adcec577df5f18fcd18f13f45; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; 3840x2160 logical/backing 1x at signed negative origin, 2560x1440 logical/5120x2880 backing 2x main, 1512x982 logical/3024x1964 backing 2x; mixed 2x/1x and same-scale 2x/2x seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundles ad-hoc signed with approved identifiers; fixture executable sha256 fcecc1f820764605d5ca7fa1553d8084411b912f1fc7050230ecc402498c0cdb; executable paths deliberately omitted; lineage=process-directed-game-like; mode=game-like renderer=opengl"
+notes = "source commit f412227d8fbe13de3f049f9631bbe9e6a8ac9bd8, tree 75cf27dd8258384b3e01cdb3063bbe81ce0db6d9; toolchain rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; DELL 3840x2160 1x at negative origin; MSI 2560x1440 2x main; Color LCD 1512x982 logical / 3024x1964 backing 2x; mixed-scale validator authoritative; permissions/signing Screen Recording granted; event-post access granted; target and foreground bundles structurally ad-hoc signed; fixture executable sha256 63a853007e654e7c6781a3cadf10521dbe60623cdaa0aed83da8fbc7f609e165; executable paths deliberately omitted; lineage=process-directed-game-like; mode=game-like renderer=opengl"
 
 [[budget]]
 measure = "result_correctness"
@@ -55,13 +55,13 @@ rationale = "the frozen 16 MiB process-directed live Rust heap ceiling"
 workload = "discovery_open_retained_authority"
 correctness_oracle = "one fresh discovery selects the retained primary target while its process owns an additional ordinary window, exposes every explicit unknown process-scoped invocation-only pair, and opens required input before the shared deadline"
 result_correctness = 0
-latency_p50_ms = 315.287375
-latency_p95_ms = 371.193583
-latency_max_ms = 389.543875
-iteration_span_ms = 395.035915
+latency_p50_ms = 314.524625
+latency_p95_ms = 365.147833
+latency_max_ms = 378.924917
+iteration_span_ms = 389.889075
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 51143
-steady_allocated_bytes = 46627
+peak_allocated_bytes = 51151
+steady_allocated_bytes = 46631
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -92,13 +92,13 @@ allocated_growth_bytes = 0
 workload = "event_authority_preflight_post"
 correctness_oracle = "with an additional same-process window present, one pointer event revalidates retained process authority, direct post-event authorization, and production posting; its invocation-only receipt and exact process event match without fallback, then a separately acknowledged controlled transition produces a strictly newer approved frame without attributing that visual change to input"
 result_correctness = 0
-latency_p50_ms = 207.938166
-latency_p95_ms = 224.368667
-latency_max_ms = 231.991584
-iteration_span_ms = 317.188039
+latency_p50_ms = 51.143750
+latency_p95_ms = 54.305208
+latency_max_ms = 57.488167
+iteration_span_ms = 158.941955
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4673349
-steady_allocated_bytes = 4672215
+peak_allocated_bytes = 4673351
+steady_allocated_bytes = 4672217
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -114,8 +114,8 @@ allocated_growth_bytes = 0
   kind = "absolute"
   unit = "milliseconds"
   direction = "at_most"
-  limit = 750.0
-  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+  limit = 112.18
+  rationale = "frozen before the optimized revision measurement by the performance-tuning change"
 
   [[measurement.budget]]
   measure = "latency_max"
@@ -129,13 +129,13 @@ allocated_growth_bytes = 0
 workload = "release_cleanup"
 correctness_oracle = "with an additional same-process window present, cancellation begins only after the fixture separately observes one key-down; the production receipt reports one possible effect and one bounded cleanup release, then an independent controlled transition produces a strictly newer approved frame"
 result_correctness = 0
-latency_p50_ms = 1.741334
-latency_p95_ms = 2.671834
-latency_max_ms = 2.892750
-iteration_span_ms = 265.736102
+latency_p50_ms = 1.732959
+latency_p95_ms = 2.120250
+latency_max_ms = 2.799000
+iteration_span_ms = 162.991650
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4673373
-steady_allocated_bytes = 4672215
+peak_allocated_bytes = 4673375
+steady_allocated_bytes = 4672217
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -166,13 +166,13 @@ allocated_growth_bytes = 0
 workload = "session_close"
 correctness_oracle = "with an additional same-process window present, a fresh process-directed session closes within its own bound and repeated close is idempotent"
 result_correctness = 0
-latency_p50_ms = 64.954500
-latency_p95_ms = 75.559042
-latency_max_ms = 78.040875
-iteration_span_ms = 277.860214
+latency_p50_ms = 65.965625
+latency_p95_ms = 75.093459
+latency_max_ms = 87.658333
+iteration_span_ms = 275.005159
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 43606
-steady_allocated_bytes = 40713
+peak_allocated_bytes = 43608
+steady_allocated_bytes = 40715
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -203,10 +203,10 @@ allocated_growth_bytes = 0
 workload = "fixture_controller_close"
 correctness_oracle = "the private fixture controller acknowledges stop, closes its bounded channel, terminates only its authenticated application when needed, and reaps its owned launcher within one shared deadline"
 result_correctness = 0
-latency_p50_ms = 20.868334
-latency_p95_ms = 33.520208
-latency_max_ms = 35.951292
-iteration_span_ms = 297.953385
+latency_p50_ms = 20.388792
+latency_p95_ms = 31.514625
+latency_max_ms = 34.815667
+iteration_span_ms = 293.263917
 mapped_bytes_per_result = 0
 peak_allocated_bytes = 37413
 steady_allocated_bytes = 0

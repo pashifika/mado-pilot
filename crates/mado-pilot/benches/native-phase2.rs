@@ -71,9 +71,10 @@ mod native {
     };
     #[cfg(target_os = "macos")]
     use mado_pilot_testkit::bench_harness::{
-        PHASE2_2_CAPTURE_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
-        PHASE2_2_PROCESS_HEAP_LIMIT_BYTES, PHASE2_2_PROCESS_LATENCY_BUDGETS,
-        PHASE2_2_TRANSITION_LATENCY_BUDGETS, enforce_latency_budgets,
+        PHASE2_2_CAPTURE_LATENCY_BUDGETS, PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS,
+        PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS, PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS,
+        PHASE2_2_PROCESS_HEAP_LIMIT_BYTES, PHASE2_2_TRANSITION_LATENCY_BUDGETS,
+        enforce_latency_budgets,
     };
 
     #[cfg(windows)]
@@ -3122,8 +3123,9 @@ mod native {
             WorkloadSet::Capture => PHASE2_2_CAPTURE_LATENCY_BUDGETS.as_slice(),
             WorkloadSet::Transitions => PHASE2_2_TRANSITION_LATENCY_BUDGETS.as_slice(),
             WorkloadSet::Input => &[],
-            WorkloadSet::ProcessDirected | WorkloadSet::ProcessDirectedGameLike => {
-                PHASE2_2_PROCESS_LATENCY_BUDGETS.as_slice()
+            WorkloadSet::ProcessDirected => PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS.as_slice(),
+            WorkloadSet::ProcessDirectedGameLike => {
+                PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS.as_slice()
             }
             WorkloadSet::ProcessDiagnostics => {
                 PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS.as_slice()

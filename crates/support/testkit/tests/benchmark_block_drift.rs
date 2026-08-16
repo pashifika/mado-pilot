@@ -18,8 +18,9 @@
 
 use mado_pilot_testkit::bench_harness::{
     Benchmark, LatencyBudget, PHASE2_2_CAPTURE_LATENCY_BUDGETS,
-    PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS, PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
-    PHASE2_2_PROCESS_LATENCY_BUDGETS, PHASE2_2_TRANSITION_LATENCY_BUDGETS, benchmark_block,
+    PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
+    PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS, PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
+    PHASE2_2_TRANSITION_LATENCY_BUDGETS, benchmark_block,
 };
 
 /// Every committed benchmark profile, by repository path and content.
@@ -146,14 +147,14 @@ const PHASE2_2_PROFILES: [(&str, &str, &[LatencyBudget]); 5] = [
         include_str!(
             "../../../../docs/benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml"
         ),
-        &PHASE2_2_PROCESS_LATENCY_BUDGETS,
+        &PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS,
     ),
     (
         "docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml",
         include_str!(
             "../../../../docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml"
         ),
-        &PHASE2_2_PROCESS_LATENCY_BUDGETS,
+        &PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS,
     ),
     (
         "docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml",
