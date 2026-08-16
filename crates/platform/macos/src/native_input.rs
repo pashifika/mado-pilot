@@ -221,6 +221,23 @@ pub(crate) trait ProcessCommitSource {
     }
 }
 
+/// Geometry observations selected by the process-directed pointer policy.
+///
+/// Keeping this seam separate from native commit lets deterministic tests prove
+/// which Rust-side source is consulted without adding runtime dispatch or
+/// production instrumentation.
+trait ProcessGeometrySource {
+    fn process_source_transform(
+        &self,
+        geometry: PointerGeometry,
+    ) -> Result<TransformSnapshot, InputFault>;
+
+    fn process_current_geometry(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<(TransformSnapshot, GeometryFingerprint, shim::NativeBounds), InputFault>;
+}
+
 pub(crate) struct NativeInputDriver {
     record: Arc<TargetRecord>,
 }
@@ -291,8 +308,12 @@ impl NativeInputDriver {
         }
     }
 
-    /// Refuses early when a caller-selected focus predicate already fails, and
-    /// returns the requirement the final native gate must confirm again.
+    /// Returns the caller-selected focus predicate for the final native gate.
+    ///
+    /// When `observe_now` is true, a false predicate is also refused early so a
+    /// later caller-ordered route may still be selected with zero possible
+    /// effect. A terminal native-event route defers that expensive observation
+    /// to the final gate instead of reading the same mutable fact twice.
     ///
     /// This observation is not authority: the foreground can change while the
     /// bounded authority queries that follow are running, so the native gate
@@ -300,6 +321,7 @@ impl NativeInputDriver {
     fn ensure_process_focus(
         &self,
         policy: FocusPolicy,
+        observe_now: bool,
         operation: &OperationContext,
     ) -> Result<shim::ProcessFocusRequirement, InputFault> {
         match policy {
@@ -307,7 +329,7 @@ impl NativeInputDriver {
                 Ok(shim::ProcessFocusRequirement::None)
             }
             FocusPolicy::RequireFocused => {
-                if self.is_focused(operation)? {
+                if !observe_now || self.is_focused(operation)? {
                     Ok(shim::ProcessFocusRequirement::RequireFocused)
                 } else {
                     Err(InputFault::FocusRequired)
@@ -418,40 +440,7 @@ impl NativeInputDriver {
         ),
         InputFault,
     > {
-        match geometry.policy() {
-            GeometryPolicy::ReprojectCurrent => {
-                let (transform, fingerprint, bounds) = self.process_current_geometry(operation)?;
-                Ok((
-                    transform,
-                    fingerprint,
-                    shim::ProcessGeometry::RequireCurrent(bounds),
-                ))
-            }
-            GeometryPolicy::RequireUnchanged => {
-                let transform = self.source_transform(geometry)?;
-                let source_fingerprint = fingerprint(&transform)?;
-                let (_, current_fingerprint, bounds) = self.process_current_geometry(operation)?;
-                if source_fingerprint != current_fingerprint {
-                    return Err(InputFault::GeometryChanged);
-                }
-                Ok((
-                    transform,
-                    source_fingerprint,
-                    shim::ProcessGeometry::RequireCurrent(bounds),
-                ))
-            }
-            GeometryPolicy::UseFrameSnapshot => {
-                let transform = self.source_transform(geometry)?;
-                let source_fingerprint = fingerprint(&transform)?;
-                let _authority = self.process_current_geometry(operation)?;
-                Ok((
-                    transform,
-                    source_fingerprint,
-                    shim::ProcessGeometry::AuthorityOnly,
-                ))
-            }
-            _ => Err(InputFault::UnsupportedCombination),
-        }
+        process_policy_geometry_for(self, geometry, operation)
     }
 
     fn resolve_process_pointer(
@@ -759,7 +748,7 @@ impl NativeInputDriver {
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> SubmissionResult {
-        let focus = self.ensure_process_focus(focus, operation)?;
+        let focus = self.ensure_process_focus(focus, false, operation)?;
         let flags = state.held_flags();
 
         match event {
@@ -957,6 +946,75 @@ impl NativeInputDriver {
     }
 }
 
+impl ProcessGeometrySource for NativeInputDriver {
+    fn process_source_transform(
+        &self,
+        geometry: PointerGeometry,
+    ) -> Result<TransformSnapshot, InputFault> {
+        NativeInputDriver::source_transform(self, geometry)
+    }
+
+    fn process_current_geometry(
+        &self,
+        operation: &OperationContext,
+    ) -> Result<(TransformSnapshot, GeometryFingerprint, shim::NativeBounds), InputFault> {
+        NativeInputDriver::process_current_geometry(self, operation)
+    }
+}
+
+fn process_policy_geometry_for<S: ProcessGeometrySource + ?Sized>(
+    source: &S,
+    geometry: PointerGeometry,
+    operation: &OperationContext,
+) -> Result<
+    (
+        TransformSnapshot,
+        GeometryFingerprint,
+        shim::ProcessGeometry,
+    ),
+    InputFault,
+> {
+    match geometry.policy() {
+        GeometryPolicy::ReprojectCurrent => {
+            let (transform, fingerprint, bounds) = source.process_current_geometry(operation)?;
+            Ok((
+                transform,
+                fingerprint,
+                shim::ProcessGeometry::RequireCurrent(bounds),
+            ))
+        }
+        GeometryPolicy::RequireUnchanged => {
+            let transform = source.process_source_transform(geometry)?;
+            let source_fingerprint = fingerprint(&transform)?;
+            // The source transform already names the exact geometry the caller
+            // requires. Passing it to the native commit gate lets that one final
+            // fresh authority observation both establish retained-window
+            // authority and reject movement or resize. A separate live query
+            // here repeated the same ScreenCaptureKit inventory immediately
+            // before the commit without strengthening the irreversible fence.
+            let expected = process_bounds(source_fingerprint)?;
+            Ok((
+                transform,
+                source_fingerprint,
+                shim::ProcessGeometry::RequireCurrent(expected),
+            ))
+        }
+        GeometryPolicy::UseFrameSnapshot => {
+            let transform = source.process_source_transform(geometry)?;
+            let source_fingerprint = fingerprint(&transform)?;
+            // Snapshot geometry deliberately tolerates movement. Exact retained
+            // window authority is still checked once at the native commit
+            // boundary, so an additional geometry inventory here was redundant.
+            Ok((
+                transform,
+                source_fingerprint,
+                shim::ProcessGeometry::AuthorityOnly,
+            ))
+        }
+        _ => Err(InputFault::UnsupportedCombination),
+    }
+}
+
 /// Splits UTF-16 units into posts of at most one native chunk, never mid-pair.
 fn text_chunks(units: &[u16]) -> Vec<std::ops::Range<usize>> {
     let mut chunks = Vec::new();
@@ -1081,6 +1139,7 @@ impl InputDriver for NativeInputDriver {
         &self,
         delivery: InputDelivery,
         focus: FocusPolicy,
+        require_early_authority: bool,
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
         operation_fault(operation)?;
@@ -1095,14 +1154,19 @@ impl InputDriver for NativeInputDriver {
                     return Err(InputFault::UnsupportedCombination);
                 }
                 self.ensure_authorized()?;
-                let authority = self
-                    .record
-                    .process_authority(process_wait(operation))
-                    .map_err(|failure| self.classify_process_status(failure.status, operation))?;
-                if authority.target_match_count != 1 {
-                    return Err(InputFault::UnsupportedCombination);
+                if require_early_authority {
+                    let authority = self
+                        .record
+                        .process_authority(process_wait(operation))
+                        .map_err(|failure| {
+                            self.classify_process_status(failure.status, operation)
+                        })?;
+                    if authority.target_match_count != 1 {
+                        return Err(InputFault::UnsupportedCombination);
+                    }
                 }
-                self.ensure_process_focus(focus, operation).map(|_| ())
+                self.ensure_process_focus(focus, require_early_authority, operation)
+                    .map(|_| ())
             }
             _ => Err(InputFault::UnsupportedCombination),
         }
@@ -1638,6 +1702,21 @@ fn fingerprint(transform: &TransformSnapshot) -> Result<GeometryFingerprint, Inp
         placement: transform
             .target()
             .ok_or(InputFault::UnsupportedCoordinate)?,
+    })
+}
+
+/// Converts capture-authoritative geometry into the uniform backing scale the
+/// native process commit ABI can compare with its final live observation.
+fn process_bounds(geometry: GeometryFingerprint) -> Result<shim::NativeBounds, InputFault> {
+    let placement = geometry.placement;
+    let scale = placement.scale();
+    if scale.x().to_bits() != scale.y().to_bits() {
+        return Err(InputFault::UnsupportedCoordinate);
+    }
+    Ok(shim::NativeBounds {
+        origin: placement.desktop_origin(),
+        size: placement.logical_size(),
+        scale: scale.x(),
     })
 }
 

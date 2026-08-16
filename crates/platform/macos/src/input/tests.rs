@@ -89,6 +89,7 @@ enum Action {
 #[derive(Debug, Default)]
 struct ScriptedDriver {
     log: Mutex<Vec<Action>>,
+    early_authority: Mutex<Vec<(InputDelivery, bool)>>,
     preflight: Mutex<Option<InputFault>>,
     /// Refuses one selected route at preflight while leaving the others available.
     refuse_preflight_route: Mutex<Option<(InputDelivery, InputFault)>>,
@@ -178,6 +179,10 @@ impl ScriptedDriver {
         self.begun_routes.lock().expect("uncontended").clone()
     }
 
+    fn early_authority(&self) -> Vec<(InputDelivery, bool)> {
+        self.early_authority.lock().expect("uncontended").clone()
+    }
+
     fn record(&self, action: Action) {
         self.log.lock().expect("uncontended").push(action);
     }
@@ -188,9 +193,14 @@ impl InputDriver for ScriptedDriver {
         &self,
         delivery: InputDelivery,
         _focus: FocusPolicy,
+        require_early_authority: bool,
         _operation: &OperationContext,
     ) -> Result<(), InputFault> {
         self.record(Action::Preflight(delivery));
+        self.early_authority
+            .lock()
+            .expect("uncontended")
+            .push((delivery, require_early_authority));
         if let Some((route, fault)) = *self.refuse_preflight_route.lock().expect("uncontended")
             && route == delivery
         {
@@ -389,6 +399,69 @@ fn an_unqualified_process_sequence_reaches_only_the_process_route() {
         vec![InputDelivery::ProcessDirected],
         "one sequence creates route-private state exactly once"
     );
+    assert_eq!(
+        driver.early_authority(),
+        vec![(InputDelivery::ProcessDirected, false)],
+        "a terminal native-event route defers mutable authority to its final commit gate"
+    );
+}
+
+#[test]
+fn a_delay_only_terminal_route_keeps_early_authority() {
+    let target = target();
+    let driver = ScriptedDriver::new();
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let sequence = InputSequence::new(vec![InputEvent::Delay(Duration::ZERO)]).expect("valid");
+
+    let receipt = controller
+        .execute(
+            &process_directed(target, sequence),
+            &OperationContext::new(),
+        )
+        .expect("delay-only sequence still selects a live route");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
+    assert_eq!(
+        driver.early_authority(),
+        vec![(InputDelivery::ProcessDirected, true)],
+        "without a native commit there is nowhere else to establish target authority"
+    );
+}
+
+#[test]
+fn terminal_process_target_loss_is_reported_from_the_first_commit_gate() {
+    let target = target();
+    let driver =
+        ScriptedDriver::failing_at(0, SubmissionFailure::before_event(InputFault::TargetLost));
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+
+    let receipt = controller
+        .execute(&process_directed(target, click()), &OperationContext::new())
+        .expect("a final-gate refusal produces a receipt");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.fault(), Some(InputFault::TargetLost));
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.selected_route(), None);
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(
+        receipt.attempts()[0].route(),
+        InputDelivery::ProcessDirected
+    );
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+        ],
+        "terminal mutable target loss is observed only after route selection"
+    );
+    assert_eq!(
+        driver.early_authority(),
+        vec![(InputDelivery::ProcessDirected, false)]
+    );
 }
 
 #[test]
@@ -425,6 +498,56 @@ fn explicit_process_fallback_uses_system_only_after_zero_effect_refusal() {
             Action::Submit(InputDelivery::System),
             Action::Submit(InputDelivery::System),
         ]
+    );
+    assert_eq!(
+        driver.early_authority(),
+        vec![
+            (InputDelivery::ProcessDirected, true),
+            (InputDelivery::System, false),
+        ],
+        "only a route with a later caller-ordered fallback needs a zero-effect authority decision"
+    );
+}
+
+#[test]
+fn a_selected_process_route_never_reopens_ordered_fallback() {
+    let target = target();
+    let driver =
+        ScriptedDriver::failing_at(0, SubmissionFailure::before_event(InputFault::TargetLost));
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let request = InputRequest::new(
+        target,
+        click(),
+        DeliveryPlan::ordered(vec![InputDelivery::ProcessDirected, InputDelivery::System])
+            .expect("valid"),
+    )
+    .with_focus(FocusPolicy::RequireFocused);
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("a selected route owns its final refusal");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.fault(), Some(InputFault::TargetLost));
+    assert!(!receipt.used_fallback());
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(
+        receipt.attempts()[0].route(),
+        InputDelivery::ProcessDirected
+    );
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+        ],
+        "submission starts the selected route even when its first post is refused"
+    );
+    assert_eq!(
+        driver.early_authority(),
+        vec![(InputDelivery::ProcessDirected, true)],
+        "the later route required an early zero-effect authority decision"
     );
 }
 

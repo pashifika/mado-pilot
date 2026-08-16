@@ -334,10 +334,19 @@ struct StoppedSubmission {
 
 /// The native seam driven by the controller.
 pub(crate) trait InputDriver: fmt::Debug + Send + Sync {
+    /// Refuses a route before it is selected.
+    ///
+    /// `require_early_authority` is true when the controller still needs a
+    /// zero-effect decision at this boundary: either a later caller-ordered
+    /// route may be tried, or the sequence contains no native event whose final
+    /// commit gate could perform the check. A terminal route with at least one
+    /// native event may defer expensive mutable target authority to that final
+    /// gate without changing fallback semantics.
     fn preflight(
         &self,
         route: InputDelivery,
         focus: FocusPolicy,
+        require_early_authority: bool,
         operation: &OperationContext,
     ) -> Result<(), InputFault>;
 
@@ -477,7 +486,13 @@ impl MacosInputController {
         let mut prior_attempts = Vec::with_capacity(request.delivery().routes().len());
         let mut last_fault = InputFault::RouteUnavailable;
 
-        for route in request.delivery().routes().iter().copied() {
+        let routes = request.delivery().routes();
+        let has_native_event = request
+            .sequence()
+            .events()
+            .iter()
+            .any(|event| !matches!(event, InputEvent::Delay(_)));
+        for (index, route) in routes.iter().copied().enumerate() {
             let evidence = match self.descriptor.preflight_route(request, route) {
                 Ok(evidence) => evidence,
                 Err(fault) => {
@@ -486,9 +501,10 @@ impl MacosInputController {
                     continue;
                 }
             };
+            let require_early_authority = index + 1 < routes.len() || !has_native_event;
             let prepared = self
                 .driver
-                .preflight(route, request.focus(), operation)
+                .preflight(route, request.focus(), require_early_authority, operation)
                 .and_then(|()| self.driver.begin_route(route, state, operation));
             match prepared {
                 Ok(()) => return Ok((route, evidence, prior_attempts)),

@@ -2928,8 +2928,8 @@ mod tests {
         assert_eq!(observed.focus, ProcessFocusObservation::NotApplicable);
         assert_eq!(
             observed.calls,
-            [2, 2, 2, 0, 1, 1, 1],
-            "authority, direct authorization, geometry, and retained lifetime are checked both before construction and immediately before one bounded post, and a request with no focus predicate observes none"
+            [1, 2, 2, 0, 1, 1, 1],
+            "cheap direct authorization and retained lifetime checks run before construction, while exact retained-window authority and geometry run once at the final bounded post gate"
         );
     }
 
@@ -2951,16 +2951,16 @@ mod tests {
     #[test]
     fn process_post_fails_closed_before_native_effect() {
         let rows = [
-            (1, ShimStatus::PermissionDenied, 1, [1, 1, 0, 0, 0, 0, 0]),
-            (2, ShimStatus::TargetLost, 0, [1, 0, 0, 0, 0, 0, 0]),
-            (3, ShimStatus::Unsupported, 0, [1, 0, 0, 0, 0, 0, 0]),
+            (1, ShimStatus::PermissionDenied, 0, [0, 1, 0, 0, 0, 0, 0]),
+            (2, ShimStatus::TargetLost, 0, [1, 1, 1, 0, 1, 0, 1]),
+            (3, ShimStatus::Unsupported, 0, [1, 1, 1, 0, 1, 0, 1]),
             (4, ShimStatus::InvalidArgument, 0, [0, 0, 0, 0, 0, 0, 0]),
             (6, ShimStatus::Unsupported, 0, [0, 0, 0, 0, 0, 0, 0]),
-            (8, ShimStatus::GeometryChanged, 1, [1, 0, 0, 0, 0, 0, 0]),
-            (10, ShimStatus::TargetLost, 1, [1, 1, 1, 0, 0, 0, 0]),
+            (8, ShimStatus::GeometryChanged, 1, [1, 1, 1, 0, 1, 0, 1]),
+            (10, ShimStatus::TargetLost, 0, [0, 1, 1, 0, 0, 0, 0]),
             (11, ShimStatus::TimedOut, 0, [0, 0, 0, 0, 0, 0, 0]),
-            (12, ShimStatus::PlatformFailure, 1, [1, 1, 1, 0, 1, 0, 0]),
-            (14, ShimStatus::TimedOut, 1, [2, 2, 2, 0, 1, 0, 1]),
+            (12, ShimStatus::PlatformFailure, 0, [0, 1, 1, 0, 1, 0, 0]),
+            (14, ShimStatus::TimedOut, 1, [1, 2, 2, 0, 1, 0, 1]),
         ];
 
         for (scenario, delivery, target_count, calls) in rows {
@@ -2978,10 +2978,10 @@ mod tests {
     #[test]
     fn process_post_refuses_authority_changes_after_event_preparation() {
         let rows = [
-            (16, ShimStatus::TargetLost, 0, [2, 1, 1, 0, 1, 0, 1]),
-            (17, ShimStatus::PermissionDenied, 1, [2, 2, 1, 0, 1, 0, 1]),
-            (18, ShimStatus::TargetLost, 1, [2, 2, 2, 0, 1, 0, 1]),
-            (19, ShimStatus::GeometryChanged, 1, [2, 1, 1, 0, 1, 0, 1]),
+            (16, ShimStatus::TargetLost, 0, [1, 1, 1, 0, 1, 0, 1]),
+            (17, ShimStatus::PermissionDenied, 1, [1, 2, 1, 0, 1, 0, 1]),
+            (18, ShimStatus::TargetLost, 1, [1, 2, 2, 0, 1, 0, 1]),
+            (19, ShimStatus::GeometryChanged, 1, [1, 1, 1, 0, 1, 0, 1]),
         ];
 
         for (scenario, delivery, target_count, calls) in rows {
@@ -2994,6 +2994,21 @@ mod tests {
             );
             assert_eq!(observed.calls, calls, "scenario {scenario}");
         }
+    }
+
+    #[test]
+    fn process_post_accepts_source_geometry_restored_before_the_final_gate() {
+        let observed = testing_process_post(25).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::Ok);
+        assert_eq!(observed.invoked_native_units, 1);
+        assert_eq!(observed.target_match_count, 1);
+        assert!(observed.native_effect_may_have_occurred);
+        assert_eq!(
+            observed.calls,
+            [1, 2, 2, 0, 1, 1, 1],
+            "only the source-matching final observation is authoritative; an earlier transient move adds no inventory read"
+        );
     }
 
     #[test]
@@ -3065,7 +3080,7 @@ mod tests {
         assert_eq!(observed.delivery, ShimStatus::NativeException);
         assert_eq!(observed.invoked_native_units, 0);
         assert!(!observed.native_effect_may_have_occurred);
-        assert_eq!(observed.calls, [1, 1, 1, 0, 1, 0, 1]);
+        assert_eq!(observed.calls, [0, 1, 1, 0, 1, 0, 1]);
     }
 
     #[test]
@@ -3075,7 +3090,7 @@ mod tests {
         assert_eq!(observed.delivery, ShimStatus::NativeException);
         assert_eq!(observed.invoked_native_units, 0);
         assert!(observed.native_effect_may_have_occurred);
-        assert_eq!(observed.calls, [2, 2, 2, 0, 1, 1, 1]);
+        assert_eq!(observed.calls, [1, 2, 2, 0, 1, 1, 1]);
     }
 
     #[test]
@@ -3083,17 +3098,17 @@ mod tests {
         let revoked = testing_process_post(7).expect("native process-post seam runs");
         assert_eq!(revoked.delivery, ShimStatus::PermissionDenied);
         assert_eq!(revoked.invoked_native_units, 1);
-        assert_eq!(revoked.calls, [3, 3, 2, 0, 1, 1, 1]);
+        assert_eq!(revoked.calls, [1, 3, 2, 0, 1, 1, 1]);
 
         let lost = testing_process_post(9).expect("native process-post seam runs");
         assert_eq!(lost.delivery, ShimStatus::TargetLost);
         assert_eq!(lost.invoked_native_units, 1);
-        assert_eq!(lost.calls, [3, 2, 2, 0, 1, 1, 1]);
+        assert_eq!(lost.calls, [2, 3, 3, 0, 2, 1, 2]);
 
         let interrupted = testing_process_post(13).expect("native process-post seam runs");
         assert_eq!(interrupted.delivery, ShimStatus::TimedOut);
         assert_eq!(interrupted.invoked_native_units, 1);
-        assert_eq!(interrupted.calls, [2, 2, 2, 0, 1, 1, 1]);
+        assert_eq!(interrupted.calls, [1, 2, 2, 0, 1, 1, 1]);
     }
 
     /// A caller-selected focus predicate is authority only if the last gate
@@ -3108,8 +3123,8 @@ mod tests {
         assert_eq!(focused.focus, ProcessFocusObservation::Passed);
         assert_eq!(
             focused.calls,
-            [2, 2, 2, 2, 1, 1, 1],
-            "a focused target observes the predicate in both per-unit gates"
+            [1, 2, 2, 2, 1, 1, 1],
+            "a focused target keeps its cheap early predicate and repeats it after the one final retained-window authority check"
         );
 
         let unfocused = testing_process_post(21).expect("native process-post seam runs");
@@ -3119,8 +3134,8 @@ mod tests {
         assert_eq!(unfocused.focus, ProcessFocusObservation::Refused);
         assert_eq!(
             unfocused.calls,
-            [1, 1, 1, 1, 0, 0, 0],
-            "an unfocused target refuses before any event is constructed"
+            [0, 1, 1, 1, 0, 0, 0],
+            "an unfocused target refuses before any event is constructed without paying for retained-window inventory"
         );
 
         let lost_late = testing_process_post(22).expect("native process-post seam runs");
@@ -3130,7 +3145,7 @@ mod tests {
         assert_eq!(lost_late.focus, ProcessFocusObservation::Refused);
         assert_eq!(
             lost_late.calls,
-            [2, 2, 2, 2, 1, 0, 1],
+            [1, 2, 2, 2, 1, 0, 1],
             "focus lost only after event preparation still refuses and releases the prepared event"
         );
 
@@ -3141,8 +3156,8 @@ mod tests {
         assert_eq!(unobservable.focus, ProcessFocusObservation::Unavailable);
         assert_eq!(
             unobservable.calls,
-            [1, 1, 1, 1, 0, 0, 0],
-            "an unobservable focus predicate fails closed rather than posting"
+            [0, 1, 1, 1, 0, 0, 0],
+            "an unobservable focus predicate fails closed rather than posting or paying for retained-window inventory"
         );
     }
 

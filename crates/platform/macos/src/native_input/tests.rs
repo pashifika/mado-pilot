@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mado_pilot_core::{
-    CancellationToken, CoordinateSpace, GeometryRevision, IdentityIssuer, InputDelivery,
-    OperationContext, PermissionState, Point, ProviderId, TargetId, TargetKind, TransformSnapshot,
+    CancellationToken, CoordinateSpace, FrameStamp, GeometryRevision, IdentityIssuer,
+    InputDelivery, OperationContext, PermissionState, Point, ProviderId, StreamCursor, TargetId,
+    TargetKind, TransformSnapshot,
 };
 use mado_pilot_input::{
     CleanupState, DeliveryPlan, FocusPolicy, GeometryPolicy, InputController, InputDescriptor,
@@ -21,9 +22,10 @@ use mado_pilot_input::{
 
 use super::{
     CommitGeometry, DriverState, FUNCTION_KEYS, GeometryFingerprint, NativePost, PointerState,
-    ProcessCommitSource, SystemButtonState, SystemCommitSource, SystemKeyState, commit_geometry,
-    commit_prepared, commit_process, contains_desktop_point, extent_from_points, focus_wait,
-    key_flag, modifier_flag, native_button, placement_for, process_permission_denied_fault,
+    ProcessCommitSource, ProcessGeometrySource, SystemButtonState, SystemCommitSource,
+    SystemKeyState, commit_geometry, commit_prepared, commit_process, contains_desktop_point,
+    extent_from_points, focus_wait, key_flag, modifier_flag, native_button, placement_for,
+    process_bounds, process_permission_denied_fault, process_policy_geometry_for,
     process_status_fault, release_pending_process, release_process, release_system,
     require_post_event_access, resolve_key_code, retain_process_pointer, retain_process_press,
     text_chunks, text_release_may_be_pending,
@@ -154,6 +156,62 @@ impl ProcessCommitSource for FakeProcessSource {
         _operation: &OperationContext,
     ) -> Result<shim::ProcessPostOutcome, shim::ProcessPostFailure> {
         self.result
+    }
+}
+
+#[derive(Debug)]
+struct FakeProcessGeometrySource {
+    source: TransformSnapshot,
+    current: (TransformSnapshot, GeometryFingerprint, shim::NativeBounds),
+    source_fault: Option<InputFault>,
+    current_fault: Option<InputFault>,
+    calls: Mutex<[usize; 2]>,
+}
+
+impl FakeProcessGeometrySource {
+    fn new(
+        source: TransformSnapshot,
+        current: (TransformSnapshot, GeometryFingerprint, shim::NativeBounds),
+    ) -> Self {
+        Self {
+            source,
+            current,
+            source_fault: None,
+            current_fault: None,
+            calls: Mutex::new([0, 0]),
+        }
+    }
+
+    fn with_source_fault(mut self, fault: InputFault) -> Self {
+        self.source_fault = Some(fault);
+        self
+    }
+
+    fn with_current_fault(mut self, fault: InputFault) -> Self {
+        self.current_fault = Some(fault);
+        self
+    }
+
+    fn calls(&self) -> [usize; 2] {
+        *self.calls.lock().expect("uncontended")
+    }
+}
+
+impl ProcessGeometrySource for FakeProcessGeometrySource {
+    fn process_source_transform(
+        &self,
+        _geometry: PointerGeometry,
+    ) -> Result<TransformSnapshot, InputFault> {
+        self.calls.lock().expect("uncontended")[0] += 1;
+        self.source_fault.map_or(Ok(self.source), Err)
+    }
+
+    fn process_current_geometry(
+        &self,
+        _operation: &OperationContext,
+    ) -> Result<(TransformSnapshot, GeometryFingerprint, shim::NativeBounds), InputFault> {
+        self.calls.lock().expect("uncontended")[1] += 1;
+        self.current_fault.map_or(Ok(self.current), Err)
     }
 }
 
@@ -305,6 +363,30 @@ fn fingerprint(origin: (f64, f64), size: (f64, f64), scale: f64) -> GeometryFing
     GeometryFingerprint { extent, placement }
 }
 
+fn process_geometry(
+    origin: (f64, f64),
+    size: (f64, f64),
+    scale: f64,
+) -> (TransformSnapshot, GeometryFingerprint, shim::NativeBounds) {
+    let fingerprint = fingerprint(origin, size, scale);
+    let transform = TransformSnapshot::with_target(
+        GeometryRevision::FIRST,
+        fingerprint.extent,
+        fingerprint.placement,
+    )
+    .expect("the placement covers the frame");
+    let bounds = process_bounds(fingerprint).expect("macOS capture scale is uniform");
+    (transform, fingerprint, bounds)
+}
+
+fn source_frame() -> FrameStamp {
+    let issuer = IdentityIssuer::new();
+    let mut cursor = StreamCursor::new(issuer.issue_stream().expect("issued stream"));
+    cursor
+        .publish(GeometryRevision::FIRST)
+        .expect("published frame")
+}
+
 fn key_post(key_code: u16, down: bool) -> NativePost<'static> {
     NativePost::Key { key_code, down }
 }
@@ -328,6 +410,7 @@ impl InputDriver for RevokingNativePathDriver {
         &self,
         delivery: InputDelivery,
         _focus: FocusPolicy,
+        _require_early_authority: bool,
         _operation: &OperationContext,
     ) -> Result<(), InputFault> {
         if delivery == InputDelivery::System {
@@ -1157,6 +1240,32 @@ fn process_commit_maps_native_counts_to_before_or_during_event_failures() {
     .expect_err("geometry changed before posting");
     assert_eq!(geometry_changed.fault, InputFault::GeometryChanged);
     assert!(!geometry_changed.current_event_may_have_effect);
+    assert_eq!(geometry_changed.invoked_native_units, 0);
+
+    let target_lost = FakeProcessSource {
+        result: Err(shim::ProcessPostFailure {
+            status: ShimStatus::TargetLost,
+            invoked_native_units: 0,
+            native_effect_may_have_occurred: false,
+            target_match_count: 0,
+            authorization: shim::ProcessAuthorizationObservation::Unknown,
+            geometry: shim::ProcessGeometryObservation::NotEvaluated,
+            focus: shim::ProcessFocusObservation::NotEvaluated,
+        }),
+    };
+    let target_lost = commit_process(
+        &target_lost,
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("retained target loss refuses before posting");
+    assert_eq!(target_lost.fault, InputFault::TargetLost);
+    assert_eq!(target_lost.invoked_native_units, 0);
+    assert!(!target_lost.current_event_may_have_effect);
 
     let revoked = commit_process(
         &failure(
@@ -1364,6 +1473,109 @@ fn text_is_chunked_without_ever_splitting_a_surrogate_pair() {
             "a chunk ended on a high surrogate"
         );
     }
+}
+
+#[test]
+fn require_unchanged_process_geometry_uses_only_the_source_frame() {
+    let source = process_geometry((-120.0, 80.0), (640.0, 420.0), 2.0);
+    let moved = process_geometry((40.0, 20.0), (700.0, 460.0), 2.0);
+    let geometry =
+        FakeProcessGeometrySource::new(source.0, moved).with_current_fault(InputFault::TargetLost);
+
+    let resolved = process_policy_geometry_for(
+        &geometry,
+        PointerGeometry::require_unchanged_since(source_frame()),
+        &OperationContext::new(),
+    )
+    .expect("source geometry is deferred to the final native comparison");
+
+    assert_eq!(resolved.0, source.0);
+    assert_eq!(resolved.1, source.1);
+    assert_eq!(resolved.2, shim::ProcessGeometry::RequireCurrent(source.2));
+    assert_eq!(
+        geometry.calls(),
+        [1, 0],
+        "the Rust path must not duplicate the final retained-window inventory read"
+    );
+}
+
+#[test]
+fn frame_snapshot_process_geometry_tolerates_live_movement_without_a_live_read() {
+    let source = process_geometry((0.0, 0.0), (640.0, 420.0), 2.0);
+    let moved = process_geometry((50.0, 25.0), (640.0, 420.0), 2.0);
+    let geometry = FakeProcessGeometrySource::new(source.0, moved)
+        .with_current_fault(InputFault::GeometryChanged);
+
+    let resolved = process_policy_geometry_for(
+        &geometry,
+        PointerGeometry::from_frame_snapshot(source_frame()),
+        &OperationContext::new(),
+    )
+    .expect("snapshot mapping tolerates current movement");
+
+    assert_eq!(resolved.0, source.0);
+    assert_eq!(resolved.1, source.1);
+    assert_eq!(resolved.2, shim::ProcessGeometry::AuthorityOnly);
+    assert_eq!(geometry.calls(), [1, 0]);
+}
+
+#[test]
+fn reprojected_process_geometry_uses_only_the_live_authority() {
+    let source = process_geometry((0.0, 0.0), (640.0, 420.0), 2.0);
+    let moved = process_geometry((50.0, 25.0), (700.0, 460.0), 2.0);
+    let geometry = FakeProcessGeometrySource::new(source.0, moved)
+        .with_source_fault(InputFault::MissingCoordinateSource);
+
+    let resolved = process_policy_geometry_for(
+        &geometry,
+        PointerGeometry::reprojected(),
+        &OperationContext::new(),
+    )
+    .expect("reprojection uses current geometry");
+
+    assert_eq!(resolved.0, moved.0);
+    assert_eq!(resolved.1, moved.1);
+    assert_eq!(resolved.2, shim::ProcessGeometry::RequireCurrent(moved.2));
+    assert_eq!(geometry.calls(), [0, 1]);
+}
+
+#[test]
+fn process_geometry_sources_preserve_typed_faults_and_stop_other_reads() {
+    let source = process_geometry((0.0, 0.0), (640.0, 420.0), 2.0);
+    let current = process_geometry((50.0, 25.0), (700.0, 460.0), 2.0);
+
+    let missing_source = FakeProcessGeometrySource::new(source.0, current)
+        .with_source_fault(InputFault::MissingCoordinateSource);
+    let fault = process_policy_geometry_for(
+        &missing_source,
+        PointerGeometry::require_unchanged_since(source_frame()),
+        &OperationContext::new(),
+    )
+    .expect_err("a missing source is not replaced by current geometry");
+    assert_eq!(fault, InputFault::MissingCoordinateSource);
+    assert_eq!(missing_source.calls(), [1, 0]);
+
+    let lost_target = FakeProcessGeometrySource::new(source.0, current)
+        .with_current_fault(InputFault::TargetLost);
+    let fault = process_policy_geometry_for(
+        &lost_target,
+        PointerGeometry::reprojected(),
+        &OperationContext::new(),
+    )
+    .expect_err("target loss remains a typed reprojection refusal");
+    assert_eq!(fault, InputFault::TargetLost);
+    assert_eq!(lost_target.calls(), [0, 1]);
+}
+
+#[test]
+fn process_commit_bounds_reuse_the_capture_authoritative_rectangle() {
+    let geometry = fingerprint((-120.0, 80.0), (640.0, 420.0), 2.0);
+
+    let bounds = process_bounds(geometry).expect("macOS capture scale is uniform");
+
+    assert_eq!(bounds.origin, (-120.0, 80.0));
+    assert_eq!(bounds.size, (640.0, 420.0));
+    assert_eq!(bounds.scale, 2.0);
 }
 
 #[test]

@@ -4701,6 +4701,46 @@ static void mp_shim_process_report_reset_gate(const mp_shim_process_post_request
 }
 
 /*
+ * Refuses cheap, process-wide failures before constructing a native event.
+ *
+ * Exact retained-window authority and geometry are intentionally absent here:
+ * ScreenCaptureKit inventory is the dominant cost and the same facts are checked
+ * again at the irreversible commit boundary below. Direct post authorization and
+ * retained process lifetime are cheap enough to avoid constructing an event that
+ * cannot be posted. A caller-selected focus predicate keeps its early refusal as
+ * well as its final check; the default preserving policy performs no focus query.
+ */
+static mp_shim_status mp_shim_process_check_prepare_eligibility(
+    const mp_shim_process_post_request *request, mp_shim_process_post_report *report,
+    const mp_shim_process_post_ops *ops, uint64_t deadline) {
+    mp_shim_status status = ops->preflight(ops->context);
+    mp_shim_process_report_authorization(report, status);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    status = ops->lifetime(request->target, ops->context);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    if (request->purpose != MP_SHIM_PROCESS_POST_INPUT ||
+        request->focus_requirement != MP_SHIM_PROCESS_FOCUS_REQUIRE_FOCUSED) {
+        return MP_SHIM_OK;
+    }
+    bool focused = false;
+    status = ops->focus(request->target, deadline, &focused, ops->context);
+    if (status != MP_SHIM_OK) {
+        report->focus_result = MP_SHIM_PROCESS_FOCUS_UNAVAILABLE;
+        return status;
+    }
+    if (!focused) {
+        report->focus_result = MP_SHIM_PROCESS_FOCUS_REFUSED;
+        return MP_SHIM_FOCUS_REQUIRED;
+    }
+    report->focus_result = MP_SHIM_PROCESS_FOCUS_PASSED;
+    return MP_SHIM_OK;
+}
+
+/*
  * Confirms everything that authorizes one irreversible native unit.
  *
  * Ordinary input revalidates the exact retained window, its geometry policy,
@@ -4800,7 +4840,7 @@ mp_shim_process_post_with_ops(const mp_shim_process_post_request *request,
             return status;
         }
 
-        status = mp_shim_process_check_commit_authority(request, out_report, ops, deadline);
+        status = mp_shim_process_check_prepare_eligibility(request, out_report, ops, deadline);
         if (status != MP_SHIM_OK) {
             return status;
         }
@@ -5213,6 +5253,7 @@ typedef struct {
     uint64_t prepare_calls;
     uint64_t post_calls;
     uint64_t release_calls;
+    bool geometry_was_transiently_changed;
 } mp_shim_process_test_probe;
 
 static mp_shim_status mp_shim_testing_process_authority(
@@ -5224,11 +5265,17 @@ static mp_shim_status mp_shim_testing_process_authority(
     probe->authority_calls += 1;
     *out_bounds = CGRectMake(100.0, 100.0, 320.0, 240.0);
     *out_target_match_count = 1;
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT) {
+        if (!probe->geometry_was_transiently_changed) {
+            return MP_SHIM_PLATFORM_FAILURE;
+        }
+        probe->geometry_was_transiently_changed = false;
+    }
     if (probe->scenario == MP_SHIM_TEST_PROCESS_TARGET_LOST ||
         (probe->scenario == MP_SHIM_TEST_PROCESS_TARGET_LOST_AFTER_FIRST &&
-         probe->authority_calls >= 3) ||
+         probe->authority_calls >= 2) ||
         (probe->scenario == MP_SHIM_TEST_PROCESS_TARGET_LOST_AFTER_PREPARE &&
-         probe->authority_calls >= 2)) {
+         probe->authority_calls >= 1)) {
         *out_target_match_count = 0;
         return MP_SHIM_TARGET_LOST;
     }
@@ -5238,7 +5285,7 @@ static mp_shim_status mp_shim_testing_process_authority(
     }
     if (probe->scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED ||
         (probe->scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE &&
-         probe->authority_calls >= 2)) {
+         probe->authority_calls >= 1)) {
         out_bounds->origin.x += 1.0;
     }
     return MP_SHIM_OK;
@@ -5315,6 +5362,9 @@ static mp_shim_status mp_shim_testing_prepare_process_event(
     (void)request;
     mp_shim_process_test_probe *probe = context;
     probe->prepare_calls += 1;
+    if (probe->scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT) {
+        probe->geometry_was_transiently_changed = true;
+    }
     if (probe->scenario == MP_SHIM_TEST_PROCESS_CONSTRUCTION_FAILED) {
         return MP_SHIM_PLATFORM_FAILURE;
     }
@@ -5352,7 +5402,7 @@ mp_shim_status mp_shim_testing_process_post(
         out_focus_result == NULL || out_authority_calls == NULL || out_preflight_calls == NULL ||
         out_lifetime_calls == NULL || out_focus_calls == NULL || out_prepare_calls == NULL ||
         out_post_calls == NULL || out_release_calls == NULL ||
-        scenario > MP_SHIM_TEST_PROCESS_FOCUS_REQUIRED_SUCCESS) {
+        scenario > MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     *out_delivery_status = MP_SHIM_PLATFORM_FAILURE;
@@ -5418,7 +5468,8 @@ mp_shim_status mp_shim_testing_process_post(
                    scenario == MP_SHIM_TEST_PROCESS_INTERRUPTED_AFTER_FIRST) {
             request.event_kind = MP_SHIM_PROCESS_EVENT_TEXT;
         } else if (scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED ||
-                   scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE) {
+                   scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_AFTER_PREPARE ||
+                   scenario == MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT) {
             request.geometry_check = MP_SHIM_PROCESS_GEOMETRY_REQUIRE_CURRENT;
             request.expected_scale = 2.0;
         }
