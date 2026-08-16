@@ -221,11 +221,11 @@ Current committed profile hashes:
 
 | Profile | SHA-256 |
 |---|---|
-| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `f9c8c5d22c8ce87d48d4c2447bd9a93b6503ad06b655568934e888770c845e9f` |
-| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `148cf6c7cd0ef3ce8b4a221fbb088070857c1e92071749ca9af028ee8cfda149` |
-| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `7361a807f00349d77781573332bef77156f5499eb59829b6cd9b69aeecbf1032` |
-| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `d1108ebcd1e4eda1785e18f74df76b3c09b88b472a951b46bdffde6ac6ac72d8` |
-| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `dca05ca26874a6438845ab9a43a9fe9833c3d43ace21bb2cc274d140e6ef4273` |
+| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `fc8c4f052e34f04faed07bcb43fb37cac287b8aed8b2162cecb9c1798c8bff23` |
+| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `29cab8e052b924ecf6033412c02fe7ae5c3bf9b8bdfb151b087575026805b7af` |
+| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `4d9dfb104630208537af519ee03048dac03ff96b2415f85d4dd165da0be49caa` |
+| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `2c5c56a7c72c4146e304f1e136f694b27333212e7ff86784c0bd3819b51e9eb8` |
+| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `900e333f68adf9de5924e057fe82ece783aef422c24ccfdce35e1a038bb4248b` |
 
 ## Current raw-output provenance
 
@@ -599,15 +599,18 @@ The controlled capture profile retained the exact 4,628,480-byte BGRA8 mapping b
 
 The separately accepted ADR 0025 native-input/public-language profile was also refreshed on the same source with 300 retained samples. Its Rust common flow passed; fresh C and C++ process-load checks passed; and the explicit C and C++ `ProcessDirected` common flows completed with p95 values of 1842.148958 ms and 2056.563250 ms respectively. Receipt evidence and owned-fixture event observation remained separate in both language consumers. Its process-load resident-memory ceilings and all shared latency, mapping, heap, and correctness budgets passed.
 
-Committed profile hashes:
+Committed profile hashes, as those five Phase 2.2 files stood for this historical
+run. The tracked files were later overwritten by the corrected-revision reruns,
+so a current checkout no longer reproduces these digests; the current-source
+digests are in the current record above.
 
 | Profile | SHA-256 |
 |---|---|
-| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `f9c8c5d22c8ce87d48d4c2447bd9a93b6503ad06b655568934e888770c845e9f` |
-| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `148cf6c7cd0ef3ce8b4a221fbb088070857c1e92071749ca9af028ee8cfda149` |
-| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `7361a807f00349d77781573332bef77156f5499eb59829b6cd9b69aeecbf1032` |
-| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `d1108ebcd1e4eda1785e18f74df76b3c09b88b472a951b46bdffde6ac6ac72d8` |
-| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `dca05ca26874a6438845ab9a43a9fe9833c3d43ace21bb2cc274d140e6ef4273` |
+| `phase-2-2-controlled-capture-aarch64-apple-darwin.toml` | `f59f42fb003bb9c145a8bdf3006cd0c71cb9ea0d6dc5a502cb4341e37cbaae4b` |
+| `phase-2-2-controlled-transitions-aarch64-apple-darwin.toml` | `c58ac65fd08bcb7f8d8df864cf0baf185259cebf71c8c9c0dbb07a9a8b056dd7` |
+| `phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml` | `d98201b5cafc5dc6cff6c3518280c0ab94e4d9864806ff9eaee617bdde64cad0` |
+| `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `ac4e9cb130f15cba5dbaaa04cdebd8498335d5d2efb8db6b79c6f820c1092705` |
+| `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `e5863b5c93a8242de6d754cd1f008ded675fb63bd8611e025a2346c38d0d67d6` |
 | `phase-2-native-input-aarch64-apple-darwin.toml` | `248fa715f7ac3a3b3c50fcf6ddfdf2718000c4fe2ac8f7028370b5f74daf267b` |
 
 ### Failed, excluded, and superseded attempts

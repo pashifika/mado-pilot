@@ -4,7 +4,8 @@
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029 sets
 # the frozen pre-measurement budgets. This corrected-revision profile passes
-# those budgets; release publication still awaits the missing topology rows.
+# those budgets alongside the passing single, same-scale, and mixed-scale
+# native rows behind the accepted pair decisions.
 
 format_version = 1
 
