@@ -77,6 +77,8 @@ extern "C" {
 /* Rust-only companion seam: the Rust trampoline panics before processing. */
 #define MP_SHIM_PANIC_IN_RUST_CALLBACK 32u
 #define MP_SHIM_RAISE_IN_STOP_COMPLETION 64u
+/* Rust-only companion seam: one callback outlives the default fence wait. */
+#define MP_SHIM_DELAY_IN_RUST_CALLBACK 128u
 
 /* Status returned by every entry point. Zero is success. */
 typedef uint32_t mp_shim_status;
@@ -399,6 +401,14 @@ mp_shim_status mp_shim_testing_surface_recommendation(double logical_width,
  */
 mp_shim_status mp_shim_testing_target_without_process_lifetime(
     uint32_t *out_capture_metadata_retained, uint32_t *out_process_metadata_retained);
+
+/*
+ * Proves activation uses one retained target and refuses a process-lifetime
+ * replacement observed immediately after the activation attempt.
+ */
+mp_shim_status mp_shim_testing_input_activation_lifetime_loss(
+    mp_shim_status *out_activation_status, uint32_t *out_validation_calls,
+    uint32_t *out_activation_calls);
 
 /*
  * Runs the production text-event preparation with the second native allocation
@@ -913,16 +923,23 @@ mp_shim_status mp_shim_input_pointer_location(double *out_x, double *out_y);
 mp_shim_status mp_shim_input_frontmost_process(uint32_t *out_process);
 
 /*
- * Activates the application owning `owner_process`, without presenting UI.
- *
- * AppKit is loaded from its absolute system location on first use rather than
- * linked, for the reason ScreenCaptureKit is: a headless library must not carry a
- * load command for the desktop UI framework. A host that cannot provide it
- * reports MP_SHIM_UNSUPPORTED. This activates an application and never claims to
- * raise one particular window; the caller re-reads the frontmost window and
- * decides.
+ * Snapshots the public foreground-process lifetime and physical cursor without
+ * prompting. The process launch time distinguishes a recycled numeric PID.
  */
-mp_shim_status mp_shim_input_activate_owner(int64_t owner_process);
+mp_shim_status mp_shim_input_environment(int64_t *out_process,
+                                         double *out_process_launch_time,
+                                         double *out_pointer_x,
+                                         double *out_pointer_y);
+
+/*
+ * Activates the application retained by `target`, without presenting UI.
+ *
+ * The target's retained public process lifetime is revalidated before and after
+ * activation. A recycled numeric PID can therefore never select a replacement.
+ * This activates an application and never claims to raise one particular
+ * window; the caller re-reads focus and decides.
+ */
+mp_shim_status mp_shim_input_activate_owner(const mp_shim_target *target);
 
 /*
  * Resolves one Unicode scalar to a key code on the active keyboard layout.

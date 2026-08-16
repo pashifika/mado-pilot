@@ -48,6 +48,14 @@ const PRODUCER_QUEUE_DEPTH: u32 = 3;
 /// How long a caller contending for the close gate sleeps between attempts.
 const CLOSE_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
+#[cfg(test)]
+static TESTING_DELAYED_CALLBACK_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn testing_delayed_callback_is_active() -> bool {
+    TESTING_DELAYED_CALLBACK_ACTIVE.load(Ordering::Acquire)
+}
+
 pub(crate) struct NativeSession {
     description: SessionDescription,
     core: Arc<SessionCore>,
@@ -424,7 +432,9 @@ impl Drop for PendingRegistration<'_> {
                 quarantine_session(Arc::clone(self.core), self.registered);
                 return;
             }
-            let _closed = close_registered(self.core, self.registered);
+            if !close_registered(self.core, self.registered) {
+                quarantine_session(Arc::clone(self.core), self.registered);
+            }
             return;
         }
         // SAFETY: this came from `Arc::into_raw` in `new`, no other owner exists on
@@ -652,7 +662,9 @@ impl Drop for NativeSession {
             quarantine_session(Arc::clone(&self.core), self.registered);
             return;
         }
-        let _closed = close_registered(&self.core, self.registered);
+        if !close_registered(&self.core, self.registered) {
+            quarantine_session(Arc::clone(&self.core), self.registered);
+        }
     }
 }
 
@@ -727,6 +739,12 @@ impl SessionCore {
         #[cfg(test)]
         if (self.testing_sites & shim::PANIC_IN_RUST_CALLBACK) != 0 {
             panic!("injected Rust frame callback panic");
+        }
+        #[cfg(test)]
+        if (self.testing_sites & shim::DELAY_IN_RUST_CALLBACK) != 0 {
+            TESTING_DELAYED_CALLBACK_ACTIVE.store(true, Ordering::Release);
+            thread::sleep(DEFAULT_NATIVE_WAIT.saturating_add(Duration::from_millis(250)));
+            TESTING_DELAYED_CALLBACK_ACTIVE.store(false, Ordering::Release);
         }
         if info.screen_rect().is_none() {
             // A complete image without the required same-frame placement

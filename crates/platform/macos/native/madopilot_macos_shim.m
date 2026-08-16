@@ -3961,26 +3961,151 @@ mp_shim_status mp_shim_input_frontmost_process(uint32_t *out_process) {
     MP_SHIM_END
 }
 
-mp_shim_status mp_shim_input_activate_owner(int64_t owner_process) {
-    if (owner_process <= 0 || owner_process > INT32_MAX) {
+mp_shim_status mp_shim_input_environment(int64_t *out_process,
+                                         double *out_process_launch_time,
+                                         double *out_pointer_x,
+                                         double *out_pointer_y) {
+    if (out_process == NULL || out_process_launch_time == NULL ||
+        out_pointer_x == NULL || out_pointer_y == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_process = 0;
+    *out_process_launch_time = 0.0;
+    *out_pointer_x = 0.0;
+    *out_pointer_y = 0.0;
+    MP_SHIM_BEGIN
+    uint32_t observed_process = 0;
+    mp_shim_status status = mp_shim_input_frontmost_process(&observed_process);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    double launch_time = 0.0;
+    id lifetime = mp_shim_process_lifetime((pid_t)observed_process, &launch_time, &status);
+    if (lifetime == nil) {
+        return status;
+    }
+    (void)lifetime;
+    double pointer_x = 0.0;
+    double pointer_y = 0.0;
+    status = mp_shim_input_pointer_location(&pointer_x, &pointer_y);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    uint32_t confirmed_process = 0;
+    status = mp_shim_input_frontmost_process(&confirmed_process);
+    if (status != MP_SHIM_OK) {
+        return status;
+    }
+    if (confirmed_process != observed_process) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    *out_process = (int64_t)observed_process;
+    *out_process_launch_time = launch_time;
+    *out_pointer_x = pointer_x;
+    *out_pointer_y = pointer_y;
+    return MP_SHIM_OK;
+    MP_SHIM_END
+}
+
+typedef mp_shim_status (*MPShimActivationValidation)(const mp_shim_target *target,
+                                                    void *context);
+typedef bool (*MPShimActivationAttempt)(const mp_shim_target *target, NSUInteger options,
+                                       void *context);
+
+static mp_shim_status mp_shim_input_activate_owner_with(
+    const mp_shim_target *target, MPShimActivationValidation validate,
+    MPShimActivationAttempt activate, void *context) {
+    mp_shim_status lifetime = validate(target, context);
+    if (lifetime != MP_SHIM_OK) {
+        return lifetime;
+    }
+    if (!activate(target, MPShimActivateAllWindows, context)) {
+        return MP_SHIM_PLATFORM_FAILURE;
+    }
+    return validate(target, context);
+}
+
+static mp_shim_status mp_shim_activation_validate(const mp_shim_target *target, void *context) {
+    (void)context;
+    return mp_shim_process_lifetime_status(target);
+}
+
+static bool mp_shim_activation_attempt(const mp_shim_target *target, NSUInteger options,
+                                       void *context) {
+    (void)context;
+    id<MPShimActivatableApplication> application =
+        (__bridge id<MPShimActivatableApplication>)target->process_lifetime;
+    /* macOS may decline under its own activation policy. A refusal is reported;
+     * nothing here retries, elevates, or overrides the user's foreground app. */
+    return [application activateWithOptions:options];
+}
+
+mp_shim_status mp_shim_input_activate_owner(const mp_shim_target *target) {
+    if (target == NULL || target->magic != MP_SHIM_TARGET_MAGIC ||
+        target->kind != MP_SHIM_TARGET_WINDOW || target->owner_process <= 0 ||
+        target->process_lifetime == NULL || !isfinite(target->process_launch_time)) {
         return MP_SHIM_INVALID_ARGUMENT;
     }
     MP_SHIM_BEGIN
-    Class class = mp_shim_activation_class();
-    if (class == Nil) {
-        return MP_SHIM_UNSUPPORTED;
-    }
-    id<MPShimRunningApplicationClass> factory = (id<MPShimRunningApplicationClass>)class;
-    id running = [factory runningApplicationWithProcessIdentifier:(pid_t)owner_process];
-    if (running == nil) {
-        return MP_SHIM_TARGET_LOST;
-    }
-    id<MPShimActivatableApplication> application = (id<MPShimActivatableApplication>)running;
-    /* macOS may decline under its own activation policy. A refusal is reported;
-     * nothing here retries, elevates, or overrides the user's foreground app. */
-    return [application activateWithOptions:MPShimActivateAllWindows] ? MP_SHIM_OK
-                                                                      : MP_SHIM_PLATFORM_FAILURE;
+    return mp_shim_input_activate_owner_with(target, mp_shim_activation_validate,
+                                             mp_shim_activation_attempt, NULL);
     MP_SHIM_END
+}
+
+typedef struct {
+    const mp_shim_target *target;
+    uint32_t validation_calls;
+    uint32_t activation_calls;
+} MPShimTestingActivationProbe;
+
+static mp_shim_status mp_shim_testing_activation_validate(const mp_shim_target *target,
+                                                          void *context) {
+    MPShimTestingActivationProbe *probe = context;
+    if (probe == NULL || target != probe->target) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    probe->validation_calls += 1u;
+    return probe->validation_calls == 1u ? MP_SHIM_OK : MP_SHIM_TARGET_LOST;
+}
+
+static bool mp_shim_testing_activation_attempt(const mp_shim_target *target, NSUInteger options,
+                                               void *context) {
+    MPShimTestingActivationProbe *probe = context;
+    if (probe == NULL || target != probe->target ||
+        target->process_lifetime != (CFTypeRef)(uintptr_t)1u ||
+        options != MPShimActivateAllWindows) {
+        return false;
+    }
+    probe->activation_calls += 1u;
+    return true;
+}
+
+mp_shim_status mp_shim_testing_input_activation_lifetime_loss(
+    mp_shim_status *out_activation_status, uint32_t *out_validation_calls,
+    uint32_t *out_activation_calls) {
+    if (out_activation_status == NULL || out_validation_calls == NULL ||
+        out_activation_calls == NULL) {
+        return MP_SHIM_INVALID_ARGUMENT;
+    }
+    *out_activation_status = MP_SHIM_PLATFORM_FAILURE;
+    *out_validation_calls = 0;
+    *out_activation_calls = 0;
+    mp_shim_target target = {
+        .magic = MP_SHIM_TARGET_MAGIC,
+        .kind = MP_SHIM_TARGET_WINDOW,
+        .native_id = 1,
+        .owner_process = 42,
+        .process_lifetime = (CFTypeRef)(uintptr_t)1u,
+        .process_launch_time = 1.0,
+    };
+    MPShimTestingActivationProbe probe = {
+        .target = &target,
+    };
+    *out_activation_status = mp_shim_input_activate_owner_with(
+        &target, mp_shim_testing_activation_validate, mp_shim_testing_activation_attempt, &probe);
+    *out_validation_calls = probe.validation_calls;
+    *out_activation_calls = probe.activation_calls;
+    return MP_SHIM_OK;
 }
 
 #pragma mark - Input: layout resolution

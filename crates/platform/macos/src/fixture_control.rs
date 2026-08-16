@@ -131,6 +131,52 @@ impl AuthenticatedFixtureProcess {
     }
 }
 
+/// Opaque comparison token for one foreground-process lifetime and physical
+/// cursor observation.
+///
+/// The values are intentionally inaccessible: qualification may compare two
+/// observations but cannot print another application's identity or cursor
+/// coordinates into retained evidence.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct DesktopInputState {
+    process: i64,
+    process_launch_time: u64,
+    pointer_x: u64,
+    pointer_y: u64,
+}
+
+/// Samples the current foreground-process lifetime and physical cursor without
+/// prompting or exposing either value.
+pub fn desktop_input_state() -> Result<DesktopInputState, String> {
+    let mut process = 0i64;
+    let mut process_launch_time = 0.0f64;
+    let mut pointer_x = 0.0f64;
+    let mut pointer_y = 0.0f64;
+    // SAFETY: every output is writable for its declared scalar type.
+    let status = unsafe {
+        mp_shim_input_environment(
+            &raw mut process,
+            &raw mut process_launch_time,
+            &raw mut pointer_x,
+            &raw mut pointer_y,
+        )
+    };
+    if status != 0
+        || process <= 0
+        || !process_launch_time.is_finite()
+        || !pointer_x.is_finite()
+        || !pointer_y.is_finite()
+    {
+        return Err("the desktop input state could not be observed".to_owned());
+    }
+    Ok(DesktopInputState {
+        process,
+        process_launch_time: process_launch_time.to_bits(),
+        pointer_x: pointer_x.to_bits(),
+        pointer_y: pointer_y.to_bits(),
+    })
+}
+
 /// A unique mode-0700 directory containing one controller socket.
 #[derive(Debug)]
 pub struct FixtureSocketDirectory {
@@ -307,6 +353,12 @@ unsafe extern "C" {
         value: *mut c_void,
         value_size: *mut u32,
     ) -> c_int;
+    fn mp_shim_input_environment(
+        out_process: *mut i64,
+        out_process_launch_time: *mut f64,
+        out_pointer_x: *mut f64,
+        out_pointer_y: *mut f64,
+    ) -> u32;
 }
 
 #[link(name = "proc")]

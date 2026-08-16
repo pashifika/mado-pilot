@@ -86,6 +86,9 @@ pub(crate) const PANIC_IN_RUST_CALLBACK: u32 = 32;
 /// has returned.
 #[cfg(test)]
 pub(crate) const RAISE_IN_STOP_COMPLETION: u32 = 64;
+/// Keeps one Rust frame callback admitted beyond the implicit-drop fence wait.
+#[cfg(test)]
+pub(crate) const DELAY_IN_RUST_CALLBACK: u32 = 128;
 
 #[repr(C)]
 struct OpaqueInventory {
@@ -606,6 +609,11 @@ impl TargetToken {
     /// Reads whether this exact retained window is focused within a bounded wait.
     pub(crate) fn input_focused(&self, wait: Duration) -> Result<bool, ShimStatus> {
         input_target_focused(self, wait)
+    }
+
+    /// Activates only this retained target's still-matching process lifetime.
+    pub(crate) fn input_activate_owner(&self) -> Result<(), ShimStatus> {
+        input_activate_owner(self)
     }
 
     /// Revalidates retained-window and owning-process identity, current geometry,
@@ -1706,10 +1714,10 @@ pub(crate) fn input_pointer_location() -> Result<(f64, f64), ShimStatus> {
     Ok((x, y))
 }
 
-/// Activates the application owning `owner_process`, presenting no interface.
-pub(crate) fn input_activate_owner(owner_process: i64) -> Result<(), ShimStatus> {
-    // SAFETY: the call takes one scalar and writes nothing.
-    ShimStatus::from_raw(unsafe { mp_shim_input_activate_owner(owner_process) }).into_result()
+/// Activates the application retained by `target`, presenting no interface.
+fn input_activate_owner(target: &TargetToken) -> Result<(), ShimStatus> {
+    // SAFETY: the immutable retained target handle stays alive for the call.
+    ShimStatus::from_raw(unsafe { mp_shim_input_activate_owner(target.as_ptr()) }).into_result()
 }
 
 /// Resolves one Unicode scalar to a key code reachable without modifiers.
@@ -2239,6 +2247,24 @@ fn testing_target_without_process_lifetime() -> Result<(bool, bool), ShimStatus>
 }
 
 #[cfg(test)]
+fn testing_input_activation_lifetime_loss() -> Result<(ShimStatus, [u32; 2]), ShimStatus> {
+    let mut activation = u32::MAX;
+    let mut calls = [u32::MAX; 2];
+    let [validation_calls, activation_calls] = &mut calls;
+    // SAFETY: every output is writable for its declared scalar type. The native
+    // seam uses a sentinel target only through injected pure callbacks.
+    let status = unsafe {
+        mp_shim_testing_input_activation_lifetime_loss(
+            &raw mut activation,
+            &raw mut *validation_calls,
+            &raw mut *activation_calls,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((ShimStatus::from_raw(activation), calls))
+}
+
+#[cfg(test)]
 fn testing_input_text_second_allocation_failure() -> Result<(ShimStatus, [usize; 5]), ShimStatus> {
     let mut delivery = u32::MAX;
     let mut observations = [usize::MAX; 5];
@@ -2537,6 +2563,12 @@ unsafe extern "C" {
         out_process_metadata_retained: *mut u32,
     ) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_input_activation_lifetime_loss(
+        out_activation_status: *mut u32,
+        out_validation_calls: *mut u32,
+        out_activation_calls: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_input_text_second_allocation_failure(
         out_delivery_status: *mut u32,
         out_allocations: *mut usize,
@@ -2655,7 +2687,7 @@ unsafe extern "C" {
         out_report: *mut NativeProcessPostReport,
     ) -> u32;
     fn mp_shim_input_pointer_location(out_x: *mut f64, out_y: *mut f64) -> u32;
-    fn mp_shim_input_activate_owner(owner_process: i64) -> u32;
+    fn mp_shim_input_activate_owner(target: *const OpaqueTarget) -> u32;
     fn mp_shim_input_resolve_character(scalar: u32, out_key_code: *mut u16) -> u32;
     fn mp_shim_input_post_pointer(
         action: u32,
@@ -2697,9 +2729,9 @@ mod tests {
         contained_frame_commit_callback, contained_stopped_callback, declared_layout,
         declared_process_offsets, execution_context, linked_layout, live_objects, monotonic_nanos,
         nanos, process_interruption_callback, testing_classify_signature, testing_gate_retries,
-        testing_input_text_second_allocation_failure, testing_process_authority_rules,
-        testing_process_event_source_release_exception, testing_process_post,
-        testing_stop_completion_exception, testing_surface_recommendation,
+        testing_input_activation_lifetime_loss, testing_input_text_second_allocation_failure,
+        testing_process_authority_rules, testing_process_event_source_release_exception,
+        testing_process_post, testing_stop_completion_exception, testing_surface_recommendation,
         testing_target_without_process_lifetime, testing_terminalize_twice,
         testing_validate_process_post, validate_open_shape_and_metadata,
     };
@@ -2871,6 +2903,19 @@ mod tests {
         assert!(
             !process_metadata_retained,
             "capture identity survives without inventing process-post authority"
+        );
+    }
+
+    #[test]
+    fn activation_refuses_a_replacement_observed_after_the_attempt() {
+        let (status, calls) = testing_input_activation_lifetime_loss()
+            .expect("the retained-process activation seam runs");
+
+        assert_eq!(status, ShimStatus::TargetLost);
+        assert_eq!(
+            calls,
+            [2, 1],
+            "the exact retained target is checked before and after one activation attempt"
         );
     }
 

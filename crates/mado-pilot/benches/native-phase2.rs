@@ -84,7 +84,8 @@ mod native {
     use mado_pilot_backend_opencv::OpenCvBackend;
     #[cfg(target_os = "macos")]
     use mado_pilot_platform_macos::{
-        MacosCaptureProvider, MacosPermissionProbe, fixture_control::AuthenticatedFixtureProcess,
+        MacosCaptureProvider, MacosPermissionProbe,
+        fixture_control::{AuthenticatedFixtureProcess, DesktopInputState, desktop_input_state},
     };
     #[cfg(target_os = "macos")]
     use mado_pilot_runtime::{
@@ -700,6 +701,17 @@ mod native {
             self.with_controller(|controller| {
                 controller.reset_events(event_payload_tag, OPERATION_WAIT)
             })
+        }
+
+        fn begin_process_flow(&self, event_payload_tag: u64) -> Option<DesktopInputState> {
+            if !self.begin_flow(event_payload_tag) {
+                return None;
+            }
+            desktop_input_state().ok()
+        }
+
+        fn process_environment_unchanged(&self, baseline: DesktopInputState) -> bool {
+            desktop_input_state().is_ok_and(|observed| observed == baseline)
         }
 
         fn cancel_after_event(
@@ -2017,10 +2029,10 @@ mod native {
     #[cfg(target_os = "macos")]
     fn event_authority_preflight_post(flow: &ProcessFlow) -> Sample {
         let (activity_tag, correlation) = process_row_activity(&[flow.pointer_fingerprint]);
-        assert!(
-            flow.fixture.begin_flow(activity_tag.get()),
-            "the pointer sample starts with empty fixture event state"
-        );
+        let environment = flow
+            .fixture
+            .begin_process_flow(activity_tag.get())
+            .expect("the pointer sample starts with empty events and an observed desktop state");
         let expected = correlated_event(POINTER_EVENT, correlation);
         let started = Instant::now();
         let receipt = flow
@@ -2035,7 +2047,10 @@ mod native {
         let visual_ok = independently_observe_tagged_visual(flow).is_some();
         Sample::unmapped(
             elapsed,
-            complete_process_receipt(&receipt, flow.session.target(), 1) && events_ok && visual_ok,
+            complete_process_receipt(&receipt, flow.session.target(), 1)
+                && events_ok
+                && visual_ok
+                && flow.fixture.process_environment_unchanged(environment),
         )
     }
 
@@ -2044,10 +2059,10 @@ mod native {
         let cancellation = CancellationToken::new();
         let fingerprints = process_enter_fingerprints();
         let (activity_tag, correlation) = process_row_activity(&fingerprints);
-        assert!(
-            flow.fixture.begin_flow(activity_tag.get()),
-            "the cleanup sample starts with empty fixture event state"
-        );
+        let environment = flow
+            .fixture
+            .begin_process_flow(activity_tag.get())
+            .expect("the cleanup sample starts with empty events and an observed desktop state");
         let pressed = correlated_event(
             protocol::EventSummary {
                 kind: protocol::EVENT_KEY_DOWN,
@@ -2100,7 +2115,8 @@ mod native {
                 .as_ref()
                 .is_some_and(|receipt| cleanup_receipt_is_exact(receipt, flow.session.target()))
             && release_ok
-            && visual_ok;
+            && visual_ok
+            && flow.fixture.process_environment_unchanged(environment);
         Sample::unmapped(elapsed, correct)
     }
 
@@ -2176,10 +2192,10 @@ mod native {
         let submissions = flow.diagnostics.submissions();
         let fingerprints = vec![flow.pointer_fingerprint; submissions];
         let (activity_tag, correlation) = process_row_activity(&fingerprints);
-        assert!(
-            flow.fixture.begin_flow(activity_tag.get()),
-            "the diagnostic sample starts with empty fixture event state"
-        );
+        let environment = flow
+            .fixture
+            .begin_process_flow(activity_tag.get())
+            .expect("the diagnostic sample starts with empty events and an observed desktop state");
         let mut receipts_correct = true;
         let mut slowest = Duration::ZERO;
         for _ in 0..submissions {
@@ -2210,7 +2226,8 @@ mod native {
                 && events_correct
                 && diagnostics_correct
                 && observed_frames.is_some()
-                && visual_diagnostics_correct,
+                && visual_diagnostics_correct
+                && flow.fixture.process_environment_unchanged(environment),
         )
     }
 

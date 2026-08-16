@@ -29,10 +29,11 @@ use mado_pilot_core::{
 use crate::availability::ensure_capture_available;
 use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, inventory};
 use crate::input::GeometryLedger;
-use crate::native::{NativeSession, SessionTarget};
+use crate::native::{NativeSession, SessionTarget, testing_delayed_callback_is_active};
 use crate::shim::{
-    self, MAX_NATIVE_WAIT, PANIC_IN_RUST_CALLBACK, RAISE_AFTER_CALLBACK, RAISE_AT_START,
-    RAISE_AT_TEARDOWN, RAISE_BEFORE_CALLBACK, RAISE_IN_START_COMPLETION, RAISE_IN_STOP_COMPLETION,
+    self, DELAY_IN_RUST_CALLBACK, MAX_NATIVE_WAIT, PANIC_IN_RUST_CALLBACK, RAISE_AFTER_CALLBACK,
+    RAISE_AT_START, RAISE_AT_TEARDOWN, RAISE_BEFORE_CALLBACK, RAISE_IN_START_COMPLETION,
+    RAISE_IN_STOP_COMPLETION,
 };
 use crate::storage::DETACHED_BUFFER_BUDGET;
 
@@ -902,6 +903,33 @@ fn close_is_idempotent_and_leaves_no_native_object_alive() {
     assert!(
         settles_to(baseline),
         "every native object the session owned is released by close"
+    );
+}
+
+#[test]
+fn implicit_drop_quarantines_a_registration_after_a_fence_timeout() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("implicit close fence timeout") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let session = harness
+        .open(DELAY_IN_RUST_CALLBACK)
+        .expect("open with one delayed Rust callback");
+    let deadline = Instant::now() + FRAME_WAIT;
+    while !testing_delayed_callback_is_active() {
+        assert!(
+            Instant::now() < deadline,
+            "the delayed callback becomes active before the scenario deadline"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+
+    drop(session);
+
+    assert!(
+        settles_to(baseline),
+        "the quarantine worker resumes teardown and releases the callback registration"
     );
 }
 

@@ -180,7 +180,8 @@ impl MacosCaptureProvider {
         authenticates_owner: impl FnOnce(i64) -> bool,
     ) -> bool {
         self.registry().records.get(&target).is_some_and(|record| {
-            record.kind() == TargetKind::Window && authenticates_owner(record.owner_process())
+            record.kind() == TargetKind::Window
+                && authenticates_owner(record.fingerprint.native_owner())
         })
     }
 
@@ -378,15 +379,6 @@ impl TargetRecord {
         self.key.kind()
     }
 
-    /// Returns the owning process this target's discovery pass recorded.
-    ///
-    /// Zero for a display, which has none. This is descriptive validation
-    /// metadata only: input may use it to narrow a current-window search, but
-    /// only logical equality with the retained `SCWindow` authorizes that match.
-    pub(crate) fn owner_process(&self) -> i64 {
-        self.fingerprint.native_owner()
-    }
-
     pub(crate) fn geometry(&self) -> &Arc<GeometryLedger> {
         &self.geometry
     }
@@ -427,6 +419,11 @@ impl TargetRecord {
         wait: Duration,
     ) -> std::result::Result<ProcessAuthority, ProcessAuthorityFailure> {
         self.selection.process_authority(wait)
+    }
+
+    /// Activates this retained target's still-matching owning-process lifetime.
+    pub(crate) fn activate_owner(&self) -> std::result::Result<(), ShimStatus> {
+        self.selection.input_activate_owner()
     }
 
     /// Invokes one bounded event through the retained owning-process authority.

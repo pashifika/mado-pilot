@@ -2282,6 +2282,139 @@ fn interactive_system_delivery_targets_only_the_exact_fixture() {
     assert!(controller.is_closed());
 }
 
+#[test]
+#[ignore = "attempts signed-fixture activation and delivers real system input on success"]
+fn system_activation_never_redirects_to_unrelated_foreground() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "activation verification requires the configured signed fixture bundle"
+    );
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE").is_some(),
+        "activation verification requires the unrelated signed foreground fixture"
+    );
+    assert!(
+        post_event_access_granted(),
+        "this check needs post-event access granted to the test process"
+    );
+
+    let mut foreground_fixture = Fixture::start_foreground()
+        .expect("the unrelated foreground fixture starts from its independent bundle");
+    let foreground_before = wait_until_frontmost_fixture(&foreground_fixture);
+    let mut fixture = Fixture::start_inactive(FixtureMode::Default)
+        .expect("the target fixture starts without taking foreground ownership");
+    assert_eq!(
+        frontmost_application(),
+        Some(foreground_before),
+        "the inactive target launch must preserve the unrelated foreground fixture"
+    );
+
+    let provider = provider();
+    let chosen = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
+        .expect("the retained target is selected exactly once");
+    let capture = CaptureProvider::open(
+        &provider,
+        chosen.id(),
+        &OpenRequest::new().require_format(PixelFormat::Bgra8),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("the retained target opens for capture");
+    let frame = capture
+        .frame(&FrameRequest::latest(), &bounded(CONTENT_WAIT))
+        .expect("the retained target publishes a frame");
+    let mapping = frame
+        .map(PixelFormat::Bgra8, &bounded(CONTENT_WAIT))
+        .expect("the retained target frame maps");
+    let mapped = mapping.descriptor();
+    let input =
+        with_confirmed_fixture_content(mapping.bytes(), mapped.stride(), mapped.extent(), || {
+            InputProvider::open(
+                &provider,
+                chosen.id(),
+                &InputOpenRequest::new()
+                    .with_requirement(InputRequirement::Required)
+                    .requiring(InputOperationKind::Keyboard, InputDelivery::System),
+                &bounded(CONTENT_WAIT),
+            )
+        })
+        .expect("the retained target matches the controlled fixture pixels")
+        .expect("system input opens for the retained target");
+
+    fixture.begin_event_row(CONTENT_WAIT);
+    foreground_fixture.begin_event_row(CONTENT_WAIT);
+    let cursor_before = pointer_location();
+    let receipt = input
+        .execute(
+            &InputRequest::new(
+                chosen.id(),
+                InputSequence::new(vec![
+                    InputEvent::KeyPress(Key::Enter),
+                    InputEvent::KeyRelease(Key::Enter),
+                ])
+                .expect("the activation key pair is balanced"),
+                DeliveryPlan::require(InputDelivery::System),
+            )
+            .with_focus(FocusPolicy::ActivateIfRequired),
+            &bounded(CONTENT_WAIT),
+        )
+        .expect("activation and system delivery return a receipt");
+    match receipt.outcome() {
+        SequenceOutcome::Complete => {
+            assert_eq!(receipt.submitted(), 2);
+            assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+            assert_eq!(
+                wait_until_frontmost_fixture(&fixture),
+                fixture.process_id,
+                "successful activation must use the retained target's process lifetime"
+            );
+            fixture.expect_event_kinds(&[EVENT_KEY_DOWN, EVENT_KEY_UP], CONTENT_WAIT);
+            assert_eq!(
+                foreground_fixture.event_totals(CONTENT_WAIT),
+                EventTotals::default(),
+                "system input reached the previous foreground application"
+            );
+        }
+        SequenceOutcome::Unexecuted => {
+            assert_eq!(receipt.submitted(), 0);
+            assert_eq!(receipt.fault(), Some(InputFault::FocusRefused));
+            assert_eq!(receipt.attempts().len(), 1);
+            assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
+            assert_eq!(
+                frontmost_application(),
+                Some(foreground_before),
+                "a refused activation changed foreground ownership"
+            );
+            assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+            assert_eq!(
+                foreground_fixture.event_totals(CONTENT_WAIT),
+                EventTotals::default(),
+                "a refused activation posted into the foreground process"
+            );
+        }
+        outcome => panic!("unexpected activation outcome {outcome:?}: {receipt}"),
+    }
+    assert_eq!(
+        pointer_location(),
+        cursor_before,
+        "keyboard activation moved the physical cursor"
+    );
+
+    input.close(&bounded(CONTENT_WAIT)).expect("input closes");
+    capture
+        .close(&bounded(CONTENT_WAIT))
+        .expect("capture closes");
+    let stopped = fixture
+        .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+        .expect("target fixture stop is acknowledged");
+    assert_eq!(stopped.status, 0);
+    let foreground_stopped = foreground_fixture
+        .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+        .expect("foreground fixture stop is acknowledged");
+    assert_eq!(foreground_stopped.status, 0);
+    fixture.input = None;
+    foreground_fixture.input = None;
+}
+
 fn frontmost_application() -> Option<u32> {
     let mut process_id = 0;
     // SAFETY: the production shim writes one `u32` and contains native exceptions.
