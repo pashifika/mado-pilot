@@ -6,11 +6,11 @@ C ABI and header-only C++ wrapper consume that same facade-owned engine. Release
 acceptance consists of the explicit native checks below; ordinary test runs never
 send desktop input or open the opt-in fixture window.
 
-Current release status: **blocked**. The corrected source passes route-wide,
-mixed-scale, performance, sanitizer, repository, and CI checks, but its exact
-single-display and same-scale renderer rows are unexecuted. Therefore none of
-the fourteen process-directed pairs is currently release-qualified. The
-historical complete matrix remains provenance only.
+Current release status: **qualified for fourteen controlled pairs**. The
+qualified source passes route-wide, `single`, `same-scale`, and `mixed-scale`
+renderer rows, performance, sanitizer, repository, and CI checks. Earlier
+matrices remain provenance only. Nothing here qualifies arbitrary applications,
+arbitrary games, exact-window delivery, or application consumption.
 
 ## Capability boundary
 
@@ -21,7 +21,7 @@ process that owns the retained window without focusing it.
 
 | Discovered target | `System` | `WindowMessage` | `ProcessDirected` |
 |---|---|---|---|
-| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Qualification-gated pointer, keyboard, and text candidates; foreground-preserving; owning-process scope; `Unknown` compatibility; invocation-only evidence; no pair currently release-qualified |
+| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Qualified pointer, keyboard, and text; foreground-preserving; honours a caller-selected `RequireFocused` predicate without activation; owning-process scope; `Unknown` compatibility; invocation-only evidence |
 | Additional same-process windows | Same target contract | Unsupported | Do not revoke process scope; no exact-window or responder-selection guarantee |
 | Display | Pointer only; no focusable target is implied; invocation-only evidence | Unsupported | Unsupported |
 
@@ -40,10 +40,8 @@ only when its mandatory revision-bound native rows in the
 `CapabilitySupport::Unknown` is the strongest publishable compatibility claim,
 and a failed or unexecuted route-wide row removes every dependent pair. The
 negotiated target descriptor, not a platform guess, is the admission authority.
-For the corrected source, the first rule currently yields zero advertised
-release pairs because exact single-display and same-scale rows remain
-unexecuted. Topic-branch binaries expose the candidate implementation for the
-controlled checks below; that is not a release support statement.
+For the qualified source, that rule yields the fourteen advertised pairs, each
+carrying its own passing `single`, `same-scale`, and `mixed-scale` rows.
 
 Every target names `PermissionKind::InputControl` as the authorization input
 needs, separately from the Screen Recording that capture needs. `InputControl`
@@ -292,7 +290,7 @@ acknowledgement ever counts as a product receipt or a visual result.
 
 Selection is the fail-closed step. `select_unique_fixture` requires a window
 target, the exact process-qualified title, all three operations `Supported`
-over `System`, `WindowMessage` unsupported, the candidate `ProcessDirected`
+over `System`, `WindowMessage` unsupported, the advertised `ProcessDirected`
 contract (`Unknown` support, owning-process scope, invocation-only evidence),
 and exactly one match. Zero matches and several matches both stop before input.
 A check then confirms selection against the window's deterministic content —
@@ -597,12 +595,12 @@ separately, but the later product correction invalidated every pair decision.
 The corrected source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426`
 (tree `f4a707501748303adcec577df5f18fcd18f13f45`) uses internal shim surface
 version 14 and fixture protocol version 10. Its route-wide and complete
-mixed-scale AppKit/OpenGL rows pass, while exact
-`single` and `same-scale` renderer rows remain unexecuted. The privacy-reviewed
+`single`, `same-scale`, and `mixed-scale` AppKit/OpenGL rows all pass. The
+privacy-reviewed
 [observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
-records both the current partial decision and the superseded complete run,
-including commands, artifact and raw-output hashes, bounded outcomes, excluded
-attempts, and all fourteen current `unexecuted` pair decisions. Current raw logs
+records both the accepted decision and the superseded runs, including commands,
+artifact and raw-output hashes, bounded outcomes, excluded attempts, and all
+fourteen `qualified` pair decisions. Current raw logs
 remain ignored under the Change's
 `ephemera/qualification-final-a1eee9c/` evidence root.
 
@@ -627,7 +625,7 @@ cargo run --locked --package mado-pilot --example macos-native-input -- \
 
 It matches the title exactly, refuses zero or more than one match, and refuses
 before discovery when either authorization is missing. It requires
-`ProcessDirected` with `FocusPolicy::Preserve`, asserts the candidate contract
+`ProcessDirected` with `FocusPolicy::Preserve`, asserts the advertised contract
 (`Unknown` support, owning-process scope, invocation-only evidence), and never
 activates or focuses the selected window; the fixture's input-driven animation
 is what turns a received event into new pixels. Point it only at the fixture —

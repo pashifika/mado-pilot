@@ -14,10 +14,9 @@ now accepts the macOS diagnostic slice,
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
 revision-bound macOS native input and public-language profile. Accepted-design
 [ADR 0029](adr/0029-macos-process-directed-input.md) binds the measured
-Phase 2.2 macOS process-directed and controlled-stimulus lineage below, while
-its corrected-source release pair decisions remain blocked by unexecuted
-single-display and same-scale rows. The remaining native workload and target
-gaps stay open.
+Phase 2.2 macOS process-directed and controlled-stimulus lineage below, whose
+fourteen controlled pairs are qualified on the measured revision. The remaining
+native workload and target gaps stay open.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -546,8 +545,8 @@ records under `docs/benchmarks/` are normative performance records. Across
 allocation growth was zero for every workload, within the frozen growth
 budgets; and every frozen p50, p95, hard-maximum,
 mapped-byte, stale-work, peak-live-heap, and diagnostic-capacity gate passed.
-These passing budgets do not substitute for the unexecuted topology rows and do
-not qualify any current-source process-directed pair for release.
+These passing budgets are regression ceilings only; the pair decisions rest on
+the separate native topology rows, not on timing.
 
 The pre-measurement ceilings remain the regression budgets; they were not
 re-ceilinged from the result. The

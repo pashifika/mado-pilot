@@ -1,23 +1,35 @@
 ## Current decision
 
-The corrected implementation at source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` and source tree `f4a707501748303adcec577df5f18fcd18f13f45` is **not yet release-qualified**.
+The Phase 2.2 native qualification matrix **passes** on source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` and source tree `f4a707501748303adcec577df5f18fcd18f13f45`.
 
-The route-wide rows, the complete mixed-scale AppKit and controlled OpenGL renderer rows, all ten opt-in native rows, the five Phase 2.2 performance profiles, AddressSanitizer, repository verification, and pull request CI pass on that revision. The exact `single` and `same-scale` renderer rows have not been run on it. Because the frozen plan requires every topology for each dependent pair, the current decision is 0 `qualified`, 0 `rejected`, and 14 `unexecuted`. Draft pull request #36 remains draft.
+All fourteen in-scope operation/target/coordinate-space pairs are `qualified` under the frozen qualification plan:
 
-This revision carries two corrections. The final-gate focus authority change makes a caller-selected `RequireFocused` predicate travel in the internal process-post request and be observed inside the same bounded native operation as retained-window authority, geometry, event-post access, and process lifetime, immediately before `CGEventPostToPid`; the internal shim surface moved from 13 to 14, which also covers the earlier scroll-location signature change. The fault-conversion change reports that native focus refusal as a typed focus refusal at the public boundary instead of an unexplained submission failure, and matches every native status so a later addition cannot fall through silently.
+- target classes: the controlled AppKit-renderer fixture window and the controlled OpenGL game-like-renderer fixture window;
+- operations: `Pointer`, `Keyboard`, and `Text`;
+- pointer coordinate spaces: `CapturePixels`, `FrameNormalized`, `TargetNormalized`, `TargetLogical`, and `DesktopLogical`;
+- delivery: explicit `ProcessDirected` only;
+- address scope: `OwningProcess`;
+- compatibility: `Unknown`;
+- submission evidence: `InvocationOnly`;
+- focus behavior: preserve the unrelated foreground application, and honour a caller-selected `RequireFocused` predicate without activation;
+- target state: the exact retained window remains open, unminimized, on-screen, and owned by the retained process lifetime.
 
-The earlier matrices at `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, `850b7b26dde49035dd5759685ab6f0c7d996167f`, and `086448f4f37f060b4ce42a887bc63d20f0c240a7` are historical only; none of their pair passes may be applied to this source.
+This decision does not claim exact-window delivery, responder selection, queue admission, application consumption, visual effect, arbitrary-application compatibility, or general game compatibility. Display targets, minimized or off-screen windows, and replacement process lifetimes remain outside the qualified scope. `System` remains a separate focus-dependent route.
 
-## Current corrected-revision provenance
+The revision carries both accepted review corrections. The final-gate focus authority change makes a caller-selected `RequireFocused` predicate travel in the internal process-post request and be observed inside the same bounded native operation as retained-window authority, geometry, event-post access, and process lifetime, immediately before `CGEventPostToPid`; the internal shim surface moved from 13 to 14, which also covers the earlier scroll-location signature change. The fault-conversion change reports that native focus refusal as a typed focus refusal at the public boundary and matches every native status exhaustively.
 
-The current partial rerun was recorded on 2026-08-16 JST. Product, fixture, test, and benchmark source remained fixed at the source commit above. The five benchmark profiles and this report were produced afterward and do not change the measured implementation tree; the recorded working-tree status counts exactly those five profile files. The release fixture executable is byte-identical to the previous revision's, because the corrected conversion is not reachable from the fixture binary.
+The earlier matrices at `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, `850b7b26dde49035dd5759685ab6f0c7d996167f`, and `086448f4f37f060b4ce42a887bc63d20f0c240a7` are historical only; none of their pair passes was applied to this source.
+
+## Current qualified provenance
+
+The accepted native rows were recorded on 2026-08-16 JST. Product, fixture, test, and benchmark source remained fixed at the source commit above for every accepted row. The five benchmark profiles and this report were produced afterward and do not change the measured implementation tree. The release fixture executable is byte-identical to the previous revision's, because the corrected conversion is not reachable from the fixture binary.
 
 | Field | Observed value |
 |---|---|
 | Base revision | `ffb1823b68ba632b4fc8e7725361ea4596e220f0` |
-| Corrected source commit | `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` |
-| Corrected source tree | `f4a707501748303adcec577df5f18fcd18f13f45` |
-| Branch / pull request | `feat/phase-2-2-macos-process-directed-delivery`; draft PR #36 against `dev/0.2.1` |
+| Qualified source commit | `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` |
+| Qualified source tree | `f4a707501748303adcec577df5f18fcd18f13f45` |
+| Branch / pull request | `feat/phase-2-2-macos-process-directed-delivery`; PR #36 against `dev/0.2.1` |
 | Host | `MacBookPro18,3`; Apple M1 Pro, 10 physical cores, 32 GiB, `arm64` |
 | OS / SDK | macOS 26.5.2 build 25F84; macOS SDK 26.5 |
 | Minimum deployment target | macOS 26.5.2 |
@@ -29,9 +41,11 @@ The current partial rerun was recorded on 2026-08-16 JST. Product, fixture, test
 | Fixture launch/signing | bundled launch; structurally valid ad-hoc signature; approved identifiers matched for both roles |
 | Authorization | Screen Recording granted; non-prompting event-post access granted; required observations agreed |
 | Prompting behavior | no permission request, settings opener, target activation, or target raise |
-| Current topology | three online, non-mirrored displays: 3840×2160 logical/backing 1× at signed origin `(-3840,109)`, 2560×1440 logical/5120×2880 backing 2× main at `(0,0)`, and 1512×982 logical/3024×1964 backing 2× at `(2560,268)`; both mixed-scale and same-scale seams are present |
+| `mixed-scale` arrangement | three online, non-mirrored displays: 3840×2160 logical/backing 1× at signed origin `(-3840,109)`, 2560×1440 logical/5120×2880 backing 2× main at `(0,0)`, and 1512×982 logical/3024×1964 backing 2× at `(2560,268)` |
+| `same-scale` arrangement | two online, non-mirrored, horizontally adjacent 2× displays: 2560×1440 logical/5120×2880 backing main at `(0,0)` and 1512×982 logical/3024×1964 backing at `(2560,170)` |
+| `single` arrangement | one online, non-mirrored 2× display: 2560×1440 logical/5120×2880 backing at `(0,0)`, with the built-in panel offline and the session unlocked |
 
-Current executable hashes:
+Qualification executable hashes:
 
 | Artifact role | Bytes | SHA-256 |
 |---|---:|---|
@@ -57,7 +71,9 @@ cargo build --locked --release -p mado-pilot-platform-macos \
 
 export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
 export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$FOREGROUND_APP/Contents/MacOS/mado-pilot-macos-input-fixture"
-export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=mixed-scale
+# Each topology block ran only after the live arrangement matched its exact
+# selector, which the run validates before it opens anything.
+export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY=<single|same-scale|mixed-scale>
 
 cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
   scenarios::every_attached_display_carries_same_frame_desktop_conversion -- \
@@ -102,21 +118,31 @@ cargo test --locked -p mado-pilot-testkit \
 
 ## Current topology and native outcomes
 
-| Selector / row group | Current corrected-revision outcome |
+| Selector / row group | Current outcome |
 |---|---|
 | `mixed-scale` display-frame rows | passed: three displays published their own logical/backing geometry; the signed-origin 1×/2× seam and adjacent 2×/2× seam were exercised |
 | `mixed-scale` AppKit renderer | passed: four visits closed the 2× → 2× → 1× → 2× cycle at geometry revisions 3/4/5/6 and epochs 2/2/3/4 |
 | `mixed-scale` controlled OpenGL renderer | passed: the same four-visit scale/geometry cycle completed independently |
-| `single` renderer rows | **unexecuted**: the corrected source has not been run with exactly one 2× display online |
-| `same-scale` renderer rows | **unexecuted**: the corrected source has not been run with exactly two horizontally adjacent 2× displays online |
+| `same-scale` AppKit renderer | passed: two visits crossed the adjacent 2×/2× seam at geometry revisions 3/4 and epoch 2 |
+| `same-scale` controlled OpenGL renderer | passed: the same two-visit traversal completed independently |
+| `single` AppKit renderer | passed: one visit stayed on the single 2× display at geometry revision 3 and epoch 2 |
+| `single` controlled OpenGL renderer | passed: the same single-display row completed independently |
 
-Each completed mixed-scale renderer test executed its fixed matrix of five pointer coordinate spaces, seven pointer sequences over eleven authoritative geometry stages, five keyboard cases, three Unicode text cases, cancellation/cleanup, caller-selected `RequireFocused` success and inactive refusal, foreground/cursor invariance, independent process observation, and strictly newer controlled visual confirmation. AppKit frame sequences for the four visits were 1,178 / 3,462 / 1,103 / 1,174; controlled OpenGL sequences were 1,180 / 3,443 / 1,090 / 1,173. These values identify capture progress only; they do not claim input-caused visual effect.
+Each renderer test executed its fixed matrix of five pointer coordinate spaces, seven pointer sequences over the topology's authoritative geometry stages, five keyboard cases, three Unicode text cases, cancellation/cleanup, caller-selected `RequireFocused` success and inactive refusal, foreground/cursor invariance, independent process observation, and strictly newer controlled visual confirmation.
 
-The default private-fixture suite recorded 253 passes and ten deliberately ignored interactive rows; all ten ignored rows were executed separately on the corrected revision, including the operator-clicked `System` route row. The complete workspace recorded 1216 passes and 11 ignored opt-in tests. Doctests recorded 8 passes and 1 ignored example. The dedicated native-shim AddressSanitizer run recorded 188 passes with no sanitizer finding. Draft PR #36 passed repository policy, branch flow, Windows, and macOS CI jobs on this revision.
+Retained frame sequences identify capture progress only and claim no input-caused visual effect:
+
+| Selector | AppKit visits | Controlled OpenGL visits |
+|---|---|---|
+| `mixed-scale` | 1,178 / 3,462 / 1,103 / 1,174 | 1,180 / 3,443 / 1,090 / 1,173 |
+| `same-scale` | 1,152 / 3,396 | 1,168 / 3,497 |
+| `single` | 1,195 | 1,142 |
+
+The default private-fixture suite recorded 253 passes and ten deliberately ignored interactive rows; all ten ignored rows were executed separately on the qualified revision, including the operator-clicked `System` route row. The complete workspace recorded 1216 passes and 11 ignored opt-in tests. Doctests recorded 8 passes and 1 ignored example. The dedicated native-shim AddressSanitizer run recorded 188 passes with no sanitizer finding. PR #36 passed repository policy, branch flow, Windows, and macOS CI jobs on this revision.
 
 ### Route-wide decisions
 
-| Row | Decision | Current observed basis |
+| Row | Decision | Observed basis |
 |---|---|---|
 | RW-01 | passed | controlled symbol loading, availability, internal version 14/layout, package isolation, production linkage, C ABI, and C++ checks passed |
 | RW-02 | passed | retained logical window, original process lifetime, current ownership, and eligible state were revalidated before ordinary posts |
@@ -133,32 +159,32 @@ The default private-fixture suite recorded 253 passes and ten deliberately ignor
 | RW-13 | passed | diagnostics modes and overflow remained bounded and privacy-safe with exact loss accounting |
 | RW-14 | passed | pointer/range validation, focus-gate refusal rows, exception/panic containment, queue pressure, allocation gates, and 187 ASan tests passed |
 
-No route-wide row failed. Missing topology rows still block every final pair decision.
+No route-wide row failed.
 
 ### Current pair decisions
 
 | Operation | Target class | Coordinate space | Decision | Reason |
 |---|---|---|---|---|
-| `Pointer` | AppKit renderer | `CapturePixels` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Pointer` | AppKit renderer | `FrameNormalized` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Pointer` | AppKit renderer | `TargetNormalized` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Pointer` | AppKit renderer | `TargetLogical` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Pointer` | AppKit renderer | `DesktopLogical` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Keyboard` | AppKit renderer | `not applicable` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Text` | AppKit renderer | `not applicable` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Pointer` | OpenGL game-like renderer | `CapturePixels` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Pointer` | OpenGL game-like renderer | `FrameNormalized` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Pointer` | OpenGL game-like renderer | `TargetNormalized` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Pointer` | OpenGL game-like renderer | `TargetLogical` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Pointer` | OpenGL game-like renderer | `DesktopLogical` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Keyboard` | OpenGL game-like renderer | `not applicable` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
-| `Text` | OpenGL game-like renderer | `not applicable` | `unexecuted` | The mixed-scale row passed on the corrected source, but its exact `single` and `same-scale` renderer rows have not run; another topology cannot substitute. |
+| `Pointer` | AppKit renderer | `CapturePixels` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Pointer` | AppKit renderer | `FrameNormalized` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Pointer` | AppKit renderer | `TargetNormalized` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Pointer` | AppKit renderer | `TargetLogical` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Pointer` | AppKit renderer | `DesktopLogical` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Keyboard` | AppKit renderer | `not applicable` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground invariance, physical-cursor invariance, and independent process observation. |
+| `Text` | AppKit renderer | `not applicable` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground invariance, physical-cursor invariance, and independent process observation. |
+| `Pointer` | OpenGL game-like renderer | `CapturePixels` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Pointer` | OpenGL game-like renderer | `FrameNormalized` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Pointer` | OpenGL game-like renderer | `TargetNormalized` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Pointer` | OpenGL game-like renderer | `TargetLogical` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Pointer` | OpenGL game-like renderer | `DesktopLogical` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground and physical-cursor invariance and independent process observation. |
+| `Keyboard` | OpenGL game-like renderer | `not applicable` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground invariance, physical-cursor invariance, and independent process observation. |
+| `Text` | OpenGL game-like renderer | `not applicable` | `qualified` | Its `single`, `same-scale`, and `mixed-scale` renderer rows each passed on this revision under sustained capture, with foreground invariance, physical-cursor invariance, and independent process observation. |
 
-Pair totals: 0 `qualified`, 0 `rejected`, 14 `unexecuted`. The implementation remains reviewable on the draft branch, but no current-source release support claim follows from this partial matrix.
+Pair totals: 14 `qualified`, 0 `rejected`, 0 `unexecuted`.
 
 ## Current performance outcomes
 
-The five Phase 2.2 profiles were remeasured on the corrected source. All 2,700 retained samples across twenty-four workloads satisfied their correctness oracle and frozen latency, hard-maximum, mapped-byte, stale-work, heap, allocation-growth, and diagnostics-capacity gates. `result_correctness` was zero for every workload, and every workload recorded zero post-warmup allocation growth.
+The five Phase 2.2 profiles were measured on the qualified source under the `mixed-scale` arrangement, which their committed notes record. All 2,700 retained samples across twenty-four workloads satisfied their correctness oracle and frozen latency, hard-maximum, mapped-byte, stale-work, heap, allocation-growth, and diagnostics-capacity gates. `result_correctness` was zero for every workload, and every workload recorded zero post-warmup allocation growth.
 
 | Profile / workload | p50 ms | p95 ms | max ms | Peak live Rust bytes |
 |---|---:|---:|---:|---:|
@@ -203,7 +229,7 @@ Current committed profile hashes:
 
 ## Current raw-output provenance
 
-Accepted current-revision raw logs remain ignored under `.rasen/changes/phase-2-2-macos-owning-process-delivery/ephemera/qualification-final-a1eee9c/`. They may contain native identifiers or fixture-private records and must not be committed. The tracked binding is limited to file size and SHA-256.
+Accepted raw logs remain ignored under `.rasen/changes/phase-2-2-macos-owning-process-delivery/ephemera/qualification-final-a1eee9c/`. They may contain native identifiers or fixture-private records and must not be committed. The tracked binding is limited to file size and SHA-256.
 
 | Accepted raw artifact | Bytes | SHA-256 |
 |---|---:|---|
@@ -242,7 +268,11 @@ Accepted current-revision raw logs remain ignored under `.rasen/changes/phase-2-
 | `retained-authority-lifecycle.log` | 3,284 | `a664b1de3cfaf0c86ecdf0a85e9dfebcaf6a52665ff2402033769cd97ffd8974` |
 | `retained-filter-replacement.log` | 620 | `5196693bbbeb7e1a8d1f5d0141e5b8cd251611c5bf055f580bf3e4ad0447dc18` |
 | `rustc.log` | 72 | `cdd372f49763b7ad6faf8210706bc4f7212e18ebbd1abee8ab874ebbd588c4a3` |
+| `same-appkit-renderer-matrix.log` | 61,688 | `8f7b65b7d7c9e3f8b34c7c21b4853c5d155927aa84796e4c0a38e111bedb967f` |
+| `same-game-like-renderer-matrix.log` | 61,653 | `729690e542eb0b3ea6a9df35e2da5c403292b3a6d46bf3c36e27531cae0ab0bf` |
 | `sdk.log` | 5 | `25205f2e2f02dc71036ee827e19c49b893b231a3d1af240e35a3ac55aa8cdcb6` |
+| `single-appkit-renderer-matrix.log` | 44,726 | `b79d16c236be9dbb12760cbd350dfddf920b5a9c52405dede1857ab02c34440a` |
+| `single-game-like-renderer-matrix.log` | 44,701 | `97798f584c9e360f6c259303fc9779c75e54c424bb01b418234c672b3c08f4ce` |
 | `source-commit.log` | 41 | `5d3a3ea58b57894f8d66505d6366a6b2bc6b230b5a4a4a5e7fd055df177cffb8` |
 | `source-tree.log` | 41 | `3e20c5e96f68fa9bcb561113aed15e3ec1800c2c26f46ab1ff0e826e9b417803` |
 | `sustained-capture-soak.log` | 2,155 | `ff606a2fe2a5140903cfa272d57a3ebc804656a557f5e791d7863656119e6cff` |
@@ -259,11 +289,13 @@ Stopped attempt:
 
 ## Current privacy review
 
-This current tracked section contains no captured pixels, recognized or submitted text, window titles, application names, native process identifiers, native window numbers, signing identifiers, raw authorization values, credentials, fixture-private payloads, unrelated foreground identity, or process inventory. Display geometry, frame stamps, bounded event/sample counts, typed outcomes, artifact sizes, and hashes are retained because they are required qualification facts.
+This tracked record contains no captured pixels, recognized or submitted text, window titles, application names, native process identifiers, native window numbers, signing identifiers, raw authorization values, credentials, fixture-private payloads, unrelated foreground identity, or process inventory. Display geometry, frame stamps, bounded event/sample counts, typed outcomes, artifact sizes, and hashes are retained because they are required qualification facts.
 
 ## Current strict release gate
 
-The gate is **blocked**, not passed: exact corrected-revision `single` and `same-scale` renderer rows are unexecuted. ADR 0029 remains the accepted owning-process design, but its release publication evidence is suspended for the current source. Public release documentation must not claim any of the fourteen pairs as currently qualified until both topology rows pass and the report is rebound again. Draft PR #36 must remain draft.
+The gate **passes** for the fourteen pairs above and for nothing else. No row failed and no mandatory row is unexecuted: each renderer pair passed its own `single`, `same-scale`, and `mixed-scale` rows on this revision, and no topology's evidence was substituted for another's.
+
+Nothing here qualifies exact-window delivery, arbitrary applications, arbitrary games, display targets, minimized or off-screen targets, other-Space targets, application consumption, or visual success. Any later product, fixture, qualification, budget, or mandatory-documentation change invalidates the affected acceptance rows and requires a new revision-bound report.
 
 ## Superseded complete-run record
 

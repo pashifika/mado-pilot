@@ -1,16 +1,18 @@
 # ADR 0029: macOS owning-process input delivery
 
-- **Status:** Accepted design; release qualification suspended — the historical
-  complete matrix qualified all fourteen controlled pairs on source commit
-  `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, but the later product corrections
-  ending at `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` invalidated those pair
-  decisions.
-  The [current observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
-  records passing route-wide and mixed-scale rows, with exact single-display
-  and same-scale rows still unexecuted.
+- **Status:** Accepted — the complete revision-bound matrix qualifies all
+  fourteen controlled pairs on source commit
+  `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` and tree
+  `f4a707501748303adcec577df5f18fcd18f13f45`. Earlier matrices at
+  `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, `850b7b26dde49035dd5759685ab6f0c7d996167f`,
+  and `086448f4f37f060b4ce42a887bc63d20f0c240a7` were invalidated by later
+  product corrections and are provenance only. The
+  [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
+  records the passing route-wide rows and the `single`, `same-scale`, and
+  `mixed-scale` rows behind each pair.
 - **Date:** 2026-08-16
-- **Release gate:** blocked for the corrected source until its complete
-  revision-bound native matrix passes
+- **Release gate:** passed for those fourteen controlled pairs on that
+  revision, and for nothing wider
 - **Supersedes:** only ADR 0016's macOS system-only delivery-surface decision;
   its controlled-linkage, non-prompting permission, `System` focus-authority,
   no-private-window-control, and no-implicit-fallback rules remain in force
@@ -183,8 +185,8 @@ the existing no-fallback contract after possible effect.
 - The support claim is bound to fourteen exact pairs in one revision-bound
   observed report. The historical qualified source advertised each as
   `Unknown`, owning-process scoped, invocation-only, and foreground-preserving;
-  the corrected source advertises none for release while its exact
-  single-display and same-scale rows remain unexecuted. Future operation,
+  each pair passed its own `single`, `same-scale`, and `mixed-scale` rows on
+  the qualified revision. Future operation,
   target-class, coordinate-space, or topology pairs remain unavailable until
   their own mandatory rows pass. A route-wide failure blocks every pair; a pair
   failure blocks only that pair; missing topology evidence is never replaced by
