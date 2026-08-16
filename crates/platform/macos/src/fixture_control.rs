@@ -73,10 +73,18 @@ struct FixturePeerIdentity {
 }
 
 /// One authenticated fixture process lifetime retained from its Unix peer.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct AuthenticatedFixtureProcess {
     process_id: u32,
     audit_token: AuditToken,
+}
+
+impl fmt::Debug for AuthenticatedFixtureProcess {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticatedFixtureProcess")
+            .finish_non_exhaustive()
+    }
 }
 
 impl AuthenticatedFixtureProcess {
@@ -384,8 +392,8 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::{
-        AuditToken, FixturePeerIdentity, FixtureSocketDirectory, authenticate_fixture_peer,
-        fixture_peer_is_expected, next_fixture_run_nonce,
+        AuditToken, AuthenticatedFixtureProcess, FixturePeerIdentity, FixtureSocketDirectory,
+        authenticate_fixture_peer, fixture_peer_is_expected, next_fixture_run_nonce,
     };
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
@@ -421,6 +429,16 @@ mod tests {
             identities.windows(2).all(|pair| pair[0] < pair[1]),
             "no concurrent controller may reuse an earlier run identity"
         );
+    }
+
+    #[test]
+    fn authenticated_process_debug_exposes_no_native_identity() {
+        let process = AuthenticatedFixtureProcess {
+            process_id: 42,
+            audit_token: AuditToken { values: [7; 8] },
+        };
+
+        assert_eq!(format!("{process:?}"), "AuthenticatedFixtureProcess { .. }");
     }
 
     #[test]
