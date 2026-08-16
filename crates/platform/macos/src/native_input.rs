@@ -1405,17 +1405,34 @@ const fn process_permission_denied_fault(post_event_access: PermissionState) -> 
     }
 }
 
+/// Names the fault one native process-directed status reports as.
+///
+/// Every variant is matched. A status added later is a compile error here, which
+/// is where the decision about what a process-directed caller sees belongs: the
+/// alternative is a wildcard that silently reports a typed refusal as an
+/// unexplained submission failure.
 fn process_status_fault(status: ShimStatus, operation: &OperationContext) -> InputFault {
     match status {
         ShimStatus::TargetLost => InputFault::TargetLost,
         ShimStatus::PermissionDenied => InputFault::NotAuthorized,
         ShimStatus::Unsupported => InputFault::UnsupportedCombination,
         ShimStatus::GeometryChanged => InputFault::GeometryChanged,
+        ShimStatus::FocusRequired => InputFault::FocusRequired,
         ShimStatus::Closed => InputFault::ControllerClosed,
         ShimStatus::TimedOut => operation
             .interruption()
             .map_or(InputFault::SubmissionFailed, InputFault::from),
-        _ => InputFault::SubmissionFailed,
+        // A successful status has no fault, and the rest name no process-directed
+        // outcome a caller can act on differently.
+        ShimStatus::Ok
+        | ShimStatus::InvalidArgument
+        | ShimStatus::PlatformFailure
+        | ShimStatus::NativeException
+        | ShimStatus::BudgetExhausted
+        | ShimStatus::FrameIncomplete
+        | ShimStatus::StoppedByUser
+        | ShimStatus::StoppedBySystem
+        | ShimStatus::Unrecognized(_) => InputFault::SubmissionFailed,
     }
 }
 

@@ -1,3 +1,18 @@
+## Invalidation notice
+
+A review of `086448f4f37f060b4ce42a887bc63d20f0c240a7` found that the native
+focus-refusal status reached the public receipt as an unexplained submission
+failure instead of the typed focus refusal, because the process-directed status
+conversion still had a wildcard arm. The native gate was correct and posted no
+event, but the caller-visible fault classification was wrong, so the fix is a
+product-code change.
+
+Every native row, benchmark profile, and pair decision recorded below is
+therefore bound to a superseded product revision. The complete matrix, including
+the mixed-scale rows that had passed, must be rerun on the corrected revision
+before any part of this report describes current source. Until that rerun and
+rebind complete, this document states no current-source qualification.
+
 ## Current decision
 
 The corrected implementation at source commit `086448f4f37f060b4ce42a887bc63d20f0c240a7` and source tree `c3c4e9969448cc34e89018f699d055f747c7427e` is **not yet release-qualified**.

@@ -1018,11 +1018,17 @@ fn every_native_process_status_maps_to_an_existing_input_fault() {
         (ShimStatus::PermissionDenied, InputFault::NotAuthorized),
         (ShimStatus::Unsupported, InputFault::UnsupportedCombination),
         (ShimStatus::GeometryChanged, InputFault::GeometryChanged),
+        (ShimStatus::FocusRequired, InputFault::FocusRequired),
         (ShimStatus::Closed, InputFault::ControllerClosed),
         (ShimStatus::TimedOut, InputFault::SubmissionFailed),
+        (ShimStatus::Ok, InputFault::SubmissionFailed),
         (ShimStatus::InvalidArgument, InputFault::SubmissionFailed),
         (ShimStatus::PlatformFailure, InputFault::SubmissionFailed),
         (ShimStatus::NativeException, InputFault::SubmissionFailed),
+        (ShimStatus::BudgetExhausted, InputFault::SubmissionFailed),
+        (ShimStatus::FrameIncomplete, InputFault::SubmissionFailed),
+        (ShimStatus::StoppedByUser, InputFault::SubmissionFailed),
+        (ShimStatus::StoppedBySystem, InputFault::SubmissionFailed),
         (ShimStatus::Unrecognized(999), InputFault::SubmissionFailed),
     ];
 
@@ -1033,6 +1039,71 @@ fn every_native_process_status_maps_to_an_existing_input_fault() {
             "{status:?}"
         );
     }
+}
+
+/// The whole point of the final native focus gate is the foreground changing
+/// while the authority queries before it run. What the caller then sees must
+/// still be the focus refusal it asked for, not an unexplained failure: the two
+/// project to different public statuses.
+#[test]
+fn late_native_focus_loss_stays_a_focus_refusal_at_the_adapter_boundary() {
+    let refused = FakeProcessSource {
+        result: Err(shim::ProcessPostFailure {
+            status: ShimStatus::FocusRequired,
+            invoked_native_units: 0,
+            native_effect_may_have_occurred: false,
+            target_match_count: 1,
+            authorization: shim::ProcessAuthorizationObservation::Granted,
+            geometry: shim::ProcessGeometryObservation::NotApplicable,
+            focus: shim::ProcessFocusObservation::Refused,
+        }),
+    };
+
+    let failure = commit_process(
+        &refused,
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::RequireFocused,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("the final native focus gate refuses before posting");
+
+    assert_eq!(failure.fault, InputFault::FocusRequired);
+    assert_eq!(failure.invoked_native_units, 0);
+    assert!(!failure.current_event_may_have_effect);
+
+    let unobservable = FakeProcessSource {
+        result: Err(shim::ProcessPostFailure {
+            status: ShimStatus::PermissionDenied,
+            invoked_native_units: 0,
+            native_effect_may_have_occurred: false,
+            target_match_count: 1,
+            authorization: shim::ProcessAuthorizationObservation::Granted,
+            geometry: shim::ProcessGeometryObservation::NotApplicable,
+            focus: shim::ProcessFocusObservation::Unavailable,
+        }),
+    };
+
+    let failure = commit_process(
+        &unobservable,
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::RequireFocused,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("an unobservable focus predicate refuses before posting");
+
+    assert_eq!(
+        failure.fault,
+        InputFault::NotAuthorized,
+        "a focus predicate that cannot be observed is an authorization answer"
+    );
+    assert_eq!(failure.invoked_native_units, 0);
+    assert!(!failure.current_event_may_have_effect);
 }
 
 #[test]
