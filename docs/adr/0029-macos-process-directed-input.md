@@ -1,18 +1,26 @@
 # ADR 0029: macOS owning-process input delivery
 
-- **Status:** Accepted — the complete revision-bound matrix qualifies all
-  fourteen controlled pairs on source commit
-  `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` and tree
-  `f4a707501748303adcec577df5f18fcd18f13f45`. Earlier matrices at
-  `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, `850b7b26dde49035dd5759685ab6f0c7d996167f`,
-  and `086448f4f37f060b4ce42a887bc63d20f0c240a7` were invalidated by later
-  product corrections and are provenance only. The
+- **Status:** Accepted design, amended for authority timing. Source
+  `a471c2d51428a25dd11e42572b73cf5e86ef7478` and tree
+  `3f5ada8d116b527a8644be4d804f91341bc1e296` retain historical
+  three-display mixed-scale native evidence. The AppKit/game-like benchmark
+  bodies attributed to that source use an oracle absent from its tree and are
+  source/oracle-misbound, non-normative artifacts. Later authority,
+  raw-backing geometry, absolute-deadline/cancellation, and
+  possible-effect/cleanup corrections also prevent native results from
+  transferring to the current candidate. Its exact-source safety, performance,
+  sanitizer, ABI, and hosted-CI reruns are unexecuted. Release-level pair
+  publication remains 0 qualified, 0 rejected, and 14 unexecuted until one
+  applicable revision passes `single`, `same-scale`, and `mixed-scale`. The
+  complete matrix at `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` remains
+  historical evidence for the pre-optimization authority order. The
   [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
-  records the passing route-wide rows and the `single`, `same-scale`, and
-  `mixed-scale` rows behind each pair.
-- **Date:** 2026-08-16
-- **Release gate:** passed for those fourteen controlled pairs on that
-  revision, and for nothing wider
+  preserves each decision without transferring a pair pass between revisions
+  or topologies.
+- **Date:** 2026-08-16; authority-timing amendment 2026-08-17
+- **Release gate:** pending until all fourteen pairs have passing `single`,
+  `same-scale`, and `mixed-scale` rows and the controlled profiles pass on one
+  applicable revision
 - **Supersedes:** only ADR 0016's macOS system-only delivery-surface decision;
   its controlled-linkage, non-prompting permission, `System` focus-authority,
   no-private-window-control, and no-implicit-fallback rules remain in force
@@ -59,15 +67,43 @@ owning-process scope, on these rules:
    authority. Numeric PIDs and window numbers narrow lookup only; no PID,
    window number, title, application name, rectangle, or lookalike authorizes
    a replacement, for ordinary events or for cleanup.
-3. **One native final commit.** Immediately before each irreversible event, one
-   controlled native entry re-establishes retained-window existence, original
-   process lifetime and current PID relationship, open/unminimized/on-screen
-   state, geometry revision and transform policy, deadline, cancellation, and
-   current non-prompting event-post access, then creates and posts the event
-   without returning to caller-controlled code in between. macOS offers no
-   atomic validate-and-post, so this minimizes rather than eliminates
-   target-exit races.
-   A pointer scroll carries the sequence's last resolved global desktop location
+3. **One native final commit, with route-sensitive early refusal.** The
+   controller decides once, from caller route order and native-event presence,
+   whether mutable retained-window authority is required during preflight. A
+   process-directed attempt keeps that early observation when a later ordered
+   route could still be tried or when the sequence is delay-only, so target loss
+   remains a zero-effect refusal and fallback eligibility does not change. A
+   terminal ordinary attempt defers the duplicate mutable observation: it
+   carries retained identity, process lifetime, and source-frame geometry into
+   one controlled native entry. That entry first checks cheap process-wide
+   prerequisites and constructs the reversible native event. After construction,
+   it repeats the optional caller-selected focus predicate, then performs the
+   authoritative shareable-content inventory read. That last potentially
+   blocking observation re-establishes retained-window existence, open,
+   unminimized and on-screen state, and the selected geometry policy after the
+   Accessibility snapshot, so neither numeric metadata nor equal geometry can
+   authorize a replacement. It then rechecks current non-prompting event-post
+   access, original process lifetime and current PID relationship, deadline, and
+   interruption immediately before posting without returning to caller-controlled code. A
+   terminal loss may therefore surface during submission rather than route
+   selection, but remains `Unexecuted` with zero submitted events. macOS offers
+   no atomic validate-and-post, so this minimizes rather than eliminates
+   target-exit races. `RequireUnchanged` compares the final native observation
+   with the capture-preserved source-frame fingerprint: exact desktop origin
+   and raw backing scale plus the raw same-sample
+   `SCStreamFrameInfoScreenRect` size quantized to backing pixels. Source and
+   live point sizes are quantized separately rather than compared for exact
+   floating-point equality, because an unchanged fractional-size window can
+   differ from the transform's normalized logical extent. The effective
+   content scale and captured content extent cannot substitute for those raw
+   bounds when ScreenCaptureKit downscales a frame. `UseFrameSnapshot`
+   continues to project from that source transform. `ReprojectCurrent`
+   deliberately obtains current Rust geometry before the same final native
+   authority check and is outside the one-read terminal profile. The one-read
+   count is proved by revision-bound controller, geometry-source, and native
+   seam tests; benchmark timing and fixture observation do not independently
+   observe that private call count. A pointer
+   scroll carries the sequence's last resolved global desktop location
    alongside its wheel deltas; it never inherits an ambient Core Graphics
    location.
 4. **One private event source per sequence.** Each sequence owns one
@@ -99,10 +135,14 @@ owning-process scope, on these rules:
    Visual confirmation stays a separate caller operation on strictly newer
    retained frames and never mutates a receipt.
 7. **No implicit `System` fallback.** After any possible native effect,
-   fallback for the sequence is closed. An explicitly ordered `System` attempt
-   may begin only after process-directed preflight proved zero possible effect
-   and the System route passes its own focus, geometry, permission, deadline,
-   and cancellation checks.
+   fallback for the sequence is closed. When the caller ordered a later route,
+   the process route retains its early mutable authority check so a target loss
+   can reject it with zero possible effect before that later route is selected.
+   Once a process-directed route begins its final native commit, a refusal does
+   not reopen route selection. An explicitly ordered `System` attempt may begin
+   only after process-directed preflight proved zero possible effect and the
+   System route passes its own focus, geometry, permission, deadline, and
+   cancellation checks.
 8. **Version-one target scope is unchanged.** Ordinary eligibility remains
    open, unminimized, and on-screen; no off-screen, other-Space, minimized,
    hidden, or closed delivery is added.
@@ -182,21 +222,33 @@ the existing no-fallback contract after possible effect.
   native address is its owning process; a multi-window target process can
   consume events anywhere inside itself, and MadoPilot will not claim
   otherwise.
-- The support claim is bound to fourteen exact pairs in one revision-bound
-  observed report. The historical qualified source advertised each as
-  `Unknown`, owning-process scoped, invocation-only, and foreground-preserving;
-  each pair passed its own `single`, `same-scale`, and `mixed-scale` rows on
-  the qualified revision. Future operation,
-  target-class, coordinate-space, or topology pairs remain unavailable until
-  their own mandatory rows pass. A route-wide failure blocks every pair; a pair
-  failure blocks only that pair; missing topology evidence is never replaced by
-  another topology.
+- The support claim remains bound to fourteen exact pairs and revision-bound
+  native evidence. The pre-optimization source qualified each as `Unknown`,
+  owning-process scoped, invocation-only, and foreground-preserving. A later
+  optimized source passed its then-current mixed-scale rows, but that result is
+  historical; the current candidate has 14 unexecuted release decisions pending
+  exact-source `single`, `same-scale`, and `mixed-scale` rows. Future operation,
+  target-class, coordinate-space, or topology
+  pairs remain unavailable until their own mandatory rows pass. A route-wide
+  failure blocks every pair; a pair failure blocks only that pair; missing
+  topology evidence is never replaced by another topology or by a latency
+  result.
 - The internal shim gains a size-versioned process-post request carrying the
-  caller's focus requirement, one focus-result report field, a dedicated
-  focus-refusal status, and a sequence source lifecycle, extending the existing
-  layout/version/containment test obligations. Its internal surface version moves
-  from 13 to 14, which also covers the scroll-location signature change made
-  during correction; the released C ABI and its frozen prefixes are unchanged.
+  explicit focus predicate, exact retained target, geometry policy, expected
+  bounds, event source, absolute timeout, activity tag, and interruption
+  callback. Its private ABI moved from 13 to 14 for that request and the
+  scroll-location signature, to 15 when activation changed from a numeric PID
+  to the retained target handle, and to 16 when capture began retaining raw
+  `SCStreamFrameInfoScaleFactor` separately from effective content scale and
+  carrying the same-sample raw `SCStreamFrameInfoScreenRect` through the frame
+  ledger for final geometry comparison. Versions 17 through 19 cover the later
+  internal cutovers: splitting the caller-clock checkpoint from the final
+  atomic cancellation fence, replacing direct System-event posting with an
+  opaque prepared-input lifecycle and final post gate, and expanding the
+  private bounded-wait, synchronization-allocation, exception-containment, and
+  gate-counter verification surface. Version 19 is the current linked surface.
+  Each Rust/native layout change is version- and size-checked together. The
+  released C ABI and its frozen prefixes remain unchanged.
 - Qualification cost is real: route-wide and per-pair native rows on the
   approved Apple Silicon host across single-display, same-scale, mixed-scale,
   and signed-origin topologies, under sustained active capture, plus the frozen
@@ -213,10 +265,12 @@ the existing no-fallback contract after possible effect.
   [macOS input verification guide](../macos-input-verification.md). The separate
   privacy-reviewed
   [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
-  binds those commands to the qualified source and artifacts and records
-  RW-01–RW-14 passed, all mandatory single-display, same-scale, and mixed-scale
-  rows passed, 14 pairs qualified, zero rejected, zero unexecuted, and every
-  frozen benchmark gate passed.
+  binds results to their exact source and artifacts. It records the historical
+  complete pre-optimization matrix and the later `a471c2d` current-topology
+  native attempt separately, while rejecting the source/oracle-misbound
+  benchmark bodies. Subsequent source changes leave the current candidate's
+  profiles and all `single`, `same-scale`, and `mixed-scale` pair rows
+  unexecuted.
 - Deterministic controller, native-double, shim layout/version, containment,
   protocol, privacy, linkage, and C/C++ contract suites must cover every
   commit-seam ordering — cancellation, revocation, geometry change, target

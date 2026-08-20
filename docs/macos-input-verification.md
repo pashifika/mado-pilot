@@ -6,11 +6,17 @@ C ABI and header-only C++ wrapper consume that same facade-owned engine. Release
 acceptance consists of the explicit native checks below; ordinary test runs never
 send desktop input or open the opt-in fixture window.
 
-Current release status: **qualified for fourteen controlled pairs**. The
-qualified source passes route-wide, `single`, `same-scale`, and `mixed-scale`
-renderer rows, performance, sanitizer, repository, and CI checks. Earlier
-matrices remain provenance only. Nothing here qualifies arbitrary applications,
-arbitrary games, exact-window delivery, or application consumption.
+Current candidate release status: **0 qualified, 0 rejected, and 14 unexecuted
+controlled pairs**. Source
+`a471c2d51428a25dd11e42572b73cf5e86ef7478` retains historical
+three-display `mixed-scale` native rows. The two benchmark bodies attributed to
+that source use a visual oracle absent from its tree and are source/oracle-
+misbound, non-normative artifacts. The candidate's current-topology rows,
+profiles, sanitizer checks, and hosted CI must rerun on its exact revision; the
+disconnected `single` and exact two-display `same-scale` rows remain
+supplemental. Nothing
+here qualifies arbitrary applications, arbitrary games, exact-window delivery,
+or application consumption.
 
 ## Capability boundary
 
@@ -21,7 +27,7 @@ process that owns the retained window without focusing it.
 
 | Discovered target | `System` | `WindowMessage` | `ProcessDirected` |
 |---|---|---|---|
-| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Qualified pointer, keyboard, and text; foreground-preserving; honours a caller-selected `RequireFocused` predicate without activation; owning-process scope; `Unknown` compatibility; invocation-only evidence |
+| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Implemented pointer, keyboard, and text; foreground-preserving; honours a caller-selected `RequireFocused` predicate without activation; owning-process scope; `Unknown` compatibility; invocation-only evidence; release support is unexecuted on the optimized source |
 | Additional same-process windows | Same target contract | Unsupported | Do not revoke process scope; no exact-window or responder-selection guarantee |
 | Display | Pointer only; no focusable target is implied; invocation-only evidence | Unsupported | Unsupported |
 
@@ -34,14 +40,17 @@ descriptor never upgrades that to an exact-window claim. A fallback plan may try
 effect. The Adapter never substitutes system input on its own: doing so would
 focus a window the caller asked not to disturb.
 
-`ProcessDirected` publication is gated per operation pair: a pair is advertised
-only when its mandatory revision-bound native rows in the
+`ProcessDirected` release publication is gated per operation pair: a source may
+call a pair qualified only when its mandatory revision-bound native rows in the
 [ADR 0029](adr/0029-macos-process-directed-input.md) qualification matrix pass.
 `CapabilitySupport::Unknown` is the strongest publishable compatibility claim,
-and a failed or unexecuted route-wide row removes every dependent pair. The
-negotiated target descriptor, not a platform guess, is the admission authority.
-For the qualified source, that rule yields the fourteen advertised pairs, each
-carrying its own passing `single`, `same-scale`, and `mixed-scale` rows.
+and a failed or unexecuted route-wide row blocks every dependent pair. The
+negotiated target descriptor remains the runtime admission authority, but its
+implemented mapping is not evidence that the current source passed the release
+gate. The pre-optimization source qualified fourteen pairs. The later optimized
+source has historical passing `mixed-scale` rows, but no result transfers to the
+current candidate: all fourteen release decisions remain unexecuted pending
+exact-source `single`, `same-scale`, and `mixed-scale` rows.
 
 Every target names `PermissionKind::InputControl` as the authorization input
 needs, separately from the Screen Recording that capture needs. `InputControl`
@@ -72,17 +81,37 @@ rectangle is refused rather than clamped into whatever is next to it.
 
 A request still fails when its geometry policy cannot resolve the named frame:
 
-- `ReprojectCurrent` reads the target's live rectangle and backing scale.
-- `RequireUnchanged` accepts only a source frame retained for that target whose
-  geometry fingerprint still equals the live target.
-- `UseFrameSnapshot` uses a retained source transform. A revision that is no
-  longer retained is unsupported rather than reconstructed from current geometry.
+- `ReprojectCurrent` reads the target's live rectangle and backing scale in Rust,
+  maps from that geometry, and asks the final native gate to confirm the same
+  fingerprint before posting.
+- `RequireUnchanged` maps from the source-frame transform and carries that
+  frame's raw screen rectangle and backing scale to the final native gate. The
+  gate compares source and live raw point sizes after backing-pixel
+  quantization; it does not reconstruct native bounds from an effective,
+  potentially downscaled transform.
+- `UseFrameSnapshot` uses the retained source transform. A revision that is no
+  longer retained is unsupported rather than reconstructed from current
+  geometry; the final gate still checks exact retained-window authority but does
+  not reject movement.
 
-Under the two current-geometry policies, geometry is revalidated immediately
-before every irreversible pointer event, so a window that moved between
-resolution and delivery reports `GeometryChanged` instead of clicking what
-moved into its place; a retained frame snapshot stays deliverable by design,
-while target and process authority are still revalidated.
+The pre-optimization terminal `RequireUnchanged` pointer path made four fresh
+ScreenCaptureKit inventory reads: route preflight, Rust live geometry, native
+preparation, and native final authority. The optimized one-event terminal path
+with `RequireUnchanged` or `UseFrameSnapshot`, default no-focus behavior, and no
+later fallback makes one authoritative final read. A fallback-eligible route
+makes one early zero-effect read plus its final read, while terminal
+`ReprojectCurrent` makes one Rust live-geometry read plus the final native read.
+Those are separate two-read cases; combining stronger policies can require more.
+A delay-only sequence makes one early authority read because it has no native
+commit gate. `RequireFocused`, fallback, `ReprojectCurrent`, cleanup, and
+multi-unit sequences are outside the one-read latency claim.
+
+At the final observation, `ReprojectCurrent` and `RequireUnchanged` refuse a
+mismatch with `GeometryChanged` rather than posting into changed geometry.
+`RequireUnchanged` does not remember transient movement: geometry restored to
+the source-frame value before the final observation passes. `UseFrameSnapshot`
+stays deliverable across movement by design while target and process authority
+are still revalidated.
 
 ## Authorization, focus, and submission evidence
 
@@ -115,10 +144,11 @@ Focus is a `System`-route precondition and an optional caller predicate on
 `ProcessDirected`. Both use public, read-only Accessibility attributes: the
 owning application must be active, its focused window must appear in its public
 window list, and exactly one Accessibility window's top-left global position
-and size must equal the freshly verified frame. The shareable-content and focus
-observations are repeated after that join. Missing attributes, changed geometry,
-or zero or multiple matches establish no focus and deliver nothing. Titles and
-private Accessibility window identifiers are not read, and a same-PID
+and size must equal the freshly verified frame. The shareable-content identity
+and frame are read again after the Accessibility snapshot. Missing required
+attributes make focus unobservable; a complete unequal or ambiguous observation
+establishes that the retained window is not focused. Both outcomes deliver nothing.
+Titles and private Accessibility window identifiers are not read, and a same-PID
 replacement that recycles numeric metadata still makes the old `TargetId`
 report `TargetLost`. Every native observation is bounded by the caller's
 remaining operation budget.
@@ -128,22 +158,24 @@ remaining operation budget.
   `ProcessDirected`, which imposes no route-level focus requirement and does not
   consult Accessibility under this policy.
 - `RequireFocused` never activates anything. On either window route it performs
-  the exact focus read above; an unfocused retained window returns
-  `FocusRequired`, and unavailable Accessibility authority returns
-  `NotAuthorized`, before any event is posted. On `ProcessDirected` the
-  requirement travels with the request and is read again inside the same bounded
-  native operation that revalidates retained-window authority, geometry,
-  event-post access, and process lifetime, so a foreground change during those
-  queries refuses instead of posting. A sequence-owned release never carries the
-  predicate, because a target that lost the foreground is exactly when a held
-  key or button most needs releasing.
+  the exact focus read above. A complete observation of an unfocused retained
+  window returns `FocusRequired`; withheld Accessibility authorization returns
+  `NotAuthorized`; and missing or inconsistent required Accessibility data
+  returns `SubmissionFailed`. All refuse before any event is posted. On
+  `ProcessDirected` the requirement travels with the request and is read again
+  inside the same bounded native operation that revalidates retained-window
+  authority, geometry, event-post access, and process lifetime, so a foreground
+  change during those queries refuses instead of posting. A sequence-owned
+  release never carries the predicate, because a target that lost the foreground
+  is exactly when a held key or button most needs releasing.
 - `ActivateIfRequired` asks macOS to activate the owning application only for
-  `System`, then repeats the exact public focus read-back for a bounded period
-  and reports `FocusRefused` if the retained window cannot be established as
-  focused. It never claims to have raised one particular window, never passes
-  `NSApplicationActivateIgnoringOtherApps`, and never uses Accessibility to
-  move another application's windows. `ProcessDirected` does not activate:
-  callers that need a focus predicate select `RequireFocused`.
+  `System`, then repeats the exact public focus read-back for a bounded period. A
+  complete observation that remains unfocused reports `FocusRefused`; an
+  authorization or platform observation failure retains its typed fault. It
+  never claims to have raised one particular window, never passes
+  `NSApplicationActivateIgnoringOtherApps`, and never uses Accessibility to move
+  another application's windows. `ProcessDirected` does not activate: callers
+  that need a focus predicate select `RequireFocused`.
 
 A display target has no focus requirement, because nothing about a display is
 focusable.
@@ -164,35 +196,45 @@ route and may receive or otherwise react to the event. The descriptor and
 receipt therefore report owning-process scope and never exact-window delivery;
 a caller that requires one exact consumer rejects the pair before input.
 
-Immediately before every irreversible ordinary post, the shim re-establishes,
-inside the caller's remaining budget and in this order:
+The route controller requests an early retained-window authority observation
+only when a later caller-ordered route could still be selected or when a
+delay-only sequence has no native commit gate. That observation is a zero-effect
+fallback prerequisite. A terminal route containing a native event defers mutable
+window authority to the final gate; target loss can therefore surface after
+route selection, and that refusal does not reopen fallback.
 
-1. the retained logical `SCWindow` is present and equal in a fresh
-   shareable-content snapshot, with numeric window/PID metadata used only as a
-   fail-closed cross-check;
-2. the owning process still matches the process-lifetime token retained at
-   discovery — a reused PID or restarted process cannot satisfy it;
-3. the retained target window remains on screen at window layer zero with a
-   finite frame, open and unminimized;
-4. `CGPreflightPostEventAccess` still reports granted;
-5. for a pointer event under `ReprojectCurrent` or `RequireUnchanged`, the
-   current native rectangle still equals the geometry the coordinate was
-   resolved against. `UseFrameSnapshot` keeps its retained transform and
-   revalidates authority only.
+Each ordinary native unit then stays inside one contained shim entry. In order,
+the shim:
 
-Only then is one `CGEvent` constructed and posted to the process. The call
-returns nothing, so a returned call records invocation-only evidence, closes
-fallback for the sequence, and is never promoted to queue admission, target
-observation, consumption, or visual success. A missing, duplicate, replaced,
-minimized, or unavailable retained-target observation produces a typed refusal
+1. checks reversible prerequisites: current non-prompting event-post access,
+   original process lifetime and PID relationship, and the caller-selected focus
+   predicate when `RequireFocused` applies;
+2. constructs one `CGEvent`;
+3. repeats the caller-selected focus predicate when `RequireFocused` applies;
+4. performs one authoritative shareable-content inventory read and proves that
+   the exact retained logical `SCWindow` is still present, equal, open,
+   unminimized, on screen, at window layer zero, and finite;
+5. applies the selected geometry policy — compares the final rectangle with the
+   source frame for `RequireUnchanged`, compares it with the Rust live mapping
+   for `ReprojectCurrent`, or retains snapshot mapping while still checking
+   target authority for `UseFrameSnapshot`;
+6. repeats authorization and original process lifetime/PID checks, then checks
+   the deadline and cancellation immediately before the irreversible call;
+7. enters `CGEventPostToPid`.
+
+An event constructed before a final refusal is released in the shim's
+`@finally` path and is never posted. Entering the void post call is the
+possible-effect boundary; normal return increments the invoked-native-unit
+count but still proves only invocation. A missing, duplicate, replaced,
+minimized, off-screen, or unavailable retained target produces a typed refusal
 before ordinary posting. Unrelated additional windows in the same process are
 not ambiguity: they are part of the process scope the caller explicitly chose.
 
 Release-only cleanup revalidates the original process lifetime, current PID,
-route, and authorization before each bounded post. It deliberately does not
-require ordinary target visibility, focus, or pointer geometry, because cleanup
-must still release only state this sequence pressed after those ordinary gates
-change. It never posts to a replacement process.
+route, authorization, deadline, and its independent bound before each post. It
+performs no ordinary retained-window inventory, focus, visibility, or pointer
+geometry check, because cleanup must still release only state this sequence
+pressed after those facts change. It never posts to a replacement process.
 
 The route never activates or raises the target application or window, posts
 through the system event stream, reads or moves the physical cursor, installs
@@ -236,9 +278,10 @@ running.
 
 `System` cleanup deliberately does **not** revalidate focus or geometry. A
 window that stopped being frontmost is exactly when a held button matters most.
-A `ProcessDirected` release revalidates the original retained process lifetime,
-current PID relationship, route, authorization, deadline, and cancellation. It
-does not require ordinary target visibility, focus, or pointer geometry: those
+A `ProcessDirected` release performs zero retained-window inventory reads. It
+revalidates the original retained process lifetime, current PID relationship,
+route, authorization, deadline, cancellation, and bounded release state, but
+does not require ordinary target visibility, focus, or pointer geometry. Those
 states may be why cleanup is required, and release purpose still refuses a
 replacement process. Cleanup never claims that external keyboard or pointer
 state was restored: a receipt reports `Incomplete` for a release the platform
@@ -317,25 +360,29 @@ FOREGROUND_APP=target/mado-pilot-fixtures/MadoPilotForegroundFixture.app
 mkdir -p "$APP/Contents/MacOS" "$FOREGROUND_APP/Contents/MacOS"
 cp crates/platform/macos/bundle/Info.plist "$APP/Contents/Info.plist"
 cp crates/platform/macos/bundle/Info.plist "$FOREGROUND_APP/Contents/Info.plist"
-/usr/bin/plutil -replace CFBundleIdentifier \
-  -string dev.mado-pilot.macos-input-foreground-fixture \
+TARGET_BUNDLE_ID="$(
+  xcrun plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist"
+)"
+FOREGROUND_BUNDLE_ID="${TARGET_BUNDLE_ID}.foreground"
+xcrun plutil -replace CFBundleIdentifier \
+  -string "$FOREGROUND_BUNDLE_ID" \
   "$FOREGROUND_APP/Contents/Info.plist"
 cp target/debug/mado-pilot-macos-input-fixture "$APP/Contents/MacOS/"
 cp target/debug/mado-pilot-macos-input-fixture "$FOREGROUND_APP/Contents/MacOS/"
-/usr/bin/codesign --force --sign - \
-  --identifier dev.mado-pilot.macos-input-fixture \
+xcrun codesign --force --sign - \
+  --identifier "$TARGET_BUNDLE_ID" \
   --timestamp=none "$APP"
-/usr/bin/codesign --force --sign - \
-  --identifier dev.mado-pilot.macos-input-foreground-fixture \
+xcrun codesign --force --sign - \
+  --identifier "$FOREGROUND_BUNDLE_ID" \
   --timestamp=none "$FOREGROUND_APP"
-/usr/bin/codesign --verify --strict --verbose=2 "$APP"
-/usr/bin/codesign --verify --strict --verbose=2 "$FOREGROUND_APP"
+xcrun codesign --verify --strict --verbose=2 "$APP"
+xcrun codesign --verify --strict --verbose=2 "$FOREGROUND_APP"
 "$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --report-execution-context
 ```
 
-The last command must report `launch=bundled`, `signature=ad-hoc`, and
-`signing-identifier=dev.mado-pilot.macos-input-fixture`. This verification proves
+The last command must report `launch=bundled`, `signature=ad-hoc`, and a
+`signing-identifier` equal to `$TARGET_BUNDLE_ID`. This verification proves
 the generated bundle's structural code-signature validity and the running code's
 classification. It does not prove that Gatekeeper would accept a distributed
 artifact, that macOS made or reused any TCC decision, that a native input route
@@ -589,20 +636,38 @@ event or visual credit before the production sequence runs.
 The historical complete qualification ran at source commit
 `8309a05c3e7696f3081c5afef6dd6979ea1bb084` (tree
 `27fe879e0c4bb55fe4850d9a50737b568936cc10`) under fixture protocol version 9.
-Its AppKit and game-like rows passed `single`, `same-scale`, and `mixed-scale`
-separately, but the later product correction invalidated every pair decision.
+Its rows are superseded.
 
-The corrected source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426`
-(tree `f4a707501748303adcec577df5f18fcd18f13f45`) uses internal shim surface
+The corrected pre-optimization source commit
+`a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (tree
+`f4a707501748303adcec577df5f18fcd18f13f45`) uses internal shim surface
 version 14 and fixture protocol version 10. Its route-wide and complete
-`single`, `same-scale`, and `mixed-scale` AppKit/OpenGL rows all pass. The
-privacy-reviewed
-[observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
-records both the accepted decision and the superseded runs, including commands,
-artifact and raw-output hashes, bounded outcomes, excluded attempts, and all
-fourteen `qualified` pair decisions. Current raw logs
-remain ignored under the Change's
-`ephemera/qualification-final-a1eee9c/` evidence root.
+`single`, `same-scale`, and `mixed-scale` AppKit/OpenGL rows passed, qualifying
+fourteen controlled pairs on that revision only.
+
+Review invalidated the first optimized candidate `28ceb2e`: its final
+`RequireUnchanged` check compared the source transform's normalized logical
+size with raw `SCWindow.frame` size. A deterministic native seam reproduced an
+unchanged 320.4-point Retina window whose 641-pixel capture normalizes to 320.5
+points and proved the raw rectangle equality rejected it. Source commit
+`a471c2d51428a25dd11e42572b73cf5e86ef7478` (tree
+`3f5ada8d116b527a8644be4d804f91341bc1e296`) instead compares exact desktop
+origin and backing scale plus the integral capture extent and redacts
+authenticated fixture process identities. That exact source reran and passed
+the live three-display `mixed-scale` native rows. Its retained AppKit/game-like
+benchmark bodies are not source-bound: their commanded-transition visual oracle
+is absent from the named tree. Later evidence-driven geometry, retained-process
+activation, callback-fence, and final-gate cutovers advanced the current private
+shim surface to version 19. The `single` and `same-scale` rows were not run, so
+every optimized-source release pair remains `unexecuted`; no historical pair
+pass transfers to the current candidate.
+
+The privacy-reviewed
+[repository evidence](evidence/phase-2-native/macos-owning-process-qualification.md)
+keeps immutable historical native records separate from the current decision.
+The tuning Change's
+[observed report](../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md)
+records the misbound benchmark rejection and excludes raw-log provenance.
 
 ## Explicit facade check
 
@@ -700,33 +765,44 @@ This profile requalifies input and public-language performance only. It does not
 replace the full current-display, shared-display, retained-frame, or
 AddressSanitizer acceptance matrices named below.
 
-The process-directed route, the fixture-controlled capture stimulus, and their
-budgets are a separate profile lineage whose pre-measurement ceilings were
-frozen in the [ADR 0029](adr/0029-macos-process-directed-input.md)
-qualification plan. That lineage was remeasured at corrected source commit
-`a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (tree
-`f4a707501748303adcec577df5f18fcd18f13f45`) in five revision-bound
-`aarch64-apple-darwin` profiles:
-[`phase-2-2-controlled-capture`](benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml),
-[`phase-2-2-controlled-transitions`](benchmarks/phase-2-2-controlled-transitions-aarch64-apple-darwin.toml),
-[`phase-2-2-process-directed-appkit`](benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml),
-[`phase-2-2-process-directed-game-like`](benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml),
-and
-[`phase-2-2-process-directed-diagnostics`](benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml).
-Their twenty-four workloads retain 2,700 passing samples in total, and every
-correctness oracle and frozen budget passed. Allocation growth is zero for every
-workload. The per-workload measurements, budgets, and artifact hashes are
-bound in the privacy-reviewed
-[observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
-rather than duplicated here. These profiles are regression ceilings for
-controlled AppKit/OpenGL fixtures on the qualified host, not user-facing
-latency promises. The corrected event-authority/preflight/post workloads
-measured about 210–224 ms at p95, so this release makes no real-time input
-latency claim. The `game-like` label identifies the controlled OpenGL renderer;
-it does not establish general game compatibility. Receipts claim neither
-exact-window delivery nor application consumption. Passing performance profiles
-do not substitute for missing topology rows and therefore do not qualify a
-process-directed pair.
+The process-directed route, fixture-controlled capture stimulus, and their
+budgets form a separate profile lineage whose pre-measurement ceilings were
+frozen in [ADR 0029](adr/0029-macos-process-directed-input.md). Controlled
+capture, controlled transitions, and process diagnostics remain bound to their
+named pre-optimization revision. The two authority-timing-sensitive files
+formerly attributed to source
+`a471c2d51428a25dd11e42572b73cf5e86ef7478` are explicitly
+`status = "misbound"` and `normative = false`:
+
+- [`phase-2-2-process-directed-appkit`](benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml);
+- [`phase-2-2-process-directed-game-like`](benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml).
+
+Their retained commanded-transition oracle is absent from the named source, and
+the emitting benchmark executable was not recorded. They provide no latency,
+correctness, fixture-event, foreground, cursor, memory, or support result.
+
+An accepted rerun must use the exact candidate commit and tree, an absolute path
+to the signed fixture executable, the frozen host/topology options, five
+warm-ups, and 50 retained samples. Its committed profile must record both
+`fixture_sha256` and `benchmark_executable_sha256`. Frozen p95 ceilings remain
+`106.34 ms` for AppKit and `112.18 ms` for the controlled game-like fixture.
+
+The one-read gate is the revision-bound conjunction of controller,
+geometry-source, and native seam counter tests with an exact-source benchmark
+row. The tests prove exactly one final retained-window inventory read for the
+terminal `RequireUnchanged`, default-focus-policy, one-pointer-event path; the
+benchmark must prove the independent environmental and latency gates without
+exposing or perturbing that private count. The scope excludes `RequireFocused`,
+`ReprojectCurrent`, ordered fallback, cleanup, and multi-unit sequences.
+
+These are enforced regression ceilings for the two controlled fixtures, not
+user-facing latency promises. The `game-like` label identifies only the
+controlled OpenGL renderer; it establishes neither general game nor anti-cheat
+compatibility. Receipts claim neither exact-window delivery nor application
+consumption. Passing historical performance and `mixed-scale` evidence does not
+transfer to the current candidate or substitute for its exact-source `single`,
+`same-scale`, and `mixed-scale` topology rows, so all fourteen release decisions
+remain unexecuted.
 
 ## Historical Phase 2 evidence
 

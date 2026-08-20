@@ -33,11 +33,11 @@ rather than ambient, and what fails when the library is absent. This is a
 development prerequisite only: source releases bundle no native dependency and
 make no installable deployment-profile claim, which remains gate `G-007`.
 
-The macOS implementation is qualified only on Apple Silicon macOS 26.5.2
-(25F84), SDK 26.5; earlier macOS versions are unsupported investigation targets,
-not compatibility claims. `.cargo/config.toml` sets the final artifact deployment
+The supported macOS native host is Apple Silicon macOS 26.5.2 (25F84), SDK
+26.5; earlier macOS versions are unsupported investigation targets, not
+compatibility claims. Individual revision-bound feature gates can still be
+unexecuted on that host. `.cargo/config.toml` sets the final artifact deployment
 metadata to 26.5.2 and the native build repeats that floor. The macOS native shim
-adds no prerequisite beyond that environment. The production shim in
 `mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
 Command Line Tools alone**, on a host where full Xcode is not installed; its only
 Cargo addition is `cc`, declared as an unconditional build dependency so Cargo
@@ -144,6 +144,40 @@ done
 
 The capability matrix, typed outcomes, privacy bounds, and bundling step are in
 [docs/macos-input-verification.md](docs/macos-input-verification.md).
+
+Run each topology selector against the exact candidate source; a pass under one
+selector cannot qualify another. Source
+`a471c2d51428a25dd11e42572b73cf5e86ef7478` passed the three-display
+`mixed-scale` matrix, but later authority, raw-backing geometry,
+absolute-deadline/cancellation, possible-effect/cleanup, and fixture-oracle
+corrections make that result historical. The current candidate
+starts at fourteen unexecuted process-directed release pairs; only exact-source
+reruns may change that decision. The complete pre-optimization matrix is
+provenance only.
+
+The performance claim is narrower than the qualification matrix. The one-event
+terminal `RequireUnchanged` path, with default no-focus behavior and no later
+fallback, makes one final inventory read. Its pre-optimization equivalent made
+four: route preflight, Rust live geometry, native preparation, and native final
+authority. A fallback-eligible route and terminal `ReprojectCurrent` each have
+distinct two-read shapes; `RequireFocused`, combinations of stronger policies,
+cleanup, and multi-unit sequences are excluded from the one-read result.
+
+The revision-bound one-read decision is composite. Controller, geometry-source,
+and native seam tests prove the call count. Exact-source AppKit and controlled
+OpenGL benchmark rows must separately prove latency, one matching fixture
+event, unchanged foreground and physical cursor, zero correctness failures,
+and allocation growth no greater than 4,096 bytes without adding private
+timing-path instrumentation. The retained benchmark bodies attributed to
+`a471c2d` are source/oracle-misbound and non-normative; they satisfy none of
+those gates. Run the exact candidate-bound commands in
+[`docs/macos-input-verification.md`](docs/macos-input-verification.md#current-native-input-performance-evidence).
+Each accepted benchmark retains 50 samples after five warm-ups and records both
+fixture and benchmark executable digests. Frozen p95 ceilings are `106.34 ms`
+for AppKit and `112.18 ms` for the controlled game-like fixture. Those gates are
+regression evidence for the named source, host, fixture, renderer, route,
+geometry policy, and focus policy only; they are not real-time or general
+application/game compatibility claims.
 
 The owned-window replacement acceptance probe sends no input, but it opens and
 replaces the signed fixture window and therefore remains explicit:

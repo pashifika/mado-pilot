@@ -571,9 +571,13 @@ route: the wrapper flow requires `ProcessDirected` with owning-process scope,
 unknown compatibility, and invocation-only evidence, preserves foreground, and
 permits no fallback. Run real input only against a target you own and have
 selected exactly, as described in the platform verification documents.
-This macOS mode exercises the release-qualified process-directed pairs for the
-controlled fixture classes on the qualified host; it makes no claim about
-arbitrary applications, exact-window delivery, or application consumption.
+This macOS mode exercises the implemented process-directed pairs. The last
+retained current-topology and controlled-fixture performance results bind a
+historical optimized source. The current candidate has no retained native result,
+so its exact-source `single`, `same-scale`, and `mixed-scale` rows and all
+fourteen release decisions remain unexecuted. The mode makes no claim about
+arbitrary applications, games,
+renderers, input stacks, exact-window delivery, or application consumption.
 
 The check needs a C++ compiler and **CMake 3.22 or later** in addition to the C
 compiler. Both are the release target's own on both hosts; set `CXX` or `CMAKE`

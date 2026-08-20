@@ -13,10 +13,13 @@ correctness-oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budge
 now accepts the macOS diagnostic slice,
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
 revision-bound macOS native input and public-language profile. Accepted-design
-[ADR 0029](adr/0029-macos-process-directed-input.md) binds the measured
-Phase 2.2 macOS process-directed and controlled-stimulus lineage below, whose
-fourteen controlled pairs are qualified on the measured revision. The remaining
-native workload and target gaps stay open.
+[ADR 0029](adr/0029-macos-process-directed-input.md) binds the Phase 2.2 macOS
+process-directed and controlled-stimulus lineage below. The last retained
+optimized profiles pass their frozen regression budgets only for their
+historical source. The current candidate has no retained native result, so its
+exact-source `single`, `same-scale`, and `mixed-scale` rows and all fourteen
+release pair decisions remain unexecuted. The remaining native workload and
+target gaps stay open.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -532,31 +535,68 @@ per-event authority/preflight/post path (`event_authority_preflight_post`),
 release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
 overflow around process-directed events.
 
-Five revision-bound profiles were remeasured on the approved Apple Silicon host
-at corrected source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426`
-(implementation tree `f4a707501748303adcec577df5f18fcd18f13f45`):
-`phase-2-2-controlled-capture-aarch64-apple-darwin`,
-`phase-2-2-controlled-transitions-aarch64-apple-darwin`,
-`phase-2-2-process-directed-appkit-aarch64-apple-darwin`,
-`phase-2-2-process-directed-game-like-aarch64-apple-darwin`, and
-`phase-2-2-process-directed-diagnostics-aarch64-apple-darwin`. Their committed
-records under `docs/benchmarks/` are normative performance records. Across
-2,700 retained samples, every workload correctness oracle passed; post-warmup
-allocation growth was zero for every workload, within the frozen growth
-budgets; and every frozen p50, p95, hard-maximum,
-mapped-byte, stale-work, peak-live-heap, and diagnostic-capacity gate passed.
-These passing budgets are regression ceilings only; the pair decisions rest on
-the separate native topology rows, not on timing.
+The original five revision-bound profiles were measured on the approved Apple
+Silicon host at corrected pre-optimization source commit
+`a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (implementation tree
+`f4a707501748303adcec577df5f18fcd18f13f45`). The controlled-capture,
+controlled-transition, and process-diagnostic records remain bound to that
+source. The authority-timing-sensitive AppKit and controlled game-like files
+formerly attributed to source
+`a471c2d51428a25dd11e42572b73cf5e86ef7478` (tree
+`3f5ada8d116b527a8644be4d804f91341bc1e296`) are:
 
-The pre-measurement ceilings remain the regression budgets; they were not
-re-ceilinged from the result. The
-[ADR 0029](adr/0029-macos-process-directed-input.md) defines those ceilings,
-and the separate privacy-reviewed
-[observed report](evidence/phase-2-native/macos-owning-process-qualification.md)
-records the exact measurements, hashes, excluded stopped attempt, and partial
-qualification decision. Game-like samples carry the fixture's explicit
-mode/renderer fact, so an AppKit-renderer measurement cannot be filed as a
-game-like result.
+- `phase-2-2-process-directed-appkit-aarch64-apple-darwin`;
+- `phase-2-2-process-directed-game-like-aarch64-apple-darwin`.
+
+Their retained commanded-transition visual oracle is absent from the named
+source tree. Both files are therefore `misbound`, non-normative evidence and
+provide no measured latency, correctness, memory, or support result. Exact-source
+profiles are unexecuted; the pre-measurement `106.34 ms` and `112.18 ms` p95
+ceilings remain frozen rather than being reset from rejected output.
+
+The one-read gate is composite rather than a field in either benchmark row.
+Revision-bound controller tests prove terminal route ordering, geometry-source
+tests prove source-transform reuse without a Rust live query, and native seam
+tests prove one final ordinary authority call. A future exact-source measured
+row must independently prove latency, fixture observation, foreground/cursor
+stability, correctness, memory, and both fixture and benchmark executable
+provenance without adding a private inventory counter to the timed path.
+
+The read count has a narrow scope. Before optimization, the same terminal
+`RequireUnchanged` pointer profile made four fresh inventory reads — route
+preflight, Rust live geometry, native preparation, and native final authority —
+and measured `212.674625 ms` / `224.368667 ms` p95. The optimized terminal
+one-event `RequireUnchanged` or `UseFrameSnapshot` path with default no-focus
+behavior and no later fallback has a deterministic one-final-read shape. A
+fallback-eligible route makes one early read plus the final read; terminal
+`ReprojectCurrent` makes one live-geometry read plus the final read. These are
+separate two-read paths. `RequireFocused`, cleanup, and multi-unit sequences are
+excluded from the one-read call-count scope.
+
+The committed files under `docs/benchmarks/` carry the exact measurements,
+profile metadata, executable hash, and in-process budgets. Every retained
+process-directed profile binds its result to one full Git commit id, tree id,
+fixture-source SHA-256 digest, and fixture-executable SHA-256 digest. The commit
+and tree in its opening provenance comment must exactly match the values in
+`[profile].notes`; `benchmark_block_drift` verifies those equalities and digest
+shapes for every committed process-directed profile. A newly generated native
+report also carries `benchmark_executable_sha256`, which must be retained when
+that report becomes a current profile. The
+[macOS input verification guide](macos-input-verification.md#current-native-input-performance-evidence)
+provides the runnable benchmark commands, and the tuning Change's
+[observed report](../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md)
+records their outputs and provenance. Game-like samples carry the fixture's
+explicit `mode=game-like renderer=opengl` fact, so they establish no result for
+another renderer, game, application, input stack, or anti-cheat system.
+
+These passing historical profiles are controlled-fixture regression evidence,
+not a real-time latency promise or evidence of exact-window delivery,
+application consumption, `RequireFocused`, `ReprojectCurrent`, or fallback
+performance. Timing cannot replace topology qualification: the retained
+`mixed-scale` rows bind an earlier optimized source, and the current candidate
+has no retained native result. Its exact-source `single`, `same-scale`, and
+`mixed-scale` rows therefore remain unexecuted, so none of its fourteen pair
+decisions is release-qualified.
 
 ## Phase 2 Windows ownership prototype
 

@@ -1,6 +1,58 @@
-## Current decision
+## Current candidate decision
 
-The Phase 2.2 native qualification matrix **passes** on source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` and source tree `f4a707501748303adcec577df5f18fcd18f13f45`.
+The current candidate has 0 `qualified`, 0 `rejected`, and 14 `unexecuted`
+release pairs. Its exact-source native matrix, controlled AppKit/game-like
+profiles, sanitizer, ABI, and hosted-CI checks have not run. No earlier
+current-topology row, latency result, or deterministic check transfers to this
+candidate.
+
+Source commit `a471c2d51428a25dd11e42572b73cf5e86ef7478` and tree
+`3f5ada8d116b527a8644be4d804f91341bc1e296` retain native-matrix,
+deterministic, sanitizer, ABI, and hosted-CI history for that source only. The
+AppKit and controlled game-like benchmark bodies previously attributed to it
+use a visual oracle absent from that tree. They are source/oracle-misbound,
+non-normative artifacts and supply no latency, correctness, or support result.
+Later authority, raw-backing geometry, absolute-deadline/cancellation, and
+possible-effect/cleanup corrections also prevent the native history from
+qualifying the current candidate. The complete qualification at
+`a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` is likewise historical evidence
+for the pre-optimization authority order.
+
+| Field | Historical `a471c2d` native evidence |
+|---|---|
+| Product commit / tree | `a471c2d51428a25dd11e42572b73cf5e86ef7478` / `3f5ada8d116b527a8644be4d804f91341bc1e296` |
+| Fixture source / executable SHA-256 | `51c6f991a942d30440f18a8b06e105ebb3bc15511a9e909ef696b300ba8d4c7b` / `44fba7cb3e28f54d4869d34640a98e1e56402b2578b836748c95617a1b1762b8` |
+| Measured topology | three online non-mirrored displays; signed-origin 1× display, 2× main display, and 2× built-in display |
+| Affected native rows | 9 passed, 0 failed; retained-window replacement passed; three display conversion/geometry/seam scenarios passed |
+| Deterministic / ASan | 200 passed without private fixture, 221 passed with private fixture / 200 passed with no sanitizer finding |
+| ABI and packaging | C ABI 1.2, frozen ABI 1.0 prefix, C/C++/CMake consumers, linkage, signing, and panic containment passed |
+| Benchmark artifacts | unavailable as source-bound evidence; prior profile digests were unreproducible and are withdrawn |
+| Immutable native-history snapshot | [`8d3fa58738f201496c496159717d274e7f5c06b7`](https://github.com/pashifika/mado-pilot/blob/8d3fa58738f201496c496159717d274e7f5c06b7/docs/evidence/phase-2-native/macos-owning-process-qualification.md) |
+| Immutable pre-optimization qualified snapshot | [`b76f06fd8997b8c666b18ace6c162c3335953e55`](https://github.com/pashifika/mado-pilot/blob/b76f06fd8997b8c666b18ace6c162c3335953e55/docs/evidence/phase-2-native/macos-owning-process-qualification.md) |
+
+The mutable successor verification procedure and tuning report are not
+historical bindings. They describe the current candidate and may change only
+with new exact-source evidence.
+
+Review invalidated predecessor `28ceb2e`: exact raw `CGRect` equality rejected
+an unchanged 320.4-point Retina window because its integral 641-pixel capture
+normalizes to 320.5 logical points. A failing deterministic native seam proved
+the mismatch before `00c4927` changed the final comparison to exact origin,
+backing scale, and integral capture extent. Later review invalidated `a287af8`
+because its changed activation argument had not advanced the private shim
+surface version and its fixture-process `Debug` exposed native identity fields.
+No safety or performance result from either invalidated candidate is promoted
+to the corrected source.
+
+The rejected benchmark files preserve the frozen acceptance budgets only. Their
+measurement bodies are forensic rejection material, not regression evidence or
+historical latency results.
+
+## Historical pre-optimization decision
+
+The Phase 2.2 native qualification matrix passed before the authority-timing optimization.
+
+The Phase 2.2 native qualification matrix **passed** on source commit `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` and source tree `f4a707501748303adcec577df5f18fcd18f13f45`.
 
 All fourteen in-scope operation/target/coordinate-space pairs are `qualified` under the frozen qualification plan:
 
@@ -20,7 +72,7 @@ The revision carries both accepted review corrections. The final-gate focus auth
 
 The earlier matrices at `8309a05c3e7696f3081c5afef6dd6979ea1bb084`, `850b7b26dde49035dd5759685ab6f0c7d996167f`, and `086448f4f37f060b4ce42a887bc63d20f0c240a7` are historical only; none of their pair passes was applied to this source.
 
-## Current qualified provenance
+## Historical pre-optimization qualified provenance
 
 The accepted native rows were recorded on 2026-08-16 JST. Product, fixture, test, and benchmark source remained fixed at the source commit above for every accepted row. The five benchmark profiles and this report were produced afterward and do not change the measured implementation tree. The release fixture executable is byte-identical to the previous revision's, because the corrected conversion is not reachable from the fixture binary.
 
@@ -56,17 +108,17 @@ Qualification executable hashes:
 | C common-flow executable | 34,880 | `c47e516890e5aa69130ef988e7d3e04e1cb941c413d6f820a27df02f1c10f6aa` |
 | C++ common-flow executable | 327,960 | `481d470428c7bbff00a8125920f5f9bd3f79187a53c47e33f66f1a3e011a754f` |
 
-## Current command manifest
+## Historical pre-optimization command manifest
 
-The retained current-revision evidence was produced by the following command groups. `$APP` and `$FOREGROUND_APP` denote repository-built fixture bundles; absolute workstation paths and private fixture records remain only in ignored raw output.
+The retained pre-optimization evidence was produced by the following command groups. `$APP` and `$FOREGROUND_APP` denote repository-built fixture bundles; absolute workstation paths and private fixture records remain only in ignored raw output.
 
 ```sh
 cargo build --locked --release -p mado-pilot-platform-macos \
   --features private-fixture --bin mado-pilot-macos-input-fixture
 # Assemble both bundles, copy the release executable, and sign each ad hoc with
 # its approved identifier.
-/usr/bin/codesign --verify --strict --verbose=2 "$APP"
-/usr/bin/codesign --verify --strict --verbose=2 "$FOREGROUND_APP"
+xcrun codesign --verify --strict --verbose=2 "$APP"
+xcrun codesign --verify --strict --verbose=2 "$FOREGROUND_APP"
 "$APP/Contents/MacOS/mado-pilot-macos-input-fixture" --report-execution-context
 
 export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$APP/Contents/MacOS/mado-pilot-macos-input-fixture"
@@ -116,9 +168,9 @@ cargo test --locked -p mado-pilot-testkit \
   --test benchmark_block_drift --test hard_budget_drift
 ```
 
-## Current topology and native outcomes
+## Historical pre-optimization topology and native outcomes
 
-| Selector / row group | Current outcome |
+| Selector / row group | Historical outcome |
 |---|---|
 | `mixed-scale` display-frame rows | passed: three displays published their own logical/backing geometry; the signed-origin 1×/2× seam and adjacent 2×/2× seam were exercised |
 | `mixed-scale` AppKit renderer | passed: four visits closed the 2× → 2× → 1× → 2× cycle at geometry revisions 3/4/5/6 and epochs 2/2/3/4 |
@@ -161,7 +213,7 @@ The default private-fixture suite recorded 253 passes and ten deliberately ignor
 
 No route-wide row failed.
 
-### Current pair decisions
+### Historical pre-optimization pair decisions
 
 | Operation | Target class | Coordinate space | Decision | Reason |
 |---|---|---|---|---|
@@ -182,7 +234,7 @@ No route-wide row failed.
 
 Pair totals: 14 `qualified`, 0 `rejected`, 0 `unexecuted`.
 
-## Current performance outcomes
+## Historical pre-optimization performance outcomes
 
 The five Phase 2.2 profiles were measured on the qualified source under the `mixed-scale` arrangement, which their committed notes record. All 2,700 retained samples across twenty-four workloads satisfied their correctness oracle and frozen latency, hard-maximum, mapped-byte, stale-work, heap, allocation-growth, and diagnostics-capacity gates. `result_correctness` was zero for every workload, and every workload recorded zero post-warmup allocation growth.
 
@@ -217,7 +269,11 @@ The controlled capture profile retained the exact 4,628,480-byte BGRA8 mapping b
 
 The separately versioned ADR 0025 native-input/public-language profile remains bound to the historical `8309a05` source and is not represented as current-source evidence.
 
-Current committed profile hashes:
+Historical as-measured profile hashes:
+
+The two renderer profile files were later overwritten by corrected optimized
+measurements and are not reproduced by the current checkout. These digests bind
+only the historical pre-optimization output named by this section.
 
 | Profile | SHA-256 |
 |---|---|
@@ -227,79 +283,41 @@ Current committed profile hashes:
 | `phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml` | `2c5c56a7c72c4146e304f1e136f694b27333212e7ff86784c0bd3819b51e9eb8` |
 | `phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml` | `900e333f68adf9de5924e057fe82ece783aef422c24ccfdce35e1a038bb4248b` |
 
-## Current raw-output provenance
+## Historical pre-optimization derivative provenance
 
-Accepted raw logs remain ignored under `.rasen/changes/phase-2-2-macos-owning-process-delivery/ephemera/qualification-final-a1eee9c/`. They may contain native identifiers or fixture-private records and must not be committed. The tracked binding is limited to file size and SHA-256.
+Raw session logs are not part of the tracked evidence chain and are not named,
+sized, or hashed here. Some contain workstation paths, native identifiers, or
+fixture-private records; hashing those payloads would not make their provenance
+safe. The durable record is limited to privacy-sanitized derivatives:
 
-| Accepted raw artifact | Bytes | SHA-256 |
-|---|---:|---|
-| `benchmark-profile-gates.log` | 1,467 | `b867baf60e0ea594d555905604bf578f09595200103eeca4f4d22f0b6c60a464` |
-| `c-abi-check.log` | 24,782 | `4470ca7f9901ab94a743f25993ab6566de6dcebd891b5b767261c7e5bb6c16d6` |
-| `capture.log` | 4,991 | `d3a1d6d8a70228a46dfa3bee57b799ca25627899fe619de7c6bb46b346577028` |
-| `cargo-clippy-macos-cross-target.log` | 72 | `59639588a6f1826f129cbcd121edc07279dab94786f5fa5bde6b3439b2e845cc` |
-| `cargo-clippy.log` | 197 | `821585a2630f0db9903c3662bde56f2bfff8ce7eafa5591b81fbaafe08e8af76` |
-| `cargo-deny.log` | 2,057 | `56d153a74401bff3d2f1ec6b638b5e4dd59f823921fec4e2c09a04bbefa0115f` |
-| `cargo-doc.log` | 198 | `8c90a22142b60cad3497ce7253ca13cbb0dd1d06a4084366238cf598bd604928` |
-| `cargo-fmt.log` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
-| `cargo-test-doc.log` | 3,467 | `5768a27ff3c3427dfd5a503ab9dffef010d81a73c60e9eda73bf339ddcafd215` |
-| `cargo-test-macos-asan.log` | 17,513 | `a99a39039ee3f901fd24337ba7cebe0c8acd5d400e2c94cae198a0770c2dd7b0` |
-| `cargo-test-private-fixture.log` | 25,938 | `d82f2ef9a294323dcfc8b30d5edcfc4fb8c5c66042c67e197b354a29355d02be` |
-| `cargo-test-workspace.log` | 112,703 | `00bf20821a50b8986f596f6d3f63993136a5dc92101c087e52d21cbbaa0d5c29` |
-| `cargo.log` | 192 | `53d3dc8115abfdc08d1d740fe5c1ac16528c4a9ba91c92f98bf77db672cb771b` |
-| `cc.log` | 159 | `76a924f59997fb65051981eb13105e0a8c151f16cd9c3e45e0f7c27ecefdb839` |
-| `ci-pr36.log` | 464 | `e84ca689f881e0fa6df76d05a24e066b8f4fb5fdb7dbeeabca072454a418ea8f` |
-| `dependency-check.log` | 3,276 | `37ef477774acde7205a0e581a9bdaf1f41918c09eb870f6e5b08b6eb6f6b21e1` |
-| `displays.log` | 927 | `825d943436d53865e0cc5dd3fb8f2eb0157e56ee5781dea25b24a6b53ed625bc` |
-| `fixture-build-release.log` | 62 | `222a02ed477d249a21359df8cae975864a62d848f4739cadc5b00b6190a963c6` |
-| `fixture-control.log` | 1,401 | `12c32ec0ec45a046689971b6f312bc7b4a4abfff87b3c32b79644b15eb002989` |
-| `fixture-release-verification.log` | 430 | `a5fdf19fafd4915f420adf7e8a218fa9a9293deae2628b02eeda96622faef67d` |
-| `hardware.log` | 43 | `aaa406159e8d01e903ad19b8d9e86d6a055f2d4a88090c2004c92f8da09afcbe` |
-| `host-status.log` | 9 | `30179a803d48be87dfe0857a82b26d66e8c866dcbdc7c8b50aa3d24dff84f81e` |
-| `mixed-appkit-renderer-matrix.log` | 95,339 | `dab8707fc826aa5b015853961cf69ae5428cfef401d49cd1c4a67e32bc346175` |
-| `mixed-display-conversion.log` | 1,617 | `517e8e6094655942607f2dcdc1f2a2a8358bfe47e63b909b60fe202a4f210981` |
-| `mixed-display-scale.log` | 1,610 | `137022fc0a52af9ecb0b0f1bc90d91f932f5f0149c7ebc032bd9cbf82d8f6c4c` |
-| `mixed-display-seam.log` | 1,659 | `6fc4290f5f25b6891af139a4f17c8f7db5f3b6f85fecba61af71437acc94f630` |
-| `mixed-game-like-renderer-matrix.log` | 95,284 | `2843b95f64751f534346679a6eb50a289de80a03c3c814a606901e725d51549e` |
-| `offscreen-cleanup.log` | 2,496 | `031af5c5cd4fc60480f879ac934522c9881efe018757a50075f33e705d9954fa` |
-| `os.log` | 65 | `9a27ea4f1e11f7b9a4f7573d8729db037a10ce2e457f97cb73f646a96a550b16` |
-| `process-diagnostics.log` | 3,955 | `f35e336e4b53427445c4fbd97c42fcec8bf4e834a3ff4a97ce7e51387ef7afec` |
-| `process-directed-game-like.log` | 4,941 | `9ff3ce310048c4cd55c03107583fb0bdac06ff50e4d36251747f43a6729256e1` |
-| `process-directed.log` | 4,934 | `5ee25c49684bebc358a2ba71864ff1ffabdff0389a990cbf96f6e2e82650dfa0` |
-| `retained-authority-lifecycle.log` | 3,284 | `a664b1de3cfaf0c86ecdf0a85e9dfebcaf6a52665ff2402033769cd97ffd8974` |
-| `retained-filter-replacement.log` | 620 | `5196693bbbeb7e1a8d1f5d0141e5b8cd251611c5bf055f580bf3e4ad0447dc18` |
-| `rustc.log` | 72 | `cdd372f49763b7ad6faf8210706bc4f7212e18ebbd1abee8ab874ebbd588c4a3` |
-| `same-appkit-renderer-matrix.log` | 61,688 | `8f7b65b7d7c9e3f8b34c7c21b4853c5d155927aa84796e4c0a38e111bedb967f` |
-| `same-game-like-renderer-matrix.log` | 61,653 | `729690e542eb0b3ea6a9df35e2da5c403292b3a6d46bf3c36e27531cae0ab0bf` |
-| `sdk.log` | 5 | `25205f2e2f02dc71036ee827e19c49b893b231a3d1af240e35a3ac55aa8cdcb6` |
-| `single-appkit-renderer-matrix.log` | 44,726 | `b79d16c236be9dbb12760cbd350dfddf920b5a9c52405dede1857ab02c34440a` |
-| `single-game-like-renderer-matrix.log` | 44,701 | `97798f584c9e360f6c259303fc9779c75e54c424bb01b418234c672b3c08f4ce` |
-| `source-commit.log` | 41 | `5d3a3ea58b57894f8d66505d6366a6b2bc6b230b5a4a4a5e7fd055df177cffb8` |
-| `source-tree.log` | 41 | `3e20c5e96f68fa9bcb561113aed15e3ec1800c2c26f46ab1ff0e826e9b417803` |
-| `sustained-capture-soak.log` | 2,155 | `ff606a2fe2a5140903cfa272d57a3ebc804656a557f5e791d7863656119e6cff` |
-| `system-route.log` | 501 | `b03f841488a9acb20349cacb6a735a4314a992d08e98c85eeea3102cf14cb4ef` |
-| `transitions.log` | 3,865 | `063fa039b7b3896acffa8f50b7e75383f2ce9c8285fc743e3fce1ec9b77223d8` |
-| `unrelated-appkit.log` | 2,355 | `4e4be6a6b2d546d5dd4bca82da24df73ad731a0eeb01a352e3c3c2194b9d530d` |
-| `unrelated-game-like.log` | 2,339 | `a3a0b8b3c72988917f793d8dc01d4e9ec56cf88f3f325da718c159ef8cd5f6db` |
+| Evidence class | Retained derivative |
+|---|---|
+| Source and environment | exact product commit/tree, public toolchain and host versions, topology class, and fixture source/executable digests |
+| Native qualification | public scenario names, aggregate pass/fail counts, pair decisions, and cleanup outcome |
+| Benchmarks | committed profile digests, bounded measurement tables, and hard-gate decisions |
+| Repository verification | command class, aggregate suite counts, public ABI extents, and pass/fail outcome |
+| Stopped attempt | setup failed before the first retained sample; zero submitted events; fixtures stopped; no result promoted |
 
-Stopped attempt:
+The complete historical tracked record is fixed at immutable snapshot
+[`b76f06fd8997b8c666b18ace6c162c3335953e55`](https://github.com/pashifika/mado-pilot/blob/b76f06fd8997b8c666b18ace6c162c3335953e55/docs/evidence/phase-2-native/macos-owning-process-qualification.md).
 
-| Excluded raw artifact | Bytes | SHA-256 | Reason |
-|---|---:|---|---|
-| `process-directed-stopped-attempt.log` | 518 | `05bef12b84c83cc5e4ef0389dfcc57cd2cb46799847072bb48b300ca7cfc6d90` | the first AppKit process-directed benchmark attempt stopped before its first retained sample because opening the freshly discovered fixture window reported an invalid capture source; no owned fixture remained running, and the isolated set then passed after an idle interval. It contributes no performance or pair decision, and no failed output was overwritten. |
+## Historical pre-optimization privacy review
 
-## Current privacy review
+This tracked record contains no captured pixels, recognized or submitted text,
+window titles, application names, native process identifiers, native window
+numbers, signing identifiers, raw authorization values, credentials,
+fixture-private payloads, unrelated foreground identity, absolute workstation
+paths, or process inventory.
 
-This tracked record contains no captured pixels, recognized or submitted text, window titles, application names, native process identifiers, native window numbers, signing identifiers, raw authorization values, credentials, fixture-private payloads, unrelated foreground identity, or process inventory. Display geometry, frame stamps, bounded event/sample counts, typed outcomes, artifact sizes, and hashes are retained because they are required qualification facts.
+## Historical pre-optimization strict release gate
 
-## Current strict release gate
-
-The gate **passes** for the fourteen pairs above and for nothing else. No row failed and no mandatory row is unexecuted: each renderer pair passed its own `single`, `same-scale`, and `mixed-scale` rows on this revision, and no topology's evidence was substituted for another's.
+The gate **passed** for the fourteen pairs above and for nothing else. No row failed and no mandatory row was unexecuted: each renderer pair passed its own `single`, `same-scale`, and `mixed-scale` rows on that revision, and no topology's evidence was substituted for another's.
 
 Nothing here qualifies exact-window delivery, arbitrary applications, arbitrary games, display targets, minimized or off-screen targets, other-Space targets, application consumption, or visual success. Any later product, fixture, qualification, budget, or mandatory-documentation change invalidates the affected acceptance rows and requires a new revision-bound report.
 
 ## Superseded complete-run record
 
-The remainder of this document is the complete historical record for source `8309a05c3e7696f3081c5afef6dd6979ea1bb084` and tree `27fe879e0c4bb55fe4850d9a50737b568936cc10`. It was valid before the later product correction. Its pair decisions, profile hashes, raw manifest, and strict-gate conclusion are retained for provenance only and do not describe current source.
+The remainder of this document is the complete historical record for source `8309a05c3e7696f3081c5afef6dd6979ea1bb084` and tree `27fe879e0c4bb55fe4850d9a50737b568936cc10`. It was valid before the later product correction. Its pair decisions, profile hashes, privacy-sanitized derivatives, and strict-gate conclusion are retained for provenance only and do not describe current source.
 
 ### Decision
 
@@ -362,7 +380,7 @@ cargo build --locked -p mado-pilot-platform-macos \
   --features private-fixture --bin mado-pilot-macos-input-fixture
 # Assemble $APP, copy the debug executable, and sign it ad hoc with the
 # approved identifier.
-/usr/bin/codesign --verify --strict --verbose=2 "$APP"
+xcrun codesign --verify --strict --verbose=2 "$APP"
 "$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --report-execution-context
 
@@ -450,7 +468,7 @@ cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
 cargo build --locked --release -p mado-pilot-platform-macos \
   --features private-fixture --bin mado-pilot-macos-input-fixture
 # Reassemble and verify the release $APP before benchmarking.
-/usr/bin/codesign --verify --strict --verbose=2 "$APP"
+xcrun codesign --verify --strict --verbose=2 "$APP"
 
 cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --workload-set <capture|transitions|process-directed|process-directed-game-like|process-diagnostics> \
@@ -617,88 +635,32 @@ digests are in the current record above.
 
 The accepted matrix has no failed or unexecuted pair row. Complete matrices on source commits `8dd70810d60c06b298c806ffce16720d0a07e4c2`, `b1059cf6239042107bd62373eb65211117beaab9`, and `a4b12ffb89e0ef5e70ddf229a258c74dbe74a9dd` were invalidated by later product, fixture, qualification, evidence, or benchmark-oracle changes and contribute no final decision. The final rerun was required even though the last source change only replaced an equivalent benchmark mapping `let...else` with `?`; the frozen plan binds qualification to an exact revision.
 
-The first same-scale AppKit renderer attempt on the final source reached its five-second operation deadline after 208 seconds. Its receipt was `Unexecuted` with zero submitted events, so it had no possible native effect and contributes to no pair result. The raw output was retained, the owned fixtures were confirmed stopped, a ten-second idle interval elapsed, and the same isolated full renderer matrix then passed. No failed output was overwritten or promoted.
+The first same-scale AppKit renderer attempt on the final source reached its
+five-second operation deadline after 208 seconds. Its receipt was `Unexecuted`
+with zero submitted events, so it had no possible native effect and contributes
+to no pair result. The owned fixtures were confirmed stopped, a ten-second idle
+interval elapsed, and the same isolated full renderer matrix then passed. No
+failed output was overwritten or promoted, and no raw artifact identifier or
+digest is retained.
 
-Excluded attempt hashes:
+### Privacy-sanitized derivative provenance
 
-| Excluded raw artifact | Bytes | SHA-256 |
-|---|---:|---|
-| `same-scale-appkit-renderer-matrix-deadline-attempt.log` | 59,536 | `ccc945bf91b71c0ff7291bf00fccb4e8acd935dcf689a8827354b2fa01f4bc4d` |
-
-### Raw-output provenance
-
-Accepted raw logs remain ignored under `.rasen/changes/phase-2-2-macos-owning-process-delivery/ephemera/qualification-final-8309a05/`. They contain native identifiers and fixture-private records and must not be committed. The tracked binding is limited to file size and SHA-256.
-
-| Accepted raw artifact | Bytes | SHA-256 |
-|---|---:|---|
-| `source-commit.log` | 66 | `c763b5ed9c862aac3bd4caad058445f861e53dada3964c821e7ec0d106057700` |
-| `source-tree.log` | 66 | `7348f51c292d804dee8663fb75cc102cbcaedd75d37ba9fd3e8d249f5e4d4141` |
-| `host-status.log` | 105 | `075cce1c47922989e2518568b95912fd93aa55f13b0709800db1716ef1b85b69` |
-| `rustc.log` | 61 | `df42bc3daf5b3d7cc0c6cb898c89b82f835ae233c1b13e1eb4316863f3398fbd` |
-| `cargo.log` | 61 | `a278cac6e8410e251ab18613144ca74413b8d8926b0bba8b27f566b016cd430c` |
-| `cc.log` | 184 | `0f0f5071e4ce01a4e5ce4c26b1671b7837b458493e259f42d04dff856bcda6ac` |
-| `hardware.log` | 622 | `403dde7a3e891a294b448a9014569ff1e5871e2440df5078d0e30b6539163bf0` |
-| `sdk.log` | 30 | `b0594ffe6b4818051966ad4e173420477863c282e17b427ce43476d6c7b1c309` |
-| `displays.log` | 2,721 | `ac897e7fbe3fa40efe517d78ac54fe1f259336202067abbea85365dd23bfabe6` |
-| `mixed-host-baseline.log` | 460 | `dfcee14003efe55e3a422411f84cca14488dfd0b3f8a49f6f6cde8d11e06390a` |
-| `fixture-build-debug.log` | 97 | `eef5190aa50f234a560f41b58147dea7f191b4886d686022b8696179d34d34f0` |
-| `fixture-debug-verification.log` | 369 | `2a5ed7f73edc6efec7f6e6393daaa76be5da950c62722fe71f0d260278e5c26e` |
-| `deterministic-macos.log` | 26,606 | `a842411d5623d1a5a218472dedfb60c40374f3fd4b5929ed6071452386c381c5` |
-| `c-abi-check.log` | 24,788 | `0fa13f443da3de9c2f1225d54156ad17f90ec92b90f645cd12d2127e04387187` |
-| `mixed-display-conversion.log` | 1,617 | `5836910dee6e4524f7e57183e3df42488388ca89e3bf9e2528ead1cde6f9ad40` |
-| `mixed-display-seam.log` | 1,659 | `c1b850fa4ac05121b464c62b13a45917b0ccd9aacf6eb8b00c978271e6931e02` |
-| `mixed-display-scale.log` | 1,610 | `3257ecb941574bf99a5109aada097a97722a104aeaaf4388d94b9cdf78d1ca95` |
-| `mixed-appkit-renderer-matrix.log` | 94,849 | `da11c96d05c6deb720aa4cd9c93657325cda4accf4ca8209cc58a09b33521445` |
-| `mixed-game-like-renderer-matrix.log` | 94,803 | `5cf71ea2b85f18499a7adcea8b49b4a2b826c8a4a2e485a892de2190af186fd4` |
-| `unrelated-appkit.log` | 2,354 | `b06cb1476c7b09a45c9f94833004cfcc2d7dd9faa63048c026304638af51a665` |
-| `unrelated-game-like.log` | 2,338 | `6d20228253f41ad0a7d2120feb892ef0ff46d0d30b5d606ba6ea7ef914258a09` |
-| `sustained-capture-soak.log` | 2,154 | `f240707de952ee0e28e6d2b876c465936ab2a5b4635543f1d393e235b4d75d77` |
-| `offscreen-cleanup.log` | 2,494 | `1278c3b6a0b62369d5c0ce62c50cd2277d3f479b7640645a36c3792057cac784` |
-| `retained-authority-lifecycle.log` | 3,283 | `f0b34c985ab30bb0d04b882a7828aff72b71ce966af1f849174176f98c5b14b6` |
-| `fixture-control.log` | 1,401 | `2996726a2825515246a02fd667327b103df9e594742b2329b14c7f280976cff9` |
-| `retained-filter-replacement.log` | 646 | `3767b29d5c4af16a738490ee601f10b72e559147faa8774e48074913deb9aa1d` |
-| `system-route.log` | 526 | `aa0af0004211f95aee1395c87872cd20d73aa92d7d016b6be268b3bfba778f45` |
-| `single-host-baseline.log` | 175 | `7465f411a1038f598a0fd951ede4c134e74988ea69fd02fe4731b299d0e0310b` |
-| `single-display-conversion.log` | 1,691 | `f27c8c97ec59a2243fa1ba0aafdc5e5c90113693a8253768483581ea8612c942` |
-| `single-appkit-renderer-matrix.log` | 44,234 | `e16248aff97e9b94fde5d50bc38afd816daadd82cc82b1b28eaf011428f7d38c` |
-| `single-game-like-renderer-matrix.log` | 44,218 | `58caaba98cc376d39d953085323d9b7a7b766104ccc7a67c8d58c69820c5d485` |
-| `same-scale-host-baseline.log` | 318 | `fc77243622d0107a45cf195a72bd9013ecd2934d524c5213fb781e59c3c7ceab` |
-| `same-scale-display-conversion.log` | 1,617 | `fbe75878e8f7e6014ad88cb64b8630cb38ba3cb98820d1573d5ee0a0292d8379` |
-| `same-scale-display-seam.log` | 1,722 | `deb5840d7a5ec61d9b78ed8d0c4a741ef8f630eb45add476bc6a01b34d4c8e04` |
-| `same-scale-appkit-renderer-matrix.log` | 61,198 | `ce80df0a99f768a2ab2d950399ac54f4ccbf69d4003603dadde6fc8c91104bf4` |
-| `same-scale-game-like-renderer-matrix.log` | 61,172 | `43702638e6c579baa8b11cf78d0d6968a8f42917aea18b7d5e2fb7a0a562dff9` |
-| `restored-mixed-host-baseline.log` | 460 | `69ed4ea698d1805ca8b652d5fd8afdb9cce6b14d2226ca63eab83a51e008015b` |
-| `restored-mixed-display-conversion.log` | 1,617 | `5836910dee6e4524f7e57183e3df42488388ca89e3bf9e2528ead1cde6f9ad40` |
-| `restored-mixed-display-seam.log` | 1,659 | `c1b850fa4ac05121b464c62b13a45917b0ccd9aacf6eb8b00c978271e6931e02` |
-| `restored-mixed-display-scale.log` | 1,610 | `597cc02de05239e8c0dbe0bd58071b7054fd7e43a0b05126c437d69982671a23` |
-| `fixture-build-release.log` | 87 | `7e95865620916ddfb379fc9afac8ac0db7394da1b1e0b49f5c2476a1691fac50` |
-| `fixture-release-verification.log` | 369 | `93a463da8dbb7c5e7785d2564ec0fca5cd3cb8e195f986d6ffa12acd95e58994` |
-| `capture.log` | 5,218 | `71b6fc2dcb79ce40a16ab474fe2d9082dc1b0d833023ebad4329a3c7fe7f734c` |
-| `transitions.log` | 4,094 | `69b8ce7b6dd77b2d0949ca6e976e0a70a724b1d76b0a80b87f505a44f00cd638` |
-| `process-directed.log` | 5,161 | `0d6af1e3a4ae95bf3521dde0a6cc30319b52a5dddbde06342eab334226061697` |
-| `process-directed-game-like.log` | 5,168 | `dbc865ac0209a79522ebbcbcf9e4d2d8ab2800344a1c99ad66382f45ac04aec4` |
-| `process-diagnostics.log` | 4,183 | `10577a7a6cfdd98789e992ba8da70ac65eb98e28fc0577349707ad236df82a16` |
-| `input.log` | 5,580 | `95809c334a765491b2dd33e523e075c9e672dbeb3170aa9bb93b383d0264ca1e` |
-| `dependency-check.log` | 3,276 | `8b7a14ea0f1e9316a1140b7d3cbbb48d27c37fe5f9ba980c7f8bb49877650c8b` |
-| `cargo-fmt.log` | 36 | `7a65ac0e89615c8f5b5efd327e2ee1111be27c07054e4f1690a70d9f8e282b1d` |
-| `cargo-clippy.log` | 222 | `8c98463f16ab03f01b07ec11ed471abba050d583a45e808cb24d401a3199ac0f` |
-| `cargo-test-workspace.log` | 112,438 | `1d4f480baa1f280302bf563ea19771af44f745a5d3f5c82a920b2ccf565d7d08` |
-| `cargo-test-doc.log` | 3,467 | `5a1a2cc58bc836f6d3979bdd6d73433c37b4f3e4c1ac726a6d34e9cf753312a6` |
-| `cargo-doc.log` | 829 | `c35521990fa03f7a72e1e218e7edfb554551e9ed81f9b756212c5f0dac0230be` |
-| `cargo-deny.log` | 2,082 | `76771058c8a54401a329cf02aea57383bec7129726af67ed6141159892626aa9` |
-| `cargo-clippy-macos-cross-target.log` | 228 | `9ca64fd66edd80e6b370dd8dcb1adbb258f7bbb73452e594f98f017a8a75c540` |
-| `cargo-test-macos-asan.log` | 17,268 | `65ec1f1c31496786bee4f48f59770d383a2ba220d7d081a0e5f6bcaa64ee473b` |
-| `benchmark-profile-gates.log` | 1,467 | `ad5219ce01fff39dc632a2d04f561d2111f76bf7c92c9807eb34e0b3485fcae3` |
-| `git-diff-check.log` | 36 | `eaf22227b66af4ffbe44c0fe205fe50ecab5ff99cd24cf2340321c7ba5c265b5` |
-| `fixture-process-final.log` | 70 | `2a29eb907c14ad607e7011d2e32608f5ee97fc0e151e949c324b744b94a04b54` |
-| `rasen-validate.log` | 544 | `c5811f049c3710081e6d8ed03bcf5cf134e580a1e2a5a4dc4b68d25a66101686` |
+Raw session logs are excluded from the tracked evidence chain because they
+contain native identifiers and fixture-private records. Durable evidence retains
+only the named source/tree, public environment facts, fixture digests, scenario
+and workload names, aggregate counts, pair decisions, bounded profile tables,
+public ABI extents, and pass/fail outcomes.
 
 ### Privacy review
 
-This tracked report contains no captured pixels, recognized or submitted text, window titles, application names, native process identifiers, native window numbers, signing identifiers, raw authorization values, credentials, fixture-private payloads, unrelated foreground identity, or process inventory. Display geometry, internal frame stamps, bounded event/sample counts, typed outcomes, artifact sizes, and hashes are retained because they are required qualification facts.
+This tracked report contains no captured pixels, recognized or submitted text,
+window titles, application names, native process identifiers, native window
+numbers, signing identifiers, raw authorization values, credentials,
+fixture-private payloads, unrelated foreground identity, absolute workstation
+paths, or process inventory.
 
 ### Strict release gate
 
-Every route-wide row and every mandatory accepted row for each of the fourteen exact pairs passed on the qualified source revision. The single-display, same-scale, and mixed-scale results are independently recorded. Therefore ADR 0029 remains Accepted for these controlled pair contracts, and public descriptors and documentation may advertise them with `Unknown` compatibility, `OwningProcess` address scope, `InvocationOnly` evidence, foreground-preserving behavior, and explicit caller opt-in.
+Every route-wide row and every mandatory accepted row for each of the fourteen exact pairs passed on that historical source revision. The single-display, same-scale, and mixed-scale results were independently recorded. ADR 0029's acceptance conditions were therefore satisfied for those controlled pair contracts on that revision, and descriptors and documentation for that source could advertise them with `Unknown` compatibility, `OwningProcess` address scope, `InvocationOnly` evidence, foreground-preserving behavior, and explicit caller opt-in. The optimized-source decision at the start of this report supersedes that release status.
 
 No support statement may broaden this result to exact-window delivery, arbitrary applications, arbitrary games, display targets, minimized/off-screen targets, application consumption, or visual success. Any later product, fixture, qualification, budget, or mandatory-documentation change invalidates the affected acceptance rows and requires a new revision-bound report.

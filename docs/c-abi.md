@@ -504,9 +504,13 @@ Windows advertises exact-window `WindowMessage` for ordinary retained
 top-level windows as unknown-but-attemptable with target-queue-admission
 evidence. The dedicated fixture raises the same route to supported with
 target-protocol acknowledgement. Both remain separate from Windows system
-routes. The macOS implementation reports system routes plus release-qualified
-process-directed pairs with owning-process scope, unknown compatibility, and
-invocation-only evidence for retained top-level windows. Additional windows in
+routes. The macOS implementation reports system routes plus process-directed
+pairs with owning-process scope, unknown compatibility, and invocation-only
+evidence for retained top-level windows. Those pairs are implemented, but the
+last optimized mixed-scale rows bind a historical source. The current candidate
+has no retained native result, so its exact-source `single`, `same-scale`, and
+`mixed-scale` rows and all fourteen release decisions remain unexecuted.
+Additional windows in
 the same process do not revoke that scope, and no exact-window route exists on
 macOS. The negotiated capability report, not a platform guess in the caller,
 decides what may be admitted.
