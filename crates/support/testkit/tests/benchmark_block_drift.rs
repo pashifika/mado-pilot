@@ -186,6 +186,22 @@ const PHASE2_2_PROCESS_PROFILES: [(&str, &str); 3] = [
         ),
     ),
 ];
+/// The authority-timing profiles that must distinguish current measurements
+/// from rejected output whose source or oracle binding cannot be reproduced.
+const PHASE2_2_TUNING_PROFILES: [(&str, &str); 2] = [
+    (
+        "docs/benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml"
+        ),
+    ),
+];
 
 /// Returns the assigned keys of `profile`'s `[benchmark]` table, in file order.
 ///
@@ -302,6 +318,55 @@ fn quoted_assignment<'a>(line: &'a str, key: &str) -> Option<&'a str> {
         .strip_suffix('"')
 }
 
+/// Returns one quoted assignment from a named top-level table.
+fn table_assignment<'a>(profile: &'a str, table: &str, key: &str) -> Option<&'a str> {
+    let mut inside = false;
+    for line in profile.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            inside = line == table;
+            continue;
+        }
+        if inside && let Some(value) = quoted_assignment(line, key) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Returns the source commit and tree carried in the profile's opening comment.
+fn source_header(profile: &str) -> Option<(&str, &str)> {
+    let mut lines = profile.lines();
+    lines.next()?.strip_suffix(" at source")?;
+    let commit = lines
+        .next()?
+        .strip_prefix("# ")?
+        .strip_suffix(" and tree")?;
+    let tree = lines.next()?.strip_prefix("# ")?.strip_suffix('.')?;
+    Some((commit, tree))
+}
+
+/// Returns the source commit and tree carried in the profile's `notes`.
+fn source_notes(profile: &str) -> Option<(&str, &str)> {
+    let source = table_assignment(profile, "[profile]", "notes")?.strip_prefix("source commit ")?;
+    let (commit, rest) = source.split_once(", tree ")?;
+    let (tree, _) = rest.split_once(';')?;
+    Some((commit, tree))
+}
+
+fn is_lower_hex(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn fixture_executable_digest(profile: &str) -> Option<&str> {
+    let notes = table_assignment(profile, "[profile]", "notes")?;
+    let (_, digest) = notes.split_once("fixture executable sha256 ")?;
+    Some(digest.split_once(';').map_or(digest, |(digest, _)| digest))
+}
+
 fn number_assignment(line: &str, key: &str) -> Option<f64> {
     line.strip_prefix(key)?
         .trim_start()
@@ -404,6 +469,83 @@ fn process_profiles_state_the_same_live_heap_ceiling_the_harness_enforces() {
             "{path} must record the frozen process-directed live-heap ceiling \
              enforced by `native-phase2`"
         );
+    }
+}
+
+#[test]
+fn process_profile_provenance_is_exact_and_internally_bound() {
+    for (path, profile) in PHASE2_2_PROCESS_PROFILES {
+        let header = source_header(profile)
+            .unwrap_or_else(|| panic!("{path} must name its exact source commit and tree"));
+        let notes = source_notes(profile).unwrap_or_else(|| {
+            panic!("{path} must repeat its exact source commit and tree in `[profile].notes`")
+        });
+        assert_eq!(
+            header, notes,
+            "{path} binds its measurements to two different source revisions"
+        );
+        assert!(
+            is_lower_hex(header.0, 40) && is_lower_hex(header.1, 40),
+            "{path} must bind its measurements to full lowercase Git commit and tree object ids"
+        );
+
+        let fixture = table_assignment(profile, "[profile]", "fixture_sha256")
+            .unwrap_or_else(|| panic!("{path} must bind its tracked fixture source"));
+        assert!(
+            is_lower_hex(fixture, 64),
+            "{path} must carry a full lowercase SHA-256 fixture-source digest"
+        );
+
+        let fixture_executable = fixture_executable_digest(profile)
+            .unwrap_or_else(|| panic!("{path} must bind the measured fixture executable"));
+        assert!(
+            is_lower_hex(fixture_executable, 64),
+            "{path} must carry a full lowercase SHA-256 fixture-executable digest"
+        );
+
+        if let Some(benchmark_executable) =
+            table_assignment(profile, "[profile]", "benchmark_executable_sha256")
+        {
+            assert!(
+                is_lower_hex(benchmark_executable, 64),
+                "{path} carries a malformed benchmark-executable SHA-256 digest"
+            );
+        }
+    }
+}
+#[test]
+fn tuning_profile_provenance_distinguishes_misbound_output_from_current_measurements() {
+    for (path, profile) in PHASE2_2_TUNING_PROFILES {
+        let status = table_assignment(profile, "[benchmark]", "status")
+            .unwrap_or_else(|| panic!("{path} must state its evidence status"));
+        let benchmark_executable =
+            table_assignment(profile, "[profile]", "benchmark_executable_sha256");
+
+        match status {
+            "measured" => {
+                let digest = benchmark_executable.unwrap_or_else(|| {
+                    panic!("{path} must bind a current measurement to its benchmark executable")
+                });
+                assert!(
+                    is_lower_hex(digest, 64),
+                    "{path} must carry a full lowercase benchmark-executable SHA-256 digest"
+                );
+            }
+            "misbound" => {
+                assert!(
+                    benchmark_executable.is_none(),
+                    "{path} must not invent a benchmark-executable digest for misbound output"
+                );
+                assert!(
+                    profile.contains("\nstatus = \"misbound\"\nnormative = false\n"),
+                    "{path} must make misbound output explicitly non-normative"
+                );
+            }
+            other => panic!(
+                "{path} has unsupported authority-timing evidence status `{other}`; \
+                 use `measured` or `misbound`"
+            ),
+        }
     }
 }
 
