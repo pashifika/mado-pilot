@@ -12,7 +12,7 @@ use mado_pilot::{
     SearchDiagnosticOutcome,
 };
 
-use crate::boundary::{self, Out, Versioned, inputs, prefixes};
+use crate::boundary::{self, Out, Versioned, covers, inputs, prefixes};
 use crate::engine::{EngineHandle, madopilot_engine_t};
 use crate::error::Fault;
 use crate::handle::opaque;
@@ -86,6 +86,7 @@ impl Versioned for madopilot_diagnostic_batch_info_t {
         discarded_normal,
         discarded_debug,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -139,6 +140,10 @@ impl Versioned for madopilot_diagnostic_record_t {
         cleanup_released,
         cleanup_owed,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[(
+        covers!(madopilot_diagnostic_record_t, reserved: u32),
+        std::mem::offset_of!(madopilot_diagnostic_record_t, requested),
+    )];
 
     fn failure(struct_size: u32) -> Self {
         Self {

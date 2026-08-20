@@ -632,6 +632,7 @@ impl Versioned for madopilot_build_info_t {
         library_version,
         required_backend,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
