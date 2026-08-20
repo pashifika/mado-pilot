@@ -1,52 +1,56 @@
 ## Current candidate decision
 
-The current candidate has 0 `qualified`, 0 `rejected`, and 14 `unexecuted`
-release pairs. Its exact-source native matrix, controlled AppKit/game-like
-profiles, sanitizer, ABI, and hosted-CI checks have not run. No earlier
-current-topology row, latency result, or deterministic check transfers to this
-candidate.
+Source commit `9e3e77d4021b792f4c4835390658aaac98e76826` and tree
+`ea7881c4416ca2a330fa3097d4fa271f9a547f96` passed the affected
+three-display `mixed-scale` native rows, deterministic one-read proofs, both
+controlled performance profiles, ASan, C ABI/C++/CMake checks, Windows-target
+lint, and hosted CI.
 
-Source commit `a471c2d51428a25dd11e42572b73cf5e86ef7478` and tree
-`3f5ada8d116b527a8644be4d804f91341bc1e296` retain native-matrix,
-deterministic, sanitizer, ABI, and hosted-CI history for that source only. The
-AppKit and controlled game-like benchmark bodies previously attributed to it
-use a visual oracle absent from that tree. They are source/oracle-misbound,
-non-normative artifacts and supply no latency, correctness, or support result.
-Later authority, raw-backing geometry, absolute-deadline/cancellation, and
-possible-effect/cleanup corrections also prevent the native history from
-qualifying the current candidate. The complete qualification at
-`a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` is likewise historical evidence
-for the pre-optimization authority order.
+Release-level owning-process support remains 0 `qualified`, 0 `rejected`, and
+14 `unexecuted` pairs. The required disconnected `single` and exact two-display
+non-mirrored `same-scale` matrices are physically unavailable. No
+`mixed-scale` row or controlled latency result substitutes for either topology.
 
-| Field | Historical `a471c2d` native evidence |
+| Field | Current exact-source evidence |
 |---|---|
-| Product commit / tree | `a471c2d51428a25dd11e42572b73cf5e86ef7478` / `3f5ada8d116b527a8644be4d804f91341bc1e296` |
-| Fixture source / executable SHA-256 | `51c6f991a942d30440f18a8b06e105ebb3bc15511a9e909ef696b300ba8d4c7b` / `44fba7cb3e28f54d4869d34640a98e1e56402b2578b836748c95617a1b1762b8` |
+| Product commit / tree | `9e3e77d4021b792f4c4835390658aaac98e76826` / `ea7881c4416ca2a330fa3097d4fa271f9a547f96` |
+| Fixture source SHA-256 | `fa5b1bd7577b877b7c3a42ba8ae5fd57029137bea36da4615881bd6837fbc3d0` |
+| Signed target / foreground executable SHA-256 | `51ef9a691c4118b84da9de3ac59b0b39def11ce55ccc2305c9c039d46fb74c29` / `28a3cc788dd81b81661d911d2e92bc0b4b827b51d832f4991cb516150d53322c` |
+| Benchmark executable SHA-256 | `bd811ac11364c7fc1ad7af3f76b59542cf55c9c1bdd5afa017c9447ac37a54cd` |
 | Measured topology | three online non-mirrored displays; signed-origin 1× display, 2× main display, and 2× built-in display |
-| Affected native rows | 9 passed, 0 failed; retained-window replacement passed; three display conversion/geometry/seam scenarios passed |
-| Deterministic / ASan | 200 passed without private fixture, 221 passed with private fixture / 200 passed with no sanitizer finding |
-| ABI and packaging | C ABI 1.2, frozen ABI 1.0 prefix, C/C++/CMake consumers, linkage, signing, and panic containment passed |
-| Benchmark artifacts | unavailable as source-bound evidence; prior profile digests were unreproducible and are withdrawn |
-| Immutable native-history snapshot | [`8d3fa58738f201496c496159717d274e7f5c06b7`](https://github.com/pashifika/mado-pilot/blob/8d3fa58738f201496c496159717d274e7f5c06b7/docs/evidence/phase-2-native/macos-owning-process-qualification.md) |
-| Immutable pre-optimization qualified snapshot | [`b76f06fd8997b8c666b18ace6c162c3335953e55`](https://github.com/pashifika/mado-pilot/blob/b76f06fd8997b8c666b18ace6c162c3335953e55/docs/evidence/phase-2-native/macos-owning-process-qualification.md) |
+| Native rows | 33 permission-independent and all 11 permissioned integration rows passed; three display conversion/geometry/seam scenarios passed |
+| Deterministic one-read binding | eight focused controller, geometry-source, and native-seam proofs passed; terminal `RequireUnchanged`/`UseFrameSnapshot` source/current counts are `[1, 0]`; final ordinary native authority count is one |
+| AppKit controlled profile | 50 retained terminal samples; p95 `65.078208 ms` ≤ `106.34 ms`; zero correctness failures; profile SHA-256 `3b52c2dff0e9b348e82d5dff58859a54d318c872af33872725d7ed0235580a65` |
+| Controlled game-like profile | 50 retained terminal samples; p95 `62.760084 ms` ≤ `112.18 ms`; zero correctness failures; profile SHA-256 `670a4470cd0da9d673a855f8dc5660308cc034a2fd23f83ddd3eb53f53c6594b` |
+| Memory / environment gates | maximum profile allocation growth 2,624 bytes; foreground and physical cursor unchanged; one matching fixture event per terminal sequence |
+| ASan / ABI / packaging | 235 ASan library tests passed; C ABI 1.2 table 592 bytes; frozen ABI 1.0 prefix 424 bytes and 222 layout lines held; C/C++/CMake, linkage, signing, and panic containment passed |
+| Hosted CI | repository policy, Windows x86_64, macOS Apple Silicon, and branch policy passed on `9e3e77d` |
+| Detailed current procedure and outcomes | [`verification-procedure.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/verification-procedure.md) and [`observed-report.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md) |
 
-The mutable successor verification procedure and tuning report are not
-historical bindings. They describe the current candidate and may change only
-with new exact-source evidence.
+The first game-like start stopped before warm-up or sampling when the fresh
+capture source was rejected. It emitted no profile, left no fixture process, and
+is retained as a non-qualifying setup fact. After a ten-second lifecycle idle,
+the unchanged source, executables, topology, and gates completed the accepted
+profile.
 
-Review invalidated predecessor `28ceb2e`: exact raw `CGRect` equality rejected
-an unchanged 320.4-point Retina window because its integral 641-pixel capture
-normalizes to 320.5 logical points. A failing deterministic native seam proved
-the mismatch before `00c4927` changed the final comparison to exact origin,
-backing scale, and integral capture extent. Later review invalidated `a287af8`
-because its changed activation argument had not advanced the private shim
-surface version and its fixture-process `Debug` exposed native identity fields.
-No safety or performance result from either invalidated candidate is promoted
-to the corrected source.
+Source `a471c2d51428a25dd11e42572b73cf5e86ef7478` retains native-matrix,
+deterministic, sanitizer, ABI, and hosted-CI history for that source only. The
+benchmark bodies formerly attributed to it use an oracle absent from its tree
+and are source/oracle-misbound, non-normative artifacts. Predecessor `28ceb2e`
+was rejected after a deterministic proof showed raw point-rectangle equality
+refused an unchanged fractional Retina capture. Neither predecessor supplies a
+latency or support result for the current candidate.
 
-The rejected benchmark files preserve the frozen acceptance budgets only. Their
-measurement bodies are forensic rejection material, not regression evidence or
-historical latency results.
+Historical records remain fixed at immutable snapshots:
+
+- [`8d3fa58738f201496c496159717d274e7f5c06b7`](https://github.com/pashifika/mado-pilot/blob/8d3fa58738f201496c496159717d274e7f5c06b7/docs/evidence/phase-2-native/macos-owning-process-qualification.md) for the superseded tuning history;
+- [`b76f06fd8997b8c666b18ace6c162c3335953e55`](https://github.com/pashifika/mado-pilot/blob/b76f06fd8997b8c666b18ace6c162c3335953e55/docs/evidence/phase-2-native/macos-owning-process-qualification.md) for the pre-optimization qualified record.
+
+The controlled profiles are regression evidence for the named source, fixture,
+route, `RequireUnchanged` geometry policy, preserving focus policy, and current
+topology only. They are not real-time guarantees and establish neither
+exact-window consumption nor general application, renderer, input-stack, or game
+compatibility.
 
 ## Historical pre-optimization decision
 

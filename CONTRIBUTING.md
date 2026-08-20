@@ -146,14 +146,14 @@ The capability matrix, typed outcomes, privacy bounds, and bundling step are in
 [docs/macos-input-verification.md](docs/macos-input-verification.md).
 
 Run each topology selector against the exact candidate source; a pass under one
-selector cannot qualify another. Source
-`a471c2d51428a25dd11e42572b73cf5e86ef7478` passed the three-display
-`mixed-scale` matrix, but later authority, raw-backing geometry,
-absolute-deadline/cancellation, possible-effect/cleanup, and fixture-oracle
-corrections make that result historical. The current candidate
-starts at fourteen unexecuted process-directed release pairs; only exact-source
-reruns may change that decision. The complete pre-optimization matrix is
-provenance only.
+selector cannot qualify another. Candidate
+`9e3e77d4021b792f4c4835390658aaac98e76826` passed the three-display
+`mixed-scale` matrix, but the required disconnected `single` and exact
+two-display non-mirrored `same-scale` matrices remain unavailable. Its fourteen
+release decisions therefore remain unexecuted. The complete pre-optimization
+matrix and the `a471c2d` native rows are historical provenance only; the
+benchmark bodies formerly attributed to `a471c2d` are source/oracle-misbound
+and supply no result.
 
 The performance claim is narrower than the qualification matrix. The one-event
 terminal `RequireUnchanged` path, with default no-focus behavior and no later
@@ -163,21 +163,21 @@ authority. A fallback-eligible route and terminal `ReprojectCurrent` each have
 distinct two-read shapes; `RequireFocused`, combinations of stronger policies,
 cleanup, and multi-unit sequences are excluded from the one-read result.
 
-The revision-bound one-read decision is composite. Controller, geometry-source,
-and native seam tests prove the call count. Exact-source AppKit and controlled
-OpenGL benchmark rows must separately prove latency, one matching fixture
-event, unchanged foreground and physical cursor, zero correctness failures,
-and allocation growth no greater than 4,096 bytes without adding private
-timing-path instrumentation. The retained benchmark bodies attributed to
-`a471c2d` are source/oracle-misbound and non-normative; they satisfy none of
-those gates. Run the exact candidate-bound commands in
+The revision-bound one-read decision is composite. Eight exact-source
+controller, geometry-source, and native seam tests prove the call count.
+Exact-source AppKit and controlled OpenGL benchmark rows separately prove
+latency, one matching fixture event, unchanged foreground and physical cursor,
+zero correctness failures, and allocation growth no greater than 4,096 bytes
+without adding private timing-path instrumentation. On candidate `9e3e77d`,
+AppKit p95 is `65.078208 ms` under `106.34 ms`; controlled game-like p95 is
+`62.760084 ms` under `112.18 ms`; maximum profile allocation growth is 2,624
+bytes. Run the exact candidate-bound commands in
 [`docs/macos-input-verification.md`](docs/macos-input-verification.md#current-native-input-performance-evidence).
-Each accepted benchmark retains 50 samples after five warm-ups and records both
-fixture and benchmark executable digests. Frozen p95 ceilings are `106.34 ms`
-for AppKit and `112.18 ms` for the controlled game-like fixture. Those gates are
-regression evidence for the named source, host, fixture, renderer, route,
-geometry policy, and focus policy only; they are not real-time or general
-application/game compatibility claims.
+Each accepted benchmark retains 50 samples after five warm-ups and records
+fixture source, signed fixture executable, and benchmark executable digests.
+Those gates are regression evidence for the named source, host, fixture,
+renderer, route, geometry policy, and focus policy only; they are not real-time
+or general application/game compatibility claims.
 
 The owned-window replacement acceptance probe sends no input, but it opens and
 replaces the signed fixture window and therefore remains explicit:

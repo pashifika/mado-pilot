@@ -7,14 +7,12 @@ acceptance consists of the explicit native checks below; ordinary test runs neve
 send desktop input or open the opt-in fixture window.
 
 Current candidate release status: **0 qualified, 0 rejected, and 14 unexecuted
-controlled pairs**. Source
-`a471c2d51428a25dd11e42572b73cf5e86ef7478` retains historical
-three-display `mixed-scale` native rows. The two benchmark bodies attributed to
-that source use a visual oracle absent from its tree and are source/oracle-
-misbound, non-normative artifacts. The candidate's current-topology rows,
-profiles, sanitizer checks, and hosted CI must rerun on its exact revision; the
-disconnected `single` and exact two-display `same-scale` rows remain
-supplemental. Nothing
+controlled pairs**. Candidate
+`9e3e77d4021b792f4c4835390658aaac98e76826` passed the exact-source
+three-display `mixed-scale` native rows, deterministic one-read proofs,
+controlled AppKit/game-like profiles, sanitizer, ABI/C++/CMake checks, and
+hosted CI. The disconnected `single` and exact two-display non-mirrored
+`same-scale` rows remain unavailable, so no release pair is promoted. Nothing
 here qualifies arbitrary applications, arbitrary games, exact-window delivery,
 or application consumption.
 
@@ -47,10 +45,10 @@ call a pair qualified only when its mandatory revision-bound native rows in the
 and a failed or unexecuted route-wide row blocks every dependent pair. The
 negotiated target descriptor remains the runtime admission authority, but its
 implemented mapping is not evidence that the current source passed the release
-gate. The pre-optimization source qualified fourteen pairs. The later optimized
-source has historical passing `mixed-scale` rows, but no result transfers to the
-current candidate: all fourteen release decisions remain unexecuted pending
-exact-source `single`, `same-scale`, and `mixed-scale` rows.
+gate. The pre-optimization source qualified fourteen pairs. Candidate
+`9e3e77d` passes exact-source `mixed-scale` rows, but all fourteen current
+release decisions remain unexecuted because disconnected `single` and exact
+two-display `same-scale` rows are unavailable.
 
 Every target names `PermissionKind::InputControl` as the authorization input
 needs, separately from the Screen Recording that capture needs. `InputControl`
@@ -651,23 +649,25 @@ size with raw `SCWindow.frame` size. A deterministic native seam reproduced an
 unchanged 320.4-point Retina window whose 641-pixel capture normalizes to 320.5
 points and proved the raw rectangle equality rejected it. Source commit
 `a471c2d51428a25dd11e42572b73cf5e86ef7478` (tree
-`3f5ada8d116b527a8644be4d804f91341bc1e296`) instead compares exact desktop
-origin and backing scale plus the integral capture extent and redacts
-authenticated fixture process identities. That exact source reran and passed
-the live three-display `mixed-scale` native rows. Its retained AppKit/game-like
-benchmark bodies are not source-bound: their commanded-transition visual oracle
-is absent from the named tree. Later evidence-driven geometry, retained-process
-activation, callback-fence, and final-gate cutovers advanced the current private
-shim surface to version 19. The `single` and `same-scale` rows were not run, so
-every optimized-source release pair remains `unexecuted`; no historical pair
-pass transfers to the current candidate.
+`3f5ada8d116b527a8644be4d804f91341bc1e296`) instead compared exact desktop
+origin and backing scale plus integral capture extent and redacted fixture
+process identities. Its native rows remain historical; its retained benchmark
+bodies are source/oracle-misbound because their commanded-transition oracle is
+absent from that tree.
+
+Candidate `9e3e77d4021b792f4c4835390658aaac98e76826` (tree
+`ea7881c4416ca2a330fa3097d4fa271f9a547f96`) carries same-frame raw
+screen bounds and backing scale, uses private shim surface version 19, and
+passed the final signed-release `mixed-scale` rows. The `single` and
+`same-scale` rows did not run, so every release pair remains `unexecuted`.
 
 The privacy-reviewed
 [repository evidence](evidence/phase-2-native/macos-owning-process-qualification.md)
-keeps immutable historical native records separate from the current decision.
-The tuning Change's
+keeps immutable historical records separate from the current decision. The
+tuning Change's
 [observed report](../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md)
-records the misbound benchmark rejection and excludes raw-log provenance.
+records exact commands, hashes, bounded outcomes, the stopped pre-sample
+attempt, and raw-log exclusion.
 
 ## Explicit facade check
 
@@ -769,40 +769,54 @@ The process-directed route, fixture-controlled capture stimulus, and their
 budgets form a separate profile lineage whose pre-measurement ceilings were
 frozen in [ADR 0029](adr/0029-macos-process-directed-input.md). Controlled
 capture, controlled transitions, and process diagnostics remain bound to their
-named pre-optimization revision. The two authority-timing-sensitive files
-formerly attributed to source
-`a471c2d51428a25dd11e42572b73cf5e86ef7478` are explicitly
-`status = "misbound"` and `normative = false`:
+named pre-optimization revision. The two authority-timing-sensitive current
+profiles are measured and normative at source
+`9e3e77d4021b792f4c4835390658aaac98e76826` (tree
+`ea7881c4416ca2a330fa3097d4fa271f9a547f96`):
 
 - [`phase-2-2-process-directed-appkit`](benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml);
 - [`phase-2-2-process-directed-game-like`](benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml).
 
-Their retained commanded-transition oracle is absent from the named source, and
-the emitting benchmark executable was not recorded. They provide no latency,
-correctness, fixture-event, foreground, cursor, memory, or support result.
+After setting `MADO_PILOT_MACOS_FIXTURE_EXECUTABLE` to the exact signed release
+fixture, reproduce either profile with:
 
-An accepted rerun must use the exact candidate commit and tree, an absolute path
-to the signed fixture executable, the frozen host/topology options, five
-warm-ups, and 50 retained samples. Its committed profile must record both
-`fixture_sha256` and `benchmark_executable_sha256`. Frozen p95 ceilings remain
-`106.34 ms` for AppKit and `112.18 ms` for the controlled game-like fixture.
+```sh
+for workload in process-directed process-directed-game-like
+do
+  cargo bench --locked -p mado-pilot --bench native-phase2 -- \
+    --workload-set "$workload" \
+    --fixture-executable "$MADO_PILOT_MACOS_FIXTURE_EXECUTABLE" \
+    --source-revision 9e3e77d4021b792f4c4835390658aaac98e76826 \
+    --source-tree ea7881c4416ca2a330fa3097d4fa271f9a547f96 \
+    --toolchain "rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5" \
+    --gpu-driver "Apple integrated GPU; system driver stack" \
+    --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
+    --os-version "macOS 26.5.2 (25F84)" \
+    --display-topology "three online non-mirrored displays; signed-origin display 3840x2160 1x; main display 2560x1440 logical / 5120x2880 backing 2x; built-in display 1512x982 logical / 3024x1964 backing 2x; mixed-scale validator authoritative" \
+    --permissions-signing "Screen Recording granted; event-post access granted; target and foreground bundles structurally ad-hoc signed"
+done
+```
+
+Each current profile retained 50 samples after five warm-ups per workload and
+recorded fixture source, signed fixture executable, and benchmark executable
+digests. AppKit terminal p95 was `65.078208 ms` under `106.34 ms`; controlled
+game-like p95 was `62.760084 ms` under `112.18 ms`. Both recorded zero
+correctness failures, one matching fixture event per terminal sequence,
+unchanged foreground and physical cursor, and maximum allocation growth 2,624
+bytes.
 
 The one-read gate is the revision-bound conjunction of controller,
-geometry-source, and native seam counter tests with an exact-source benchmark
-row. The tests prove exactly one final retained-window inventory read for the
-terminal `RequireUnchanged`, default-focus-policy, one-pointer-event path; the
-benchmark must prove the independent environmental and latency gates without
-exposing or perturbing that private count. The scope excludes `RequireFocused`,
-`ReprojectCurrent`, ordered fallback, cleanup, and multi-unit sequences.
+geometry-source, and native seam tests with those exact-source rows. It applies
+to the terminal `RequireUnchanged`, default-focus-policy, one-pointer-event
+path. `RequireFocused`, `ReprojectCurrent`, ordered fallback, cleanup, and
+multi-unit sequences retain distinct observation shapes.
 
-These are enforced regression ceilings for the two controlled fixtures, not
-user-facing latency promises. The `game-like` label identifies only the
-controlled OpenGL renderer; it establishes neither general game nor anti-cheat
-compatibility. Receipts claim neither exact-window delivery nor application
-consumption. Passing historical performance and `mixed-scale` evidence does not
-transfer to the current candidate or substitute for its exact-source `single`,
-`same-scale`, and `mixed-scale` topology rows, so all fourteen release decisions
-remain unexecuted.
+The benchmark bodies formerly attributed to `a471c2d` are source/oracle-
+misbound and supply no result. Current performance and `mixed-scale` evidence do
+not substitute for unavailable `single` or exact two-display `same-scale`
+topology rows, so all fourteen release decisions remain unexecuted. These are
+controlled regression ceilings, not user-facing latency promises or evidence
+of general game or anti-cheat compatibility.
 
 ## Historical Phase 2 evidence
 

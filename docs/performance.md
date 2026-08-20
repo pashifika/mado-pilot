@@ -14,10 +14,10 @@ now accepts the macOS diagnostic slice,
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
 revision-bound macOS native input and public-language profile. Accepted-design
 [ADR 0029](adr/0029-macos-process-directed-input.md) binds the Phase 2.2 macOS
-process-directed and controlled-stimulus lineage below. The last retained
-optimized profiles pass their frozen regression budgets only for their
-historical source. The current candidate has no retained native result, so its
-exact-source `single`, `same-scale`, and `mixed-scale` rows and all fourteen
+process-directed and controlled-stimulus lineage below. Candidate `9e3e77d`
+passes the exact-source controlled AppKit and game-like profiles under their
+frozen regression budgets. Those measurements do not substitute for unavailable
+`single` and exact two-display `same-scale` qualification rows, so all fourteen
 release pair decisions remain unexecuted. The remaining native workload and
 target gaps stay open.
 
@@ -540,27 +540,29 @@ Silicon host at corrected pre-optimization source commit
 `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (implementation tree
 `f4a707501748303adcec577df5f18fcd18f13f45`). The controlled-capture,
 controlled-transition, and process-diagnostic records remain bound to that
-source. The authority-timing-sensitive AppKit and controlled game-like files
-formerly attributed to source
-`a471c2d51428a25dd11e42572b73cf5e86ef7478` (tree
-`3f5ada8d116b527a8644be4d804f91341bc1e296`) are:
+source. Benchmark bodies formerly attributed to `a471c2d` use a visual oracle
+absent from its source tree and remain rejected, non-normative evidence.
+
+The authority-timing-sensitive current profiles are measured at source
+`9e3e77d4021b792f4c4835390658aaac98e76826` (tree
+`ea7881c4416ca2a330fa3097d4fa271f9a547f96`):
 
 - `phase-2-2-process-directed-appkit-aarch64-apple-darwin`;
 - `phase-2-2-process-directed-game-like-aarch64-apple-darwin`.
 
-Their retained commanded-transition visual oracle is absent from the named
-source tree. Both files are therefore `misbound`, non-normative evidence and
-provide no measured latency, correctness, memory, or support result. Exact-source
-profiles are unexecuted; the pre-measurement `106.34 ms` and `112.18 ms` p95
-ceilings remain frozen rather than being reset from rejected output.
+AppKit terminal p95 is `65.078208 ms` under the frozen `106.34 ms` ceiling;
+controlled game-like p95 is `62.760084 ms` under `112.18 ms`. Both profiles
+record zero correctness failures, one matching fixture event per terminal
+sequence, unchanged foreground and physical cursor, and maximum post-warm-up
+allocation growth 2,624 bytes.
 
 The one-read gate is composite rather than a field in either benchmark row.
-Revision-bound controller tests prove terminal route ordering, geometry-source
-tests prove source-transform reuse without a Rust live query, and native seam
-tests prove one final ordinary authority call. A future exact-source measured
-row must independently prove latency, fixture observation, foreground/cursor
-stability, correctness, memory, and both fixture and benchmark executable
-provenance without adding a private inventory counter to the timed path.
+Eight revision-bound controller, geometry-source, and native seam tests prove
+terminal route ordering, source-transform reuse without a Rust live query, one
+final ordinary authority call, and zero retained-window authority calls for
+cleanup. The measured rows independently prove latency, fixture observation,
+foreground/cursor stability, correctness, memory, and executable provenance
+without adding a private inventory counter to the timed path.
 
 The read count has a narrow scope. Before optimization, the same terminal
 `RequireUnchanged` pointer profile made four fresh inventory reads — route

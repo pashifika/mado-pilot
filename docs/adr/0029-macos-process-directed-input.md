@@ -1,23 +1,23 @@
 # ADR 0029: macOS owning-process input delivery
 
-- **Status:** Accepted design, amended for authority timing. Source
-  `a471c2d51428a25dd11e42572b73cf5e86ef7478` and tree
-  `3f5ada8d116b527a8644be4d804f91341bc1e296` retain historical
-  three-display mixed-scale native evidence. The AppKit/game-like benchmark
-  bodies attributed to that source use an oracle absent from its tree and are
-  source/oracle-misbound, non-normative artifacts. Later authority,
-  raw-backing geometry, absolute-deadline/cancellation, and
-  possible-effect/cleanup corrections also prevent native results from
-  transferring to the current candidate. Its exact-source safety, performance,
-  sanitizer, ABI, and hosted-CI reruns are unexecuted. Release-level pair
-  publication remains 0 qualified, 0 rejected, and 14 unexecuted until one
-  applicable revision passes `single`, `same-scale`, and `mixed-scale`. The
-  complete matrix at `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` remains
-  historical evidence for the pre-optimization authority order. The
+- **Status:** Accepted design, amended for authority timing and exact-source
+  controlled evidence. Candidate
+  `9e3e77d4021b792f4c4835390658aaac98e76826` (tree
+  `ea7881c4416ca2a330fa3097d4fa271f9a547f96`) passed the affected
+  three-display `mixed-scale` native rows, deterministic one-read proofs,
+  controlled AppKit/game-like profiles, sanitizer, ABI/C++/CMake checks, and
+  hosted CI. Release-level pair publication remains 0 qualified, 0 rejected,
+  and 14 unexecuted because disconnected `single` and exact two-display
+  non-mirrored `same-scale` matrices are unavailable. The complete matrix at
+  `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` remains historical evidence for
+  the pre-optimization authority order. Source `a471c2d` retains historical
+  native rows, but its attributed benchmark bodies are source/oracle-misbound
+  and supply no result. The
   [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
-  preserves each decision without transferring a pair pass between revisions
-  or topologies.
-- **Date:** 2026-08-16; authority-timing amendment 2026-08-17
+  preserves each decision without transferring a pair pass between revisions or
+  topologies.
+- **Date:** 2026-08-16; authority-timing amendment 2026-08-17; exact-source
+  controlled evidence 2026-08-21
 - **Release gate:** pending until all fourteen pairs have passing `single`,
   `same-scale`, and `mixed-scale` rows and the controlled profiles pass on one
   applicable revision
@@ -224,15 +224,14 @@ the existing no-fallback contract after possible effect.
   otherwise.
 - The support claim remains bound to fourteen exact pairs and revision-bound
   native evidence. The pre-optimization source qualified each as `Unknown`,
-  owning-process scoped, invocation-only, and foreground-preserving. A later
-  optimized source passed its then-current mixed-scale rows, but that result is
-  historical; the current candidate has 14 unexecuted release decisions pending
-  exact-source `single`, `same-scale`, and `mixed-scale` rows. Future operation,
-  target-class, coordinate-space, or topology
-  pairs remain unavailable until their own mandatory rows pass. A route-wide
-  failure blocks every pair; a pair failure blocks only that pair; missing
-  topology evidence is never replaced by another topology or by a latency
-  result.
+  owning-process scoped, invocation-only, and foreground-preserving. Current
+  candidate `9e3e77d` passes exact-source `mixed-scale` rows and controlled
+  profiles, but has 14 unexecuted release decisions because `single` and exact
+  two-display `same-scale` rows are unavailable. Future operation,
+  target-class, coordinate-space, or topology pairs remain unavailable until
+  their own mandatory rows pass. A route-wide failure blocks every pair; a pair
+  failure blocks only that pair; missing topology evidence is never replaced by
+  another topology or by a latency result.
 - The internal shim gains a size-versioned process-post request carrying the
   explicit focus predicate, exact retained target, geometry policy, expected
   bounds, event source, absolute timeout, activity tag, and interruption
@@ -266,11 +265,10 @@ the existing no-fallback contract after possible effect.
   privacy-reviewed
   [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
   binds results to their exact source and artifacts. It records the historical
-  complete pre-optimization matrix and the later `a471c2d` current-topology
-  native attempt separately, while rejecting the source/oracle-misbound
-  benchmark bodies. Subsequent source changes leave the current candidate's
-  profiles and all `single`, `same-scale`, and `mixed-scale` pair rows
-  unexecuted.
+  complete pre-optimization matrix, rejected `a471c2d` benchmark bodies, and
+  current `9e3e77d` native/performance evidence separately. The current
+  `mixed-scale` rows and controlled profiles pass; all `single` and exact
+  two-display `same-scale` pair rows remain unexecuted.
 - Deterministic controller, native-double, shim layout/version, containment,
   protocol, privacy, linkage, and C/C++ contract suites must cover every
   commit-seam ordering — cancellation, revocation, geometry change, target
