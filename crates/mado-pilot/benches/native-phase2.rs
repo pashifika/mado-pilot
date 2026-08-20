@@ -479,8 +479,8 @@ mod native {
         const fn launch_mode(self) -> LaunchMode {
             match self {
                 Self::Animate => LaunchMode::AnimateOnInput,
-                Self::Static => LaunchMode::Static,
-                Self::GameLike => LaunchMode::GameLike,
+                Self::Static => LaunchMode::ControlledStatic,
+                Self::GameLike => LaunchMode::ControlledGameLike,
             }
         }
     }
@@ -1991,7 +1991,7 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn independently_observe_tagged_visual(flow: &ProcessFlow) -> Option<usize> {
+    fn observe_controlled_process_visual(flow: &ProcessFlow) -> Option<usize> {
         let before = *flow
             .visual
             .lock()
@@ -2034,6 +2034,13 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
+    fn stimulate_and_observe_process_visual(flow: &ProcessFlow) -> Option<usize> {
+        controlled_command_ok(&flow.fixture, protocol::FixtureCommandKind::Transition)
+            .then(|| observe_controlled_process_visual(flow))
+            .flatten()
+    }
+
+    #[cfg(target_os = "macos")]
     fn event_authority_preflight_post(flow: &ProcessFlow) -> Sample {
         let (activity_tag, correlation) = process_row_activity(&[flow.pointer_fingerprint]);
         let environment = flow
@@ -2051,7 +2058,7 @@ mod native {
             .expect("the process-directed pointer invocation returns a receipt");
         let elapsed = started.elapsed();
         let events_ok = flow.fixture.next_flow(&[expected]);
-        let visual_ok = independently_observe_tagged_visual(flow).is_some();
+        let visual_ok = stimulate_and_observe_process_visual(flow).is_some();
         Sample::unmapped(
             elapsed,
             complete_process_receipt(&receipt, flow.session.target(), 1)
@@ -2116,7 +2123,7 @@ mod native {
         let release_ok = flow
             .fixture
             .finish_flow_after_prefix(&[expected_release], &[pressed, expected_release]);
-        let visual_ok = independently_observe_tagged_visual(flow).is_some();
+        let visual_ok = stimulate_and_observe_process_visual(flow).is_some();
         let correct = observed.summary() == Some(pressed)
             && receipt
                 .as_ref()
@@ -2221,7 +2228,7 @@ mod native {
         let events_correct = flow.fixture.next_flow(&expected_events);
         let diagnostics_correct =
             process_diagnostics_are_exact(flow.reader.as_ref(), flow.diagnostics, submissions);
-        let observed_frames = independently_observe_tagged_visual(flow);
+        let observed_frames = stimulate_and_observe_process_visual(flow);
         let visual_diagnostics_correct = process_visual_diagnostics_are_exact(
             flow.reader.as_ref(),
             flow.diagnostics,
@@ -3206,13 +3213,13 @@ mod native {
                 "lineage=rust-System-unchanged-cross-language-ProcessDirected-cutover; mode=default renderer=appkit-background"
             }
             WorkloadSet::ProcessDirected => {
-                "lineage=process-directed-appkit; mode=default renderer=appkit-background"
+                "lineage=process-directed-appkit; mode=default renderer=appkit-background stimulus=private-control"
             }
             WorkloadSet::ProcessDirectedGameLike => {
-                "lineage=process-directed-game-like; mode=game-like renderer=opengl"
+                "lineage=process-directed-game-like; mode=game-like renderer=opengl stimulus=private-control"
             }
             WorkloadSet::ProcessDiagnostics => {
-                "lineage=process-directed-diagnostics; mode=default renderer=appkit-background"
+                "lineage=process-directed-diagnostics; mode=default renderer=appkit-background stimulus=private-control"
             }
         };
         format!("{notes}; {lineage}")

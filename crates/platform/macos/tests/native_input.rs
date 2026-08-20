@@ -831,87 +831,68 @@ fn an_open_that_requires_window_message_fails_without_establishing_anything() {
 }
 
 #[test]
-fn a_preserving_request_to_an_unfocused_window_submits_nothing() {
-    // The point of this check is that it is safe to run anywhere: a focus policy
-    // that will not activate cannot satisfy system delivery, so the refusal
-    // happens before any event and the developer's desktop is untouched.
+fn delay_only_focus_policies_probe_unfocused_windows_without_posting_input() {
+    // A default test must never turn an ambient desktop window into an input
+    // target. Probe focus with a reversible delay-only sequence, and accept a
+    // complete result only as evidence that this particular window was focused.
     let provider = provider();
     let Some(targets) = discovered(&provider) else {
         println!("skipped: this host offers no capture capability");
         return;
     };
-    let Some(window) = targets
+    let windows = targets
         .iter()
-        .find(|target| target.capability().kind() == Some(TargetKind::Window))
-    else {
+        .filter(|target| target.capability().kind() == Some(TargetKind::Window))
+        .collect::<Vec<_>>();
+    if windows.is_empty() {
         println!("skipped: this host presented no shareable window");
         return;
-    };
+    }
 
-    let controller =
-        InputProvider::open(&provider, window.id(), &InputOpenRequest::new(), &context())
-            .expect("an optional input open succeeds for a window");
-    let request = InputRequest::new(
-        window.id(),
-        InputSequence::new(vec![InputEvent::KeyPress(Key::Escape)]).expect("valid"),
-        DeliveryPlan::require(InputDelivery::System),
-    );
+    for policy in [FocusPolicy::Preserve, FocusPolicy::RequireFocused] {
+        let mut observed_refusal = false;
+        for window in &windows {
+            let controller =
+                InputProvider::open(&provider, window.id(), &InputOpenRequest::new(), &context())
+                    .expect("an optional input open succeeds for a window");
+            let request = InputRequest::new(
+                window.id(),
+                InputSequence::new(vec![InputEvent::Delay(Duration::ZERO)]).expect("valid"),
+                DeliveryPlan::require(InputDelivery::System),
+            )
+            .with_focus(policy);
+            let receipt = controller
+                .execute(&request, &context())
+                .expect("the reversible focus probe produces a receipt");
+            controller.close(&context()).expect("close");
 
-    let receipt = controller
-        .execute(&request, &context())
-        .expect("focus-policy refusal is receipt evidence");
-
-    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    assert_eq!(receipt.submitted(), 0);
-    assert_eq!(receipt.fault(), Some(InputFault::FocusRequired));
-    assert_eq!(receipt.attempts().len(), 1);
-    assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
-    controller.close(&context()).expect("close");
-    assert!(controller.is_closed());
-}
-
-#[test]
-fn an_unfocused_window_refuses_a_require_focused_sequence_before_any_event() {
-    let provider = provider();
-    let Some(targets) = discovered(&provider) else {
-        println!("skipped: this host offers no capture capability");
-        return;
-    };
-    // A window this test process does not own cannot be frontmost while the test
-    // binary is, so the refusal below is the one a caller would see.
-    let Some(window) = targets
-        .iter()
-        .find(|target| target.capability().kind() == Some(TargetKind::Window))
-    else {
-        println!("skipped: this host presented no shareable window");
-        return;
-    };
-
-    let controller =
-        InputProvider::open(&provider, window.id(), &InputOpenRequest::new(), &context())
-            .expect("input opens");
-    let request = InputRequest::new(
-        window.id(),
-        InputSequence::new(vec![InputEvent::KeyPress(Key::Escape)]).expect("valid"),
-        DeliveryPlan::require(InputDelivery::System),
-    )
-    .with_focus(FocusPolicy::RequireFocused);
-
-    let receipt = controller
-        .execute(&request, &context())
-        .expect("an admitted sequence produces a receipt");
-
-    assert_eq!(receipt.submitted(), 0);
-    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
-    let fault = receipt.fault().expect("a reason");
-    assert!(
-        matches!(
-            fault,
-            InputFault::FocusRequired | InputFault::NotAuthorized | InputFault::TargetLost
-        ),
-        "an unfocused, unauthorized, or vanished target are the honest answers, got {fault:?}"
-    );
-    controller.close(&context()).expect("close");
+            match receipt.fault() {
+                Some(InputFault::FocusRequired) => {
+                    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+                    assert_eq!(receipt.submitted(), 0);
+                    assert_eq!(receipt.attempts().len(), 1);
+                    assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
+                    observed_refusal = true;
+                    break;
+                }
+                Some(InputFault::NotAuthorized | InputFault::TargetLost) => {
+                    assert_eq!(receipt.submitted(), 0);
+                }
+                None => {
+                    assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
+                    assert_eq!(
+                        receipt.submitted(),
+                        1,
+                        "only the reversible delay completed"
+                    );
+                }
+                fault => panic!("unexpected focus-probe result for {policy:?}: {fault:?}"),
+            }
+        }
+        if !observed_refusal {
+            println!("skipped: no observable unfocused window for {policy:?}");
+        }
+    }
 }
 
 #[test]

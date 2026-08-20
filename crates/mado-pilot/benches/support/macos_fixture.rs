@@ -38,34 +38,45 @@ const DROP_WAIT: Duration = Duration::from_secs(1);
 const GRACEFUL_CLOSE_WAIT: Duration = Duration::from_millis(100);
 const EVENT_QUIET_WAIT: Duration = Duration::from_millis(100);
 
-/// How the independently linked fixture renders and whether product input also
-/// drives its legacy interactive animation.
+/// How the independently linked fixture renders and whether correlated product
+/// input is also allowed to drive a qualification-only visual transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchMode {
-    /// Static AppKit background, changed only by private commands.
+    /// Static AppKit background outside correlated input qualification.
     Static,
+    /// AppKit background whose benchmark stimulus is only a private command.
+    ControlledStatic,
     /// The retained interactive `System` profile's input-driven animation.
     AnimateOnInput,
     /// The retained interactive `System` profile's animation and resize mode.
     AnimateAndResizeOnInput,
     /// Independently qualified dynamically loaded OpenGL renderer.
     GameLike,
+    /// OpenGL renderer whose benchmark stimulus is only a private command.
+    ControlledGameLike,
 }
 
 impl LaunchMode {
-    fn argument(self) -> Option<&'static str> {
+    fn arguments(self) -> &'static [&'static str] {
         match self {
-            Self::Static => None,
-            Self::AnimateOnInput => Some("--animate-on-input"),
-            Self::AnimateAndResizeOnInput => Some("--animate-and-resize-on-input"),
-            Self::GameLike => Some("--game-like"),
+            Self::Static => &[],
+            Self::ControlledStatic => &["--independent-visual-stimulus"],
+            Self::AnimateOnInput => &["--animate-on-input"],
+            Self::AnimateAndResizeOnInput => &["--animate-and-resize-on-input"],
+            Self::GameLike => &["--game-like"],
+            Self::ControlledGameLike => &["--game-like", "--independent-visual-stimulus"],
         }
     }
 
     fn expected_facts(self) -> (FixtureMode, FixtureRenderer) {
         match self {
-            Self::GameLike => (FixtureMode::GameLike, FixtureRenderer::OpenGl),
-            Self::Static | Self::AnimateOnInput | Self::AnimateAndResizeOnInput => {
+            Self::GameLike | Self::ControlledGameLike => {
+                (FixtureMode::GameLike, FixtureRenderer::OpenGl)
+            }
+            Self::Static
+            | Self::ControlledStatic
+            | Self::AnimateOnInput
+            | Self::AnimateAndResizeOnInput => {
                 (FixtureMode::Default, FixtureRenderer::AppKitBackground)
             }
         }
@@ -75,8 +86,12 @@ impl LaunchMode {
     pub const fn fact(self) -> &'static str {
         match self {
             Self::GameLike => "mode=game-like renderer=opengl",
+            Self::ControlledGameLike => "mode=game-like renderer=opengl stimulus=private-control",
             Self::Static | Self::AnimateOnInput | Self::AnimateAndResizeOnInput => {
                 "mode=default renderer=appkit-background"
+            }
+            Self::ControlledStatic => {
+                "mode=default renderer=appkit-background stimulus=private-control"
             }
         }
     }
@@ -194,9 +209,7 @@ impl FixtureController {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
-        if let Some(argument) = launch_mode.argument() {
-            launch.arg(argument);
-        }
+        launch.args(launch_mode.arguments());
         let child = launch
             .spawn()
             .map_err(|_| "the fixture application launcher could not start".to_owned())?;

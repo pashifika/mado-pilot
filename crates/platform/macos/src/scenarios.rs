@@ -13,7 +13,7 @@
 //! its reason so a green run cannot be read as evidence the scenario ran.
 
 use std::ffi::c_void;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -31,9 +31,10 @@ use crate::discovery::{Candidate, Fingerprint, NativeKey, TargetMetadata, invent
 use crate::input::GeometryLedger;
 use crate::native::{NativeSession, SessionTarget, testing_delayed_callback_is_active};
 use crate::shim::{
-    self, DELAY_IN_RUST_CALLBACK, MAX_NATIVE_WAIT, PANIC_IN_RUST_CALLBACK, RAISE_AFTER_CALLBACK,
-    RAISE_AT_START, RAISE_AT_TEARDOWN, RAISE_BEFORE_CALLBACK, RAISE_IN_START_COMPLETION,
-    RAISE_IN_STOP_COMPLETION,
+    self, DELAY_IN_RUST_CALLBACK, FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION,
+    FAIL_START_HOLD_ALLOCATION, FAIL_START_SEMAPHORE_ALLOCATION, MAX_NATIVE_WAIT,
+    PANIC_IN_RUST_CALLBACK, RAISE_AFTER_CALLBACK, RAISE_AT_START, RAISE_AT_TEARDOWN,
+    RAISE_BEFORE_CALLBACK, RAISE_IN_START_COMPLETION, RAISE_IN_STOP_COMPLETION,
 };
 use crate::storage::DETACHED_BUFFER_BUDGET;
 
@@ -232,6 +233,7 @@ impl Harness {
         &self,
         start_delay: Duration,
         stop_delay: Duration,
+        failure_sites: u32,
     ) -> Result<shim::Session, shim::ShimStatus> {
         unsafe extern "C" fn ignore_frame(
             _context: *mut c_void,
@@ -256,7 +258,7 @@ impl Harness {
                 detached_budget: DETACHED_BUFFER_BUDGET.get(),
                 testing_start_delay: start_delay,
                 testing_stop_delay: stop_delay,
-                testing_raise_sites: 0,
+                testing_raise_sites: failure_sites,
             },
             std::ptr::null_mut(),
             ignore_frame,
@@ -907,6 +909,48 @@ fn close_is_idempotent_and_leaves_no_native_object_alive() {
 }
 
 #[test]
+fn concurrent_close_callers_serialize_one_shared_native_session() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("concurrent close serialization") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let session = harness.open(0).expect("open");
+    drop(next_frame(&session, FrameRequest::latest()).expect("frame"));
+    let ready = Arc::new(Barrier::new(3));
+
+    thread::scope(|scope| {
+        let mut callers = Vec::new();
+        for _ in 0..2 {
+            let session = Arc::clone(&session);
+            let ready = Arc::clone(&ready);
+            callers.push(scope.spawn(move || {
+                ready.wait();
+                session.close(
+                    &OperationContext::new()
+                        .with_timeout(Duration::from_secs(5))
+                        .expect("close timeout"),
+                )
+            }));
+        }
+        ready.wait();
+        for caller in callers {
+            caller
+                .join()
+                .expect("close caller did not panic")
+                .expect("serialized close succeeds");
+        }
+    });
+
+    assert_eq!(session.lifecycle(), Lifecycle::Closed);
+    drop(session);
+    assert!(
+        settles_to(baseline),
+        "concurrent close callers release each native object exactly once"
+    );
+}
+
+#[test]
 fn implicit_drop_quarantines_a_registration_after_a_fence_timeout() {
     let _serial = serialized();
     let Some(harness) = Harness::acquire("implicit close fence timeout") else {
@@ -930,6 +974,42 @@ fn implicit_drop_quarantines_a_registration_after_a_fence_timeout() {
     assert!(
         settles_to(baseline),
         "the quarantine worker resumes teardown and releases the callback registration"
+    );
+}
+
+#[test]
+fn implicit_drop_retains_the_session_handle_until_a_delayed_native_stop_joins() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("implicit delayed native stop") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let session = harness
+        .open_with_delays(Duration::ZERO, Duration::from_millis(2_500))
+        .expect("open session with a delayed native stop");
+    let core_is_alive = session.core_lifetime_probe();
+
+    drop(session);
+
+    assert!(
+        core_is_alive(),
+        "the quarantine worker retains the Rust session handle while native stop is pending"
+    );
+    assert!(
+        shim::live_objects() > baseline,
+        "native ownership remains live until the pending stop completes"
+    );
+    assert!(
+        settles_to(baseline),
+        "the joined delayed-stop worker releases every native object"
+    );
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while core_is_alive() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(
+        !core_is_alive(),
+        "the Rust session handle is released only after the close worker joins"
     );
 }
 
@@ -999,7 +1079,7 @@ fn a_close_timeout_during_native_start_is_resumable() {
     };
     let baseline = shim::live_objects();
     let session = harness
-        .open_unstarted_shim(Duration::from_millis(150), Duration::ZERO)
+        .open_unstarted_shim(Duration::from_millis(150), Duration::ZERO, 0)
         .expect("open unstarted shim session");
 
     assert_eq!(
@@ -1071,6 +1151,47 @@ fn a_closed_session_refuses_further_frame_requests() {
     assert!(
         matches!(error.status(), Status::Closed | Status::TargetLost),
         "a closed session reports why it stopped, not a capture failure: {error}"
+    );
+}
+
+#[test]
+fn a_start_semaphore_allocation_failure_is_typed_and_leaves_no_native_object_alive() {
+    let _serial = serialized();
+    start_allocation_failure("capture-start semaphore", FAIL_START_SEMAPHORE_ALLOCATION);
+}
+
+#[test]
+fn a_start_session_hold_allocation_failure_is_typed_and_leaves_no_native_object_alive() {
+    let _serial = serialized();
+    start_allocation_failure("capture-start session hold", FAIL_START_HOLD_ALLOCATION);
+}
+
+#[test]
+fn a_reconfigure_semaphore_allocation_failure_is_typed_before_framework_submission() {
+    let _serial = serialized();
+    let Some(harness) = Harness::acquire("reconfigure semaphore allocation failure") else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let session = harness
+        .open_unstarted_shim(
+            Duration::ZERO,
+            Duration::ZERO,
+            FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION,
+        )
+        .expect("open unstarted shim session");
+
+    assert_eq!(
+        session.reconfigure(harness.metadata.extent, MAX_NATIVE_WAIT),
+        Err(shim::ShimStatus::PlatformFailure)
+    );
+    session
+        .close(MAX_NATIVE_WAIT)
+        .expect("close the unstarted session");
+    drop(session);
+    assert!(
+        settles_to(baseline),
+        "reconfigure allocation failure left a native object alive"
     );
 }
 
@@ -1181,6 +1302,21 @@ enum FrameExpectation {
 /// These are the cases that stop holding if `-fobjc-arc-exceptions` is ever
 /// dropped from the build script, which is how a compiler flag becomes a tested
 /// invariant rather than a comment.
+fn start_allocation_failure(name: &str, site: u32) {
+    let Some(harness) = Harness::acquire(&format!("{name} allocation failure")) else {
+        return;
+    };
+    let baseline = shim::live_objects();
+    let error = harness
+        .open(site)
+        .expect_err("allocation failure prevents the asynchronous start submission");
+    assert_eq!(error.status(), Status::CaptureFailed);
+    assert!(
+        settles_to(baseline),
+        "{name} allocation failure left a native object alive"
+    );
+}
+
 fn contained_site(name: &str, site: u32, expectation: FrameExpectation) {
     let scenario = format!("containment at {name}");
     // The frame sites need a display that is actually producing, or the raise

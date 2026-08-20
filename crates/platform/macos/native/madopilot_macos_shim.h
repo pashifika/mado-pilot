@@ -30,12 +30,13 @@ extern "C" {
 #endif
 
 /* The version of this internal surface. Rust asserts it at load. */
-#define MP_SHIM_ABI_VERSION 15u
+#define MP_SHIM_ABI_VERSION 19u
 
 /* The largest extent, budget, and default wait the shim will accept or apply. */
 #define MP_SHIM_MAX_PIXEL_EXTENT 32768u
 #define MP_SHIM_MAX_DETACHED_BUDGET 256u
 #define MP_SHIM_DEFAULT_TIMEOUT_NANOS 1000000000ull
+#define MP_SHIM_MAX_NATIVE_WAIT_NANOS 2000000000ull
 
 /*
  * The largest surface the shim will accept, in bytes.
@@ -79,6 +80,10 @@ extern "C" {
 #define MP_SHIM_RAISE_IN_STOP_COMPLETION 64u
 /* Rust-only companion seam: one callback outlives the default fence wait. */
 #define MP_SHIM_DELAY_IN_RUST_CALLBACK 128u
+/* Native allocation-failure seams; zero in every product request. */
+#define MP_SHIM_FAIL_START_SEMAPHORE_ALLOCATION 256u
+#define MP_SHIM_FAIL_START_HOLD_ALLOCATION 512u
+#define MP_SHIM_FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION 1024u
 
 /* Status returned by every entry point. Zero is success. */
 typedef uint32_t mp_shim_status;
@@ -159,6 +164,7 @@ typedef struct mp_shim_target mp_shim_target;
 typedef struct mp_shim_session mp_shim_session;
 typedef struct mp_shim_frame mp_shim_frame;
 typedef struct mp_shim_process_event_source mp_shim_process_event_source;
+typedef struct mp_shim_prepared_input mp_shim_prepared_input;
 
 /*
  * One discovered window or display.
@@ -209,6 +215,9 @@ typedef struct mp_shim_frame_info {
     uint64_t display_time_nanos;
     /* Capture pixels per point for this frame. */
     double scale_factor;
+    /* Raw display backing pixels per point for final live-window comparison.
+     * Unlike `scale_factor`, this excludes SCStreamFrameInfoContentScale. */
+    double backing_scale;
     /* Content origin within the surface, in capture pixels. */
     double content_origin_x;
     double content_origin_y;
@@ -370,6 +379,12 @@ mp_shim_status mp_shim_testing_terminalize_twice(
     void *context, void (*stopped_callback)(void *context, mp_shim_status status),
     mp_shim_status first, mp_shim_status second);
 
+/* Exercises stream timestamp range checks and stop-callback containment. */
+uint64_t mp_shim_testing_seconds_to_nanos(double seconds);
+mp_shim_status mp_shim_testing_stop_callback_exception(
+    mp_shim_status *out_terminal_status, uint32_t *out_terminal_calls,
+    mp_shim_status *out_fence_status);
+
 /*
  * Deterministic test seam for the resumable asynchronous start/stop gates.
  * Each first wait expires while the delayed completion remains pending; each
@@ -387,6 +402,23 @@ mp_shim_status mp_shim_testing_gate_retries(
  */
 mp_shim_status mp_shim_testing_stop_completion_exception(mp_shim_status *out_status,
                                                           bool *out_started);
+
+/*
+ * Exercises every synchronization-object construction boundary used by a
+ * session. A nonzero `fail_at` injects failure at that one-based pthread init
+ * attempt; zero initializes and then destroys the complete set.
+ */
+#define MP_SHIM_TEST_SESSION_SYNC_INIT_STAGES 10u
+mp_shim_status mp_shim_testing_session_sync_init(
+    uint32_t fail_at, uint32_t *out_attempts, uint32_t *out_initialized,
+    uint32_t *out_destroyed, uint32_t *out_success);
+
+/*
+ * Runs the exact resource factories used by asynchronous production paths with
+ * deterministic allocation failure enabled.
+ */
+mp_shim_status mp_shim_testing_resource_allocation_failures(
+    mp_shim_status *out_semaphore_status, mp_shim_status *out_session_hold_status);
 
 /* Pure seam for the same-sample source-resolution surface recommendation. */
 mp_shim_status mp_shim_testing_surface_recommendation(double logical_width,
@@ -410,14 +442,49 @@ mp_shim_status mp_shim_testing_input_activation_lifetime_loss(
     mp_shim_status *out_activation_status, uint32_t *out_validation_calls,
     uint32_t *out_activation_calls);
 
+/* Scenarios for one-unit system-event exception containment. */
+#define MP_SHIM_TEST_INPUT_SINGLE_CONFIGURE_EXCEPTION 0u
+#define MP_SHIM_TEST_INPUT_SINGLE_POST_EXCEPTION 1u
+
 /*
- * Runs the production text-event preparation with the second native allocation
- * forced to fail. The counters prove the first object was released and neither
- * half of the text event was configured or posted.
+ * Runs the production one-unit ownership helper with a contained exception
+ * before or after its irreversible posting threshold.
  */
-mp_shim_status mp_shim_testing_input_text_second_allocation_failure(
-    mp_shim_status *out_delivery_status, size_t *out_allocations, size_t *out_configurations,
+mp_shim_status mp_shim_testing_input_single_event_failure(
+    uint32_t scenario, mp_shim_status *out_delivery_status, size_t *out_configurations,
     size_t *out_posts, size_t *out_releases, size_t *out_posted);
+
+/* Scenarios for balanced system text preparation and posting failures. */
+#define MP_SHIM_TEST_INPUT_TEXT_SECOND_ALLOCATION_FAILURE 0u
+#define MP_SHIM_TEST_INPUT_TEXT_CONFIGURE_EXCEPTION 1u
+#define MP_SHIM_TEST_INPUT_TEXT_POST_EXCEPTION 2u
+
+/*
+ * Runs the production text-event ownership helper with the selected allocation
+ * failure or contained configuration/post exception.
+ */
+mp_shim_status mp_shim_testing_input_text_failure(
+    uint32_t scenario, mp_shim_status *out_delivery_status, size_t *out_allocations,
+    size_t *out_configurations, size_t *out_posts, size_t *out_releases,
+    size_t *out_posted);
+
+/* Scenarios for the prepared system-event final native fence. */
+#define MP_SHIM_TEST_PREPARED_INPUT_SUCCESS 0u
+#define MP_SHIM_TEST_PREPARED_INPUT_CANCELLED 1u
+#define MP_SHIM_TEST_PREPARED_INPUT_DEADLINE 2u
+#define MP_SHIM_TEST_PREPARED_INPUT_POST_EXCEPTION 3u
+
+mp_shim_status mp_shim_testing_prepared_input_gate(
+    uint32_t scenario, mp_shim_status *out_delivery_status,
+    uint32_t *out_native_effect_may_have_occurred, uint64_t *out_post_calls,
+    size_t *out_next_index);
+
+/*
+ * Classifies one required Accessibility read without consulting another
+ * process. Scenarios cover success, disabled API, missing-value variants, and
+ * an incomplete response in that order.
+ */
+mp_shim_status mp_shim_testing_required_ax_error_status(uint32_t scenario);
 
 /*
  * Raises from the native event-source release operation and proves the opaque
@@ -461,6 +528,13 @@ mp_shim_status mp_shim_testing_target_release_exception(
 #define MP_SHIM_TEST_PROCESS_FOCUS_REQUIRED_SUCCESS 24u
 #define MP_SHIM_TEST_PROCESS_GEOMETRY_RESTORED_BEFORE_COMMIT 25u
 #define MP_SHIM_TEST_PROCESS_FRACTIONAL_GEOMETRY_NORMALIZED 26u
+#define MP_SHIM_TEST_PROCESS_DEADLINE_AFTER_PREPARE 27u
+#define MP_SHIM_TEST_PROCESS_TARGET_LOST_AFTER_FOCUS 28u
+#define MP_SHIM_TEST_PROCESS_INTERRUPTION_INVALIDATES_LIFETIME 29u
+#define MP_SHIM_TEST_PROCESS_CANCELLED_DURING_LIFETIME 30u
+#define MP_SHIM_TEST_PROCESS_NATIVE_BUDGET_AFTER_AUTHORITY 31u
+#define MP_SHIM_TEST_PROCESS_NATIVE_BUDGET_AFTER_LIFETIME 32u
+#define MP_SHIM_TEST_PROCESS_RELEASE_EXCEPTION 33u
 
 /* Process-post request and capture-only target-shape validation scenarios. */
 #define MP_SHIM_TEST_PROCESS_VALIDATE_NULL_REQUEST 0u
@@ -502,6 +576,8 @@ mp_shim_status mp_shim_testing_target_release_exception(
 #define MP_SHIM_TEST_PROCESS_VALIDATE_SCROLL_COORDINATE 36u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_FOCUS_REQUIREMENT 37u
 #define MP_SHIM_TEST_PROCESS_VALIDATE_RELEASE_FOCUS 38u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_CANCELLATION_CONTEXT 39u
+#define MP_SHIM_TEST_PROCESS_VALIDATE_CANCELLATION_CALLBACK 40u
 
 /*
  * Runs the production process-post state machine with deterministic authority,
@@ -513,7 +589,8 @@ mp_shim_status mp_shim_testing_process_post(
     uint32_t *out_native_effect_may_have_occurred, uint32_t *out_target_match_count,
     uint32_t *out_focus_result, uint64_t *out_authority_calls, uint64_t *out_preflight_calls,
     uint64_t *out_lifetime_calls, uint64_t *out_focus_calls, uint64_t *out_prepare_calls,
-    uint64_t *out_post_calls, uint64_t *out_release_calls);
+    uint64_t *out_post_calls, uint64_t *out_release_calls, uint64_t *out_checkpoint_calls,
+    uint64_t *out_cancellation_calls);
 
 /*
  * Runs one invalid request through the public native entry point. A valid report
@@ -782,13 +859,15 @@ typedef struct mp_shim_process_authority_report {
 } mp_shim_process_authority_report;
 
 /*
- * One bounded process-directed native event.
+ * One adapter-bounded process-directed native event.
  *
  * Fields not selected by `event_kind` are ignored after their containing
  * structure and reserved bytes are validated. Text is a borrowed pointer-length
- * view valid only for the call. `focus_requirement` is the caller's focus
- * predicate, not a route requirement, and a release purpose must leave it
- * `MP_SHIM_PROCESS_FOCUS_NONE`. No native framework type crosses this boundary.
+ * view valid only for the call. `timeout_nanos` is an adapter-owned maximum for
+ * each native observation, not an operation-deadline decision.
+ * `focus_requirement` is the caller's focus predicate, not a route requirement,
+ * and a release purpose must leave it `MP_SHIM_PROCESS_FOCUS_NONE`. No native
+ * framework type crosses this boundary.
  */
 typedef struct mp_shim_process_post_request {
     uint32_t struct_size;
@@ -818,12 +897,16 @@ typedef struct mp_shim_process_post_request {
     double expected_height;
     double expected_scale;
     /*
-     * Synchronous adapter-owned cancellation fence. The callback and context
-     * remain valid for this call, contain their own failures, and must not
-     * dispatch caller-provided code.
+     * The synchronous operation checkpoint runs before every mutable final gate
+     * and writes the caller clock's current remaining slice. The cancellation
+     * callback runs after final authority and reads only adapter-owned atomic
+     * state. Both callback/context pairs remain valid for this call, contain
+     * their own failures, and are never retained.
      */
     void *interruption_context;
-    mp_shim_status (*interruption_callback)(void *context);
+    mp_shim_status (*interruption_callback)(void *context, uint64_t *out_wait_nanos);
+    void *cancellation_context;
+    mp_shim_status (*cancellation_callback)(void *context);
 } mp_shim_process_post_request;
 
 /*
@@ -898,8 +981,9 @@ mp_shim_status mp_shim_process_post(const mp_shim_process_post_request *request,
  * attributes then report the active application, its focused window, and its
  * window list. Focus is true only when exactly one Accessibility window has the
  * freshly verified window's unchanged position and size and that element is
- * focused. Missing or ambiguous attributes write false. No title, private
- * Accessibility identifier, or window-raising action is used.
+ * focused. Missing or internally inconsistent required attributes return a
+ * failure status; a complete unequal or ambiguous observation writes false. No
+ * title, private Accessibility identifier, or window-raising action is used.
  *
  * `timeout_nanos` bounds the shareable-content and Accessibility observations.
  */
@@ -958,32 +1042,43 @@ mp_shim_status mp_shim_input_activate_owner(const mp_shim_target *target);
 mp_shim_status mp_shim_input_resolve_character(uint32_t scalar, uint16_t *out_key_code);
 
 /*
- * Posts one pointer event at `x`, `y` in the global point space.
+ * Fully prepares system-delivery events before any final mutable target gate.
+ * Pointer coordinates use the global point space; `button` is ignored for a
+ * move and `click_state` is the click count for a press or release.
  *
- * `button` is ignored for a move. `click_state` is the click count a press or
- * release carries and is ignored for a move.
+ * On success the caller owns `*out_prepared`; release it exactly once.
  */
-mp_shim_status mp_shim_input_post_pointer(uint32_t action, uint32_t button, uint64_t click_state,
-                                          double x, double y, uint32_t flags);
+mp_shim_status mp_shim_input_prepare_pointer(uint32_t action, uint32_t button,
+                                             uint64_t click_state, double x, double y,
+                                             uint32_t flags,
+                                             mp_shim_prepared_input **out_prepared);
+mp_shim_status mp_shim_input_prepare_scroll(int32_t horizontal, int32_t vertical, double x,
+                                            double y, uint32_t flags,
+                                            mp_shim_prepared_input **out_prepared);
+mp_shim_status mp_shim_input_prepare_key(uint16_t key_code, bool down, uint32_t flags,
+                                         mp_shim_prepared_input **out_prepared);
+mp_shim_status mp_shim_input_prepare_text(const uint16_t *units, size_t count, uint32_t flags,
+                                          mp_shim_prepared_input **out_prepared);
 
-/* Posts one line-unit scroll at a finite global desktop location. */
-mp_shim_status mp_shim_input_post_scroll(int32_t horizontal, int32_t vertical, double x, double y,
-                                         uint32_t flags);
-
-/* Posts one key event for a hardware key code. */
-mp_shim_status mp_shim_input_post_key(uint16_t key_code, bool down, uint32_t flags);
+/* Reports the ordered native event count owned by a prepared input handle. */
+mp_shim_status mp_shim_input_prepared_count(const mp_shim_prepared_input *prepared,
+                                            size_t *out_count);
 
 /*
- * Posts `count` UTF-16 units as text rather than as key codes.
- *
- * `count` must not exceed MP_SHIM_INPUT_MAX_TEXT_CHUNK. Both balanced events are
- * allocated and configured before either is posted. `*out_posted` receives how
- * many units reached the key-down post: zero when pair preparation fails and the
- * whole chunk on success. A caller reports a nonzero partial count as native
- * effect it cannot take back.
+ * Posts exactly the next prepared event. The deadline uses the same monotonic
+ * nanosecond domain as `mp_shim_monotonic_nanos`. The cancellation callback must
+ * read only adapter-owned atomic state; it and its context are borrowed for this
+ * synchronous call and are never retained. `out_native_effect_may_have_occurred`
+ * advances immediately before entering the void Core Graphics post.
  */
-mp_shim_status mp_shim_input_post_text(const uint16_t *units, size_t count, uint32_t flags,
-                                       size_t *out_posted);
+mp_shim_status mp_shim_input_post_prepared(
+    mp_shim_prepared_input *prepared, size_t index, uint64_t deadline_nanos,
+    void *cancellation_context,
+    mp_shim_status (*cancellation_callback)(void *context),
+    uint32_t *out_native_effect_may_have_occurred);
+
+/* Releases every Core Graphics object still owned by the prepared handle. */
+mp_shim_status mp_shim_input_prepared_release(mp_shim_prepared_input *prepared);
 
 #ifdef __cplusplus
 }

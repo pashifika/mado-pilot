@@ -16,7 +16,9 @@
 
 use std::ffi::c_void;
 use std::fmt;
+use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, TryLockError, Weak};
@@ -48,6 +50,119 @@ const PRODUCER_QUEUE_DEPTH: u32 = 3;
 /// How long a caller contending for the close gate sleeps between attempts.
 const CLOSE_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
+#[derive(Debug, Default)]
+struct CloseGate {
+    state: Mutex<CloseGateState>,
+    idle: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct CloseGateState {
+    owner: Option<thread::ThreadId>,
+    entering: Vec<thread::ThreadId>,
+}
+
+#[derive(Debug)]
+struct CloseOwner<'gate> {
+    gate: &'gate CloseGate,
+    thread: thread::ThreadId,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+#[derive(Debug)]
+struct CloseEntry<'gate> {
+    gate: &'gate CloseGate,
+    thread: thread::ThreadId,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl CloseGate {
+    fn enter(&self, operation: &OperationContext) -> Result<CloseOwner<'_>> {
+        let thread = thread::current().id();
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.owner == Some(thread) || state.entering.contains(&thread) {
+                /*
+                 * Caller clocks may synchronously re-enter close. The outer
+                 * call will finish the same idempotent teardown, but the
+                 * nested call cannot report success before that teardown has
+                 * actually completed.
+                 */
+                return Err(CaptureFault::SessionClosed.into());
+            }
+            state.entering.push(thread);
+        }
+        let _entry = CloseEntry {
+            gate: self,
+            thread,
+            _not_send: PhantomData,
+        };
+        let mut attempt = Operation::admit(operation)?;
+        loop {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match state.owner {
+                None => {
+                    state.owner = Some(thread);
+                    drop(state);
+                    return Ok(attempt.commit(CloseOwner {
+                        gate: self,
+                        thread,
+                        _not_send: PhantomData,
+                    })?);
+                }
+                Some(owner) if owner == thread => {
+                    unreachable!("the entry marker caught same-thread close reentry")
+                }
+                Some(_) => {
+                    let (state, _timed) = self
+                        .idle
+                        .wait_timeout(state, CLOSE_POLL_INTERVAL)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    drop(state);
+                    // Caller code runs only after the gate mutex is released.
+                    attempt.checkpoint()?;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for CloseEntry<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let index = state
+            .entering
+            .iter()
+            .position(|thread| *thread == self.thread)
+            .expect("a live close entry remains registered");
+        state.entering.swap_remove(index);
+    }
+}
+
+impl Drop for CloseOwner<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        debug_assert_eq!(state.owner, Some(self.thread));
+        state.owner = None;
+        drop(state);
+        self.gate.idle.notify_all();
+    }
+}
+
 #[cfg(test)]
 static TESTING_DELAYED_CALLBACK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -63,7 +178,7 @@ pub(crate) struct NativeSession {
     ///
     /// Reclaimed only after a successful fence proves no callback can reach it.
     registered: *const SessionCore,
-    close_gate: Mutex<()>,
+    close_gate: CloseGate,
     close_reported: AtomicBool,
 }
 
@@ -126,8 +241,8 @@ impl GeometryRegistration {
         Self { ledger, stream }
     }
 
-    fn publish(&self, frame: &Frame) {
-        self.ledger.publish(frame);
+    fn publish(&self, frame: &Frame, native_bounds: shim::NativeBounds) {
+        self.ledger.publish(frame, native_bounds);
     }
 }
 
@@ -155,12 +270,13 @@ struct SessionCore {
 /// What the stream last received from this Adapter.
 ///
 /// Continuity is decided against this rather than against a flag accumulated from
-/// intermediate observations. Both values come from frames that were actually
+/// intermediate observations. Every value comes from a frame that was actually
 /// published; a later inventory snapshot never enters this comparison.
 #[derive(Debug, Clone, Copy)]
 struct Published {
     extent: PixelExtent,
     placement: TargetPlacement,
+    native_bounds: shim::NativeBounds,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -566,7 +682,7 @@ impl NativeSession {
             description,
             core,
             registered,
-            close_gate: Mutex::new(()),
+            close_gate: CloseGate::default(),
             close_reported: AtomicBool::new(false),
         });
 
@@ -616,6 +732,12 @@ impl NativeSession {
     pub(crate) fn terminal_reports(&self) -> u64 {
         self.core.terminal_reports.load(Ordering::Acquire)
     }
+
+    #[cfg(test)]
+    pub(crate) fn core_lifetime_probe(&self) -> Box<dyn Fn() -> bool + Send + Sync> {
+        let core = Arc::downgrade(&self.core);
+        Box::new(move || core.strong_count() != 0)
+    }
 }
 
 impl fmt::Debug for NativeSession {
@@ -642,7 +764,7 @@ impl CaptureSession for NativeSession {
         self.core.state.begin_close();
         self.core.session().disable_callbacks();
         self.core.reconfigure.shutdown();
-        let _gate = lock_with_operation(&self.close_gate, operation)?;
+        let _gate = self.close_gate.enter(operation)?;
         self.core.reconfigure.drain(operation)?;
         self.fence_and_close(operation)?;
         self.core.state.drain(operation)
@@ -677,8 +799,14 @@ fn close_registered(core: &Arc<SessionCore>, registered: *const SessionCore) -> 
     if fenced.is_ok() {
         core.discard_pending_frame();
     }
-    let _closed = session.close(DEFAULT_NATIVE_WAIT);
-    if fenced.is_err() {
+    let closed = session.close(DEFAULT_NATIVE_WAIT);
+    if fenced.is_err() || matches!(closed, Err(ShimStatus::TimedOut)) {
+        /*
+         * A timed-out native close still owns an asynchronous start or stop.
+         * Keep `core`, and therefore the Rust session handle, in quarantine
+         * until a worker joins that phase rather than relying on Session::drop
+         * to create a second native-only quarantine.
+         */
         return false;
     }
     // SAFETY: the fence returned, so the shim admits no further callback and none
@@ -804,6 +932,15 @@ impl SessionCore {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let extent = info.extent().ok_or(CaptureFault::InconsistentDescriptor)?;
+        let native_bounds = info
+            .screen_rect()
+            .zip(info.backing_scale())
+            .map(|((origin, size), scale)| shim::NativeBounds {
+                origin,
+                size,
+                scale,
+            })
+            .ok_or(CaptureFault::InconsistentDescriptor)?;
         let surface = info
             .surface_extent()
             .ok_or(CaptureFault::InconsistentDescriptor)?;
@@ -828,23 +965,26 @@ impl SessionCore {
         }
 
         let descriptor = descriptor_from_native(info.pixel_format, extent)?;
-        let continuity = continuity_against(transition.published, extent, placement);
+        let continuity = continuity_against(transition.published, extent, placement, native_bounds);
         self.publish(
             &mut transition,
             detached,
             descriptor,
             placement,
+            native_bounds,
             continuity,
             info.display_time_nanos,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn publish(
         &self,
         transition: &mut TransitionState,
         detached: DetachedFrame,
         descriptor: mado_pilot_capture::FrameDescriptor,
         placement: TargetPlacement,
+        native_bounds: shim::NativeBounds,
         continuity: Continuity,
         display_time_nanos: u64,
     ) -> std::result::Result<(), CaptureFault> {
@@ -860,7 +1000,7 @@ impl SessionCore {
                 // Recorded while the stream still excludes readers, so no frame is
                 // observable before the transform an input request would resolve
                 // its coordinates against.
-                |frame| self.geometry.publish(frame),
+                |frame| self.geometry.publish(frame, native_bounds),
             )
             .map_err(|refused| {
                 if refused.error().status() == mado_pilot_core::Status::Closed {
@@ -872,6 +1012,7 @@ impl SessionCore {
         transition.published = Some(Published {
             extent: descriptor.extent(),
             placement,
+            native_bounds,
         });
         Ok(())
     }
@@ -1056,12 +1197,16 @@ fn continuity_against(
     published: Option<Published>,
     extent: PixelExtent,
     placement: TargetPlacement,
+    native_bounds: shim::NativeBounds,
 ) -> Continuity {
     match published {
         // Nothing has been published, so there is nothing to be discontinuous with.
         None => Continuity::Continuous,
         Some(last) if last.extent != extent => Continuity::Discontinuous,
         Some(last) if last.placement != placement => Continuity::GeometryChanged,
+        Some(last) if !last.native_bounds.capture_equivalent_to(native_bounds) => {
+            Continuity::GeometryChanged
+        }
         Some(_) => Continuity::Continuous,
     }
 }
@@ -1169,35 +1314,16 @@ fn frame_time(anchor: (u64, MonotonicInstant), display_time_nanos: u64) -> Monot
     }
 }
 
-fn lock_with_operation<'mutex>(
-    mutex: &'mutex Mutex<()>,
-    operation: &OperationContext,
-) -> Result<MutexGuard<'mutex, ()>> {
-    let mut attempt = Operation::admit(operation)?;
-    loop {
-        match mutex.try_lock() {
-            Ok(guard) => return Ok(attempt.commit(guard)?),
-            Err(TryLockError::Poisoned(poisoned)) => {
-                return Ok(attempt.commit(poisoned.into_inner())?);
-            }
-            Err(TryLockError::WouldBlock) => {
-                thread::sleep(CLOSE_POLL_INTERVAL);
-                attempt.checkpoint()?;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 
     use mado_pilot_capture::{CaptureFault, StreamState};
     use mado_pilot_core::{
-        CancellationToken, IdentityIssuer, MonotonicInstant, Operation, OperationContext,
+        CancellationToken, Clock, IdentityIssuer, MonotonicInstant, Operation, OperationContext,
         PixelExtent, Scale, TargetKind, TargetPlacement,
     };
 
@@ -1205,12 +1331,20 @@ mod tests {
     use crate::native::GeometryRegistration;
 
     use super::{
-        MAX_NATIVE_WAIT, PendingRegistration, PendingSlot, Published, Reconfigure,
+        CloseGate, MAX_NATIVE_WAIT, PendingRegistration, PendingSlot, Published, Reconfigure,
         ReconfigurePublication, SessionCore, TransitionState, continuity_against, decode_extent,
         extent_ready_for_publication, frame_time, native_wait, normalize_native_fault,
         surface_request, target_fault,
     };
-    use crate::shim::FrameInfo;
+    use crate::shim::{FrameInfo, NativeBounds};
+
+    fn native_bounds(origin: (f64, f64), size: (f64, f64), scale: f64) -> NativeBounds {
+        NativeBounds {
+            origin,
+            size,
+            scale,
+        }
+    }
 
     #[test]
     fn terminal_discard_outranks_a_staged_commit_and_releases_the_value() {
@@ -1377,23 +1511,86 @@ mod tests {
         let published = Published {
             extent,
             placement: original,
+            native_bounds: native_bounds((-2489.0, 400.0), (1718.0, 1050.0), 1.0),
         };
 
         assert_eq!(
-            continuity_against(Some(published), extent, moved),
+            continuity_against(
+                Some(published),
+                extent,
+                moved,
+                native_bounds((0.0, 400.0), (1718.0, 1050.0), 1.0),
+            ),
             mado_pilot_capture::Continuity::GeometryChanged
         );
         assert_eq!(
-            continuity_against(Some(published), extent, original),
+            continuity_against(Some(published), extent, original, published.native_bounds,),
             mado_pilot_capture::Continuity::Continuous
         );
         assert_eq!(
-            continuity_against(Some(published), PixelExtent::new(3436, 2216), moved,),
+            continuity_against(
+                Some(published),
+                PixelExtent::new(3436, 2216),
+                moved,
+                native_bounds((0.0, 400.0), (1718.0, 1108.0), 2.0),
+            ),
             mado_pilot_capture::Continuity::Discontinuous
         );
         assert_eq!(
-            continuity_against(None, extent, moved),
+            continuity_against(
+                None,
+                extent,
+                moved,
+                native_bounds((0.0, 400.0), (1718.0, 1050.0), 1.0),
+            ),
             mado_pilot_capture::Continuity::Continuous
+        );
+        assert_eq!(
+            continuity_against(
+                Some(published),
+                extent,
+                original,
+                native_bounds((-2489.0, 400.0), (1718.0, 1050.0), 2.0),
+            ),
+            mado_pilot_capture::Continuity::GeometryChanged,
+            "a raw backing-scale change advances the geometry revision even when effective frame placement is unchanged"
+        );
+    }
+
+    #[test]
+    fn raw_fractional_backing_geometry_controls_the_geometry_revision() {
+        let extent = PixelExtent::new(320, 240);
+        let placement = TargetPlacement::new(
+            (-120.0, 80.0),
+            (320.0, 240.0),
+            Scale::new(1.0, 1.0).expect("scale"),
+        )
+        .expect("placement");
+        let published = Published {
+            extent,
+            placement,
+            native_bounds: native_bounds((-120.0, 80.0), (320.4, 240.0), 2.0),
+        };
+
+        assert_eq!(
+            continuity_against(
+                Some(published),
+                extent,
+                placement,
+                native_bounds((-120.0, 80.0), (320.49, 240.0), 2.0),
+            ),
+            mado_pilot_capture::Continuity::Continuous,
+            "fractional point sizes with the same rounded backing-pixel extent are equivalent"
+        );
+        assert_eq!(
+            continuity_against(
+                Some(published),
+                extent,
+                placement,
+                native_bounds((-120.0, 80.0), (320.75, 240.0), 2.0),
+            ),
+            mado_pilot_capture::Continuity::GeometryChanged,
+            "a raw size change that crosses a backing-pixel boundary advances geometry even when effective capture placement is unchanged"
         );
     }
 
@@ -1430,7 +1627,8 @@ mod tests {
             (34.0, 191.0),
             (1718.0, 1108.0),
             target,
-        );
+        )
+        .with_backing_scale(2.0);
         let placement = crate::discovery::frame_placement(&info).expect("same-frame placement");
 
         assert_eq!(
@@ -1439,6 +1637,7 @@ mod tests {
             "a surface the content fills can still be the wrong size for the target"
         );
         assert_eq!(placement.scale().x(), 1.0);
+        assert_eq!(info.backing_scale(), Some(2.0));
         assert_eq!(placement.desktop_origin(), (34.0, 191.0));
     }
 
@@ -1532,6 +1731,7 @@ mod tests {
             published: Some(Published {
                 extent: one_x,
                 placement: published_placement,
+                native_bounds: native_bounds((-700.0, 191.0), (1718.0, 1108.0), 1.0),
             }),
         };
         let reduced = FrameInfo::testing_screen_rect_with_surface_recommendation(
@@ -1541,18 +1741,25 @@ mod tests {
             (34.0, 191.0),
             (1718.0, 1108.0),
             two_x,
-        );
+        )
+        .with_backing_scale(2.0);
         let reduced_placement =
             crate::discovery::frame_placement(&reduced).expect("reduced placement");
         assert!(extent_ready_for_publication(&mut transition, one_x));
         assert_eq!(
-            continuity_against(transition.published, one_x, reduced_placement),
+            continuity_against(
+                transition.published,
+                one_x,
+                reduced_placement,
+                native_bounds((34.0, 191.0), (1718.0, 1108.0), 2.0),
+            ),
             mado_pilot_capture::Continuity::GeometryChanged
         );
         assert_eq!(surface_request(TargetKind::Window, &reduced), Some(two_x));
         transition.published = Some(Published {
             extent: one_x,
             placement: reduced_placement,
+            native_bounds: native_bounds((34.0, 191.0), (1718.0, 1108.0), 2.0),
         });
 
         let settled = FrameInfo::testing_screen_rect_with_surface_recommendation(
@@ -1572,7 +1779,12 @@ mod tests {
         assert!(extent_ready_for_publication(&mut transition, two_x));
         assert_eq!(surface_request(TargetKind::Window, &settled), None);
         assert_eq!(
-            continuity_against(transition.published, two_x, settled_placement),
+            continuity_against(
+                transition.published,
+                two_x,
+                settled_placement,
+                native_bounds((34.0, 191.0), (1718.0, 1108.0), 2.0),
+            ),
             mado_pilot_capture::Continuity::Discontinuous,
             "StreamState turns this one publication into the new epoch"
         );
@@ -1738,14 +1950,162 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_close_gate_reports_cancellation_rather_than_waiting() {
+    fn a_cancelled_close_gate_reports_cancellation_before_ownership() {
         let token = CancellationToken::new();
         token.cancel();
         let context = OperationContext::new().with_cancellation(token);
-        let gate = Mutex::new(());
+        let gate = CloseGate::default();
 
-        let error = super::lock_with_operation(&gate, &context).expect_err("cancelled");
+        let error = gate.enter(&context).expect_err("cancelled");
 
         assert_eq!(error.status(), mado_pilot_core::Status::Cancelled);
+    }
+
+    #[test]
+    fn concurrent_close_callers_never_own_the_gate_together() {
+        let gate = Arc::new(CloseGate::default());
+        let (owner_tx, owner_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first_gate = Arc::clone(&gate);
+        let first = thread::spawn(move || {
+            let owner = first_gate
+                .enter(&OperationContext::new())
+                .expect("first close ownership");
+            owner_tx.send(()).expect("report owner");
+            release_rx.recv().expect("release owner");
+            drop(owner);
+        });
+        owner_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first caller owns the close gate");
+
+        let (attempted_tx, attempted_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let second_gate = Arc::clone(&gate);
+        let second = thread::spawn(move || {
+            attempted_tx.send(()).expect("report attempt");
+            let owner = second_gate
+                .enter(&OperationContext::new())
+                .expect("second close ownership");
+            acquired_tx.send(()).expect("report acquisition");
+            drop(owner);
+        });
+        attempted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second caller attempts close");
+        assert_eq!(
+            acquired_rx.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "the second close remains outside the shared session while the first owns it"
+        );
+
+        release_tx.send(()).expect("release first close");
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second close proceeds after release");
+        first.join().expect("first close caller");
+        second.join().expect("second close caller");
+    }
+
+    #[test]
+    fn a_caller_clock_reentering_the_owned_close_gate_is_rejected_without_deadlock() {
+        #[derive(Debug)]
+        struct ReentrantClock {
+            gate: Arc<CloseGate>,
+            entered: AtomicBool,
+        }
+
+        impl Clock for ReentrantClock {
+            fn now(&self) -> MonotonicInstant {
+                if !self.entered.swap(true, Ordering::AcqRel) {
+                    let error = self
+                        .gate
+                        .enter(&OperationContext::new())
+                        .expect_err("same-thread reentrant close cannot report success");
+                    assert_eq!(error.status(), mado_pilot_core::Status::Closed);
+                }
+                MonotonicInstant::ORIGIN
+            }
+        }
+
+        let gate = Arc::new(CloseGate::default());
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker_gate = Arc::clone(&gate);
+        let worker = thread::spawn(move || {
+            let _owner = worker_gate
+                .enter(&OperationContext::new())
+                .expect("initial close ownership");
+            let clock = Arc::new(ReentrantClock {
+                gate: Arc::clone(&worker_gate),
+                entered: AtomicBool::new(false),
+            });
+            Operation::admit(
+                &OperationContext::new()
+                    .with_clock(clock.clone())
+                    .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1))),
+            )
+            .expect("the caller clock returns from its reentrant close");
+            finished_tx
+                .send(clock.entered.load(Ordering::Acquire))
+                .expect("report completion");
+        });
+
+        assert!(
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("reentrant close must not deadlock")
+        );
+        worker.join().expect("close gate worker");
+    }
+    #[test]
+    fn a_caller_clock_reentering_before_close_ownership_never_recurses() {
+        #[derive(Debug)]
+        struct PanicClock;
+
+        impl Clock for PanicClock {
+            fn now(&self) -> MonotonicInstant {
+                panic!("a reentrant close consulted caller-owned operation state");
+            }
+        }
+
+        #[derive(Debug)]
+        struct InitialReentrantClock {
+            gate: Arc<CloseGate>,
+            calls: AtomicUsize,
+            rejected: AtomicBool,
+        }
+
+        impl Clock for InitialReentrantClock {
+            fn now(&self) -> MonotonicInstant {
+                if self.calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                    let nested = OperationContext::new()
+                        .with_clock(Arc::new(PanicClock))
+                        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+                    let error = self
+                        .gate
+                        .enter(&nested)
+                        .expect_err("same-thread reentry is refused without caller code");
+                    self.rejected.store(
+                        error.status() == mado_pilot_core::Status::Closed,
+                        Ordering::Release,
+                    );
+                }
+                MonotonicInstant::ORIGIN
+            }
+        }
+
+        let gate = Arc::new(CloseGate::default());
+        let clock = Arc::new(InitialReentrantClock {
+            gate: Arc::clone(&gate),
+            calls: AtomicUsize::new(0),
+            rejected: AtomicBool::new(false),
+        });
+        let context = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+
+        let _owner = gate.enter(&context).expect("outer close owns the gate");
+
+        assert!(clock.rejected.load(Ordering::Acquire));
     }
 }

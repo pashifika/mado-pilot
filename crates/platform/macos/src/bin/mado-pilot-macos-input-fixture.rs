@@ -26,6 +26,7 @@ fn main() {
     let mut run_nonce = None;
     let mut report_execution_context = false;
     let mut inactive = false;
+    let mut independent_visual_stimulus = false;
     let mut arguments = std::env::args_os().skip(1);
     while let Some(argument) = arguments.next() {
         let parsed_mode = if argument == std::ffi::OsStr::new("--replace-window-after-ready") {
@@ -76,6 +77,12 @@ fn main() {
                 std::process::exit(2);
             }
             inactive = true;
+        } else if argument == std::ffi::OsStr::new("--independent-visual-stimulus") {
+            if independent_visual_stimulus {
+                fixture::print_usage();
+                std::process::exit(2);
+            }
+            independent_visual_stimulus = true;
         } else if argument == std::ffi::OsStr::new("--report-execution-context") {
             report_execution_context = true;
         } else {
@@ -84,7 +91,12 @@ fn main() {
         }
     }
     if report_execution_context {
-        if mode.is_some() || control_socket.is_some() || run_nonce.is_some() || inactive {
+        if mode.is_some()
+            || control_socket.is_some()
+            || run_nonce.is_some()
+            || inactive
+            || independent_visual_stimulus
+        {
             fixture::print_usage();
             std::process::exit(2);
         }
@@ -100,6 +112,7 @@ fn main() {
         control_socket,
         run_nonce.unwrap_or_else(fixture::local_run_nonce),
         !inactive,
+        independent_visual_stimulus,
     ) {
         Ok(()) => {}
         Err(status) => {
@@ -234,7 +247,8 @@ mod fixture {
             "usage: mado-pilot-macos-input-fixture \
              [--report-execution-context|--replace-window-after-ready|--game-like|\
              --animate-on-input|--resize-on-input|--animate-and-resize-on-input] \
-             [--inactive] [--control-socket <path> --run-nonce <nonzero-u64>]"
+             [--independent-visual-stimulus] [--inactive] \
+             [--control-socket <path> --run-nonce <nonzero-u64>]"
         );
     }
 
@@ -324,6 +338,7 @@ mod fixture {
         control_socket: Option<PathBuf>,
         run_nonce: u64,
         activate: bool,
+        independent_visual_stimulus: bool,
     ) -> Result<(), Status> {
         let input: Box<dyn Read + Send> = if let Some(path) = control_socket {
             let stream = UnixStream::connect(path).map_err(|_| Status(PLATFORM_FAILURE))?;
@@ -365,6 +380,12 @@ mod fixture {
             Mode::AnimateAndResizeOnInput => BEHAVIOR_ANIMATE_ON_INPUT | BEHAVIOR_RESIZE_ON_INPUT,
             Mode::Static | Mode::Replace | Mode::GameLike => 0,
         };
+        let behavior = behavior
+            | if independent_visual_stimulus {
+                BEHAVIOR_TAGGED_INPUT_NO_VISUAL
+            } else {
+                0
+            };
         let renderer = if mode == Mode::GameLike {
             RENDERER_OPENGL
         } else {
@@ -421,6 +442,21 @@ mod fixture {
         let _flushed = output.flush();
     }
 
+    /// Contains a Rust callback panic, including a panic from destruction of
+    /// the first panic payload, before returning through an `extern "C"` seam.
+    fn contain_ffi_panic(body: impl FnOnce()) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+            Ok(()) => {}
+            Err(payload) => {
+                if let Err(payload) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
+                {
+                    let _payload = std::mem::ManuallyDrop::new(payload);
+                }
+            }
+        }
+    }
+
     /// Prints the line a check waits for before it discovers anything.
     ///
     /// Contains its own panics: this runs on the fixture's main thread through an
@@ -435,7 +471,7 @@ mod fixture {
         signing_identifier: *const u8,
         signing_identifier_len: usize,
     ) {
-        let _contained = std::panic::catch_unwind(|| {
+        contain_ffi_panic(|| {
             let identifier = if signing_identifier_len == 0
                 || signing_identifier.is_null()
                 || signing_identifier_len >= SIGNING_IDENTIFIER_CAPACITY
@@ -481,7 +517,7 @@ mod fixture {
         old_window_number: u64,
         new_window_number: u64,
     ) {
-        let _contained = std::panic::catch_unwind(|| {
+        contain_ffi_panic(|| {
             let run_nonce = RUN_NONCE.get().copied().unwrap_or(0);
             write_protocol_line(format_args!(
                 "fixture-replaced run={run_nonce} status={status} \
@@ -499,7 +535,7 @@ mod fixture {
         before_window: u64,
         after_window: u64,
     ) {
-        let _contained = std::panic::catch_unwind(|| {
+        contain_ffi_panic(|| {
             complete_control(nonce, command, status, before_window, after_window);
         });
     }
@@ -645,7 +681,7 @@ mod fixture {
         event_payload_tag: u64,
         payload_fingerprint: u64,
     ) {
-        let _contained = std::panic::catch_unwind(|| {
+        contain_ffi_panic(|| {
             let Some(run_nonce) = RUN_NONCE.get().copied() else {
                 return;
             };
@@ -716,6 +752,7 @@ mod fixture {
     const REPLACEMENT_DELAY_MS: u32 = 5_000;
     const BEHAVIOR_ANIMATE_ON_INPUT: u32 = 1;
     const BEHAVIOR_RESIZE_ON_INPUT: u32 = 2;
+    const BEHAVIOR_TAGGED_INPUT_NO_VISUAL: u32 = 4;
     const RENDERER_APPKIT_BACKGROUND: u32 = 0;
     const RENDERER_OPENGL: u32 = 1;
     const PLATFORM_FAILURE: u32 = 3;

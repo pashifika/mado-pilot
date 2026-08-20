@@ -12,8 +12,8 @@
 use std::sync::Arc;
 
 use mado_pilot_core::{
-    CoordinateSpace, GeometryRevision, InputDelivery, OperationContext, PermissionState,
-    PixelExtent, Point, Scale, TargetKind, TransformSnapshot,
+    CancellationToken, CoordinateSpace, GeometryRevision, InputDelivery, OperationContext,
+    PermissionState, PixelExtent, Point, Scale, TargetKind, TransformSnapshot,
 };
 use mado_pilot_input::{
     FocusPolicy, GeometryPolicy, InputEvent, InputFault, Key, Modifier, PointerButton,
@@ -55,6 +55,39 @@ fn process_wait(operation: &OperationContext) -> std::time::Duration {
         .map_or(PROCESS_OBSERVATION_WAIT, |remaining| {
             remaining.min(PROCESS_OBSERVATION_WAIT)
         })
+}
+
+fn wait_for_activation<Observe, Sleep>(
+    operation: &OperationContext,
+    mut observe_focus: Observe,
+    mut sleep: Sleep,
+) -> Result<(), InputFault>
+where
+    Observe: FnMut() -> Result<bool, InputFault>,
+    Sleep: FnMut(std::time::Duration),
+{
+    let Some(settle_deadline) = operation.now().checked_add(ACTIVATION_SETTLE) else {
+        return Err(InputFault::FocusRefused);
+    };
+    loop {
+        operation_fault(operation)?;
+        if observe_focus()? {
+            return Ok(());
+        }
+        let now = operation.now();
+        if now >= settle_deadline {
+            return Err(InputFault::FocusRefused);
+        }
+        let mut wait = settle_deadline
+            .saturating_duration_since(now)
+            .min(ACTIVATION_POLL);
+        if let Some(remaining) = operation.remaining() {
+            wait = wait.min(remaining);
+        }
+        if !wait.is_zero() {
+            sleep(wait);
+        }
+    }
 }
 
 /// Hardware key codes for the keys whose position does not vary with the layout.
@@ -179,28 +212,81 @@ pub(crate) enum CommitGeometry {
     UseFrameSnapshot,
 }
 
+/// Adapter-monotonic deadline derived from one caller-clock checkpoint.
+///
+/// This deadline bounds native work without re-entering an arbitrary caller
+/// clock after mutable target authority has been observed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NativeCommitBudget {
+    deadline_nanos: u64,
+}
+
+impl NativeCommitBudget {
+    fn new(wait: std::time::Duration) -> Result<Self, InputFault> {
+        let now = shim::monotonic_nanos().ok_or(InputFault::SubmissionFailed)?;
+        let wait = u64::try_from(wait.as_nanos()).map_err(|_| InputFault::SubmissionFailed)?;
+        if wait == 0 {
+            return Err(InputFault::DeadlineExceeded);
+        }
+        Ok(Self {
+            deadline_nanos: now.saturating_add(wait),
+        })
+    }
+
+    fn remaining(self) -> Result<std::time::Duration, InputFault> {
+        let now = shim::monotonic_nanos().ok_or(InputFault::SubmissionFailed)?;
+        if now >= self.deadline_nanos {
+            return Err(InputFault::SubmissionFailed);
+        }
+        Ok(std::time::Duration::from_nanos(self.deadline_nanos - now))
+    }
+
+    fn check(self) -> Result<(), InputFault> {
+        self.remaining().map(|_| ())
+    }
+
+    const fn deadline_nanos(self) -> u64 {
+        self.deadline_nanos
+    }
+}
+
 /// The mutable native state consulted at the final commit boundary.
 pub(crate) trait SystemCommitSource {
+    type Prepared;
+
+    /// Allocates and configures all native events before the final mutable gate.
+    fn prepare(&self, post: NativePost<'_>, flags: u32) -> Result<Self::Prepared, ShimStatus>;
+
+    fn prepared_unit_count(&self, prepared: &Self::Prepared) -> usize;
+
+    /// Revalidates every mutable system-post fact within one adapter deadline.
+    ///
+    /// Implementations must not invoke caller-provided code. This lets the
+    /// caller-clock checkpoint run before, and the atomic cancellation fence run
+    /// after, the final mutable observations.
     fn revalidate_system_commit(
         &self,
         focus: FocusPolicy,
         geometry: CommitGeometry,
-        operation: &OperationContext,
+        budget: NativeCommitBudget,
     ) -> Result<(), InputFault>;
 
-    /// Re-reads the non-prompting authorization needed for a cleanup release.
-    ///
-    /// Cleanup deliberately does not consult focus or geometry: a release must
-    /// still be attempted after either changes. Authorization is different
-    /// because macOS silently discards an untrusted post, so an absent grant
-    /// cannot truthfully be reported as a completed cleanup.
-    fn revalidate_cleanup_authorization(&self) -> Result<(), InputFault>;
+    /// Re-reads non-prompting authorization needed for a cleanup release.
+    fn revalidate_cleanup_authorization(
+        &self,
+        budget: NativeCommitBudget,
+    ) -> Result<(), InputFault>;
 
-    /// Posts one prepared event, reporting how many text units reached the native
-    /// posting threshold when a text post could not finish.
-    fn post(&self, post: NativePost<'_>, flags: u32) -> Result<(), (ShimStatus, usize)>;
+    /// Posts exactly one already-configured native unit.
+    fn post_prepared_unit(
+        &self,
+        prepared: &mut Self::Prepared,
+        index: usize,
+        deadline_nanos: u64,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<(), (ShimStatus, bool)>;
 
-    /// Classifies a post that failed before this event could have native effect.
+    /// Classifies a failure before the current native unit could have effect.
     fn classify_post_failure(&self, status: ShimStatus) -> InputFault;
 }
 
@@ -221,17 +307,17 @@ pub(crate) trait ProcessCommitSource {
     }
 }
 
-/// Geometry observations selected by the process-directed pointer policy.
+/// Effective mapping and raw native geometry selected by the process-directed
+/// pointer policy.
 ///
 /// Keeping this seam separate from native commit lets deterministic tests prove
-/// which Rust-side source is consulted without adding runtime dispatch or
-/// production instrumentation.
+/// which same-frame or live source is consulted without adding runtime dispatch
+/// or production instrumentation.
 trait ProcessGeometrySource {
-    fn process_source_transform(
+    fn process_source_geometry(
         &self,
         geometry: PointerGeometry,
-    ) -> Result<TransformSnapshot, InputFault>;
-
+    ) -> Result<(TransformSnapshot, shim::NativeBounds), InputFault>;
     fn process_current_geometry(
         &self,
         operation: &OperationContext,
@@ -285,6 +371,35 @@ impl NativeInputDriver {
                 })
             }
             Err(_) => Err(InputFault::SubmissionFailed),
+        }
+    }
+
+    fn is_focused_with_wait(&self, wait: std::time::Duration) -> Result<bool, InputFault> {
+        if self.record.kind() == TargetKind::Display {
+            return Ok(true);
+        }
+        match self.record.is_focused(wait) {
+            Ok(focused) => Ok(focused),
+            Err(ShimStatus::PermissionDenied) => Err(InputFault::NotAuthorized),
+            Err(ShimStatus::TargetLost) => Err(InputFault::TargetLost),
+            Err(_) => Err(InputFault::SubmissionFailed),
+        }
+    }
+
+    fn ensure_system_focus_with_wait(
+        &self,
+        policy: FocusPolicy,
+        wait: std::time::Duration,
+    ) -> Result<(), InputFault> {
+        if self.is_focused_with_wait(wait)? {
+            return Ok(());
+        }
+        match policy {
+            FocusPolicy::Preserve | FocusPolicy::RequireFocused => Err(InputFault::FocusRequired),
+            // Activation is never a final-gate action: it can invoke application
+            // behavior and requires the caller's operation for bounded polling.
+            FocusPolicy::ActivateIfRequired => Err(InputFault::FocusRequired),
+            _ => Err(InputFault::UnsupportedCombination),
         }
     }
 
@@ -352,23 +467,7 @@ impl NativeInputDriver {
             Err(ShimStatus::Unsupported) => return Err(InputFault::FocusRefused),
             Err(_) => return Err(InputFault::FocusRefused),
         }
-        let deadline = operation.now().checked_add(ACTIVATION_SETTLE);
-        loop {
-            if let Some(interruption) = operation.interruption() {
-                return Err(InputFault::from(interruption));
-            }
-            if self.is_focused(operation)? {
-                return Ok(());
-            }
-            match deadline {
-                Some(deadline) if operation.now() < deadline => {
-                    std::thread::sleep(ACTIVATION_POLL);
-                }
-                // Either the wait is over, or the clock domain cannot express one.
-                // Both mean the activation is not going to be waited on further.
-                _ => return Err(InputFault::FocusRefused),
-            }
-        }
+        wait_for_activation(operation, || self.is_focused(operation), std::thread::sleep)
     }
 
     fn geometry_from_bounds(
@@ -387,6 +486,13 @@ impl NativeInputDriver {
         operation: &OperationContext,
     ) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
         Self::geometry_from_bounds(self.record.current_bounds(focus_wait(operation))?)
+    }
+
+    fn current_geometry_with_wait(
+        &self,
+        wait: std::time::Duration,
+    ) -> Result<(TransformSnapshot, GeometryFingerprint), InputFault> {
+        Self::geometry_from_bounds(self.record.current_bounds(wait)?)
     }
 
     fn policy_geometry(
@@ -482,14 +588,22 @@ impl NativeInputDriver {
         Ok((pointer, commit_geometry))
     }
 
-    fn source_transform(&self, geometry: PointerGeometry) -> Result<TransformSnapshot, InputFault> {
+    fn source_geometry(
+        &self,
+        geometry: PointerGeometry,
+    ) -> Result<(TransformSnapshot, shim::NativeBounds), InputFault> {
         let source = geometry
             .source()
             .ok_or(InputFault::MissingCoordinateSource)?;
         self.record
             .geometry()
-            .source_transform(source)
+            .source_geometry(source)
             .ok_or(InputFault::UnsupportedCoordinate)
+    }
+
+    fn source_transform(&self, geometry: PointerGeometry) -> Result<TransformSnapshot, InputFault> {
+        self.source_geometry(geometry)
+            .map(|(transform, _)| transform)
     }
 
     fn resolve_pointer(
@@ -948,11 +1062,11 @@ impl NativeInputDriver {
 }
 
 impl ProcessGeometrySource for NativeInputDriver {
-    fn process_source_transform(
+    fn process_source_geometry(
         &self,
         geometry: PointerGeometry,
-    ) -> Result<TransformSnapshot, InputFault> {
-        NativeInputDriver::source_transform(self, geometry)
+    ) -> Result<(TransformSnapshot, shim::NativeBounds), InputFault> {
+        NativeInputDriver::source_geometry(self, geometry)
     }
 
     fn process_current_geometry(
@@ -985,23 +1099,23 @@ fn process_policy_geometry_for<S: ProcessGeometrySource + ?Sized>(
             ))
         }
         GeometryPolicy::RequireUnchanged => {
-            let transform = source.process_source_transform(geometry)?;
+            let (transform, source_bounds) = source.process_source_geometry(geometry)?;
             let source_fingerprint = fingerprint(&transform)?;
-            // The source transform already names the exact geometry the caller
-            // requires. Passing it to the native commit gate lets that one final
-            // fresh authority observation both establish retained-window
-            // authority and reject movement or resize. A separate live query
-            // here repeated the same ScreenCaptureKit inventory immediately
-            // before the commit without strengthening the irreversible fence.
-            let expected = process_bounds(source_fingerprint)?;
+            // The source transform and same-sample raw native bounds name the exact
+            // geometry the caller requires. Passing both to the native commit gate
+            // lets that one final fresh authority observation establish
+            // retained-window authority and reject movement or resize. A separate
+            // live query here repeated the same ScreenCaptureKit inventory
+            // immediately before the commit without strengthening the irreversible
+            // fence.
             Ok((
                 transform,
                 source_fingerprint,
-                shim::ProcessGeometry::RequireCurrent(expected),
+                shim::ProcessGeometry::RequireCurrent(source_bounds),
             ))
         }
         GeometryPolicy::UseFrameSnapshot => {
-            let transform = source.process_source_transform(geometry)?;
+            let (transform, _) = source.process_source_geometry(geometry)?;
             let source_fingerprint = fingerprint(&transform)?;
             // Snapshot geometry deliberately tolerates movement. Exact retained
             // window authority is still checked once at the native commit
@@ -1035,51 +1149,65 @@ fn text_chunks(units: &[u16]) -> Vec<std::ops::Range<usize>> {
 }
 
 impl SystemCommitSource for NativeInputDriver {
-    fn revalidate_system_commit(
-        &self,
-        focus: FocusPolicy,
-        geometry: CommitGeometry,
-        operation: &OperationContext,
-    ) -> Result<(), InputFault> {
-        self.record.ensure_live(focus_wait(operation))?;
-        // Authorization is re-read here and not only at preflight, because macOS
-        // revokes it while a process is running and discards the events that
-        // follow without saying so.
-        self.ensure_authorized()?;
-        self.ensure_system_focus(focus, operation)?;
-        if let CommitGeometry::RequireCurrent(expected) = geometry {
-            let (_, current) = self.current_geometry(operation)?;
-            if current != expected {
-                return Err(InputFault::GeometryChanged);
-            }
-        }
-        Ok(())
-    }
+    type Prepared = shim::PreparedInput;
 
-    fn revalidate_cleanup_authorization(&self) -> Result<(), InputFault> {
-        self.ensure_authorized()
-    }
-
-    fn post(&self, post: NativePost<'_>, flags: u32) -> Result<(), (ShimStatus, usize)> {
+    fn prepare(&self, post: NativePost<'_>, flags: u32) -> Result<Self::Prepared, ShimStatus> {
         match post {
             NativePost::Pointer {
                 action,
                 button,
                 click_state,
                 location,
-            } => shim::input_post_pointer(action, button, click_state, location, flags)
-                .map_err(|status| (status, 0)),
+            } => shim::input_prepare_pointer(action, button, click_state, location, flags),
             NativePost::Scroll {
                 horizontal,
                 vertical,
                 location,
-            } => shim::input_post_scroll(horizontal, vertical, location, flags)
-                .map_err(|status| (status, 0)),
-            NativePost::Key { key_code, down } => {
-                shim::input_post_key(key_code, down, flags).map_err(|status| (status, 0))
-            }
-            NativePost::Text(units) => shim::input_post_text(units, flags),
+            } => shim::input_prepare_scroll(horizontal, vertical, location, flags),
+            NativePost::Key { key_code, down } => shim::input_prepare_key(key_code, down, flags),
+            NativePost::Text(units) => shim::input_prepare_text(units, flags),
         }
+    }
+
+    fn prepared_unit_count(&self, prepared: &Self::Prepared) -> usize {
+        prepared.count()
+    }
+
+    fn revalidate_system_commit(
+        &self,
+        focus: FocusPolicy,
+        geometry: CommitGeometry,
+        budget: NativeCommitBudget,
+    ) -> Result<(), InputFault> {
+        self.record.ensure_live(budget.remaining()?)?;
+        self.ensure_authorized()?;
+        budget.check()?;
+        self.ensure_system_focus_with_wait(focus, budget.remaining()?)?;
+        if let CommitGeometry::RequireCurrent(expected) = geometry {
+            let (_, current) = self.current_geometry_with_wait(budget.remaining()?)?;
+            if current != expected {
+                return Err(InputFault::GeometryChanged);
+            }
+        }
+        budget.check()
+    }
+
+    fn revalidate_cleanup_authorization(
+        &self,
+        budget: NativeCommitBudget,
+    ) -> Result<(), InputFault> {
+        self.ensure_authorized()?;
+        budget.check()
+    }
+
+    fn post_prepared_unit(
+        &self,
+        prepared: &mut Self::Prepared,
+        index: usize,
+        deadline_nanos: u64,
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<(), (ShimStatus, bool)> {
+        prepared.post_unit(index, deadline_nanos, cancellation)
     }
 
     fn classify_post_failure(&self, status: ShimStatus) -> InputFault {
@@ -1455,9 +1583,66 @@ fn require_post_event_access(access: PermissionState) -> Result<(), InputFault> 
 }
 
 fn operation_fault(operation: &OperationContext) -> Result<(), InputFault> {
-    operation
-        .interruption()
-        .map_or(Ok(()), |interruption| Err(InputFault::from(interruption)))
+    let interruption = shim::catch_panic(|| operation.interruption())
+        .map_err(|()| InputFault::SubmissionFailed)?;
+    interruption.map_or(Ok(()), |interruption| Err(InputFault::from(interruption)))
+}
+
+fn fault_after_failed_gate(operation: &OperationContext, fault: InputFault) -> InputFault {
+    shim::catch_panic(|| operation.interruption())
+        .map_or(InputFault::SubmissionFailed, |interruption| {
+            interruption.map_or(fault, InputFault::from)
+        })
+}
+
+/// Caller-clock and adapter-clock state captured immediately before one system
+/// post unit's final mutable gate.
+///
+/// Native preparation has already completed. After authority, only adapter
+/// monotonic time and cloned atomic cancellation are consulted.
+#[derive(Debug)]
+struct SystemCommitCheckpoint<'a> {
+    budget: NativeCommitBudget,
+    cancellation: Option<&'a CancellationToken>,
+}
+
+impl<'a> SystemCommitCheckpoint<'a> {
+    fn new(operation: &'a OperationContext) -> Result<Self, InputFault> {
+        let cancellation = operation.cancellation();
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(InputFault::Cancelled);
+        }
+        let remaining = shim::catch_panic(|| operation.remaining())
+            .map_err(|()| InputFault::SubmissionFailed)?;
+        if remaining == Some(std::time::Duration::ZERO) {
+            return Err(InputFault::DeadlineExceeded);
+        }
+        let wait = remaining.map_or(FOCUS_OBSERVATION_WAIT, |remaining| {
+            remaining.min(FOCUS_OBSERVATION_WAIT)
+        });
+        Ok(Self {
+            budget: NativeCommitBudget::new(wait)?,
+            cancellation,
+        })
+    }
+
+    const fn budget(&self) -> NativeCommitBudget {
+        self.budget
+    }
+
+    const fn cancellation(&self) -> Option<&CancellationToken> {
+        self.cancellation
+    }
+
+    fn check_final_fence(&self) -> Result<(), InputFault> {
+        if self
+            .cancellation
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(InputFault::Cancelled);
+        }
+        self.budget.check()
+    }
 }
 
 const fn process_permission_denied_fault(post_event_access: PermissionState) -> InputFault {
@@ -1600,6 +1785,7 @@ fn commit_process_for<S: ProcessCommitSource + ?Sized>(
         flags,
     } = commit;
     operation_fault(operation)?;
+    let cancellation = operation.cancellation();
     let expected_units = post.process_native_units();
     let result = source.post_process(
         event_source,
@@ -1609,14 +1795,14 @@ fn commit_process_for<S: ProcessCommitSource + ?Sized>(
             purpose,
             focus,
             flags,
-            wait: process_wait(operation),
+            wait: PROCESS_OBSERVATION_WAIT,
         },
         operation,
     );
-    let interruption = operation.interruption().map(InputFault::from);
+    let cancelled = cancellation.is_some_and(CancellationToken::is_cancelled);
     match result {
-        Ok(outcome) if interruption.is_some() => Err(SubmissionFailure::after_native_units(
-            interruption.expect("matched Some"),
+        Ok(outcome) if cancelled => Err(SubmissionFailure::after_native_units(
+            InputFault::Cancelled,
             usize::try_from(outcome.invoked_native_units).unwrap_or(usize::MAX),
         )),
         Ok(outcome)
@@ -1629,20 +1815,25 @@ fn commit_process_for<S: ProcessCommitSource + ?Sized>(
             InputFault::SubmissionFailed,
             usize::try_from(outcome.invoked_native_units).unwrap_or(usize::MAX),
         )),
-        Err(failure) if interruption.is_some() => Err(SubmissionFailure::after_native_attempt(
-            interruption.expect("matched Some"),
+        Err(failure) if cancelled => Err(SubmissionFailure::after_native_attempt(
+            InputFault::Cancelled,
             usize::try_from(failure.invoked_native_units).unwrap_or(usize::MAX),
             failure.native_effect_may_have_occurred,
         )),
-        Err(failure) => Err(SubmissionFailure::after_native_attempt(
-            source.classify_process_failure(failure, operation),
-            usize::try_from(failure.invoked_native_units).unwrap_or(usize::MAX),
-            failure.native_effect_may_have_occurred,
-        )),
+        Err(failure) => {
+            let fault = shim::catch_panic(|| source.classify_process_failure(failure, operation))
+                .unwrap_or(InputFault::SubmissionFailed);
+            Err(SubmissionFailure::after_native_attempt(
+                fault,
+                usize::try_from(failure.invoked_native_units).unwrap_or(usize::MAX),
+                failure.native_effect_may_have_occurred,
+            ))
+        }
     }
 }
 
-/// Revalidates and then posts, with arbitration adjacent to the irreversible act.
+/// Arbitrates, revalidates, and then posts without running caller code between
+/// the final mutable authority observation and the irreversible native call.
 pub(crate) fn commit_prepared<S: SystemCommitSource + ?Sized>(
     source: &S,
     focus: FocusPolicy,
@@ -1651,21 +1842,44 @@ pub(crate) fn commit_prepared<S: SystemCommitSource + ?Sized>(
     post: NativePost<'_>,
     flags: u32,
 ) -> SubmissionResult {
-    operation_fault(operation)?;
-    source.revalidate_system_commit(focus, geometry, operation)?;
-    // Revalidation performs target, authorization, focus, and geometry queries, so
-    // arbitration is checked once more as the last operation before the post.
-    operation_fault(operation)?;
-    source.post(post, flags).map_err(|(status, posted)| {
-        SubmissionFailure::after_native_units(
-            if posted > 0 {
+    let mut prepared = source
+        .prepare(post, flags)
+        .map_err(|status| SubmissionFailure::before_event(source.classify_post_failure(status)))?;
+    let unit_count = source.prepared_unit_count(&prepared);
+    if unit_count == 0 {
+        return Err(InputFault::SubmissionFailed.into());
+    }
+    for (invoked_native_units, index) in (0..unit_count).enumerate() {
+        let checkpoint = SystemCommitCheckpoint::new(operation)
+            .map_err(|fault| SubmissionFailure::after_native_units(fault, invoked_native_units))?;
+        if let Err(fault) = source.revalidate_system_commit(focus, geometry, checkpoint.budget()) {
+            return Err(SubmissionFailure::after_native_units(
+                fault_after_failed_gate(operation, fault),
+                invoked_native_units,
+            ));
+        }
+        checkpoint
+            .check_final_fence()
+            .map_err(|fault| SubmissionFailure::after_native_units(fault, invoked_native_units))?;
+        if let Err((status, native_effect_may_have_occurred)) = source.post_prepared_unit(
+            &mut prepared,
+            index,
+            checkpoint.budget().deadline_nanos(),
+            checkpoint.cancellation(),
+        ) {
+            let fault = if native_effect_may_have_occurred {
                 InputFault::SubmissionFailed
             } else {
                 source.classify_post_failure(status)
-            },
-            usize::from(posted > 0),
-        )
-    })
+            };
+            return Err(SubmissionFailure::after_native_attempt(
+                fault,
+                invoked_native_units,
+                native_effect_may_have_occurred,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn commit_cleanup<S: SystemCommitSource + ?Sized>(
@@ -1674,14 +1888,35 @@ fn commit_cleanup<S: SystemCommitSource + ?Sized>(
     post: NativePost<'_>,
     flags: u32,
 ) -> Result<(), InputFault> {
-    operation_fault(cleanup)?;
-    source.revalidate_cleanup_authorization()?;
-    // Keep cancellation/deadline arbitration adjacent to the release after the
-    // authorization probe, just as ordinary commits do after their full gate.
-    operation_fault(cleanup)?;
-    source
-        .post(post, flags)
-        .map_err(|(status, _)| source.classify_post_failure(status))
+    let mut prepared = source
+        .prepare(post, flags)
+        .map_err(|status| source.classify_post_failure(status))?;
+    let unit_count = source.prepared_unit_count(&prepared);
+    if unit_count == 0 {
+        return Err(InputFault::SubmissionFailed);
+    }
+    for index in 0..unit_count {
+        let checkpoint = SystemCommitCheckpoint::new(cleanup)?;
+        if let Err(fault) = source.revalidate_cleanup_authorization(checkpoint.budget()) {
+            return Err(fault_after_failed_gate(cleanup, fault));
+        }
+        checkpoint.check_final_fence()?;
+        source
+            .post_prepared_unit(
+                &mut prepared,
+                index,
+                checkpoint.budget().deadline_nanos(),
+                checkpoint.cancellation(),
+            )
+            .map_err(|(status, effect)| {
+                if effect {
+                    InputFault::SubmissionFailed
+                } else {
+                    source.classify_post_failure(status)
+                }
+            })?;
+    }
+    Ok(())
 }
 
 fn commit_geometry(
@@ -1703,21 +1938,6 @@ fn fingerprint(transform: &TransformSnapshot) -> Result<GeometryFingerprint, Inp
         placement: transform
             .target()
             .ok_or(InputFault::UnsupportedCoordinate)?,
-    })
-}
-
-/// Converts capture-authoritative geometry into the uniform backing scale the
-/// native process commit ABI can compare with its final live observation.
-fn process_bounds(geometry: GeometryFingerprint) -> Result<shim::NativeBounds, InputFault> {
-    let placement = geometry.placement;
-    let scale = placement.scale();
-    if scale.x().to_bits() != scale.y().to_bits() {
-        return Err(InputFault::UnsupportedCoordinate);
-    }
-    Ok(shim::NativeBounds {
-        origin: placement.desktop_origin(),
-        size: placement.logical_size(),
-        scale: scale.x(),
     })
 }
 

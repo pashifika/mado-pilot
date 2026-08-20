@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mado_pilot_core::{
-    CancellationToken, CoordinateSpace, FrameStamp, GeometryRevision, IdentityIssuer,
-    InputDelivery, OperationContext, PermissionState, Point, ProviderId, StreamCursor, TargetId,
-    TargetKind, TransformSnapshot,
+    CancellationToken, Clock, CoordinateSpace, FrameStamp, GeometryRevision, IdentityIssuer,
+    InputDelivery, MonotonicInstant, OperationContext, PermissionState, Point, ProviderId,
+    StreamCursor, TargetId, TargetKind, TransformSnapshot,
 };
 use mado_pilot_input::{
     CleanupState, DeliveryPlan, FocusPolicy, GeometryPolicy, InputController, InputDescriptor,
@@ -21,14 +21,14 @@ use mado_pilot_input::{
 };
 
 use super::{
-    CommitGeometry, DriverState, FUNCTION_KEYS, GeometryFingerprint, NativePost, PointerState,
-    ProcessCommitSource, ProcessGeometrySource, SystemButtonState, SystemCommitSource,
-    SystemKeyState, commit_geometry, commit_prepared, commit_process, contains_desktop_point,
-    extent_from_points, focus_wait, key_flag, modifier_flag, native_button, placement_for,
-    process_bounds, process_permission_denied_fault, process_policy_geometry_for,
-    process_status_fault, release_pending_process, release_process, release_system,
-    require_post_event_access, resolve_key_code, retain_process_pointer, retain_process_press,
-    text_chunks, text_release_may_be_pending,
+    CommitGeometry, DriverState, FUNCTION_KEYS, GeometryFingerprint, NativeCommitBudget,
+    NativePost, PointerState, ProcessCommitSource, ProcessGeometrySource, SystemButtonState,
+    SystemCommitSource, SystemKeyState, commit_cleanup, commit_geometry, commit_prepared,
+    commit_process, contains_desktop_point, extent_from_points, focus_wait, key_flag,
+    modifier_flag, native_button, placement_for, process_permission_denied_fault,
+    process_policy_geometry_for, process_status_fault, release_pending_process, release_process,
+    release_system, require_post_event_access, resolve_key_code, retain_process_pointer,
+    retain_process_press, text_chunks, text_release_may_be_pending, wait_for_activation,
 };
 use crate::input::{
     InputDriver, MacosInputController, PendingTextRelease, SubmissionFailure, input_capability,
@@ -42,6 +42,31 @@ struct Posted {
     flags: u32,
 }
 
+#[derive(Debug)]
+struct FakePrepared {
+    post: String,
+    flags: u32,
+    unit_count: usize,
+}
+
+#[derive(Debug, Default)]
+struct TestClock {
+    now: Mutex<Duration>,
+}
+
+impl TestClock {
+    fn advance(&self, duration: Duration) {
+        let mut now = self.now.lock().expect("test clock is not poisoned");
+        *now = now.saturating_add(duration);
+    }
+}
+
+impl Clock for TestClock {
+    fn now(&self) -> MonotonicInstant {
+        MonotonicInstant::from_origin(*self.now.lock().expect("test clock is not poisoned"))
+    }
+}
+
 /// A commit source whose revalidation outcome and post outcome the test writes.
 #[derive(Debug, Default)]
 struct FakeSource {
@@ -49,6 +74,9 @@ struct FakeSource {
     revalidation: Mutex<Option<InputFault>>,
     cleanup_authorization: Mutex<Option<InputFault>>,
     current_geometry: Mutex<Option<GeometryFingerprint>>,
+    cancel_during_revalidation: Mutex<Option<CancellationToken>>,
+    revalidation_delay: Mutex<Duration>,
+    advance_during_prepare: Mutex<Option<(Arc<TestClock>, Duration)>>,
     post_failure: Mutex<Option<(ShimStatus, usize)>>,
     revalidations: Mutex<usize>,
     cleanup_authorizations: Mutex<usize>,
@@ -77,6 +105,27 @@ impl FakeSource {
         source
     }
 
+    fn cancelling_revalidation(token: CancellationToken) -> Self {
+        let source = Self::default();
+        *source
+            .cancel_during_revalidation
+            .lock()
+            .expect("uncontended") = Some(token);
+        source
+    }
+
+    fn delaying_revalidation(delay: Duration) -> Self {
+        let source = Self::default();
+        *source.revalidation_delay.lock().expect("uncontended") = delay;
+        source
+    }
+
+    fn advancing_during_prepare(clock: Arc<TestClock>, duration: Duration) -> Self {
+        let source = Self::default();
+        *source.advance_during_prepare.lock().expect("uncontended") = Some((clock, duration));
+        source
+    }
+
     fn revoke_cleanup_authorization(&self) {
         *self.cleanup_authorization.lock().expect("uncontended") = Some(InputFault::NotAuthorized);
     }
@@ -95,13 +144,48 @@ impl FakeSource {
 }
 
 impl SystemCommitSource for FakeSource {
+    type Prepared = FakePrepared;
+
+    fn prepare(&self, post: NativePost<'_>, flags: u32) -> Result<Self::Prepared, ShimStatus> {
+        if let Some((clock, duration)) = self
+            .advance_during_prepare
+            .lock()
+            .expect("uncontended")
+            .as_ref()
+        {
+            clock.advance(*duration);
+        }
+        Ok(FakePrepared {
+            post: format!("{post:?}"),
+            flags,
+            unit_count: if matches!(post, NativePost::Text(_)) {
+                2
+            } else {
+                1
+            },
+        })
+    }
+
+    fn prepared_unit_count(&self, prepared: &Self::Prepared) -> usize {
+        prepared.unit_count
+    }
+
     fn revalidate_system_commit(
         &self,
         _focus: FocusPolicy,
         geometry: CommitGeometry,
-        _operation: &OperationContext,
+        _budget: NativeCommitBudget,
     ) -> Result<(), InputFault> {
         *self.revalidations.lock().expect("uncontended") += 1;
+        std::thread::sleep(*self.revalidation_delay.lock().expect("uncontended"));
+        if let Some(cancellation) = self
+            .cancel_during_revalidation
+            .lock()
+            .expect("uncontended")
+            .as_ref()
+        {
+            cancellation.cancel();
+        }
         if let Some(fault) = *self.revalidation.lock().expect("uncontended") {
             return Err(fault);
         }
@@ -115,23 +199,46 @@ impl SystemCommitSource for FakeSource {
         Ok(())
     }
 
-    fn revalidate_cleanup_authorization(&self) -> Result<(), InputFault> {
+    fn revalidate_cleanup_authorization(
+        &self,
+        _budget: NativeCommitBudget,
+    ) -> Result<(), InputFault> {
         *self.cleanup_authorizations.lock().expect("uncontended") += 1;
+        std::thread::sleep(*self.revalidation_delay.lock().expect("uncontended"));
+        if let Some(cancellation) = self
+            .cancel_during_revalidation
+            .lock()
+            .expect("uncontended")
+            .as_ref()
+        {
+            cancellation.cancel();
+        }
         match *self.cleanup_authorization.lock().expect("uncontended") {
             Some(fault) => Err(fault),
             None => Ok(()),
         }
     }
 
-    fn post(&self, post: NativePost<'_>, flags: u32) -> Result<(), (ShimStatus, usize)> {
-        self.posts.lock().expect("uncontended").push(Posted {
-            post: format!("{post:?}"),
-            flags,
-        });
-        match *self.post_failure.lock().expect("uncontended") {
-            Some(failure) => Err(failure),
-            None => Ok(()),
+    fn post_prepared_unit(
+        &self,
+        prepared: &mut Self::Prepared,
+        index: usize,
+        _deadline_nanos: u64,
+        _cancellation: Option<&CancellationToken>,
+    ) -> Result<(), (ShimStatus, bool)> {
+        if index >= prepared.unit_count {
+            return Err((ShimStatus::InvalidArgument, false));
         }
+        if let Some((status, invoked)) = *self.post_failure.lock().expect("uncontended") {
+            return Err((status, invoked > 0));
+        }
+        if index == 0 {
+            self.posts.lock().expect("uncontended").push(Posted {
+                post: prepared.post.clone(),
+                flags: prepared.flags,
+            });
+        }
+        Ok(())
     }
 
     fn classify_post_failure(&self, status: ShimStatus) -> InputFault {
@@ -161,7 +268,7 @@ impl ProcessCommitSource for FakeProcessSource {
 
 #[derive(Debug)]
 struct FakeProcessGeometrySource {
-    source: TransformSnapshot,
+    source: (TransformSnapshot, shim::NativeBounds),
     current: (TransformSnapshot, GeometryFingerprint, shim::NativeBounds),
     source_fault: Option<InputFault>,
     current_fault: Option<InputFault>,
@@ -170,7 +277,7 @@ struct FakeProcessGeometrySource {
 
 impl FakeProcessGeometrySource {
     fn new(
-        source: TransformSnapshot,
+        source: (TransformSnapshot, shim::NativeBounds),
         current: (TransformSnapshot, GeometryFingerprint, shim::NativeBounds),
     ) -> Self {
         Self {
@@ -198,10 +305,10 @@ impl FakeProcessGeometrySource {
 }
 
 impl ProcessGeometrySource for FakeProcessGeometrySource {
-    fn process_source_transform(
+    fn process_source_geometry(
         &self,
         _geometry: PointerGeometry,
-    ) -> Result<TransformSnapshot, InputFault> {
+    ) -> Result<(TransformSnapshot, shim::NativeBounds), InputFault> {
         self.calls.lock().expect("uncontended")[0] += 1;
         self.source_fault.map_or(Ok(self.source), Err)
     }
@@ -368,14 +475,27 @@ fn process_geometry(
     size: (f64, f64),
     scale: f64,
 ) -> (TransformSnapshot, GeometryFingerprint, shim::NativeBounds) {
-    let fingerprint = fingerprint(origin, size, scale);
+    process_geometry_with_backing(origin, size, scale, scale)
+}
+
+fn process_geometry_with_backing(
+    origin: (f64, f64),
+    size: (f64, f64),
+    effective_scale: f64,
+    backing_scale: f64,
+) -> (TransformSnapshot, GeometryFingerprint, shim::NativeBounds) {
+    let fingerprint = fingerprint(origin, size, effective_scale);
     let transform = TransformSnapshot::with_target(
         GeometryRevision::FIRST,
         fingerprint.extent,
         fingerprint.placement,
     )
     .expect("the placement covers the frame");
-    let bounds = process_bounds(fingerprint).expect("macOS capture scale is uniform");
+    let bounds = shim::NativeBounds {
+        origin,
+        size,
+        scale: backing_scale,
+    };
     (transform, fingerprint, bounds)
 }
 
@@ -479,6 +599,57 @@ fn a_focus_observation_never_outlives_the_callers_budget() {
         focus_wait(&OperationContext::new()),
         Duration::from_millis(250)
     );
+}
+
+#[test]
+fn activation_settle_stops_when_the_caller_cancels() {
+    let cancellation = CancellationToken::new();
+    let operation = OperationContext::new().with_cancellation(cancellation.clone());
+    let mut focus_checks = 0;
+    let mut waits = 0;
+
+    let result = wait_for_activation(
+        &operation,
+        || {
+            focus_checks += 1;
+            Ok(false)
+        },
+        |wait| {
+            assert!(!wait.is_zero());
+            waits += 1;
+            cancellation.cancel();
+        },
+    );
+
+    assert_eq!(result, Err(InputFault::Cancelled));
+    assert_eq!(focus_checks, 1);
+    assert_eq!(waits, 1);
+}
+
+#[test]
+fn activation_settle_never_sleeps_past_the_callers_deadline() {
+    let clock = Arc::new(TestClock::default());
+    let operation = OperationContext::new()
+        .with_clock(Arc::clone(&clock) as Arc<dyn Clock>)
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(5)));
+    let mut focus_checks = 0;
+    let mut waits = Vec::new();
+
+    let result = wait_for_activation(
+        &operation,
+        || {
+            focus_checks += 1;
+            Ok(false)
+        },
+        |wait| {
+            waits.push(wait);
+            clock.advance(wait);
+        },
+    );
+
+    assert_eq!(result, Err(InputFault::DeadlineExceeded));
+    assert_eq!(focus_checks, 1);
+    assert_eq!(waits, vec![Duration::from_millis(5)]);
 }
 
 #[test]
@@ -1048,6 +1219,117 @@ fn a_deadline_that_passes_before_the_commit_posts_nothing() {
 }
 
 #[test]
+fn native_preparation_precedes_the_caller_clock_checkpoint_and_final_authority() {
+    let clock = Arc::new(TestClock::default());
+    let source = FakeSource::advancing_during_prepare(clock.clone(), Duration::from_millis(2));
+    let operation = OperationContext::new()
+        .with_clock(clock)
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(1)));
+
+    let failure = commit_prepared(
+        &source,
+        FocusPolicy::RequireFocused,
+        CommitGeometry::NotApplicable,
+        &operation,
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("the post-preparation caller checkpoint sees the elapsed deadline");
+
+    assert_eq!(failure.fault, InputFault::DeadlineExceeded);
+    assert_eq!(source.revalidations(), 0);
+    assert!(source.posts().is_empty());
+}
+
+#[test]
+fn system_post_and_cleanup_do_not_call_the_operation_clock_after_revalidation() {
+    #[derive(Debug, Default)]
+    struct CountingClock {
+        calls: Mutex<usize>,
+    }
+
+    impl Clock for CountingClock {
+        fn now(&self) -> MonotonicInstant {
+            *self.calls.lock().expect("uncontended") += 1;
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    let ordinary_clock = Arc::new(CountingClock::default());
+    let ordinary = OperationContext::new()
+        .with_clock(ordinary_clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+    let ordinary_source = FakeSource::new();
+    commit_prepared(
+        &ordinary_source,
+        FocusPolicy::RequireFocused,
+        CommitGeometry::NotApplicable,
+        &ordinary,
+        key_post(0x24, true),
+        0,
+    )
+    .expect("the revalidated event is posted");
+    assert_eq!(*ordinary_clock.calls.lock().expect("uncontended"), 1);
+    assert_eq!(ordinary_source.revalidations(), 1);
+    assert_eq!(ordinary_source.posts().len(), 1);
+
+    let cleanup_clock = Arc::new(CountingClock::default());
+    let cleanup = OperationContext::new()
+        .with_clock(cleanup_clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+    let cleanup_source = FakeSource::new();
+    commit_cleanup(&cleanup_source, &cleanup, key_post(0x24, false), 0)
+        .expect("the authorized release is posted");
+    assert_eq!(*cleanup_clock.calls.lock().expect("uncontended"), 1);
+    assert_eq!(cleanup_source.cleanup_authorizations(), 1);
+    assert_eq!(cleanup_source.posts().len(), 1);
+}
+
+#[test]
+fn system_post_fence_uses_atomic_cancellation_and_an_adapter_deadline() {
+    let ordinary_token = CancellationToken::new();
+    let ordinary_source = FakeSource::cancelling_revalidation(ordinary_token.clone());
+    let ordinary = OperationContext::new().with_cancellation(ordinary_token);
+    let failure = commit_prepared(
+        &ordinary_source,
+        FocusPolicy::RequireFocused,
+        CommitGeometry::NotApplicable,
+        &ordinary,
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("cancellation during revalidation stops the post");
+    assert_eq!(failure.fault, InputFault::Cancelled);
+    assert!(ordinary_source.posts().is_empty());
+
+    let cleanup_token = CancellationToken::new();
+    let cleanup_source = FakeSource::cancelling_revalidation(cleanup_token.clone());
+    let cleanup = OperationContext::new().with_cancellation(cleanup_token);
+    let failure = commit_cleanup(&cleanup_source, &cleanup, key_post(0x24, false), 0)
+        .expect_err("cancellation during authorization stops the release");
+    assert_eq!(failure, InputFault::Cancelled);
+    assert!(cleanup_source.posts().is_empty());
+
+    let clock = Arc::new(TestClock::default());
+    let deadline = OperationContext::new()
+        .with_clock(clock)
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(1)));
+    let delayed = FakeSource::delaying_revalidation(Duration::from_millis(5));
+    let failure = commit_prepared(
+        &delayed,
+        FocusPolicy::RequireFocused,
+        CommitGeometry::NotApplicable,
+        &deadline,
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("the adapter deadline expires during final native observations");
+    assert_eq!(failure.fault, InputFault::SubmissionFailed);
+    assert_eq!(delayed.revalidations(), 1);
+    assert!(delayed.posts().is_empty());
+}
+
+#[test]
 fn a_post_that_partly_reached_the_target_reports_effect_it_cannot_take_back() {
     let partly = FakeSource::failing_post(ShimStatus::PlatformFailure, 4);
     let units: Vec<u16> = "hello".encode_utf16().collect();
@@ -1435,6 +1717,52 @@ fn process_commit_arbitrates_cancellation_again_after_the_blocking_post() {
 }
 
 #[test]
+fn process_commit_does_not_invoke_a_caller_clock_after_native_effect() {
+    #[derive(Debug, Default)]
+    struct OneReadClock {
+        calls: Mutex<usize>,
+    }
+
+    impl Clock for OneReadClock {
+        fn now(&self) -> MonotonicInstant {
+            let mut calls = self.calls.lock().expect("uncontended");
+            *calls += 1;
+            assert_eq!(
+                *calls, 1,
+                "the caller clock must not run after the native post returns"
+            );
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    let clock = Arc::new(OneReadClock::default());
+    let operation = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+    let source = FakeProcessSource {
+        result: Ok(shim::ProcessPostOutcome {
+            invoked_native_units: 1,
+            target_match_count: 1,
+            authorization: shim::ProcessAuthorizationObservation::Granted,
+            geometry: shim::ProcessGeometryObservation::NotApplicable,
+            focus: shim::ProcessFocusObservation::NotApplicable,
+        }),
+    };
+
+    commit_process(
+        &source,
+        None,
+        shim::ProcessGeometry::AuthorityOnly,
+        shim::ProcessFocusRequirement::None,
+        &operation,
+        key_post(0x24, true),
+        0,
+    )
+    .expect("native success commits without a late caller-clock callback");
+    assert_eq!(*clock.calls.lock().expect("uncontended"), 1);
+}
+
+#[test]
 fn text_is_chunked_without_ever_splitting_a_surrogate_pair() {
     let units: Vec<u16> = "x".repeat(40).encode_utf16().collect();
     let chunks = text_chunks(&units);
@@ -1479,8 +1807,8 @@ fn text_is_chunked_without_ever_splitting_a_surrogate_pair() {
 fn require_unchanged_process_geometry_uses_only_the_source_frame() {
     let source = process_geometry((-120.0, 80.0), (640.0, 420.0), 2.0);
     let moved = process_geometry((40.0, 20.0), (700.0, 460.0), 2.0);
-    let geometry =
-        FakeProcessGeometrySource::new(source.0, moved).with_current_fault(InputFault::TargetLost);
+    let geometry = FakeProcessGeometrySource::new((source.0, source.2), moved)
+        .with_current_fault(InputFault::TargetLost);
 
     let resolved = process_policy_geometry_for(
         &geometry,
@@ -1500,10 +1828,36 @@ fn require_unchanged_process_geometry_uses_only_the_source_frame() {
 }
 
 #[test]
+fn require_unchanged_uses_raw_backing_scale_for_a_downscaled_source_frame() {
+    let source = process_geometry_with_backing((34.0, 191.0), (1718.0, 1108.0), 1.0, 2.0);
+    let current = process_geometry((34.0, 191.0), (1718.0, 1108.0), 2.0);
+    let geometry = FakeProcessGeometrySource::new((source.0, source.2), current);
+
+    let resolved = process_policy_geometry_for(
+        &geometry,
+        PointerGeometry::require_unchanged_since(source_frame()),
+        &OperationContext::new(),
+    )
+    .expect("raw backing scale is independent of effective capture scale");
+
+    assert_eq!(resolved.0, source.0);
+    assert_eq!(resolved.1, source.1);
+    assert_eq!(
+        resolved.2,
+        shim::ProcessGeometry::RequireCurrent(shim::NativeBounds {
+            origin: (34.0, 191.0),
+            size: (1718.0, 1108.0),
+            scale: 2.0,
+        })
+    );
+    assert_eq!(geometry.calls(), [1, 0]);
+}
+
+#[test]
 fn frame_snapshot_process_geometry_tolerates_live_movement_without_a_live_read() {
     let source = process_geometry((0.0, 0.0), (640.0, 420.0), 2.0);
     let moved = process_geometry((50.0, 25.0), (640.0, 420.0), 2.0);
-    let geometry = FakeProcessGeometrySource::new(source.0, moved)
+    let geometry = FakeProcessGeometrySource::new((source.0, source.2), moved)
         .with_current_fault(InputFault::GeometryChanged);
 
     let resolved = process_policy_geometry_for(
@@ -1523,7 +1877,7 @@ fn frame_snapshot_process_geometry_tolerates_live_movement_without_a_live_read()
 fn reprojected_process_geometry_uses_only_the_live_authority() {
     let source = process_geometry((0.0, 0.0), (640.0, 420.0), 2.0);
     let moved = process_geometry((50.0, 25.0), (700.0, 460.0), 2.0);
-    let geometry = FakeProcessGeometrySource::new(source.0, moved)
+    let geometry = FakeProcessGeometrySource::new((source.0, source.2), moved)
         .with_source_fault(InputFault::MissingCoordinateSource);
 
     let resolved = process_policy_geometry_for(
@@ -1544,7 +1898,7 @@ fn process_geometry_sources_preserve_typed_faults_and_stop_other_reads() {
     let source = process_geometry((0.0, 0.0), (640.0, 420.0), 2.0);
     let current = process_geometry((50.0, 25.0), (700.0, 460.0), 2.0);
 
-    let missing_source = FakeProcessGeometrySource::new(source.0, current)
+    let missing_source = FakeProcessGeometrySource::new((source.0, source.2), current)
         .with_source_fault(InputFault::MissingCoordinateSource);
     let fault = process_policy_geometry_for(
         &missing_source,
@@ -1555,7 +1909,7 @@ fn process_geometry_sources_preserve_typed_faults_and_stop_other_reads() {
     assert_eq!(fault, InputFault::MissingCoordinateSource);
     assert_eq!(missing_source.calls(), [1, 0]);
 
-    let lost_target = FakeProcessGeometrySource::new(source.0, current)
+    let lost_target = FakeProcessGeometrySource::new((source.0, source.2), current)
         .with_current_fault(InputFault::TargetLost);
     let fault = process_policy_geometry_for(
         &lost_target,
@@ -1568,23 +1922,29 @@ fn process_geometry_sources_preserve_typed_faults_and_stop_other_reads() {
 }
 
 #[test]
-fn process_commit_bounds_reuse_the_capture_authoritative_rectangle() {
-    let geometry = fingerprint((-120.0, 80.0), (640.0, 420.0), 2.0);
+fn require_unchanged_preserves_raw_fractional_bounds_when_capture_is_downscaled() {
+    let source = process_geometry_with_backing((-120.0, 80.0), (320.4, 240.0), 1.0, 2.0);
+    let current = process_geometry((-120.0, 80.0), (320.0, 240.0), 1.0);
+    let geometry = FakeProcessGeometrySource::new((source.0, source.2), current);
 
-    let bounds = process_bounds(geometry).expect("macOS capture scale is uniform");
+    let resolved = process_policy_geometry_for(
+        &geometry,
+        PointerGeometry::require_unchanged_since(source_frame()),
+        &OperationContext::new(),
+    )
+    .expect("same-sample native bounds survive the source geometry ledger");
 
-    assert_eq!(bounds.origin, (-120.0, 80.0));
-    assert_eq!(bounds.size, (640.0, 420.0));
-    assert_eq!(bounds.scale, 2.0);
-
-    let fractional = fingerprint((-120.0, 80.0), (320.4, 240.0), 2.0);
-    let normalized =
-        process_bounds(fractional).expect("fractional native points normalize to frame pixels");
+    assert_eq!(resolved.1.placement.logical_size(), (320.0, 240.0));
     assert_eq!(
-        normalized.size,
-        (320.5, 240.0),
-        "the 641-pixel source transform, not the lossy raw point size, is authoritative"
+        resolved.2,
+        shim::ProcessGeometry::RequireCurrent(shim::NativeBounds {
+            origin: (-120.0, 80.0),
+            size: (320.4, 240.0),
+            scale: 2.0,
+        }),
+        "the final gate receives raw screen points and backing scale rather than a reconstructed effective rectangle"
     );
+    assert_eq!(geometry.calls(), [1, 0]);
 }
 
 #[test]

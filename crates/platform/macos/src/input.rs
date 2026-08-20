@@ -28,7 +28,7 @@ use mado_pilot_input::{
 
 use crate::native_input::NativeInputDriver;
 use crate::provider::TargetRecord;
-use crate::shim::ProcessEventSource;
+use crate::shim::{NativeBounds, ProcessEventSource};
 
 const DELAY_POLL_INTERVAL: Duration = Duration::from_millis(2);
 
@@ -147,11 +147,13 @@ pub(crate) fn input_capability(kind: TargetKind, process_directed: bool) -> Inpu
         )
 }
 
-/// The latest authoritative transform for every live capture stream of a target.
+/// The latest authoritative transform and raw native bounds for every live
+/// capture stream of a target.
 ///
-/// Geometry revisions make an older frame in the same revision equivalent to the
-/// latest transform in that revision. A frame from an older revision is not
-/// reconstructed after movement or resize: the request is refused instead.
+/// Geometry revisions make an older frame in the same revision equivalent to
+/// the latest transform and native bounds in that revision. A frame from an
+/// older revision is not reconstructed after movement, resize, or backing-scale
+/// change: the request is refused instead.
 #[derive(Debug, Default)]
 pub(crate) struct GeometryLedger {
     streams: Mutex<HashMap<StreamId, GeometryEntry>>,
@@ -161,18 +163,26 @@ pub(crate) struct GeometryLedger {
 struct GeometryEntry {
     stamp: FrameStamp,
     transform: TransformSnapshot,
+    native_bounds: NativeBounds,
 }
 
 impl GeometryLedger {
-    pub(crate) fn publish(&self, frame: &Frame) {
-        self.record(frame.stamp(), *frame.transform());
+    pub(crate) fn publish(&self, frame: &Frame, native_bounds: NativeBounds) {
+        self.record(frame.stamp(), *frame.transform(), native_bounds);
     }
 
-    fn record(&self, stamp: FrameStamp, transform: TransformSnapshot) {
+    fn record(&self, stamp: FrameStamp, transform: TransformSnapshot, native_bounds: NativeBounds) {
         self.streams
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(stamp.stream(), GeometryEntry { stamp, transform });
+            .insert(
+                stamp.stream(),
+                GeometryEntry {
+                    stamp,
+                    transform,
+                    native_bounds,
+                },
+            );
     }
 
     /// Retires the entry a finished stream left behind.
@@ -187,7 +197,10 @@ impl GeometryLedger {
             .remove(&stream);
     }
 
-    pub(crate) fn source_transform(&self, source: FrameStamp) -> Option<TransformSnapshot> {
+    pub(crate) fn source_geometry(
+        &self,
+        source: FrameStamp,
+    ) -> Option<(TransformSnapshot, NativeBounds)> {
         let entry = *self
             .streams
             .lock()
@@ -202,7 +215,7 @@ impl GeometryLedger {
         {
             return None;
         }
-        Some(entry.transform)
+        Some((entry.transform, entry.native_bounds))
     }
 }
 

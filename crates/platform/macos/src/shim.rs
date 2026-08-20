@@ -20,12 +20,29 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+/// Catches one Rust panic and disposes of its payload without allowing a
+/// panicking payload destructor to unwind into native code.
+pub(crate) fn catch_panic<T>(body: impl FnOnce() -> T) -> Result<T, ()> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+        Ok(value) => Ok(value),
+        Err(payload) => {
+            if let Err(payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(payload)))
+            {
+                // The replacement payload already escaped its own destructor.
+                // There is no safe destructor call left on this failing path.
+                let _leaked = std::mem::ManuallyDrop::new(payload);
+            }
+            Err(())
+        }
+    }
+}
 
 use mado_pilot_capture::CaptureFault;
-use mado_pilot_core::{CancellationToken, OperationContext, PermissionState, PixelExtent};
+use mado_pilot_core::{OperationContext, PermissionState, PixelExtent};
 
 /// The internal surface version this build was written against.
-pub(crate) const ABI_VERSION: u32 = 15;
+pub(crate) const ABI_VERSION: u32 = 19;
 
 /// Largest wait the shim is ever asked for, so one native call cannot consume a
 /// caller's whole budget.
@@ -89,6 +106,15 @@ pub(crate) const RAISE_IN_STOP_COMPLETION: u32 = 64;
 /// Keeps one Rust frame callback admitted beyond the implicit-drop fence wait.
 #[cfg(test)]
 pub(crate) const DELAY_IN_RUST_CALLBACK: u32 = 128;
+/// Refuses the capture-start semaphore factory before framework submission.
+#[cfg(test)]
+pub(crate) const FAIL_START_SEMAPHORE_ALLOCATION: u32 = 256;
+/// Refuses the retained session hold before framework submission.
+#[cfg(test)]
+pub(crate) const FAIL_START_HOLD_ALLOCATION: u32 = 512;
+/// Refuses the reconfiguration semaphore factory before framework submission.
+#[cfg(test)]
+pub(crate) const FAIL_RECONFIGURE_SEMAPHORE_ALLOCATION: u32 = 1024;
 
 #[repr(C)]
 struct OpaqueInventory {
@@ -102,6 +128,11 @@ struct OpaqueTarget {
 
 #[repr(C)]
 struct OpaqueProcessEventSource {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct OpaquePreparedInput {
     _private: [u8; 0],
 }
 
@@ -180,7 +211,10 @@ pub(crate) struct FrameInfo {
     flags: u32,
     reserved: u32,
     pub(crate) display_time_nanos: u64,
+    /// Effective capture pixels per point after content scaling.
     pub(crate) scale_factor: f64,
+    /// Raw display backing pixels per point for native geometry comparison.
+    backing_scale: f64,
     pub(crate) content_origin_x: f64,
     pub(crate) content_origin_y: f64,
     screen_x: f64,
@@ -206,6 +240,7 @@ impl FrameInfo {
             reserved: 0,
             display_time_nanos: 0,
             scale_factor: 1.0,
+            backing_scale: 1.0,
             content_origin_x: 0.0,
             content_origin_y: 0.0,
             screen_x: 0.0,
@@ -236,6 +271,7 @@ impl FrameInfo {
             reserved: 0,
             display_time_nanos: 0,
             scale_factor,
+            backing_scale: scale_factor,
             content_origin_x: 0.0,
             content_origin_y: 0.0,
             screen_x: origin.0,
@@ -268,6 +304,7 @@ impl FrameInfo {
             reserved: 0,
             display_time_nanos: 0,
             scale_factor,
+            backing_scale: scale_factor,
             content_origin_x: 0.0,
             content_origin_y: 0.0,
             screen_x: origin.0,
@@ -277,6 +314,13 @@ impl FrameInfo {
             recommended_surface_width: recommended.width(),
             recommended_surface_height: recommended.height(),
         }
+    }
+
+    /// Overrides the raw backing scale for a downscaled-frame boundary test.
+    #[cfg(test)]
+    pub(crate) const fn with_backing_scale(mut self, backing_scale: f64) -> Self {
+        self.backing_scale = backing_scale;
+        self
     }
 
     /// Returns the content extent, when the frame reported a usable one.
@@ -297,6 +341,11 @@ impl FrameInfo {
             (self.screen_x, self.screen_y),
             (self.screen_width, self.screen_height),
         ))
+    }
+
+    /// Returns the raw display backing scale after repeating native validation.
+    pub(crate) fn backing_scale(&self) -> Option<f64> {
+        (self.backing_scale.is_finite() && self.backing_scale > 0.0).then_some(self.backing_scale)
     }
 
     /// Returns the same-sample producer capacity hint after repeating its bounds.
@@ -1383,6 +1432,43 @@ pub(crate) struct NativeBounds {
     pub(crate) scale: f64,
 }
 
+impl NativeBounds {
+    /// Compares the geometry identity the native final commit gate observes.
+    ///
+    /// ScreenCaptureKit can report a fractional point size whose exact transform
+    /// covers the rounded backing-pixel extent. The raw point sizes therefore need
+    /// not be bit-identical for the two observations to describe the same capture
+    /// geometry.
+    pub(crate) fn capture_equivalent_to(self, other: Self) -> bool {
+        self.origin == other.origin
+            && self.scale == other.scale
+            && self.pixel_extent().is_some_and(|extent| {
+                other
+                    .pixel_extent()
+                    .is_some_and(|other_extent| extent == other_extent)
+            })
+    }
+
+    fn pixel_extent(self) -> Option<PixelExtent> {
+        Some(PixelExtent::new(
+            native_pixels_from_points(self.size.0, self.scale)?,
+            native_pixels_from_points(self.size.1, self.scale)?,
+        ))
+    }
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn native_pixels_from_points(points: f64, scale: f64) -> Option<u32> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let pixels = (points * scale).round();
+    if !pixels.is_finite() || pixels < 1.0 || pixels > f64::from(MAX_SURFACE_EXTENT) {
+        return None;
+    }
+    Some(pixels as u32)
+}
+
 /// Reports whether the exact retained window is focused.
 fn input_target_focused(target: &TargetToken, wait: Duration) -> Result<bool, ShimStatus> {
     let mut focused = false;
@@ -1495,18 +1581,20 @@ fn process_post(
     request: ProcessPostRequest<'_>,
     operation: &OperationContext,
 ) -> Result<ProcessPostOutcome, ProcessPostFailure> {
+    #[cfg(test)]
+    let test_wait = request.wait;
     let ProcessPostRequest {
         post,
         geometry,
         purpose,
         focus,
         flags,
-        wait,
+        wait: _,
     } = request;
     let Some(handle) = target.inner.handle else {
         #[cfg(test)]
         {
-            if let Err(status) = input_target_bounds(target, wait) {
+            if let Err(status) = input_target_bounds(target, test_wait) {
                 return Err(ProcessPostFailure {
                     status,
                     invoked_native_units: 0,
@@ -1634,8 +1722,10 @@ fn process_post(
         ),
         ProcessGeometry::RequireCurrent(expected) => (1, expected),
     };
-    let interruption = ProcessCancellationFence::new(operation);
-    let interruption_context = std::ptr::from_ref(&interruption)
+    let checkpoint = ProcessOperationCheckpoint::new(operation);
+    let checkpoint_context = std::ptr::from_ref(&checkpoint).cast_mut().cast::<c_void>();
+    let cancellation = ProcessCancellationFence::new(operation);
+    let cancellation_context = std::ptr::from_ref(&cancellation)
         .cast_mut()
         .cast::<c_void>();
     let request = NativeProcessPostRequest {
@@ -1644,7 +1734,7 @@ fn process_post(
         event_kind,
         target: handle.as_ptr(),
         event_source: source.as_ptr(),
-        timeout_nanos: nanos(wait),
+        timeout_nanos: nanos(MAX_NATIVE_WAIT),
         flags,
         geometry_check,
         purpose: purpose.as_raw(),
@@ -1666,8 +1756,10 @@ fn process_post(
         expected_width: expected.size.0,
         expected_height: expected.size.1,
         expected_scale: expected.scale,
-        interruption_context,
-        interruption_callback: Some(process_interruption_callback),
+        interruption_context: checkpoint_context,
+        interruption_callback: Some(process_operation_checkpoint_callback),
+        cancellation_context,
+        cancellation_callback: Some(process_cancellation_callback),
     };
     let mut report = NativeProcessPostReport {
         struct_size: u32::try_from(size_of::<NativeProcessPostReport>())
@@ -1729,58 +1821,135 @@ pub(crate) fn input_resolve_character(scalar: u32) -> Result<u16, ShimStatus> {
     Ok(key_code)
 }
 
-/// Posts one pointer event at a global point.
-pub(crate) fn input_post_pointer(
+/// A fully configured system-delivery event batch.
+///
+/// Native storage is prepared before final mutable target authority is read.
+/// Drop releases every Core Graphics object whether or not any unit was posted.
+pub(crate) struct PreparedInput {
+    raw: NonNull<OpaquePreparedInput>,
+    count: usize,
+}
+
+impl PreparedInput {
+    fn from_native(status: u32, raw: *mut OpaquePreparedInput) -> Result<Self, ShimStatus> {
+        ShimStatus::from_raw(status).into_result()?;
+        let raw = NonNull::new(raw).ok_or(ShimStatus::PlatformFailure)?;
+        let mut prepared = Self { raw, count: 0 };
+        let mut count = 0usize;
+        // SAFETY: the owned handle remains live and `count` is writable.
+        let status = unsafe { mp_shim_input_prepared_count(prepared.raw.as_ptr(), &raw mut count) };
+        ShimStatus::from_raw(status).into_result()?;
+        if !(1..=2).contains(&count) {
+            return Err(ShimStatus::PlatformFailure);
+        }
+        prepared.count = count;
+        Ok(prepared)
+    }
+
+    pub(crate) const fn count(&self) -> usize {
+        self.count
+    }
+
+    pub(crate) fn post_unit(
+        &mut self,
+        index: usize,
+        deadline_nanos: u64,
+        cancellation: Option<&mado_pilot_core::CancellationToken>,
+    ) -> Result<(), (ShimStatus, bool)> {
+        let fence = ProcessCancellationFence::from_cancellation(cancellation);
+        let context = std::ptr::from_ref(&fence).cast_mut().cast::<c_void>();
+        let mut native_effect_may_have_occurred = 0u32;
+        // SAFETY: the prepared handle and stack-owned atomic fence remain live
+        // for this synchronous call; the scalar output is writable.
+        let status = unsafe {
+            mp_shim_input_post_prepared(
+                self.raw.as_ptr(),
+                index,
+                deadline_nanos,
+                context,
+                Some(process_cancellation_callback),
+                &raw mut native_effect_may_have_occurred,
+            )
+        };
+        match ShimStatus::from_raw(status) {
+            ShimStatus::Ok => Ok(()),
+            status => Err((status, native_effect_may_have_occurred == 1)),
+        }
+    }
+}
+
+impl Drop for PreparedInput {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper uniquely owns the handle and releases it once.
+        let _ = unsafe { mp_shim_input_prepared_release(self.raw.as_ptr()) };
+    }
+}
+
+pub(crate) fn input_prepare_pointer(
     action: u32,
     button: u32,
     click_state: u64,
     location: (f64, f64),
     flags: u32,
-) -> Result<(), ShimStatus> {
-    // SAFETY: the call takes scalars only and writes nothing.
-    ShimStatus::from_raw(unsafe {
-        mp_shim_input_post_pointer(action, button, click_state, location.0, location.1, flags)
-    })
-    .into_result()
+) -> Result<PreparedInput, ShimStatus> {
+    let mut raw = std::ptr::null_mut();
+    // SAFETY: every input is scalar and `raw` is writable for one handle.
+    let status = unsafe {
+        mp_shim_input_prepare_pointer(
+            action,
+            button,
+            click_state,
+            location.0,
+            location.1,
+            flags,
+            &raw mut raw,
+        )
+    };
+    PreparedInput::from_native(status, raw)
 }
 
-/// Posts one line-unit scroll, positive being down and right.
-pub(crate) fn input_post_scroll(
+pub(crate) fn input_prepare_scroll(
     horizontal: i32,
     vertical: i32,
     location: (f64, f64),
     flags: u32,
-) -> Result<(), ShimStatus> {
-    // SAFETY: the call takes scalars only and writes nothing.
-    ShimStatus::from_raw(unsafe {
-        mp_shim_input_post_scroll(horizontal, vertical, location.0, location.1, flags)
-    })
-    .into_result()
+) -> Result<PreparedInput, ShimStatus> {
+    let mut raw = std::ptr::null_mut();
+    // SAFETY: every input is scalar and `raw` is writable for one handle.
+    let status = unsafe {
+        mp_shim_input_prepare_scroll(
+            horizontal,
+            vertical,
+            location.0,
+            location.1,
+            flags,
+            &raw mut raw,
+        )
+    };
+    PreparedInput::from_native(status, raw)
 }
 
-/// Posts one key event for a hardware key code.
-pub(crate) fn input_post_key(key_code: u16, down: bool, flags: u32) -> Result<(), ShimStatus> {
-    // SAFETY: the call takes scalars only and writes nothing.
-    ShimStatus::from_raw(unsafe { mp_shim_input_post_key(key_code, down, flags) }).into_result()
+pub(crate) fn input_prepare_key(
+    key_code: u16,
+    down: bool,
+    flags: u32,
+) -> Result<PreparedInput, ShimStatus> {
+    let mut raw = std::ptr::null_mut();
+    // SAFETY: every input is scalar and `raw` is writable for one handle.
+    let status = unsafe { mp_shim_input_prepare_key(key_code, down, flags, &raw mut raw) };
+    PreparedInput::from_native(status, raw)
 }
 
-/// Posts one bounded chunk of UTF-16 units as text.
-///
-/// The error carries how many units had already reached the target, because a
-/// caller that stops mid-text has to report native effect it cannot take back.
-pub(crate) fn input_post_text(units: &[u16], flags: u32) -> Result<(), (ShimStatus, usize)> {
+pub(crate) fn input_prepare_text(units: &[u16], flags: u32) -> Result<PreparedInput, ShimStatus> {
     if units.is_empty() || units.len() > INPUT_MAX_TEXT_CHUNK {
-        return Err((ShimStatus::InvalidArgument, 0));
+        return Err(ShimStatus::InvalidArgument);
     }
-    let mut posted = 0usize;
-    // SAFETY: `units` is a complete initialized slice whose length is passed
-    // beside it, and `posted` is writable for one `usize`.
+    let mut raw = std::ptr::null_mut();
+    // SAFETY: the initialized slice remains borrowed for the synchronous
+    // preparation call and `raw` is writable for one handle.
     let status =
-        unsafe { mp_shim_input_post_text(units.as_ptr(), units.len(), flags, &raw mut posted) };
-    match ShimStatus::from_raw(status) {
-        ShimStatus::Ok => Ok(()),
-        other => Err((other, posted)),
-    }
+        unsafe { mp_shim_input_prepare_text(units.as_ptr(), units.len(), flags, &raw mut raw) };
+    PreparedInput::from_native(status, raw)
 }
 
 /// Returns the version, structure sizes, and process-field offsets compiled into
@@ -2030,44 +2199,95 @@ pub(crate) type FrameCommitCallback = unsafe extern "C" fn(*mut c_void) -> u32;
 /// The producer-stopped callback signature the shim invokes.
 pub(crate) type StoppedCallback = unsafe extern "C" fn(*mut c_void, u32);
 
-/// Adapter-owned cancellation state read by the synchronous native fence.
+/// Caller-clock state consulted immediately before a native mutable gate.
 ///
-/// Owning a token clone keeps the concrete atomic flag alive through the call
-/// without exposing [`OperationContext`] or its caller-provided clock to native
-/// commit-time callbacks.
+/// The checkpoint runs while every mutable observation is still ahead of it, so
+/// arbitrary caller clock code cannot stale retained-window authority. It also
+/// supplies the caller clock's current remaining slice for adapter-owned native
+/// wait bounding.
+#[derive(Debug)]
+struct ProcessOperationCheckpoint<'a> {
+    operation: &'a OperationContext,
+}
+
+impl<'a> ProcessOperationCheckpoint<'a> {
+    const fn new(operation: &'a OperationContext) -> Self {
+        Self { operation }
+    }
+}
+
+/// Atomic cancellation state consulted after final mutable authority.
 #[derive(Debug)]
 struct ProcessCancellationFence {
-    cancellation: Option<CancellationToken>,
+    cancellation: Option<mado_pilot_core::CancellationToken>,
 }
 
 impl ProcessCancellationFence {
     fn new(operation: &OperationContext) -> Self {
+        Self::from_cancellation(operation.cancellation())
+    }
+
+    fn from_cancellation(cancellation: Option<&mado_pilot_core::CancellationToken>) -> Self {
         Self {
-            cancellation: operation.cancellation().cloned(),
+            cancellation: cancellation.cloned(),
         }
     }
 }
+type ProcessCheckpointCallback = unsafe extern "C" fn(*mut c_void, *mut u64) -> u32;
+type ProcessCancellationCallback = unsafe extern "C" fn(*mut c_void) -> u32;
 
-type ProcessInterruptionCallback = unsafe extern "C" fn(*mut c_void) -> u32;
+unsafe extern "C" fn process_operation_checkpoint_callback(
+    context: *mut c_void,
+    out_wait_nanos: *mut u64,
+) -> u32 {
+    if context.is_null() || out_wait_nanos.is_null() {
+        return ShimStatus::InvalidArgument.as_raw();
+    }
+    // SAFETY: the output was validated for one writable u64.
+    unsafe { out_wait_nanos.write(0) };
+    let outcome = catch_panic(|| {
+        // SAFETY: `process_post` passes a stack-owned checkpoint that outlives
+        // its synchronous native call. The shim never stores the pointer.
+        let checkpoint = unsafe { &*context.cast::<ProcessOperationCheckpoint<'_>>() };
+        if checkpoint
+            .operation
+            .cancellation()
+            .is_some_and(mado_pilot_core::CancellationToken::is_cancelled)
+        {
+            return ShimStatus::TimedOut;
+        }
+        let wait = checkpoint
+            .operation
+            .remaining()
+            .map_or(MAX_NATIVE_WAIT, |remaining| remaining.min(MAX_NATIVE_WAIT));
+        if wait.is_zero() {
+            return ShimStatus::TimedOut;
+        }
+        // SAFETY: the output remains exclusively writable for this callback.
+        unsafe { out_wait_nanos.write(nanos(wait)) };
+        ShimStatus::Ok
+    });
+    outcome.map_or(ShimStatus::PlatformFailure.as_raw(), ShimStatus::as_raw)
+}
 
-unsafe extern "C" fn process_interruption_callback(context: *mut c_void) -> u32 {
+unsafe extern "C" fn process_cancellation_callback(context: *mut c_void) -> u32 {
     if context.is_null() {
         return ShimStatus::InvalidArgument.as_raw();
     }
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let outcome = catch_panic(|| {
         // SAFETY: `process_post` passes a stack-owned fence that outlives its
         // synchronous native call. The shim never stores the pointer.
         let fence = unsafe { &*context.cast::<ProcessCancellationFence>() };
         if fence
             .cancellation
             .as_ref()
-            .is_some_and(CancellationToken::is_cancelled)
+            .is_some_and(mado_pilot_core::CancellationToken::is_cancelled)
         {
             ShimStatus::TimedOut
         } else {
             ShimStatus::Ok
         }
-    }));
+    });
     outcome.map_or(ShimStatus::PlatformFailure.as_raw(), ShimStatus::as_raw)
 }
 
@@ -2089,7 +2309,7 @@ pub(crate) unsafe fn contained_frame_callback<C>(
     if context.is_null() || info.is_null() {
         return ShimStatus::InvalidArgument.as_raw();
     }
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let outcome = catch_panic(|| {
         // SAFETY: the caller guarantees `context` is the registered value for a
         // live session and `info` points to one complete report the shim owns
         // for the duration of this call.
@@ -2101,11 +2321,11 @@ pub(crate) unsafe fn contained_frame_callback<C>(
             lifetime: PhantomData,
         };
         body(owner, borrowed, report)
-    }));
+    });
     match outcome {
         Ok(status) => status.as_raw(),
         // A panicking host callback becomes a typed failure rather than an abort.
-        Err(_) => ShimStatus::PlatformFailure.as_raw(),
+        Err(()) => ShimStatus::PlatformFailure.as_raw(),
     }
 }
 
@@ -2121,15 +2341,15 @@ pub(crate) unsafe fn contained_frame_commit_callback<C>(
     if context.is_null() {
         return ShimStatus::InvalidArgument.as_raw();
     }
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let outcome = catch_panic(|| {
         // SAFETY: the caller guarantees `context` is the registered value for a
         // live session.
         let owner = unsafe { &*context.cast::<C>() };
         body(owner)
-    }));
+    });
     match outcome {
         Ok(status) => status.as_raw(),
-        Err(_) => ShimStatus::PlatformFailure.as_raw(),
+        Err(()) => ShimStatus::PlatformFailure.as_raw(),
     }
 }
 
@@ -2146,12 +2366,12 @@ pub(crate) unsafe fn contained_stopped_callback<C>(
     if context.is_null() {
         return;
     }
-    let _outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let _outcome = catch_panic(|| {
         // SAFETY: the caller guarantees `context` is the registered value for a
         // live session.
         let owner = unsafe { &*context.cast::<C>() };
         body(owner, ShimStatus::from_raw(status));
-    }));
+    });
 }
 
 #[cfg(test)]
@@ -2167,6 +2387,30 @@ fn testing_terminalize_twice(
         mp_shim_testing_terminalize_twice(context, Some(stopped), first.as_raw(), second.as_raw())
     };
     ShimStatus::from_raw(status).into_result()
+}
+
+#[cfg(test)]
+fn testing_seconds_to_nanos(seconds: f64) -> u64 {
+    // SAFETY: the native helper accepts one scalar and performs no callbacks.
+    unsafe { mp_shim_testing_seconds_to_nanos(seconds) }
+}
+
+#[cfg(test)]
+fn testing_stop_callback_exception() -> Result<(ShimStatus, u32, ShimStatus), ShimStatus> {
+    let mut terminal = u32::MAX;
+    let mut calls = u32::MAX;
+    let mut fence = u32::MAX;
+    // SAFETY: every output is writable. The native seam owns its fake session
+    // and contains the injected Objective-C exception before returning.
+    let status = unsafe {
+        mp_shim_testing_stop_callback_exception(&raw mut terminal, &raw mut calls, &raw mut fence)
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((
+        ShimStatus::from_raw(terminal),
+        calls,
+        ShimStatus::from_raw(fence),
+    ))
 }
 
 #[cfg(test)]
@@ -2204,6 +2448,57 @@ fn testing_stop_completion_exception() -> Result<(ShimStatus, bool), ShimStatus>
         unsafe { mp_shim_testing_stop_completion_exception(&raw mut completion, &raw mut started) };
     ShimStatus::from_raw(status).into_result()?;
     Ok((ShimStatus::from_raw(completion), started))
+}
+
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+struct SessionSyncInit {
+    attempts: u32,
+    initialized: u32,
+    destroyed: u32,
+    success: bool,
+}
+
+#[cfg(test)]
+fn testing_session_sync_init(fail_at: u32) -> Result<SessionSyncInit, ShimStatus> {
+    let mut attempts = 0;
+    let mut initialized = 0;
+    let mut destroyed = 0;
+    let mut success = 0;
+    // SAFETY: every output points to one writable `u32`; the native seam keeps
+    // all synchronization objects within its call and invokes no callback.
+    let status = unsafe {
+        mp_shim_testing_session_sync_init(
+            fail_at,
+            &raw mut attempts,
+            &raw mut initialized,
+            &raw mut destroyed,
+            &raw mut success,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok(SessionSyncInit {
+        attempts,
+        initialized,
+        destroyed,
+        success: success != 0,
+    })
+}
+
+#[cfg(test)]
+fn testing_resource_allocation_failures() -> Result<[ShimStatus; 2], ShimStatus> {
+    let mut semaphore = u32::MAX;
+    let mut session_hold = u32::MAX;
+    // SAFETY: both outputs point to one writable status and both native
+    // factories are invoked with deterministic failure before retaining input.
+    let status = unsafe {
+        mp_shim_testing_resource_allocation_failures(&raw mut semaphore, &raw mut session_hold)
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok([
+        ShimStatus::from_raw(semaphore),
+        ShimStatus::from_raw(session_hold),
+    ])
 }
 
 #[cfg(test)]
@@ -2265,14 +2560,57 @@ fn testing_input_activation_lifetime_loss() -> Result<(ShimStatus, [u32; 2]), Sh
 }
 
 #[cfg(test)]
-fn testing_input_text_second_allocation_failure() -> Result<(ShimStatus, [usize; 5]), ShimStatus> {
+const TEST_INPUT_SINGLE_CONFIGURE_EXCEPTION: u32 = 0;
+#[cfg(test)]
+const TEST_INPUT_SINGLE_POST_EXCEPTION: u32 = 1;
+#[cfg(test)]
+const TEST_INPUT_TEXT_SECOND_ALLOCATION_FAILURE: u32 = 0;
+#[cfg(test)]
+const TEST_INPUT_TEXT_CONFIGURE_EXCEPTION: u32 = 1;
+#[cfg(test)]
+const TEST_INPUT_TEXT_POST_EXCEPTION: u32 = 2;
+#[cfg(test)]
+const TEST_PREPARED_INPUT_SUCCESS: u32 = 0;
+#[cfg(test)]
+const TEST_PREPARED_INPUT_CANCELLED: u32 = 1;
+#[cfg(test)]
+const TEST_PREPARED_INPUT_DEADLINE: u32 = 2;
+#[cfg(test)]
+const TEST_PREPARED_INPUT_POST_EXCEPTION: u32 = 3;
+
+#[cfg(test)]
+fn testing_input_single_event_failure(
+    scenario: u32,
+) -> Result<(ShimStatus, [usize; 4]), ShimStatus> {
+    let mut delivery = u32::MAX;
+    let mut observations = [usize::MAX; 4];
+    let [configurations, posts, releases, posted] = &mut observations;
+    // SAFETY: every output is writable for its declared scalar type. The native
+    // seam uses a fake object and injected callbacks that never post to the host.
+    let status = unsafe {
+        mp_shim_testing_input_single_event_failure(
+            scenario,
+            &raw mut delivery,
+            &raw mut *configurations,
+            &raw mut *posts,
+            &raw mut *releases,
+            &raw mut *posted,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((ShimStatus::from_raw(delivery), observations))
+}
+
+#[cfg(test)]
+fn testing_input_text_failure(scenario: u32) -> Result<(ShimStatus, [usize; 5]), ShimStatus> {
     let mut delivery = u32::MAX;
     let mut observations = [usize::MAX; 5];
     let [allocations, configurations, posts, releases, posted] = &mut observations;
     // SAFETY: every output is writable for its declared scalar type. The native
     // seam uses fake objects and never posts to the host system.
     let status = unsafe {
-        mp_shim_testing_input_text_second_allocation_failure(
+        mp_shim_testing_input_text_failure(
+            scenario,
             &raw mut delivery,
             &raw mut *allocations,
             &raw mut *configurations,
@@ -2283,6 +2621,40 @@ fn testing_input_text_second_allocation_failure() -> Result<(ShimStatus, [usize;
     };
     ShimStatus::from_raw(status).into_result()?;
     Ok((ShimStatus::from_raw(delivery), observations))
+}
+
+#[cfg(test)]
+fn testing_prepared_input_gate(
+    scenario: u32,
+) -> Result<(ShimStatus, bool, u64, usize), ShimStatus> {
+    let mut delivery = u32::MAX;
+    let mut native_effect_may_have_occurred = u32::MAX;
+    let mut post_calls = u64::MAX;
+    let mut next_index = usize::MAX;
+    // SAFETY: every output is writable. The native seam posts only a sentinel
+    // through an injected callback and never reaches the host desktop.
+    let status = unsafe {
+        mp_shim_testing_prepared_input_gate(
+            scenario,
+            &raw mut delivery,
+            &raw mut native_effect_may_have_occurred,
+            &raw mut post_calls,
+            &raw mut next_index,
+        )
+    };
+    ShimStatus::from_raw(status).into_result()?;
+    Ok((
+        ShimStatus::from_raw(delivery),
+        native_effect_may_have_occurred == 1,
+        post_calls,
+        next_index,
+    ))
+}
+
+#[cfg(test)]
+fn testing_required_ax_error_status(scenario: u32) -> ShimStatus {
+    // SAFETY: the testing seam accepts one scalar scenario and returns a status.
+    ShimStatus::from_raw(unsafe { mp_shim_testing_required_ax_error_status(scenario) })
 }
 
 #[cfg(test)]
@@ -2326,7 +2698,7 @@ struct ProcessPostTestObservation {
     native_effect_may_have_occurred: bool,
     target_match_count: u32,
     focus: ProcessFocusObservation,
-    calls: [u64; 7],
+    calls: [u64; 9],
 }
 
 #[cfg(test)]
@@ -2336,7 +2708,7 @@ fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, Shi
     let mut native_effect_may_have_occurred = u32::MAX;
     let mut target_match_count = u32::MAX;
     let mut focus_result = u32::MAX;
-    let mut calls = [u64::MAX; 7];
+    let mut calls = [u64::MAX; 9];
     let [
         authority,
         preflight,
@@ -2345,6 +2717,8 @@ fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, Shi
         prepare,
         post,
         release,
+        checkpoint,
+        cancellation,
     ] = &mut calls;
     // SAFETY: every output is writable for its declared scalar type. The native
     // seam uses sentinel events handled only by injected callbacks and never
@@ -2364,6 +2738,8 @@ fn testing_process_post(scenario: u32) -> Result<ProcessPostTestObservation, Shi
             &raw mut *prepare,
             &raw mut *post,
             &raw mut *release,
+            &raw mut *checkpoint,
+            &raw mut *cancellation,
         )
     };
     ShimStatus::from_raw(status).into_result()?;
@@ -2485,7 +2861,9 @@ struct NativeProcessPostRequest {
     expected_height: f64,
     expected_scale: f64,
     interruption_context: *mut c_void,
-    interruption_callback: Option<ProcessInterruptionCallback>,
+    interruption_callback: Option<ProcessCheckpointCallback>,
+    cancellation_context: *mut c_void,
+    cancellation_callback: Option<ProcessCancellationCallback>,
 }
 
 #[repr(C)]
@@ -2552,6 +2930,14 @@ unsafe extern "C" {
         second: u32,
     ) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_seconds_to_nanos(seconds: f64) -> u64;
+    #[cfg(test)]
+    fn mp_shim_testing_stop_callback_exception(
+        out_terminal_status: *mut u32,
+        out_terminal_calls: *mut u32,
+        out_fence_status: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_gate_retries(
         completion_delay_nanos: u64,
         first_wait_nanos: u64,
@@ -2567,6 +2953,14 @@ unsafe extern "C" {
         out_started: *mut bool,
     ) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_session_sync_init(
+        fail_at: u32,
+        out_attempts: *mut u32,
+        out_initialized: *mut u32,
+        out_destroyed: *mut u32,
+        out_success: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_surface_recommendation(
         logical_width: f64,
         logical_height: f64,
@@ -2580,13 +2974,28 @@ unsafe extern "C" {
         out_process_metadata_retained: *mut u32,
     ) -> u32;
     #[cfg(test)]
+    fn mp_shim_testing_resource_allocation_failures(
+        out_semaphore_status: *mut u32,
+        out_session_hold_status: *mut u32,
+    ) -> u32;
+    #[cfg(test)]
     fn mp_shim_testing_input_activation_lifetime_loss(
         out_activation_status: *mut u32,
         out_validation_calls: *mut u32,
         out_activation_calls: *mut u32,
     ) -> u32;
     #[cfg(test)]
-    fn mp_shim_testing_input_text_second_allocation_failure(
+    fn mp_shim_testing_input_single_event_failure(
+        scenario: u32,
+        out_delivery_status: *mut u32,
+        out_configurations: *mut usize,
+        out_posts: *mut usize,
+        out_releases: *mut usize,
+        out_posted: *mut usize,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_input_text_failure(
+        scenario: u32,
         out_delivery_status: *mut u32,
         out_allocations: *mut usize,
         out_configurations: *mut usize,
@@ -2594,6 +3003,16 @@ unsafe extern "C" {
         out_releases: *mut usize,
         out_posted: *mut usize,
     ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_prepared_input_gate(
+        scenario: u32,
+        out_delivery_status: *mut u32,
+        out_native_effect_may_have_occurred: *mut u32,
+        out_post_calls: *mut u64,
+        out_next_index: *mut usize,
+    ) -> u32;
+    #[cfg(test)]
+    fn mp_shim_testing_required_ax_error_status(scenario: u32) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_process_event_source_release_exception(
         out_release_calls: *mut u32,
@@ -2620,6 +3039,8 @@ unsafe extern "C" {
         out_prepare_calls: *mut u64,
         out_post_calls: *mut u64,
         out_release_calls: *mut u64,
+        out_checkpoint_calls: *mut u64,
+        out_cancellation_calls: *mut u64,
     ) -> u32;
     #[cfg(test)]
     fn mp_shim_testing_validate_process_post(
@@ -2712,23 +3133,48 @@ unsafe extern "C" {
     fn mp_shim_input_pointer_location(out_x: *mut f64, out_y: *mut f64) -> u32;
     fn mp_shim_input_activate_owner(target: *const OpaqueTarget) -> u32;
     fn mp_shim_input_resolve_character(scalar: u32, out_key_code: *mut u16) -> u32;
-    fn mp_shim_input_post_pointer(
+    fn mp_shim_input_prepare_pointer(
         action: u32,
         button: u32,
         click_state: u64,
         x: f64,
         y: f64,
         flags: u32,
+        out_prepared: *mut *mut OpaquePreparedInput,
     ) -> u32;
-    fn mp_shim_input_post_scroll(horizontal: i32, vertical: i32, x: f64, y: f64, flags: u32)
-    -> u32;
-    fn mp_shim_input_post_key(key_code: u16, down: bool, flags: u32) -> u32;
-    fn mp_shim_input_post_text(
+    fn mp_shim_input_prepare_scroll(
+        horizontal: i32,
+        vertical: i32,
+        x: f64,
+        y: f64,
+        flags: u32,
+        out_prepared: *mut *mut OpaquePreparedInput,
+    ) -> u32;
+    fn mp_shim_input_prepare_key(
+        key_code: u16,
+        down: bool,
+        flags: u32,
+        out_prepared: *mut *mut OpaquePreparedInput,
+    ) -> u32;
+    fn mp_shim_input_prepare_text(
         units: *const u16,
         count: usize,
         flags: u32,
-        out_posted: *mut usize,
+        out_prepared: *mut *mut OpaquePreparedInput,
     ) -> u32;
+    fn mp_shim_input_prepared_count(
+        prepared: *const OpaquePreparedInput,
+        out_count: *mut usize,
+    ) -> u32;
+    fn mp_shim_input_post_prepared(
+        prepared: *mut OpaquePreparedInput,
+        index: usize,
+        deadline_nanos: u64,
+        cancellation_context: *mut c_void,
+        cancellation_callback: Option<ProcessCancellationCallback>,
+        out_native_effect_may_have_occurred: *mut u32,
+    ) -> u32;
+    fn mp_shim_input_prepared_release(prepared: *mut OpaquePreparedInput) -> u32;
 }
 
 // The C header spells the borrowed name view as `const uint8_t *`; this keeps the
@@ -2748,13 +3194,22 @@ mod tests {
         ABI_VERSION, DEFAULT_NATIVE_WAIT, ExecutionContext, FrameInfo, KIND_DISPLAY, KIND_WINDOW,
         LaunchContext, MAX_NATIVE_WAIT, MAX_SURFACE_EXTENT, OpaqueFrame, OpenRequest,
         ProcessAuthorization, ProcessCancellationFence, ProcessEventSource,
-        ProcessFocusObservation, ShimStatus, SignatureMode, TargetToken, contained_frame_callback,
+        ProcessFocusObservation, ProcessOperationCheckpoint, SessionSyncInit, ShimStatus,
+        SignatureMode, TEST_INPUT_SINGLE_CONFIGURE_EXCEPTION, TEST_INPUT_SINGLE_POST_EXCEPTION,
+        TEST_INPUT_TEXT_CONFIGURE_EXCEPTION, TEST_INPUT_TEXT_POST_EXCEPTION,
+        TEST_INPUT_TEXT_SECOND_ALLOCATION_FAILURE, TEST_PREPARED_INPUT_CANCELLED,
+        TEST_PREPARED_INPUT_DEADLINE, TEST_PREPARED_INPUT_POST_EXCEPTION,
+        TEST_PREPARED_INPUT_SUCCESS, TargetToken, catch_panic, contained_frame_callback,
         contained_frame_commit_callback, contained_stopped_callback, declared_layout,
         declared_process_offsets, execution_context, linked_layout, live_objects, monotonic_nanos,
-        nanos, process_interruption_callback, testing_classify_signature, testing_gate_retries,
-        testing_input_activation_lifetime_loss, testing_input_text_second_allocation_failure,
-        testing_process_authority_rules, testing_process_event_source_release_exception,
-        testing_process_post, testing_stop_completion_exception, testing_surface_recommendation,
+        nanos, process_cancellation_callback, process_operation_checkpoint_callback,
+        testing_classify_signature, testing_gate_retries, testing_input_activation_lifetime_loss,
+        testing_input_single_event_failure, testing_input_text_failure,
+        testing_prepared_input_gate, testing_process_authority_rules,
+        testing_process_event_source_release_exception, testing_process_post,
+        testing_required_ax_error_status, testing_resource_allocation_failures,
+        testing_seconds_to_nanos, testing_session_sync_init, testing_stop_callback_exception,
+        testing_stop_completion_exception, testing_surface_recommendation,
         testing_target_release_exception, testing_target_without_process_lifetime,
         testing_terminalize_twice, testing_validate_process_post, validate_open_shape_and_metadata,
     };
@@ -2954,9 +3409,69 @@ mod tests {
     }
 
     #[test]
+    fn single_system_events_release_native_storage_and_preserve_the_post_threshold() {
+        let rows = [
+            (TEST_INPUT_SINGLE_CONFIGURE_EXCEPTION, 0, 0),
+            (TEST_INPUT_SINGLE_POST_EXCEPTION, 1, 1),
+        ];
+        for (scenario, expected_posts, expected_posted) in rows {
+            let (delivery, [configurations, posts, releases, posted]) =
+                testing_input_single_event_failure(scenario)
+                    .expect("native single-event failure seam runs");
+
+            assert_eq!(delivery, ShimStatus::NativeException);
+            assert_eq!(configurations, 1);
+            assert_eq!(posts, expected_posts);
+            assert_eq!(releases, 1, "the owned event is released on every exit");
+            assert_eq!(
+                posted, expected_posted,
+                "only entry into the void post crosses the possible-effect threshold"
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_system_posts_enforce_the_final_fence_and_effect_threshold() {
+        let rows = [
+            (TEST_PREPARED_INPUT_SUCCESS, ShimStatus::Ok, true, 1, 1),
+            (
+                TEST_PREPARED_INPUT_CANCELLED,
+                ShimStatus::TimedOut,
+                false,
+                0,
+                0,
+            ),
+            (
+                TEST_PREPARED_INPUT_DEADLINE,
+                ShimStatus::TimedOut,
+                false,
+                0,
+                0,
+            ),
+            (
+                TEST_PREPARED_INPUT_POST_EXCEPTION,
+                ShimStatus::NativeException,
+                true,
+                1,
+                1,
+            ),
+        ];
+        for (scenario, expected_status, expected_effect, expected_posts, expected_next) in rows {
+            let (delivery, effect, posts, next_index) =
+                testing_prepared_input_gate(scenario).expect("prepared-input seam runs");
+
+            assert_eq!(delivery, expected_status, "scenario {scenario}");
+            assert_eq!(effect, expected_effect, "scenario {scenario}");
+            assert_eq!(posts, expected_posts, "scenario {scenario}");
+            assert_eq!(next_index, expected_next, "scenario {scenario}");
+        }
+    }
+
+    #[test]
     fn text_posts_nothing_when_the_release_event_cannot_be_allocated() {
         let (delivery, [allocations, configurations, posts, releases, posted]) =
-            testing_input_text_second_allocation_failure().expect("native text failure seam runs");
+            testing_input_text_failure(TEST_INPUT_TEXT_SECOND_ALLOCATION_FAILURE)
+                .expect("native text allocation-failure seam runs");
 
         assert_eq!(delivery, ShimStatus::PlatformFailure);
         assert_eq!(
@@ -2964,19 +3479,71 @@ mod tests {
             "the forced failure is the second allocation"
         );
         assert_eq!(configurations, 0, "no half-pair is configured alone");
-        assert_eq!(posts, 0, "the key-down never reaches the system");
+        assert_eq!(posts, 0, "the key-down never reaches the post threshold");
         assert_eq!(releases, 1, "the first native event is released on failure");
-        assert_eq!(posted, 0, "the caller observes no native effect");
+        assert_eq!(posted, 0, "the caller observes no possible native effect");
     }
 
     #[test]
-    fn process_interruption_callback_reads_only_adapter_owned_cancellation() {
+    fn text_configuration_exception_posts_nothing_and_releases_the_pair() {
+        let (delivery, [allocations, configurations, posts, releases, posted]) =
+            testing_input_text_failure(TEST_INPUT_TEXT_CONFIGURE_EXCEPTION)
+                .expect("native text configuration-exception seam runs");
+
+        assert_eq!(delivery, ShimStatus::NativeException);
+        assert_eq!(allocations, 2);
+        assert_eq!(configurations, 1);
+        assert_eq!(posts, 0);
+        assert_eq!(releases, 2, "both prepared events are released");
+        assert_eq!(posted, 0, "configuration precedes the post threshold");
+    }
+
+    #[test]
+    fn text_post_exception_preserves_possible_effect_and_releases_the_pair() {
+        let (delivery, [allocations, configurations, posts, releases, posted]) =
+            testing_input_text_failure(TEST_INPUT_TEXT_POST_EXCEPTION)
+                .expect("native text post-exception seam runs");
+
+        assert_eq!(delivery, ShimStatus::NativeException);
+        assert_eq!(allocations, 2);
+        assert_eq!(configurations, 2);
+        assert_eq!(posts, 1);
+        assert_eq!(releases, 2, "both prepared events are released");
+        assert_eq!(
+            posted, 1,
+            "entry into the key-down post remains observable after its exception"
+        );
+    }
+
+    #[test]
+    fn missing_required_accessibility_data_is_unavailable_not_observed_unfocused() {
+        let rows = [
+            (0, ShimStatus::Ok),
+            (1, ShimStatus::PermissionDenied),
+            (2, ShimStatus::PlatformFailure),
+            (3, ShimStatus::PlatformFailure),
+            (4, ShimStatus::PlatformFailure),
+            (5, ShimStatus::PlatformFailure),
+            (6, ShimStatus::PlatformFailure),
+            (7, ShimStatus::InvalidArgument),
+        ];
+        for (scenario, expected) in rows {
+            assert_eq!(
+                testing_required_ax_error_status(scenario),
+                expected,
+                "scenario {scenario}"
+            );
+        }
+    }
+
+    #[test]
+    fn process_cancellation_callback_reads_only_atomic_state() {
         #[derive(Debug)]
         struct PanickingClock;
 
         impl Clock for PanickingClock {
             fn now(&self) -> MonotonicInstant {
-                panic!("the native commit fence must not dispatch a caller clock")
+                panic!("the native cancellation fence must not call the operation clock")
             }
         }
 
@@ -2989,12 +3556,65 @@ mod tests {
         let context = std::ptr::from_ref(&fence).cast_mut().cast::<c_void>();
 
         // SAFETY: `context` points to the live fence for this synchronous call.
-        let observed = unsafe { process_interruption_callback(context) };
+        let observed = without_panic_output(|| unsafe { process_cancellation_callback(context) });
         assert_eq!(observed, ShimStatus::Ok.as_raw());
+
         cancellation.cancel();
         // SAFETY: `context` still points to the live fence for this synchronous call.
-        let observed = unsafe { process_interruption_callback(context) };
+        let observed = unsafe { process_cancellation_callback(context) };
         assert_eq!(observed, ShimStatus::TimedOut.as_raw());
+    }
+
+    #[test]
+    fn process_operation_checkpoint_uses_the_caller_clock_and_contains_panics() {
+        #[derive(Debug, Default)]
+        struct ManualClock(AtomicU64);
+
+        impl Clock for ManualClock {
+            fn now(&self) -> MonotonicInstant {
+                MonotonicInstant::from_origin(Duration::from_nanos(self.0.load(Ordering::SeqCst)))
+            }
+        }
+
+        let clock = Arc::new(ManualClock::default());
+        clock.0.store(2, Ordering::SeqCst);
+        let operation = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_nanos(5)));
+        let checkpoint = ProcessOperationCheckpoint::new(&operation);
+        let context = std::ptr::from_ref(&checkpoint).cast_mut().cast::<c_void>();
+        let mut wait = u64::MAX;
+        // SAFETY: both pointers remain valid for this synchronous call.
+        let observed = unsafe { process_operation_checkpoint_callback(context, &raw mut wait) };
+        assert_eq!(observed, ShimStatus::Ok.as_raw());
+        assert_eq!(wait, 3);
+
+        clock.0.store(5, Ordering::SeqCst);
+        wait = u64::MAX;
+        // SAFETY: both pointers remain valid for this synchronous call.
+        let observed = unsafe { process_operation_checkpoint_callback(context, &raw mut wait) };
+        assert_eq!(observed, ShimStatus::TimedOut.as_raw());
+        assert_eq!(wait, 0);
+
+        #[derive(Debug)]
+        struct PanickingClock;
+        impl Clock for PanickingClock {
+            fn now(&self) -> MonotonicInstant {
+                panic!("contained caller clock panic")
+            }
+        }
+        let panicking = OperationContext::new()
+            .with_clock(Arc::new(PanickingClock))
+            .with_deadline(MonotonicInstant::ORIGIN);
+        let checkpoint = ProcessOperationCheckpoint::new(&panicking);
+        let context = std::ptr::from_ref(&checkpoint).cast_mut().cast::<c_void>();
+        wait = u64::MAX;
+        // SAFETY: both pointers remain valid for this synchronous call.
+        let observed = without_panic_output(|| unsafe {
+            process_operation_checkpoint_callback(context, &raw mut wait)
+        });
+        assert_eq!(observed, ShimStatus::PlatformFailure.as_raw());
+        assert_eq!(wait, 0);
     }
 
     #[test]
@@ -3007,7 +3627,7 @@ mod tests {
         assert_eq!(observed.focus, ProcessFocusObservation::NotApplicable);
         assert_eq!(
             observed.calls,
-            [1, 2, 2, 0, 1, 1, 1],
+            [1, 2, 2, 0, 1, 1, 1, 2, 1],
             "cheap direct authorization and retained lifetime checks run before construction, while exact retained-window authority and geometry run once at the final bounded post gate"
         );
     }
@@ -3022,7 +3642,7 @@ mod tests {
         assert_eq!(observed.focus, ProcessFocusObservation::NotApplicable);
         assert_eq!(
             observed.calls,
-            [0, 2, 2, 0, 1, 1, 1],
+            [0, 2, 2, 0, 1, 1, 1, 2, 1],
             "release skips current window admission and focus but rechecks authorization and process lifetime after construction before posting"
         );
     }
@@ -3030,18 +3650,37 @@ mod tests {
     #[test]
     fn process_post_fails_closed_before_native_effect() {
         let rows = [
-            (1, ShimStatus::PermissionDenied, 0, [0, 1, 0, 0, 0, 0, 0]),
-            (2, ShimStatus::TargetLost, 0, [1, 1, 1, 0, 1, 0, 1]),
-            (3, ShimStatus::Unsupported, 0, [1, 1, 1, 0, 1, 0, 1]),
-            (4, ShimStatus::InvalidArgument, 0, [0, 0, 0, 0, 0, 0, 0]),
-            (6, ShimStatus::Unsupported, 0, [0, 0, 0, 0, 0, 0, 0]),
-            (8, ShimStatus::GeometryChanged, 1, [1, 1, 1, 0, 1, 0, 1]),
-            (10, ShimStatus::TargetLost, 0, [0, 1, 1, 0, 0, 0, 0]),
-            (11, ShimStatus::TimedOut, 0, [0, 0, 0, 0, 0, 0, 0]),
-            (12, ShimStatus::PlatformFailure, 0, [0, 1, 1, 0, 1, 0, 0]),
-            (14, ShimStatus::TimedOut, 1, [1, 2, 2, 0, 1, 0, 1]),
+            (
+                1,
+                ShimStatus::PermissionDenied,
+                0,
+                [0, 1, 0, 0, 0, 0, 0, 1, 0],
+            ),
+            (2, ShimStatus::TargetLost, 0, [1, 1, 1, 0, 1, 0, 1, 2, 0]),
+            (3, ShimStatus::Unsupported, 0, [1, 1, 1, 0, 1, 0, 1, 2, 0]),
+            (
+                4,
+                ShimStatus::InvalidArgument,
+                0,
+                [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ),
+            (6, ShimStatus::Unsupported, 0, [0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (
+                8,
+                ShimStatus::GeometryChanged,
+                1,
+                [1, 1, 1, 0, 1, 0, 1, 2, 0],
+            ),
+            (10, ShimStatus::TargetLost, 0, [0, 1, 1, 0, 0, 0, 0, 1, 0]),
+            (11, ShimStatus::TimedOut, 0, [0, 0, 0, 0, 0, 0, 0, 1, 0]),
+            (
+                12,
+                ShimStatus::PlatformFailure,
+                0,
+                [0, 1, 1, 0, 1, 0, 0, 1, 0],
+            ),
+            (14, ShimStatus::TimedOut, 0, [0, 1, 1, 0, 1, 0, 1, 2, 0]),
         ];
-
         for (scenario, delivery, target_count, calls) in rows {
             let observed = testing_process_post(scenario).expect("native process-post seam runs");
             assert_eq!(observed.delivery, delivery, "scenario {scenario}");
@@ -3055,14 +3694,98 @@ mod tests {
     }
 
     #[test]
+    fn process_post_checks_caller_deadline_before_final_authority() {
+        let observed = testing_process_post(27).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::TimedOut);
+        assert_eq!(observed.invoked_native_units, 0);
+        assert!(!observed.native_effect_may_have_occurred);
+        assert_eq!(observed.target_match_count, 0);
+        assert_eq!(
+            observed.calls,
+            [0, 1, 1, 0, 1, 0, 1, 2, 0],
+            "the caller-clock checkpoint expires before any final mutable observation"
+        );
+    }
+
+    #[test]
+    fn process_post_bounds_late_native_authority_without_rechecking_the_caller_clock() {
+        let observed = testing_process_post(31).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::TimedOut);
+        assert_eq!(observed.invoked_native_units, 0);
+        assert!(!observed.native_effect_may_have_occurred);
+        assert_eq!(observed.target_match_count, 1);
+        assert_eq!(
+            observed.calls,
+            [1, 2, 1, 0, 1, 0, 1, 2, 0],
+            "adapter monotonic time rejects a native authority call that returns outside its supplied slice"
+        );
+    }
+
+    #[test]
+    fn process_post_rechecks_native_budget_after_final_process_lifetime() {
+        let observed = testing_process_post(32).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::TimedOut);
+        assert_eq!(observed.invoked_native_units, 0);
+        assert!(!observed.native_effect_may_have_occurred);
+        assert_eq!(observed.target_match_count, 1);
+        assert_eq!(
+            observed.calls,
+            [1, 2, 2, 0, 1, 0, 1, 2, 0],
+            "the final adapter-clock check catches a deadline crossed during process-lifetime validation"
+        );
+    }
+
+    #[test]
+    fn process_post_reads_atomic_cancellation_after_final_process_lifetime() {
+        let observed = testing_process_post(30).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::TimedOut);
+        assert_eq!(observed.invoked_native_units, 0);
+        assert!(!observed.native_effect_may_have_occurred);
+        assert_eq!(observed.target_match_count, 1);
+        assert_eq!(
+            observed.calls,
+            [1, 2, 2, 0, 1, 0, 1, 2, 1],
+            "cancellation raised during lifetime validation is caught immediately before posting"
+        );
+    }
+
+    #[test]
+    fn process_post_rechecks_lifetime_after_the_operation_checkpoint() {
+        let observed = testing_process_post(29).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::TargetLost);
+        assert_eq!(observed.invoked_native_units, 0);
+        assert!(!observed.native_effect_may_have_occurred);
+        assert_eq!(observed.target_match_count, 1);
+        assert_eq!(
+            observed.calls,
+            [1, 2, 2, 0, 1, 0, 1, 2, 0],
+            "lifetime invalidated at the checkpoint is refused by the last identity read"
+        );
+    }
+
+    #[test]
     fn process_post_refuses_authority_changes_after_event_preparation() {
         let rows = [
-            (16, ShimStatus::TargetLost, 0, [1, 1, 1, 0, 1, 0, 1]),
-            (17, ShimStatus::PermissionDenied, 1, [1, 2, 1, 0, 1, 0, 1]),
-            (18, ShimStatus::TargetLost, 1, [1, 2, 2, 0, 1, 0, 1]),
-            (19, ShimStatus::GeometryChanged, 1, [1, 1, 1, 0, 1, 0, 1]),
+            (16, ShimStatus::TargetLost, 0, [1, 1, 1, 0, 1, 0, 1, 2, 0]),
+            (
+                17,
+                ShimStatus::PermissionDenied,
+                1,
+                [1, 2, 1, 0, 1, 0, 1, 2, 0],
+            ),
+            (18, ShimStatus::TargetLost, 1, [1, 2, 2, 0, 1, 0, 1, 2, 0]),
+            (
+                19,
+                ShimStatus::GeometryChanged,
+                1,
+                [1, 1, 1, 0, 1, 0, 1, 2, 0],
+            ),
         ];
-
         for (scenario, delivery, target_count, calls) in rows {
             let observed = testing_process_post(scenario).expect("native process-post seam runs");
             assert_eq!(observed.delivery, delivery, "scenario {scenario}");
@@ -3085,7 +3808,7 @@ mod tests {
         assert!(observed.native_effect_may_have_occurred);
         assert_eq!(
             observed.calls,
-            [1, 2, 2, 0, 1, 1, 1],
+            [1, 2, 2, 0, 1, 1, 1, 2, 1],
             "only the source-matching final observation is authoritative; an earlier transient move adds no inventory read"
         );
     }
@@ -3101,7 +3824,7 @@ mod tests {
         );
         assert_eq!(observed.invoked_native_units, 1);
         assert_eq!(observed.target_match_count, 1);
-        assert_eq!(observed.calls, [1, 2, 2, 0, 1, 1, 1]);
+        assert_eq!(observed.calls, [1, 2, 2, 0, 1, 1, 1, 2, 1]);
     }
 
     #[test]
@@ -3146,6 +3869,8 @@ mod tests {
             "scroll coordinate",
             "focus requirement",
             "release focus requirement",
+            "cancellation context",
+            "cancellation callback",
         ];
         for (scenario, description) in scenarios.into_iter().enumerate() {
             let scenario = u32::try_from(scenario).expect("validation scenario index fits u32");
@@ -3173,7 +3898,7 @@ mod tests {
         assert_eq!(observed.delivery, ShimStatus::NativeException);
         assert_eq!(observed.invoked_native_units, 0);
         assert!(!observed.native_effect_may_have_occurred);
-        assert_eq!(observed.calls, [0, 1, 1, 0, 1, 0, 1]);
+        assert_eq!(observed.calls, [0, 1, 1, 0, 1, 0, 1, 1, 0]);
     }
 
     #[test]
@@ -3183,7 +3908,21 @@ mod tests {
         assert_eq!(observed.delivery, ShimStatus::NativeException);
         assert_eq!(observed.invoked_native_units, 0);
         assert!(observed.native_effect_may_have_occurred);
-        assert_eq!(observed.calls, [1, 2, 2, 0, 1, 1, 1]);
+        assert_eq!(observed.calls, [1, 2, 2, 0, 1, 1, 1, 2, 1]);
+    }
+
+    #[test]
+    fn process_release_exception_after_the_final_post_is_contained() {
+        let observed = testing_process_post(33).expect("native process-post seam runs");
+
+        assert_eq!(observed.delivery, ShimStatus::NativeException);
+        assert_eq!(observed.invoked_native_units, 1);
+        assert!(observed.native_effect_may_have_occurred);
+        assert_eq!(
+            observed.calls,
+            [1, 2, 2, 0, 1, 1, 1, 2, 1],
+            "the final post returned before the release exception, and the outer native boundary contained it"
+        );
     }
 
     #[test]
@@ -3191,23 +3930,23 @@ mod tests {
         let revoked = testing_process_post(7).expect("native process-post seam runs");
         assert_eq!(revoked.delivery, ShimStatus::PermissionDenied);
         assert_eq!(revoked.invoked_native_units, 1);
-        assert_eq!(revoked.calls, [1, 3, 2, 0, 1, 1, 1]);
+        assert_eq!(revoked.calls, [1, 3, 2, 0, 1, 1, 1, 3, 1]);
 
         let lost = testing_process_post(9).expect("native process-post seam runs");
         assert_eq!(lost.delivery, ShimStatus::TargetLost);
         assert_eq!(lost.invoked_native_units, 1);
-        assert_eq!(lost.calls, [2, 3, 3, 0, 2, 1, 2]);
+        assert_eq!(lost.calls, [2, 3, 3, 0, 2, 1, 2, 4, 1]);
 
         let interrupted = testing_process_post(13).expect("native process-post seam runs");
         assert_eq!(interrupted.delivery, ShimStatus::TimedOut);
         assert_eq!(interrupted.invoked_native_units, 1);
-        assert_eq!(interrupted.calls, [1, 2, 2, 0, 1, 1, 1]);
+        assert_eq!(interrupted.calls, [1, 2, 2, 0, 1, 1, 1, 3, 1]);
     }
 
-    /// A caller-selected focus predicate is authority only if the last gate
-    /// before the post observes it. The route's bounded authority queries take
-    /// long enough for a person to change the foreground application, so an
-    /// observation made before them cannot stand in for one made after them.
+    /// A caller-selected focus predicate is repeated after event preparation,
+    /// and the sole final retained-window authority read follows that potentially
+    /// blocking observation. Focus cannot therefore authorize an identical-bounds
+    /// replacement that appeared while Accessibility was responding.
     #[test]
     fn process_post_requires_caller_selected_focus_at_the_final_gate() {
         let focused = testing_process_post(24).expect("native process-post seam runs");
@@ -3216,8 +3955,19 @@ mod tests {
         assert_eq!(focused.focus, ProcessFocusObservation::Passed);
         assert_eq!(
             focused.calls,
-            [1, 2, 2, 2, 1, 1, 1],
-            "a focused target keeps its cheap early predicate and repeats it after the one final retained-window authority check"
+            [1, 2, 2, 2, 1, 1, 1, 2, 1],
+            "a focused target repeats its cheap predicate before the sole final retained-window authority check"
+        );
+
+        let replaced_after_focus = testing_process_post(28).expect("native process-post seam runs");
+        assert_eq!(replaced_after_focus.delivery, ShimStatus::TargetLost);
+        assert_eq!(replaced_after_focus.invoked_native_units, 0);
+        assert!(!replaced_after_focus.native_effect_may_have_occurred);
+        assert_eq!(replaced_after_focus.focus, ProcessFocusObservation::Passed);
+        assert_eq!(
+            replaced_after_focus.calls,
+            [1, 1, 1, 2, 1, 0, 1, 2, 0],
+            "the final retained-window read rejects a lookalike replacement that appeared during focus observation"
         );
 
         let unfocused = testing_process_post(21).expect("native process-post seam runs");
@@ -3227,7 +3977,7 @@ mod tests {
         assert_eq!(unfocused.focus, ProcessFocusObservation::Refused);
         assert_eq!(
             unfocused.calls,
-            [0, 1, 1, 1, 0, 0, 0],
+            [0, 1, 1, 1, 0, 0, 0, 1, 0],
             "an unfocused target refuses before any event is constructed without paying for retained-window inventory"
         );
 
@@ -3238,8 +3988,8 @@ mod tests {
         assert_eq!(lost_late.focus, ProcessFocusObservation::Refused);
         assert_eq!(
             lost_late.calls,
-            [1, 2, 2, 2, 1, 0, 1],
-            "focus lost only after event preparation still refuses and releases the prepared event"
+            [0, 1, 1, 2, 1, 0, 1, 2, 0],
+            "focus lost only after event preparation refuses and releases without paying for a stale retained-window read"
         );
 
         let unobservable = testing_process_post(23).expect("native process-post seam runs");
@@ -3249,7 +3999,7 @@ mod tests {
         assert_eq!(unobservable.focus, ProcessFocusObservation::Unavailable);
         assert_eq!(
             unobservable.calls,
-            [0, 1, 1, 1, 0, 0, 0],
+            [0, 1, 1, 1, 0, 0, 0, 1, 0],
             "an unobservable focus predicate fails closed rather than posting or paying for retained-window inventory"
         );
     }
@@ -3418,6 +4168,30 @@ mod tests {
     }
 
     #[test]
+    fn frame_timestamp_conversion_rejects_every_out_of_range_float() {
+        assert_eq!(testing_seconds_to_nanos(1.5), 1_500_000_000);
+        assert_eq!(testing_seconds_to_nanos(0.0), 0);
+        assert_eq!(testing_seconds_to_nanos(-1.0), 0);
+        assert_eq!(testing_seconds_to_nanos(f64::NAN), 0);
+        assert_eq!(testing_seconds_to_nanos(f64::INFINITY), 0);
+        assert_eq!(
+            testing_seconds_to_nanos(2_f64.powi(64) / 1e9),
+            0,
+            "the first value whose integer cast could exceed u64 is rejected"
+        );
+    }
+
+    #[test]
+    fn a_stream_stop_error_exception_is_contained_and_drains_admission() {
+        let (terminal, calls, fence) =
+            testing_stop_callback_exception().expect("the native stream-stop exception seam runs");
+
+        assert_eq!(terminal, ShimStatus::NativeException);
+        assert_eq!(calls, 1);
+        assert_eq!(fence, ShimStatus::Ok);
+    }
+
+    #[test]
     fn delayed_native_start_and_stop_gates_resume_after_the_first_wait_expires() {
         let statuses = testing_gate_retries(
             Duration::from_millis(30),
@@ -3447,6 +4221,49 @@ mod tests {
         assert!(
             !started,
             "the completion clears started even when it raises"
+        );
+    }
+
+    #[test]
+    fn every_session_synchronization_initialization_failure_unwinds_only_owned_objects() {
+        const STAGES: u32 = 10;
+        for fail_at in 1..=STAGES {
+            let observed =
+                testing_session_sync_init(fail_at).expect("the native initialization seam runs");
+            assert_eq!(
+                observed,
+                SessionSyncInit {
+                    attempts: fail_at,
+                    initialized: fail_at - 1,
+                    destroyed: fail_at - 1,
+                    success: false,
+                },
+                "failure at pthread initialization stage {fail_at}"
+            );
+        }
+
+        assert_eq!(
+            testing_session_sync_init(0).expect("all synchronization objects initialize"),
+            SessionSyncInit {
+                attempts: STAGES,
+                initialized: STAGES,
+                destroyed: STAGES,
+                success: true,
+            }
+        );
+
+        assert_eq!(
+            testing_session_sync_init(STAGES + 1),
+            Err(ShimStatus::InvalidArgument)
+        );
+    }
+
+    #[test]
+    fn asynchronous_resource_allocation_failures_are_typed_before_submission() {
+        assert_eq!(
+            testing_resource_allocation_failures()
+                .expect("the native resource-allocation seam runs"),
+            [ShimStatus::PlatformFailure; 2]
         );
     }
 
@@ -3534,6 +4351,22 @@ mod tests {
             u64::try_from(MAX_NATIVE_WAIT.as_nanos()).expect("ceiling fits u64")
         );
         assert!(DEFAULT_NATIVE_WAIT <= MAX_NATIVE_WAIT);
+    }
+
+    #[test]
+    fn a_panicking_payload_destructor_is_contained_before_native_return() {
+        struct PanickingPayload;
+
+        impl Drop for PanickingPayload {
+            fn drop(&mut self) {
+                panic!("panic payload destructor");
+            }
+        }
+
+        let outcome: Result<(), ()> =
+            without_panic_output(|| catch_panic(|| panic::panic_any(PanickingPayload)));
+
+        assert_eq!(outcome, Err(()));
     }
 
     #[test]

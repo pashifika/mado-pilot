@@ -1050,7 +1050,8 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                      uint64_t event_payload_tag,
                                      uint64_t payload_fingerprint)) {
     const uint32_t behavior_mask = MP_FIXTURE_BEHAVIOR_ANIMATE_ON_KEY_DOWN |
-                                   MP_FIXTURE_BEHAVIOR_RESIZE_ON_KEY_DOWN;
+                                   MP_FIXTURE_BEHAVIOR_RESIZE_ON_KEY_DOWN |
+                                   MP_FIXTURE_BEHAVIOR_TAGGED_INPUT_NO_VISUAL;
     if (title == NULL || run_nonce == 0 || ready == NULL || replaced == NULL ||
         controlled == NULL || sink == NULL ||
         atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire) ||
@@ -1182,6 +1183,9 @@ uint32_t mp_fixture_run(const char *title, uint64_t run_nonce, uint32_t fill,
                                                uint32_t correlation =
                                                    (uint32_t)(event_payload_tag >> 32);
                                                bool tagged_visual_event =
+                                                   (behavior &
+                                                    MP_FIXTURE_BEHAVIOR_TAGGED_INPUT_NO_VISUAL) ==
+                                                       0u &&
                                                    correlation != 0u &&
                                                    correlation != visualized_correlation;
                                                bool animates =

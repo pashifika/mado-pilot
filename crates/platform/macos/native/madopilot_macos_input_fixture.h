@@ -66,9 +66,10 @@ extern "C" {
 #define MP_FIXTURE_EVENT_KEY_UP 6u
 #define MP_FIXTURE_EVENT_FLAGS_CHANGED 7u
 
-/* Opt-in deterministic stimuli used only by the native benchmark fixture. */
+/* Opt-in behavior used only by the native qualification/benchmark fixture. */
 #define MP_FIXTURE_BEHAVIOR_ANIMATE_ON_KEY_DOWN 1u
 #define MP_FIXTURE_BEHAVIOR_RESIZE_ON_KEY_DOWN 2u
+#define MP_FIXTURE_BEHAVIOR_TAGGED_INPUT_NO_VISUAL 4u
 
 /* Mutually exclusive rendering paths selected before the window is created. */
 #define MP_FIXTURE_RENDERER_APPKIT_BACKGROUND 0u
@@ -82,9 +83,10 @@ extern "C" {
  * `renderer` selects the default AppKit background-colour path or the opt-in
  * OpenGL content-view path. `activate` is one when the fixture may take
  * foreground ownership and zero when qualification needs a visible inactive
- * target. `behavior` retains only benchmark compatibility; qualification
- * drives visual transitions through `mp_fixture_control`. `ready` is invoked
- * once after the first window is visible and reports the renderer that actually
+ * target. `behavior` selects legacy untagged input animation and whether tagged
+ * input is recorded without directly changing the visual oracle; that mode
+ * requires a separate `mp_fixture_control` transition. `ready` is invoked once
+ * after the first window is visible and reports the renderer that actually
  * initialized. `controlled` reports each accepted control nonce with the native
  * status and the exact before/after window numbers. `sink` reports bounded input
  * metadata plus the private reset-row token supplied by the harness.
