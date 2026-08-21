@@ -10,8 +10,7 @@ Windows-target lint passed on predecessor `df1c45d`. The complete
 `crates/mado-pilot/benches/native-phase2.rs` — a benchmark-harness file
 outside product, fixture, and native-test source — so those revision-bound
 native results apply to `dec43d7`. Hosted CI passed on source/test commit
-`7ce1602` with evidence head `8c19a17`; the later CI-summary successor changes
-documentation only.
+`7ce1602` with pushed evidence head `705c713`.
 
 Subsequent test-only commit `5f1fdb6177d7ec02d2f8eb841f0786432299b0c2`
 tightens the minimized/off-screen qualification to require an eventual typed
@@ -29,10 +28,10 @@ requiring primary success, reader EOF/join, and complete child-tree reaping.
 No retained profile value or oracle is relabeled.
 
 Release-level owning-process support remains 0 `qualified`, 0 `rejected`, and
-14 `unexecuted` pairs. The required disconnected `single` and exact
-two-display non-mirrored `same-scale` matrices are physically unavailable. No
-`mixed-scale` row or controlled latency result substitutes for either
-topology.
+14 `unexecuted` pairs. The exact two-display non-mirrored `same-scale`
+supplement now passes; the required disconnected `single` matrix remains
+physically unavailable. No current topology or controlled latency result
+substitutes for it.
 
 | Field | Current exact-source evidence |
 |---|---|
@@ -42,16 +41,17 @@ topology.
 | Benchmark executable SHA-256 | `fa4ac54a1fa9df3e25833c7923cf7b24dc5ee82a70ddff9a3aa3033a73f5ce08` |
 | Input-profile C / C++ executable SHA-256 | `12d4c23d7788973efd01b5257e8352c45b73221088fd6257a7b6c08b94428819` / `4651243160c3845427011f83480ac81197a1a61cb92fa6631cf437f0d6b8da42` |
 | Input-profile MadoPilot dynamic library SHA-256 | `e7f42b208522ff772fa67449f52ba7ef33350e535788a29f4876c171a5bf6898` |
-| Measured topology | three online non-mirrored displays; signed-origin 1× display, 2× main display, and 2× built-in display |
+| Measured `mixed-scale` topology | three online non-mirrored displays; signed-origin 1× display, 2× main display, and 2× built-in display |
+| Supplemental `same-scale` topology | exactly two online non-mirrored horizontally adjacent 2× displays: main 2560×1440 logical / 5120×2880 backing at `(0,0)` and built-in 1512×982 logical / 3024×1964 backing at `(2560,170)` |
 | Fixture protocol / internal shim surface / deployment target | version 11 / version 19 / macOS 26.5.2 |
-| Native rows (`df1c45d`, applicable) | 34 permission-independent rows and all 14 ignored interactive rows passed; three display conversion/geometry/seam scenarios passed; the `5f1fdb6`-tightened minimized/off-screen lifecycle row passed |
+| Native rows | 34 permission-independent rows and all 14 ignored interactive rows passed on the applicable signed-release matrix; three `mixed-scale` display conversion/geometry/seam scenarios passed; all 14 `same-scale` interactive rows plus same-frame conversion and adjacent-seam scenarios passed; the tightened minimized/off-screen lifecycle row passed |
 | Deterministic one-read binding | eight focused controller, geometry-source, and native-seam proofs passed; terminal `RequireUnchanged`/`UseFrameSnapshot` source/current counts are `[1, 0]`; final ordinary native authority count is one |
 | AppKit controlled profile | 50 retained terminal samples; p95 `56.466375 ms` ≤ `106.34 ms`; zero correctness failures; zero allocation growth; profile SHA-256 `288106be21c9c9987a472803260e11f634c2311e521ec9eee6250926e2425fd0` |
 | Controlled game-like profile | 50 retained terminal samples; p95 `56.699333 ms` ≤ `112.18 ms`; zero correctness failures; zero allocation growth; profile SHA-256 `1d4b030ad08c5a5febb9167ef5a307b7eed78794e0001ccf7436e2f3365e5b70` |
 | Native input / public-language profile | six workloads, 300 retained samples; zero correctness failures; maximum allocation growth 64 bytes; profile SHA-256 `90b33b1f40286fe64d51bcde69340303faafd2145d06f9c3ed8fed5d1877598a` |
 | Memory / environment gates | zero process-profile allocation growth; foreground and physical cursor unchanged; one matching fixture event per terminal sequence |
 | ASan / ABI / packaging (`dec43d7`) | 254 ASan library tests passed; C ABI 1.2 table 592 bytes; frozen ABI 1.0 prefix 424 bytes and 222 layout lines held; C/C++/CMake, linkage, signing, and panic containment passed |
-| Hosted CI | repository policy, branch flow, Windows x86_64, and macOS Apple Silicon passed on source/test commit `7ce1602` with evidence head `8c19a17`; the later CI-summary successor changes documentation only |
+| Hosted CI | repository policy, branch flow, Windows x86_64, and macOS Apple Silicon passed on source/test commit `7ce1602` with pushed evidence head `705c713` |
 | Detailed current procedure and outcomes | [`verification-procedure.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/verification-procedure.md) and [`observed-report.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md) |
 
 The full input benchmark provisions each C/C++ sample's fresh approved

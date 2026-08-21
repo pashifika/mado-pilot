@@ -508,9 +508,9 @@ routes. The macOS implementation reports system routes plus process-directed
 pairs with owning-process scope, unknown compatibility, and invocation-only
 evidence for retained top-level windows. Final candidate `dec43d7` passed the
 controlled profiles and inherits the `df1c45d` exact-source three-display
-`mixed-scale` rows through a benchmark-harness-only diff; all
-fourteen release decisions remain unexecuted because disconnected `single` and
-exact two-display `same-scale` matrices are unavailable.
+`mixed-scale` rows through a benchmark-harness-only diff. The exact two-display
+non-mirrored `same-scale` supplement also passes; all fourteen release decisions
+remain unexecuted because the disconnected `single` matrix is unavailable.
 Additional windows in
 the same process do not revoke that scope, and no exact-window route exists on
 macOS. The negotiated capability report, not a platform guess in the caller,

@@ -11,14 +11,14 @@ controlled pairs**. Final candidate
 `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` passed the controlled AppKit,
 game-like, and native input/public-language profiles. The three-display
 `mixed-scale` native rows, deterministic one-read proofs, sanitizer, and
-ABI/C++/CMake checks passed on predecessor `df1c45d` and apply to `dec43d7`
-because their complete diff is the benchmark harness alone. Hosted CI passed on
-source/test commit `7ce1602` with evidence head `8c19a17`; the later CI-summary
-successor changes documentation only.
-The disconnected `single` and exact two-display non-mirrored `same-scale` rows
-remain unavailable, so no release pair is promoted. Nothing
-here qualifies arbitrary applications, arbitrary games, exact-window delivery,
-or application consumption.
+ABI/C++/CMake checks apply through the reviewed source chain. Hosted CI passed
+on source/test commit `7ce1602` with pushed evidence head `705c713`.
+
+The exact two-display non-mirrored `same-scale` supplement passed all 14
+interactive rows and both applicable display scenarios. The disconnected
+`single` row remains unavailable, so no release pair is promoted. Nothing here
+qualifies arbitrary applications, arbitrary games, exact-window delivery, or
+application consumption.
 
 ## Capability boundary
 
@@ -691,8 +691,9 @@ interactive rows, and three topology scenarios. Final measured candidate
 bounds and backing scale, uses private shim surface version 19 and fixture
 protocol version 11, and differs from `df1c45d` only in
 `crates/mado-pilot/benches/native-phase2.rs`, so the `df1c45d` native matrix
-applies to it. The `single` and `same-scale` rows did not run, so every
-release pair remains `unexecuted`.
+applies to it. The exact two-display non-mirrored `same-scale` supplement also
+passes; the disconnected `single` row did not run, so every release pair remains
+`unexecuted`.
 
 The privacy-reviewed
 [repository evidence](evidence/phase-2-native/macos-owning-process-qualification.md)
@@ -849,10 +850,10 @@ path. `RequireFocused`, `ReprojectCurrent`, ordered fallback, cleanup, and
 multi-unit sequences retain distinct observation shapes.
 
 The benchmark bodies formerly attributed to `a471c2d` are source/oracle-
-misbound and supply no result. Current performance and `mixed-scale` evidence do
-not substitute for unavailable `single` or exact two-display `same-scale`
-topology rows, so all fourteen release decisions remain unexecuted. These are
-controlled regression ceilings, not user-facing latency promises or evidence
+misbound and supply no result. Current performance plus passing `mixed-scale`
+and exact two-display `same-scale` evidence do not substitute for the unavailable
+`single` topology, so all fourteen release decisions remain unexecuted. These
+are controlled regression ceilings, not user-facing latency promises or evidence
 of general game or anti-cheat compatibility.
 
 ## Historical Phase 2 evidence

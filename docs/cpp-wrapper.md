@@ -573,12 +573,12 @@ permits no fallback. Run real input only against a target you own and have
 selected exactly, as described in the platform verification documents.
 This macOS mode exercises the implemented process-directed pairs. Final
 candidate `dec43d7` passed the controlled-fixture performance profiles and
-inherits the `df1c45d` exact-source three-display `mixed-scale` rows through
-a benchmark-harness-only diff. All fourteen release decisions remain
-unexecuted because disconnected `single` and exact two-display `same-scale`
-matrices are unavailable. The mode makes no claim about arbitrary applications,
-games, renderers, input stacks, exact-window delivery, or application
-consumption.
+inherits the `df1c45d` exact-source three-display `mixed-scale` rows through a
+benchmark-harness-only diff. The exact two-display non-mirrored `same-scale`
+supplement also passes; all fourteen release decisions remain unexecuted because
+the disconnected `single` matrix is unavailable. The mode makes no claim about
+arbitrary applications, games, renderers, input stacks, exact-window delivery,
+or application consumption.
 
 The check needs a C++ compiler and **CMake 3.22 or later** in addition to the C
 compiler. Both are the release target's own on both hosts; set `CXX` or `CMAKE`

@@ -6,15 +6,13 @@
   `109f77df9ef9f40b515245ab60a6036822ee7d78`) passed the controlled AppKit,
   game-like, and native input/public-language profiles with zero correctness
   failures. The affected three-display `mixed-scale` native rows,
-  deterministic one-read proofs, sanitizer, and ABI/C++/CMake checks passed on
-  predecessor `df1c45d`; the complete `df1c45d..dec43d7` diff is exactly
-  `crates/mado-pilot/benches/native-phase2.rs`, a benchmark-harness file, so
-  those revision-bound results apply to `dec43d7`. Hosted CI passed on
-  source/test commit `7ce1602` with evidence head `8c19a17`; the later
-  CI-summary successor changes documentation only.
-  Release-level pair publication remains 0 qualified, 0 rejected, and 14
-  unexecuted because disconnected `single` and exact two-display non-mirrored
-  `same-scale` matrices are unavailable.
+  deterministic one-read proofs, sanitizer, and ABI/C++/CMake checks apply
+  through the reviewed source chain. Hosted CI passed on source/test commit
+  `7ce1602` with pushed evidence head `705c713`.
+  The exact two-display non-mirrored `same-scale` supplement passed all 14
+  interactive rows and both applicable display scenarios. Release-level pair
+  publication remains 0 qualified, 0 rejected, and 14 unexecuted because the
+  disconnected `single` matrix is unavailable.
   Historical candidate `9e3e77d` passed its own earlier exact-source rows and
   profiles; the later review-driven source, fixture, and harness corrections
   invalidated that evidence for the final candidate. The complete matrix at
@@ -287,8 +285,8 @@ the existing no-fallback contract after possible effect.
   binds results to their exact source and artifacts. It records the historical
   complete pre-optimization matrix, rejected `a471c2d` benchmark bodies,
   historical `9e3e77d` evidence, and final `dec43d7` native/performance
-  evidence separately. The `mixed-scale` rows and controlled profiles pass;
-  all `single` and exact two-display `same-scale` pair rows remain unexecuted.
+  evidence separately. The `mixed-scale` and exact two-display `same-scale`
+  rows pass; all disconnected `single` pair rows remain unexecuted.
 - Deterministic controller, native-double, shim layout/version, containment,
   protocol, privacy, linkage, and C/C++ contract suites must cover every
   commit-seam ordering — cancellation, revocation, geometry change, target
