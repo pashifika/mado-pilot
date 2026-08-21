@@ -92,7 +92,11 @@ mod native {
 
     #[cfg(windows)]
     use mado_pilot_testkit::bench_harness::{
-        PrefixedLineMatch, bounded_child_output, classify_prefixed_line,
+        PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES,
+        PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS,
+        PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES,
+        PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS, PrefixedLineMatch, bounded_child_output,
+        classify_prefixed_line, enforce_latency_budgets,
     };
 
     #[cfg(target_os = "macos")]
@@ -4598,7 +4602,28 @@ mod native {
     }
 
     #[cfg(windows)]
-    fn enforce_premeasurement_budgets(_set: WorkloadSet, _workloads: &[Workload]) {}
+    fn enforce_premeasurement_budgets(set: WorkloadSet, workloads: &[Workload]) {
+        let (latency, heap_limit) = match set {
+            WorkloadSet::ProductionCapture1280 => (
+                PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS.as_slice(),
+                PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES,
+            ),
+            WorkloadSet::ProductionCaptureDual4k => (
+                PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS.as_slice(),
+                PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES,
+            ),
+            WorkloadSet::Capture | WorkloadSet::Transitions | WorkloadSet::Input => return,
+        };
+        enforce_latency_budgets(workloads, latency);
+        for workload in workloads {
+            assert!(
+                workload.peak_allocated_bytes() <= heap_limit,
+                "{} exceeded the accepted Windows production live Rust heap ceiling: {} bytes",
+                workload.name(),
+                workload.peak_allocated_bytes(),
+            );
+        }
+    }
 
     #[cfg(target_os = "macos")]
     const fn benchmark_phase(set: WorkloadSet) -> &'static str {

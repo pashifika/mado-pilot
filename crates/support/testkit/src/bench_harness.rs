@@ -1671,6 +1671,56 @@ pub const PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 3] = [
     ),
 ];
 
+/// Phase 2 Windows 1280x720 production-capture latency ceilings accepted by ADR 0031.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS: [LatencyBudget; 4] = [
+    LatencyBudget::new(
+        "steady_frame_acquisition",
+        Duration::from_millis(75),
+        Duration::from_millis(150),
+        Duration::from_millis(250),
+    ),
+    LatencyBudget::new(
+        "callback_copy",
+        Duration::from_millis(1),
+        Duration::from_millis(2),
+        Duration::from_millis(5),
+    ),
+    LatencyBudget::new(
+        "latest_acquisition",
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+    ),
+    LatencyBudget::new(
+        "cpu_map_bgra8",
+        Duration::from_millis(10),
+        Duration::from_millis(20),
+        Duration::from_millis(50),
+    ),
+];
+
+/// Phase 2 Windows dual-4K production-capture latency ceilings accepted by ADR 0031.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS: [LatencyBudget; 2] = [
+    LatencyBudget::new(
+        "dual_display_frame_arrival",
+        Duration::from_millis(50),
+        Duration::from_millis(100),
+        Duration::from_millis(250),
+    ),
+    LatencyBudget::new(
+        "dual_display_callback_copy",
+        Duration::from_millis(1),
+        Duration::from_millis(2),
+        Duration::from_millis(5),
+    ),
+];
+
+/// Maximum live Rust heap for the Windows 1280x720 production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES: usize = 32 * 1_024 * 1_024;
+
+/// Maximum live Rust heap for the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES: usize = 256 * 1_024 * 1_024;
+
 const fn phase2_2_process_latency_budgets(event_p95: Duration) -> [LatencyBudget; 5] {
     [
         LatencyBudget::new(
