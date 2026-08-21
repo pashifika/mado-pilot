@@ -232,6 +232,10 @@ mod native {
         Transitions,
         Input,
         #[cfg(target_os = "macos")]
+        ProductionCapture,
+        #[cfg(target_os = "macos")]
+        ProductionTransitions,
+        #[cfg(target_os = "macos")]
         ProcessDirected,
         #[cfg(target_os = "macos")]
         ProcessDirectedGameLike,
@@ -245,6 +249,10 @@ mod native {
                 "capture" => Some(Self::Capture),
                 "transitions" => Some(Self::Transitions),
                 "input" => Some(Self::Input),
+                #[cfg(target_os = "macos")]
+                "production-capture" => Some(Self::ProductionCapture),
+                #[cfg(target_os = "macos")]
+                "production-transitions" => Some(Self::ProductionTransitions),
                 #[cfg(target_os = "macos")]
                 "process-directed" => Some(Self::ProcessDirected),
                 #[cfg(target_os = "macos")]
@@ -260,7 +268,11 @@ mod native {
                 Self::Capture => Plan::new(20, 200),
                 Self::Transitions | Self::Input => Plan::new(5, 50),
                 #[cfg(target_os = "macos")]
-                Self::ProcessDirected | Self::ProcessDirectedGameLike => Plan::new(5, 50),
+                Self::ProductionCapture => Plan::new(20, 200),
+                #[cfg(target_os = "macos")]
+                Self::ProductionTransitions
+                | Self::ProcessDirected
+                | Self::ProcessDirectedGameLike => Plan::new(5, 50),
                 #[cfg(target_os = "macos")]
                 Self::ProcessDiagnostics => Plan::new(20, 200),
             }
@@ -273,6 +285,14 @@ mod native {
 
                 Self::Input => input_workload_description(),
 
+                #[cfg(target_os = "macos")]
+                Self::ProductionCapture => {
+                    "macOS production capture publication age, acquisition, mapping, and retained progress"
+                }
+                #[cfg(target_os = "macos")]
+                Self::ProductionTransitions => {
+                    "macOS production capture startup, controlled resize, and close transitions"
+                }
                 #[cfg(target_os = "macos")]
                 Self::ProcessDirected => {
                     "macOS AppKit process-directed discovery, posting, cleanup, and close"
@@ -295,6 +315,14 @@ mod native {
 
                 Self::Input => input_queue_policy(),
 
+                #[cfg(target_os = "macos")]
+                Self::ProductionCapture => {
+                    "session latest-wins queue depth 1; adapter finite retained-storage limit; no input stimulus"
+                }
+                #[cfg(target_os = "macos")]
+                Self::ProductionTransitions => {
+                    "session latest-wins queue depth 1; one bounded private resize stimulus; adapter finite retained-storage limit"
+                }
                 #[cfg(target_os = "macos")]
                 Self::ProcessDirected | Self::ProcessDirectedGameLike => {
                     "one fixture command outstanding; one process-directed sequence admitted; no fallback"
@@ -359,6 +387,17 @@ mod native {
     #[cfg(target_os = "macos")]
     const fn transition_queue_policy() -> &'static str {
         "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
+    }
+
+    fn profile_correctness_oracle(set: WorkloadSet) -> &'static str {
+        #[cfg(target_os = "macos")]
+        if matches!(
+            set,
+            WorkloadSet::ProductionCapture | WorkloadSet::ProductionTransitions
+        ) {
+            return "every retained sample checks production frame identity, frame-authoritative geometry, declared fixture content, finite retained progress, exact mapping, or bounded lifecycle outcome; the resize command is stimulus only and never substitutes for a captured result";
+        }
+        "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
     }
 
     #[derive(Clone)]
@@ -1557,8 +1596,9 @@ mod native {
                 "{error}\n{}",
                 concat!(
                     "usage: cargo bench --package mado-pilot --bench native-phase2 -- ",
-                    "--workload-set <capture|transitions|input|process-directed|",
-                    "process-directed-game-like|process-diagnostics> ",
+                    "--workload-set <capture|transitions|input|production-capture|",
+                    "production-transitions|process-directed|process-directed-game-like|",
+                    "process-diagnostics> ",
                     "--fixture-executable <path> [--ordinary-fixture-executable <path> ",
                     "--c-executable <path> --cpp-executable <path> --library <path>] ",
                     "--hardware <description> --os-version <description> ",
@@ -1638,7 +1678,7 @@ mod native {
                     cfg!(debug_assertions),
                     fixture_build_profile(),
                 ),
-                correctness_oracle: "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress",
+                correctness_oracle: profile_correctness_oracle(set),
                 queue_policy: set.queue_policy(),
                 notes: Some(profile_notes(set, &args.notes)),
             },
@@ -1653,6 +1693,10 @@ mod native {
         match set {
             WorkloadSet::Capture => capture_workloads(plan),
             WorkloadSet::Transitions => transition_workloads(plan),
+            #[cfg(target_os = "macos")]
+            WorkloadSet::ProductionCapture => production_capture_workloads(plan),
+            #[cfg(target_os = "macos")]
+            WorkloadSet::ProductionTransitions => production_transition_workloads(plan),
 
             WorkloadSet::Input => {
                 let fixture = Rc::new(FixtureProcess::spawn(input_fixture_behavior()));
@@ -1835,6 +1879,64 @@ mod native {
         ]
     }
 
+    #[cfg(target_os = "macos")]
+    fn production_capture_workloads(plan: Plan) -> Vec<Workload> {
+        let pressure_fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Static));
+        vec![
+            measure(
+                "publication_age",
+                "one naturally published production frame reports bounded age in the engine clock domain, advances the same stream, and carries exact fixture content and frame-authoritative geometry",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                production_publication_age,
+            ),
+            measure(
+                "steady_frame_acquisition",
+                "one strictly newer production frame arrives without input or private stimulus, preserves exact fixture content, and reports observable sequence gaps",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                production_steady_acquisition,
+            ),
+            measure(
+                "latest_acquisition",
+                "after natural production progress, latest returns a same-stream frame no older than the proven publication and reports observable sequence gaps",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                production_latest_acquisition,
+            ),
+            measure(
+                "cpu_map_bgra8",
+                "one naturally published production frame maps once to exact-size BGRA8 bytes carrying declared fixture content",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                production_cpu_map,
+            ),
+            measure(
+                "retained_pressure_resume",
+                "natural production fills the reported retained limit; one blocked publication remains observable and releasing one slot resumes with a sequence gap",
+                plan,
+                || Rc::clone(&pressure_fixture),
+                production_retained_pressure_resume,
+            ),
+        ]
+    }
+
     #[cfg(windows)]
     fn capture_workloads(plan: Plan) -> Vec<Workload> {
         vec![
@@ -1902,6 +2004,34 @@ mod native {
             measure(
                 "close_drain",
                 "explicit capture-session close reaches the closed state and remains idempotent",
+                plan,
+                || Flow::from_fixture(Rc::clone(&fixture)),
+                close_drain,
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    fn production_transition_workloads(plan: Plan) -> Vec<Workload> {
+        let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Static));
+        vec![
+            measure(
+                "open_first_frame",
+                "each fresh production capture session returns one correctly identified and mapped first frame, then closes",
+                plan,
+                || Flow::from_fixture(Rc::clone(&fixture)),
+                open_first_frame,
+            ),
+            measure(
+                "resize_recreation",
+                "one bounded private resize stimulus drives the production capture session; only the independently observed new epoch, geometry, extent, and frame-authoritative transform satisfy the oracle",
+                plan,
+                || ActiveFlow::from_capture_fixture(Rc::clone(&fixture)),
+                resize_recreation,
+            ),
+            measure(
+                "close_drain",
+                "explicit production capture close drains within its bound, reaches the closed state, and remains idempotent",
                 plan,
                 || Flow::from_fixture(Rc::clone(&fixture)),
                 close_drain,
@@ -3000,6 +3130,133 @@ mod native {
         Sample::new(elapsed, correct, mapping.bytes().len() as u64)
     }
 
+    #[cfg(target_os = "macos")]
+    fn production_publication_age(active: &ActiveFlow) -> Sample {
+        let mut state = lock_state(active);
+        let before = state.last.stamp();
+        let operation = bounded(OPERATION_WAIT);
+        let frame = state
+            .session
+            .acquire_frame(&FrameRequest::newer_than(before), &operation)
+            .expect("production capture publishes a newer frame");
+        let elapsed = operation
+            .now()
+            .saturating_duration_since(frame.captured_at());
+        let mapping = frame
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("the production frame maps for its content oracle");
+        let stamp = frame.stamp();
+        let delta = stamp
+            .sequence()
+            .value()
+            .saturating_sub(before.sequence().value());
+        let correct = stamp.stream() == before.stream()
+            && stamp.epoch() == before.epoch()
+            && stamp.sequence() > before.sequence()
+            && frame.transform().geometry() == stamp.geometry()
+            && mapping.stamp() == stamp
+            && benchmark_mapping_fill(&mapping) == Some(state.fill);
+        let mapped = mapping.bytes().len() as u64;
+        state.last = frame;
+        Sample::new(elapsed, correct, mapped).with_stale_work(delta.saturating_sub(1), delta)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn production_steady_acquisition(active: &ActiveFlow) -> Sample {
+        let mut state = lock_state(active);
+        let before = state.last.stamp();
+        let operation = bounded(OPERATION_WAIT);
+        let started = Instant::now();
+        let frame = state
+            .session
+            .acquire_frame(&FrameRequest::newer_than(before), &operation)
+            .expect("production capture publishes a strictly newer frame");
+        let elapsed = started.elapsed();
+        let mapping = frame
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("the production frame maps for its content oracle");
+        let stamp = frame.stamp();
+        let delta = stamp
+            .sequence()
+            .value()
+            .saturating_sub(before.sequence().value());
+        let correct = stamp.stream() == before.stream()
+            && stamp.epoch() == before.epoch()
+            && stamp.sequence() > before.sequence()
+            && frame.transform().geometry() == stamp.geometry()
+            && mapping.stamp() == stamp
+            && benchmark_mapping_fill(&mapping) == Some(state.fill);
+        let mapped = mapping.bytes().len() as u64;
+        state.last = frame;
+        Sample::new(elapsed, correct, mapped).with_stale_work(delta.saturating_sub(1), delta)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn production_latest_acquisition(active: &ActiveFlow) -> Sample {
+        let mut state = lock_state(active);
+        let before = state.last.stamp();
+        let operation = bounded(OPERATION_WAIT);
+        let progressed = state
+            .session
+            .acquire_frame(&FrameRequest::newer_than(before), &operation)
+            .expect("production progress is observed before latest is measured");
+        let progressed_stamp = progressed.stamp();
+        let started = Instant::now();
+        let latest = state
+            .session
+            .acquire_frame(&FrameRequest::latest(), &operation)
+            .expect("latest returns the maintained production frame");
+        let elapsed = started.elapsed();
+        let mapping = latest
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("latest production content maps for its oracle");
+        let stamp = latest.stamp();
+        let delta = stamp
+            .sequence()
+            .value()
+            .saturating_sub(before.sequence().value());
+        let correct = progressed_stamp.stream() == before.stream()
+            && progressed_stamp.epoch() == before.epoch()
+            && progressed_stamp.sequence() > before.sequence()
+            && stamp.stream() == before.stream()
+            && stamp.epoch() == before.epoch()
+            && stamp.sequence() >= progressed_stamp.sequence()
+            && latest.transform().geometry() == stamp.geometry()
+            && mapping.stamp() == stamp
+            && benchmark_mapping_fill(&mapping) == Some(state.fill)
+            && delta > 0;
+        state.last = latest;
+        Sample::new(elapsed, correct, mapping.bytes().len() as u64)
+            .with_stale_work(delta.saturating_sub(1), delta)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn production_cpu_map(active: &ActiveFlow) -> Sample {
+        let mut state = lock_state(active);
+        let before = state.last.stamp();
+        let operation = bounded(OPERATION_WAIT);
+        let frame = state
+            .session
+            .acquire_frame(&FrameRequest::newer_than(before), &operation)
+            .expect("production capture publishes a frame to map");
+        let started = Instant::now();
+        let mapping = frame
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("the production frame maps to BGRA8");
+        let elapsed = started.elapsed();
+        let stamp = frame.stamp();
+        let correct = stamp.stream() == before.stream()
+            && stamp.epoch() == before.epoch()
+            && stamp.sequence() > before.sequence()
+            && frame.transform().geometry() == stamp.geometry()
+            && mapping.stamp() == stamp
+            && mapping.bytes().len() == mapping.descriptor().byte_len()
+            && benchmark_mapping_fill(&mapping) == Some(state.fill);
+        let mapped = mapping.bytes().len() as u64;
+        state.last = frame;
+        Sample::new(elapsed, correct, mapped)
+    }
+
     fn latest_acquisition(active: &ActiveFlow) -> Sample {
         let mut state = lock_state(active);
         let before = state.last.stamp();
@@ -3134,6 +3391,60 @@ mod native {
         let resumed = session
             .acquire_frame(&FrameRequest::newer_than(before), &bounded(OPERATION_WAIT))
             .expect("releasing one retained slot resumes publication");
+        let elapsed = started.elapsed();
+        let delta = resumed
+            .stamp()
+            .sequence()
+            .value()
+            .saturating_sub(before.sequence().value());
+        let correct = blocked.status() == Status::DeadlineExceeded && delta > 1;
+        drop(retained);
+        drop(resumed);
+        let correct = correct && close(&session);
+        Sample::unmapped(elapsed, correct).with_stale_work(delta.saturating_sub(1), delta)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn production_retained_pressure_resume(fixture: &Rc<FixtureProcess>) -> Sample {
+        let flow = Flow::from_fixture(Rc::clone(fixture));
+        let session = open_benchmark_capture_session(&flow);
+        let capacity = session
+            .description()
+            .queue()
+            .retained_storage()
+            .expect("a production session reports a finite retained-storage limit")
+            .get() as usize;
+        assert!(capacity >= 2, "retained pressure needs at least two slots");
+
+        let first = session
+            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+            .expect("the production pressure session publishes its first frame");
+        let mut retained = Vec::with_capacity(capacity);
+        retained.push(first);
+        while retained.len() < capacity {
+            let before = retained
+                .last()
+                .expect("a retained production frame")
+                .stamp();
+            retained.push(
+                session
+                    .acquire_frame(&FrameRequest::newer_than(before), &bounded(OPERATION_WAIT))
+                    .expect("natural production fills the reported retained limit"),
+            );
+        }
+
+        let before = retained
+            .last()
+            .expect("the last retained production frame")
+            .stamp();
+        let blocked = session
+            .acquire_frame(&FrameRequest::newer_than(before), &bounded(PRESSURE_WAIT))
+            .expect_err("a full production retained budget cannot invent publication progress");
+        retained.remove(0);
+        let started = Instant::now();
+        let resumed = session
+            .acquire_frame(&FrameRequest::newer_than(before), &bounded(OPERATION_WAIT))
+            .expect("releasing one retained production slot resumes publication");
         let elapsed = started.elapsed();
         let delta = resumed
             .stamp()
@@ -3700,6 +4011,7 @@ mod native {
             WorkloadSet::Capture => PHASE2_2_CAPTURE_LATENCY_BUDGETS.as_slice(),
             WorkloadSet::Transitions => PHASE2_2_TRANSITION_LATENCY_BUDGETS.as_slice(),
             WorkloadSet::Input => &[],
+            WorkloadSet::ProductionCapture | WorkloadSet::ProductionTransitions => &[],
             WorkloadSet::ProcessDirected => PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS.as_slice(),
             WorkloadSet::ProcessDirectedGameLike => {
                 PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS.as_slice()
@@ -3732,7 +4044,9 @@ mod native {
     #[cfg(target_os = "macos")]
     const fn benchmark_phase(set: WorkloadSet) -> &'static str {
         match set {
-            WorkloadSet::Input => "2",
+            WorkloadSet::Input
+            | WorkloadSet::ProductionCapture
+            | WorkloadSet::ProductionTransitions => "2",
             WorkloadSet::Capture
             | WorkloadSet::Transitions
             | WorkloadSet::ProcessDirected
@@ -3757,6 +4071,12 @@ mod native {
             }
             WorkloadSet::Input => {
                 "lineage=rust-System-unchanged-cross-language-ProcessDirected-cutover; mode=default renderer=appkit-background"
+            }
+            WorkloadSet::ProductionCapture => {
+                "lineage=production-capture-publication; mode=default renderer=appkit-background stimulus=none"
+            }
+            WorkloadSet::ProductionTransitions => {
+                "lineage=production-capture-transitions; mode=default renderer=appkit-background resize-stimulus=private-control"
             }
             WorkloadSet::ProcessDirected => {
                 "lineage=process-directed-appkit; mode=default renderer=appkit-background stimulus=private-control"
@@ -4039,6 +4359,10 @@ mod native {
             WorkloadSet::Capture => "phase-2-2-controlled-capture-aarch64-apple-darwin",
             WorkloadSet::Transitions => "phase-2-2-controlled-transitions-aarch64-apple-darwin",
             WorkloadSet::Input => "phase-2-native-input-aarch64-apple-darwin",
+            WorkloadSet::ProductionCapture => "phase-2-production-capture-aarch64-apple-darwin",
+            WorkloadSet::ProductionTransitions => {
+                "phase-2-production-transitions-aarch64-apple-darwin"
+            }
             WorkloadSet::ProcessDirected => {
                 "phase-2-2-process-directed-appkit-aarch64-apple-darwin"
             }
