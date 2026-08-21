@@ -2848,6 +2848,76 @@ fn assert_zero_effect(receipt: &mado_pilot_input::InputReceipt, fault: InputFaul
     assert_eq!(receipt.cleanup(), CleanupState::NotNeeded, "{receipt}");
 }
 
+fn wait_for_process_refusal(
+    fixture: &mut Fixture,
+    foreground_fixture: &mut Fixture,
+    foreground_before: &u32,
+    context_label: &str,
+    mut execute: impl FnMut() -> mado_pilot_input::InputReceipt,
+) {
+    let deadline = Instant::now() + CONTENT_WAIT;
+    let expected = expected_process_keyboard_events(&[
+        InputEvent::KeyPress(Key::Enter),
+        InputEvent::KeyRelease(Key::Enter),
+    ])
+    .into_iter()
+    .map(|event| EventSummary {
+        kind: event.kind,
+        text_units: event.text_units,
+        correlation: 0,
+    })
+    .collect::<Vec<_>>();
+    loop {
+        fixture.begin_event_row(CONTENT_WAIT);
+        foreground_fixture.begin_event_row(CONTENT_WAIT);
+        let cursor_before = pointer_location();
+        let receipt = execute();
+        if let Some(fault) = receipt.fault() {
+            assert!(
+                matches!(
+                    fault,
+                    InputFault::TargetLost | InputFault::UnsupportedCombination
+                ),
+                "{context_label} refusal reported {fault}"
+            );
+            assert_zero_effect(&receipt, fault);
+            assert!(
+                fixture
+                    .event_summaries(1, Duration::from_millis(200))
+                    .is_empty(),
+                "a refused {context_label} target received input"
+            );
+            assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+            assert_unrelated_desktop_state(
+                fixture,
+                foreground_fixture,
+                foreground_before,
+                cursor_before,
+            );
+            return;
+        }
+
+        assert_process_receipt(&receipt, 2);
+        assert_eq!(
+            fixture.event_summaries(expected.len(), CONTENT_WAIT),
+            expected,
+            "a transiently authoritative {context_label} target receives the exact process row"
+        );
+        assert_eq!(fixture.event_totals(CONTENT_WAIT), event_totals(&expected));
+        assert_unrelated_desktop_state(
+            fixture,
+            foreground_fixture,
+            foreground_before,
+            cursor_before,
+        );
+        assert!(
+            Instant::now() < deadline,
+            "{context_label} authority never produced a zero-effect refusal"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn assert_unrelated_desktop_state(
     fixture: &Fixture,
     foreground_fixture: &mut Fixture,
@@ -5187,53 +5257,16 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         InputOperationKind::Keyboard,
         CONTENT_WAIT,
     );
-    fixture.begin_event_row(CONTENT_WAIT);
-    foreground_fixture.begin_event_row(CONTENT_WAIT);
-    let cursor_before = pointer_location();
-    let minimized_result = input
-        .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
-        .expect("a minimized target returns a receipt");
-    if let Some(fault) = minimized_result.fault() {
-        assert!(
-            matches!(
-                fault,
-                InputFault::TargetLost | InputFault::UnsupportedCombination
-            ),
-            "minimized-target refusal reported {fault}"
-        );
-        assert_zero_effect(&minimized_result, fault);
-        assert!(
-            fixture
-                .event_summaries(1, Duration::from_millis(200))
-                .is_empty(),
-            "a refused minimized target received input"
-        );
-        assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
-    } else {
-        assert_process_receipt(&minimized_result, 2);
-        let expected = expected_process_keyboard_events(&[
-            InputEvent::KeyPress(Key::Enter),
-            InputEvent::KeyRelease(Key::Enter),
-        ])
-        .into_iter()
-        .map(|event| EventSummary {
-            kind: event.kind,
-            text_units: event.text_units,
-            correlation: 0,
-        })
-        .collect::<Vec<_>>();
-        assert_eq!(
-            fixture.event_summaries(expected.len(), CONTENT_WAIT),
-            expected,
-            "a target that returned before final authority receives the exact row"
-        );
-        assert_eq!(fixture.event_totals(CONTENT_WAIT), event_totals(&expected));
-    }
-    assert_unrelated_desktop_state(
-        &fixture,
+    wait_for_process_refusal(
+        &mut fixture,
         &mut foreground_fixture,
         &foreground_before,
-        cursor_before,
+        "minimized",
+        || {
+            input
+                .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
+                .expect("a minimized target returns a receipt")
+        },
     );
 
     let restored = fixture
@@ -5318,53 +5351,16 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         InputOperationKind::Keyboard,
         CONTENT_WAIT,
     );
-    fixture.begin_event_row(CONTENT_WAIT);
-    foreground_fixture.begin_event_row(CONTENT_WAIT);
-    let cursor_before = pointer_location();
-    let offscreen_receipt = input
-        .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
-        .expect("an off-screen target returns a receipt");
-    if let Some(fault) = offscreen_receipt.fault() {
-        assert!(
-            matches!(
-                fault,
-                InputFault::TargetLost | InputFault::UnsupportedCombination
-            ),
-            "off-screen refusal reported {fault}"
-        );
-        assert_zero_effect(&offscreen_receipt, fault);
-        assert!(
-            fixture
-                .event_summaries(1, Duration::from_millis(200))
-                .is_empty(),
-            "a refused off-screen target received input"
-        );
-        assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
-    } else {
-        assert_process_receipt(&offscreen_receipt, 2);
-        let expected = expected_process_keyboard_events(&[
-            InputEvent::KeyPress(Key::Enter),
-            InputEvent::KeyRelease(Key::Enter),
-        ])
-        .into_iter()
-        .map(|event| EventSummary {
-            kind: event.kind,
-            text_units: event.text_units,
-            correlation: 0,
-        })
-        .collect::<Vec<_>>();
-        assert_eq!(
-            fixture.event_summaries(expected.len(), CONTENT_WAIT),
-            expected,
-            "an off-screen target that returned before final authority receives the exact row"
-        );
-        assert_eq!(fixture.event_totals(CONTENT_WAIT), event_totals(&expected));
-    }
-    assert_unrelated_desktop_state(
-        &fixture,
+    wait_for_process_refusal(
+        &mut fixture,
         &mut foreground_fixture,
         &foreground_before,
-        cursor_before,
+        "off-screen",
+        || {
+            input
+                .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
+                .expect("an off-screen target returns a receipt")
+        },
     );
 
     let onscreen = fixture
