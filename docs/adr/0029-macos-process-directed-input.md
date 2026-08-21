@@ -10,7 +10,7 @@
   predecessor `df1c45d`; the complete `df1c45d..dec43d7` diff is exactly
   `crates/mado-pilot/benches/native-phase2.rs`, a benchmark-harness file, so
   those revision-bound results apply to `dec43d7`. Hosted CI for final
-  source/test commit `7dc5e0c` and its evidence-only successor is pending push.
+  source/harness commit `6deec54` and its evidence-only successor is pending push.
   Release-level pair publication remains 0 qualified, 0 rejected, and 14
   unexecuted because disconnected `single` and exact two-display non-mirrored
   `same-scale` matrices are unavailable.
