@@ -403,10 +403,10 @@ mod native {
         "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
     }
 
-    fn profile_correctness_oracle(set: WorkloadSet) -> &'static str {
+    fn profile_correctness_oracle(_set: WorkloadSet) -> &'static str {
         #[cfg(target_os = "macos")]
         if matches!(
-            set,
+            _set,
             WorkloadSet::ProductionCapture | WorkloadSet::ProductionTransitions
         ) {
             return "every retained sample checks production frame identity, frame-authoritative geometry, declared fixture content, finite retained progress, exact mapping, or bounded lifecycle outcome; the resize command is stimulus only and never substitutes for a captured result";
