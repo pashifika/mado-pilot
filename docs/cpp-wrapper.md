@@ -571,9 +571,10 @@ route: the wrapper flow requires `ProcessDirected` with owning-process scope,
 unknown compatibility, and invocation-only evidence, preserves foreground, and
 permits no fallback. Run real input only against a target you own and have
 selected exactly, as described in the platform verification documents.
-This macOS mode exercises the implemented process-directed pairs. Candidate
-`9e3e77d` passed its exact-source three-display `mixed-scale` rows and
-controlled-fixture performance profiles. All fourteen release decisions remain
+This macOS mode exercises the implemented process-directed pairs. Final
+candidate `dec43d7` passed the controlled-fixture performance profiles and
+inherits the `df1c45d` exact-source three-display `mixed-scale` rows through
+a benchmark-harness-only diff. All fourteen release decisions remain
 unexecuted because disconnected `single` and exact two-display `same-scale`
 matrices are unavailable. The mode makes no claim about arbitrary applications,
 games, renderers, input stacks, exact-window delivery, or application

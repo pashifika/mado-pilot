@@ -506,8 +506,9 @@ evidence. The dedicated fixture raises the same route to supported with
 target-protocol acknowledgement. Both remain separate from Windows system
 routes. The macOS implementation reports system routes plus process-directed
 pairs with owning-process scope, unknown compatibility, and invocation-only
-evidence for retained top-level windows. Candidate `9e3e77d` passed its
-exact-source three-display `mixed-scale` rows and controlled profiles; all
+evidence for retained top-level windows. Final candidate `dec43d7` passed the
+controlled profiles and inherits the `df1c45d` exact-source three-display
+`mixed-scale` rows through a benchmark-harness-only diff; all
 fourteen release decisions remain unexecuted because disconnected `single` and
 exact two-display `same-scale` matrices are unavailable.
 Additional windows in

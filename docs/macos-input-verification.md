@@ -7,11 +7,14 @@ acceptance consists of the explicit native checks below; ordinary test runs neve
 send desktop input or open the opt-in fixture window.
 
 Current candidate release status: **0 qualified, 0 rejected, and 14 unexecuted
-controlled pairs**. Candidate
-`9e3e77d4021b792f4c4835390658aaac98e76826` passed the exact-source
-three-display `mixed-scale` native rows, deterministic one-read proofs,
-controlled AppKit/game-like profiles, sanitizer, ABI/C++/CMake checks, and
-hosted CI. The disconnected `single` and exact two-display non-mirrored
+controlled pairs**. Final candidate
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` passed the controlled AppKit,
+game-like, and native input/public-language profiles. The three-display
+`mixed-scale` native rows, deterministic one-read proofs, sanitizer, and
+ABI/C++/CMake checks passed on predecessor `df1c45d` and apply to `dec43d7`
+because their complete diff is the benchmark harness alone. Hosted CI on
+`dec43d7` is pending push. The disconnected `single` and exact two-display
+non-mirrored
 `same-scale` rows remain unavailable, so no release pair is promoted. Nothing
 here qualifies arbitrary applications, arbitrary games, exact-window delivery,
 or application consumption.
@@ -45,8 +48,9 @@ call a pair qualified only when its mandatory revision-bound native rows in the
 and a failed or unexecuted route-wide row blocks every dependent pair. The
 negotiated target descriptor remains the runtime admission authority, but its
 implemented mapping is not evidence that the current source passed the release
-gate. The pre-optimization source qualified fourteen pairs. Candidate
-`9e3e77d` passes exact-source `mixed-scale` rows, but all fourteen current
+gate. The pre-optimization source qualified fourteen pairs. The `df1c45d`
+`mixed-scale` rows apply to final candidate `dec43d7` through the
+benchmark-harness-only diff, but all fourteen current
 release decisions remain unexecuted because disconnected `single` and exact
 two-display `same-scale` rows are unavailable.
 
@@ -670,10 +674,19 @@ bodies are source/oracle-misbound because their commanded-transition oracle is
 absent from that tree.
 
 Candidate `9e3e77d4021b792f4c4835390658aaac98e76826` (tree
-`ea7881c4416ca2a330fa3097d4fa271f9a547f96`) carries same-frame raw
-screen bounds and backing scale, uses private shim surface version 19, and
-passed the final signed-release `mixed-scale` rows. The `single` and
-`same-scale` rows did not run, so every release pair remains `unexecuted`.
+`ea7881c4416ca2a330fa3097d4fa271f9a547f96`) passed its own earlier
+exact-source `mixed-scale` rows and controlled profiles; later review-driven
+source, fixture, and harness corrections invalidated that evidence and it is
+historical. Predecessor `df1c45d` then passed the signed-release
+`mixed-scale` matrix — 34 permission-independent rows, all 14 ignored
+interactive rows, and three topology scenarios. Final measured candidate
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
+`109f77df9ef9f40b515245ab60a6036822ee7d78`) carries same-frame raw screen
+bounds and backing scale, uses private shim surface version 19 and fixture
+protocol version 11, and differs from `df1c45d` only in
+`crates/mado-pilot/benches/native-phase2.rs`, so the `df1c45d` native matrix
+applies to it. The `single` and `same-scale` rows did not run, so every
+release pair remains `unexecuted`.
 
 The privacy-reviewed
 [repository evidence](evidence/phase-2-native/macos-owning-process-qualification.md)
@@ -768,12 +781,15 @@ desktop payload.
 
 The revision-bound native input and public-language profile at
 [`benchmarks/phase-2-native-input-aarch64-apple-darwin.toml`](benchmarks/phase-2-native-input-aarch64-apple-darwin.toml)
-is measured and normative under
-[ADR 0025](adr/0025-macos-native-input-performance-budgets.md). Its six
-workloads retain 300 correct samples with zero allocation growth and exact
-frame-mapping and fixture-event oracles. Each C and C++ sample provisions a
-fresh approved fixture before its timed span so one sample cannot change the
-next sample's visual precondition.
+is normative under
+[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) and measured
+at final candidate `dec43d7`. Its six workloads retain 300 correct samples
+with maximum allocation growth 64 bytes under the 4,096-byte hard gate and
+exact frame-mapping and fixture-event oracles. The harness provisions each C
+and C++ sample's fresh approved fixture outside its timed span and retains
+controller-owned mode-0500 executable/library pins per workload, so one
+sample cannot change the next sample's identity, lifecycle, or visual
+precondition.
 
 This profile requalifies input and public-language performance only. It does not
 replace the full current-display, shared-display, retained-frame, or
@@ -785,8 +801,8 @@ frozen in [ADR 0029](adr/0029-macos-process-directed-input.md). Controlled
 capture, controlled transitions, and process diagnostics remain bound to their
 named pre-optimization revision. The two authority-timing-sensitive current
 profiles are measured and normative at source
-`9e3e77d4021b792f4c4835390658aaac98e76826` (tree
-`ea7881c4416ca2a330fa3097d4fa271f9a547f96`):
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
+`109f77df9ef9f40b515245ab60a6036822ee7d78`):
 
 - [`phase-2-2-process-directed-appkit`](benchmarks/phase-2-2-process-directed-appkit-aarch64-apple-darwin.toml);
 - [`phase-2-2-process-directed-game-like`](benchmarks/phase-2-2-process-directed-game-like-aarch64-apple-darwin.toml).
@@ -800,8 +816,8 @@ do
   cargo bench --locked -p mado-pilot --bench native-phase2 -- \
     --workload-set "$workload" \
     --fixture-executable "$MADO_PILOT_MACOS_FIXTURE_EXECUTABLE" \
-    --source-revision 9e3e77d4021b792f4c4835390658aaac98e76826 \
-    --source-tree ea7881c4416ca2a330fa3097d4fa271f9a547f96 \
+    --source-revision dec43d7b6c91d415f2028e188e89fa289cb9c1c9 \
+    --source-tree 109f77df9ef9f40b515245ab60a6036822ee7d78 \
     --toolchain "rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5" \
     --gpu-driver "Apple integrated GPU; system driver stack" \
     --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
@@ -814,11 +830,11 @@ done
 
 Each current profile retained 50 samples after five warm-ups per workload and
 recorded fixture source, signed fixture executable, and benchmark executable
-digests. AppKit terminal p95 was `65.078208 ms` under `106.34 ms`; controlled
-game-like p95 was `62.760084 ms` under `112.18 ms`. Both recorded zero
+digests. AppKit terminal p95 was `56.466375 ms` under `106.34 ms`; controlled
+game-like p95 was `56.699333 ms` under `112.18 ms`. Both recorded zero
 correctness failures, one matching fixture event per terminal sequence,
-unchanged foreground and physical cursor, and maximum allocation growth 2,624
-bytes.
+unchanged foreground and physical cursor, and zero post-warm-up allocation
+growth in every workload.
 
 The one-read gate is the revision-bound conjunction of controller,
 geometry-source, and native seam tests with those exact-source rows. It applies

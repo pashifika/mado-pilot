@@ -14,11 +14,12 @@ now accepts the macOS diagnostic slice,
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
 revision-bound macOS native input and public-language profile. Accepted-design
 [ADR 0029](adr/0029-macos-process-directed-input.md) binds the Phase 2.2 macOS
-process-directed and controlled-stimulus lineage below. Candidate `9e3e77d`
-passes the exact-source controlled AppKit and game-like profiles under their
-frozen regression budgets. Those measurements do not substitute for unavailable
-`single` and exact two-display `same-scale` qualification rows, so all fourteen
-release pair decisions remain unexecuted. The remaining native workload and
+process-directed and controlled-stimulus lineage below. Final candidate
+`dec43d7` passes the exact-source controlled AppKit and game-like profiles
+under their frozen regression budgets. Those measurements do not substitute
+for unavailable `single` and exact two-display `same-scale` qualification
+rows, so all fourteen release pair decisions remain unexecuted. The remaining
+native workload and
 target gaps stay open.
 
 Nothing in this document is itself a measured result. The numbers live in the
@@ -468,9 +469,12 @@ the macOS input profile; ADR 0026 now replaces every Windows native gap:
 
 The two historical macOS files retain their old samples, environment metadata,
 and former budget blocks with `normative = false`; they do not gate current
-source. The macOS input requalification retained 300 correct samples with zero
-allocation growth after replacing stale six-event/two-key-pair expectations and
-giving every public-language sample an independent visual precondition.
+source. The macOS input requalification at final candidate `dec43d7` retained
+300 correct samples with maximum allocation growth 64 bytes under the
+4,096-byte hard gate. The harness provisions each C/C++ sample's fresh
+approved fixture outside its timed span and retains controller-owned
+mode-0500 executable/library pins per workload, so one sample cannot change
+the next sample's identity, lifecycle, or visual precondition.
 
 The post-review Windows run is bound to source commit
 `6873d4b05a13fd15cb3ffd961892b1153f606d78`, implementation tree
@@ -543,18 +547,18 @@ controlled-transition, and process-diagnostic records remain bound to that
 source. Benchmark bodies formerly attributed to `a471c2d` use a visual oracle
 absent from its source tree and remain rejected, non-normative evidence.
 
-The authority-timing-sensitive current profiles are measured at source
-`9e3e77d4021b792f4c4835390658aaac98e76826` (tree
-`ea7881c4416ca2a330fa3097d4fa271f9a547f96`):
+The authority-timing-sensitive current profiles are measured at final source
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
+`109f77df9ef9f40b515245ab60a6036822ee7d78`):
 
 - `phase-2-2-process-directed-appkit-aarch64-apple-darwin`;
 - `phase-2-2-process-directed-game-like-aarch64-apple-darwin`.
 
-AppKit terminal p95 is `65.078208 ms` under the frozen `106.34 ms` ceiling;
-controlled game-like p95 is `62.760084 ms` under `112.18 ms`. Both profiles
+AppKit terminal p95 is `56.466375 ms` under the frozen `106.34 ms` ceiling;
+controlled game-like p95 is `56.699333 ms` under `112.18 ms`. Both profiles
 record zero correctness failures, one matching fixture event per terminal
-sequence, unchanged foreground and physical cursor, and maximum post-warm-up
-allocation growth 2,624 bytes.
+sequence, unchanged foreground and physical cursor, and zero post-warm-up
+allocation growth in every workload.
 
 The one-read gate is composite rather than a field in either benchmark row.
 Eight revision-bound controller, geometry-source, and native seam tests prove
@@ -591,14 +595,14 @@ records their outputs and provenance. Game-like samples carry the fixture's
 explicit `mode=game-like renderer=opengl` fact, so they establish no result for
 another renderer, game, application, input stack, or anti-cheat system.
 
-These passing historical profiles are controlled-fixture regression evidence,
-not a real-time latency promise or evidence of exact-window delivery,
-application consumption, `RequireFocused`, `ReprojectCurrent`, or fallback
-performance. Timing cannot replace topology qualification: the retained
-`mixed-scale` rows bind an earlier optimized source, and the current candidate
-has no retained native result. Its exact-source `single`, `same-scale`, and
-`mixed-scale` rows therefore remain unexecuted, so none of its fourteen pair
-decisions is release-qualified.
+These passing profiles are controlled-fixture regression evidence, not a
+real-time latency promise or evidence of exact-window delivery, application
+consumption, `RequireFocused`, `ReprojectCurrent`, or fallback performance.
+Timing cannot replace topology qualification: the retained `mixed-scale` rows
+passed on predecessor `df1c45d` and apply to `dec43d7` because the complete
+diff between those revisions is the benchmark harness alone, but the
+`single` and exact two-display `same-scale` rows remain unexecuted, so none
+of the fourteen pair decisions is release-qualified.
 
 ## Phase 2 Windows ownership prototype
 

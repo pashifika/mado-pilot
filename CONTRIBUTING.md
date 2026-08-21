@@ -146,11 +146,13 @@ The capability matrix, typed outcomes, privacy bounds, and bundling step are in
 [docs/macos-input-verification.md](docs/macos-input-verification.md).
 
 Run each topology selector against the exact candidate source; a pass under one
-selector cannot qualify another. Candidate
-`9e3e77d4021b792f4c4835390658aaac98e76826` passed the three-display
-`mixed-scale` matrix, but the required disconnected `single` and exact
-two-display non-mirrored `same-scale` matrices remain unavailable. Its fourteen
-release decisions therefore remain unexecuted. The complete pre-optimization
+selector cannot qualify another. Measured product candidate
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` retained the complete
+three-display `mixed-scale` matrix through the benchmark-harness-only
+applicability diff; test-only successor `5f1fdb6` tightened and passed the
+minimized/off-screen refusal row. The required disconnected `single` and exact
+two-display non-mirrored `same-scale` matrices remain unavailable, so all
+fourteen release decisions remain unexecuted. The complete pre-optimization
 matrix and the `a471c2d` native rows are historical provenance only; the
 benchmark bodies formerly attributed to `a471c2d` are source/oracle-misbound
 and supply no result.
@@ -168,10 +170,10 @@ controller, geometry-source, and native seam tests prove the call count.
 Exact-source AppKit and controlled OpenGL benchmark rows separately prove
 latency, one matching fixture event, unchanged foreground and physical cursor,
 zero correctness failures, and allocation growth no greater than 4,096 bytes
-without adding private timing-path instrumentation. On candidate `9e3e77d`,
-AppKit p95 is `65.078208 ms` under `106.34 ms`; controlled game-like p95 is
-`62.760084 ms` under `112.18 ms`; maximum profile allocation growth is 2,624
-bytes. Run the exact candidate-bound commands in
+without adding private timing-path instrumentation. On measured product
+candidate `dec43d7`, AppKit p95 is `56.466375 ms` under `106.34 ms`;
+controlled game-like p95 is `56.699333 ms` under `112.18 ms`; both profiles
+have zero allocation growth. Run the exact candidate-bound commands in
 [`docs/macos-input-verification.md`](docs/macos-input-verification.md#current-native-input-performance-evidence).
 Each accepted benchmark retains 50 samples after five warm-ups and records
 fixture source, signed fixture executable, and benchmark executable digests.

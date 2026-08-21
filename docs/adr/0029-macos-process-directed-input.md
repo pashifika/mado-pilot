@@ -1,14 +1,21 @@
 # ADR 0029: macOS owning-process input delivery
 
 - **Status:** Accepted design, amended for authority timing and exact-source
-  controlled evidence. Candidate
-  `9e3e77d4021b792f4c4835390658aaac98e76826` (tree
-  `ea7881c4416ca2a330fa3097d4fa271f9a547f96`) passed the affected
-  three-display `mixed-scale` native rows, deterministic one-read proofs,
-  controlled AppKit/game-like profiles, sanitizer, ABI/C++/CMake checks, and
-  hosted CI. Release-level pair publication remains 0 qualified, 0 rejected,
-  and 14 unexecuted because disconnected `single` and exact two-display
-  non-mirrored `same-scale` matrices are unavailable. The complete matrix at
+  controlled evidence. Final measured candidate
+  `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
+  `109f77df9ef9f40b515245ab60a6036822ee7d78`) passed the controlled AppKit,
+  game-like, and native input/public-language profiles with zero correctness
+  failures. The affected three-display `mixed-scale` native rows,
+  deterministic one-read proofs, sanitizer, and ABI/C++/CMake checks passed on
+  predecessor `df1c45d`; the complete `df1c45d..dec43d7` diff is exactly
+  `crates/mado-pilot/benches/native-phase2.rs`, a benchmark-harness file, so
+  those revision-bound results apply to `dec43d7`. Hosted CI has not yet run
+  on `dec43d7`; it is pending push. Release-level pair publication remains
+  0 qualified, 0 rejected, and 14 unexecuted because disconnected `single`
+  and exact two-display non-mirrored `same-scale` matrices are unavailable.
+  Historical candidate `9e3e77d` passed its own earlier exact-source rows and
+  profiles; the later review-driven source, fixture, and harness corrections
+  invalidated that evidence for the final candidate. The complete matrix at
   `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` remains historical evidence for
   the pre-optimization authority order. Source `a471c2d` retains historical
   native rows, but its attributed benchmark bodies are source/oracle-misbound
@@ -233,9 +240,10 @@ the existing no-fallback contract after possible effect.
   otherwise.
 - The support claim remains bound to fourteen exact pairs and revision-bound
   native evidence. The pre-optimization source qualified each as `Unknown`,
-  owning-process scoped, invocation-only, and foreground-preserving. Current
-  candidate `9e3e77d` passes exact-source `mixed-scale` rows and controlled
-  profiles, but has 14 unexecuted release decisions because `single` and exact
+  owning-process scoped, invocation-only, and foreground-preserving. Final
+  candidate `dec43d7` passes the controlled profiles, and the `df1c45d`
+  `mixed-scale` rows apply to it through the benchmark-harness-only diff, but
+  its 14 release decisions remain unexecuted because `single` and exact
   two-display `same-scale` rows are unavailable. Future operation,
   target-class, coordinate-space, or topology pairs remain unavailable until
   their own mandatory rows pass. A route-wide failure blocks every pair; a pair
@@ -274,10 +282,10 @@ the existing no-fallback contract after possible effect.
   privacy-reviewed
   [observed report](../evidence/phase-2-native/macos-owning-process-qualification.md)
   binds results to their exact source and artifacts. It records the historical
-  complete pre-optimization matrix, rejected `a471c2d` benchmark bodies, and
-  current `9e3e77d` native/performance evidence separately. The current
-  `mixed-scale` rows and controlled profiles pass; all `single` and exact
-  two-display `same-scale` pair rows remain unexecuted.
+  complete pre-optimization matrix, rejected `a471c2d` benchmark bodies,
+  historical `9e3e77d` evidence, and final `dec43d7` native/performance
+  evidence separately. The `mixed-scale` rows and controlled profiles pass;
+  all `single` and exact two-display `same-scale` pair rows remain unexecuted.
 - Deterministic controller, native-double, shim layout/version, containment,
   protocol, privacy, linkage, and C/C++ contract suites must cover every
   commit-seam ordering — cancellation, revocation, geometry change, target

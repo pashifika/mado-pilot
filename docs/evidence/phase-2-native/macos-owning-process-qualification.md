@@ -1,37 +1,97 @@
 ## Current candidate decision
 
-Source commit `9e3e77d4021b792f4c4835390658aaac98e76826` and tree
-`ea7881c4416ca2a330fa3097d4fa271f9a547f96` passed the affected
-three-display `mixed-scale` native rows, deterministic one-read proofs, both
-controlled performance profiles, ASan, C ABI/C++/CMake checks, Windows-target
-lint, and hosted CI.
+Final measured candidate `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
+`109f77df9ef9f40b515245ab60a6036822ee7d78`) passed the controlled AppKit,
+game-like, and native input/public-language profiles with zero correctness
+failures. The affected three-display `mixed-scale` native matrix,
+deterministic one-read proofs, ASan, C ABI/C++/CMake checks, and
+Windows-target lint passed on predecessor `df1c45d`. The complete
+`df1c45d..dec43d7` diff is exactly
+`crates/mado-pilot/benches/native-phase2.rs` — a benchmark-harness file
+outside product, fixture, and native-test source — so those revision-bound
+native results apply to `dec43d7`. Hosted CI has not yet run on `dec43d7`;
+it is pending push.
+
+Subsequent test-only commit `5f1fdb6177d7ec02d2f8eb841f0786432299b0c2`
+tightens the minimized/off-screen qualification to require an eventual typed
+zero-effect refusal, and that lifecycle row passed. Its complete
+`dec43d7..5f1fdb6` diff is exactly
+`crates/platform/macos/tests/native_input.rs`; no product, fixture, or
+benchmark source changed, so the measured profiles and native results remain
+bound to `dec43d7` and are not relabeled.
 
 Release-level owning-process support remains 0 `qualified`, 0 `rejected`, and
-14 `unexecuted` pairs. The required disconnected `single` and exact two-display
-non-mirrored `same-scale` matrices are physically unavailable. No
-`mixed-scale` row or controlled latency result substitutes for either topology.
+14 `unexecuted` pairs. The required disconnected `single` and exact
+two-display non-mirrored `same-scale` matrices are physically unavailable. No
+`mixed-scale` row or controlled latency result substitutes for either
+topology.
 
 | Field | Current exact-source evidence |
 |---|---|
-| Product commit / tree | `9e3e77d4021b792f4c4835390658aaac98e76826` / `ea7881c4416ca2a330fa3097d4fa271f9a547f96` |
-| Fixture source SHA-256 | `fa5b1bd7577b877b7c3a42ba8ae5fd57029137bea36da4615881bd6837fbc3d0` |
-| Signed target / foreground executable SHA-256 | `51ef9a691c4118b84da9de3ac59b0b39def11ce55ccc2305c9c039d46fb74c29` / `28a3cc788dd81b81661d911d2e92bc0b4b827b51d832f4991cb516150d53322c` |
-| Benchmark executable SHA-256 | `bd811ac11364c7fc1ad7af3f76b59542cf55c9c1bdd5afa017c9447ac37a54cd` |
+| Product commit / tree | `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` / `109f77df9ef9f40b515245ab60a6036822ee7d78` |
+| Fixture source SHA-256 | `c5576c5290003c723f1d3797ab1c6032e935a9e04ab42d50ce5dc9108bc029ea` |
+| Signed target / independent foreground release executable SHA-256 | `18a14299de1a2cbb6d26e1aa9f37c1708c1a25ec9a32413e4cc730f3cfa761bc` / `9e8ac146458f86d55b80d0ad719edc58e8eda15c2eb41545da55948de73b205b` |
+| Benchmark executable SHA-256 | `fa4ac54a1fa9df3e25833c7923cf7b24dc5ee82a70ddff9a3aa3033a73f5ce08` |
+| Input-profile C / C++ executable SHA-256 | `12d4c23d7788973efd01b5257e8352c45b73221088fd6257a7b6c08b94428819` / `4651243160c3845427011f83480ac81197a1a61cb92fa6631cf437f0d6b8da42` |
+| Input-profile MadoPilot dynamic library SHA-256 | `e7f42b208522ff772fa67449f52ba7ef33350e535788a29f4876c171a5bf6898` |
 | Measured topology | three online non-mirrored displays; signed-origin 1× display, 2× main display, and 2× built-in display |
-| Native rows | 33 permission-independent and all 11 permissioned integration rows passed; three display conversion/geometry/seam scenarios passed |
+| Fixture protocol / internal shim surface / deployment target | version 11 / version 19 / macOS 26.5.2 |
+| Native rows (`df1c45d`, applicable) | 34 permission-independent rows and all 14 ignored interactive rows passed; three display conversion/geometry/seam scenarios passed; the `5f1fdb6`-tightened minimized/off-screen lifecycle row passed |
 | Deterministic one-read binding | eight focused controller, geometry-source, and native-seam proofs passed; terminal `RequireUnchanged`/`UseFrameSnapshot` source/current counts are `[1, 0]`; final ordinary native authority count is one |
-| AppKit controlled profile | 50 retained terminal samples; p95 `65.078208 ms` ≤ `106.34 ms`; zero correctness failures; profile SHA-256 `3b52c2dff0e9b348e82d5dff58859a54d318c872af33872725d7ed0235580a65` |
-| Controlled game-like profile | 50 retained terminal samples; p95 `62.760084 ms` ≤ `112.18 ms`; zero correctness failures; profile SHA-256 `670a4470cd0da9d673a855f8dc5660308cc034a2fd23f83ddd3eb53f53c6594b` |
-| Memory / environment gates | maximum profile allocation growth 2,624 bytes; foreground and physical cursor unchanged; one matching fixture event per terminal sequence |
-| ASan / ABI / packaging | 235 ASan library tests passed; C ABI 1.2 table 592 bytes; frozen ABI 1.0 prefix 424 bytes and 222 layout lines held; C/C++/CMake, linkage, signing, and panic containment passed |
-| Hosted CI | repository policy, Windows x86_64, macOS Apple Silicon, and branch policy passed on `9e3e77d` |
+| AppKit controlled profile | 50 retained terminal samples; p95 `56.466375 ms` ≤ `106.34 ms`; zero correctness failures; zero allocation growth; profile SHA-256 `288106be21c9c9987a472803260e11f634c2311e521ec9eee6250926e2425fd0` |
+| Controlled game-like profile | 50 retained terminal samples; p95 `56.699333 ms` ≤ `112.18 ms`; zero correctness failures; zero allocation growth; profile SHA-256 `1d4b030ad08c5a5febb9167ef5a307b7eed78794e0001ccf7436e2f3365e5b70` |
+| Native input / public-language profile | six workloads, 300 retained samples; zero correctness failures; maximum allocation growth 64 bytes; profile SHA-256 `90b33b1f40286fe64d51bcde69340303faafd2145d06f9c3ed8fed5d1877598a` |
+| Memory / environment gates | zero process-profile allocation growth; foreground and physical cursor unchanged; one matching fixture event per terminal sequence |
+| ASan / ABI / packaging (`dec43d7`) | 254 ASan library tests passed; C ABI 1.2 table 592 bytes; frozen ABI 1.0 prefix 424 bytes and 222 layout lines held; C/C++/CMake, linkage, signing, and panic containment passed |
+| Hosted CI | pending push for `dec43d7`; historical runs passed on `9e3e77d` and evidence-only `3792e78` |
 | Detailed current procedure and outcomes | [`verification-procedure.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/verification-procedure.md) and [`observed-report.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md) |
 
-The first game-like start stopped before warm-up or sampling when the fresh
-capture source was rejected. It emitted no profile, left no fixture process, and
-is retained as a non-qualifying setup fact. After a ten-second lifecycle idle,
-the unchanged source, executables, topology, and gates completed the accepted
-profile.
+The full input benchmark provisions each C/C++ sample's fresh approved
+fixture outside its timed span and retains controller-owned mode-0500
+executable/library pins per workload; every spawned child must match its
+executable pin's live code identity.
+
+The target and independent foreground executables were each accepted only after
+their canonical paths, retained application lifetimes, and validity-checked
+Security.framework identities matched the pre-launch records.
+
+The controlled profiles are regression evidence for the named source, fixture,
+route, `RequireUnchanged` geometry policy, preserving focus policy, and current
+topology only. They are not real-time guarantees and establish neither
+exact-window consumption nor general application, renderer, input-stack, or game
+compatibility.
+
+## Historical optimized candidates
+
+Candidate `9e3e77d4021b792f4c4835390658aaac98e76826` (tree
+`ea7881c4416ca2a330fa3097d4fa271f9a547f96`) passed its own exact-source
+three-display `mixed-scale` native rows — 33 permission-independent and 11
+permissioned integration rows — deterministic one-read proofs, both controlled
+performance profiles, ASan, C ABI/C++/CMake checks, Windows-target lint, and
+hosted CI. Its profiles recorded p95 `65.078208 ms` / `62.760084 ms`, zero
+correctness failures, and maximum allocation growth 2,624 bytes, with profile
+SHA-256 `3b52c2dff0e9b348e82d5dff58859a54d318c872af33872725d7ed0235580a65`
+and `670a4470cd0da9d673a855f8dc5660308cc034a2fd23f83ddd3eb53f53c6594b`,
+fixture source SHA-256
+`fa5b1bd7577b877b7c3a42ba8ae5fd57029137bea36da4615881bd6837fbc3d0`, signed
+target/foreground executable SHA-256
+`51ef9a691c4118b84da9de3ac59b0b39def11ce55ccc2305c9c039d46fb74c29` /
+`28a3cc788dd81b81661d911d2e92bc0b4b827b51d832f4991cb516150d53322c`, and
+benchmark executable SHA-256
+`bd811ac11364c7fc1ad7af3f76b59542cf55c9c1bdd5afa017c9447ac37a54cd`. The
+subsequent review-driven source, fixture, and harness corrections invalidated
+that evidence for the final candidate; it is historical and transfers no
+pair, latency, or support result.
+
+Its first game-like start stopped before warm-up or sampling when the fresh
+capture source was rejected. It emitted no profile, left no fixture process,
+and is retained as a non-qualifying setup fact. After a ten-second lifecycle
+idle, the then-unchanged source, executables, topology, and gates completed
+that candidate's accepted profile. Successor `df1c45d` passed the full
+permissioned native matrix and both controlled process profiles, then its
+public-language input run stopped before reporting when one untimed
+auxiliary-window discovery exceeded a separate two-second sub-deadline; the
+`dec43d7` harness correction resolved exactly that stop.
 
 Source `a471c2d51428a25dd11e42572b73cf5e86ef7478` retains native-matrix,
 deterministic, sanitizer, ABI, and hosted-CI history for that source only. The
@@ -44,13 +104,8 @@ latency or support result for the current candidate.
 Historical records remain fixed at immutable snapshots:
 
 - [`8d3fa58738f201496c496159717d274e7f5c06b7`](https://github.com/pashifika/mado-pilot/blob/8d3fa58738f201496c496159717d274e7f5c06b7/docs/evidence/phase-2-native/macos-owning-process-qualification.md) for the superseded tuning history;
+- [`3792e78d77c6a81f1aa8d518b36fc9a99f27d1fc`](https://github.com/pashifika/mado-pilot/blob/3792e78d77c6a81f1aa8d518b36fc9a99f27d1fc/docs/evidence/phase-2-native/macos-owning-process-qualification.md) for the superseded `9e3e77d` optimized record;
 - [`b76f06fd8997b8c666b18ace6c162c3335953e55`](https://github.com/pashifika/mado-pilot/blob/b76f06fd8997b8c666b18ace6c162c3335953e55/docs/evidence/phase-2-native/macos-owning-process-qualification.md) for the pre-optimization qualified record.
-
-The controlled profiles are regression evidence for the named source, fixture,
-route, `RequireUnchanged` geometry policy, preserving focus policy, and current
-topology only. They are not real-time guarantees and establish neither
-exact-window consumption nor general application, renderer, input-stack, or game
-compatibility.
 
 ## Historical pre-optimization decision
 

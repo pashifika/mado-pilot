@@ -1,6 +1,6 @@
-# Phase 2.2 macOS OpenGL game-like process-directed delivery, measured on aarch64-apple-darwin at source
-# 9e3e77d4021b792f4c4835390658aaac98e76826 and tree
-# ea7881c4416ca2a330fa3097d4fa271f9a547f96.
+# Phase 2.2 macOS game-like process-directed delivery, measured on aarch64-apple-darwin at source
+# dec43d7b6c91d415f2028e188e89fa289cb9c1c9 and tree
+# 109f77df9ef9f40b515245ab60a6036822ee7d78.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029 sets
 # the frozen pre-measurement budgets. This exact-source mixed-scale result
@@ -18,19 +18,19 @@ measurements_recorded = true
 # A committed profile under docs/benchmarks/ carries the budgets.
 
 [profile]
-fixture = "separately linked private macOS fixture Rust, protocol-v10, header, Objective-C, and renderer sources"
-fixture_sha256 = "fa5b1bd7577b877b7c3a42ba8ae5fd57029137bea36da4615881bd6837fbc3d0"
-benchmark_executable_sha256 = "bd811ac11364c7fc1ad7af3f76b59542cf55c9c1bdd5afa017c9447ac37a54cd"
+fixture = "separately linked private macOS fixture Rust, protocol-v11, header, Objective-C, and renderer sources"
+fixture_sha256 = "c5576c5290003c723f1d3797ab1c6032e935a9e04ab42d50ce5dc9108bc029ea"
+benchmark_executable_sha256 = "fa4ac54a1fa9df3e25833c7923cf7b24dc5ee82a70ddff9a3aa3033a73f5ce08"
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
 deployment_target = "macOS 26.5.2"
-build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release --features private-fixture; signed .app launch"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release --features private-fixture; signed .app; controlled NSWorkspace new-instance launch"
 warmup_iterations = 5
 sample_count = 50
 correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
 queue_policy = "one fixture command outstanding; one process-directed sequence admitted; no fallback"
-notes = "source commit 9e3e77d4021b792f4c4835390658aaac98e76826, tree ea7881c4416ca2a330fa3097d4fa271f9a547f96; toolchain rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; signed-origin display 3840x2160 1x; main display 2560x1440 logical / 5120x2880 backing 2x; built-in display 1512x982 logical / 3024x1964 backing 2x; mixed-scale validator authoritative; permissions/signing Screen Recording granted; event-post access granted; target and foreground bundles structurally ad-hoc signed; fixture executable sha256 51ef9a691c4118b84da9de3ac59b0b39def11ce55ccc2305c9c039d46fb74c29; executable paths deliberately omitted; lineage=process-directed-game-like; mode=game-like renderer=opengl stimulus=private-control"
+notes = "source commit dec43d7b6c91d415f2028e188e89fa289cb9c1c9, tree 109f77df9ef9f40b515245ab60a6036822ee7d78; toolchain rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; signed-origin display 3840x2160 1x; main display 2560x1440 logical / 5120x2880 backing 2x; built-in display 1512x982 logical / 3024x1964 backing 2x; mixed-scale validator authoritative; permissions/signing Screen Recording granted; event-post access granted; target and foreground bundles structurally ad-hoc signed; fixture executable sha256 18a14299de1a2cbb6d26e1aa9f37c1708c1a25ec9a32413e4cc730f3cfa761bc; executable paths deliberately omitted; benchmark and fixture SHA-256 bytes are bound to validity-checked static and audit-token-selected live Security code identities; lineage=process-directed-game-like; mode=game-like renderer=opengl stimulus=private-control"
 
 [[budget]]
 measure = "result_correctness"
@@ -56,14 +56,14 @@ rationale = "the frozen 16 MiB process-directed live Rust heap ceiling"
 workload = "discovery_open_retained_authority"
 correctness_oracle = "one fresh discovery selects the retained primary target while its process owns an additional ordinary window, exposes every explicit unknown process-scoped invocation-only pair, and opens required input before the shared deadline"
 result_correctness = 0
-latency_p50_ms = 336.448125
-latency_p95_ms = 390.793459
-latency_max_ms = 418.131750
-iteration_span_ms = 410.046475
+latency_p50_ms = 327.312958
+latency_p95_ms = 397.643833
+latency_max_ms = 420.6585
+iteration_span_ms = 411.328066
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 59195
-steady_allocated_bytes = 51009
-allocated_growth_bytes = 2624
+peak_allocated_bytes = 51021
+steady_allocated_bytes = 45893
+allocated_growth_bytes = 0
 
 [[measurement.budget]]
   measure = "latency_p50"
@@ -93,13 +93,13 @@ allocated_growth_bytes = 2624
 workload = "event_authority_preflight_post"
 correctness_oracle = "with an additional same-process window present, one pointer event revalidates retained process authority, direct post-event authorization, and production posting; its invocation-only receipt and exact process event match without fallback, then a separately acknowledged controlled transition produces a strictly newer approved frame without attributing that visual change to input"
 result_correctness = 0
-latency_p50_ms = 60.230750
-latency_p95_ms = 62.760084
-latency_max_ms = 67.098292
-iteration_span_ms = 182.396308
+latency_p50_ms = 52.372459
+latency_p95_ms = 56.699333
+latency_max_ms = 57.873416
+iteration_span_ms = 173.248277
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4674388
-steady_allocated_bytes = 4673254
+peak_allocated_bytes = 4677709
+steady_allocated_bytes = 4676575
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -130,13 +130,13 @@ allocated_growth_bytes = 0
 workload = "release_cleanup"
 correctness_oracle = "with an additional same-process window present, cancellation begins only after the fixture separately observes one key-down; the production receipt reports one possible effect and one bounded cleanup release, then an independent controlled transition produces a strictly newer approved frame"
 result_correctness = 0
-latency_p50_ms = 1.652792
-latency_p95_ms = 2.616958
-latency_max_ms = 2.734042
-iteration_span_ms = 190.529067
+latency_p50_ms = 1.509833
+latency_p95_ms = 2.392834
+latency_max_ms = 2.702916
+iteration_span_ms = 180.423144
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 4674412
-steady_allocated_bytes = 4673254
+peak_allocated_bytes = 4677733
+steady_allocated_bytes = 4676575
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -167,13 +167,13 @@ allocated_growth_bytes = 0
 workload = "session_close"
 correctness_oracle = "with an additional same-process window present, a fresh process-directed session closes within its own bound and repeated close is idempotent"
 result_correctness = 0
-latency_p50_ms = 68.578834
-latency_p95_ms = 76.776875
-latency_max_ms = 79.964542
-iteration_span_ms = 297.106577
+latency_p50_ms = 72.238708
+latency_p95_ms = 83.162083
+latency_max_ms = 90.717709
+iteration_span_ms = 289.94774
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 44677
-steady_allocated_bytes = 41592
+peak_allocated_bytes = 47998
+steady_allocated_bytes = 44201
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -204,13 +204,13 @@ allocated_growth_bytes = 0
 workload = "fixture_controller_close"
 correctness_oracle = "the private fixture controller acknowledges stop, closes its bounded channel, terminates only its authenticated application when needed, and reaps its owned launcher within one shared deadline"
 result_correctness = 0
-latency_p50_ms = 20.940875
-latency_p95_ms = 32.991458
-latency_max_ms = 33.695208
-iteration_span_ms = 312.210714
+latency_p50_ms = 33.459542
+latency_p95_ms = 45.212708
+latency_max_ms = 93.182792
+iteration_span_ms = 2054.076865
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 37443
-steady_allocated_bytes = 0
+peak_allocated_bytes = 607344
+steady_allocated_bytes = 64
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
