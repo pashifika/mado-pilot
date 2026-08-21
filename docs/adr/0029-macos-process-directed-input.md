@@ -9,10 +9,10 @@
   deterministic one-read proofs, sanitizer, and ABI/C++/CMake checks apply
   through the reviewed source chain. Hosted CI passed on source/test commit
   `7ce1602` with pushed evidence head `705c713`.
-  The exact two-display non-mirrored `same-scale` supplement passed all 14
-  interactive rows and both applicable display scenarios. Release-level pair
-  publication remains 0 qualified, 0 rejected, and 14 unexecuted because the
-  disconnected `single` matrix is unavailable.
+  Independent disconnected `single` and exact two-display non-mirrored
+  `same-scale` supplements each passed all 14 interactive rows and their
+  applicable display scenarios. Release-level pair publication is
+  14 qualified, 0 rejected, and 0 unexecuted.
   Historical candidate `9e3e77d` passed its own earlier exact-source rows and
   profiles; the later review-driven source, fixture, and harness corrections
   invalidated that evidence for the final candidate. The complete matrix at
@@ -25,9 +25,9 @@
   topologies.
 - **Date:** 2026-08-16; authority-timing amendment 2026-08-17; exact-source
   controlled evidence 2026-08-21
-- **Release gate:** pending until all fourteen pairs have passing `single`,
-  `same-scale`, and `mixed-scale` rows and the controlled profiles pass on one
-  applicable revision
+- **Release gate:** passed for all fourteen controlled pairs after independent
+  `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale`
+  matrices plus the controlled profiles passed on the applicable source chain
 - **Supersedes:** only ADR 0016's macOS system-only delivery-surface decision;
   its controlled-linkage, non-prompting permission, `System` focus-authority,
   no-private-window-control, and no-implicit-fallback rules remain in force
@@ -242,10 +242,9 @@ the existing no-fallback contract after possible effect.
 - The support claim remains bound to fourteen exact pairs and revision-bound
   native evidence. The pre-optimization source qualified each as `Unknown`,
   owning-process scoped, invocation-only, and foreground-preserving. Final
-  candidate `dec43d7` passes the controlled profiles, and the `df1c45d`
-  `mixed-scale` rows apply to it through the benchmark-harness-only diff, but
-  its 14 release decisions remain unexecuted because `single` and exact
-  two-display `same-scale` rows are unavailable. Future operation,
+  candidate `dec43d7` passes the controlled profiles and independently passing
+  `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale`
+  matrices. All fourteen controlled pairs are qualified. Future operation,
   target-class, coordinate-space, or topology pairs remain unavailable until
   their own mandatory rows pass. A route-wide failure blocks every pair; a pair
   failure blocks only that pair; missing topology evidence is never replaced by
@@ -285,8 +284,8 @@ the existing no-fallback contract after possible effect.
   binds results to their exact source and artifacts. It records the historical
   complete pre-optimization matrix, rejected `a471c2d` benchmark bodies,
   historical `9e3e77d` evidence, and final `dec43d7` native/performance
-  evidence separately. The `mixed-scale` and exact two-display `same-scale`
-  rows pass; all disconnected `single` pair rows remain unexecuted.
+  evidence separately. Independent `single`, exact two-display `same-scale`,
+  and `mixed-scale` rows pass; all fourteen controlled pairs are qualified.
 - Deterministic controller, native-double, shim layout/version, containment,
   protocol, privacy, linkage, and C/C++ contract suites must cover every
   commit-seam ordering — cancellation, revocation, geometry change, target

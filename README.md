@@ -41,13 +41,13 @@ crates/bindings/capi/examples/c/macos-native-input.c
 crates/bindings/capi/examples/cpp/native-input.cpp
 ```
 
-Release acceptance remains incomplete. Final measured candidate
+Release acceptance is complete for the fourteen controlled macOS
+owning-process pairs. Final measured candidate
 `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` passed the controlled
-AppKit, game-like, and native input/public-language profiles. The
-three-display `mixed-scale` rows apply through the reviewed
-benchmark-harness-only diff, and the exact two-display non-mirrored
-`same-scale` supplement now passes. Its fourteen release pair decisions remain
-unexecuted because the required disconnected `single` matrix is unavailable.
+AppKit, game-like, and native input/public-language profiles. Independent
+`single`, exact two-display non-mirrored `same-scale`, and three-display
+`mixed-scale` matrices passed without substituting one topology for another.
+The release decision is 14 qualified, 0 rejected, and 0 unexecuted.
 The shared external-display matrix and both Windows interactive matrices still
 require their approved physical topologies. macOS capture needs Screen Recording
 and input needs event-post access; MadoPilot probes both without
@@ -75,7 +75,7 @@ Adding a package here is not a claim that its behavior exists.
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.2 while preserving the released ABI 1.0 prefix; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.2 |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 is resolved on both targets. The Phase 2.2 input-diagnostic profile and final `dec43d7` native input/public-language, process-directed AppKit, and controlled game-like profiles are accepted on macOS; those results and the passing `same-scale` supplement do not substitute for missing `single` topology qualification. Diagnostic hard correctness and bounded-growth gates run in both release-target CI jobs; named-host Windows timing plus the remaining Windows native profiles stay open |
+| Numeric performance budgets | Phase 1 is resolved on both targets. The Phase 2.2 input-diagnostic profile and final `dec43d7` native input/public-language, process-directed AppKit, and controlled game-like profiles are accepted on macOS. Independent `single`, `same-scale`, and `mixed-scale` owning-process matrices pass. Diagnostic hard correctness and bounded-growth gates run in both release-target CI jobs; named-host Windows timing plus the remaining Windows native profiles stay open |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled

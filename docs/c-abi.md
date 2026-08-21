@@ -507,10 +507,9 @@ target-protocol acknowledgement. Both remain separate from Windows system
 routes. The macOS implementation reports system routes plus process-directed
 pairs with owning-process scope, unknown compatibility, and invocation-only
 evidence for retained top-level windows. Final candidate `dec43d7` passed the
-controlled profiles and inherits the `df1c45d` exact-source three-display
-`mixed-scale` rows through a benchmark-harness-only diff. The exact two-display
-non-mirrored `same-scale` supplement also passes; all fourteen release decisions
-remain unexecuted because the disconnected `single` matrix is unavailable.
+controlled profiles; independent `single`, exact two-display non-mirrored
+`same-scale`, and `mixed-scale` matrices passed for all fourteen controlled
+pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted.
 Additional windows in
 the same process do not revoke that scope, and no exact-window route exists on
 macOS. The negotiated capability report, not a platform guess in the caller,

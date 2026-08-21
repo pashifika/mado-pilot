@@ -16,11 +16,10 @@ revision-bound macOS native input and public-language profile. Accepted-design
 [ADR 0029](adr/0029-macos-process-directed-input.md) binds the Phase 2.2 macOS
 process-directed and controlled-stimulus lineage below. Final candidate
 `dec43d7` passes the exact-source controlled AppKit and game-like profiles
-under their frozen regression budgets. The exact two-display non-mirrored
-`same-scale` supplement also passes, but measurements and multi-display evidence
-do not substitute for the unavailable `single` qualification row. All fourteen
-release pair decisions therefore remain unexecuted. The remaining native
-workload and target gaps stay open.
+under their frozen regression budgets. Independent `single`, exact two-display
+non-mirrored `same-scale`, and `mixed-scale` qualification matrices also pass,
+so all fourteen controlled release pair decisions are qualified. The remaining
+native workload and target gaps stay open.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -598,11 +597,9 @@ another renderer, game, application, input stack, or anti-cheat system.
 These passing profiles are controlled-fixture regression evidence, not a
 real-time latency promise or evidence of exact-window delivery, application
 consumption, `RequireFocused`, `ReprojectCurrent`, or fallback performance.
-Timing cannot replace topology qualification: the retained `mixed-scale` rows
-apply through the reviewed benchmark-harness-only diff and the exact
-two-display non-mirrored `same-scale` supplement passes, but the disconnected
-`single` row remains unexecuted. None of the fourteen pair decisions is
-release-qualified.
+Timing did not replace topology qualification: independent `single`, exact
+two-display non-mirrored `same-scale`, and `mixed-scale` matrices each passed.
+All fourteen controlled pair decisions are release-qualified.
 
 ## Phase 2 Windows ownership prototype
 

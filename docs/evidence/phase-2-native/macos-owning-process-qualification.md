@@ -27,11 +27,11 @@ containment completed. Final test-only commit `7ce1602` restores the production
 requiring primary success, reader EOF/join, and complete child-tree reaping.
 No retained profile value or oracle is relabeled.
 
-Release-level owning-process support remains 0 `qualified`, 0 `rejected`, and
-14 `unexecuted` pairs. The exact two-display non-mirrored `same-scale`
-supplement now passes; the required disconnected `single` matrix remains
-physically unavailable. No current topology or controlled latency result
-substitutes for it.
+Release-level owning-process support is 14 `qualified`, 0 `rejected`, and
+0 `unexecuted` pairs. Independent `single`, exact two-display non-mirrored
+`same-scale`, and `mixed-scale` matrices each passed on the recorded
+source/applicability chain and signed fixtures. No topology or controlled
+latency result was substituted for another.
 
 | Field | Current exact-source evidence |
 |---|---|
@@ -43,8 +43,9 @@ substitutes for it.
 | Input-profile MadoPilot dynamic library SHA-256 | `e7f42b208522ff772fa67449f52ba7ef33350e535788a29f4876c171a5bf6898` |
 | Measured `mixed-scale` topology | three online non-mirrored displays; signed-origin 1× display, 2× main display, and 2× built-in display |
 | Supplemental `same-scale` topology | exactly two online non-mirrored horizontally adjacent 2× displays: main 2560×1440 logical / 5120×2880 backing at `(0,0)` and built-in 1512×982 logical / 3024×1964 backing at `(2560,170)` |
+| Supplemental `single` topology | exactly one online, non-mirrored 2× built-in display: 1512×982 logical / 3024×1964 backing at `(0,0)` |
 | Fixture protocol / internal shim surface / deployment target | version 11 / version 19 / macOS 26.5.2 |
-| Native rows | 34 permission-independent rows and all 14 ignored interactive rows passed on the applicable signed-release matrix; three `mixed-scale` display conversion/geometry/seam scenarios passed; all 14 `same-scale` interactive rows plus same-frame conversion and adjacent-seam scenarios passed; the tightened minimized/off-screen lifecycle row passed |
+| Native rows | 34 permission-independent rows and all 14 ignored interactive rows passed on the applicable signed-release matrix; independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices each passed all 14 interactive rows plus every applicable display scenario; the tightened minimized/off-screen lifecycle row passed |
 | Deterministic one-read binding | eight focused controller, geometry-source, and native-seam proofs passed; terminal `RequireUnchanged`/`UseFrameSnapshot` source/current counts are `[1, 0]`; final ordinary native authority count is one |
 | AppKit controlled profile | 50 retained terminal samples; p95 `56.466375 ms` ≤ `106.34 ms`; zero correctness failures; zero allocation growth; profile SHA-256 `288106be21c9c9987a472803260e11f634c2311e521ec9eee6250926e2425fd0` |
 | Controlled game-like profile | 50 retained terminal samples; p95 `56.699333 ms` ≤ `112.18 ms`; zero correctness failures; zero allocation growth; profile SHA-256 `1d4b030ad08c5a5febb9167ef5a307b7eed78794e0001ccf7436e2f3365e5b70` |

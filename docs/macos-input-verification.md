@@ -6,7 +6,7 @@ C ABI and header-only C++ wrapper consume that same facade-owned engine. Release
 acceptance consists of the explicit native checks below; ordinary test runs never
 send desktop input or open the opt-in fixture window.
 
-Current candidate release status: **0 qualified, 0 rejected, and 14 unexecuted
+Current candidate release status: **14 qualified, 0 rejected, and 0 unexecuted
 controlled pairs**. Final candidate
 `dec43d7b6c91d415f2028e188e89fa289cb9c1c9` passed the controlled AppKit,
 game-like, and native input/public-language profiles. The three-display
@@ -14,11 +14,11 @@ game-like, and native input/public-language profiles. The three-display
 ABI/C++/CMake checks apply through the reviewed source chain. Hosted CI passed
 on source/test commit `7ce1602` with pushed evidence head `705c713`.
 
-The exact two-display non-mirrored `same-scale` supplement passed all 14
-interactive rows and both applicable display scenarios. The disconnected
-`single` row remains unavailable, so no release pair is promoted. Nothing here
-qualifies arbitrary applications, arbitrary games, exact-window delivery, or
-application consumption.
+Independent disconnected `single` and exact two-display non-mirrored
+`same-scale` supplements each passed all 14 interactive rows and their
+applicable display scenarios. No topology result was substituted for another.
+Nothing here qualifies arbitrary applications, arbitrary games, exact-window
+delivery, or application consumption.
 
 ## Capability boundary
 
@@ -29,7 +29,7 @@ process that owns the retained window without focusing it.
 
 | Discovered target | `System` | `WindowMessage` | `ProcessDirected` |
 |---|---|---|---|
-| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Implemented pointer, keyboard, and text; foreground-preserving; honours a caller-selected `RequireFocused` predicate without activation; owning-process scope; `Unknown` compatibility; invocation-only evidence; release support is unexecuted on the optimized source |
+| Top-level window | Pointer, keyboard, text; focus required; invocation-only evidence | Unsupported | Qualified pointer, keyboard, and text; foreground-preserving; honours a caller-selected `RequireFocused` predicate without activation; owning-process scope; `Unknown` compatibility; invocation-only evidence |
 | Additional same-process windows | Same target contract | Unsupported | Do not revoke process scope; no exact-window or responder-selection guarantee |
 | Display | Pointer only; no focusable target is implied; invocation-only evidence | Unsupported | Unsupported |
 
@@ -49,11 +49,10 @@ call a pair qualified only when its mandatory revision-bound native rows in the
 and a failed or unexecuted route-wide row blocks every dependent pair. The
 negotiated target descriptor remains the runtime admission authority, but its
 implemented mapping is not evidence that the current source passed the release
-gate. The pre-optimization source qualified fourteen pairs. The `df1c45d`
-`mixed-scale` rows apply to final candidate `dec43d7` through the
-benchmark-harness-only diff, but all fourteen current
-release decisions remain unexecuted because disconnected `single` and exact
-two-display `same-scale` rows are unavailable.
+gate. The pre-optimization source qualified fourteen pairs. Final candidate
+`dec43d7` now has independently passing `single`, exact two-display
+non-mirrored `same-scale`, and `mixed-scale` matrices. All fourteen current
+release decisions are `qualified`.
 
 Every target names `PermissionKind::InputControl` as the authorization input
 needs, separately from the Screen Recording that capture needs. `InputControl`
@@ -691,9 +690,9 @@ interactive rows, and three topology scenarios. Final measured candidate
 bounds and backing scale, uses private shim surface version 19 and fixture
 protocol version 11, and differs from `df1c45d` only in
 `crates/mado-pilot/benches/native-phase2.rs`, so the `df1c45d` native matrix
-applies to it. The exact two-display non-mirrored `same-scale` supplement also
-passes; the disconnected `single` row did not run, so every release pair remains
-`unexecuted`.
+applies to it. Independent `single` and exact two-display non-mirrored
+`same-scale` supplements also pass. Together with `mixed-scale`, every
+mandatory topology row passes and every release pair is `qualified`.
 
 The privacy-reviewed
 [repository evidence](evidence/phase-2-native/macos-owning-process-qualification.md)
@@ -850,11 +849,11 @@ path. `RequireFocused`, `ReprojectCurrent`, ordered fallback, cleanup, and
 multi-unit sequences retain distinct observation shapes.
 
 The benchmark bodies formerly attributed to `a471c2d` are source/oracle-
-misbound and supply no result. Current performance plus passing `mixed-scale`
-and exact two-display `same-scale` evidence do not substitute for the unavailable
-`single` topology, so all fourteen release decisions remain unexecuted. These
-are controlled regression ceilings, not user-facing latency promises or evidence
-of general game or anti-cheat compatibility.
+misbound and supply no result. Current performance plus independently passing
+`single`, exact two-display `same-scale`, and `mixed-scale` matrices support the
+fourteen controlled release pairs. These are controlled regression ceilings,
+not user-facing latency promises or evidence of general game or anti-cheat
+compatibility.
 
 ## Historical Phase 2 evidence
 
