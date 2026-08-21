@@ -230,6 +230,8 @@ mod native {
     enum WorkloadSet {
         Capture,
         Transitions,
+        #[cfg(target_os = "macos")]
+        ResizeAllocation,
         Input,
         #[cfg(target_os = "macos")]
         ProductionCapture,
@@ -248,6 +250,8 @@ mod native {
             match value {
                 "capture" => Some(Self::Capture),
                 "transitions" => Some(Self::Transitions),
+                #[cfg(target_os = "macos")]
+                "resize-allocation" => Some(Self::ResizeAllocation),
                 "input" => Some(Self::Input),
                 #[cfg(target_os = "macos")]
                 "production-capture" => Some(Self::ProductionCapture),
@@ -271,6 +275,7 @@ mod native {
                 Self::ProductionCapture => Plan::new(20, 200),
                 #[cfg(target_os = "macos")]
                 Self::ProductionTransitions
+                | Self::ResizeAllocation
                 | Self::ProcessDirected
                 | Self::ProcessDirectedGameLike => Plan::new(5, 50),
                 #[cfg(target_os = "macos")]
@@ -282,6 +287,10 @@ mod native {
             match self {
                 Self::Capture => capture_workload_description(),
                 Self::Transitions => transition_workload_description(),
+                #[cfg(target_os = "macos")]
+                Self::ResizeAllocation => {
+                    "macOS production capture allocation across controlled target resize"
+                }
 
                 Self::Input => input_workload_description(),
 
@@ -312,6 +321,10 @@ mod native {
             match self {
                 Self::Capture => capture_queue_policy(),
                 Self::Transitions => transition_queue_policy(),
+                #[cfg(target_os = "macos")]
+                Self::ResizeAllocation => {
+                    "fixture command queue depth 1; one long-lived session latest-wins queue depth 1"
+                }
 
                 Self::Input => input_queue_policy(),
 
@@ -483,8 +496,8 @@ mod native {
             };
             let set = required("--workload-set").and_then(|value| {
                 WorkloadSet::parse(&value).ok_or_else(|| {
-                    "--workload-set must be capture, transitions, input, process-directed, \
-                     process-directed-game-like, or process-diagnostics"
+                    "--workload-set must be capture, transitions, input, resize-allocation, \
+                     process-directed, process-directed-game-like, or process-diagnostics"
                         .to_owned()
                 })
             })?;
@@ -1597,8 +1610,8 @@ mod native {
                 concat!(
                     "usage: cargo bench --package mado-pilot --bench native-phase2 -- ",
                     "--workload-set <capture|transitions|input|production-capture|",
-                    "production-transitions|process-directed|process-directed-game-like|",
-                    "process-diagnostics> ",
+                    "production-transitions|resize-allocation|process-directed|",
+                    "process-directed-game-like|process-diagnostics> ",
                     "--fixture-executable <path> [--ordinary-fixture-executable <path> ",
                     "--c-executable <path> --cpp-executable <path> --library <path>] ",
                     "--hardware <description> --os-version <description> ",
@@ -1697,6 +1710,8 @@ mod native {
             WorkloadSet::ProductionCapture => production_capture_workloads(plan),
             #[cfg(target_os = "macos")]
             WorkloadSet::ProductionTransitions => production_transition_workloads(plan),
+            #[cfg(target_os = "macos")]
+            WorkloadSet::ResizeAllocation => resize_allocation_workloads(plan),
 
             WorkloadSet::Input => {
                 let fixture = Rc::new(FixtureProcess::spawn(input_fixture_behavior()));
@@ -1972,6 +1987,31 @@ mod native {
                     )))
                 },
                 cpu_map,
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    fn resize_allocation_workloads(plan: Plan) -> Vec<Workload> {
+        vec![
+            measure(
+                "fixture_resize_command",
+                "one private resize command is acknowledged by the separately running fixture",
+                plan,
+                || Rc::new(FixtureProcess::spawn(FixtureBehavior::Static)),
+                fixture_resize_command,
+            ),
+            measure(
+                "resize_recreation",
+                "one acknowledged private resize advances epoch and geometry and returns the resized \
+                 extent independently of the acknowledgement",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                resize_recreation,
             ),
         ]
     }
@@ -3458,6 +3498,13 @@ mod native {
         Sample::unmapped(elapsed, correct).with_stale_work(delta.saturating_sub(1), delta)
     }
 
+    #[cfg(target_os = "macos")]
+    fn fixture_resize_command(fixture: &Rc<FixtureProcess>) -> Sample {
+        let started = Instant::now();
+        let correct = controlled_command_ok(fixture, protocol::FixtureCommandKind::Resize);
+        Sample::unmapped(started.elapsed(), correct)
+    }
+
     fn resize_recreation(active: &ActiveFlow) -> Sample {
         let mut state = lock_state(active);
         let before = state.last.stamp();
@@ -4010,6 +4057,7 @@ mod native {
         let latency = match set {
             WorkloadSet::Capture => PHASE2_2_CAPTURE_LATENCY_BUDGETS.as_slice(),
             WorkloadSet::Transitions => PHASE2_2_TRANSITION_LATENCY_BUDGETS.as_slice(),
+            WorkloadSet::ResizeAllocation => &[],
             WorkloadSet::Input => &[],
             WorkloadSet::ProductionCapture | WorkloadSet::ProductionTransitions => &[],
             WorkloadSet::ProcessDirected => PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS.as_slice(),
@@ -4049,6 +4097,7 @@ mod native {
             | WorkloadSet::ProductionTransitions => "2",
             WorkloadSet::Capture
             | WorkloadSet::Transitions
+            | WorkloadSet::ResizeAllocation
             | WorkloadSet::ProcessDirected
             | WorkloadSet::ProcessDirectedGameLike
             | WorkloadSet::ProcessDiagnostics => "2.2",
@@ -4068,6 +4117,9 @@ mod native {
             }
             WorkloadSet::Transitions => {
                 "lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
+            }
+            WorkloadSet::ResizeAllocation => {
+                "lineage=focused-resize-allocation; mode=default renderer=appkit-background stimulus=private-control"
             }
             WorkloadSet::Input => {
                 "lineage=rust-System-unchanged-cross-language-ProcessDirected-cutover; mode=default renderer=appkit-background"
@@ -4358,6 +4410,7 @@ mod native {
         let id = match set {
             WorkloadSet::Capture => "phase-2-2-controlled-capture-aarch64-apple-darwin",
             WorkloadSet::Transitions => "phase-2-2-controlled-transitions-aarch64-apple-darwin",
+            WorkloadSet::ResizeAllocation => "phase-2-macos-resize-allocation-aarch64-apple-darwin",
             WorkloadSet::Input => "phase-2-native-input-aarch64-apple-darwin",
             WorkloadSet::ProductionCapture => "phase-2-production-capture-aarch64-apple-darwin",
             WorkloadSet::ProductionTransitions => {

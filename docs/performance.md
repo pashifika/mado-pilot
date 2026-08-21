@@ -538,6 +538,14 @@ per-event authority/preflight/post path (`event_authority_preflight_post`),
 release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
 overflow around process-directed events.
 
+The macOS-only `resize-allocation` workload set is the focused regression seam
+for allocation retained across controlled geometry changes. It measures the
+fixture resize command separately from `resize_recreation`, uses five warm-ups
+and fifty retained samples, and applies the repository hard correctness and
+4,096-byte growth gates without defining an independent latency ceiling. It is
+non-normative diagnostic evidence and does not replace the complete
+`transitions` or production-capture acceptance profiles.
+
 The original five revision-bound profiles were measured on the approved Apple
 Silicon host at corrected pre-optimization source commit
 `a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (implementation tree
