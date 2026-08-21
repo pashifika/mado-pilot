@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 const CHILD_PROCESS_POLL: Duration = Duration::from_millis(5);
 const CHILD_PROCESS_TERMINATE_WAIT: Duration = Duration::from_secs(1);
-const CHILD_PIPE_DRAIN_WAIT: Duration = Duration::from_millis(500);
+const CHILD_PIPE_DRAIN_WAIT: Duration = Duration::from_millis(100);
 
 /// Captured output from one benchmark child whose lifetime and output were
 /// bounded by [`bounded_child_output`].
@@ -2181,7 +2181,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_child_output_terminates_a_closed_pipe_descendant_before_success() {
+    fn bounded_child_output_contains_a_closed_pipe_descendant_before_return() {
         let report = PidReport::new();
         let mut command = report.command("closed-pipe-descendant");
         let (mut primary_cleanup, _cleanup_finished, reader_events) =
@@ -2199,7 +2199,14 @@ mod tests {
         );
         let descendant_pid = report.descendant_pid();
 
-        assert!(output.within_bounds);
+        #[cfg(not(windows))]
+        assert!(output.within_bounds, "{output:?}");
+        #[cfg(windows)]
+        assert!(
+            !output.within_bounds,
+            "hosted Windows keeps a pipe reader pending until job containment terminates the \
+             descendant, so the primary result must stay conservative: {output:?}"
+        );
         assert!(output.status.is_some_and(|status| status.success()));
         assert_readers_reached_eof_and_were_joined(&reader_events);
         assert_process_is_reaped(child_pid.get(), "finite child");
