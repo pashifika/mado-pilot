@@ -13,7 +13,7 @@ game-like, and native input/public-language profiles. The three-display
 `mixed-scale` native rows, deterministic one-read proofs, sanitizer, and
 ABI/C++/CMake checks passed on predecessor `df1c45d` and apply to `dec43d7`
 because their complete diff is the benchmark harness alone. Hosted CI for final
-source/harness commit `6deec54` and its evidence-only successor is pending push.
+source/test commit `7ce1602` and its evidence-only successor is pending push.
 The disconnected `single` and exact two-display non-mirrored `same-scale` rows
 remain unavailable, so no release pair is promoted. Nothing
 here qualifies arbitrary applications, arbitrary games, exact-window delivery,
