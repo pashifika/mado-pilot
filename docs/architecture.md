@@ -62,7 +62,7 @@ owns and where they genuinely differ.
 |---|---|---|
 | Adapter package | `mado-pilot-platform-windows` | `mado-pilot-platform-macos` |
 | Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and Core Video frame lifetime (implemented) |
-| Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Candidate `9e3e77d` passed exact-source three-display `mixed-scale` native rows and controlled AppKit/game-like profiles; its fourteen release decisions remain unexecuted because disconnected `single` and exact two-display non-mirrored `same-scale` matrices are unavailable. No `WindowMessage` route exists |
+| Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Historical candidate `9e3e77d` passed exact-source three-display `mixed-scale` native rows and controlled AppKit/game-like profiles. The protocol-v11 source candidate awaits replacement exact-source qualification, and its fourteen release decisions remain unexecuted because disconnected `single` and exact two-display non-mirrored `same-scale` matrices are unavailable. No `WindowMessage` route exists |
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
 | Native verification host | `windows-2025` CI plus the ADR 0026 named interactive Core i7-12700KF / RTX 4080 Windows 11 Pro 26200 host | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | unresolved | macOS 26.5.2; older versions unsupported |
@@ -1298,10 +1298,14 @@ ScreenCaptureKit downscales a frame. Movement or resize refuses after
 reversible event construction and before posting.
 `UseFrameSnapshot` also projects from the source transform but deliberately
 tolerates current movement while retaining exact-window and process-lifetime
-authority. `ReprojectCurrent` obtains a live Rust transform, resolves against
-it, and requires the final native bounds to remain equal. Pointer scroll events
-carry the sequence's last resolved global location with their deltas and never
-inherit an ambient Core Graphics location. A fixture restore can first publish
+authority. The macOS target ledger retains the 64 most recent distinct geometry
+revisions per live stream; a retired source is `UnsupportedCoordinate`, never a
+reconstruction from current geometry. `ReprojectCurrent` obtains a live Rust
+transform, resolves against it, and requires the final native bounds to remain
+equal.
+Pointer scroll events carry the sequence's last resolved global location with
+their deltas and never inherit an ambient Core Graphics location. A fixture
+restore can first publish
 a strictly newer frame with transient pre-restore geometry; qualification waits
 for a strictly newer frame whose geometry and controlled content both match,
 rather than treating frame order alone as restoration.
@@ -1333,12 +1337,25 @@ process-qualified title, one flat fill colour, and a bounded report of event kin
 and UTF-16 unit counts; it never retains characters. Its reproducible OSS bundle
 mode uses an ad-hoc signature with the stable signing identifier
 `dev.mado-pilot.macos-input-fixture` and no certificate identity. The generated
-bundle is structurally verified without a keychain. A private version-10 control
+bundle is structurally verified without a keychain. A private version-11 control
 protocol drives bounded deterministic window, foreground, recorder, and
 termination transitions and an opt-in game-like OpenGL renderer mode reported
 as an explicit ready fact, so capture evidence never depends on focus, ambient
 redraws, or product input. `System` submission remains an explicit user-focused
-check. Each `ProcessDirected` renderer matrix first runs a target-only launch
+check.
+
+The qualification controller obtains each new fixture instance through the
+absolute-path AppKit loader, retains the returned `NSRunningApplication`, and
+accepts its private socket peer only when kernel credentials bind that exact
+PID, user, canonical executable, and audit-token lifetime. The artifact SHA-256
+is paired with a validity-first Security.framework unique code identity; the
+peer's audit-token-selected running identity must match before ready facts are
+trusted. The benchmark's own process uses the same binding. Each C and C++
+workload retains unique executable and dynamic-library pins inside
+controller-owned mode-0500 directories; every child must match the executable
+pin's live code identity, and both directory/file identities and bytes are
+rechecked after each exit. Each `ProcessDirected`
+renderer matrix first runs a target-only launch
 that proves `RequireFocused` succeeds while that retained window is already
 focused, then terminates it. The main lifecycle starts the independently
 identified foreground bundle before an inactive target; its focus-policy row

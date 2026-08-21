@@ -4,13 +4,15 @@
 //! rather than inheriting them from a binding crate, which is rule 8 of
 //! `docs/adr/0012-macos-shim-language-and-containment.md`.
 //!
-//! Two of the flags are correctness requirements rather than preferences.
-//! `-fobjc-arc-exceptions` is the one the ADR measured: without it, ARC emits no
-//! release on an exception's unwind edge, so an exception raised where a failing
-//! stream start would raise one leaks the native object the session had already
-//! retained. `MP_SHIM_ARC_EXCEPTIONS` is defined beside it because Clang exposes
-//! no feature macro for the flag, so the shim's `#error` and the flag stay in one
-//! review.
+//! Three language flags are correctness requirements rather than preferences.
+//! `-fobjc-arc` owns native object references, and `-fobjc-arc-exceptions` is the
+//! one ADR 0012 measured: without it, ARC emits no release on an exception's
+//! unwind edge, so an exception raised where a failing stream start would raise
+//! one leaks the native object the session had already retained.
+//! `MP_SHIM_ARC_EXCEPTIONS` is defined beside it because Clang exposes no feature
+//! macro for the flag, so the shim's `#error` and the flag stay in one review.
+//! `-fblocks` compiles the bounded private NSWorkspace completion handler; AppKit
+//! remains a controlled absolute-path load rather than an eager dependency.
 //!
 //! The workspace declares macOS 26.5.2 as this implementation's deployment floor.
 //! ScreenCaptureKit remains deliberately absent from eager linkage: controlled
@@ -173,6 +175,7 @@ fn main() {
         .include("native")
         .flag("-fobjc-arc")
         .flag("-fobjc-arc-exceptions")
+        .flag("-fblocks")
         .define("MP_SHIM_ARC_EXCEPTIONS", "1")
         .flag("-mmacosx-version-min=26.5.2")
         .warnings(true)

@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mado_pilot_core::{
-    CancellationToken, CapabilitySupport, Clock, CoordinateSpace, IdentityIssuer, InputCapability,
-    InputDelivery, InputOperationKind, Lifecycle, MonotonicInstant, OperationContext, Point,
-    ProviderId, Status, SubmissionEvidence, TargetId, TargetKind,
+    CancellationToken, CapabilitySupport, Clock, CoordinateSpace, GeometryRevision, IdentityIssuer,
+    InputCapability, InputDelivery, InputOperationKind, Lifecycle, MonotonicInstant,
+    OperationContext, PixelExtent, Point, ProviderId, Status, StreamCursor, SubmissionEvidence,
+    TargetId, TargetKind, TransformSnapshot,
 };
 use mado_pilot_input::{
     CleanupBudget, CleanupState, DeliveryPlan, FocusPolicy, InputController, InputDescriptor,
@@ -20,9 +21,10 @@ use mado_pilot_input::{
 };
 
 use super::{
-    DriverState, InputDriver, MacosInputController, PendingTextRelease, SubmissionFailure,
-    SystemButtonState, SystemKeyState, input_capability,
+    DriverState, GeometryLedger, InputDriver, MacosInputController, PendingTextRelease,
+    SubmissionFailure, SystemButtonState, SystemKeyState, input_capability,
 };
+use crate::shim::NativeBounds;
 
 fn target() -> TargetId {
     IdentityIssuer::new()
@@ -1296,4 +1298,88 @@ fn the_advertised_capability_is_what_admission_decides_against() {
             "process-directed pointer uses the same capture-derived transforms"
         );
     }
+}
+
+#[test]
+fn source_geometry_survives_movement_and_restoration() {
+    let ledger = GeometryLedger::default();
+    let mut cursor =
+        StreamCursor::new(IdentityIssuer::new().issue_stream().expect("issued stream"));
+    let first_revision = GeometryRevision::FIRST;
+    let moved_revision = first_revision.next().expect("next geometry revision");
+    let restored_revision = moved_revision.next().expect("next geometry revision");
+    let first_stamp = cursor
+        .publish(first_revision)
+        .expect("published first frame");
+    let moved_stamp = cursor
+        .publish(moved_revision)
+        .expect("published moved frame");
+    let restored_stamp = cursor
+        .publish(restored_revision)
+        .expect("published restored frame");
+    let first_transform =
+        TransformSnapshot::with_target_extent(first_revision, PixelExtent::new(1_280, 960));
+    let moved_transform =
+        TransformSnapshot::with_target_extent(moved_revision, PixelExtent::new(1_280, 960));
+    let restored_transform =
+        TransformSnapshot::with_target_extent(restored_revision, PixelExtent::new(1_280, 960));
+    let first_bounds = NativeBounds {
+        origin: (120.0, 80.0),
+        size: (640.0, 480.0),
+        scale: 2.0,
+    };
+    let moved_bounds = NativeBounds {
+        origin: (480.0, 240.0),
+        ..first_bounds
+    };
+
+    ledger.record(first_stamp, first_transform, first_bounds);
+    ledger.record(moved_stamp, moved_transform, moved_bounds);
+    ledger.record(restored_stamp, restored_transform, first_bounds);
+
+    assert_eq!(
+        ledger.source_geometry(first_stamp),
+        Some((first_transform, first_bounds)),
+        "UseFrameSnapshot keeps the source transform after movement and restoration"
+    );
+    assert_eq!(
+        ledger.source_geometry(moved_stamp),
+        Some((moved_transform, moved_bounds)),
+        "each retained revision keeps its same-sample raw native bounds"
+    );
+}
+
+#[test]
+fn source_geometry_history_is_finite_and_retires_oldest_first() {
+    let ledger = GeometryLedger::default();
+    let mut cursor =
+        StreamCursor::new(IdentityIssuer::new().issue_stream().expect("issued stream"));
+    let mut revision = GeometryRevision::FIRST;
+    let first_stamp = cursor.publish(revision).expect("published first frame");
+    let first_transform =
+        TransformSnapshot::with_target_extent(revision, PixelExtent::new(640, 480));
+    let bounds = NativeBounds {
+        origin: (0.0, 0.0),
+        size: (640.0, 480.0),
+        scale: 1.0,
+    };
+    ledger.record(first_stamp, first_transform, bounds);
+    let mut second = None;
+
+    for index in 1..=super::GEOMETRY_HISTORY_REVISIONS {
+        revision = revision.next().expect("geometry history revision");
+        let stamp = cursor.publish(revision).expect("published geometry frame");
+        let transform = TransformSnapshot::with_target_extent(revision, PixelExtent::new(640, 480));
+        ledger.record(stamp, transform, bounds);
+        if index == 1 {
+            second = Some((stamp, transform));
+        }
+    }
+
+    assert_eq!(ledger.source_geometry(first_stamp), None);
+    let (second_stamp, second_transform) = second.expect("second revision retained");
+    assert_eq!(
+        ledger.source_geometry(second_stamp),
+        Some((second_transform, bounds))
+    );
 }

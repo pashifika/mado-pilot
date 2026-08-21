@@ -30,20 +30,26 @@ were both granted. Three committed profiles retain the results:
 | [transitions](../benchmarks/phase-2-native-transitions-aarch64-apple-darwin.toml) | 20 | 4 | zero rejected samples and zero allocation growth |
 | [input](../benchmarks/phase-2-native-input-aarch64-apple-darwin.toml) | 50 | 6 | the accepted rerun has zero rejected samples and zero allocation growth |
 
-The commands were:
+The commands below retain the historical run conditions. The current harness
+also records the same workspace-enforced macOS deployment floor explicitly as
+`--deployment-target`; adding that provenance field does not relabel the
+historical measurements.
 
 ```text
 cargo bench --locked --package mado-pilot --bench native-phase2 -- \
   --workload-set capture --fixture-executable <signed-fixture> \
   --hardware "Apple M1 Pro, 10 CPU cores, 32 GiB" \
   --os-version "macOS 26.5.2 build 25F84" \
+  --deployment-target "macOS 26.5.2" \
+  --source-revision <commit> --source-tree <tree> \
   --toolchain "rustc 1.97.1; Apple clang 21.0.0" \
   --gpu-driver "Apple integrated GPU; system driver stack" \
   --display-topology "one built-in 3024x1964 Retina display at scale 2" \
   --permissions-signing "Screen Recording granted; Accessibility granted; generated fixture bundle ad-hoc signed with approved identifier"
 
-# Repeat with --workload-set transitions and --workload-set input, and pass the
-# release-built C and C++ example executables for the input set.
+# Repeat with `--workload-set transitions`. For `--workload-set input`, also
+# pass `--c-executable`, `--cpp-executable`, and `--library` for the exact
+# release-built artifacts.
 ```
 
 At the time, no approved bare-metal Windows host was available. A former gap

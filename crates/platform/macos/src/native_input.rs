@@ -278,13 +278,16 @@ pub(crate) trait SystemCommitSource {
     ) -> Result<(), InputFault>;
 
     /// Posts exactly one already-configured native unit.
+    ///
+    /// A failure distinguishes possible native effect from cancellation observed
+    /// by the final atomic callback.
     fn post_prepared_unit(
         &self,
         prepared: &mut Self::Prepared,
         index: usize,
         deadline_nanos: u64,
         cancellation: Option<&CancellationToken>,
-    ) -> Result<(), (ShimStatus, bool)>;
+    ) -> Result<(), shim::PreparedPostFailure>;
 
     /// Classifies a failure before the current native unit could have effect.
     fn classify_post_failure(&self, status: ShimStatus) -> InputFault;
@@ -580,12 +583,9 @@ impl NativeInputDriver {
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> Result<(PointerState, shim::ProcessGeometry), InputFault> {
-        let pointer = state.pointer.ok_or(InputFault::UnsupportedCoordinate)?;
-        let (_, current, commit_geometry) = self.process_policy_geometry(geometry, operation)?;
-        if pointer.geometry != current {
-            return Err(InputFault::GeometryChanged);
-        }
-        Ok((pointer, commit_geometry))
+        process_pointer_for_non_move_with(self, geometry, state, operation, || {
+            shim::input_pointer_location().map_err(|_| InputFault::SubmissionFailed)
+        })
     }
 
     fn source_geometry(
@@ -1130,6 +1130,32 @@ fn process_policy_geometry_for<S: ProcessGeometrySource + ?Sized>(
     }
 }
 
+fn process_pointer_for_non_move_with<S: ProcessGeometrySource + ?Sized>(
+    source: &S,
+    geometry: PointerGeometry,
+    state: &mut DriverState,
+    operation: &OperationContext,
+    read_pointer: impl FnOnce() -> Result<(f64, f64), InputFault>,
+) -> Result<(PointerState, shim::ProcessGeometry), InputFault> {
+    let (_, current, commit_geometry) = process_policy_geometry_for(source, geometry, operation)?;
+    if let Some(pointer) = state.pointer {
+        if pointer.geometry != current {
+            return Err(InputFault::GeometryChanged);
+        }
+        return Ok((pointer, commit_geometry));
+    }
+    let location = read_pointer()?;
+    if !contains_desktop_point(current, location) {
+        return Err(InputFault::UnsupportedCoordinate);
+    }
+    let pointer = PointerState {
+        desktop: location,
+        geometry: current,
+    };
+    state.pointer = Some(pointer);
+    Ok((pointer, commit_geometry))
+}
+
 /// Splits UTF-16 units into posts of at most one native chunk, never mid-pair.
 fn text_chunks(units: &[u16]) -> Vec<std::ops::Range<usize>> {
     let mut chunks = Vec::new();
@@ -1206,7 +1232,7 @@ impl SystemCommitSource for NativeInputDriver {
         index: usize,
         deadline_nanos: u64,
         cancellation: Option<&CancellationToken>,
-    ) -> Result<(), (ShimStatus, bool)> {
+    ) -> Result<(), shim::PreparedPostFailure> {
         prepared.post_unit(index, deadline_nanos, cancellation)
     }
 
@@ -1595,6 +1621,33 @@ fn fault_after_failed_gate(operation: &OperationContext, fault: InputFault) -> I
         })
 }
 
+fn fault_after_native_timeout(operation: &OperationContext, fault: InputFault) -> InputFault {
+    shim::catch_panic(|| operation.remaining()).map_or(InputFault::SubmissionFailed, |remaining| {
+        if remaining == Some(std::time::Duration::ZERO) {
+            InputFault::DeadlineExceeded
+        } else {
+            fault
+        }
+    })
+}
+
+fn prepared_post_failure_fault<S: SystemCommitSource + ?Sized>(
+    source: &S,
+    operation: &OperationContext,
+    failure: shim::PreparedPostFailure,
+) -> InputFault {
+    if failure.native_effect_may_have_occurred {
+        return InputFault::SubmissionFailed;
+    }
+    match failure.status {
+        ShimStatus::TimedOut if failure.cancellation_prevented_effect => InputFault::Cancelled,
+        ShimStatus::TimedOut => {
+            fault_after_native_timeout(operation, source.classify_post_failure(failure.status))
+        }
+        status => source.classify_post_failure(status),
+    }
+}
+
 /// Caller-clock and adapter-clock state captured immediately before one system
 /// post unit's final mutable gate.
 ///
@@ -1861,21 +1914,17 @@ pub(crate) fn commit_prepared<S: SystemCommitSource + ?Sized>(
         checkpoint
             .check_final_fence()
             .map_err(|fault| SubmissionFailure::after_native_units(fault, invoked_native_units))?;
-        if let Err((status, native_effect_may_have_occurred)) = source.post_prepared_unit(
+        if let Err(failure) = source.post_prepared_unit(
             &mut prepared,
             index,
             checkpoint.budget().deadline_nanos(),
             checkpoint.cancellation(),
         ) {
-            let fault = if native_effect_may_have_occurred {
-                InputFault::SubmissionFailed
-            } else {
-                source.classify_post_failure(status)
-            };
+            let fault = prepared_post_failure_fault(source, operation, failure);
             return Err(SubmissionFailure::after_native_attempt(
                 fault,
                 invoked_native_units,
-                native_effect_may_have_occurred,
+                failure.native_effect_may_have_occurred,
             ));
         }
     }
@@ -1908,13 +1957,7 @@ fn commit_cleanup<S: SystemCommitSource + ?Sized>(
                 checkpoint.budget().deadline_nanos(),
                 checkpoint.cancellation(),
             )
-            .map_err(|(status, effect)| {
-                if effect {
-                    InputFault::SubmissionFailed
-                } else {
-                    source.classify_post_failure(status)
-                }
-            })?;
+            .map_err(|failure| prepared_post_failure_fault(source, cleanup, failure))?;
     }
     Ok(())
 }

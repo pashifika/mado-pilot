@@ -957,7 +957,7 @@ mod tests {
     use crate::types::{
         madopilot_diagnostic_record_t, madopilot_frame_info_t, madopilot_image_t,
         madopilot_input_attempt_t, madopilot_input_capability_t, madopilot_input_receipt_info_t,
-        madopilot_match_t, madopilot_result_info_t,
+        madopilot_match_t, madopilot_pixel_rect_t, madopilot_result_info_t,
     };
 
     #[test]
@@ -974,10 +974,16 @@ mod tests {
 
         assert_eq!(status, MADOPILOT_STATUS_INTERNAL_PANIC);
     }
-    fn assert_full_output_zeroes_padding<S: Versioned>() {
+    fn assert_full_output_zeroes_padding<S: Versioned>(expected_padding: &[(usize, usize)]) {
         assert!(
-            !S::ZEROED_PADDING.is_empty(),
-            "the test must name only structures with implicit padding"
+            !expected_padding.is_empty(),
+            "the independent oracle must name only structures with implicit padding"
+        );
+        assert_eq!(
+            S::ZEROED_PADDING,
+            expected_padding,
+            "{} production padding table differs from compiler-derived field gaps",
+            S::NAME
         );
         let mut output = std::mem::MaybeUninit::<S>::uninit();
         let size = size_of::<S>();
@@ -997,7 +1003,8 @@ mod tests {
         // SAFETY: the poisoned allocation was initialized byte-for-byte above
         // and remains live for this read.
         let bytes = unsafe { std::slice::from_raw_parts(output.as_ptr().cast::<u8>(), size) };
-        for &(start, end) in S::ZEROED_PADDING {
+        for &(start, end) in expected_padding {
+            assert!(start < end && end <= size, "invalid compiler-derived gap");
             assert!(
                 bytes[start..end].iter().all(|byte| *byte == 0),
                 "{} exposed nonzero implicit padding at {start}..{end}",
@@ -1007,15 +1014,54 @@ mod tests {
     }
 
     #[test]
-    fn every_padded_public_output_zeroes_its_implicit_bytes() {
-        assert_full_output_zeroes_padding::<madopilot_input_capability_t>();
-        assert_full_output_zeroes_padding::<madopilot_input_receipt_info_t>();
-        assert_full_output_zeroes_padding::<madopilot_input_attempt_t>();
-        assert_full_output_zeroes_padding::<madopilot_diagnostic_record_t>();
-        assert_full_output_zeroes_padding::<madopilot_frame_info_t>();
-        assert_full_output_zeroes_padding::<madopilot_image_t>();
-        assert_full_output_zeroes_padding::<madopilot_match_t>();
-        assert_full_output_zeroes_padding::<madopilot_result_info_t>();
+    fn every_padded_public_output_zeroes_compiler_derived_gaps() {
+        assert_full_output_zeroes_padding::<madopilot_input_capability_t>(&[(
+            std::mem::offset_of!(madopilot_input_capability_t, reserved) + size_of::<u32>(),
+            size_of::<madopilot_input_capability_t>(),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_input_receipt_info_t>(&[
+            (
+                std::mem::offset_of!(madopilot_input_receipt_info_t, address_scope)
+                    + size_of::<u32>(),
+                std::mem::offset_of!(madopilot_input_receipt_info_t, attempt_count),
+            ),
+            (
+                std::mem::offset_of!(madopilot_input_receipt_info_t, cleanup) + size_of::<u32>(),
+                std::mem::offset_of!(madopilot_input_receipt_info_t, cleanup_released),
+            ),
+        ]);
+        assert_full_output_zeroes_padding::<madopilot_input_attempt_t>(&[
+            (
+                std::mem::offset_of!(madopilot_input_attempt_t, outcome) + size_of::<u32>(),
+                std::mem::offset_of!(madopilot_input_attempt_t, submitted),
+            ),
+            (
+                std::mem::offset_of!(madopilot_input_attempt_t, reserved) + size_of::<u32>(),
+                size_of::<madopilot_input_attempt_t>(),
+            ),
+        ]);
+        assert_full_output_zeroes_padding::<madopilot_diagnostic_record_t>(&[(
+            std::mem::offset_of!(madopilot_diagnostic_record_t, reserved) + size_of::<u32>(),
+            std::mem::offset_of!(madopilot_diagnostic_record_t, requested),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_frame_info_t>(&[(
+            std::mem::offset_of!(madopilot_frame_info_t, bounds)
+                + size_of::<madopilot_pixel_rect_t>(),
+            size_of::<madopilot_frame_info_t>(),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_image_t>(&[(
+            std::mem::offset_of!(madopilot_image_t, region) + size_of::<madopilot_pixel_rect_t>(),
+            size_of::<madopilot_image_t>(),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_match_t>(&[(
+            std::mem::offset_of!(madopilot_match_t, bounds) + size_of::<madopilot_pixel_rect_t>(),
+            size_of::<madopilot_match_t>(),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_result_info_t>(&[(
+            std::mem::offset_of!(madopilot_result_info_t, searched)
+                + size_of::<madopilot_pixel_rect_t>(),
+            size_of::<madopilot_result_info_t>(),
+        )]);
     }
 
     /// The header, read as text rather than compiled.

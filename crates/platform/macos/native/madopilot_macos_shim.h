@@ -142,6 +142,8 @@ typedef uint32_t mp_shim_status;
 
 /* Finite UTF-8 bound for a signing identifier returned to a deliberate reporter. */
 #define MP_SHIM_MAX_SIGNING_IDENTIFIER 255u
+/* Maximum public Security.framework unique code identity length. */
+#define MP_SHIM_EXECUTABLE_IDENTITY_CAPACITY 32u
 
 /* What kind of desktop object a target is. */
 #define MP_SHIM_TARGET_WINDOW 0u
@@ -165,6 +167,7 @@ typedef struct mp_shim_session mp_shim_session;
 typedef struct mp_shim_frame mp_shim_frame;
 typedef struct mp_shim_process_event_source mp_shim_process_event_source;
 typedef struct mp_shim_prepared_input mp_shim_prepared_input;
+typedef struct mp_shim_fixture_application mp_shim_fixture_application;
 
 /*
  * One discovered window or display.
@@ -345,6 +348,21 @@ mp_shim_status mp_shim_execution_context(uint32_t *out_launch, uint32_t *out_sig
                                          size_t *out_identifier_len);
 
 /*
+ * Returns the validity-first Security.framework unique identity for one
+ * canonical executable path or one kernel-issued audit-token process lifetime.
+ */
+mp_shim_status mp_shim_executable_identity_for_path(
+    const uint8_t *path, size_t path_len, uint8_t *out_identity,
+    size_t identity_capacity, size_t *out_identity_len);
+mp_shim_status mp_shim_executable_identity_for_audit_token(
+    const uint32_t *audit_token, size_t audit_token_count,
+    uint8_t *out_identity, size_t identity_capacity,
+    size_t *out_identity_len);
+mp_shim_status mp_shim_executable_identity_for_process(
+    uint32_t process_id, uint8_t *out_identity, size_t identity_capacity,
+    size_t *out_identity_len);
+
+/*
  * Classifies one capture-framework error code as this shim maps it.
  *
  * Exposed so the mapping table can be asserted per code rather than reached only
@@ -486,12 +504,40 @@ mp_shim_status mp_shim_testing_prepared_input_gate(
  */
 mp_shim_status mp_shim_testing_required_ax_error_status(uint32_t scenario);
 
+/* Deterministic scenarios for the complete foreground/pointer environment sample. */
+#define MP_SHIM_TEST_INPUT_ENVIRONMENT_STABLE_IDENTITY 0u
+#define MP_SHIM_TEST_INPUT_ENVIRONMENT_PID_CHANGE 1u
+#define MP_SHIM_TEST_INPUT_ENVIRONMENT_LAUNCH_TIME_CHANGE 2u
+#define MP_SHIM_TEST_INPUT_ENVIRONMENT_APPLICATION_CHANGE 3u
+#define MP_SHIM_TEST_INPUT_ENVIRONMENT_POINTER_FAILURE 4u
+#define MP_SHIM_TEST_INPUT_ENVIRONMENT_SECOND_LIFETIME_FAILURE 5u
+
+/*
+ * Runs the production sampling sequence through injected operations. A failed
+ * sample leaves its process, launch time, and pointer coordinates zero. The
+ * operation trace appends nibbles 1 (frontmost), 2 (lifetime), and 3 (pointer).
+ */
+mp_shim_status mp_shim_testing_input_environment(
+    uint32_t scenario, mp_shim_status *out_sampling_status, int64_t *out_process,
+    double *out_process_launch_time, double *out_pointer_x, double *out_pointer_y,
+    uint32_t *out_frontmost_calls, uint32_t *out_lifetime_calls,
+    uint32_t *out_pointer_calls, uint32_t *out_operation_trace);
+
 /*
  * Raises from the native event-source release operation and proves the opaque
  * wrapper still completes its ownership cleanup without crossing the C boundary.
  */
 mp_shim_status mp_shim_testing_process_event_source_release_exception(
     uint32_t *out_release_calls, uint32_t *out_cleanup_completed);
+
+/* Deterministic event-source factory failures: native source, then wrapper. */
+#define MP_SHIM_TEST_PROCESS_EVENT_SOURCE_NATIVE_FAILURE 0u
+#define MP_SHIM_TEST_PROCESS_EVENT_SOURCE_WRAPPER_FAILURE 1u
+
+mp_shim_status mp_shim_testing_process_event_source_allocation_failure(
+    uint32_t scenario, mp_shim_status *out_creation_status,
+    uint32_t *out_source_is_null, uint32_t *out_create_calls,
+    uint32_t *out_allocation_calls, uint32_t *out_release_calls);
 
 /*
  * Raises while releasing one retained target object and proves every later
@@ -535,6 +581,9 @@ mp_shim_status mp_shim_testing_target_release_exception(
 #define MP_SHIM_TEST_PROCESS_NATIVE_BUDGET_AFTER_AUTHORITY 31u
 #define MP_SHIM_TEST_PROCESS_NATIVE_BUDGET_AFTER_LIFETIME 32u
 #define MP_SHIM_TEST_PROCESS_RELEASE_EXCEPTION 33u
+#define MP_SHIM_TEST_PROCESS_FOCUS_LOST_DURING_AUTHORITY 34u
+#define MP_SHIM_TEST_PROCESS_GEOMETRY_CHANGED_DURING_FOCUS 35u
+#define MP_SHIM_TEST_PROCESS_GEOMETRY_MOVED_WITHOUT_REQUIRE_UNCHANGED 36u
 
 /* Process-post request and capture-only target-shape validation scenarios. */
 #define MP_SHIM_TEST_PROCESS_VALIDATE_NULL_REQUEST 0u
@@ -742,11 +791,12 @@ mp_shim_status mp_shim_frame_copy_out(const mp_shim_frame *frame, uint8_t *desti
 /*
  * Input delivery.
  *
- * Every entry point below posts or observes Core Graphics events. None of them
- * requests Accessibility, presents permission UI, or consults ScreenCaptureKit;
- * the caller preflights authorization and re-checks it before each irreversible
- * event, because macOS silently discards a synthesized event from an untrusted
- * process rather than failing the post.
+ * System event preparation and posting request no Accessibility access, present
+ * no permission UI, and never consult ScreenCaptureKit. Process-directed posting
+ * likewise never prompts, but performs bounded fresh ScreenCaptureKit authority
+ * reads before each irreversible event. Authorization is non-promptingly
+ * preflighted and rechecked because macOS silently discards a synthesized event
+ * from an untrusted process rather than failing the post.
  *
  * The logical key vocabulary is deliberately absent. Rust owns the fixed
  * hardware key codes, which do not vary with the active layout, and this surface
@@ -1015,12 +1065,61 @@ mp_shim_status mp_shim_input_frontmost_process(uint32_t *out_process);
 
 /*
  * Snapshots the public foreground-process lifetime and physical cursor without
- * prompting. The process launch time distinguishes a recycled numeric PID.
+ * prompting. The PID and public process-lifetime object are sampled before the
+ * pointer and confirmed afterward. Only the same PID, application object, and
+ * launch time publish a sample; every output remains zero on failure.
  */
 mp_shim_status mp_shim_input_environment(int64_t *out_process,
                                          double *out_process_launch_time,
                                          double *out_pointer_x,
                                          double *out_pointer_y);
+
+/*
+ * Private qualification-fixture launcher. AppKit is loaded from its absolute
+ * system path; the returned handle owns the exact NSRunningApplication instance.
+ * A submitted application that cannot be returned remains retained through a
+ * bounded graceful-then-force termination sequence and an exact-object lifecycle
+ * observation, including when completion arrives after the caller's wait expires.
+ * If that bounded attempt cannot verify exit, delayed reaper ownership persists
+ * across bounded retries until the exact application is observed terminated.
+ */
+mp_shim_status mp_shim_fixture_application_launch(
+    const char *bundle_path, const char *const *arguments,
+    size_t argument_count, mp_shim_fixture_application **out_application,
+    uint32_t *out_process_id);
+mp_shim_status mp_shim_fixture_application_is_live(
+    const mp_shim_fixture_application *application, uint32_t *out_live);
+mp_shim_status mp_shim_fixture_application_terminate(
+    mp_shim_fixture_application *application, uint32_t force);
+/*
+ * Releases the opaque owner only after the exact application is observed
+ * terminated or retained reaper ownership has accepted the handoff.
+ */
+void mp_shim_fixture_application_release(
+    mp_shim_fixture_application *application);
+
+/* Deterministic scenarios for the production-shaped workspace launch helper. */
+#define MP_SHIM_TEST_FIXTURE_SEMAPHORE_ALLOCATION_FAILURE 0u
+#define MP_SHIM_TEST_FIXTURE_COMPLETION_EXCEPTION 1u
+#define MP_SHIM_TEST_FIXTURE_LATE_COMPLETION 2u
+#define MP_SHIM_TEST_FIXTURE_SUCCESSFUL_RELEASE 3u
+#define MP_SHIM_TEST_FIXTURE_VALIDATION_FAILURE 4u
+#define MP_SHIM_TEST_FIXTURE_HANDLE_ALLOCATION_FAILURE 5u
+#define MP_SHIM_TEST_FIXTURE_REAPER_HANDOFF 6u
+#define MP_SHIM_TEST_FIXTURE_RELEASE_REAPER_HANDOFF 7u
+
+/*
+ * Exercises fixture launch submission, asynchronous completion containment,
+ * abandoned-application termination, and opaque-handle release without starting
+ * a process. Live counts are readings from `mp_shim_live_objects`.
+ */
+mp_shim_status mp_shim_testing_fixture_application_launch(
+    uint32_t scenario, mp_shim_status *out_launch_status,
+    uint32_t *out_submission_calls,
+    uint32_t *out_graceful_termination_calls,
+    uint32_t *out_force_termination_calls, uint32_t *out_terminated,
+    uint64_t *out_live_during_handle,
+    uint64_t *out_live_after_release);
 
 /*
  * Activates the application retained by `target`, without presenting UI.

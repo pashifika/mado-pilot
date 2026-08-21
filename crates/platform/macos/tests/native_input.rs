@@ -21,7 +21,8 @@ mod fixture_control;
 mod fixture_protocol;
 
 use fixture_control::{
-    AuthenticatedFixtureProcess, FixtureSocketDirectory, authenticate_fixture_peer,
+    AuthenticatedFixtureProcess, ExecutableIdentity, FixtureSocketDirectory,
+    LaunchedFixtureApplication, authenticate_fixture_peer, executable_identity,
     next_fixture_run_nonce,
 };
 #[cfg(feature = "private-fixture")]
@@ -53,6 +54,7 @@ use mado_pilot_input::{
 };
 use mado_pilot_platform_macos::{MacosCaptureProvider, MacosPermissionProbe, PROVIDER};
 use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::panic::{self, AssertUnwindSafe};
@@ -919,46 +921,115 @@ fn ready_process_id_for_peer(line: &str, authenticated_process_id: u32) -> Optio
     (reported_process_id == authenticated_process_id).then_some(reported_process_id)
 }
 
-/// A fixture launch broker plus the audit-token-bound application it owns.
+/// A fixture launch plus the audit-token-bound application it owns.
+enum FixtureLauncher {
+    Workspace(LaunchedFixtureApplication),
+    Child(Child),
+}
+
+impl FixtureLauncher {
+    fn process_id(&self) -> u32 {
+        match self {
+            Self::Workspace(application) => application.process_id(),
+            Self::Child(child) => child.id(),
+        }
+    }
+
+    fn exited(&mut self) -> bool {
+        match self {
+            Self::Workspace(application) => application.is_live().is_ok_and(|live| !live),
+            Self::Child(child) => child.try_wait().ok().flatten().is_some(),
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        match self {
+            Self::Workspace(application) => application.is_live() == Ok(true),
+            Self::Child(_) => true,
+        }
+    }
+
+    fn liveness_is_known(&self) -> bool {
+        match self {
+            Self::Workspace(application) => application.is_live().is_ok(),
+            Self::Child(_) => true,
+        }
+    }
+
+    fn terminate(&mut self) {
+        if let Self::Workspace(application) = self {
+            let _terminated = application.terminate();
+        }
+    }
+
+    fn kill(&mut self) {
+        match self {
+            Self::Workspace(application) => {
+                let _killed = application.kill();
+            }
+            Self::Child(child) => {
+                let _killed = child.kill();
+            }
+        }
+    }
+}
+
 struct FixtureChild {
-    launcher: Child,
+    launcher: FixtureLauncher,
     application: Option<AuthenticatedFixtureProcess>,
 }
 
 impl FixtureChild {
-    fn new(launcher: Child) -> Self {
+    fn new(child: Child) -> Self {
         Self {
-            launcher,
+            launcher: FixtureLauncher::Child(child),
             application: None,
         }
+    }
+
+    fn from_launched(application: LaunchedFixtureApplication) -> Self {
+        Self {
+            launcher: FixtureLauncher::Workspace(application),
+            application: None,
+        }
+    }
+
+    fn process_id(&self) -> u32 {
+        self.launcher.process_id()
+    }
+
+    fn exited(&mut self) -> bool {
+        self.launcher.exited()
     }
 }
 
 impl Drop for FixtureChild {
     fn drop(&mut self) {
-        if self.launcher.try_wait().ok().flatten().is_some() {
+        if self.exited() {
             return;
         }
         let deadline = Instant::now() + Duration::from_secs(1);
         if let Some(application) = self.application.as_mut() {
             let _terminated = application.terminate();
-            let term_deadline = deadline.min(Instant::now() + Duration::from_millis(100));
-            while Instant::now() < term_deadline {
-                if self.launcher.try_wait().ok().flatten().is_some() {
-                    return;
-                }
-                thread::sleep(Duration::from_millis(10));
-            }
-            let _killed = application.kill();
         }
-        while Instant::now() < deadline {
-            if self.launcher.try_wait().ok().flatten().is_some() {
+        self.launcher.terminate();
+        let term_deadline = deadline.min(Instant::now() + Duration::from_millis(100));
+        while Instant::now() < term_deadline {
+            if self.exited() {
                 return;
             }
             thread::sleep(Duration::from_millis(10));
         }
-        let _killed = self.launcher.kill();
-        let _reaped = self.launcher.wait();
+        if let Some(application) = self.application.as_mut() {
+            let _killed = application.kill();
+        }
+        self.launcher.kill();
+        while Instant::now() < deadline {
+            if self.exited() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 
@@ -976,6 +1047,13 @@ fn fixture_protocol_line(message: ReaderMessage) -> String {
     }
 }
 
+struct FixtureReadyExpectation {
+    require_signed_bundle: bool,
+    mode: FixtureMode,
+    run_nonce: u64,
+    wait: Duration,
+}
+
 /// A running fixture with an owned command channel and bounded output channel.
 struct Fixture {
     child: FixtureChild,
@@ -986,6 +1064,10 @@ struct Fixture {
     run_nonce: u64,
     next_nonce: u64,
     pending_events: VecDeque<EventSummary>,
+    stopped: bool,
+    expected_executable: Option<PathBuf>,
+    expected_executable_bytes: Option<Arc<[u8]>>,
+    expected_identity: Option<ExecutableIdentity>,
 }
 
 impl Fixture {
@@ -1049,45 +1131,53 @@ impl Fixture {
         require_signed_bundle: bool,
     ) -> Option<Self> {
         let expected_executable = std::fs::canonicalize(&executable).ok()?;
+        let expected_executable_bytes: Arc<[u8]> = std::fs::read(&expected_executable).ok()?.into();
+        let expected_identity = executable_identity(&expected_executable)
+            .inspect_err(|error| eprintln!("fixture code identity: {error}"))
+            .ok()?;
         let bundle = fixture_bundle(&executable)?;
         let socket_directory = FixtureSocketDirectory::new().ok()?;
         let socket_path = socket_directory.socket_path();
         let listener = UnixListener::bind(&socket_path).ok()?;
         listener.set_nonblocking(true).ok()?;
         let run_nonce = next_fixture_run_nonce().ok()?;
-        let mut command = Command::new("/usr/bin/open");
-        if arguments.contains(&"--inactive") {
-            command.arg("-g");
-        }
-        command
-            .arg("-n")
-            .arg("-W")
-            .arg(&bundle)
-            .arg("--args")
-            .arg("--control-socket")
-            .arg(&socket_path)
-            .arg("--run-nonce")
-            .arg(run_nonce.to_string())
-            .args(arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
-        let mut child = FixtureChild::new(command.spawn().ok()?);
+        let mut launch_arguments = vec![
+            OsString::from("--control-socket"),
+            socket_path.as_os_str().to_owned(),
+            OsString::from("--run-nonce"),
+            OsString::from(run_nonce.to_string()),
+        ];
+        launch_arguments.extend(arguments.iter().map(OsString::from));
+        let argument_views = launch_arguments
+            .iter()
+            .map(OsString::as_os_str)
+            .collect::<Vec<&OsStr>>();
+        let launched = LaunchedFixtureApplication::launch(&bundle, &argument_views).ok()?;
+        let mut child = FixtureChild::from_launched(launched);
+        let expected_process_id = child.process_id();
         let deadline = Instant::now() + READY_WAIT;
         let (stream, authenticated_process) = loop {
+            if child.exited() || Instant::now() >= deadline {
+                return None;
+            }
             match listener.accept() {
                 Ok((stream, _address)) => {
-                    if let Some(process) = authenticate_fixture_peer(&stream, &expected_executable)
-                    {
+                    if let Some(process) = authenticate_fixture_peer(
+                        &stream,
+                        expected_process_id,
+                        &expected_executable,
+                    ) {
+                        if !child.launcher.is_live()
+                            || !process.matches_executable_identity(expected_identity)
+                        {
+                            return None;
+                        }
                         child.application = Some(process);
                         break (stream, process);
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(_) => return None,
-            }
-            if child.launcher.try_wait().ok().flatten().is_some() || Instant::now() >= deadline {
-                return None;
             }
             thread::sleep(Duration::from_millis(25));
         };
@@ -1098,10 +1188,17 @@ impl Fixture {
             child,
             stream,
             authenticated_process,
-            require_signed_bundle,
-            expected_mode,
-            run_nonce,
-            READY_WAIT,
+            Some((
+                expected_executable,
+                expected_executable_bytes,
+                expected_identity,
+            )),
+            FixtureReadyExpectation {
+                require_signed_bundle,
+                mode: expected_mode,
+                run_nonce,
+                wait: READY_WAIT,
+            },
         )
     }
 
@@ -1109,11 +1206,15 @@ impl Fixture {
         child: FixtureChild,
         input: UnixStream,
         authenticated_process: AuthenticatedFixtureProcess,
-        require_signed_bundle: bool,
-        expected_mode: FixtureMode,
-        run_nonce: u64,
-        ready_wait: Duration,
+        expected_provenance: Option<(PathBuf, Arc<[u8]>, ExecutableIdentity)>,
+        expectation: FixtureReadyExpectation,
     ) -> Option<Self> {
+        let FixtureReadyExpectation {
+            require_signed_bundle,
+            mode: expected_mode,
+            run_nonce,
+            wait: ready_wait,
+        } = expectation;
         let lines = spawn_reader(input.try_clone().ok()?);
         let line = match lines.recv_timeout(ready_wait).ok()? {
             ReaderMessage::Line(line) if line.starts_with("fixture-ready ") => line,
@@ -1150,25 +1251,57 @@ impl Fixture {
             facts.renderer(),
             facts.execution_context_is_approved()
         );
+        let (expected_executable, expected_executable_bytes, expected_identity) =
+            expected_provenance.map_or((None, None, None), |(path, bytes, identity)| {
+                (Some(path), Some(bytes), Some(identity))
+            });
         Some(Self {
             child,
             input: Some(input),
             lines: Arc::new(Mutex::new(lines)),
+            stopped: false,
             process_id,
             run_nonce,
             facts,
             next_nonce: 1,
             pending_events: VecDeque::new(),
+            expected_executable,
+            expected_executable_bytes,
+            expected_identity,
         })
     }
 
-    #[cfg(feature = "private-fixture")]
     fn authenticated_process(&self) -> Option<AuthenticatedFixtureProcess> {
         self.input.as_ref()?;
         let process = self.child.application?;
-        process
-            .matches_live_owner(i64::from(self.process_id))
-            .then_some(process)
+        let expected_identity = self.expected_identity?;
+        (self.child.launcher.is_live()
+            && process.matches_live_owner(i64::from(self.process_id))
+            && process.matches_executable_identity(expected_identity))
+        .then_some(process)
+    }
+
+    fn executable_provenance_unchanged(&self) -> bool {
+        let (Some(path), Some(expected_bytes), Some(expected_identity)) = (
+            self.expected_executable.as_ref(),
+            self.expected_executable_bytes.as_ref(),
+            self.expected_identity,
+        ) else {
+            return true;
+        };
+        let artifact_unchanged = std::fs::read(path)
+            .is_ok_and(|bytes| bytes == expected_bytes.as_ref())
+            && executable_identity(path).is_ok_and(|identity| identity == expected_identity);
+        let running_unchanged = if !self.child.launcher.liveness_is_known() {
+            false
+        } else if self.child.launcher.is_live() {
+            self.child
+                .application
+                .is_some_and(|process| process.matches_executable_identity(expected_identity))
+        } else {
+            true
+        };
+        artifact_unchanged && running_unchanged
     }
 
     fn replacement_result(&mut self, wait: Duration) -> Option<(u32, u64, u64)> {
@@ -1223,11 +1356,18 @@ impl Fixture {
         })?;
         let result = parse_command_result_line(&line)?;
         assert_eq!(result.run_nonce, self.run_nonce);
-        if command.kind == FixtureCommandKind::ResetEvents && result.status == 0 {
+        if matches!(
+            command.kind,
+            FixtureCommandKind::ResetEvents | FixtureCommandKind::PrepareLanguageFlow
+        ) && result.status == 0
+        {
             // Event lines emitted before the reset acknowledgement belong to
             // the previous observation interval. The native snapshot remains
             // authoritative and later reads still expose any post-reset event.
             self.pending_events.clear();
+        }
+        if command.kind == FixtureCommandKind::Stop && result.status == 0 {
+            self.stopped = true;
         }
         println!(
             "fixture-command-observed action={} success={}",
@@ -1557,20 +1697,24 @@ fn event_totals(events: &[EventSummary]) -> EventTotals {
     }
     totals
 }
-
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Some(input) = self.input.as_mut() {
-            let command = FixtureCommand {
-                run_nonce: self.run_nonce,
-                nonce: self.next_nonce,
-                event_payload_tag: 0,
-                kind: FixtureCommandKind::Stop,
-            };
-            let _written = writeln!(input, "{}", format_command_line(command));
-            let _flushed = input.flush();
+        let provenance_unchanged = self.executable_provenance_unchanged();
+        if !self.stopped {
+            self.stopped = self
+                .command(FixtureCommandKind::Stop, CONTENT_WAIT)
+                .is_some_and(|result| result.status == 0);
         }
-        let _ = self.child.launcher.try_wait();
+        self.input = None;
+        let deadline = Instant::now() + CONTENT_WAIT;
+        let mut exited = self.child.exited();
+        while !exited && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(25));
+            exited = self.child.exited();
+        }
+        if !(provenance_unchanged && self.stopped && exited) && !thread::panicking() {
+            panic!("native qualification fixture teardown or executable provenance failed");
+        }
     }
 }
 
@@ -1682,7 +1826,7 @@ fn invalid_execution_context_output_reaps_the_owned_child() {
             .spawn()
             .expect("the non-interactive child starts"),
     );
-    let process_id = child.launcher.id();
+    let process_id = child.process_id();
     writeln!(
         output,
         "fixture-ready title={} pid={process_id} window=17 run=77 control-version={} \
@@ -1699,10 +1843,13 @@ fn invalid_execution_context_output_reaps_the_owned_child() {
             child,
             input,
             AuthenticatedFixtureProcess::for_test(process_id),
-            true,
-            FixtureMode::Default,
-            77,
-            Duration::from_secs(2),
+            None,
+            FixtureReadyExpectation {
+                require_signed_bundle: true,
+                mode: FixtureMode::Default,
+                run_nonce: 77,
+                wait: Duration::from_secs(2),
+            },
         )
     }));
 
@@ -1812,6 +1959,59 @@ fn discover_unique_fixture(
     }
 }
 
+#[cfg(feature = "private-fixture")]
+fn authenticated_fixture_window_ids(
+    provider: &MacosCaptureProvider,
+    fixture: &Fixture,
+) -> Vec<TargetId> {
+    let Some(process) = fixture.authenticated_process() else {
+        return Vec::new();
+    };
+    discovered(provider)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|target| target.capability().kind() == Some(TargetKind::Window))
+        .filter(|target| {
+            provider.fixture_target_has_authenticated_owner(target.id(), |owner| {
+                process.matches_live_owner(owner)
+            })
+        })
+        .map(|target| target.id())
+        .collect()
+}
+
+#[cfg(feature = "private-fixture")]
+fn require_auxiliary_fixture_windows(
+    provider: &MacosCaptureProvider,
+    fixture: &Fixture,
+    wait: Duration,
+) {
+    let deadline = Instant::now() + wait;
+    loop {
+        let window_ids = authenticated_fixture_window_ids(provider, fixture);
+        if window_ids
+            .split_first()
+            .is_some_and(|(first, rest)| rest.iter().any(|other| other != first))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the acknowledged auxiliary window never appeared in production discovery"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(not(feature = "private-fixture"))]
+fn require_auxiliary_fixture_windows(
+    _provider: &MacosCaptureProvider,
+    _fixture: &Fixture,
+    _wait: Duration,
+) {
+    panic!("auxiliary-window inventory proof requires the `private-fixture` feature");
+}
+
 #[test]
 fn the_fixture_starts_publishes_its_title_and_is_selected_exactly_once() {
     if std::env::var_os("MADO_PILOT_MACOS_FIXTURE").is_none() {
@@ -1841,6 +2041,52 @@ fn the_fixture_starts_publishes_its_title_and_is_selected_exactly_once() {
         .expect("foreground ownership is returned after discovery");
     assert_eq!(yielded.status, 0);
     assert_eq!(yielded.before_window, yielded.after_window);
+}
+
+#[test]
+#[ignore = "opens two real fixture windows on an interactive desktop"]
+fn fixture_launcher_owns_distinct_same_bundle_instances() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "multi-instance verification requires the configured signed fixture bundle"
+    );
+    let first = Fixture::start().expect("the first owned fixture starts");
+    let second = Fixture::start_with_arguments(&["--animate-on-input"], FixtureMode::Default)
+        .expect("the second animated owned fixture starts");
+
+    assert_ne!(first.process_id, second.process_id);
+    assert!(first.authenticated_process().is_some());
+    assert!(second.authenticated_process().is_some());
+}
+
+#[test]
+#[ignore = "opens a real animated fixture window on an interactive desktop"]
+fn fixture_launcher_passes_animated_mode_arguments() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "animated launch verification requires the configured signed fixture bundle"
+    );
+    let fixture = Fixture::start_with_arguments(&["--animate-on-input"], FixtureMode::Default)
+        .expect("the animated owned fixture starts");
+
+    assert!(fixture.authenticated_process().is_some());
+}
+
+#[test]
+#[ignore = "opens and inventories two real fixture windows on an interactive desktop"]
+fn auxiliary_window_acknowledgement_requires_two_production_inventory_windows() {
+    assert!(
+        std::env::var_os("MADO_PILOT_MACOS_FIXTURE_EXECUTABLE").is_some(),
+        "auxiliary-window verification requires the configured signed fixture bundle"
+    );
+    let mut fixture = Fixture::start().expect("the owned fixture starts");
+    let provider = provider();
+    let opened = fixture
+        .command(FixtureCommandKind::OpenAuxiliary, CONTENT_WAIT)
+        .expect("the auxiliary command is acknowledged");
+    assert_eq!(opened.status, 0);
+
+    require_auxiliary_fixture_windows(&provider, &fixture, CONTENT_WAIT);
 }
 
 /// Exercises the private command channel independently of production input.
@@ -1980,13 +2226,7 @@ fn owned_fixture_control_is_versioned_idempotent_and_identity_bound() {
     fixture.input = None;
     let deadline = Instant::now() + CONTENT_WAIT;
     while Instant::now() < deadline {
-        if fixture
-            .child
-            .launcher
-            .try_wait()
-            .expect("the owned child remains waitable")
-            .is_some()
-        {
+        if fixture.child.exited() {
             return;
         }
         thread::sleep(Duration::from_millis(25));
@@ -3406,6 +3646,7 @@ fn qualify_process_directed_renderer(
         .command(FixtureCommandKind::OpenAuxiliary, CONTENT_WAIT)
         .expect("the additional ordinary window opens");
     assert_eq!(auxiliary.status, 0);
+    require_auxiliary_fixture_windows(&provider, &fixture, CONTENT_WAIT);
     thread::sleep(Duration::from_secs(10));
     let multiple_window_target = discover_unique_fixture(&provider, &fixture, CONTENT_WAIT)
         .expect("the retained primary remains discoverable with an ordinary sibling");
@@ -4418,6 +4659,7 @@ fn sustained_capture_soak_keeps_process_route_isolated() {
             .command(FixtureCommandKind::OpenAuxiliary, CONTENT_WAIT)
             .expect("the additional ordinary window opens");
         assert_eq!(auxiliary.status, 0);
+        require_auxiliary_fixture_windows(&provider, &fixture, CONTENT_WAIT);
         thread::sleep(Duration::from_secs(10));
         let mut visual = ControlledVisualObservation {
             stamp: first.stamp(),
@@ -4829,6 +5071,7 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         .command(FixtureCommandKind::OpenAuxiliary, CONTENT_WAIT)
         .expect("the auxiliary-window transition completes");
     assert_eq!(auxiliary.status, 0);
+    require_auxiliary_fixture_windows(&provider, &fixture, CONTENT_WAIT);
     thread::sleep(Duration::from_secs(10));
     let active_capture_stamp =
         observe_controlled_transition(&mut fixture, capture.as_ref(), first.stamp(), true);

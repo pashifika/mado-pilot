@@ -311,7 +311,7 @@ caller with different options.
 The fixture accepts no input packet — everything its recorder observes arrived
 as ordinary macOS input — but it is driven by a private, versioned control
 protocol over a controller-owned socket, so capture evidence never depends on
-focus, ambient redraws, or product input. Version 10 of that newline protocol
+focus, ambient redraws, or product input. Version 11 of that newline protocol
 carries one bounded command at a time, identified by a per-run nonce and a
 monotonic nonzero command nonce, and an explicit result record echoing the same
 identity, a bounded status, the before/after native window numbers, and a
@@ -320,14 +320,28 @@ unit total, and a saturation flag, never characters. Approved payload-free
 commands are `transition` (fill change), `replace`, `minimize`, `restore`,
 `yield-foreground`, `move`, `resize`, `open-auxiliary`, `close-auxiliary`,
 `move-to-next-display` (unsupported with fewer than two displays),
-`move-offscreen`, `restore-onscreen`, `reset-events`, `read-events`, `close`,
-and `stop`; every window transition executes on the fixture's AppKit main
-queue.
+`move-offscreen`, `restore-onscreen`, `reset-events`,
+`prepare-language-flow`, `read-events`, `close`, and `stop`;
+`prepare-language-flow` alone restores the declared base fill while it zeroes
+the recorder, so animated language samples start from one deterministic visual
+precondition without changing ordinary native qualification state. Every window
+transition executes on the fixture's AppKit main queue.
 Lines are bounded, unknown or
 reordered records are rejected, and EOF, repeated close, and controller
 cleanup are idempotent. The protocol and event recorder are
 fixture/test-only: no production artifact links them, and no fixture
 acknowledgement ever counts as a product receipt or a visual result.
+
+The controller loads AppKit only from its absolute system framework path, asks
+`NSWorkspace` for a new application instance, and retains the exact returned
+`NSRunningApplication` and PID. It accepts a control peer only when kernel
+socket credentials report that PID, the harness effective user, the canonical
+executable, and an audit token that still names that process lifetime. Before
+trusting a ready record, the controller requires the audit-token-selected
+running code identity to equal the validity-checked static identity recorded
+beside the artifact SHA-256. It retains that identity through teardown. A
+same-user second copy at the same path therefore cannot become the oracle merely
+by learning the socket path or run nonce.
 
 Selection is the fail-closed step. `select_unique_fixture` requires a window
 target, the exact process-qualified title, all three operations `Supported`
@@ -792,6 +806,7 @@ do
     --gpu-driver "Apple integrated GPU; system driver stack" \
     --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
     --os-version "macOS 26.5.2 (25F84)" \
+    --deployment-target "macOS 26.5.2" \
     --display-topology "three online non-mirrored displays; signed-origin display 3840x2160 1x; main display 2560x1440 logical / 5120x2880 backing 2x; built-in display 1512x982 logical / 3024x1964 backing 2x; mixed-scale validator authoritative" \
     --permissions-signing "Screen Recording granted; event-post access granted; target and foreground bundles structurally ad-hoc signed"
 done

@@ -1323,8 +1323,9 @@ mod tests {
 
     use mado_pilot_capture::{CaptureFault, StreamState};
     use mado_pilot_core::{
-        CancellationToken, Clock, IdentityIssuer, MonotonicInstant, Operation, OperationContext,
-        PixelExtent, Scale, TargetKind, TargetPlacement,
+        CancellationToken, Clock, GeometryRevision, IdentityIssuer, MonotonicInstant, Operation,
+        OperationContext, PixelExtent, Scale, StreamCursor, TargetKind, TargetPlacement,
+        TransformSnapshot,
     };
 
     use crate::input::GeometryLedger;
@@ -1459,6 +1460,33 @@ mod tests {
             #[cfg(test)]
             terminal_reports: AtomicU64::new(0),
         })
+    }
+
+    #[test]
+    fn dropping_geometry_registration_retires_only_its_stream_history() {
+        let ledger = Arc::new(GeometryLedger::default());
+        let issuer = IdentityIssuer::new();
+        let retired_stream = issuer.issue_stream().expect("retired stream");
+        let live_stream = issuer.issue_stream().expect("live stream");
+        let mut retired_cursor = StreamCursor::new(retired_stream);
+        let mut live_cursor = StreamCursor::new(live_stream);
+        let revision = GeometryRevision::FIRST;
+        let retired_stamp = retired_cursor.publish(revision).expect("retired stamp");
+        let live_stamp = live_cursor.publish(revision).expect("live stamp");
+        let transform = TransformSnapshot::with_target_extent(revision, PixelExtent::new(64, 48));
+        let bounds = native_bounds((0.0, 0.0), (64.0, 48.0), 1.0);
+        ledger.record(retired_stamp, transform, bounds);
+        ledger.record(live_stamp, transform, bounds);
+        let registration = GeometryRegistration::new(Arc::clone(&ledger), retired_stream);
+
+        drop(registration);
+
+        assert_eq!(ledger.source_geometry(retired_stamp), None);
+        assert_eq!(
+            ledger.source_geometry(live_stamp),
+            Some((transform, bounds)),
+            "closing one stream does not retire another live stream's source geometry"
+        );
     }
 
     #[test]

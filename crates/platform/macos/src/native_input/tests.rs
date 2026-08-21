@@ -26,9 +26,10 @@ use super::{
     SystemCommitSource, SystemKeyState, commit_cleanup, commit_geometry, commit_prepared,
     commit_process, contains_desktop_point, extent_from_points, focus_wait, key_flag,
     modifier_flag, native_button, placement_for, process_permission_denied_fault,
-    process_policy_geometry_for, process_status_fault, release_pending_process, release_process,
-    release_system, require_post_event_access, resolve_key_code, retain_process_pointer,
-    retain_process_press, text_chunks, text_release_may_be_pending, wait_for_activation,
+    process_pointer_for_non_move_with, process_policy_geometry_for, process_status_fault,
+    release_pending_process, release_process, release_system, require_post_event_access,
+    resolve_key_code, retain_process_pointer, retain_process_press, text_chunks,
+    text_release_may_be_pending, wait_for_activation,
 };
 use crate::input::{
     InputDriver, MacosInputController, PendingTextRelease, SubmissionFailure, input_capability,
@@ -77,6 +78,9 @@ struct FakeSource {
     cancel_during_revalidation: Mutex<Option<CancellationToken>>,
     revalidation_delay: Mutex<Duration>,
     advance_during_prepare: Mutex<Option<(Arc<TestClock>, Duration)>>,
+    advance_during_post: Mutex<Option<(Arc<TestClock>, Duration)>>,
+    cancel_during_post: bool,
+    cancellation_prevented_effect: bool,
     post_failure: Mutex<Option<(ShimStatus, usize)>>,
     revalidations: Mutex<usize>,
     cleanup_authorizations: Mutex<usize>,
@@ -96,6 +100,19 @@ impl FakeSource {
     fn failing_post(status: ShimStatus, posted: usize) -> Self {
         let source = Self::default();
         *source.post_failure.lock().expect("uncontended") = Some((status, posted));
+        source
+    }
+
+    fn cancelled_at_post_fence() -> Self {
+        let mut source = Self::failing_post(ShimStatus::TimedOut, 0);
+        source.cancel_during_post = true;
+        source.cancellation_prevented_effect = true;
+        source
+    }
+
+    fn failing_post_after_unobserved_cancellation(status: ShimStatus) -> Self {
+        let mut source = Self::failing_post(status, 0);
+        source.cancel_during_post = true;
         source
     }
 
@@ -123,6 +140,16 @@ impl FakeSource {
     fn advancing_during_prepare(clock: Arc<TestClock>, duration: Duration) -> Self {
         let source = Self::default();
         *source.advance_during_prepare.lock().expect("uncontended") = Some((clock, duration));
+        source
+    }
+
+    fn failing_post_after_clock_advance(
+        status: ShimStatus,
+        clock: Arc<TestClock>,
+        duration: Duration,
+    ) -> Self {
+        let source = Self::failing_post(status, 0);
+        *source.advance_during_post.lock().expect("uncontended") = Some((clock, duration));
         source
     }
 
@@ -224,13 +251,37 @@ impl SystemCommitSource for FakeSource {
         prepared: &mut Self::Prepared,
         index: usize,
         _deadline_nanos: u64,
-        _cancellation: Option<&CancellationToken>,
-    ) -> Result<(), (ShimStatus, bool)> {
+        cancellation: Option<&CancellationToken>,
+    ) -> Result<(), shim::PreparedPostFailure> {
         if index >= prepared.unit_count {
-            return Err((ShimStatus::InvalidArgument, false));
+            return Err(shim::PreparedPostFailure {
+                status: ShimStatus::InvalidArgument,
+                native_effect_may_have_occurred: false,
+                cancellation_prevented_effect: false,
+            });
+        }
+        if let Some((clock, duration)) = self
+            .advance_during_post
+            .lock()
+            .expect("uncontended")
+            .as_ref()
+        {
+            clock.advance(*duration);
+        }
+        if self.cancel_during_post {
+            cancellation
+                .expect("a cancellation seam requires an operation token")
+                .cancel();
         }
         if let Some((status, invoked)) = *self.post_failure.lock().expect("uncontended") {
-            return Err((status, invoked > 0));
+            let native_effect_may_have_occurred = invoked > 0;
+            return Err(shim::PreparedPostFailure {
+                status,
+                native_effect_may_have_occurred,
+                cancellation_prevented_effect: self.cancellation_prevented_effect
+                    && status == ShimStatus::TimedOut
+                    && !native_effect_may_have_occurred,
+            });
         }
         if index == 0 {
             self.posts.lock().expect("uncontended").push(Posted {
@@ -1330,6 +1381,81 @@ fn system_post_fence_uses_atomic_cancellation_and_an_adapter_deadline() {
 }
 
 #[test]
+fn system_post_cancellation_at_the_native_fence_reports_cancelled_without_effect() {
+    let cancellation = CancellationToken::new();
+    let operation = OperationContext::new().with_cancellation(cancellation.clone());
+    let source = FakeSource::cancelled_at_post_fence();
+
+    let failure = commit_prepared(
+        &source,
+        FocusPolicy::RequireFocused,
+        CommitGeometry::NotApplicable,
+        &operation,
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("the native cancellation fence prevents the post");
+
+    assert!(cancellation.is_cancelled());
+    assert_eq!(failure.fault, InputFault::Cancelled);
+    assert_eq!(failure.invoked_native_units, 0);
+    assert!(!failure.current_event_may_have_effect);
+    assert!(source.posts().is_empty());
+}
+
+#[test]
+fn system_post_timeout_preserves_deadline_and_platform_failure_distinctions() {
+    let cancellation = CancellationToken::new();
+    let raced = FakeSource::failing_post_after_unobserved_cancellation(ShimStatus::TimedOut);
+    let failure = commit_prepared(
+        &raced,
+        FocusPolicy::RequireFocused,
+        CommitGeometry::NotApplicable,
+        &OperationContext::new().with_cancellation(cancellation.clone()),
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("a racy token read is not proof that cancellation stopped the post");
+    assert!(cancellation.is_cancelled());
+    assert_eq!(failure.fault, InputFault::SubmissionFailed);
+    assert!(!failure.current_event_may_have_effect);
+
+    let clock = Arc::new(TestClock::default());
+    let deadline = OperationContext::new()
+        .with_clock(clock.clone())
+        .with_deadline(MonotonicInstant::from_origin(Duration::from_millis(1)));
+    let expired = FakeSource::failing_post_after_clock_advance(
+        ShimStatus::TimedOut,
+        clock,
+        Duration::from_millis(2),
+    );
+    let failure = commit_prepared(
+        &expired,
+        FocusPolicy::RequireFocused,
+        CommitGeometry::NotApplicable,
+        &deadline,
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("the caller deadline expires inside the native post");
+    assert_eq!(failure.fault, InputFault::DeadlineExceeded);
+    assert!(!failure.current_event_may_have_effect);
+
+    let platform = FakeSource::failing_post(ShimStatus::PlatformFailure, 0);
+    let failure = commit_prepared(
+        &platform,
+        FocusPolicy::RequireFocused,
+        CommitGeometry::NotApplicable,
+        &OperationContext::new(),
+        key_post(0x24, true),
+        0,
+    )
+    .expect_err("a platform failure remains a platform failure");
+    assert_eq!(failure.fault, InputFault::SubmissionFailed);
+    assert!(!failure.current_event_may_have_effect);
+}
+
+#[test]
 fn a_post_that_partly_reached_the_target_reports_effect_it_cannot_take_back() {
     let partly = FakeSource::failing_post(ShimStatus::PlatformFailure, 4);
     let units: Vec<u16> = "hello".encode_utf16().collect();
@@ -1804,8 +1930,47 @@ fn text_is_chunked_without_ever_splitting_a_surrogate_pair() {
 }
 
 #[test]
+fn process_non_move_pointer_starts_from_the_physical_pointer_location() {
+    let source = process_geometry((34.0, 191.0), (640.0, 420.0), 2.0);
+    let geometry = FakeProcessGeometrySource::new((source.0, source.2), source);
+    let mut state = DriverState::default();
+
+    let (pointer, commit) = process_pointer_for_non_move_with(
+        &geometry,
+        PointerGeometry::reprojected(),
+        &mut state,
+        &OperationContext::new(),
+        || Ok((100.0, 250.0)),
+    )
+    .expect("a press, release, or scroll may begin at the physical pointer");
+
+    assert_eq!(pointer.desktop, (100.0, 250.0));
+    assert_eq!(state.pointer, Some(pointer));
+    assert_eq!(commit, shim::ProcessGeometry::RequireCurrent(source.2));
+}
+
+#[test]
+fn process_non_move_pointer_refuses_a_location_outside_the_selected_target() {
+    let source = process_geometry((34.0, 191.0), (640.0, 420.0), 2.0);
+    let geometry = FakeProcessGeometrySource::new((source.0, source.2), source);
+    let mut state = DriverState::default();
+
+    let fault = process_pointer_for_non_move_with(
+        &geometry,
+        PointerGeometry::reprojected(),
+        &mut state,
+        &OperationContext::new(),
+        || Ok((-500.0, -500.0)),
+    )
+    .expect_err("an ambient pointer outside the selected target is not addressable");
+
+    assert_eq!(fault, InputFault::UnsupportedCoordinate);
+    assert_eq!(state.pointer, None);
+}
+#[test]
 fn require_unchanged_process_geometry_uses_only_the_source_frame() {
     let source = process_geometry((-120.0, 80.0), (640.0, 420.0), 2.0);
+
     let moved = process_geometry((40.0, 20.0), (700.0, 460.0), 2.0);
     let geometry = FakeProcessGeometrySource::new((source.0, source.2), moved)
         .with_current_fault(InputFault::TargetLost);

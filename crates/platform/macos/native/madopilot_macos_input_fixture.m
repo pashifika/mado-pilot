@@ -32,6 +32,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "madopilot_macos_input_fixture.h"
 
@@ -801,18 +802,346 @@ static void mp_fixture_reset_state(void) {
     mp_fixture_last_after = 0;
 }
 
-static void mp_fixture_emit_control(uint64_t nonce, uint32_t command,
-                                    uint32_t status, uint64_t before,
-                                    uint64_t after) {
-    if (mp_fixture_controlled != NULL) {
-        mp_fixture_controlled(mp_fixture_control_context, nonce, command,
-                              status, before, after);
+typedef struct MPFixtureControlTesting {
+    uint32_t scenario;
+    uint64_t last_nonce;
+    uint32_t last_command;
+    uint64_t last_event_payload_tag;
+    uint32_t last_status;
+    uint64_t last_before;
+    uint64_t last_after;
+    uint32_t completion_count;
+    uint32_t completion_status;
+    uint64_t completion_before;
+    uint64_t completion_after;
+    uint32_t termination_calls;
+    uint32_t fail_closed_calls;
+} MPFixtureControlTesting;
+
+static const uint64_t MPFixtureTestingBeforeWindow = 41;
+static const uint64_t MPFixtureTestingAfterWindow = 42;
+
+static void mp_fixture_testing_raise_control(MPFixtureControlTesting *testing,
+                                             uint32_t scenario) {
+    if (testing != NULL && testing->scenario == scenario) {
+        [NSException raise:@"MPFixtureInjectedFailure" format:@"fixture control"];
+    }
+}
+
+static void mp_fixture_fail_closed(MPFixtureControlTesting *testing) {
+    if (testing != NULL) {
+        testing->fail_closed_calls += 1;
+        return;
+    }
+    atomic_store_explicit(&mp_fixture_control_active, false, memory_order_release);
+    _exit(1);
+}
+
+static uint64_t mp_fixture_control_window_number(MPFixtureControlTesting *testing,
+                                                 uint32_t scenario,
+                                                 uint64_t testing_value) {
+    mp_fixture_testing_raise_control(testing, scenario);
+    return testing == NULL ? mp_fixture_window_number() : testing_value;
+}
+
+static void mp_fixture_terminate_control(MPFixtureControlTesting *testing,
+                                         uint32_t scenario) {
+    if (testing != NULL) {
+        testing->termination_calls += 1;
+        mp_fixture_testing_raise_control(testing, scenario);
+        return;
+    }
+    [mp_fixture_application terminate:nil];
+}
+
+/*
+ * Completes one accepted command without any Objective-C message send. The Rust
+ * callback contains its own panics; if it nevertheless raises, fail the private
+ * fixture closed rather than retrying a possibly delivered completion.
+ */
+static void mp_fixture_complete_control(MPFixtureControlTesting *testing,
+                                        uint64_t nonce, uint32_t command,
+                                        uint64_t event_payload_tag, bool cache_result,
+                                        uint32_t status, uint64_t before, uint64_t after) {
+    if (cache_result) {
+        if (testing == NULL) {
+            mp_fixture_last_nonce = nonce;
+            mp_fixture_last_command = command;
+            mp_fixture_last_event_payload_tag = event_payload_tag;
+            mp_fixture_last_status = status;
+            mp_fixture_last_before = before;
+            mp_fixture_last_after = after;
+        } else {
+            testing->last_nonce = nonce;
+            testing->last_command = command;
+            testing->last_event_payload_tag = event_payload_tag;
+            testing->last_status = status;
+            testing->last_before = before;
+            testing->last_after = after;
+        }
+    }
+
+    if (testing != NULL) {
+        testing->completion_count += 1;
+        testing->completion_status = status;
+        testing->completion_before = before;
+        testing->completion_after = after;
+        return;
+    }
+
+    MPFixtureControlledCallback controlled = mp_fixture_controlled;
+    void *context = mp_fixture_control_context;
+    if (controlled == NULL) {
+        mp_fixture_fail_closed(NULL);
+    }
+    @try {
+        controlled(context, nonce, command, status, before, after);
+    } @catch (NSException *exception) {
+        (void)exception;
+        mp_fixture_fail_closed(NULL);
+    } @catch (...) {
+        mp_fixture_fail_closed(NULL);
     }
 }
 
 static bool mp_fixture_valid_command(uint32_t command) {
     return command >= MP_FIXTURE_COMMAND_TRANSITION &&
-           command <= MP_FIXTURE_COMMAND_RESTORE_ONSCREEN;
+           command <= MP_FIXTURE_COMMAND_PREPARE_LANGUAGE_FLOW;
+}
+
+static void mp_fixture_run_control_block(uint64_t run_nonce, uint64_t nonce,
+                                         uint32_t command, uint64_t event_payload_tag,
+                                         MPFixtureControlTesting *testing) {
+    bool completion_owed = false;
+    bool completion_sent = false;
+    bool cache_result = false;
+    uint32_t status = MP_FIXTURE_OK;
+    uint64_t before = 0;
+    uint64_t after = 0;
+    bool should_stop = false;
+
+    @try {
+        if (testing == NULL &&
+            (!atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire) ||
+             mp_fixture_controlled == NULL ||
+             run_nonce !=
+                 atomic_load_explicit(&mp_fixture_run_nonce, memory_order_relaxed))) {
+            return;
+        }
+        completion_owed = true;
+
+        uint64_t last_nonce =
+            testing == NULL ? mp_fixture_last_nonce : testing->last_nonce;
+        uint32_t last_command =
+            testing == NULL ? mp_fixture_last_command : testing->last_command;
+        uint64_t last_event_payload_tag = testing == NULL
+                                              ? mp_fixture_last_event_payload_tag
+                                              : testing->last_event_payload_tag;
+        if (nonce < last_nonce ||
+            (nonce == last_nonce &&
+             (command != last_command ||
+              event_payload_tag != last_event_payload_tag))) {
+            uint64_t current = mp_fixture_control_window_number(
+                testing, MP_FIXTURE_TEST_CONTROL_PRE_WINDOW_EXCEPTION,
+                MPFixtureTestingBeforeWindow);
+            before = current;
+            after = current;
+            status = MP_FIXTURE_INVALID_ARGUMENT;
+            mp_fixture_complete_control(testing, nonce, command, event_payload_tag,
+                                        false, status, before, after);
+            completion_sent = true;
+            return;
+        }
+        if (nonce == last_nonce) {
+            status =
+                testing == NULL ? mp_fixture_last_status : testing->last_status;
+            before =
+                testing == NULL ? mp_fixture_last_before : testing->last_before;
+            after =
+                testing == NULL ? mp_fixture_last_after : testing->last_after;
+            mp_fixture_complete_control(testing, nonce, command, event_payload_tag,
+                                        false, status, before, after);
+            completion_sent = true;
+            return;
+        }
+
+        cache_result = true;
+        before = mp_fixture_control_window_number(
+            testing, MP_FIXTURE_TEST_CONTROL_PRE_WINDOW_EXCEPTION,
+            MPFixtureTestingBeforeWindow);
+        mp_fixture_testing_raise_control(
+            testing, MP_FIXTURE_TEST_CONTROL_COMMAND_EXCEPTION);
+        if (command == MP_FIXTURE_COMMAND_TRANSITION) {
+            if (mp_fixture_window == nil) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            } else {
+                bool alternate_fill = !mp_fixture_alternate_fill;
+                uint32_t fill =
+                    alternate_fill ? mp_fixture_replacement_fill : mp_fixture_fill;
+                if (!mp_fixture_apply_fill(mp_fixture_window, fill)) {
+                    status = MP_FIXTURE_PLATFORM_FAILURE;
+                } else {
+                    mp_fixture_alternate_fill = alternate_fill;
+                }
+            }
+        } else if (command == MP_FIXTURE_COMMAND_REPLACE) {
+            if (mp_fixture_window == nil || mp_fixture_window_class == Nil ||
+                mp_fixture_color_class == Nil || mp_fixture_window_title == nil) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            } else {
+                id<MPFixtureWindow> old_window = mp_fixture_window;
+                [old_window close];
+                mp_fixture_window = nil;
+                id<MPFixtureWindow> replacement =
+                    mp_fixture_create_window(mp_fixture_window_class, mp_fixture_window_title,
+                                             mp_fixture_replacement_fill, mp_fixture_width,
+                                             mp_fixture_height);
+                if (replacement == nil) {
+                    status = MP_FIXTURE_PLATFORM_FAILURE;
+                } else {
+                    mp_fixture_window = replacement;
+                    mp_fixture_alternate_fill = true;
+                }
+            }
+        } else if (command == MP_FIXTURE_COMMAND_MINIMIZE) {
+            if (mp_fixture_window == nil) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            } else {
+                [mp_fixture_window miniaturize:nil];
+            }
+        } else if (command == MP_FIXTURE_COMMAND_RESTORE) {
+            if (mp_fixture_window == nil) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            } else {
+                [mp_fixture_window deminiaturize:nil];
+                [mp_fixture_window orderFrontRegardless];
+                if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+                    !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+                    status = MP_FIXTURE_PLATFORM_FAILURE;
+                }
+            }
+        } else if (command == MP_FIXTURE_COMMAND_YIELD_FOREGROUND) {
+            if (mp_fixture_prior_application == nil ||
+                ![mp_fixture_prior_application activateWithOptions:2u]) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            }
+        } else if (command == MP_FIXTURE_COMMAND_MOVE) {
+            if (mp_fixture_window == nil) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            } else {
+                CGRect frame = [mp_fixture_window frame];
+                double offset = mp_fixture_moved ? -48.0 : 48.0;
+                [mp_fixture_window
+                    setFrameOrigin:CGPointMake(frame.origin.x + offset,
+                                              frame.origin.y + offset)];
+                if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+                    !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+                    status = MP_FIXTURE_PLATFORM_FAILURE;
+                } else {
+                    mp_fixture_moved = !mp_fixture_moved;
+                }
+            }
+        } else if (command == MP_FIXTURE_COMMAND_RESIZE) {
+            if (mp_fixture_window == nil) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            } else {
+                CGSize size = mp_fixture_resized
+                                  ? CGSizeMake(mp_fixture_width, mp_fixture_height)
+                                  : CGSizeMake(mp_fixture_width + 48.0,
+                                               mp_fixture_height + 32.0);
+                [mp_fixture_window setContentSize:size];
+                if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
+                    !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
+                    status = MP_FIXTURE_PLATFORM_FAILURE;
+                } else {
+                    mp_fixture_resized = !mp_fixture_resized;
+                }
+            }
+        } else if (command == MP_FIXTURE_COMMAND_OPEN_AUXILIARY) {
+            if (mp_fixture_auxiliary_window != nil) {
+                status = MP_FIXTURE_INVALID_ARGUMENT;
+            } else {
+                mp_fixture_auxiliary_window = mp_fixture_create_auxiliary_window();
+                if (mp_fixture_auxiliary_window == nil) {
+                    status = MP_FIXTURE_PLATFORM_FAILURE;
+                }
+            }
+        } else if (command == MP_FIXTURE_COMMAND_CLOSE_AUXILIARY) {
+            if (mp_fixture_auxiliary_window == nil) {
+                status = MP_FIXTURE_INVALID_ARGUMENT;
+            } else {
+                [mp_fixture_auxiliary_window close];
+                mp_fixture_auxiliary_window = nil;
+            }
+        } else if (command == MP_FIXTURE_COMMAND_CLOSE) {
+            if (mp_fixture_window == nil) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            } else {
+                [mp_fixture_window close];
+                mp_fixture_window = nil;
+            }
+        } else if (command == MP_FIXTURE_COMMAND_MOVE_TO_NEXT_DISPLAY) {
+            status = mp_fixture_move_to_next_display();
+        } else if (command == MP_FIXTURE_COMMAND_MOVE_OFFSCREEN) {
+            status = mp_fixture_move_offscreen();
+        } else if (command == MP_FIXTURE_COMMAND_RESTORE_ONSCREEN) {
+            status = mp_fixture_restore_onscreen();
+        } else if (command == MP_FIXTURE_COMMAND_RESET_EVENTS) {
+            atomic_store_explicit(&mp_fixture_event_payload_tag, event_payload_tag,
+                                  memory_order_release);
+        } else if (command == MP_FIXTURE_COMMAND_PREPARE_LANGUAGE_FLOW) {
+            if (mp_fixture_window == nil) {
+                status = MP_FIXTURE_PLATFORM_FAILURE;
+            } else {
+                mp_fixture_alternate_fill = false;
+                if (!mp_fixture_apply_fill(mp_fixture_window, mp_fixture_fill)) {
+                    status = MP_FIXTURE_PLATFORM_FAILURE;
+                } else {
+                    atomic_store_explicit(&mp_fixture_event_payload_tag, event_payload_tag,
+                                          memory_order_release);
+                }
+            }
+        } else if (command == MP_FIXTURE_COMMAND_READ_EVENTS) {
+            /* The Rust callback owns the bounded process-wide summary. */
+        } else if (command == MP_FIXTURE_COMMAND_STOP) {
+            should_stop = true;
+        } else {
+            status = MP_FIXTURE_INVALID_ARGUMENT;
+        }
+
+        after = mp_fixture_control_window_number(
+            testing, MP_FIXTURE_TEST_CONTROL_FINAL_WINDOW_EXCEPTION,
+            MPFixtureTestingAfterWindow);
+        mp_fixture_complete_control(testing, nonce, command, event_payload_tag,
+                                    cache_result, status, before, after);
+        completion_sent = true;
+        if (should_stop && status == MP_FIXTURE_OK &&
+            (testing != NULL || mp_fixture_application != nil)) {
+            mp_fixture_terminate_control(
+                testing, MP_FIXTURE_TEST_CONTROL_STOP_TERMINATION_EXCEPTION);
+        }
+    } @catch (NSException *exception) {
+        (void)exception;
+        if (completion_owed) {
+            if (completion_sent) {
+                mp_fixture_fail_closed(testing);
+            } else {
+                mp_fixture_complete_control(
+                    testing, nonce, command, event_payload_tag, cache_result,
+                    MP_FIXTURE_NATIVE_EXCEPTION, before, after);
+            }
+        }
+    } @catch (...) {
+        if (completion_owed) {
+            if (completion_sent) {
+                mp_fixture_fail_closed(testing);
+            } else {
+                mp_fixture_complete_control(
+                    testing, nonce, command, event_payload_tag, cache_result,
+                    MP_FIXTURE_NATIVE_EXCEPTION, before, after);
+            }
+        }
+    }
 }
 
 uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
@@ -820,7 +1149,8 @@ uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
                             uint64_t event_payload_tag) {
     if (version != MP_FIXTURE_CONTROL_VERSION || run_nonce == 0 || nonce == 0 ||
         !mp_fixture_valid_command(command) ||
-        (event_payload_tag != 0 && command != MP_FIXTURE_COMMAND_RESET_EVENTS)) {
+        (event_payload_tag != 0 && command != MP_FIXTURE_COMMAND_RESET_EVENTS &&
+         command != MP_FIXTURE_COMMAND_PREPARE_LANGUAGE_FLOW)) {
         return MP_FIXTURE_INVALID_ARGUMENT;
     }
     if (!atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire)) {
@@ -832,176 +1162,28 @@ uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (!atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire) ||
-          mp_fixture_controlled == NULL ||
-          run_nonce !=
-              atomic_load_explicit(&mp_fixture_run_nonce, memory_order_relaxed)) {
-          return;
-      }
-      if (nonce < mp_fixture_last_nonce ||
-          (nonce == mp_fixture_last_nonce &&
-           (command != mp_fixture_last_command ||
-            event_payload_tag != mp_fixture_last_event_payload_tag))) {
-          uint64_t current = mp_fixture_window_number();
-          mp_fixture_emit_control(nonce, command, MP_FIXTURE_INVALID_ARGUMENT,
-                                  current, current);
-          return;
-      }
-      if (nonce == mp_fixture_last_nonce) {
-          mp_fixture_emit_control(nonce, command, mp_fixture_last_status,
-                                  mp_fixture_last_before, mp_fixture_last_after);
-          return;
-      }
-
-      uint32_t status = MP_FIXTURE_OK;
-      uint64_t before = mp_fixture_window_number();
-      bool should_stop = false;
-      @try {
-          if (command == MP_FIXTURE_COMMAND_TRANSITION) {
-              if (mp_fixture_window == nil) {
-                  status = MP_FIXTURE_PLATFORM_FAILURE;
-              } else {
-                  bool alternate_fill = !mp_fixture_alternate_fill;
-                  uint32_t fill =
-                      alternate_fill ? mp_fixture_replacement_fill : mp_fixture_fill;
-                  if (!mp_fixture_apply_fill(mp_fixture_window, fill)) {
-                      status = MP_FIXTURE_PLATFORM_FAILURE;
-                  } else {
-                      mp_fixture_alternate_fill = alternate_fill;
-                  }
-              }
-          } else if (command == MP_FIXTURE_COMMAND_REPLACE) {
-              if (mp_fixture_window == nil || mp_fixture_window_class == Nil ||
-                  mp_fixture_color_class == Nil || mp_fixture_window_title == nil) {
-                  status = MP_FIXTURE_PLATFORM_FAILURE;
-              } else {
-                  id<MPFixtureWindow> old_window = mp_fixture_window;
-                  [old_window close];
-                  mp_fixture_window = nil;
-                  id<MPFixtureWindow> replacement =
-                      mp_fixture_create_window(mp_fixture_window_class, mp_fixture_window_title,
-                                               mp_fixture_replacement_fill, mp_fixture_width,
-                                               mp_fixture_height);
-                  if (replacement == nil) {
-                      status = MP_FIXTURE_PLATFORM_FAILURE;
-                  } else {
-                      mp_fixture_window = replacement;
-                      mp_fixture_alternate_fill = true;
-                  }
-              }
-          } else if (command == MP_FIXTURE_COMMAND_MINIMIZE) {
-              if (mp_fixture_window == nil) {
-                  status = MP_FIXTURE_PLATFORM_FAILURE;
-              } else {
-                  [mp_fixture_window miniaturize:nil];
-              }
-          } else if (command == MP_FIXTURE_COMMAND_RESTORE) {
-              if (mp_fixture_window == nil) {
-                  status = MP_FIXTURE_PLATFORM_FAILURE;
-              } else {
-                  [mp_fixture_window deminiaturize:nil];
-                  [mp_fixture_window orderFrontRegardless];
-                  if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
-                      !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
-                      status = MP_FIXTURE_PLATFORM_FAILURE;
-                  }
-              }
-          } else if (command == MP_FIXTURE_COMMAND_YIELD_FOREGROUND) {
-              if (mp_fixture_prior_application == nil ||
-                  ![mp_fixture_prior_application activateWithOptions:2u]) {
-                  status = MP_FIXTURE_PLATFORM_FAILURE;
-              }
-          } else if (command == MP_FIXTURE_COMMAND_MOVE) {
-              if (mp_fixture_window == nil) {
-                  status = MP_FIXTURE_PLATFORM_FAILURE;
-              } else {
-                  CGRect frame = [mp_fixture_window frame];
-                  double offset = mp_fixture_moved ? -48.0 : 48.0;
-                  [mp_fixture_window
-                      setFrameOrigin:CGPointMake(frame.origin.x + offset,
-                                                frame.origin.y + offset)];
-                  if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
-                      !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
-                      status = MP_FIXTURE_PLATFORM_FAILURE;
-                  } else {
-                      mp_fixture_moved = !mp_fixture_moved;
-                  }
-              }
-          } else if (command == MP_FIXTURE_COMMAND_RESIZE) {
-              if (mp_fixture_window == nil) {
-                  status = MP_FIXTURE_PLATFORM_FAILURE;
-              } else {
-                  CGSize size = mp_fixture_resized
-                                    ? CGSizeMake(mp_fixture_width, mp_fixture_height)
-                                    : CGSizeMake(mp_fixture_width + 48.0,
-                                                 mp_fixture_height + 32.0);
-                  [mp_fixture_window setContentSize:size];
-                  if (mp_fixture_renderer == MP_FIXTURE_RENDERER_OPENGL &&
-                      !mp_fixture_apply_fill(mp_fixture_window, mp_fixture_current_fill())) {
-                      status = MP_FIXTURE_PLATFORM_FAILURE;
-                  } else {
-                      mp_fixture_resized = !mp_fixture_resized;
-                  }
-              }
-          } else if (command == MP_FIXTURE_COMMAND_OPEN_AUXILIARY) {
-              if (mp_fixture_auxiliary_window != nil) {
-                  status = MP_FIXTURE_INVALID_ARGUMENT;
-              } else {
-                  mp_fixture_auxiliary_window = mp_fixture_create_auxiliary_window();
-                  if (mp_fixture_auxiliary_window == nil) {
-                      status = MP_FIXTURE_PLATFORM_FAILURE;
-                  }
-              }
-          } else if (command == MP_FIXTURE_COMMAND_CLOSE_AUXILIARY) {
-              if (mp_fixture_auxiliary_window == nil) {
-                  status = MP_FIXTURE_INVALID_ARGUMENT;
-              } else {
-                  [mp_fixture_auxiliary_window close];
-                  mp_fixture_auxiliary_window = nil;
-              }
-          } else if (command == MP_FIXTURE_COMMAND_CLOSE) {
-              if (mp_fixture_window == nil) {
-                  status = MP_FIXTURE_PLATFORM_FAILURE;
-              } else {
-                  [mp_fixture_window close];
-                  mp_fixture_window = nil;
-              }
-          } else if (command == MP_FIXTURE_COMMAND_MOVE_TO_NEXT_DISPLAY) {
-              status = mp_fixture_move_to_next_display();
-          } else if (command == MP_FIXTURE_COMMAND_MOVE_OFFSCREEN) {
-              status = mp_fixture_move_offscreen();
-          } else if (command == MP_FIXTURE_COMMAND_RESTORE_ONSCREEN) {
-              status = mp_fixture_restore_onscreen();
-          } else if (command == MP_FIXTURE_COMMAND_RESET_EVENTS) {
-              atomic_store_explicit(&mp_fixture_event_payload_tag, event_payload_tag,
-                                    memory_order_release);
-          } else if (command == MP_FIXTURE_COMMAND_READ_EVENTS) {
-              /* The Rust callback owns the bounded process-wide summary. */
-          } else if (command == MP_FIXTURE_COMMAND_STOP) {
-              should_stop = true;
-          } else {
-              status = MP_FIXTURE_INVALID_ARGUMENT;
-          }
-      } @catch (NSException *exception) {
-          (void)exception;
-          status = MP_FIXTURE_NATIVE_EXCEPTION;
-      } @catch (...) {
-          status = MP_FIXTURE_NATIVE_EXCEPTION;
-      }
-
-      uint64_t after = mp_fixture_window_number();
-      mp_fixture_last_nonce = nonce;
-      mp_fixture_last_command = command;
-      mp_fixture_last_event_payload_tag = event_payload_tag;
-      mp_fixture_last_status = status;
-      mp_fixture_last_before = before;
-      mp_fixture_last_after = after;
-      mp_fixture_emit_control(nonce, command, status, before, after);
-      if (should_stop && status == MP_FIXTURE_OK && mp_fixture_application != nil) {
-          [mp_fixture_application terminate:nil];
-      }
+      mp_fixture_run_control_block(run_nonce, nonce, command, event_payload_tag, NULL);
     });
     return MP_FIXTURE_OK;
+}
+
+static void mp_fixture_run_control_closed_block(uint64_t run_nonce,
+                                                MPFixtureControlTesting *testing) {
+    @try {
+        if (testing != NULL ||
+            (atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire) &&
+             run_nonce ==
+                 atomic_load_explicit(&mp_fixture_run_nonce, memory_order_relaxed) &&
+             mp_fixture_application != nil)) {
+            mp_fixture_terminate_control(
+                testing, MP_FIXTURE_TEST_CONTROL_CLOSED_TERMINATION_EXCEPTION);
+        }
+    } @catch (NSException *exception) {
+        (void)exception;
+        mp_fixture_fail_closed(testing);
+    } @catch (...) {
+        mp_fixture_fail_closed(testing);
+    }
 }
 
 uint32_t mp_fixture_control_closed(uint32_t version, uint64_t run_nonce) {
@@ -1017,13 +1199,46 @@ uint32_t mp_fixture_control_closed(uint32_t version, uint64_t run_nonce) {
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (atomic_load_explicit(&mp_fixture_control_active, memory_order_acquire) &&
-          run_nonce ==
-              atomic_load_explicit(&mp_fixture_run_nonce, memory_order_relaxed) &&
-          mp_fixture_application != nil) {
-          [mp_fixture_application terminate:nil];
-      }
+      mp_fixture_run_control_closed_block(run_nonce, NULL);
     });
+    return MP_FIXTURE_OK;
+}
+
+uint32_t mp_fixture_test_control_containment(
+    uint32_t scenario, uint32_t *out_completion_count,
+    uint32_t *out_completion_status, uint64_t *out_completion_before,
+    uint64_t *out_completion_after, uint32_t *out_cached_status,
+    uint64_t *out_cached_before, uint64_t *out_cached_after,
+    uint32_t *out_termination_calls, uint32_t *out_fail_closed_calls) {
+    if (scenario > MP_FIXTURE_TEST_CONTROL_CLOSED_TERMINATION_EXCEPTION ||
+        out_completion_count == NULL || out_completion_status == NULL ||
+        out_completion_before == NULL || out_completion_after == NULL ||
+        out_cached_status == NULL || out_cached_before == NULL ||
+        out_cached_after == NULL || out_termination_calls == NULL ||
+        out_fail_closed_calls == NULL) {
+        return MP_FIXTURE_INVALID_ARGUMENT;
+    }
+
+    MPFixtureControlTesting testing = {.scenario = scenario};
+    if (scenario == MP_FIXTURE_TEST_CONTROL_CLOSED_TERMINATION_EXCEPTION) {
+        mp_fixture_run_control_closed_block(1, &testing);
+    } else {
+        uint32_t command =
+            scenario == MP_FIXTURE_TEST_CONTROL_STOP_TERMINATION_EXCEPTION
+                ? MP_FIXTURE_COMMAND_STOP
+                : MP_FIXTURE_COMMAND_READ_EVENTS;
+        mp_fixture_run_control_block(1, 1, command, 0, &testing);
+    }
+
+    *out_completion_count = testing.completion_count;
+    *out_completion_status = testing.completion_status;
+    *out_completion_before = testing.completion_before;
+    *out_completion_after = testing.completion_after;
+    *out_cached_status = testing.last_status;
+    *out_cached_before = testing.last_before;
+    *out_cached_after = testing.last_after;
+    *out_termination_calls = testing.termination_calls;
+    *out_fail_closed_calls = testing.fail_closed_calls;
     return MP_FIXTURE_OK;
 }
 

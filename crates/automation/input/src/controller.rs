@@ -300,6 +300,7 @@ struct AdmissionState {
     busy: bool,
     owner: Option<ThreadId>,
     waiters: usize,
+    pending_admissions: usize,
     lifecycle: Lifecycle,
     entering: Vec<ThreadId>,
 }
@@ -313,6 +314,7 @@ impl Admission {
                 busy: false,
                 owner: None,
                 waiters: 0,
+                pending_admissions: 0,
                 lifecycle: Lifecycle::Open,
                 entering: Vec::new(),
             }),
@@ -358,11 +360,13 @@ impl Admission {
                 return Err(InputFault::ControllerClosed.into());
             }
             state.entering.push(thread);
+            state.pending_admissions += 1;
         }
         let mut entry = AdmissionEntry {
             admission: self,
             thread,
             registered: true,
+            blocks_close: true,
             _not_send: PhantomData,
         };
         let mut attempt = Operation::admit(operation)?;
@@ -417,7 +421,8 @@ impl Admission {
         self.released.notify_all();
     }
 
-    /// Waits for the sequence in flight and the waiters to unwind, then closes.
+    /// Waits for the sequence in flight, its waiters, and pre-admission caller
+    /// callbacks to unwind, then closes.
     ///
     /// # Errors
     ///
@@ -442,6 +447,7 @@ impl Admission {
             admission: self,
             thread,
             registered: true,
+            blocks_close: false,
             _not_send: PhantomData,
         };
         self.begin_close();
@@ -453,7 +459,7 @@ impl Admission {
                     drop(state);
                     return Ok(attempt.commit(())?);
                 }
-                if !state.busy && state.waiters == 0 {
+                if !state.busy && state.waiters == 0 && state.pending_admissions == 0 {
                     drop(state);
                     // The caller's clock is consulted by commit, so the final
                     // arbitration happens with no lock held and before the
@@ -493,26 +499,36 @@ struct AdmissionEntry<'admission> {
     admission: &'admission Admission,
     thread: ThreadId,
     registered: bool,
+    blocks_close: bool,
     _not_send: PhantomData<Rc<()>>,
 }
 
 impl AdmissionEntry<'_> {
-    fn unregister(&mut self, state: &mut AdmissionState) {
+    fn unregister(&mut self, state: &mut AdmissionState) -> bool {
         let index = state
             .entering
             .iter()
             .position(|thread| *thread == self.thread)
             .expect("a live admission entry remains registered");
         state.entering.swap_remove(index);
+        if self.blocks_close {
+            state.pending_admissions -= 1;
+        }
         self.registered = false;
+        self.blocks_close && state.pending_admissions == 0
     }
 }
 
 impl Drop for AdmissionEntry<'_> {
     fn drop(&mut self) {
         if self.registered {
-            let mut state = self.admission.lock();
-            self.unregister(&mut state);
+            let notify = {
+                let mut state = self.admission.lock();
+                self.unregister(&mut state)
+            };
+            if notify {
+                self.admission.released.notify_all();
+            }
         }
     }
 }
@@ -614,6 +630,27 @@ mod tests {
                     .observed
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = status;
+            }
+            MonotonicInstant::from_origin(Duration::ZERO)
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingClock {
+        blocked: AtomicBool,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl Clock for BlockingClock {
+        fn now(&self) -> MonotonicInstant {
+            if !self.blocked.swap(true, Ordering::AcqRel) {
+                self.entered.send(()).expect("report blocked clock");
+                self.release
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .recv()
+                    .expect("release blocked clock");
             }
             MonotonicInstant::from_origin(Duration::ZERO)
         }
@@ -893,6 +930,80 @@ mod tests {
         admission.drain(&context).expect("drained");
         assert_eq!(admission.lifecycle(), Lifecycle::Closed);
         admission.drain(&context).expect("already drained");
+        assert_eq!(admission.lifecycle(), Lifecycle::Closed);
+    }
+
+    #[test]
+    fn caller_clock_reentry_from_drain_is_rejected_without_recursing() {
+        let admission = Arc::new(Admission::new());
+        let clock = Arc::new(ReentrantClock::new(Arc::clone(&admission), Reentry::Drain));
+        let context = OperationContext::new()
+            .with_clock(clock.clone())
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+
+        admission.drain(&context).expect("outer drain completes");
+
+        assert!(clock.rejected.load(Ordering::Acquire));
+        assert_eq!(
+            *clock
+                .observed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            Some(Status::InputFailed)
+        );
+        assert_eq!(admission.lifecycle(), Lifecycle::Closed);
+    }
+
+    #[test]
+    fn drain_waits_for_pre_admission_caller_code_to_return() {
+        let admission = Arc::new(Admission::new());
+        let (clock_entered_tx, clock_entered_rx) = mpsc::channel();
+        let (release_clock_tx, release_clock_rx) = mpsc::channel();
+        let (closed_tx, closed_rx) = mpsc::channel();
+        let clock = Arc::new(BlockingClock {
+            blocked: AtomicBool::new(false),
+            entered: clock_entered_tx,
+            release: Mutex::new(release_clock_rx),
+        });
+        let context = OperationContext::new()
+            .with_clock(clock)
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+
+        thread::scope(|scope| {
+            let worker_gate = Arc::clone(&admission);
+            let worker = scope.spawn(move || match worker_gate.admit(&context) {
+                Ok(guard) => {
+                    drop(guard);
+                    None
+                }
+                Err(error) => Some(error.status()),
+            });
+            clock_entered_rx
+                .recv()
+                .expect("admission entered caller clock");
+
+            let close_gate = Arc::clone(&admission);
+            let closer = scope.spawn(move || {
+                let result = close_gate.drain(&OperationContext::new());
+                closed_tx.send(result).expect("report close result");
+            });
+            assert!(
+                closed_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+                "close cannot finish while pre-admission caller code is still executing"
+            );
+
+            release_clock_tx.send(()).expect("release caller clock");
+            let status = worker
+                .join()
+                .expect("admission worker returns")
+                .expect("closing controller refuses the pending admission");
+            assert_eq!(status, Status::Closed);
+            closed_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("close finishes after admission callback returns")
+                .expect("drain succeeds");
+            closer.join().expect("closer returns");
+        });
         assert_eq!(admission.lifecycle(), Lifecycle::Closed);
     }
 

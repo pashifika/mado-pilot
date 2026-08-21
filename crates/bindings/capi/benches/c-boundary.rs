@@ -133,6 +133,7 @@ fn main() {
                 benchmark_executable_sha256: None,
                 hardware,
                 os_version,
+                deployment_target: None,
                 build_profile: format!(
                     "cargo bench, default features, debug_assertions={}",
                     cfg!(debug_assertions)

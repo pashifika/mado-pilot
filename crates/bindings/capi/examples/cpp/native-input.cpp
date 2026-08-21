@@ -16,6 +16,7 @@
  */
 
 #include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <string_view>
@@ -27,6 +28,8 @@
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
 #elif defined(__APPLE__)
+#include <dlfcn.h>
+#include <limits.h>
 #include <sys/resource.h>
 #endif
 
@@ -813,6 +816,31 @@ bool run_native(const madopilot::Api& api, madopilot::Engine& engine,
     return exercised && closed;
 }
 
+#if defined(__APPLE__)
+bool expected_library_image(const madopilot::Api& api)
+{
+    const char* expected = std::getenv("MADO_PILOT_EXPECT_LIBRARY_IMAGE");
+    if (expected == nullptr) {
+        return true;
+    }
+    Dl_info information{};
+    char actual_path[PATH_MAX]{};
+    char expected_path[PATH_MAX]{};
+    return expect(api.table() != nullptr &&
+                      dladdr(static_cast<const void*>(api.table()), &information) != 0 &&
+                      information.dli_fname != nullptr &&
+                      realpath(information.dli_fname, actual_path) != nullptr &&
+                      realpath(expected, expected_path) != nullptr &&
+                      std::string_view(actual_path) == expected_path,
+                  "the loaded MadoPilot library is the pinned benchmark artifact");
+}
+#else
+bool expected_library_image(const madopilot::Api&)
+{
+    return true;
+}
+#endif
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -852,6 +880,9 @@ int main(int argc, char** argv)
     const madopilot::Api api = loaded.take();
     if (!expect(api.extent() >= MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT,
                 "the negotiated table contains the complete ABI 1.2 suffix")) {
+        return 1;
+    }
+    if (!expected_library_image(api)) {
         return 1;
     }
 

@@ -23,6 +23,8 @@
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
 #elif defined(__APPLE__)
+#include <dlfcn.h>
+#include <limits.h>
 #include <sys/resource.h>
 #include <time.h>
 #endif
@@ -855,6 +857,30 @@ static void report_peak_resident_bytes(void)
            (unsigned long long)peak_resident_bytes());
 }
 
+static int expected_library_image(const madopilot_api_t* api)
+{
+#if defined(__APPLE__)
+    const char* expected = getenv("MADO_PILOT_EXPECT_LIBRARY_IMAGE");
+    if (expected == NULL) {
+        return 1;
+    }
+    Dl_info information;
+    char actual_path[PATH_MAX];
+    char expected_path[PATH_MAX];
+    memset(&information, 0, sizeof(information));
+    return expect(api != NULL &&
+                      dladdr((const void*)api, &information) != 0 &&
+                      information.dli_fname != NULL &&
+                      realpath(information.dli_fname, actual_path) != NULL &&
+                      realpath(expected, expected_path) != NULL &&
+                      strcmp(actual_path, expected_path) == 0,
+                  "the loaded MadoPilot library is the pinned benchmark artifact");
+#else
+    (void)api;
+    return 1;
+#endif
+}
+
 
 int main(int argc, char** argv)
 {
@@ -912,6 +938,9 @@ int main(int argc, char** argv)
                 "negotiate ABI 1.2") ||
         !expect(api->struct_size >= MADOPILOT_API_SIZE_SESSION_SEND_INPUT,
                 "the negotiated table contains the ABI 1.2 input suffix")) {
+        return 1;
+    }
+    if (!expected_library_image(api)) {
         return 1;
     }
 

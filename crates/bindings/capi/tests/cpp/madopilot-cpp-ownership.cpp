@@ -1033,6 +1033,32 @@ void abi_1_2_requests_own_their_storage(Fixture& fixture)
                assignment_source.value().events != nullptr),
           "the move-assigned source remains internally consistent");
 
+    auto self_moved = copied.to_c();
+    const auto* self_events = self_moved.value().events;
+    const auto* self_deliveries = self_moved.value().deliveries;
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wself-move"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wself-move"
+#endif
+    self_moved = std::move(self_moved);
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+    check(self_moved.value().event_count == 1 &&
+              self_moved.value().events == self_events &&
+              self_moved.value().events[0].text.data != nullptr &&
+              std::string_view(self_moved.value().events[0].text.data,
+                               self_moved.value().events[0].text.len) ==
+                  "copied text" &&
+              self_moved.value().delivery_count == 2 &&
+              self_moved.value().deliveries == self_deliveries,
+          "self-move assignment preserves the complete call-local C projection");
+
     const void* concurrent_events[2] = {nullptr, nullptr};
     const void* concurrent_deliveries[2] = {nullptr, nullptr};
     const char* concurrent_text_data[2] = {nullptr, nullptr};

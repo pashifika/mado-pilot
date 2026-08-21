@@ -566,7 +566,11 @@ mod fixture {
         let mut events = events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if accepted.kind == FixtureCommandKind::ResetEvents && status == OK {
+        if matches!(
+            accepted.kind,
+            FixtureCommandKind::ResetEvents | FixtureCommandKind::PrepareLanguageFlow
+        ) && status == OK
+        {
             *events = RecordedEvents::default();
         }
         let snapshot = *events;
@@ -804,6 +808,19 @@ mod fixture {
         ) -> u32;
         fn mp_fixture_control_closed(version: u32, run_nonce: u64) -> u32;
         #[cfg(test)]
+        fn mp_fixture_test_control_containment(
+            scenario: u32,
+            out_completion_count: *mut u32,
+            out_completion_status: *mut u32,
+            out_completion_before: *mut u64,
+            out_completion_after: *mut u64,
+            out_cached_status: *mut u32,
+            out_cached_before: *mut u64,
+            out_cached_after: *mut u64,
+            out_termination_calls: *mut u32,
+            out_fail_closed_calls: *mut u32,
+        ) -> u32;
+        #[cfg(test)]
         fn mp_fixture_test_unsupported_renderer() -> u32;
         fn mp_shim_execution_context(
             out_launch: *mut u32,
@@ -816,8 +833,112 @@ mod fixture {
 
     #[cfg(test)]
     mod tests {
-        use super::{RecordedEvents, UNSUPPORTED, mp_fixture_test_unsupported_renderer};
+        use super::{
+            OK, RecordedEvents, UNSUPPORTED, mp_fixture_test_control_containment,
+            mp_fixture_test_unsupported_renderer,
+        };
         use crate::fixture_protocol::{EVENT_KEY_DOWN, EVENT_KEY_UP, event_payload_activity_tag};
+        const NATIVE_EXCEPTION: u32 = 4;
+
+        #[derive(Debug, PartialEq, Eq)]
+        struct ControlContainmentObservation {
+            completion_count: u32,
+            completion_status: u32,
+            completion_before: u64,
+            completion_after: u64,
+            cached_status: u32,
+            cached_before: u64,
+            cached_after: u64,
+            termination_calls: u32,
+            fail_closed_calls: u32,
+        }
+
+        fn observe_control_containment(scenario: u32) -> ControlContainmentObservation {
+            let mut observation = ControlContainmentObservation {
+                completion_count: u32::MAX,
+                completion_status: u32::MAX,
+                completion_before: u64::MAX,
+                completion_after: u64::MAX,
+                cached_status: u32::MAX,
+                cached_before: u64::MAX,
+                cached_after: u64::MAX,
+                termination_calls: u32::MAX,
+                fail_closed_calls: u32::MAX,
+            };
+            // SAFETY: every output points to one writable scalar. The fixture-only
+            // seam uses local injected operations and retains none of the pointers.
+            let status = unsafe {
+                mp_fixture_test_control_containment(
+                    scenario,
+                    &raw mut observation.completion_count,
+                    &raw mut observation.completion_status,
+                    &raw mut observation.completion_before,
+                    &raw mut observation.completion_after,
+                    &raw mut observation.cached_status,
+                    &raw mut observation.cached_before,
+                    &raw mut observation.cached_after,
+                    &raw mut observation.termination_calls,
+                    &raw mut observation.fail_closed_calls,
+                )
+            };
+            assert_eq!(status, OK, "scenario {scenario}");
+            observation
+        }
+
+        #[test]
+        fn queued_control_exceptions_complete_once_with_only_safe_window_reads() {
+            for (scenario, safe_before) in [(0, 0), (1, 41), (2, 41)] {
+                assert_eq!(
+                    observe_control_containment(scenario),
+                    ControlContainmentObservation {
+                        completion_count: 1,
+                        completion_status: NATIVE_EXCEPTION,
+                        completion_before: safe_before,
+                        completion_after: 0,
+                        cached_status: NATIVE_EXCEPTION,
+                        cached_before: safe_before,
+                        cached_after: 0,
+                        termination_calls: 0,
+                        fail_closed_calls: 0,
+                    },
+                    "scenario {scenario}"
+                );
+            }
+        }
+
+        #[test]
+        fn control_termination_exceptions_take_the_fail_closed_exit_path() {
+            // STOP publishes its one result before asking AppKit to terminate, so
+            // a termination exception cannot rewrite or duplicate that result.
+            assert_eq!(
+                observe_control_containment(3),
+                ControlContainmentObservation {
+                    completion_count: 1,
+                    completion_status: OK,
+                    completion_before: 41,
+                    completion_after: 42,
+                    cached_status: OK,
+                    cached_before: 41,
+                    cached_after: 42,
+                    termination_calls: 1,
+                    fail_closed_calls: 1,
+                }
+            );
+            assert_eq!(
+                observe_control_containment(4),
+                ControlContainmentObservation {
+                    completion_count: 0,
+                    completion_status: OK,
+                    completion_before: 0,
+                    completion_after: 0,
+                    cached_status: OK,
+                    cached_before: 0,
+                    cached_after: 0,
+                    termination_calls: 1,
+                    fail_closed_calls: 1,
+                }
+            );
+        }
 
         #[test]
         fn unsupported_renderer_loading_fails_closed() {

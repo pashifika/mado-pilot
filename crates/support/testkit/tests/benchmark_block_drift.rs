@@ -473,6 +473,18 @@ fn process_profiles_state_the_same_live_heap_ceiling_the_harness_enforces() {
 }
 
 #[test]
+fn tuning_profiles_record_the_qualified_deployment_floor() {
+    for (path, profile) in PHASE2_2_TUNING_PROFILES {
+        let deployment_target = table_assignment(profile, "[profile]", "deployment_target")
+            .unwrap_or_else(|| panic!("{path} must state its minimum deployment target"));
+        assert_eq!(
+            deployment_target, "macOS 26.5.2",
+            "{path} must bind the measured native artifacts to the qualified deployment floor"
+        );
+    }
+}
+
+#[test]
 fn process_profile_provenance_is_exact_and_internally_bound() {
     for (path, profile) in PHASE2_2_PROCESS_PROFILES {
         let header = source_header(profile)

@@ -9,7 +9,7 @@
 //! own. The pieces that genuinely cannot be shared are already separated below —
 //! the capability table, the pressed-state records, and the driver seam.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -31,6 +31,13 @@ use crate::provider::TargetRecord;
 use crate::shim::{NativeBounds, ProcessEventSource};
 
 const DELAY_POLL_INTERVAL: Duration = Duration::from_millis(2);
+/// Source-frame geometry retained for each live capture stream.
+///
+/// A dragged window can publish a revision on every frame. Keeping the complete
+/// stream history would therefore turn caller-controlled desktop movement into
+/// unbounded adapter memory. Sixty-four revisions keep the movement/restoration
+/// contract useful while bounding each live stream's metadata.
+const GEOMETRY_HISTORY_REVISIONS: usize = 64;
 
 /// Returns the pairwise input contract for a discovered macOS target.
 ///
@@ -147,16 +154,16 @@ pub(crate) fn input_capability(kind: TargetKind, process_directed: bool) -> Inpu
         )
 }
 
-/// The latest authoritative transform and raw native bounds for every live
-/// capture stream of a target.
+/// Recent authoritative transforms and raw native bounds for every live capture
+/// stream of a target.
 ///
 /// Geometry revisions make an older frame in the same revision equivalent to
-/// the latest transform and native bounds in that revision. A frame from an
-/// older revision is not reconstructed after movement, resize, or backing-scale
-/// change: the request is refused instead.
+/// the latest transform and native bounds in that revision. Distinct revisions
+/// remain addressable across later movement, resize, or backing-scale changes
+/// until the fixed per-stream history retires them.
 #[derive(Debug, Default)]
 pub(crate) struct GeometryLedger {
-    streams: Mutex<HashMap<StreamId, GeometryEntry>>,
+    streams: Mutex<HashMap<StreamId, VecDeque<GeometryEntry>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -171,18 +178,43 @@ impl GeometryLedger {
         self.record(frame.stamp(), *frame.transform(), native_bounds);
     }
 
-    fn record(&self, stamp: FrameStamp, transform: TransformSnapshot, native_bounds: NativeBounds) {
-        self.streams
+    pub(crate) fn record(
+        &self,
+        stamp: FrameStamp,
+        transform: TransformSnapshot,
+        native_bounds: NativeBounds,
+    ) {
+        let mut streams = self
+            .streams
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
-                stamp.stream(),
-                GeometryEntry {
-                    stamp,
-                    transform,
-                    native_bounds,
-                },
-            );
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let history = streams.entry(stamp.stream()).or_default();
+        if let Some(latest) = history.back_mut() {
+            if latest.stamp.geometry() == stamp.geometry() {
+                if matches!(
+                    latest.stamp.order(&stamp),
+                    Ok(FrameOrder::Before | FrameOrder::Same)
+                ) {
+                    *latest = GeometryEntry {
+                        stamp,
+                        transform,
+                        native_bounds,
+                    };
+                }
+                return;
+            }
+            if !matches!(latest.stamp.order(&stamp), Ok(FrameOrder::Before)) {
+                return;
+            }
+        }
+        history.push_back(GeometryEntry {
+            stamp,
+            transform,
+            native_bounds,
+        });
+        if history.len() > GEOMETRY_HISTORY_REVISIONS {
+            history.pop_front();
+        }
     }
 
     /// Retires the entry a finished stream left behind.
@@ -201,20 +233,17 @@ impl GeometryLedger {
         &self,
         source: FrameStamp,
     ) -> Option<(TransformSnapshot, NativeBounds)> {
-        let entry = *self
+        let streams = self
             .streams
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&source.stream())?;
-        if entry.stamp.epoch() != source.epoch()
-            || entry.stamp.geometry() != source.geometry()
-            || !matches!(
-                source.order(&entry.stamp),
-                Ok(FrameOrder::Before | FrameOrder::Same)
-            )
-        {
-            return None;
-        }
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = *streams.get(&source.stream())?.iter().find(|entry| {
+            entry.stamp.geometry() == source.geometry()
+                && matches!(
+                    source.order(&entry.stamp),
+                    Ok(FrameOrder::Before | FrameOrder::Same)
+                )
+        })?;
         Some((entry.transform, entry.native_bounds))
     }
 }

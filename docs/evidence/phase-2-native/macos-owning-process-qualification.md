@@ -483,6 +483,7 @@ cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --gpu-driver "Apple integrated GPU; system driver stack" \
   --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
   --os-version "macOS 26.5.2 (25F84)" \
+  --deployment-target "macOS 26.5.2" \
   --display-topology "<recorded three-display mixed-scale topology>" \
   --permissions-signing "<recorded non-sensitive authorization/signing facts>"
 
@@ -491,6 +492,7 @@ cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --fixture-executable "$APP/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --c-executable "<c-abi-check>/macos-native-input" \
   --cpp-executable "<c-abi-check>/macos-native-input-cpp" \
+  --library "<cargo-profile>/deps/libmadopilot.dylib" \
   --source-revision 8309a05c3e7696f3081c5afef6dd6979ea1bb084 --source-tree 27fe879e0c4bb55fe4850d9a50737b568936cc10 \
   <the same recorded host, toolchain, topology, and permission options>
 

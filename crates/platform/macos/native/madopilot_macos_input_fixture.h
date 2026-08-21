@@ -31,7 +31,7 @@ extern "C" {
 #define MP_FIXTURE_NATIVE_EXCEPTION 4u
 
 /* Versioned commands accepted only from the owned test harness. */
-#define MP_FIXTURE_CONTROL_VERSION 10u
+#define MP_FIXTURE_CONTROL_VERSION 11u
 #define MP_FIXTURE_COMMAND_TRANSITION 1u
 #define MP_FIXTURE_COMMAND_REPLACE 2u
 #define MP_FIXTURE_COMMAND_MINIMIZE 3u
@@ -48,6 +48,7 @@ extern "C" {
 #define MP_FIXTURE_COMMAND_READ_EVENTS 14u
 #define MP_FIXTURE_COMMAND_MOVE_OFFSCREEN 15u
 #define MP_FIXTURE_COMMAND_RESTORE_ONSCREEN 16u
+#define MP_FIXTURE_COMMAND_PREPARE_LANGUAGE_FLOW 17u
 
 /*
  * What one observed event was.
@@ -129,6 +130,24 @@ uint32_t mp_fixture_control(uint32_t version, uint64_t run_nonce,
  * The run identity prevents a stale reader from terminating a later run.
  */
 uint32_t mp_fixture_control_closed(uint32_t version, uint64_t run_nonce);
+
+/* Deterministic exception positions in the queued fixture-control blocks. */
+#define MP_FIXTURE_TEST_CONTROL_PRE_WINDOW_EXCEPTION 0u
+#define MP_FIXTURE_TEST_CONTROL_COMMAND_EXCEPTION 1u
+#define MP_FIXTURE_TEST_CONTROL_FINAL_WINDOW_EXCEPTION 2u
+#define MP_FIXTURE_TEST_CONTROL_STOP_TERMINATION_EXCEPTION 3u
+#define MP_FIXTURE_TEST_CONTROL_CLOSED_TERMINATION_EXCEPTION 4u
+
+/*
+ * Runs the production-shaped control block synchronously with local completion,
+ * window-read, termination, and fail-closed observations.
+ */
+uint32_t mp_fixture_test_control_containment(
+    uint32_t scenario, uint32_t *out_completion_count,
+    uint32_t *out_completion_status, uint64_t *out_completion_before,
+    uint64_t *out_completion_after, uint32_t *out_cached_status,
+    uint64_t *out_cached_before, uint64_t *out_cached_after,
+    uint32_t *out_termination_calls, uint32_t *out_fail_closed_calls);
 
 
 /*

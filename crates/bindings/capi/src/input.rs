@@ -1592,11 +1592,17 @@ mod tests {
         output
     }
 
-    fn assert_zeroed_padding<T: Versioned>(output: *const T) {
+    fn assert_zeroed_padding<T: Versioned>(output: *const T, expected_padding: &[(usize, usize)]) {
+        assert_eq!(
+            T::ZEROED_PADDING,
+            expected_padding,
+            "{} production padding table differs from compiler-derived gaps",
+            T::NAME
+        );
         // SAFETY: `poisoned_output` initialized the whole allocation, and the
         // checked C output call retained that allocation and covered all bytes.
         let bytes = unsafe { std::slice::from_raw_parts(output.cast::<u8>(), size_of::<T>()) };
-        for &(start, end) in T::ZEROED_PADDING {
+        for &(start, end) in expected_padding {
             assert_eq!(
                 &bytes[start..end],
                 vec![0; end - start],
@@ -1729,7 +1735,21 @@ mod tests {
 
         let mut info = poisoned_output::<madopilot_input_receipt_info_t>();
         assert_eq!(receipt_info(raw, info.as_mut_ptr()), MADOPILOT_STATUS_OK);
-        assert_zeroed_padding(info.as_ptr());
+        assert_zeroed_padding(
+            info.as_ptr(),
+            &[
+                (
+                    std::mem::offset_of!(madopilot_input_receipt_info_t, address_scope)
+                        + size_of::<u32>(),
+                    std::mem::offset_of!(madopilot_input_receipt_info_t, attempt_count),
+                ),
+                (
+                    std::mem::offset_of!(madopilot_input_receipt_info_t, cleanup)
+                        + size_of::<u32>(),
+                    std::mem::offset_of!(madopilot_input_receipt_info_t, cleanup_released),
+                ),
+            ],
+        );
         // SAFETY: the successful output call populated the full declared
         // structure, including its explicitly zeroed implicit padding.
         let info = unsafe { info.assume_init() };
@@ -1762,7 +1782,19 @@ mod tests {
             receipt_attempt_at(raw, 0, attempt.as_mut_ptr()),
             MADOPILOT_STATUS_OK
         );
-        assert_zeroed_padding(attempt.as_ptr());
+        assert_zeroed_padding(
+            attempt.as_ptr(),
+            &[
+                (
+                    std::mem::offset_of!(madopilot_input_attempt_t, outcome) + size_of::<u32>(),
+                    std::mem::offset_of!(madopilot_input_attempt_t, submitted),
+                ),
+                (
+                    std::mem::offset_of!(madopilot_input_attempt_t, reserved) + size_of::<u32>(),
+                    size_of::<madopilot_input_attempt_t>(),
+                ),
+            ],
+        );
         // SAFETY: the successful output call populated the full declared
         // structure, including its explicitly zeroed implicit padding.
         let attempt = unsafe { attempt.assume_init() };

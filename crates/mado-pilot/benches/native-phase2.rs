@@ -38,15 +38,16 @@ mod native {
     use std::io::{BufRead, BufReader};
     #[cfg(target_os = "macos")]
     use std::ops::Deref;
+    #[cfg(target_os = "macos")]
+    use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
     use std::process::Command;
     #[cfg(windows)]
     use std::process::{Child, Stdio};
     use std::rc::Rc;
-    #[cfg(target_os = "macos")]
     use std::sync::Arc;
     #[cfg(target_os = "macos")]
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     #[cfg(windows)]
     use std::sync::mpsc;
     use std::sync::{Mutex, OnceLock};
@@ -54,6 +55,13 @@ mod native {
     use std::time::{Duration, Instant};
 
     const MAX_LANGUAGE_OUTPUT_BYTES: usize = 64 * 1_024;
+
+    #[cfg(target_os = "macos")]
+    static FIXTURE_FINALIZATION_SUCCEEDED: AtomicBool = AtomicBool::new(true);
+    #[cfg(target_os = "macos")]
+    static LANGUAGE_IDENTITY_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+    #[cfg(target_os = "macos")]
+    static LANGUAGE_OUTPUT_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 
     #[cfg(windows)]
     use mado_pilot::NativeEngineRequest;
@@ -65,9 +73,11 @@ mod native {
         InputRequirement, InputSequence, Key, OpenRequest, OperationContext, PixelExtent,
         PixelFormat, SequenceOutcome, Session, SessionRequest, Status, TargetId,
     };
+    #[cfg(target_os = "macos")]
+    use mado_pilot_testkit::bench_harness::bounded_child_output_checked;
     use mado_pilot_testkit::bench_harness::{
         self, Benchmark, BoundedChildOutput, Plan, Profile, Sample, Workload, argument,
-        bounded_child_output, enforce_hard_budgets, measure,
+        enforce_hard_budgets, measure,
     };
     #[cfg(target_os = "macos")]
     use mado_pilot_testkit::bench_harness::{
@@ -78,14 +88,20 @@ mod native {
     };
 
     #[cfg(windows)]
-    use mado_pilot_testkit::bench_harness::{PrefixedLineMatch, classify_prefixed_line};
+    use mado_pilot_testkit::bench_harness::{
+        PrefixedLineMatch, bounded_child_output, classify_prefixed_line,
+    };
 
     #[cfg(target_os = "macos")]
     use mado_pilot_backend_opencv::OpenCvBackend;
     #[cfg(target_os = "macos")]
     use mado_pilot_platform_macos::{
         MacosCaptureProvider, MacosPermissionProbe,
-        fixture_control::{AuthenticatedFixtureProcess, DesktopInputState, desktop_input_state},
+        fixture_control::{
+            AuthenticatedFixtureProcess, DesktopInputState, ExecutableIdentity,
+            authenticate_fixture_peer, desktop_input_state, executable_identity,
+            process_executable_identity,
+        },
     };
     #[cfg(target_os = "macos")]
     use mado_pilot_runtime::{
@@ -103,7 +119,9 @@ mod native {
 
     #[cfg(target_os = "macos")]
     use crate::macos_fixture::{
-        CancellationObservation, CommandAcknowledgement, FixtureController, LaunchMode,
+        CancellationObservation, CommandAcknowledgement, FixtureController, LanguageExecutablePin,
+        LaunchMode, auxiliary_window_setup_is_proven, language_pins_are_unchanged,
+        post_use_identity_gate,
     };
     #[cfg(target_os = "macos")]
     use mado_pilot::{
@@ -153,6 +171,10 @@ mod native {
     const CLOSE_WAIT: Duration = Duration::from_secs(5);
     const PRESSURE_WAIT: Duration = Duration::from_millis(100);
     const FIXTURE_WAIT: Duration = Duration::from_secs(10);
+    #[cfg(target_os = "macos")]
+    const LANGUAGE_PROCESS_WAIT: Duration = Duration::from_secs(5);
+    #[cfg(windows)]
+    const LANGUAGE_PROCESS_WAIT: Duration = OPERATION_WAIT;
 
     #[cfg(windows)]
     const fn language_event(kind: u32, text_units: u32) -> protocol::EventSummary {
@@ -339,21 +361,76 @@ mod native {
         "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
     }
 
+    #[derive(Clone)]
+    struct ExecutableArtifact {
+        path: PathBuf,
+        bytes: Arc<[u8]>,
+        #[cfg(target_os = "macos")]
+        identity: ExecutableIdentity,
+    }
+
+    impl ExecutableArtifact {
+        fn read(path: PathBuf, label: &str) -> Result<Self, String> {
+            let bytes: Arc<[u8]> = std::fs::read(&path)
+                .map_err(|_| format!("the {label} executable could not be read"))?
+                .into();
+            #[cfg(target_os = "macos")]
+            let identity = {
+                let identity_pin = LanguageExecutablePin::new(&path, Arc::clone(&bytes))?;
+                let identity = executable_identity(identity_pin.path())?;
+                drop(identity_pin);
+                identity
+            };
+            #[cfg(target_os = "macos")]
+            if std::fs::read(&path)
+                .ok()
+                .is_none_or(|observed| observed != bytes.as_ref())
+            {
+                return Err(format!(
+                    "the {label} executable changed while provenance was recorded"
+                ));
+            }
+            Ok(Self {
+                path,
+                bytes,
+                #[cfg(target_os = "macos")]
+                identity,
+            })
+        }
+
+        fn digest(&self) -> ContentDigest {
+            ContentDigest::of(&self.bytes)
+        }
+    }
+
     #[cfg(windows)]
     const fn transition_queue_policy() -> &'static str {
         "session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
     }
 
-    #[derive(Debug)]
     struct Arguments {
         set: WorkloadSet,
         fixture_executable: PathBuf,
+        #[cfg(target_os = "macos")]
+        fixture_executable_bytes: Arc<[u8]>,
+        #[cfg(target_os = "macos")]
+        fixture_executable_identity: ExecutableIdentity,
         #[cfg(windows)]
         ordinary_fixture_executable: Option<PathBuf>,
-        c_executable: Option<PathBuf>,
-        cpp_executable: Option<PathBuf>,
+        c_executable: Option<ExecutableArtifact>,
+        cpp_executable: Option<ExecutableArtifact>,
+        language_library: Option<ExecutableArtifact>,
         hardware: String,
         os_version: String,
+        deployment_target: String,
+        #[cfg(target_os = "macos")]
+        benchmark_executable: PathBuf,
+        #[cfg(target_os = "macos")]
+        benchmark_executable_bytes: Arc<[u8]>,
+        #[cfg(target_os = "macos")]
+        benchmark_process: AuthenticatedFixtureProcess,
+        #[cfg(target_os = "macos")]
+        benchmark_executable_identity: ExecutableIdentity,
         benchmark_executable_sha256: String,
         notes: String,
     }
@@ -377,30 +454,67 @@ mod native {
             if !fixture_executable.is_file() {
                 return Err("--fixture-executable does not name a built fixture binary".to_owned());
             }
-            let language_executable = |name: &str| -> Result<PathBuf, String> {
+            #[cfg(target_os = "macos")]
+            let fixture_executable_bytes: Arc<[u8]> = std::fs::read(&fixture_executable)
+                .map_err(|_| "the fixture executable could not be read".to_owned())?
+                .into();
+            #[cfg(target_os = "macos")]
+            let fixture_executable_identity = executable_identity(&fixture_executable)?;
+            #[cfg(target_os = "macos")]
+            if std::fs::read(&fixture_executable)
+                .ok()
+                .is_none_or(|bytes| bytes != fixture_executable_bytes.as_ref())
+            {
+                return Err(
+                    "the fixture executable changed while provenance was recorded".to_owned(),
+                );
+            }
+            let language_executable = |name: &str, label: &str| {
                 let executable = PathBuf::from(required(name)?);
-                if executable.is_file() {
-                    Ok(executable)
-                } else {
-                    Err(format!("{name} does not name a built executable"))
+                if !executable.is_file() {
+                    return Err(format!("{name} does not name a built executable"));
                 }
+                ExecutableArtifact::read(executable, label)
             };
             #[cfg(windows)]
             let ordinary_fixture_executable = if set == WorkloadSet::Input {
-                Some(language_executable("--ordinary-fixture-executable")?)
+                let executable = PathBuf::from(required("--ordinary-fixture-executable")?);
+                if !executable.is_file() {
+                    return Err(
+                        "--ordinary-fixture-executable does not name a built executable".to_owned(),
+                    );
+                }
+                Some(executable)
             } else {
                 None
             };
             let (c_executable, cpp_executable) = if set == WorkloadSet::Input {
                 (
-                    Some(language_executable("--c-executable")?),
-                    Some(language_executable("--cpp-executable")?),
+                    Some(language_executable("--c-executable", "C")?),
+                    Some(language_executable("--cpp-executable", "C++")?),
                 )
             } else {
                 (None, None)
             };
+            #[cfg(target_os = "macos")]
+            let language_library = if set == WorkloadSet::Input {
+                Some(language_executable(
+                    "--library",
+                    "MadoPilot dynamic library",
+                )?)
+            } else {
+                None
+            };
+            #[cfg(windows)]
+            let language_library: Option<ExecutableArtifact> = None;
             let hardware = required("--hardware")?;
             let os_version = required("--os-version")?;
+            #[cfg(target_os = "macos")]
+            let deployment_target = required("--deployment-target")?;
+            #[cfg(windows)]
+            let deployment_target = argument(arguments, "--deployment-target")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "unresolved".to_owned());
             let source_revision = required("--source-revision")?;
             let source_tree = required("--source-tree")?;
             let toolchain = required("--toolchain")?;
@@ -408,10 +522,25 @@ mod native {
             let display_topology = required("--display-topology")?;
             let permissions_signing = required("--permissions-signing")?;
             let language_memory = if set == WorkloadSet::Input {
-                "; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup; each C/C++ child has a 2 s execution bound, a 1 s termination/reap allowance, and a 65536-byte stdout/stderr cap per stream"
+                format!(
+                    "; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while \
+                     peak_resident_bytes is the child process peak reported by the native OS after \
+                     owned-handle cleanup; each C/C++ child has a {} s execution bound, a 1 s \
+                     termination/reap allowance, and a 65536-byte stdout/stderr cap per stream",
+                    LANGUAGE_PROCESS_WAIT.as_secs()
+                )
             } else {
-                ""
+                String::new()
             };
+            #[cfg(target_os = "macos")]
+            let executable_binding = if set == WorkloadSet::Input {
+                "; benchmark and fixture SHA-256 bytes are bound to validity-checked static and live Security code identities; each C/C++ program retains unique executable and library pins inside controller-owned mode-0500 directories, every spawned child must match the executable pin's live code identity, and both directory/file identities and bytes are rechecked after each exit"
+            } else {
+                "; benchmark and fixture SHA-256 bytes are bound to validity-checked static and audit-token-selected live Security code identities"
+            };
+            #[cfg(windows)]
+            let executable_binding = "";
+            #[cfg(windows)]
             let executable_digest = |path: &Path, label: &str| {
                 std::fs::read(path)
                     .map(|bytes| ContentDigest::of(&bytes))
@@ -419,8 +548,46 @@ mod native {
             };
             let benchmark_executable = std::env::current_exe()
                 .map_err(|_| "the benchmark executable path is unavailable".to_owned())?;
+            #[cfg(target_os = "macos")]
+            let benchmark_executable_bytes: Arc<[u8]> = std::fs::read(&benchmark_executable)
+                .map_err(|_| "the benchmark executable could not be hashed".to_owned())?
+                .into();
+            #[cfg(target_os = "macos")]
+            let benchmark_executable_identity = executable_identity(&benchmark_executable)?;
+            #[cfg(target_os = "macos")]
+            if std::fs::read(&benchmark_executable)
+                .ok()
+                .is_none_or(|bytes| bytes != benchmark_executable_bytes.as_ref())
+            {
+                return Err(
+                    "the benchmark executable changed while provenance was recorded".to_owned(),
+                );
+            }
+            #[cfg(target_os = "macos")]
+            let benchmark_process = {
+                let (server, _client) = UnixStream::pair()
+                    .map_err(|_| "the benchmark identity socket could not be created".to_owned())?;
+                let process =
+                    authenticate_fixture_peer(&server, std::process::id(), &benchmark_executable)
+                        .ok_or_else(|| {
+                        "the running benchmark could not be audit-token authenticated".to_owned()
+                    })?;
+                if !process.matches_executable_identity(benchmark_executable_identity) {
+                    return Err(
+                        "the running benchmark image differs from its recorded identity".to_owned(),
+                    );
+                }
+                process
+            };
+            #[cfg(target_os = "macos")]
+            let benchmark_executable_sha256 =
+                ContentDigest::of(&benchmark_executable_bytes).to_string();
+            #[cfg(windows)]
             let benchmark_executable_sha256 =
                 executable_digest(&benchmark_executable, "benchmark")?.to_string();
+            #[cfg(target_os = "macos")]
+            let fixture_binary = ContentDigest::of(&fixture_executable_bytes);
+            #[cfg(windows)]
             let fixture_binary = executable_digest(&fixture_executable, "fixture")?;
             let mut binary_hashes = format!("; fixture executable sha256 {fixture_binary}");
             #[cfg(windows)]
@@ -428,27 +595,45 @@ mod native {
                 let digest = executable_digest(executable, "ordinary fixture")?;
                 binary_hashes.push_str(&format!("; ordinary fixture executable sha256 {digest}"));
             }
-            if let Some(executable) = c_executable.as_deref() {
-                let digest = executable_digest(executable, "C")?;
-                binary_hashes.push_str(&format!("; C executable sha256 {digest}"));
+            if let Some(executable) = c_executable.as_ref() {
+                binary_hashes.push_str(&format!("; C executable sha256 {}", executable.digest()));
             }
-            if let Some(executable) = cpp_executable.as_deref() {
-                let digest = executable_digest(executable, "C++")?;
-                binary_hashes.push_str(&format!("; C++ executable sha256 {digest}"));
+            if let Some(executable) = cpp_executable.as_ref() {
+                binary_hashes.push_str(&format!("; C++ executable sha256 {}", executable.digest()));
+            }
+            if let Some(library) = language_library.as_ref() {
+                binary_hashes.push_str(&format!(
+                    "; MadoPilot dynamic library sha256 {}",
+                    library.digest()
+                ));
             }
             let notes = format!(
-                "source commit {source_revision}, tree {source_tree}; toolchain {toolchain}; GPU/driver {gpu_driver}; display topology {display_topology}; permissions/signing {permissions_signing}{binary_hashes}; executable paths deliberately omitted{language_memory}"
+                "source commit {source_revision}, tree {source_tree}; toolchain {toolchain}; GPU/driver {gpu_driver}; display topology {display_topology}; permissions/signing {permissions_signing}{binary_hashes}; executable paths deliberately omitted{executable_binding}{language_memory}"
             );
 
             Ok(Self {
                 set,
                 fixture_executable,
+                #[cfg(target_os = "macos")]
+                fixture_executable_bytes,
+                #[cfg(target_os = "macos")]
+                fixture_executable_identity,
                 #[cfg(windows)]
                 ordinary_fixture_executable,
-                hardware,
-                os_version,
                 c_executable,
                 cpp_executable,
+                language_library,
+                hardware,
+                os_version,
+                deployment_target,
+                #[cfg(target_os = "macos")]
+                benchmark_executable,
+                #[cfg(target_os = "macos")]
+                benchmark_executable_bytes,
+                #[cfg(target_os = "macos")]
+                benchmark_process,
+                #[cfg(target_os = "macos")]
+                benchmark_executable_identity,
                 benchmark_executable_sha256,
                 notes,
             })
@@ -670,6 +855,8 @@ mod native {
         fn spawn(behavior: FixtureBehavior) -> Self {
             let controller = FixtureController::start(
                 &arguments().fixture_executable,
+                Arc::clone(&arguments().fixture_executable_bytes),
+                arguments().fixture_executable_identity,
                 behavior.launch_mode(),
                 FIXTURE_WAIT,
             )
@@ -707,6 +894,10 @@ mod native {
             self.with_controller(|controller| {
                 controller.reset_events(event_payload_tag, OPERATION_WAIT)
             })
+        }
+
+        fn discard_setup_events(&self) -> bool {
+            self.with_controller(|controller| controller.discard_setup_events(OPERATION_WAIT))
         }
 
         fn begin_process_flow(&self, event_payload_tag: u64) -> Option<DesktopInputState> {
@@ -753,13 +944,6 @@ mod native {
             self.with_controller(|controller| controller.finish(wait))
         }
 
-        fn finish_observation(mut self) -> bool {
-            self.controller
-                .get_mut()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .finish(OPERATION_WAIT)
-        }
-
         fn next_key_pair(&self) -> bool {
             let units = expected_key_units();
             self.next_key_pair_with_units(units, units)
@@ -786,6 +970,19 @@ mod native {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             operation(&mut controller)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for FixtureProcess {
+        fn drop(&mut self) {
+            let controller = self
+                .controller
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !controller.finish(FIXTURE_WAIT) {
+                FIXTURE_FINALIZATION_SUCCEEDED.store(false, Ordering::Release);
+            }
         }
     }
 
@@ -1138,9 +1335,96 @@ mod native {
             let _closed = close(&state.session);
         }
     }
+
+    #[cfg(target_os = "macos")]
+    fn language_process_identity_matches(process_id: u32, expected: ExecutableIdentity) -> bool {
+        let observed = process_executable_identity(process_id);
+        let matches = observed == Ok(expected);
+        if !matches && !LANGUAGE_IDENTITY_FAILURE_REPORTED.swap(true, Ordering::AcqRel) {
+            match observed {
+                Ok(_) => eprintln!("language child identity rejected: live identity mismatch"),
+                Err(error) => eprintln!("language child identity rejected: {error}"),
+            }
+        }
+        matches
+    }
+
+    struct LanguageCommand {
+        command: Command,
+        #[cfg(target_os = "macos")]
+        pinned: Arc<LanguageExecutablePin>,
+        #[cfg(target_os = "macos")]
+        expected_identity: ExecutableIdentity,
+        #[cfg(target_os = "macos")]
+        library_pin: Arc<LanguageExecutablePin>,
+        #[cfg(windows)]
+        expected: ExecutableArtifact,
+    }
+
+    impl LanguageCommand {
+        fn command(&mut self) -> &mut Command {
+            &mut self.command
+        }
+
+        fn executable_is_unchanged(&self) -> bool {
+            #[cfg(target_os = "macos")]
+            {
+                language_pins_are_unchanged(&self.pinned, &self.library_pin)
+            }
+            #[cfg(windows)]
+            {
+                std::fs::read(&self.expected.path)
+                    .ok()
+                    .as_deref()
+                    .is_some_and(|bytes| bytes == self.expected.bytes.as_ref())
+            }
+        }
+
+        fn bounded_output(&mut self) -> BoundedChildOutput {
+            #[cfg(target_os = "macos")]
+            {
+                let expected = self.expected_identity;
+                let output = bounded_child_output_checked(
+                    &mut self.command,
+                    LANGUAGE_PROCESS_WAIT,
+                    MAX_LANGUAGE_OUTPUT_BYTES,
+                    move |process_id| language_process_identity_matches(process_id, expected),
+                );
+                if (!output.within_bounds
+                    || output.status.is_none_or(|status| !status.success())
+                    || !output.stderr.is_empty())
+                    && !LANGUAGE_OUTPUT_FAILURE_REPORTED.swap(true, Ordering::AcqRel)
+                {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    eprintln!(
+                        "language child output rejected: within-bounds={} status={:?} \
+                         stdout-bytes={} stderr-bytes={} stderr={stderr:?}",
+                        output.within_bounds,
+                        output.status,
+                        output.stdout.len(),
+                        output.stderr.len(),
+                    );
+                }
+                output
+            }
+            #[cfg(windows)]
+            {
+                bounded_child_output(
+                    &mut self.command,
+                    LANGUAGE_PROCESS_WAIT,
+                    MAX_LANGUAGE_OUTPUT_BYTES,
+                )
+            }
+        }
+    }
+
     #[derive(Clone)]
     struct LanguageProgram {
-        executable: PathBuf,
+        executable: ExecutableArtifact,
+        #[cfg(target_os = "macos")]
+        pinned: Arc<LanguageExecutablePin>,
+        #[cfg(target_os = "macos")]
+        library_pin: Arc<LanguageExecutablePin>,
         #[cfg(windows)]
         library_directory: PathBuf,
         example_name: &'static str,
@@ -1149,24 +1433,61 @@ mod native {
 
     impl LanguageProgram {
         fn new(
-            executable: PathBuf,
+            executable: ExecutableArtifact,
+            library: Option<ExecutableArtifact>,
             example_name: &'static str,
             receipt_line: &'static str,
         ) -> Self {
+            #[cfg(target_os = "macos")]
+            let pinned = {
+                let pinned = Arc::new(
+                    LanguageExecutablePin::new(&executable.path, Arc::clone(&executable.bytes))
+                        .unwrap_or_else(|error| panic!("language executable pin failed: {error}")),
+                );
+                assert_eq!(
+                    executable_identity(pinned.path()),
+                    Ok(executable.identity),
+                    "the language pin retains the recorded executable code identity"
+                );
+                pinned
+            };
+            #[cfg(target_os = "macos")]
+            let library_pin = {
+                let library = library
+                    .as_ref()
+                    .expect("the macOS language program carries its dynamic library");
+                let pinned = Arc::new(
+                    LanguageExecutablePin::new(&library.path, Arc::clone(&library.bytes))
+                        .unwrap_or_else(|error| panic!("language library pin failed: {error}")),
+                );
+                assert_eq!(
+                    executable_identity(pinned.path()),
+                    Ok(library.identity),
+                    "the language library pin retains the recorded code identity"
+                );
+                pinned
+            };
             #[cfg(windows)]
             let library_directory = executable
+                .path
                 .parent()
                 .and_then(Path::parent)
                 .filter(|directory| directory.join("madopilot.dll").is_file())
                 .unwrap_or_else(|| {
                     panic!(
                         "{} has no madopilot.dll in its cargo profile directory",
-                        executable.display()
+                        executable.path.display()
                     )
                 })
                 .to_path_buf();
+            #[cfg(windows)]
+            let _unused_library = library;
             Self {
                 executable,
+                #[cfg(target_os = "macos")]
+                pinned,
+                #[cfg(target_os = "macos")]
+                library_pin,
                 #[cfg(windows)]
                 library_directory,
                 example_name,
@@ -1174,11 +1495,24 @@ mod native {
             }
         }
 
-        fn command(&self) -> Command {
-            let command = Command::new(&self.executable);
+        fn command(&self) -> LanguageCommand {
+            #[cfg(target_os = "macos")]
+            {
+                let pinned = Arc::clone(&self.pinned);
+                let library_pin = Arc::clone(&self.library_pin);
+                let mut command = Command::new(pinned.path());
+                command.env("DYLD_INSERT_LIBRARIES", library_pin.path());
+                command.env("MADO_PILOT_EXPECT_LIBRARY_IMAGE", library_pin.path());
+                LanguageCommand {
+                    command,
+                    pinned,
+                    expected_identity: self.executable.identity,
+                    library_pin,
+                }
+            }
             #[cfg(windows)]
-            let command = {
-                let mut command = command;
+            {
+                let mut command = Command::new(&self.executable.path);
                 let existing = std::env::var_os("PATH").unwrap_or_default();
                 let mut search = vec![self.library_directory.clone()];
                 search.extend(std::env::split_paths(&existing));
@@ -1187,9 +1521,11 @@ mod native {
                     std::env::join_paths(search)
                         .expect("the Windows child library path is representable"),
                 );
-                command
-            };
-            command
+                LanguageCommand {
+                    command,
+                    expected: self.executable.clone(),
+                }
+            }
         }
 
         fn expected_fixture_events(&self) -> &'static [protocol::EventSummary] {
@@ -1199,6 +1535,13 @@ mod native {
                 &COMMON_LANGUAGE_EVENTS
             }
         }
+    }
+
+    fn language_common_fixture(
+        program: LanguageProgram,
+        _shared_fixture: Rc<FixtureProcess>,
+    ) -> LanguageProgram {
+        program
     }
 
     pub(super) fn run() {
@@ -1217,9 +1560,9 @@ mod native {
                     "--workload-set <capture|transitions|input|process-directed|",
                     "process-directed-game-like|process-diagnostics> ",
                     "--fixture-executable <path> [--ordinary-fixture-executable <path> ",
-                    "--c-executable <path> --cpp-executable <path>] ",
-
+                    "--c-executable <path> --cpp-executable <path> --library <path>] ",
                     "--hardware <description> --os-version <description> ",
+                    "--deployment-target <description> ",
                     "--source-revision <commit> --source-tree <tree> ",
                     "--toolchain <versions> --gpu-driver <description> ",
                     "--display-topology <description> ",
@@ -1229,13 +1572,54 @@ mod native {
             )
         });
         let set = parsed.set;
-        ARGUMENTS
-            .set(parsed)
-            .expect("benchmark arguments initialize exactly once");
+        assert!(
+            ARGUMENTS.set(parsed).is_ok(),
+            "benchmark arguments initialize exactly once"
+        );
         let plan = set.measured_plan();
         let workloads = workloads(set, plan);
         let args = arguments();
         let (id, fixture) = profile_identity(set);
+        #[cfg(target_os = "macos")]
+        {
+            let benchmark_live_identity_unchanged = args
+                .benchmark_process
+                .matches_executable_identity(args.benchmark_executable_identity);
+            let benchmark_static_identity_unchanged =
+                executable_identity(&args.benchmark_executable)
+                    .is_ok_and(|identity| identity == args.benchmark_executable_identity);
+            let benchmark_bytes_unchanged = std::fs::read(&args.benchmark_executable)
+                .ok()
+                .as_deref()
+                .is_some_and(|bytes| bytes == args.benchmark_executable_bytes.as_ref());
+            let fixture_static_identity_unchanged = executable_identity(&args.fixture_executable)
+                .is_ok_and(|identity| identity == args.fixture_executable_identity);
+            let fixture_bytes_unchanged = std::fs::read(&args.fixture_executable)
+                .ok()
+                .as_deref()
+                .is_some_and(|bytes| bytes == args.fixture_executable_bytes.as_ref());
+            let fixture_finalization_succeeded =
+                FIXTURE_FINALIZATION_SUCCEEDED.load(Ordering::Acquire);
+            assert!(
+                post_use_identity_gate(
+                    true,
+                    &[
+                        benchmark_live_identity_unchanged,
+                        benchmark_static_identity_unchanged,
+                        benchmark_bytes_unchanged,
+                        fixture_static_identity_unchanged,
+                        fixture_bytes_unchanged,
+                        fixture_finalization_succeeded,
+                    ],
+                ),
+                "benchmark provenance gate failed: benchmark-live={benchmark_live_identity_unchanged} \
+                 benchmark-static={benchmark_static_identity_unchanged} \
+                 benchmark-bytes={benchmark_bytes_unchanged} \
+                 fixture-static={fixture_static_identity_unchanged} \
+                 fixture-bytes={fixture_bytes_unchanged} \
+                 fixture-finalization={fixture_finalization_succeeded}"
+            );
+        }
         bench_harness::report(
             &Benchmark {
                 id,
@@ -1248,6 +1632,7 @@ mod native {
                 benchmark_executable_sha256: Some(args.benchmark_executable_sha256.clone()),
                 hardware: args.hardware.clone(),
                 os_version: args.os_version.clone(),
+                deployment_target: Some(args.deployment_target.clone()),
                 build_profile: format!(
                     "cargo bench, default features, debug_assertions={}; {}",
                     cfg!(debug_assertions),
@@ -1271,17 +1656,12 @@ mod native {
 
             WorkloadSet::Input => {
                 let fixture = Rc::new(FixtureProcess::spawn(input_fixture_behavior()));
-                #[cfg(target_os = "macos")]
-                assert!(
-                    controlled_command_ok(&fixture, protocol::FixtureCommandKind::OpenAuxiliary),
-                    "the released C/C++ process-directed samples retain an additional ordinary \
-                     target-process window"
-                );
                 let args = arguments();
                 let c = LanguageProgram::new(
                     args.c_executable
                         .clone()
                         .expect("the input benchmark requires its C executable"),
+                    args.language_library.clone(),
                     c_example_name(),
                     "receipt: outcome 1 submitted 4 fault 0 cleanup 0",
                 );
@@ -1289,6 +1669,7 @@ mod native {
                     args.cpp_executable
                         .clone()
                         .expect("the input benchmark requires its C++ executable"),
+                    args.language_library.clone(),
                     cpp_example_name(),
                     cpp_receipt_line(),
                 );
@@ -1318,7 +1699,7 @@ mod native {
                         "c_common_flow",
                         "the released C ABI uses explicit ProcessDirected delivery and checks its invocation-only receipt separately from exact owned-fixture events",
                         plan,
-                        || c.clone(),
+                        || language_common_fixture(c.clone(), Rc::clone(&fixture)),
                         language_common_flow,
                     ),
                     measure(
@@ -1332,7 +1713,7 @@ mod native {
                         "cpp_common_flow",
                         cpp_correctness_oracle(),
                         plan,
-                        || cpp.clone(),
+                        || language_common_fixture(cpp.clone(), Rc::clone(&fixture)),
                         language_common_flow,
                     ),
                 ];
@@ -1715,7 +2096,7 @@ mod native {
             ),
             measure(
                 "fixture_controller_close",
-                "the private fixture controller acknowledges stop, closes its bounded channel, terminates only its authenticated application when needed, and reaps its owned launcher within one shared deadline",
+                "the private fixture controller acknowledges stop, closes its bounded channel, and confirms termination of the same authenticated NSWorkspace application within one shared deadline",
                 plan,
                 move || behavior,
                 fixture_controller_close,
@@ -1766,9 +2147,9 @@ mod native {
     #[cfg(target_os = "macos")]
     impl ProcessDiscoveryFlow {
         fn new(behavior: FixtureBehavior) -> Self {
-            let fixture = start_inactive_process_fixture(behavior);
             let engine = native_engine_with_diagnostics(DiagnosticOptions::off());
             require_permissions(&engine);
+            let fixture = start_inactive_process_fixture(behavior, &engine);
             let _seed_target = discover_process_target(&engine, &fixture);
             Self { engine, fixture }
         }
@@ -1795,9 +2176,9 @@ mod native {
     #[cfg(target_os = "macos")]
     impl ProcessFlow {
         fn new(behavior: FixtureBehavior, diagnostics: ProcessDiagnosticCase) -> Self {
-            let fixture = start_inactive_process_fixture(behavior);
             let engine = native_engine_with_diagnostics(diagnostics.options());
             require_permissions(&engine);
+            let fixture = start_inactive_process_fixture(behavior, &engine);
             let reader = engine.take_diagnostic_reader();
             let target = discover_process_target(&engine, &fixture);
             let session = engine
@@ -1871,9 +2252,9 @@ mod native {
     #[cfg(target_os = "macos")]
     impl ProcessCloseFlow {
         fn new(behavior: FixtureBehavior) -> Self {
-            let fixture = start_inactive_process_fixture(behavior);
             let engine = native_engine_with_diagnostics(DiagnosticOptions::off());
             require_permissions(&engine);
+            let fixture = start_inactive_process_fixture(behavior, &engine);
             let target = discover_process_target(&engine, &fixture);
             Self {
                 _engine: engine,
@@ -1884,22 +2265,96 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn start_inactive_process_fixture(behavior: FixtureBehavior) -> Rc<FixtureProcess> {
+    fn start_inactive_process_fixture(
+        behavior: FixtureBehavior,
+        engine: &NativeEngine,
+    ) -> Rc<FixtureProcess> {
         let fixture = Rc::new(FixtureProcess::spawn(behavior));
         assert_eq!(
             fixture.launch_mode(),
             behavior.launch_mode(),
             "the ready mode/renderer facts match the requested profile"
         );
-        assert!(
-            controlled_command_ok(&fixture, protocol::FixtureCommandKind::OpenAuxiliary),
-            "the process benchmark fixture opens an additional ordinary window"
-        );
+        confirm_auxiliary_window_setup(engine, &fixture);
         assert!(
             controlled_command_ok(&fixture, protocol::FixtureCommandKind::YieldForeground),
             "the process-directed fixture yields foreground before sampling"
         );
         fixture
+    }
+
+    #[cfg(target_os = "macos")]
+    fn confirm_auxiliary_window_setup(engine: &NativeEngine, fixture: &FixtureProcess) {
+        let acknowledged =
+            controlled_command_ok(fixture, protocol::FixtureCommandKind::OpenAuxiliary);
+        let authenticated_window_ids = if acknowledged {
+            authenticated_fixture_window_inventory(engine, fixture)
+        } else {
+            Vec::new()
+        };
+        assert!(
+            auxiliary_window_setup_is_proven(acknowledged, &authenticated_window_ids),
+            "the acknowledged auxiliary-window setup is independently visible as two distinct \
+             live authenticated windows in production discovery"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn confirm_transient_auxiliary_window_setup(engine: &NativeEngine, fixture: &FixtureProcess) {
+        confirm_auxiliary_window_setup(engine, fixture);
+        assert!(
+            controlled_command_ok(fixture, protocol::FixtureCommandKind::CloseAuxiliary),
+            "the proven auxiliary window closes before title-selected language sampling"
+        );
+        let deadline = Instant::now() + FIXTURE_WAIT;
+        loop {
+            let authenticated_window_ids = authenticated_fixture_window_ids(engine, fixture);
+            if authenticated_window_ids.len() == 1 {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "production discovery did not retire the closed auxiliary window before language \
+                 sampling"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn authenticated_fixture_window_inventory(
+        engine: &NativeEngine,
+        fixture: &FixtureProcess,
+    ) -> Vec<TargetId> {
+        let deadline = Instant::now() + FIXTURE_WAIT;
+        loop {
+            let authenticated_window_ids = authenticated_fixture_window_ids(engine, fixture);
+            if auxiliary_window_setup_is_proven(true, &authenticated_window_ids)
+                || Instant::now() >= deadline
+            {
+                return authenticated_window_ids;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn authenticated_fixture_window_ids(
+        engine: &NativeEngine,
+        fixture: &FixtureProcess,
+    ) -> Vec<TargetId> {
+        let targets = engine
+            .discover(&bounded(OPERATION_WAIT))
+            .expect("production discovery inventories the fixture windows");
+        let process = fixture
+            .authenticated_process()
+            .expect("the fixture control peer remains live and authenticated");
+        targets
+            .iter()
+            .filter(|target| target.capability().kind() == Some(TargetKind::Window))
+            .filter(|target| engine.authenticates_fixture_target(target.id(), process))
+            .map(mado_pilot::TargetDescription::id)
+            .collect()
     }
 
     #[cfg(target_os = "macos")]
@@ -2866,10 +3321,12 @@ mod native {
     fn language_process_load(program: &LanguageProgram) -> Sample {
         let started = Instant::now();
         let mut command = program.command();
-        command.arg("--load-check");
-        let output = bounded_child_output(&mut command, OPERATION_WAIT, MAX_LANGUAGE_OUTPUT_BYTES);
+        command.command().arg("--load-check");
+        let output = command.bounded_output();
+        let executable_unchanged = command.executable_is_unchanged();
         let elapsed = started.elapsed();
-        let (correct, peak_resident) = if output.within_bounds
+        let (correct, peak_resident) = if executable_unchanged
+            && output.within_bounds
             && output.status.is_some_and(|status| status.success())
             && output.stderr.is_empty()
         {
@@ -2892,18 +3349,95 @@ mod native {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn language_common_flow(program: &LanguageProgram) -> Sample {
-        let fixture = FixtureProcess::spawn(FixtureBehavior::Animate);
+        let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Animate));
+        let engine = native_engine();
+        require_permissions(&engine);
+        confirm_transient_auxiliary_window_setup(&engine, &fixture);
+        assert!(
+            fixture.discard_setup_events(),
+            "fixture-only auxiliary-window events are retired before language sampling"
+        );
         let title = fixture.title();
         let started = Instant::now();
         let mut command = program.command();
-        command.arg(title);
+        command.command().arg(title);
         let BoundedChildOutput {
             status,
             stdout,
             stderr,
             within_bounds,
-        } = bounded_child_output(&mut command, OPERATION_WAIT, MAX_LANGUAGE_OUTPUT_BYTES);
+        } = command.bounded_output();
+        let executable_unchanged = command.executable_is_unchanged();
+        let process_succeeded = within_bounds && status.is_some_and(|status| status.success());
+        let stderr_empty = within_bounds && stderr.is_empty();
+        let stdout = within_bounds
+            .then(|| String::from_utf8(stdout).ok())
+            .flatten();
+        let receipt_present = stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
+        let fixture_acknowledged = if process_succeeded || receipt_present {
+            fixture.next_flow(program.expected_fixture_events())
+        } else {
+            false
+        };
+        let elapsed = started.elapsed();
+        let mapped = stdout
+            .as_deref()
+            .and_then(language_mapping_bytes)
+            .unwrap_or(0);
+        let peak_resident = stdout.as_deref().and_then(language_peak_resident_bytes);
+        let abi_present = stdout
+            .as_deref()
+            .is_some_and(|stdout| language_abi_line_is_present(stdout, program.example_name));
+        let completion_present = stdout.as_deref().is_some_and(|stdout| {
+            stdout
+                .lines()
+                .any(|line| line == format!("{} complete", program.example_name))
+        });
+        let peak_present = peak_resident.is_some_and(|bytes| bytes > 0);
+        let correct = executable_unchanged
+            && process_succeeded
+            && stderr_empty
+            && fixture_acknowledged
+            && receipt_present
+            && abi_present
+            && completion_present
+            && mapped > 0
+            && peak_present;
+        if !correct {
+            eprintln!(
+                "{} common-flow rejection: executable={executable_unchanged} \
+                 process={process_succeeded} stderr-empty={stderr_empty} \
+                 fixture={fixture_acknowledged} receipt={receipt_present} abi={abi_present} \
+                 complete={completion_present} mapped={} peak={peak_present}",
+                program.example_name,
+                mapped > 0
+            );
+        }
+        let sample = Sample::new(elapsed, correct, mapped);
+        match peak_resident {
+            Some(bytes) => sample.with_peak_resident_bytes(bytes),
+            None => sample,
+        }
+    }
+
+    #[cfg(windows)]
+    fn language_common_flow(program: &LanguageProgram) -> Sample {
+        let fixture = FixtureProcess::spawn(FixtureBehavior::Animate);
+        let title = fixture.title();
+        let started = Instant::now();
+        let mut command = program.command();
+        command.command().arg(title);
+        let BoundedChildOutput {
+            status,
+            stdout,
+            stderr,
+            within_bounds,
+        } = command.bounded_output();
+        let executable_unchanged = command.executable_is_unchanged();
         let process_succeeded = within_bounds && status.is_some_and(|status| status.success());
         let stderr_empty = within_bounds && stderr.is_empty();
         let stdout = within_bounds
@@ -2924,7 +3458,8 @@ mod native {
             .and_then(language_mapping_bytes)
             .unwrap_or(0);
         let peak_resident = stdout.as_deref().and_then(language_peak_resident_bytes);
-        let correct = process_succeeded
+        let correct = executable_unchanged
+            && process_succeeded
             && stderr_empty
             && fixture_acknowledged
             && fixture_sequence_complete
@@ -3232,14 +3767,13 @@ mod native {
 
     #[cfg(target_os = "macos")]
     const fn fixture_build_profile() -> &'static str {
-        "fixture cargo build --release --features private-fixture; signed .app launch"
+        "fixture cargo build --release --features private-fixture; signed .app; controlled NSWorkspace new-instance launch"
     }
 
     #[cfg(windows)]
     const fn fixture_build_profile() -> &'static str {
         "fixture cargo build --release"
     }
-
     #[cfg(target_os = "macos")]
     const fn measured_close_bound() -> Duration {
         Duration::from_secs(1)

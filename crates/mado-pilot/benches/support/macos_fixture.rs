@@ -1,25 +1,28 @@
 //! Benchmark-only controller for the separately linked private macOS fixture.
 //!
-//! This module is compiled into benchmark artifacts only. It owns one fixture
-//! child, one bounded Unix-domain control connection, and one outstanding
-//! command at a time. A fixture acknowledgement proves only that the private
-//! command ran; callers must establish capture progress or product input
-//! delivery through independent oracles.
+//! This module is compiled into benchmark artifacts only. It owns one retained
+//! fixture application, one bounded Unix-domain control connection, and one
+//! outstanding command at a time. A fixture acknowledgement proves only that
+//! the private command ran; callers must establish capture progress or product
+//! input delivery through independent oracles.
 
 use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::Shutdown;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::macos_fixture_control::{
-    AuthenticatedFixtureProcess, FixtureSocketDirectory, authenticate_fixture_peer,
+    AuthenticatedFixtureProcess, ExecutableIdentity, FixtureSocketDirectory,
+    LaunchedFixtureApplication, authenticate_fixture_peer, executable_identity,
     next_fixture_run_nonce,
 };
 use crate::macos_fixture_protocol::{
@@ -37,6 +40,185 @@ const WAIT_SLICE: Duration = Duration::from_millis(25);
 const DROP_WAIT: Duration = Duration::from_secs(1);
 const GRACEFUL_CLOSE_WAIT: Duration = Duration::from_millis(100);
 const EVENT_QUIET_WAIT: Duration = Duration::from_millis(100);
+const MAX_FIXTURE_LAUNCH_ATTEMPTS: u32 = 3;
+
+fn remove_language_pin(directory: &Path, path: &Path) {
+    let _writable = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
+    let _file_removed = std::fs::remove_file(path);
+    let _directory_removed = std::fs::remove_dir(directory);
+}
+
+/// One unique controller-owned copy of a recorded language artifact.
+///
+/// The file lives in its own mode-0500 directory rather than beside a
+/// caller-supplied artifact. Both directory and file descriptors retain the
+/// created vnodes until the pin removes them on every exit path.
+pub(crate) struct LanguageExecutablePin {
+    directory: PathBuf,
+    path: PathBuf,
+    expected: Arc<[u8]>,
+    _directory: File,
+    _file: File,
+    directory_device: u64,
+    directory_inode: u64,
+    device: u64,
+    inode: u64,
+}
+
+impl LanguageExecutablePin {
+    /// Creates one private pin from an artifact's recorded bytes.
+    pub(crate) fn new(executable: &Path, expected: Arc<[u8]>) -> Result<Self, String> {
+        let file_name = executable
+            .file_name()
+            .ok_or_else(|| "the language artifact has no file name".to_owned())?;
+        let nonce = next_fixture_run_nonce()?;
+        let directory = std::env::temp_dir().join(format!(
+            "mado-pilot-language-pin-{}-{nonce}",
+            std::process::id()
+        ));
+        let mut builder = DirBuilder::new();
+        builder.mode(0o700);
+        builder
+            .create(&directory)
+            .map_err(|_| "the language pin directory could not be created".to_owned())?;
+        let path = directory.join(file_name);
+        let mut writer = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o500)
+            .open(&path)
+        {
+            Ok(writer) => writer,
+            Err(_) => {
+                remove_language_pin(&directory, &path);
+                return Err("the language artifact pin could not be created".to_owned());
+            }
+        };
+        if writer
+            .write_all(expected.as_ref())
+            .and_then(|()| writer.sync_all())
+            .is_err()
+        {
+            drop(writer);
+            remove_language_pin(&directory, &path);
+            return Err("the language artifact pin could not be written".to_owned());
+        }
+        let retained = match File::open(&path) {
+            Ok(retained) => retained,
+            Err(_) => {
+                drop(writer);
+                remove_language_pin(&directory, &path);
+                return Err("the language artifact pin could not be retained".to_owned());
+            }
+        };
+        let metadata = match retained.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                drop((writer, retained));
+                remove_language_pin(&directory, &path);
+                return Err("the language artifact pin identity could not be read".to_owned());
+            }
+        };
+        if std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500)).is_err() {
+            drop((writer, retained));
+            remove_language_pin(&directory, &path);
+            return Err("the language pin directory could not become read-only".to_owned());
+        }
+        let retained_directory = match File::open(&directory) {
+            Ok(retained_directory) => retained_directory,
+            Err(_) => {
+                drop((writer, retained));
+                remove_language_pin(&directory, &path);
+                return Err("the language pin directory could not be retained".to_owned());
+            }
+        };
+        let directory_metadata = match retained_directory.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                drop((writer, retained, retained_directory));
+                remove_language_pin(&directory, &path);
+                return Err("the language pin directory identity could not be read".to_owned());
+            }
+        };
+        drop(writer);
+        let guard = Self {
+            directory,
+            path,
+            expected,
+            _directory: retained_directory,
+            _file: retained,
+            directory_device: directory_metadata.dev(),
+            directory_inode: directory_metadata.ino(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        if !guard.is_unchanged() {
+            return Err(
+                "the language artifact pin did not preserve its identity and bytes".to_owned(),
+            );
+        }
+        Ok(guard)
+    }
+
+    /// Path passed to the bounded child process.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Confirms that the private directory and artifact remain the created vnodes.
+    pub(crate) fn is_unchanged(&self) -> bool {
+        std::fs::symlink_metadata(&self.directory).is_ok_and(|metadata| {
+            metadata.file_type().is_dir()
+                && metadata.dev() == self.directory_device
+                && metadata.ino() == self.directory_inode
+                && metadata.mode() & 0o777 == 0o500
+        }) && std::fs::symlink_metadata(&self.path).is_ok_and(|metadata| {
+            metadata.file_type().is_file()
+                && metadata.dev() == self.device
+                && metadata.ino() == self.inode
+                && metadata.mode() & 0o777 == 0o500
+        }) && std::fs::read(&self.path)
+            .ok()
+            .as_deref()
+            .is_some_and(|bytes| bytes == self.expected.as_ref())
+    }
+}
+
+impl Drop for LanguageExecutablePin {
+    fn drop(&mut self) {
+        remove_language_pin(&self.directory, &self.path);
+    }
+}
+
+/// Requires a completed use and every final artifact identity to remain valid.
+#[must_use]
+pub(crate) fn post_use_identity_gate(use_succeeded: bool, artifacts_unchanged: &[bool]) -> bool {
+    use_succeeded
+        && !artifacts_unchanged.is_empty()
+        && artifacts_unchanged.iter().all(|unchanged| *unchanged)
+}
+
+/// Requires both retained language pins to remain the exact files created from
+/// their recorded bytes.
+#[must_use]
+pub(crate) fn language_pins_are_unchanged(
+    executable: &LanguageExecutablePin,
+    library: &LanguageExecutablePin,
+) -> bool {
+    executable.is_unchanged() && library.is_unchanged()
+}
+
+/// Requires an acknowledged auxiliary-window command to be proven by inventory.
+#[must_use]
+pub(crate) fn auxiliary_window_setup_is_proven<T: PartialEq>(
+    command_acknowledged: bool,
+    authenticated_window_ids: &[T],
+) -> bool {
+    command_acknowledged
+        && authenticated_window_ids
+            .split_first()
+            .is_some_and(|(first, rest)| rest.iter().any(|other| other != first))
+}
 
 /// How the independently linked fixture renders and whether correlated product
 /// input is also allowed to drive a qualification-only visual transition.
@@ -146,7 +328,7 @@ enum ReaderMessage {
 
 /// One owned fixture application and its bounded command/event channel.
 pub struct FixtureController {
-    launcher: Child,
+    launched: LaunchedFixtureApplication,
     application: AuthenticatedFixtureProcess,
     input: Option<UnixStream>,
     lines: Arc<Mutex<mpsc::Receiver<ReaderMessage>>>,
@@ -157,6 +339,7 @@ pub struct FixtureController {
     next_nonce: u64,
     launch_mode: LaunchMode,
     stopped: bool,
+    expected_identity: ExecutableIdentity,
     finish_result: Option<bool>,
 }
 
@@ -173,11 +356,47 @@ impl fmt::Debug for FixtureController {
     }
 }
 
+fn strict_event_reset(pending_events_empty: bool, reset: impl FnOnce() -> bool) -> bool {
+    pending_events_empty && reset()
+}
+
+fn discard_setup_events_until_quiet<State>(
+    state: &mut State,
+    wait: Duration,
+    quiet_wait: Duration,
+    mut reset: impl FnMut(&mut State, Duration) -> bool,
+    mut discard_pending_events: impl FnMut(&mut State),
+    mut output_remains_quiet: impl FnMut(&mut State, Instant) -> bool,
+) -> bool {
+    let Some(deadline) = Instant::now().checked_add(wait) else {
+        return false;
+    };
+    while Instant::now() < deadline {
+        if !reset(state, deadline.saturating_duration_since(Instant::now())) {
+            return false;
+        }
+        discard_pending_events(state);
+        let Some(quiet_deadline) = Instant::now()
+            .checked_add(quiet_wait)
+            .filter(|quiet_deadline| *quiet_deadline <= deadline)
+        else {
+            return false;
+        };
+        if output_remains_quiet(state, quiet_deadline) {
+            return true;
+        }
+    }
+    false
+}
+
 impl FixtureController {
-    /// Launches one signed app bundle derived from `executable` and waits for its
-    /// exact version-10 protocol ready facts.
+    /// Launches one signed app bundle through NSWorkspace, binds the control
+    /// peer to that exact retained application instance, and waits for its exact
+    /// version-11 protocol ready facts.
     pub fn start(
         executable: &Path,
+        expected_executable: Arc<[u8]>,
+        expected_identity: ExecutableIdentity,
         launch_mode: LaunchMode,
         wait: Duration,
     ) -> Result<Self, String> {
@@ -187,6 +406,18 @@ impl FixtureController {
         let bundle = fixture_bundle(&executable).ok_or_else(|| {
             "the fixture executable is not inside a .app/Contents/MacOS bundle".to_owned()
         })?;
+        if std::fs::read(&executable)
+            .ok()
+            .as_deref()
+            .is_none_or(|bytes| bytes != expected_executable.as_ref())
+        {
+            return Err("the fixture executable changed after provenance was recorded".to_owned());
+        }
+        if executable_identity(&executable)? != expected_identity {
+            return Err(
+                "the fixture code identity changed after provenance was recorded".to_owned(),
+            );
+        }
         let socket_directory = FixtureSocketDirectory::new()?;
         let socket_path = socket_directory.socket_path();
         let run_nonce = next_fixture_run_nonce()?;
@@ -196,38 +427,81 @@ impl FixtureController {
             .set_nonblocking(true)
             .map_err(|_| "the fixture control listener could not be bounded".to_owned())?;
 
-        let mut launch = Command::new("/usr/bin/open");
-        launch
-            .arg("-n")
-            .arg("-W")
-            .arg(&bundle)
-            .arg("--args")
-            .arg("--control-socket")
-            .arg(&socket_path)
-            .arg("--run-nonce")
-            .arg(run_nonce.to_string())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
-        launch.args(launch_mode.arguments());
-        let child = launch
-            .spawn()
-            .map_err(|_| "the fixture application launcher could not start".to_owned())?;
-        let mut launch_guard = LaunchGuard::new(child);
+        let mut launch_arguments = vec![
+            OsString::from("--control-socket"),
+            socket_path.as_os_str().to_owned(),
+            OsString::from("--run-nonce"),
+            OsString::from(run_nonce.to_string()),
+        ];
+        launch_arguments.extend(launch_mode.arguments().iter().map(OsString::from));
+        let argument_views = launch_arguments
+            .iter()
+            .map(OsString::as_os_str)
+            .collect::<Vec<&OsStr>>();
+        let launched = LaunchedFixtureApplication::launch(&bundle, &argument_views)?;
+        let mut expected_process_id = launched.process_id();
+        let mut launch_guard = LaunchGuard::new(launched);
+        let mut launch_attempts = 1_u32;
         let deadline = Instant::now() + wait;
         let (stream, application) = loop {
+            if !launch_guard.is_live()? {
+                if launch_attempts >= MAX_FIXTURE_LAUNCH_ATTEMPTS || Instant::now() >= deadline {
+                    return Err(format!(
+                        "the fixture application exited before connecting after \
+                         {launch_attempts} launch attempt(s)"
+                    ));
+                }
+                eprintln!(
+                    "fixture-launch-retry attempt={} reason=exited-before-control-connection",
+                    launch_attempts + 1
+                );
+                drop(launch_guard);
+                let launched = LaunchedFixtureApplication::launch(&bundle, &argument_views)?;
+                expected_process_id = launched.process_id();
+                launch_guard = LaunchGuard::new(launched);
+                launch_attempts += 1;
+                continue;
+            }
             match listener.accept() {
                 Ok((stream, _address)) => {
-                    if let Some(application) = authenticate_fixture_peer(&stream, &executable) {
+                    if let Some(application) =
+                        authenticate_fixture_peer(&stream, expected_process_id, &executable)
+                    {
+                        let identity_matches = loop {
+                            match application.executable_identity() {
+                                Ok(identity) => break Some(identity == expected_identity),
+                                Err(error) => {
+                                    if !launch_guard.is_live()? {
+                                        break None;
+                                    }
+                                    if Instant::now() >= deadline {
+                                        return Err(format!(
+                                            "the launched fixture identity remained unavailable: \
+                                             {error}"
+                                        ));
+                                    }
+                                    thread::sleep(WAIT_SLICE);
+                                }
+                            }
+                        };
+                        let Some(identity_matches) = identity_matches else {
+                            continue;
+                        };
+                        if !identity_matches {
+                            return Err(
+                                "the launched fixture identity differs from recorded provenance"
+                                    .to_owned(),
+                            );
+                        }
+                        if !launch_guard.is_live()? {
+                            continue;
+                        }
                         launch_guard.application = Some(application);
                         break (stream, application);
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(_) => return Err("the fixture control listener failed".to_owned()),
-            }
-            if launch_guard.exited()? {
-                return Err("the fixture application exited before connecting".to_owned());
             }
             if Instant::now() >= deadline {
                 return Err(
@@ -273,9 +547,9 @@ impl FixtureController {
             );
         }
 
-        let (launcher, application) = launch_guard.take();
+        let (launched, application) = launch_guard.take();
         Ok(Self {
-            launcher,
+            launched,
             application,
             input: Some(input),
             lines,
@@ -285,6 +559,7 @@ impl FixtureController {
             run_nonce,
             next_nonce: 1,
             launch_mode,
+            expected_identity,
             stopped: false,
             finish_result: None,
         })
@@ -301,7 +576,10 @@ impl FixtureController {
         if self.stopped
             || self.input.is_none()
             || self.reader_failed.load(Ordering::Acquire)
-            || !self.application.is_live()
+            || !self.launched.is_live().ok()?
+            || !self
+                .application
+                .matches_executable_identity(self.expected_identity)
         {
             return None;
         }
@@ -392,15 +670,37 @@ impl FixtureController {
     }
     /// Resets the fixture's bounded event counters and refuses queued prior-run output.
     pub fn reset_events(&mut self, event_payload_tag: u64, wait: Duration) -> bool {
-        if !self.pending_events.is_empty() {
-            return false;
-        }
-        self.send_command(FixtureCommandKind::ResetEvents, event_payload_tag, wait)
-            .is_ok_and(|ack| {
-                ack.result.status == 0
-                    && ack.result.events == EventTotals::default()
-                    && self.pending_events.is_empty()
-            })
+        let pending_events_empty = self.pending_events.is_empty();
+        strict_event_reset(pending_events_empty, || {
+            self.send_command(FixtureCommandKind::ResetEvents, event_payload_tag, wait)
+                .is_ok_and(|ack| {
+                    ack.result.status == 0
+                        && ack.result.events == EventTotals::default()
+                        && self.pending_events.is_empty()
+                })
+        })
+    }
+
+    /// Establishes the first measurement baseline after fixture-only window setup.
+    ///
+    /// Event lines ordered before the successful reset acknowledgement belong to
+    /// setup, not product input. Each fresh language fixture uses this fence only
+    /// before its timed sample.
+    pub fn discard_setup_events(&mut self, wait: Duration) -> bool {
+        discard_setup_events_until_quiet(
+            self,
+            wait,
+            EVENT_QUIET_WAIT,
+            |controller, remaining| {
+                controller
+                    .send_command(FixtureCommandKind::PrepareLanguageFlow, 0, remaining)
+                    .is_ok_and(|ack| {
+                        ack.result.status == 0 && ack.result.events == EventTotals::default()
+                    })
+            },
+            |controller| controller.pending_events.clear(),
+            |controller, quiet_deadline| controller.output_remains_quiet(quiet_deadline),
+        )
     }
 
     /// Reads one exact event row and verifies the fixture's independent totals.
@@ -447,7 +747,18 @@ impl FixtureController {
             .checked_add(EVENT_QUIET_WAIT)
             .filter(|quiet_deadline| *quiet_deadline <= deadline)
             .is_some_and(|quiet_deadline| self.output_remains_quiet(quiet_deadline));
-        observed == expected_remaining && report_is_exact && self.pending_events.is_empty() && quiet
+        let exact = observed == expected_remaining
+            && report_is_exact
+            && self.pending_events.is_empty()
+            && quiet;
+        if !exact {
+            eprintln!(
+                "fixture event oracle mismatch: expected={expected_remaining:?} observed={observed:?} \
+                 report-exact={report_is_exact} pending={} quiet={quiet}",
+                self.pending_events.len()
+            );
+        }
+        exact
     }
 
     fn output_remains_quiet(&self, deadline: Instant) -> bool {
@@ -575,13 +886,16 @@ impl FixtureController {
             })
             .map_err(|_| "the cleanup observation helper could not start".to_owned())
     }
-    /// Stops the private fixture, terminates its authenticated application when
-    /// needed, reaps the owned launcher, and verifies no event remained. Idempotent.
+    /// Stops the private fixture, terminates its exact launched application when
+    /// needed, and verifies no event remained. Idempotent.
     pub fn finish(&mut self, wait: Duration) -> bool {
         if let Some(result) = self.finish_result {
             return result;
         }
         let deadline = Instant::now() + wait;
+        let executable_unchanged = self
+            .application
+            .matches_executable_identity(self.expected_identity);
         let acknowledged = self
             .command(
                 FixtureCommandKind::Stop,
@@ -590,27 +904,15 @@ impl FixtureController {
             .is_ok_and(|ack| ack.result.status == 0);
         self.shutdown_input();
         let graceful_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
-        let mut stopped =
-            if wait_for_authenticated_application_exit(&self.application, graceful_deadline) {
-                reap_launcher_after_application_exit(
-                    &self.application,
-                    &mut self.launcher,
-                    deadline,
-                )
-            } else {
-                terminate_authenticated_application(
-                    &mut self.application,
-                    &mut self.launcher,
-                    deadline,
-                )
-            };
-        if !stopped && !self.application.is_live() {
-            stopped = reap_launcher_after_application_exit(
-                &self.application,
-                &mut self.launcher,
-                deadline,
-            );
-        }
+        let stopped = if wait_for_authenticated_application_exit(
+            &self.application,
+            &self.launched,
+            graceful_deadline,
+        ) {
+            true
+        } else {
+            terminate_authenticated_application(&mut self.application, &mut self.launched, deadline)
+        };
         let bounded = stopped && Instant::now() <= deadline;
         self.stopped = stopped;
 
@@ -621,7 +923,25 @@ impl FixtureController {
             self.pending_events.is_empty(),
             deadline,
         );
-        let result = acknowledged && stopped && bounded && output_clean;
+        let result = post_use_identity_gate(
+            acknowledged && stopped && bounded && output_clean,
+            &[executable_unchanged],
+        );
+        if !result {
+            eprintln!(
+                "fixture-finalization-failed run={} acknowledged={} stopped={} bounded={} \
+                 output-clean={} executable-identity-unchanged={} pending-events={} \
+                 reader-failed={}",
+                self.run_nonce,
+                acknowledged,
+                stopped,
+                bounded,
+                output_clean,
+                executable_unchanged,
+                self.pending_events.len(),
+                self.reader_failed.load(Ordering::Acquire),
+            );
+        }
         self.finish_result = Some(result);
         result
     }
@@ -637,7 +957,7 @@ impl FixtureController {
         let deadline = Instant::now() + DROP_WAIT;
         self.stopped = terminate_authenticated_application(
             &mut self.application,
-            &mut self.launcher,
+            &mut self.launched,
             deadline,
         );
         self.finish_result = Some(false);
@@ -823,22 +1143,12 @@ fn fixture_bundle(executable: &Path) -> Option<PathBuf> {
         .then(|| bundle.to_path_buf())
 }
 
-fn wait_for_exit(child: &mut Child, deadline: Instant) -> bool {
-    loop {
-        match child.try_wait() {
-            Ok(Some(_status)) => return true,
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
-            Ok(None) | Err(_) => return false,
-        }
-    }
-}
-
-fn wait_for_authenticated_application_exit(
-    application: &AuthenticatedFixtureProcess,
+fn wait_for_launched_application_exit(
+    application: &LaunchedFixtureApplication,
     deadline: Instant,
 ) -> bool {
     loop {
-        if !application.is_live() {
+        if matches!(application.is_live(), Ok(false)) {
             return true;
         }
         if Instant::now() >= deadline {
@@ -848,82 +1158,87 @@ fn wait_for_authenticated_application_exit(
     }
 }
 
-fn reap_launcher_after_application_exit(
+fn wait_for_authenticated_application_exit(
     application: &AuthenticatedFixtureProcess,
-    launcher: &mut Child,
+    launched: &LaunchedFixtureApplication,
     deadline: Instant,
 ) -> bool {
-    if application.is_live() {
-        return false;
+    loop {
+        if !application.is_live() && matches!(launched.is_live(), Ok(false)) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
     }
-    let graceful_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
-    if wait_for_exit(launcher, graceful_deadline) {
-        return true;
-    }
-    if application.is_live() || Instant::now() >= deadline {
-        return false;
-    }
-    let _killed = launcher.kill();
-    wait_for_exit(launcher, deadline) && !application.is_live()
 }
 
 fn terminate_authenticated_application(
     application: &mut AuthenticatedFixtureProcess,
-    launcher: &mut Child,
+    launched: &mut LaunchedFixtureApplication,
     deadline: Instant,
 ) -> bool {
-    let _terminated = application.terminate();
+    let _authenticated_terminated = application.terminate();
+    let _launched_terminated = launched.terminate();
     let term_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
-    if wait_for_authenticated_application_exit(application, term_deadline) {
-        return reap_launcher_after_application_exit(application, launcher, deadline);
+    if wait_for_authenticated_application_exit(application, launched, term_deadline) {
+        return true;
     }
-    let _killed = application.kill();
-    wait_for_authenticated_application_exit(application, deadline)
-        && reap_launcher_after_application_exit(application, launcher, deadline)
+    let _authenticated_killed = application.kill();
+    let _launched_killed = launched.kill();
+    wait_for_authenticated_application_exit(application, launched, deadline)
 }
 
 struct LaunchGuard {
-    child: Option<Child>,
+    launched: Option<LaunchedFixtureApplication>,
     application: Option<AuthenticatedFixtureProcess>,
 }
 
 impl LaunchGuard {
-    fn new(child: Child) -> Self {
+    fn new(launched: LaunchedFixtureApplication) -> Self {
         Self {
-            child: Some(child),
+            launched: Some(launched),
             application: None,
         }
     }
 
-    fn exited(&mut self) -> Result<bool, String> {
-        self.child
-            .as_mut()
-            .expect("the guarded launcher exists")
-            .try_wait()
-            .map(|status| status.is_some())
-            .map_err(|_| "the fixture launcher state could not be read".to_owned())
+    fn is_live(&self) -> Result<bool, String> {
+        self.launched
+            .as_ref()
+            .ok_or_else(|| "the guarded launched application is missing".to_owned())?
+            .is_live()
     }
 
-    fn take(mut self) -> (Child, AuthenticatedFixtureProcess) {
+    fn take(mut self) -> (LaunchedFixtureApplication, AuthenticatedFixtureProcess) {
         let application = self
             .application
             .take()
             .expect("the authenticated fixture process exists");
-        let child = self.child.take().expect("the guarded launcher exists");
-        (child, application)
+        let launched = self
+            .launched
+            .take()
+            .expect("the guarded launched application exists");
+        (launched, application)
     }
 }
 
 impl Drop for LaunchGuard {
     fn drop(&mut self) {
         let deadline = Instant::now() + DROP_WAIT;
-        if let (Some(application), Some(child)) = (self.application.as_mut(), self.child.as_mut()) {
-            let _stopped = terminate_authenticated_application(application, child, deadline);
+        if let (Some(application), Some(launched)) =
+            (self.application.as_mut(), self.launched.as_mut())
+        {
+            let _stopped = terminate_authenticated_application(application, launched, deadline);
             return;
         }
-        if let Some(child) = self.child.as_mut() {
-            let _killed = child.kill();
-            let _reaped = wait_for_exit(child, deadline);
+        if let Some(launched) = self.launched.as_mut() {
+            let _terminated = launched.terminate();
+            let term_deadline = deadline.min(Instant::now() + GRACEFUL_CLOSE_WAIT);
+            if !wait_for_launched_application_exit(launched, term_deadline) {
+                let _killed = launched.kill();
+                let _stopped = wait_for_launched_application_exit(launched, deadline);
+            }
         }
     }
 }
@@ -931,11 +1246,15 @@ impl Drop for LaunchGuard {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_OUTPUT_LINE_BYTES, ReaderMessage, finish_reader_output_is_clean, fixture_bundle,
-        read_bounded_lines,
+        LanguageExecutablePin, MAX_OUTPUT_LINE_BYTES, ReaderMessage,
+        auxiliary_window_setup_is_proven, discard_setup_events_until_quiet,
+        finish_reader_output_is_clean, fixture_bundle, language_pins_are_unchanged,
+        next_fixture_run_nonce, post_use_identity_gate, read_bounded_lines, strict_event_reset,
     };
     use crate::macos_fixture_protocol::{EVENT_KEY_DOWN, EventSummary, format_event_line};
+    use std::collections::VecDeque;
     use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
@@ -955,6 +1274,146 @@ mod tests {
             fixture_bundle(Path::new("/tmp/mado-pilot-macos-input-fixture")),
             None
         );
+    }
+    #[test]
+    fn language_pin_pair_rejects_either_replaced_file() {
+        fn pin_pair() -> (LanguageExecutablePin, LanguageExecutablePin) {
+            let parent = std::env::temp_dir();
+            let executable = LanguageExecutablePin::new(
+                &parent.join("mado-pilot-language-executable-source"),
+                Arc::from(b"recorded executable".as_slice()),
+            )
+            .expect("create the executable pin");
+            let library = LanguageExecutablePin::new(
+                &parent.join("mado-pilot-language-library-source"),
+                Arc::from(b"recorded library".as_slice()),
+            )
+            .expect("create the library pin");
+            (executable, library)
+        }
+
+        fn set_pin_directory_mode(pin: &LanguageExecutablePin, mode: u32) {
+            std::fs::set_permissions(&pin.directory, std::fs::Permissions::from_mode(mode))
+                .expect("change the pin directory mode for mutation");
+        }
+
+        let (executable, library) = pin_pair();
+        assert!(language_pins_are_unchanged(&executable, &library));
+        assert_eq!(
+            std::fs::remove_file(executable.path())
+                .expect_err("the private pin directory refuses replacement")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        set_pin_directory_mode(&executable, 0o700);
+        std::fs::remove_file(executable.path()).expect("remove the executable pin");
+        std::fs::write(executable.path(), b"replacement").expect("replace the executable pin");
+        set_pin_directory_mode(&executable, 0o500);
+        assert!(!language_pins_are_unchanged(&executable, &library));
+        drop((executable, library));
+
+        let (executable, library) = pin_pair();
+        assert!(language_pins_are_unchanged(&executable, &library));
+        set_pin_directory_mode(&library, 0o700);
+        std::fs::remove_file(library.path()).expect("remove the library pin");
+        std::fs::write(library.path(), b"replacement").expect("replace the library pin");
+        set_pin_directory_mode(&library, 0o500);
+        assert!(!language_pins_are_unchanged(&executable, &library));
+    }
+
+    #[test]
+    fn language_executable_pin_rejects_replacement_and_removes_it() {
+        let nonce = next_fixture_run_nonce().expect("issue a unique pin test identity");
+        let source = std::env::temp_dir().join(format!(
+            "mado-pilot-language-pin-source-{}-{nonce}",
+            std::process::id()
+        ));
+        let expected: Arc<[u8]> = Arc::from(b"recorded language executable".as_slice());
+        std::fs::write(&source, expected.as_ref()).expect("write the pin source");
+        let pin = LanguageExecutablePin::new(&source, Arc::clone(&expected))
+            .expect("create the private executable pin");
+        let pin_path = pin.path().to_path_buf();
+
+        std::fs::set_permissions(&pin.directory, std::fs::Permissions::from_mode(0o700))
+            .expect("make the pin directory writable for mutation");
+        std::fs::remove_file(&pin_path).expect("remove the original pin");
+        std::fs::write(&pin_path, b"changed language executable").expect("replace the pin");
+        std::fs::set_permissions(&pin.directory, std::fs::Permissions::from_mode(0o500))
+            .expect("restore the private directory mode");
+        assert!(!post_use_identity_gate(true, &[pin.is_unchanged()]));
+
+        drop(pin);
+        assert!(!pin_path.exists());
+        std::fs::remove_file(source).expect("remove the pin source");
+    }
+
+    #[test]
+    fn setup_events_retry_until_quiet_then_strict_reset_rejects_leftovers() {
+        #[derive(Default)]
+        struct SetupState {
+            pending: VecDeque<u8>,
+            reset_calls: usize,
+            quiet_calls: usize,
+            discarded_before_ack: usize,
+            observed_during_quiet: usize,
+        }
+
+        let mut state = SetupState::default();
+        assert!(discard_setup_events_until_quiet(
+            &mut state,
+            Duration::from_secs(1),
+            Duration::from_millis(1),
+            |state, _remaining| {
+                state.reset_calls += 1;
+                if state.reset_calls == 1 {
+                    state.pending.push_back(1);
+                }
+                true
+            },
+            |state| {
+                state.discarded_before_ack += state.pending.len();
+                state.pending.clear();
+            },
+            |state, _quiet_deadline| {
+                state.quiet_calls += 1;
+                if state.quiet_calls == 1 {
+                    state.observed_during_quiet += 1;
+                    false
+                } else {
+                    true
+                }
+            },
+        ));
+        assert_eq!(state.discarded_before_ack, 1);
+        assert_eq!(state.observed_during_quiet, 1);
+        assert_eq!(state.reset_calls, 2);
+        assert_eq!(state.quiet_calls, 2);
+        assert!(state.pending.is_empty());
+
+        state.pending.push_back(2);
+        let mut strict_command_called = false;
+        assert!(!strict_event_reset(state.pending.is_empty(), || {
+            strict_command_called = true;
+            true
+        }));
+        assert!(!strict_command_called);
+    }
+
+    #[test]
+    fn final_identity_gate_rejects_each_changed_artifact() {
+        assert!(!post_use_identity_gate(true, &[]));
+        assert!(!post_use_identity_gate(true, &[false]));
+        assert!(!post_use_identity_gate(true, &[true, false]));
+        assert!(!post_use_identity_gate(false, &[true, true]));
+        assert!(post_use_identity_gate(true, &[true, true]));
+    }
+
+    #[test]
+    fn auxiliary_setup_rejects_an_acknowledged_no_op_without_a_second_window() {
+        assert!(!auxiliary_window_setup_is_proven(true, &[7_u64]));
+        assert!(!auxiliary_window_setup_is_proven(true, &[7_u64, 7]));
+        assert!(auxiliary_window_setup_is_proven(true, &[7_u64, 8]));
+        assert!(!auxiliary_window_setup_is_proven(false, &[7_u64, 8]));
     }
 
     #[test]

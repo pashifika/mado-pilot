@@ -143,6 +143,11 @@ Phase 1 reruns remain open.
 The accepted profile came from the release fixture and the full 5-warmup,
 50-sample input workload set:
 
+The current reproduction command names `--deployment-target` explicitly. The
+original run used the same `26.5.2` floor from the workspace configuration; the
+added field records that existing condition rather than changing the historical
+measurement.
+
 ```sh
 cargo build --locked --release -p mado-pilot-platform-macos \
   --bin mado-pilot-macos-input-fixture
@@ -153,12 +158,14 @@ cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --fixture-executable "$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --c-executable "$PWD/target/debug/c-abi-check/macos-native-input" \
   --cpp-executable "$PWD/target/debug/c-abi-check/macos-native-input-cpp" \
+  --library "$PWD/target/debug/deps/libmadopilot.dylib" \
   --source-revision c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848 \
   --source-tree f4ba20b5797e03cbea3582a750dd3f828e3d8fe4 \
   --toolchain "rustc 1.97.1 (8bab26f4f 2026-07-14); C/C++ Apple clang 21.0.0" \
   --gpu-driver "Apple integrated GPU; system driver stack" \
   --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
   --os-version "macOS 26.5.2 (25F84)" \
+  --deployment-target "macOS 26.5.2" \
   --display-topology "one built-in 3024x1964 Retina display at scale 2" \
   --permissions-signing "Screen Recording granted; Accessibility granted; generated fixture bundle ad-hoc signed with approved identifier"
 ```

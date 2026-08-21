@@ -24,6 +24,7 @@ benchmark_executable_sha256 = "bd811ac11364c7fc1ad7af3f76b59542cf55c9c1bdd5afa01
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
+deployment_target = "macOS 26.5.2"
 build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release --features private-fixture; signed .app launch"
 warmup_iterations = 5
 sample_count = 50

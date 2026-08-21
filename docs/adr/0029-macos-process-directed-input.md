@@ -77,15 +77,19 @@ owning-process scope, on these rules:
    carries retained identity, process lifetime, and source-frame geometry into
    one controlled native entry. That entry first checks cheap process-wide
    prerequisites and constructs the reversible native event. After construction,
-   it repeats the optional caller-selected focus predicate, then performs the
-   authoritative shareable-content inventory read. That last potentially
-   blocking observation re-establishes retained-window existence, open,
-   unminimized and on-screen state, and the selected geometry policy after the
-   Accessibility snapshot, so neither numeric metadata nor equal geometry can
-   authorize a replacement. It then rechecks current non-prompting event-post
-   access, original process lifetime and current PID relationship, deadline, and
-   interruption immediately before posting without returning to caller-controlled code. A
-   terminal loss may therefore surface during submission rather than route
+   it performs the authoritative retained-window inventory read. Under the
+   default preserving focus policy, that is the sole final inventory. When the
+   caller requires focus, a combined final focus observer then brackets the
+   potentially blocking Accessibility predicate with exact retained-window
+   samples and returns the post-focus native bounds. The geometry policy is
+   evaluated against those later bounds, so neither focus loss nor a
+   same-bounds replacement or movement during Accessibility can reach posting.
+   `RequireFocused` therefore has additional retained-window observations and
+   remains outside the one-read terminal profile. The gate then rechecks current
+   non-prompting event-post access, original process lifetime and current PID
+   relationship, deadline, and interruption immediately before posting without
+   returning to caller-controlled code.
+   A terminal loss may therefore surface during submission rather than route
    selection, but remains `Unexecuted` with zero submitted events. macOS offers
    no atomic validate-and-post, so this minimizes rather than eliminates
    target-exit races. `RequireUnchanged` compares the final native observation
@@ -96,12 +100,17 @@ owning-process scope, on these rules:
    floating-point equality, because an unchanged fractional-size window can
    differ from the transform's normalized logical extent. The effective
    content scale and captured content extent cannot substitute for those raw
-   bounds when ScreenCaptureKit downscales a frame. `UseFrameSnapshot`
-   continues to project from that source transform. `ReprojectCurrent`
-   deliberately obtains current Rust geometry before the same final native
-   authority check and is outside the one-read terminal profile. The one-read
-   count is proved by revision-bound controller, geometry-source, and native
-   seam tests; benchmark timing and fixture observation do not independently
+   bounds when ScreenCaptureKit downscales a frame. The macOS ledger retains
+   the 64 most recent distinct geometry revisions for each live stream, with
+   each revision's exact transform and same-sample raw bounds. This bounded
+   history preserves movement/restoration and snapshot semantics without
+   unbounded growth during window dragging; an older retired source is
+   `UnsupportedCoordinate` and is never reconstructed from current geometry.
+   `UseFrameSnapshot` continues to project from that source transform.
+   `ReprojectCurrent` deliberately obtains current Rust geometry before the same
+   final native authority gate and is outside the one-read terminal profile.
+   The one-read count is proved by revision-bound controller, geometry-source,
+   and native seam tests; benchmark timing and fixture observation do not
    observe that private call count. A pointer
    scroll carries the sequence's last resolved global desktop location
    alongside its wheel deltas; it never inherits an ambient Core Graphics
