@@ -40,7 +40,7 @@ registry is itself a Phase 0 deliverable.
 
 | ID | Unresolved decision | Due | Blocks | Status |
 |---|---|---|---|---|
-| [`G-001`](#g-001) | Minimum Windows version; macOS fixed by ADR 0014 | Before Phase 2 exit | Windows support claim and release | Open for Windows; macOS resolved |
+| [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Windows and macOS support claims | Resolved by [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md) and [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md) |
 | [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open |
@@ -57,13 +57,15 @@ registry is itself a Phase 0 deliverable.
 
 ## G-001
 
-**Decision and remaining question.** [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md)
-fixes the macOS implementation and deployment floor at Apple Silicon macOS 26.5.2
-(25F84), SDK 26.5. Earlier macOS versions are unqualified and unsupported. The
-exact minimum supported Windows version remains unresolved.
+**Decision.** [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
+fixes the Windows floor at Windows 11 25H2 build family 26200 on a currently
+serviced x64 desktop installation. [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md)
+fixes the macOS floor at Apple Silicon macOS 26.5.2 (25F84), SDK 26.5.
 
-**Required evidence.** Windows still needs build and load probes on its candidate
-oldest system. macOS deployment metadata and controlled linkage are pinned. Its
+**Required evidence.** Windows build, process-load, SDK, API-availability,
+unsupported-capability, native Rust, C, and C++ evidence is retained in
+[`windows-minimum-system.md`](evidence/g-001/windows-minimum-system.md). macOS
+deployment metadata and controlled linkage are pinned. Its
 2026-08-01 permissioned ASan run passed all 95 library tests with live display and
 window capture, signed and mixed-scale placement checks, retained-filter discovery,
 and no sanitizer finding. Two later manual runs moved the window fully onto a 2x
@@ -83,17 +85,23 @@ unchanged. ScreenCaptureKit remained quiescent rather than reporting explicit
 loss, so the Adapter correctly did not infer `TargetLost`. This closes the macOS
 replacement acceptance item.
 
+The 2026-08-22 Windows run used Pro build `26200.9168`, SDK `10.0.26100.0`,
+and clean source commit `834a58f6c28ab94f3f7a6d5901e3370b07e93155`. The full
+repository sequence, lazy-import check, native Rust capture and fixture input,
+product-DLL load, current C and C++, frozen ABI 1.0, ownership, and CMake rows
+passed. The positive host did not force the controlled unsupported native branch,
+which remains recorded as an observation gap rather than a pass.
+
 **Due.** Before Phase 2 exit.
 
 **Blocks.** The Windows support claim and release.
 
-**Status.** The macOS minimum, cross-scale movement, and owned-window replacement
-acceptance are resolved by ADR 0014 and its qualified-host evidence. The Windows
-minimum remains open.
+**Status.** Resolved. ADR 0019 accepts the Windows minimum; ADR 0014 accepts the
+macOS minimum, cross-scale movement, and owned-window replacement boundary.
 
-**Resolution.** A Windows ADR must record its chosen minimum and build, process-load,
-SDK, API-availability, unsupported-capability, native Rust, C, and C++ probes on the
-approved oldest desktop host. ADR 0014 records the complete macOS resolution.
+**Resolution.** ADR 0019 records the Windows minimum and its build, process-load,
+SDK, API-availability, unsupported-capability boundary, native Rust, C, and C++
+evidence. ADR 0014 records the complete macOS resolution.
 
 ## G-002
 

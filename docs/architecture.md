@@ -44,12 +44,12 @@ Version one targets two platforms, and each is verified natively:
 
 | Release target | Native verification host |
 |---|---|
-| `x86_64-pc-windows-msvc` | `windows-2025` |
+| `x86_64-pc-windows-msvc` | Windows 11 Pro 25H2 (26200.9168), SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence |
 | `aarch64-apple-darwin` | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 
 A cross-compiled result never stands in for native verification of the other
-target. The Windows minimum remains unresolved; ADR 0014 fixes the macOS deployment
-floor to the qualified host above. See gate [`G-001`](validation-gates.md#g-001).
+target. [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
+fixes the Windows floor; ADR 0014 fixes the macOS floor. See gate [`G-001`](validation-gates.md#g-001).
 
 ### Platform baseline
 
@@ -64,9 +64,9 @@ owns and where they genuinely differ.
 | Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and Core Video frame lifetime (implemented) |
 | Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Final protocol-v11 candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted. No `WindowMessage` route exists |
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
-| Native verification host | `windows-2025` CI plus the ADR 0026 named interactive Core i7-12700KF / RTX 4080 Windows 11 Pro 26200 host | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
-| Deployment floor | unresolved | macOS 26.5.2; older versions unsupported |
-| Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) production-capture acceptance matrix and budgets; [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts diagnostic timing and the original `native-phase2` workload sets; [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` timing, memory, queue-pressure, and cleanup ceilings | [`G-013`](validation-gates.md#g-013) final-source regression reruns; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts native input/public-language costs, [ADR 0029](adr/0029-macos-process-directed-input.md) accepts the final controlled process-directed profiles and all fourteen topology-qualified owning-process pairs, and [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts production capture and transition budgets |
+| Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build 26200.9168, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
+| Deployment floor | Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation; earlier versions unsupported | macOS 26.5.2; older versions unsupported |
+| Open gates | [`G-013`](validation-gates.md#g-013) production-capture acceptance matrix and budgets; [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts diagnostic timing and the original `native-phase2` workload sets; [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` timing, memory, queue-pressure, and cleanup ceilings | [`G-013`](validation-gates.md#g-013) final-source regression reruns; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts native input/public-language costs, [ADR 0029](adr/0029-macos-process-directed-input.md) accepts the final controlled process-directed profiles and all fourteen topology-qualified owning-process pairs, and [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts production capture and transition budgets |
 
 Detailed capabilities, permission outcomes, coordinate transforms, native
 resource ownership, and unsupported-system behavior are added by the changes

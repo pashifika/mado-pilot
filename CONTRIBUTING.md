@@ -197,6 +197,12 @@ distinct successor, if the successor cannot be captured independently, or if the
 retained original mapping changes. The accepted qualified-host record is
 [`docs/evidence/g-001/macos-owned-window-replacement.md`](docs/evidence/g-001/macos-owned-window-replacement.md).
 
+The minimum supported Windows boundary is Windows 11 25H2 build family 26200 on
+a currently serviced x64 desktop installation, accepted by
+[ADR 0019](docs/adr/0019-windows-qualified-system-and-controlled-availability.md).
+Windows SDK 10.0.26100.0 is the supported build input, not the runtime floor.
+Earlier Windows versions are unsupported and unqualified.
+
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
 Capture, Direct3D 11, and DXGI, and needs no NuGet package, Windows App SDK,

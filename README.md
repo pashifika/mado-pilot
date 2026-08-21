@@ -110,10 +110,10 @@ OpenCV. A tracked release-note file is the canonical release body.
 Version one targets `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`. Hosted
 CI builds and tests both natively, but it never substitutes for an interactive
 display, permission, input, device, or target-loss matrix. The qualified macOS
-floor is Apple Silicon macOS 26.5.2 build 25F84. The Windows 11 25H2 candidate
-remains a proposal until its approved desktop host runs the boundary plan; no
-minimum Windows support claim is active. Remaining version-one decisions are
-tracked in [docs/validation-gates.md](docs/validation-gates.md).
+floor is Apple Silicon macOS 26.5.2 build 25F84. The qualified Windows floor is
+Windows 11 25H2 build family 26200 on a currently serviced x64 desktop
+installation; the retained boundary run used Pro build 26200.9168. Remaining
+version-one decisions are tracked in [docs/validation-gates.md](docs/validation-gates.md).
 
 ## Integration surfaces
 
