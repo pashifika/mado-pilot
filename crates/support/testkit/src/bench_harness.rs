@@ -1551,6 +1551,62 @@ pub const PHASE2_2_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 1] = [LatencyBudg
     Duration::from_secs(1),
 )];
 
+/// Phase 2 macOS production-capture latency ceilings accepted by ADR 0030.
+pub const PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS: [LatencyBudget; 5] = [
+    LatencyBudget::new(
+        "publication_age",
+        Duration::from_millis(5),
+        Duration::from_millis(15),
+        Duration::from_millis(50),
+    ),
+    LatencyBudget::new(
+        "steady_frame_acquisition",
+        Duration::from_millis(75),
+        Duration::from_millis(150),
+        Duration::from_millis(250),
+    ),
+    LatencyBudget::new(
+        "latest_acquisition",
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+    ),
+    LatencyBudget::new(
+        "cpu_map_bgra8",
+        Duration::from_millis(1),
+        Duration::from_millis(2),
+        Duration::from_millis(10),
+    ),
+    LatencyBudget::new(
+        "retained_pressure_resume",
+        Duration::from_millis(10),
+        Duration::from_millis(50),
+        Duration::from_millis(75),
+    ),
+];
+
+/// Phase 2 macOS production-transition latency ceilings accepted by ADR 0030.
+pub const PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 3] = [
+    LatencyBudget::new(
+        "open_first_frame",
+        Duration::from_millis(350),
+        Duration::from_millis(350),
+        Duration::from_millis(400),
+    ),
+    LatencyBudget::new(
+        "resize_recreation",
+        Duration::from_millis(175),
+        Duration::from_millis(250),
+        Duration::from_millis(300),
+    ),
+    LatencyBudget::new(
+        "close_drain",
+        Duration::from_millis(250),
+        Duration::from_millis(300),
+        Duration::from_millis(300),
+    ),
+];
+
 const fn phase2_2_process_latency_budgets(event_p95: Duration) -> [LatencyBudget; 5] {
     [
         LatencyBudget::new(

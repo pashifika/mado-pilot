@@ -84,6 +84,7 @@ mod native {
         PHASE2_2_CAPTURE_LATENCY_BUDGETS, PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS,
         PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS, PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS,
         PHASE2_2_PROCESS_HEAP_LIMIT_BYTES, PHASE2_2_TRANSITION_LATENCY_BUDGETS,
+        PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS, PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS,
         enforce_latency_budgets,
     };
 
@@ -4057,9 +4058,11 @@ mod native {
         let latency = match set {
             WorkloadSet::Capture => PHASE2_2_CAPTURE_LATENCY_BUDGETS.as_slice(),
             WorkloadSet::Transitions => PHASE2_2_TRANSITION_LATENCY_BUDGETS.as_slice(),
-            WorkloadSet::ResizeAllocation => &[],
-            WorkloadSet::Input => &[],
-            WorkloadSet::ProductionCapture | WorkloadSet::ProductionTransitions => &[],
+            WorkloadSet::ResizeAllocation | WorkloadSet::Input => &[],
+            WorkloadSet::ProductionCapture => PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS.as_slice(),
+            WorkloadSet::ProductionTransitions => {
+                PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS.as_slice()
+            }
             WorkloadSet::ProcessDirected => PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS.as_slice(),
             WorkloadSet::ProcessDirectedGameLike => {
                 PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS.as_slice()

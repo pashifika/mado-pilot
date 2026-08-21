@@ -1,0 +1,273 @@
+# Phase 2 production capture, measured on aarch64-apple-darwin at source
+# 5dbc4b30b5166c0de589110a237279d728f9d406 and tree
+# 559c5c8af74e54dee674a12350980ff9214624f1.
+#
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0030 sets
+# the target-specific regression budgets. This profile is independent of the
+# frozen historical native and Phase 2.2 controlled-stimulus profiles.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-production-capture-aarch64-apple-darwin"
+workload = "macOS production capture publication age, acquisition, mapping, and retained progress"
+phase = "2"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "separately linked private macOS fixture Rust, protocol-v11, header, Objective-C, and renderer sources"
+fixture_sha256 = "c5576c5290003c723f1d3797ab1c6032e935a9e04ab42d50ce5dc9108bc029ea"
+benchmark_executable_sha256 = "e16eca1801b813af2c7caad084fd6708f700f35b691a2bfd5df741b9662abb0f"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 cores, 32 GiB"
+os_version = "macOS 26.5.2 (25F84)"
+deployment_target = "macOS 26.5.2"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release --features private-fixture; signed .app; controlled NSWorkspace new-instance launch"
+warmup_iterations = 20
+sample_count = 200
+correctness_oracle = "every retained sample checks production frame identity, frame-authoritative geometry, declared fixture content, finite retained progress, exact mapping, or bounded lifecycle outcome; the resize command is stimulus only and never substitutes for a captured result"
+queue_policy = "session latest-wins queue depth 1; adapter finite retained-storage limit; no input stimulus"
+notes = "source commit 5dbc4b30b5166c0de589110a237279d728f9d406, tree 559c5c8af74e54dee674a12350980ff9214624f1; toolchain rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology exactly two online non-mirrored displays; signed-origin 3840x2160 1x; main 2560x1440 logical / 5120x2880 backing 2x; mixed-scale connection method unrestricted; permissions/signing Screen Recording granted; event-post access granted; target bundle structurally ad-hoc signed; fixture executable sha256 40a33a5ceefff9ff01afef52b694799d2a1af91cc355a9d1020dda2a68891374; executable paths deliberately omitted; benchmark and fixture SHA-256 bytes are bound to validity-checked static and audit-token-selected live Security code identities; lineage=production-capture-publication; mode=default renderer=appkit-background stimulus=none"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 33554432
+rationale = "ADR 0030 permits more than three times the measured production-capture live Rust heap peak"
+
+[[measurement]]
+workload = "publication_age"
+correctness_oracle = "one naturally published production frame reports bounded age in the engine clock domain, advances the same stream, and carries exact fixture content and frame-authoritative geometry"
+result_correctness = 0
+latency_p50_ms = 0.757875
+latency_p95_ms = 2.031792
+latency_max_ms = 7.897292
+iteration_span_ms = 23.547402
+mapped_bytes_per_result = 4628480
+stale_work_ratio = 0.000000000
+peak_allocated_bytes = 9301205
+steady_allocated_bytes = 4672245
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 5.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p50"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 15.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p95"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 50.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured maximum"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4628480
+rationale = "one exact 1280x904 BGRA8 fixture mapping"
+
+[[measurement]]
+workload = "steady_frame_acquisition"
+correctness_oracle = "one strictly newer production frame arrives without input or private stimulus, preserves exact fixture content, and reports observable sequence gaps"
+result_correctness = 0
+latency_p50_ms = 19.207917
+latency_p95_ms = 41.856666
+latency_max_ms = 57.597417
+iteration_span_ms = 24.429805
+mapped_bytes_per_result = 4628480
+stale_work_ratio = 0.000000000
+peak_allocated_bytes = 9301205
+steady_allocated_bytes = 4672245
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 75.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p50"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 150.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p95"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 250.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured maximum"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4628480
+rationale = "one exact 1280x904 BGRA8 fixture mapping"
+
+[[measurement]]
+workload = "latest_acquisition"
+correctness_oracle = "after natural production progress, latest returns a same-stream frame no older than the proven publication and reports observable sequence gaps"
+result_correctness = 0
+latency_p50_ms = 0.000750
+latency_p95_ms = 0.001000
+latency_max_ms = 0.001417
+iteration_span_ms = 24.321381
+mapped_bytes_per_result = 4628480
+stale_work_ratio = 0.000000000
+peak_allocated_bytes = 9301205
+steady_allocated_bytes = 4672245
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.0
+rationale = "one millisecond remains above the applicable measured latest-frame percentiles"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.0
+rationale = "one millisecond remains above the applicable measured latest-frame percentiles"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.0
+rationale = "one millisecond remains above the applicable measured latest-frame maxima"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4628480
+rationale = "one exact 1280x904 BGRA8 fixture mapping"
+
+[[measurement]]
+workload = "cpu_map_bgra8"
+correctness_oracle = "one naturally published production frame maps once to exact-size BGRA8 bytes carrying declared fixture content"
+result_correctness = 0
+latency_p50_ms = 0.189250
+latency_p95_ms = 0.503167
+latency_max_ms = 3.050333
+iteration_span_ms = 23.901338
+mapped_bytes_per_result = 4628480
+peak_allocated_bytes = 9301269
+steady_allocated_bytes = 4672309
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p50"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 2.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p95"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 10.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured maximum"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4628480
+rationale = "one exact 1280x904 BGRA8 fixture mapping"
+
+[[measurement]]
+workload = "retained_pressure_resume"
+correctness_oracle = "natural production fills the reported retained limit; one blocked publication remains observable and releasing one slot resumes with a sequence gap"
+result_correctness = 0
+latency_p50_ms = 2.898583
+latency_p95_ms = 15.986083
+latency_max_ms = 17.929375
+iteration_span_ms = 713.060621
+mapped_bytes_per_result = 0
+stale_work_ratio = 0.834983498
+peak_allocated_bytes = 4636399
+steady_allocated_bytes = 64
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 10.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p50"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 50.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p95"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 75.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured maximum"

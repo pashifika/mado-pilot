@@ -20,14 +20,15 @@ use mado_pilot_testkit::bench_harness::{
     Benchmark, LatencyBudget, PHASE2_2_CAPTURE_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS, PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
-    PHASE2_2_TRANSITION_LATENCY_BUDGETS, benchmark_block,
+    PHASE2_2_TRANSITION_LATENCY_BUDGETS, PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS,
+    PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS, benchmark_block,
 };
 
 /// Every committed benchmark profile, by repository path and content.
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 17] = [
+const PROFILES: [(&str, &str); 19] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -124,10 +125,22 @@ const PROFILES: [(&str, &str); 17] = [
             "../../../../docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml"
+        ),
+    ),
 ];
 
-/// The Phase 2.2 profiles and the latency ceilings enforced by their benchmark.
-const PHASE2_2_PROFILES: [(&str, &str, &[LatencyBudget]); 5] = [
+/// The macOS native profiles and the latency ceilings enforced by their benchmark.
+const MACOS_NATIVE_PROFILES: [(&str, &str, &[LatencyBudget]); 7] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -162,6 +175,20 @@ const PHASE2_2_PROFILES: [(&str, &str, &[LatencyBudget]); 5] = [
             "../../../../docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml"
         ),
         &PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml"
+        ),
+        &PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml"
+        ),
+        &PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS,
     ),
 ];
 
@@ -424,8 +451,8 @@ fn the_harness_emits_exactly_the_benchmark_keys_a_committed_profile_carries() {
 }
 
 #[test]
-fn phase2_2_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
-    for (path, profile, enforced) in PHASE2_2_PROFILES {
+fn macos_native_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
+    for (path, profile, enforced) in MACOS_NATIVE_PROFILES {
         let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
             .into_iter()
             .filter(|budget| {

@@ -609,6 +609,38 @@ Timing did not replace topology qualification: independent `single`, exact
 two-display non-mirrored `same-scale`, and `mixed-scale` matrices each passed.
 All fourteen controlled pair decisions are release-qualified.
 
+## Phase 2 macOS production-capture acceptance
+
+[ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
+production-capture and production-transition profiles at source
+`5dbc4b30b5166c0de589110a237279d728f9d406`, tree
+`559c5c8af74e54dee674a12350980ff9214624f1`, on the approved exactly-two-display
+mixed-scale Apple Silicon host. The two profiles retain 1,150 samples across
+eight workloads with zero correctness failures and zero allocation growth.
+
+Natural `publication_age`, strictly-newer acquisition, latest acquisition,
+BGRA8 mapping, and retained-pressure recovery are recorded separately from
+fresh-session startup, controlled resize recreation, and close drain. Mapped
+rows carry exactly one 1280x904 BGRA8 frame (`4,628,480` bytes). The deliberate
+retained-pressure row reports a stale ratio near `0.835` only after filling the
+finite retained budget and proving blocked/resumed publication; ordinary
+production publication and acquisition report zero stale work.
+
+The resize investigation did not establish an unbounded general capture leak.
+It identified the documented 64-revision macOS source-geometry history growing
+in power-of-two allocation steps and briefly retaining capacity 128 because
+retirement followed insertion. The implementation now keeps a small history
+for fixed-geometry targets, reserves the complete bound only on the first
+geometry change, and retires before insertion at the bound. The exact
+production resize row changed from `9,856` bytes to zero post-warm-up growth.
+
+ADR 0030's target-specific p50, p95, and maximum ceilings follow the established
+three-times-measurement policy. They are regression gates for this fixture,
+host, topology, and operation shape, not real-time or application/game
+compatibility claims. Production capture uses a 32 MiB peak live Rust heap
+ceiling; transitions use 16 MiB. Every row remains subject to zero correctness
+failures and at most 4,096 bytes of allocation growth.
+
 ## Phase 2 Windows ownership prototype
 
 The G-002 prototype resolves a correctness and ownership gate; it does not set

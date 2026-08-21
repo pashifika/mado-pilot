@@ -499,12 +499,23 @@ reuse of a 1,024-event fixture for 2,050 redacted summaries, a missing child-onl
 Cargo profile DLL path, and a C++ oracle that expected macOS submission evidence
 on Windows. The ADR records the bounded repairs and target-specific oracle.
 
+[ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
+separate macOS production-capture and production-transition profiles at source
+`5dbc4b30b5166c0de589110a237279d728f9d406`, tree
+`559c5c8af74e54dee674a12350980ff9214624f1`. Their eight workloads retain 1,150
+correct samples with zero allocation growth and exact mapped-byte accounting on
+the approved exactly-two-display mixed-scale host. The ADR records the bounded
+geometry-history allocation repair and target-specific publication, acquisition,
+mapping, pressure-recovery, startup, resize, and close ceilings. It changes no
+historical profile or source attribution.
+
 The Windows `native-phase2` capture profile does not substitute for the separate
 production-capture acceptance required by
 [windows-capture-contract-tests.md](windows-capture-contract-tests.md): callback
 copy/staging/resident measures and the named 1280×720/dual-4K matrix remain
-unmeasured. That profile, current macOS capture and transition profiles, and the
-final-source Phase 1 regression reruns remain required before Phase 2 exit.
+unmeasured. That Windows profile and the final-source Phase 1 regression reruns
+remain required before Phase 2 exit; the macOS production-capture portion is
+resolved by ADR 0030.
 
 OCR, watcher scheduling, and acceleration remain open for the phases that
 introduce them.
