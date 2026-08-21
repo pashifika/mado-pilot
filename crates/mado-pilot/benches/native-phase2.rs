@@ -1897,7 +1897,6 @@ mod native {
 
     #[cfg(target_os = "macos")]
     fn production_capture_workloads(plan: Plan) -> Vec<Workload> {
-        let pressure_fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Static));
         vec![
             measure(
                 "publication_age",
@@ -1947,7 +1946,7 @@ mod native {
                 "retained_pressure_resume",
                 "natural production fills the reported retained limit; one blocked publication remains observable and releasing one slot resumes with a sequence gap",
                 plan,
-                || Rc::clone(&pressure_fixture),
+                || Rc::new(FixtureProcess::spawn(FixtureBehavior::Static)),
                 production_retained_pressure_resume,
             ),
         ]
