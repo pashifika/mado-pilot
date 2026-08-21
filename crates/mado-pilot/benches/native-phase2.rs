@@ -2308,15 +2308,17 @@ mod native {
         );
         let deadline = Instant::now() + FIXTURE_WAIT;
         loop {
-            let authenticated_window_ids = authenticated_fixture_window_ids(engine, fixture);
-            if authenticated_window_ids.len() == 1 {
-                return;
-            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
             assert!(
-                Instant::now() < deadline,
+                !remaining.is_zero(),
                 "production discovery did not retire the closed auxiliary window before language \
                  sampling"
             );
+            if authenticated_fixture_window_ids(engine, fixture, remaining)
+                .is_some_and(|window_ids| window_ids.len() == 1)
+            {
+                return;
+            }
             thread::sleep(Duration::from_millis(25));
         }
     }
@@ -2328,9 +2330,13 @@ mod native {
     ) -> Vec<TargetId> {
         let deadline = Instant::now() + FIXTURE_WAIT;
         loop {
-            let authenticated_window_ids = authenticated_fixture_window_ids(engine, fixture);
-            if auxiliary_window_setup_is_proven(true, &authenticated_window_ids)
-                || Instant::now() >= deadline
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Vec::new();
+            }
+            if let Some(authenticated_window_ids) =
+                authenticated_fixture_window_ids(engine, fixture, remaining)
+                && auxiliary_window_setup_is_proven(true, &authenticated_window_ids)
             {
                 return authenticated_window_ids;
             }
@@ -2342,28 +2348,33 @@ mod native {
     fn authenticated_fixture_window_ids(
         engine: &NativeEngine,
         fixture: &FixtureProcess,
-    ) -> Vec<TargetId> {
-        let targets = engine
-            .discover(&bounded(OPERATION_WAIT))
-            .expect("production discovery inventories the fixture windows");
-        let process = fixture
-            .authenticated_process()
-            .expect("the fixture control peer remains live and authenticated");
-        targets
-            .iter()
-            .filter(|target| target.capability().kind() == Some(TargetKind::Window))
-            .filter(|target| engine.authenticates_fixture_target(target.id(), process))
-            .map(mado_pilot::TargetDescription::id)
-            .collect()
+        wait: Duration,
+    ) -> Option<Vec<TargetId>> {
+        let targets = engine.discover(&bounded(wait)).ok()?;
+        let process = fixture.authenticated_process()?;
+        Some(
+            targets
+                .iter()
+                .filter(|target| target.capability().kind() == Some(TargetKind::Window))
+                .filter(|target| engine.authenticates_fixture_target(target.id(), process))
+                .map(mado_pilot::TargetDescription::id)
+                .collect(),
+        )
     }
 
     #[cfg(target_os = "macos")]
     fn discover_process_target(engine: &NativeEngine, fixture: &FixtureProcess) -> TargetId {
         let deadline = Instant::now() + FIXTURE_WAIT;
         loop {
-            let targets = engine
-                .discover(&bounded(OPERATION_WAIT))
-                .expect("the process-directed benchmark fixture is discoverable");
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "the process-directed benchmark fixture was not discoverable before its deadline"
+            );
+            let Ok(targets) = engine.discover(&bounded(remaining)) else {
+                thread::sleep(Duration::from_millis(25));
+                continue;
+            };
             let process = fixture
                 .authenticated_process()
                 .expect("the process fixture control peer remains authenticated");
