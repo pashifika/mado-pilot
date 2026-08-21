@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 
 const CHILD_PROCESS_POLL: Duration = Duration::from_millis(5);
 const CHILD_PROCESS_TERMINATE_WAIT: Duration = Duration::from_secs(1);
-const CHILD_PIPE_DRAIN_WAIT: Duration = Duration::from_millis(100);
+const CHILD_PIPE_DRAIN_WAIT: Duration = Duration::from_millis(500);
 
 /// Captured output from one benchmark child whose lifetime and output were
 /// bounded by [`bounded_child_output`].
@@ -2189,7 +2189,7 @@ mod tests {
         let child_pid = Cell::new(0);
         let output = bounded_child_output_with(
             &mut command,
-            Duration::from_secs(5),
+            Duration::from_secs(1),
             16 * 1_024,
             &mut primary_cleanup,
             |process_id| {
