@@ -168,6 +168,7 @@ impl Versioned for madopilot_engine_capabilities_t {
     const NAME: &'static str = "madopilot_engine_capabilities_t";
     const PREFIXES: &'static [usize] =
         prefixes!(madopilot_engine_capabilities_t, struct_size, flags);
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -192,6 +193,7 @@ impl Versioned for madopilot_permission_t {
         platform_namespace,
         context,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -226,6 +228,10 @@ impl Versioned for madopilot_input_capability_t {
         pointer_spaces,
         reserved,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[(
+        covers!(madopilot_input_capability_t, reserved: u32),
+        size_of::<madopilot_input_capability_t>(),
+    )];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -259,6 +265,7 @@ impl Versioned for madopilot_input_descriptor_t {
         pointer_spaces,
         max_events,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -294,6 +301,22 @@ impl Versioned for madopilot_input_receipt_info_t {
         cleanup_released,
         cleanup_owed,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[
+        (
+            covers!(
+                madopilot_input_receipt_info_t,
+                address_scope: madopilot_input_address_scope_t
+            ),
+            std::mem::offset_of!(madopilot_input_receipt_info_t, attempt_count),
+        ),
+        (
+            covers!(
+                madopilot_input_receipt_info_t,
+                cleanup: madopilot_cleanup_state_t
+            ),
+            std::mem::offset_of!(madopilot_input_receipt_info_t, cleanup_released),
+        ),
+    ];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -331,6 +354,19 @@ impl Versioned for madopilot_input_attempt_t {
         fault,
         reserved,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[
+        (
+            covers!(
+                madopilot_input_attempt_t,
+                outcome: madopilot_sequence_outcome_t
+            ),
+            std::mem::offset_of!(madopilot_input_attempt_t, submitted),
+        ),
+        (
+            covers!(madopilot_input_attempt_t, reserved: u32),
+            size_of::<madopilot_input_attempt_t>(),
+        ),
+    ];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -1532,11 +1568,252 @@ mod tests {
 
     use super::*;
 
+    fn target() -> mado_pilot::TargetId {
+        IdentityIssuer::new()
+            .issue_target(ProviderId::new("capi-test"))
+            .expect("issued")
+    }
+
+    fn full_size<T>() -> u32 {
+        u32::try_from(size_of::<T>()).expect("ABI structure size fits u32")
+    }
+    fn poisoned_output<T: Versioned>() -> std::mem::MaybeUninit<T> {
+        let mut output = std::mem::MaybeUninit::<T>::uninit();
+        // SAFETY: every byte is initialized before the output pointer is
+        // exposed, then the common first `u32` field receives the declared
+        // extent expected by `Out::begin`.
+        unsafe {
+            output
+                .as_mut_ptr()
+                .cast::<u8>()
+                .write_bytes(0xa5, size_of::<T>());
+            output.as_mut_ptr().cast::<u32>().write(full_size::<T>());
+        }
+        output
+    }
+
+    fn assert_zeroed_padding<T: Versioned>(output: *const T, expected_padding: &[(usize, usize)]) {
+        assert_eq!(
+            T::ZEROED_PADDING,
+            expected_padding,
+            "{} production padding table differs from compiler-derived gaps",
+            T::NAME
+        );
+        // SAFETY: `poisoned_output` initialized the whole allocation, and the
+        // checked C output call retained that allocation and covered all bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(output.cast::<u8>(), size_of::<T>()) };
+        for &(start, end) in expected_padding {
+            assert_eq!(
+                &bytes[start..end],
+                vec![0; end - start],
+                "{} exposed nonzero implicit padding at {start}..{end}",
+                T::NAME
+            );
+        }
+    }
+
+    #[test]
+    fn process_directed_capability_projects_the_abi_1_2_contract() {
+        let capability = InputCapability::none()
+            .with_pair(
+                InputOperationKind::Keyboard,
+                InputDelivery::ProcessDirected,
+                CapabilitySupport::Unknown,
+                SubmissionEvidence::InvocationOnly,
+            )
+            .with_permission(
+                InputOperationKind::Keyboard,
+                InputDelivery::ProcessDirected,
+                PermissionKind::InputControl,
+            );
+        let projected = capability_record(
+            41,
+            capability.pair(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
+            full_size::<madopilot_input_capability_t>(),
+        );
+
+        assert_eq!(projected.target, 41);
+        assert_eq!(projected.operation, MADOPILOT_INPUT_OPERATION_KEYBOARD);
+        assert_eq!(
+            projected.delivery,
+            MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED
+        );
+        assert_eq!(projected.support, MADOPILOT_CAPABILITY_UNKNOWN);
+        assert_eq!(
+            projected.address_scope,
+            MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS
+        );
+        assert_eq!(
+            projected.flags,
+            MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION | MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE
+        );
+        assert_eq!(
+            projected.permission,
+            MADOPILOT_PERMISSION_KIND_INPUT_CONTROL
+        );
+        assert_eq!(
+            projected.evidence,
+            MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY
+        );
+        assert_eq!(projected.focus_required, 0);
+
+        let fields = capability_fields(capability);
+        assert_eq!(
+            fields.unknown_pairs,
+            MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED
+        );
+        assert_eq!(fields.supported_pairs, 0);
+        assert_eq!(
+            fields.known_pairs & MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED,
+            0,
+            "unknown compatibility is not projected as known support"
+        );
+        assert_ne!(
+            fields.known_pairs & MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM,
+            0,
+            "the separately unsupported system pair remains explicit"
+        );
+    }
+
+    #[test]
+    fn process_directed_open_and_delivery_inputs_do_not_add_system_fallback() {
+        let request = madopilot_input_open_request_t {
+            struct_size: full_size::<madopilot_input_open_request_t>(),
+            flags: 0,
+            requirement: MADOPILOT_INPUT_REQUIRED,
+            reserved: 0,
+            required_pairs: MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED,
+            preferred_pairs: 0,
+        };
+        // SAFETY: `request` is a live, fully initialized ABI 1.2 record.
+        let converted = unsafe { open_request(&raw const request) }.expect("converted");
+        assert_eq!(converted.requirement(), InputRequirement::Required);
+        assert_eq!(
+            converted.required(),
+            &[(InputOperationKind::Keyboard, InputDelivery::ProcessDirected)]
+        );
+
+        let system_only = InputCapability::none().with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::SystemInputAdmission,
+        );
+        assert_eq!(
+            converted
+                .check(system_only)
+                .expect_err("the required process pair is gated")
+                .status(),
+            mado_pilot::Status::Unsupported
+        );
+
+        let deliveries = [MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED];
+        // SAFETY: `deliveries` is a live, aligned one-element array.
+        let plan = unsafe { delivery_plan(deliveries.as_ptr(), deliveries.len()) }
+            .expect("one explicit route");
+        assert_eq!(plan.routes(), &[InputDelivery::ProcessDirected]);
+        assert!(!plan.routes().contains(&InputDelivery::System));
+    }
+
+    #[test]
+    fn process_directed_receipt_handle_retains_invocation_only_facts() {
+        let target = target();
+        let receipt = InputReceipt::complete(
+            target,
+            InputDelivery::ProcessDirected,
+            SubmissionEvidence::InvocationOnly,
+            2,
+        );
+        let raw = handle::into_raw(InputReceiptHandle { receipt });
+
+        assert_eq!(receipt_retain(raw), MADOPILOT_STATUS_OK);
+        assert_eq!(
+            receipt_release(raw),
+            MADOPILOT_STATUS_OK,
+            "releasing one sibling leaves the retained receipt alive"
+        );
+
+        let mut info = poisoned_output::<madopilot_input_receipt_info_t>();
+        assert_eq!(receipt_info(raw, info.as_mut_ptr()), MADOPILOT_STATUS_OK);
+        assert_zeroed_padding(
+            info.as_ptr(),
+            &[
+                (
+                    std::mem::offset_of!(madopilot_input_receipt_info_t, address_scope)
+                        + size_of::<u32>(),
+                    std::mem::offset_of!(madopilot_input_receipt_info_t, attempt_count),
+                ),
+                (
+                    std::mem::offset_of!(madopilot_input_receipt_info_t, cleanup)
+                        + size_of::<u32>(),
+                    std::mem::offset_of!(madopilot_input_receipt_info_t, cleanup_released),
+                ),
+            ],
+        );
+        // SAFETY: the successful output call populated the full declared
+        // structure, including its explicitly zeroed implicit padding.
+        let info = unsafe { info.assume_init() };
+        assert_eq!(info.target, target.get());
+        assert_eq!(info.outcome, MADOPILOT_SEQUENCE_COMPLETE);
+        assert_eq!(
+            info.flags
+                & (MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE
+                    | MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE),
+            MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE | MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE
+        );
+        assert_eq!(
+            info.selected_route,
+            MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED
+        );
+        assert_eq!(info.address_scope, MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS);
+        assert_eq!(info.evidence, MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY);
+        assert_eq!(info.submitted, 2);
+        assert_eq!(info.attempt_count, 1);
+        assert_eq!(info.flags & MADOPILOT_INPUT_RECEIPT_USED_FALLBACK, 0);
+
+        let mut count = 0;
+        assert_eq!(
+            receipt_attempt_count(raw, &raw mut count),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(count, 1);
+        let mut attempt = poisoned_output::<madopilot_input_attempt_t>();
+        assert_eq!(
+            receipt_attempt_at(raw, 0, attempt.as_mut_ptr()),
+            MADOPILOT_STATUS_OK
+        );
+        assert_zeroed_padding(
+            attempt.as_ptr(),
+            &[
+                (
+                    std::mem::offset_of!(madopilot_input_attempt_t, outcome) + size_of::<u32>(),
+                    std::mem::offset_of!(madopilot_input_attempt_t, submitted),
+                ),
+                (
+                    std::mem::offset_of!(madopilot_input_attempt_t, reserved) + size_of::<u32>(),
+                    size_of::<madopilot_input_attempt_t>(),
+                ),
+            ],
+        );
+        // SAFETY: the successful output call populated the full declared
+        // structure, including its explicitly zeroed implicit padding.
+        let attempt = unsafe { attempt.assume_init() };
+        assert_eq!(attempt.route, MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED);
+        assert_eq!(
+            attempt.address_scope,
+            MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS
+        );
+        assert_eq!(
+            attempt.evidence,
+            MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY
+        );
+
+        assert_eq!(receipt_release(raw), MADOPILOT_STATUS_OK);
+    }
+
     #[test]
     fn receipt_projection_keeps_target_ordinal_and_counts_above_u32() {
-        let target = IdentityIssuer::new()
-            .issue_target(ProviderId::new("capi-test"))
-            .expect("issued");
+        let target = target();
         let submitted = usize::try_from(u64::from(u32::MAX) + 7).expect("64-bit usize");
         let submitted_u64 = u64::try_from(submitted).expect("64-bit count");
         let receipt = InputReceipt::complete(
@@ -1548,12 +1825,8 @@ mod tests {
         .with_cleanup(submitted + 1, submitted + 2);
         let handle = InputReceiptHandle { receipt };
 
-        let projected = receipt_record(
-            &handle,
-            u32::try_from(size_of::<madopilot_input_receipt_info_t>())
-                .expect("receipt structure fits u32"),
-        )
-        .expect("projected");
+        let projected = receipt_record(&handle, full_size::<madopilot_input_receipt_info_t>())
+            .expect("projected");
         assert_eq!(projected.target, target.get());
         assert_eq!(projected.attempt_count, 1);
         assert_eq!(projected.submitted, submitted_u64);
@@ -1563,8 +1836,7 @@ mod tests {
 
         let attempt = attempt_record(
             handle.receipt.attempts()[0],
-            u32::try_from(size_of::<madopilot_input_attempt_t>())
-                .expect("attempt structure fits u32"),
+            full_size::<madopilot_input_attempt_t>(),
         )
         .expect("projected");
         assert_eq!(attempt.submitted, submitted_u64);

@@ -33,11 +33,11 @@ rather than ambient, and what fails when the library is absent. This is a
 development prerequisite only: source releases bundle no native dependency and
 make no installable deployment-profile claim, which remains gate `G-007`.
 
-The macOS implementation is qualified only on Apple Silicon macOS 26.5.2
-(25F84), SDK 26.5; earlier macOS versions are unsupported investigation targets,
-not compatibility claims. `.cargo/config.toml` sets the final artifact deployment
+The supported macOS native host is Apple Silicon macOS 26.5.2 (25F84), SDK
+26.5; earlier macOS versions are unsupported investigation targets, not
+compatibility claims. Individual revision-bound feature gates can still be
+unexecuted on that host. `.cargo/config.toml` sets the final artifact deployment
 metadata to 26.5.2 and the native build repeats that floor. The macOS native shim
-adds no prerequisite beyond that environment. The production shim in
 `mado-pilot-platform-macos` compiles, links, and passes its tests with the **Xcode
 Command Line Tools alone**, on a host where full Xcode is not installed; its only
 Cargo addition is `cc`, declared as an unconditional build dependency so Cargo
@@ -72,37 +72,114 @@ implies the session the connection comes from. Keep that order if either entry p
 edited: the preflight is what stands between an unauthorized host and an abort.
 
 The macOS input implementation adds a second authorization with the same
-non-prompting rule: **Accessibility granted to the process running the tests**,
-under System Settings ▸ Privacy & Security ▸ Accessibility. macOS does not fail a
-synthesized event from an untrusted process — it discards it silently — so the
-Adapter reads that decision before every irreversible event and reports
-`NotAuthorized` rather than claiming a delivery. Screen Recording and
-Accessibility are separate grants and neither implies the other.
+non-prompting rule: **event-post access granted to the process running the
+tests**, which macOS surfaces under System Settings ▸ Privacy & Security ▸
+Accessibility. macOS does not fail a synthesized event from an unauthorized
+process — it discards it silently — so the Adapter reads the public
+`CGPreflightPostEventAccess` decision before every irreversible event on both
+input routes and reports `NotAuthorized` rather than claiming a delivery. The
+legacy `AXIsProcessTrusted` observation is read beside that preflight only as
+paired qualification evidence; it grants nothing and demotes nothing. Screen
+Recording and event-post access are separate grants and neither implies the
+other.
 
-The ordinary workspace test run **delivers no macOS input at all**. macOS offers
-no background channel, so there is no way to reach a fixture without focusing it
-and posting real system input; the automatic checks exercise the read-only native
-observations and the refusals that happen before any event. Starting the fixture
-window is itself opt-in, because it takes focus:
+The ordinary workspace test run **delivers no macOS input at all**. Both real
+routes — focus-dependent `System` and process-scoped `ProcessDirected` — post
+real events to a real process, so the automatic checks exercise the read-only
+native observations and the refusals that happen before any event, and every
+posting row is opt-in. The fixture binary and its private control protocol are
+built only under the explicit `private-fixture` feature and are absent from the
+production library. Starting the fixture window is itself opt-in, because it
+takes focus:
 
 ```sh
 MADO_PILOT_MACOS_FIXTURE=1 cargo test --locked \
-  -p mado-pilot-platform-macos --test native_input
+  -p mado-pilot-platform-macos --features private-fixture --test native_input
 ```
 
-Successful macOS injection is the explicit user-focused check, run on an
-interactive desktop with both grants in place:
+Successful macOS `System` injection is the explicit user-focused check, run on
+an interactive desktop with both grants in place:
 
 ```sh
-cargo test --locked -p mado-pilot-platform-macos --test native_input interactive_system_delivery_targets_only_the_exact_fixture -- --ignored --exact --nocapture --test-threads=1
+MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
+  cargo test --locked -p mado-pilot-platform-macos --test native_input \
+  interactive_system_delivery_targets_only_the_exact_fixture -- \
+  --ignored --exact --nocapture --test-threads=1
 ```
 
 It sends no click and no pointer movement, stops before input when selection is
 absent or ambiguous, and refuses rather than activating anything on its own. Do
 not make it pass by requesting a permission, opening System Settings, or
-activating another application to force focus. The capability matrix, typed
-outcomes, privacy bounds, and bundling step are in
+activating another application to force focus.
+
+Process-directed qualification is seven explicit tests that never focus the
+target fixture. They post through the production `ProcessDirected` route while
+an unrelated, independently identified owned fixture stays frontmost; assert an
+unchanged physical cursor and foreground; keep sustained capture active; reject
+untagged same-process observation credit; and fail closed if the retained window
+or original process lifetime is lost. Additional same-process windows remain
+admitted because the route promises owning-process, not exact-window, scope.
+After building and signing both bundles as documented in
+[`docs/macos-input-verification.md`](docs/macos-input-verification.md), export
+their executable paths and the one topology being qualified:
+
+```sh
+export MADO_PILOT_MACOS_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture"
+export MADO_PILOT_MACOS_FOREGROUND_FIXTURE_EXECUTABLE="$PWD/target/mado-pilot-fixtures/MadoPilotForegroundFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture"
+export MADO_PILOT_MACOS_QUALIFICATION_TOPOLOGY="<single|same-scale|mixed-scale>"
+for test in \
+  process_directed_delivery_qualifies_appkit_renderer \
+  process_directed_delivery_qualifies_game_like_renderer \
+  controlled_unrelated_activity_remains_outside_appkit_process_evidence \
+  controlled_unrelated_activity_remains_outside_game_like_process_evidence \
+  sustained_capture_soak_keeps_process_route_isolated \
+  process_directed_pointer_refuses_offscreen_and_closed_targets \
+  process_directed_delivery_uses_process_authority_and_revalidates_window_state
+do
+  cargo test --locked -p mado-pilot-platform-macos --features private-fixture \
+    --test native_input "$test" -- \
+    --ignored --exact --nocapture --test-threads=1
+done
+```
+
+The capability matrix, typed outcomes, privacy bounds, and bundling step are in
 [docs/macos-input-verification.md](docs/macos-input-verification.md).
+
+Run each topology selector against the exact candidate source; a pass under one
+selector cannot qualify another. Measured product candidate
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` retained the complete
+three-display `mixed-scale` matrix through the benchmark-harness-only
+applicability diff; test-only successor `5f1fdb6` tightened and passed the
+minimized/off-screen refusal row. The required disconnected `single` and exact
+two-display non-mirrored `same-scale` matrices remain unavailable, so all
+fourteen release decisions remain unexecuted. The complete pre-optimization
+matrix and the `a471c2d` native rows are historical provenance only; the
+benchmark bodies formerly attributed to `a471c2d` are source/oracle-misbound
+and supply no result.
+
+The performance claim is narrower than the qualification matrix. The one-event
+terminal `RequireUnchanged` path, with default no-focus behavior and no later
+fallback, makes one final inventory read. Its pre-optimization equivalent made
+four: route preflight, Rust live geometry, native preparation, and native final
+authority. A fallback-eligible route and terminal `ReprojectCurrent` each have
+distinct two-read shapes; `RequireFocused`, combinations of stronger policies,
+cleanup, and multi-unit sequences are excluded from the one-read result.
+
+The revision-bound one-read decision is composite. Eight exact-source
+controller, geometry-source, and native seam tests prove the call count.
+Exact-source AppKit and controlled OpenGL benchmark rows separately prove
+latency, one matching fixture event, unchanged foreground and physical cursor,
+zero correctness failures, and allocation growth no greater than 4,096 bytes
+without adding private timing-path instrumentation. On measured product
+candidate `dec43d7`, AppKit p95 is `56.466375 ms` under `106.34 ms`;
+controlled game-like p95 is `56.699333 ms` under `112.18 ms`; both profiles
+have zero allocation growth. Run the exact candidate-bound commands in
+[`docs/macos-input-verification.md`](docs/macos-input-verification.md#current-native-input-performance-evidence).
+Each accepted benchmark retains 50 samples after five warm-ups and records
+fixture source, signed fixture executable, and benchmark executable digests.
+Those gates are regression evidence for the named source, host, fixture,
+renderer, route, geometry policy, and focus policy only; they are not real-time
+or general application/game compatibility claims.
 
 The owned-window replacement acceptance probe sends no input, but it opens and
 replaces the signed fixture window and therefore remains explicit:

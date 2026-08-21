@@ -4,13 +4,15 @@
 //! rather than inheriting them from a binding crate, which is rule 8 of
 //! `docs/adr/0012-macos-shim-language-and-containment.md`.
 //!
-//! Two of the flags are correctness requirements rather than preferences.
-//! `-fobjc-arc-exceptions` is the one the ADR measured: without it, ARC emits no
-//! release on an exception's unwind edge, so an exception raised where a failing
-//! stream start would raise one leaks the native object the session had already
-//! retained. `MP_SHIM_ARC_EXCEPTIONS` is defined beside it because Clang exposes
-//! no feature macro for the flag, so the shim's `#error` and the flag stay in one
-//! review.
+//! Three language flags are correctness requirements rather than preferences.
+//! `-fobjc-arc` owns native object references, and `-fobjc-arc-exceptions` is the
+//! one ADR 0012 measured: without it, ARC emits no release on an exception's
+//! unwind edge, so an exception raised where a failing stream start would raise
+//! one leaks the native object the session had already retained.
+//! `MP_SHIM_ARC_EXCEPTIONS` is defined beside it because Clang exposes no feature
+//! macro for the flag, so the shim's `#error` and the flag stay in one review.
+//! `-fblocks` compiles the bounded private NSWorkspace completion handler; AppKit
+//! remains a controlled absolute-path load rather than an eager dependency.
 //!
 //! The workspace declares macOS 26.5.2 as this implementation's deployment floor.
 //! ScreenCaptureKit remains deliberately absent from eager linkage: controlled
@@ -31,6 +33,14 @@
 //! Running it needs the capture scenarios to actually capture, which needs Screen
 //! Recording granted to the test process; `mado_pilot_asan` is published below so
 //! that a scenario which cannot reach a capture fails this build instead of skipping.
+const NATIVE_FRAMEWORKS: [&str; 6] = [
+    "ApplicationServices",
+    "CoreFoundation",
+    "CoreGraphics",
+    "CoreMedia",
+    "CoreVideo",
+    "Foundation",
+];
 
 /// Reads whether this build was asked for an AddressSanitizer-instrumented shim.
 ///
@@ -93,15 +103,17 @@ fn link_address_sanitizer_runtime(shim: &cc::Build) {
     println!("cargo::rustc-link-arg=-Wl,-rpath,{}", directory.display());
 }
 
-/// Compiles the interactive fixture's window into an archive of its own.
+/// Compiles and links the interactive fixture's window only for its private bin.
 ///
-/// A separate archive rather than another file in the shim, because the fixture
-/// creates a window and observes events and nothing in a released artifact may
-/// reach that code. The linker drops an archive no target references, so the
-/// library and the ordinary test binaries carry none of it.
+/// `cc` metadata is disabled so no `-l madopilot_macos_input_fixture` directive
+/// can reach the production library or any consumer. The resulting archive is
+/// passed as a target-specific linker argument to the feature-gated fixture
+/// executable. This is explicit isolation rather than archive dead stripping.
 ///
-/// It declares no framework of its own: the fixture opens AppKit at runtime, so
-/// the Adapter's load commands stay exactly what `tests/linkage.rs` asserts.
+/// The fixture reuses the production execution-context classifier and therefore
+/// links the production shim plus its foundational frameworks into this private
+/// executable only. AppKit and the opt-in OpenGL renderer remain controlled
+/// runtime loads rather than eager dependencies.
 fn compile_input_fixture() {
     println!("cargo::rerun-if-changed=native/madopilot_macos_input_fixture.m");
     println!("cargo::rerun-if-changed=native/madopilot_macos_input_fixture.h");
@@ -113,8 +125,37 @@ fn compile_input_fixture() {
         .flag("-fobjc-arc-exceptions")
         .flag("-mmacosx-version-min=26.5.2")
         .warnings(true)
+        .cargo_metadata(false)
         .extra_warnings(true)
         .compile("madopilot_macos_input_fixture");
+    let archive = std::path::PathBuf::from(
+        std::env::var_os("OUT_DIR").expect("Cargo provides an output directory"),
+    )
+    .join("libmadopilot_macos_input_fixture.a");
+    assert!(
+        archive.is_file(),
+        "the private fixture archive was not produced at {}",
+        archive.display()
+    );
+    println!(
+        "cargo::rustc-link-arg-bin=mado-pilot-macos-input-fixture={}",
+        archive.display()
+    );
+    let production_archive = archive.with_file_name("libmadopilot_macos_shim.a");
+    assert!(
+        production_archive.is_file(),
+        "the production shim archive was not produced at {}",
+        production_archive.display()
+    );
+    println!(
+        "cargo::rustc-link-arg-bin=mado-pilot-macos-input-fixture={}",
+        production_archive.display()
+    );
+    for framework in NATIVE_FRAMEWORKS {
+        println!(
+            "cargo::rustc-link-arg-bin=mado-pilot-macos-input-fixture=-Wl,-framework,{framework}"
+        );
+    }
 }
 
 fn main() {
@@ -134,6 +175,7 @@ fn main() {
         .include("native")
         .flag("-fobjc-arc")
         .flag("-fobjc-arc-exceptions")
+        .flag("-fblocks")
         .define("MP_SHIM_ARC_EXCEPTIONS", "1")
         .flag("-mmacosx-version-min=26.5.2")
         .warnings(true)
@@ -151,16 +193,11 @@ fn main() {
     }
 
     shim.compile("madopilot_macos_shim");
-    compile_input_fixture();
+    if std::env::var_os("CARGO_FEATURE_PRIVATE_FIXTURE").is_some() {
+        compile_input_fixture();
+    }
 
-    for framework in [
-        "ApplicationServices",
-        "CoreFoundation",
-        "CoreGraphics",
-        "CoreMedia",
-        "CoreVideo",
-        "Foundation",
-    ] {
+    for framework in NATIVE_FRAMEWORKS {
         println!("cargo::rustc-link-lib=framework={framework}");
     }
 }

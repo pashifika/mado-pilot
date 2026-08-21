@@ -9,24 +9,31 @@
 //! cargo run --locked --package mado-pilot --example macos-native-input -- "<window title>"
 //! ```
 //!
-//! # This one sends real input, so read this part
+//! # This one invokes real native input, so read this part
 //!
-//! macOS offers no per-window channel an unfocused process may post to, so the
-//! only delivery this Adapter implements is system input, and a window has to be
-//! focused to receive a keystroke. This program therefore asks for
-//! [`FocusPolicy::ActivateIfRequired`], which means it **will focus the window
-//! it selects and type into it**.
+//! This program explicitly opts into [`InputDelivery::ProcessDirected`]. The
+//! route preserves focus and addresses the process that owns the selected
+//! capture window; it does not promise exact-window delivery. Before each
+//! irreversible event, the Adapter revalidates the exact retained `SCWindow`,
+//! its original owning process lifetime, and an unambiguous fresh snapshot.
+//! Other same-process windows may coexist; replacement or identity disagreement
+//! is refused rather than activating or guessing.
 //!
-//! Everything else here exists to make sure that window is the one the operator
-//! meant. The title is a required argument rather than a search: nothing is
-//! guessed, a prefix is not accepted, and more than one match is refused rather
-//! than resolved. The repository's own dedicated receiver is
-//! `mado-pilot-macos-input-fixture` in `mado-pilot-platform-macos`, whose window
-//! title is `MadoPilot Input Fixture [<pid>]`; point this at that, or at
-//! something else you own.
+//! A successful post API call reports [`SubmissionEvidence::InvocationOnly`].
+//! It does not prove queue admission, application consumption, or visual
+//! effect. This example therefore checks the expected condition separately on
+//! a strictly newer frame from the retained capture session, and it permits no
+//! implicit `System` fallback.
 //!
-//! Every prerequisite is checked before any event is sent, and a missing one
-//! ends the program with an actionable message and a non-zero status.
+//! The title is a required argument rather than a search: nothing is guessed,
+//! a prefix is not accepted, and more than one match is refused. The
+//! repository's dedicated receiver is `mado-pilot-macos-input-fixture` in
+//! `mado-pilot-platform-macos`, whose window title is
+//! `MadoPilot Input Fixture [<pid>]`; point this at that, or at something else
+//! you own.
+//!
+//! Every prerequisite is checked before any event is invoked, and a missing
+//! one ends the program with an actionable message and a non-zero status.
 //!
 //! # What it prints
 //!
@@ -58,11 +65,11 @@ mod macos {
 
     use mado_pilot::{
         CapabilitySupport, CoordinateSpace, DeliveryPlan, DiagnosticOptions, Engine, Error,
-        FocusPolicy, Frame, FrameRequest, InputDelivery, InputEvent, InputOpenRequest,
-        InputOperationKind, InputReceipt, InputRequest, InputRequirement, InputSequence, Key,
-        NativeEngineRequest, OpenRequest, OperationContext, PermissionKind, PermissionReport,
-        PixelFormat, Point, PointerGeometry, SequenceOutcome, Session, SessionRequest,
-        TargetDescription, TargetId, TargetKind,
+        FocusPolicy, Frame, FrameRequest, InputAddressScope, InputDelivery, InputEvent,
+        InputOpenRequest, InputOperationKind, InputReceipt, InputRequest, InputRequirement,
+        InputSequence, Key, NativeEngineRequest, OpenRequest, OperationContext, PermissionKind,
+        PermissionReport, PixelFormat, Point, PointerGeometry, SequenceOutcome, Session,
+        SessionRequest, SubmissionEvidence, TargetDescription, TargetId, TargetKind,
     };
 
     /// How long a discovery pass may take.
@@ -74,9 +81,9 @@ mod macos {
 
     /// How long the whole input sequence may take.
     ///
-    /// The sequence below is six events with one short delay in it. Two seconds
-    /// leaves room for the activation the focus policy permits and still bounds a
-    /// platform that stops answering.
+    /// The sequence below is four events with one short delay in it. Two seconds
+    /// bounds current authority, authorization, representation, and invocation
+    /// checks without permitting activation or an unbounded native call.
     const INPUT_BUDGET: Duration = Duration::from_secs(2);
 
     /// How long a strictly-newer frame may take to show the expected condition.
@@ -94,8 +101,8 @@ mod macos {
             _ => {
                 return Err(
                     "usage: macos-native-input \"<full window title>\" — the title is \
-                            required and is matched exactly, because the events this sends are \
-                            real system input and a wrong target is somebody's application"
+                            required and is matched exactly, because this invokes real \
+                            process-directed input and a wrong process is somebody's application"
                         .into(),
                 );
             }
@@ -134,11 +141,11 @@ mod macos {
             target.extent()
         );
 
-        // 4. Confirm the target accepts what this program is about to send,
-        //    before a session exists. A description is not a promise — macOS can
-        //    revoke Accessibility between here and delivery — but a target that
-        //    never accepted pointer or keyboard input is excluded now rather than
-        //    half-way through a sequence.
+        // 4. Confirm the target exposes the exact process-directed contract this
+        //    program is about to use. A description is not a promise — macOS can
+        //    revoke event-post authorization between here and delivery — but an
+        //    unqualified pair is excluded now rather than half-way through a
+        //    sequence.
         require_pointer_and_keyboard(&engine, target.id())?;
 
         // 5. Open capture and input as one session. Input is required, so a
@@ -152,8 +159,8 @@ mod macos {
                 .requesting_input(
                     InputOpenRequest::new()
                         .with_requirement(InputRequirement::Required)
-                        .requiring(InputOperationKind::Pointer, InputDelivery::System)
-                        .requiring(InputOperationKind::Keyboard, InputDelivery::System),
+                        .requiring(InputOperationKind::Pointer, InputDelivery::ProcessDirected)
+                        .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
                 ),
             &bounded(DISCOVERY_BUDGET)?,
         )?;
@@ -220,24 +227,35 @@ mod macos {
             );
         }
 
-        // 7. Submit one bounded sequence, addressed to the exact frame above.
-        //    The pointer position is expressed in that frame's own capture
-        //    pixels, and `RequireUnchanged` binds it to that frame's identity: if
-        //    the window moved or resized since it was captured, the coordinate no
-        //    longer names what was captured, and the sequence is refused rather
-        //    than submitted somewhere else. The delivery plan names exactly one
-        //    mechanism, so nothing is substituted for it, and the focus policy is
-        //    the one this platform's only mechanism needs.
+        // 7. Submit one bounded sequence to the process that owns the retained
+        //    window, correlated with the exact frame above. The pointer position
+        //    is expressed in that frame's own capture pixels, and
+        //    `RequireUnchanged` binds it to that frame's identity: if the window
+        //    moved or resized since it was captured, the coordinate no longer
+        //    names what was captured, and the sequence is refused. The delivery
+        //    plan names exactly one mechanism, so `System` is never substituted,
+        //    and `Preserve` permits no activation.
         let receipt = session.send_input(
             &InputRequest::new(session.target(), sequence(&frame)?, plan())
-                .with_focus(FocusPolicy::ActivateIfRequired)
+                .with_focus(FocusPolicy::Preserve)
                 .with_pointer_geometry(PointerGeometry::require_unchanged_since(stamp)),
             &bounded(INPUT_BUDGET)?,
         )?;
         report_receipt(&receipt);
         if receipt.outcome() == SequenceOutcome::Complete {
-            // 8. A complete receipt proves native submission only. Application
-            //    effect is a separate visual fact from a strictly newer frame.
+            if receipt.selected_route() != Some(InputDelivery::ProcessDirected)
+                || receipt.address_scope() != Some(InputAddressScope::OwningProcess)
+                || receipt.evidence() != Some(SubmissionEvidence::InvocationOnly)
+                || receipt.used_fallback()
+            {
+                return Err(
+                    "a complete receipt did not preserve the explicit process-directed contract"
+                        .into(),
+                );
+            }
+            // 8. Invocation-only progress is not application consumption or
+            //    visual effect. The latter remains a separate strictly-newer
+            //    frame fact.
             native_observation::observe_expected_condition(session, stamp, OBSERVATION_BUDGET)?;
         }
         Ok(receipt)
@@ -260,9 +278,11 @@ mod macos {
         native_observation::bounded(budget)
     }
 
-    /// The mechanism this program permits, and the only one macOS implements.
+    /// The explicit process-addressed mechanism this program permits.
+    ///
+    /// A one-route plan cannot silently fall back to focused system input.
     fn plan() -> DeliveryPlan {
-        DeliveryPlan::require(InputDelivery::System)
+        DeliveryPlan::require(InputDelivery::ProcessDirected)
     }
 
     /// A move to the centre of `frame`, one keystroke, and a short delay so the
@@ -343,17 +363,21 @@ mod macos {
         let descriptor = engine.describe_input(target, &bounded(DISCOVERY_BUDGET)?)?;
         let capability = descriptor.capability();
         for kind in [InputOperationKind::Pointer, InputOperationKind::Keyboard] {
-            if capability.pair(kind, InputDelivery::System).support()
-                != CapabilitySupport::Supported
+            let pair = capability.pair(kind, InputDelivery::ProcessDirected);
+            if pair.support() != CapabilitySupport::Unknown
+                || pair.address_scope() != InputAddressScope::OwningProcess
+                || pair.evidence() != Some(SubmissionEvidence::InvocationOnly)
+                || pair.focus_required()
             {
                 return Err(format!(
-                    "the selected window does not accept {kind} input through system delivery"
+                    "the selected window does not expose unknown-but-attemptable {kind} \
+                     process-directed input with process scope and invocation-only evidence"
                 )
                 .into());
             }
         }
         if !capability
-            .pair(InputOperationKind::Pointer, InputDelivery::System)
+            .pair(InputOperationKind::Pointer, InputDelivery::ProcessDirected)
             .accepts_pointer_space(CoordinateSpace::CapturePixels)
         {
             return Err(

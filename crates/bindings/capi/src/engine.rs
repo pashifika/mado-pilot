@@ -203,6 +203,7 @@ impl Versioned for madopilot_target_t {
         capture_permission,
         reserved,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {

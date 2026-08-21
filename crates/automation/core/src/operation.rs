@@ -20,7 +20,9 @@ use crate::time::{Clock, MonotonicInstant, SystemClock};
 
 /// An opaque caller-selected correlation value for one logical activity.
 ///
-/// Tags are copied into diagnostics and have no control-flow meaning. Zero is
+/// Tags are copied into diagnostics and may be carried by a platform's native
+/// observational metadata. They are not a confidentiality boundary, so callers
+/// must not encode secrets in them. Tags have no control-flow meaning. Zero is
 /// reserved for the absent representation at foreign-function boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ActivityTag(std::num::NonZeroU64);

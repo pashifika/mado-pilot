@@ -91,6 +91,7 @@ impl Versioned for madopilot_package_info_t {
         package_version,
         license,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -119,6 +120,7 @@ impl Versioned for madopilot_template_info_t {
         max_results,
         space,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {

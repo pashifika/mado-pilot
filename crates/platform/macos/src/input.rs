@@ -9,7 +9,7 @@
 //! own. The pieces that genuinely cannot be shared are already separated below —
 //! the capability table, the pressed-state records, and the driver seam.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -28,17 +28,26 @@ use mado_pilot_input::{
 
 use crate::native_input::NativeInputDriver;
 use crate::provider::TargetRecord;
+use crate::shim::{NativeBounds, ProcessEventSource};
 
 const DELAY_POLL_INTERVAL: Duration = Duration::from_millis(2);
+/// Source-frame geometry retained for each live capture stream.
+///
+/// A dragged window can publish a revision on every frame. Keeping the complete
+/// stream history would therefore turn caller-controlled desktop movement into
+/// unbounded adapter memory. Sixty-four revisions keep the movement/restoration
+/// contract useful while bounding each live stream's metadata.
+const GEOMETRY_HISTORY_REVISIONS: usize = 64;
 
 /// Returns the pairwise input contract for a discovered macOS target.
 ///
-/// macOS exposes only `System` input. A successful `CGEventPost` invocation
-/// carries invocation-only evidence; it does not acknowledge target consumption.
-/// Windows accept pointer, keyboard, and text after Accessibility authorization.
-/// Displays accept pointer input only.
-pub(crate) fn input_capability(kind: TargetKind) -> InputCapability {
-    let mut capability = InputCapability::none()
+/// macOS always exposes `System` input. A qualifying window additionally
+/// advertises process-scoped pointer, keyboard, and text as `Unknown` until the
+/// operation pair passes native qualification. Both routes carry
+/// invocation-only evidence; Core Graphics does not acknowledge consumption.
+/// Displays accept system pointer input only.
+pub(crate) fn input_capability(kind: TargetKind, process_directed: bool) -> InputCapability {
+    let capability = InputCapability::none()
         .with_pair(
             InputOperationKind::Pointer,
             InputDelivery::System,
@@ -56,63 +65,156 @@ pub(crate) fn input_capability(kind: TargetKind) -> InputCapability {
             PermissionKind::InputControl,
         );
 
-    if kind == TargetKind::Window {
-        capability = capability
-            .with_focus_required(InputOperationKind::Pointer, InputDelivery::System)
-            .with_pair(
-                InputOperationKind::Keyboard,
-                InputDelivery::System,
-                CapabilitySupport::Supported,
-                SubmissionEvidence::InvocationOnly,
-            )
-            .with_focus_required(InputOperationKind::Keyboard, InputDelivery::System)
-            .with_permission(
-                InputOperationKind::Keyboard,
-                InputDelivery::System,
-                PermissionKind::InputControl,
-            )
-            .with_pair(
-                InputOperationKind::Text,
-                InputDelivery::System,
-                CapabilitySupport::Supported,
-                SubmissionEvidence::InvocationOnly,
-            )
-            .with_focus_required(InputOperationKind::Text, InputDelivery::System)
-            .with_permission(
-                InputOperationKind::Text,
-                InputDelivery::System,
-                PermissionKind::InputControl,
-            );
+    if kind != TargetKind::Window {
+        return capability;
     }
+    let capability = capability
+        .with_focus_required(InputOperationKind::Pointer, InputDelivery::System)
+        .with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_focus_required(InputOperationKind::Keyboard, InputDelivery::System)
+        .with_permission(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            PermissionKind::InputControl,
+        )
+        .with_pair(
+            InputOperationKind::Text,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_focus_required(InputOperationKind::Text, InputDelivery::System)
+        .with_permission(
+            InputOperationKind::Text,
+            InputDelivery::System,
+            PermissionKind::InputControl,
+        );
+    if !process_directed {
+        return capability;
+    }
+
     capability
+        .with_pair(
+            InputOperationKind::Pointer,
+            InputDelivery::ProcessDirected,
+            CapabilitySupport::Unknown,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::CapturePixels,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::FrameNormalized,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::TargetNormalized,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::TargetLogical,
+        )
+        .with_pointer_space(
+            InputDelivery::ProcessDirected,
+            CoordinateSpace::DesktopLogical,
+        )
+        .with_permission(
+            InputOperationKind::Pointer,
+            InputDelivery::ProcessDirected,
+            PermissionKind::InputControl,
+        )
+        .with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::ProcessDirected,
+            CapabilitySupport::Unknown,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_permission(
+            InputOperationKind::Keyboard,
+            InputDelivery::ProcessDirected,
+            PermissionKind::InputControl,
+        )
+        .with_pair(
+            InputOperationKind::Text,
+            InputDelivery::ProcessDirected,
+            CapabilitySupport::Unknown,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_permission(
+            InputOperationKind::Text,
+            InputDelivery::ProcessDirected,
+            PermissionKind::InputControl,
+        )
 }
 
-/// The latest authoritative transform for every live capture stream of a target.
+/// Recent authoritative transforms and raw native bounds for every live capture
+/// stream of a target.
 ///
-/// Geometry revisions make an older frame in the same revision equivalent to the
-/// latest transform in that revision. A frame from an older revision is not
-/// reconstructed after movement or resize: the request is refused instead.
+/// Geometry revisions make an older frame in the same revision equivalent to
+/// the latest transform and native bounds in that revision. Distinct revisions
+/// remain addressable across later movement, resize, or backing-scale changes
+/// until the fixed per-stream history retires them.
 #[derive(Debug, Default)]
 pub(crate) struct GeometryLedger {
-    streams: Mutex<HashMap<StreamId, GeometryEntry>>,
+    streams: Mutex<HashMap<StreamId, VecDeque<GeometryEntry>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct GeometryEntry {
     stamp: FrameStamp,
     transform: TransformSnapshot,
+    native_bounds: NativeBounds,
 }
 
 impl GeometryLedger {
-    pub(crate) fn publish(&self, frame: &Frame) {
-        self.record(frame.stamp(), *frame.transform());
+    pub(crate) fn publish(&self, frame: &Frame, native_bounds: NativeBounds) {
+        self.record(frame.stamp(), *frame.transform(), native_bounds);
     }
 
-    fn record(&self, stamp: FrameStamp, transform: TransformSnapshot) {
-        self.streams
+    pub(crate) fn record(
+        &self,
+        stamp: FrameStamp,
+        transform: TransformSnapshot,
+        native_bounds: NativeBounds,
+    ) {
+        let mut streams = self
+            .streams
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(stamp.stream(), GeometryEntry { stamp, transform });
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let history = streams.entry(stamp.stream()).or_default();
+        if let Some(latest) = history.back_mut() {
+            if latest.stamp.geometry() == stamp.geometry() {
+                if matches!(
+                    latest.stamp.order(&stamp),
+                    Ok(FrameOrder::Before | FrameOrder::Same)
+                ) {
+                    *latest = GeometryEntry {
+                        stamp,
+                        transform,
+                        native_bounds,
+                    };
+                }
+                return;
+            }
+            if !matches!(latest.stamp.order(&stamp), Ok(FrameOrder::Before)) {
+                return;
+            }
+        }
+        history.push_back(GeometryEntry {
+            stamp,
+            transform,
+            native_bounds,
+        });
+        if history.len() > GEOMETRY_HISTORY_REVISIONS {
+            history.pop_front();
+        }
     }
 
     /// Retires the entry a finished stream left behind.
@@ -127,22 +229,22 @@ impl GeometryLedger {
             .remove(&stream);
     }
 
-    pub(crate) fn source_transform(&self, source: FrameStamp) -> Option<TransformSnapshot> {
-        let entry = *self
+    pub(crate) fn source_geometry(
+        &self,
+        source: FrameStamp,
+    ) -> Option<(TransformSnapshot, NativeBounds)> {
+        let streams = self
             .streams
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&source.stream())?;
-        if entry.stamp.epoch() != source.epoch()
-            || entry.stamp.geometry() != source.geometry()
-            || !matches!(
-                source.order(&entry.stamp),
-                Ok(FrameOrder::Before | FrameOrder::Same)
-            )
-        {
-            return None;
-        }
-        Some(entry.transform)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let entry = *streams.get(&source.stream())?.iter().find(|entry| {
+            entry.stamp.geometry() == source.geometry()
+                && matches!(
+                    source.order(&entry.stamp),
+                    Ok(FrameOrder::Before | FrameOrder::Same)
+                )
+        })?;
+        Some((entry.transform, entry.native_bounds))
     }
 }
 
@@ -170,6 +272,18 @@ pub(crate) struct DriverState {
     pub(crate) pointer: Option<PointerState>,
     pub(crate) keys: Vec<SystemKeyState>,
     pub(crate) buttons: Vec<SystemButtonState>,
+    pub(crate) pending_text_release: Option<PendingTextRelease>,
+    pub(crate) process_event_source: Option<ProcessEventSource>,
+}
+
+/// A synthesized text key-down whose matching key-up did not run.
+///
+/// The payload is deliberately absent: a key-up for virtual key zero balances
+/// the native state without retaining or re-emitting caller text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingTextRelease {
+    pub(crate) route: InputDelivery,
+    pub(crate) flags: u32,
 }
 
 impl DriverState {
@@ -211,6 +325,8 @@ pub(crate) struct SystemButtonState {
 pub(crate) struct SubmissionFailure {
     pub(crate) fault: InputFault,
     pub(crate) current_event_may_have_effect: bool,
+    /// Native units from the current logical event whose invocation completed.
+    pub(crate) invoked_native_units: usize,
 }
 
 impl SubmissionFailure {
@@ -218,13 +334,28 @@ impl SubmissionFailure {
         Self {
             fault,
             current_event_may_have_effect: false,
+            invoked_native_units: 0,
         }
     }
 
-    pub(crate) const fn during_event(fault: InputFault) -> Self {
+    pub(crate) const fn after_native_units(fault: InputFault, invoked_native_units: usize) -> Self {
         Self {
             fault,
-            current_event_may_have_effect: true,
+            current_event_may_have_effect: invoked_native_units != 0,
+            invoked_native_units,
+        }
+    }
+
+    pub(crate) const fn after_native_attempt(
+        fault: InputFault,
+        invoked_native_units: usize,
+        current_event_may_have_effect: bool,
+    ) -> Self {
+        Self {
+            fault,
+            current_event_may_have_effect: current_event_may_have_effect
+                || invoked_native_units != 0,
+            invoked_native_units,
         }
     }
 }
@@ -245,12 +376,33 @@ struct StoppedSubmission {
 
 /// The native seam driven by the controller.
 pub(crate) trait InputDriver: fmt::Debug + Send + Sync {
+    /// Refuses a route before it is selected.
+    ///
+    /// `require_early_authority` is true when the controller still needs a
+    /// zero-effect decision at this boundary: either a later caller-ordered
+    /// route may be tried, or the sequence contains no native event whose final
+    /// commit gate could perform the check. A terminal route with at least one
+    /// native event may defer expensive mutable target authority to that final
+    /// gate without changing fallback semantics.
     fn preflight(
         &self,
         route: InputDelivery,
         focus: FocusPolicy,
+        require_early_authority: bool,
         operation: &OperationContext,
     ) -> Result<(), InputFault>;
+
+    /// Creates route-private state after preflight and before route selection is
+    /// committed. Failure is still eligible for caller-ordered fallback because
+    /// no event has been submitted.
+    fn begin_route(
+        &self,
+        _route: InputDelivery,
+        _state: &mut DriverState,
+        _operation: &OperationContext,
+    ) -> Result<(), InputFault> {
+        Ok(())
+    }
 
     /// Submits one logical event or reports whether its native representation may
     /// have had effect.
@@ -271,6 +423,20 @@ pub(crate) trait InputDriver: fmt::Debug + Send + Sync {
         state: &mut DriverState,
         operation: &OperationContext,
     ) -> Result<(), InputFault>;
+
+    /// Releases a route-private native state that has no public
+    /// [`PressedState`] representation.
+    ///
+    /// Returns `true` only when one pending state was released. The default is
+    /// correct for adapters and test doubles that create no such state.
+    fn release_pending(
+        &self,
+        _route: InputDelivery,
+        _state: &mut DriverState,
+        _operation: &OperationContext,
+    ) -> Result<bool, InputFault> {
+        Ok(false)
+    }
 }
 
 pub(crate) struct MacosInputController {
@@ -280,8 +446,7 @@ pub(crate) struct MacosInputController {
 }
 
 impl MacosInputController {
-    pub(crate) fn new(record: Arc<TargetRecord>) -> Arc<Self> {
-        let descriptor = record.input_descriptor();
+    pub(crate) fn new(record: Arc<TargetRecord>, descriptor: InputDescriptor) -> Arc<Self> {
         Arc::new(Self {
             descriptor,
             driver: Arc::new(NativeInputDriver::new(record)),
@@ -298,16 +463,78 @@ impl MacosInputController {
         }
     }
 
+    fn execute_inner(
+        &self,
+        request: &InputRequest,
+        operation: &OperationContext,
+    ) -> mado_pilot_core::Result<InputReceipt> {
+        self.descriptor.validate(request)?;
+        let _guard = self.admission.admit(operation)?;
+        let mut state = DriverState::default();
+        let (route, evidence, prior_attempts) =
+            match self.select_route(request, &mut state, operation) {
+                Ok(selected) => selected,
+                Err(receipt) => return Ok(receipt),
+            };
+
+        let mut submitted = 0usize;
+        for event in request.sequence().events() {
+            let result = if let InputEvent::Delay(delay) = event {
+                wait_delay(*delay, operation).map_err(SubmissionFailure::from)
+            } else {
+                match operation.interruption() {
+                    Some(interruption) => Err(SubmissionFailure::before_event(InputFault::from(
+                        interruption,
+                    ))),
+                    None => self.driver.submit(
+                        route,
+                        request.focus(),
+                        event,
+                        request.pointer_geometry(),
+                        &mut state,
+                        operation,
+                    ),
+                }
+            };
+            if let Err(failure) = result {
+                return Ok(self.stopped_receipt(
+                    request,
+                    StoppedSubmission {
+                        route,
+                        evidence,
+                        prior_attempts,
+                        submitted,
+                        failure,
+                    },
+                    &mut state,
+                    operation,
+                ));
+            }
+            submitted += 1;
+        }
+        Ok(
+            InputReceipt::complete(request.target(), route, evidence, submitted)
+                .with_prior_attempts(prior_attempts),
+        )
+    }
+
     fn select_route(
         &self,
         request: &InputRequest,
+        state: &mut DriverState,
         operation: &OperationContext,
     ) -> Result<(InputDelivery, SubmissionEvidence, Vec<InputAttempt>), InputReceipt> {
         let target = request.target();
         let mut prior_attempts = Vec::with_capacity(request.delivery().routes().len());
         let mut last_fault = InputFault::RouteUnavailable;
 
-        for route in request.delivery().routes().iter().copied() {
+        let routes = request.delivery().routes();
+        let has_native_event = request
+            .sequence()
+            .events()
+            .iter()
+            .any(|event| !matches!(event, InputEvent::Delay(_)));
+        for (index, route) in routes.iter().copied().enumerate() {
             let evidence = match self.descriptor.preflight_route(request, route) {
                 Ok(evidence) => evidence,
                 Err(fault) => {
@@ -316,18 +543,29 @@ impl MacosInputController {
                     continue;
                 }
             };
-            match self.driver.preflight(route, request.focus(), operation) {
+            let require_early_authority = index + 1 < routes.len() || !has_native_event;
+            let prepared = self
+                .driver
+                .preflight(route, request.focus(), require_early_authority, operation)
+                .and_then(|()| self.driver.begin_route(route, state, operation));
+            match prepared {
                 Ok(()) => return Ok((route, evidence, prior_attempts)),
                 Err(fault) => {
                     prior_attempts.push(InputAttempt::refused(route, fault));
                     last_fault = fault;
+                    *state = DriverState::default();
+                    let early_process_target_loss_allows_fallback = matches!(
+                        (route, fault),
+                        (InputDelivery::ProcessDirected, InputFault::TargetLost)
+                    ) && index + 1 < routes.len();
                     if matches!(
                         fault,
                         InputFault::Cancelled
                             | InputFault::DeadlineExceeded
                             | InputFault::TargetLost
                             | InputFault::ControllerClosed
-                    ) {
+                    ) && !early_process_target_loss_allows_fallback
+                    {
                         break;
                     }
                 }
@@ -377,31 +615,45 @@ impl MacosInputController {
             stopped.submitted,
             stopped.failure.current_event_may_have_effect,
         );
-        if held.is_empty() {
+        let pending = usize::from(state.pending_text_release.is_some());
+        let owed = pending + held.len();
+        if owed == 0 {
             return receipt.with_cleanup(0, 0);
         }
         let budget = request.cleanup_budget();
         let cleanup = budget.context(operation);
         let mut released = 0usize;
         let mut exhausted = false;
-        for pressed in &held {
+        if pending != 0 {
             if released >= budget.max_events() || cleanup.interruption().is_some() {
                 exhausted = true;
-                break;
+            } else {
+                match self.driver.release_pending(stopped.route, state, &cleanup) {
+                    Ok(true) => released += 1,
+                    Ok(false) | Err(_) => return receipt.with_cleanup(released, owed),
+                }
             }
-            if self
-                .driver
-                .release(stopped.route, *pressed, state, &cleanup)
-                .is_err()
-            {
-                break;
+        }
+        if !exhausted {
+            for pressed in &held {
+                if released >= budget.max_events() || cleanup.interruption().is_some() {
+                    exhausted = true;
+                    break;
+                }
+                if self
+                    .driver
+                    .release(stopped.route, *pressed, state, &cleanup)
+                    .is_err()
+                {
+                    break;
+                }
+                released += 1;
             }
-            released += 1;
         }
         if exhausted {
-            receipt.with_exhausted_cleanup(released, held.len())
+            receipt.with_exhausted_cleanup(released, owed)
         } else {
-            receipt.with_cleanup(released, held.len())
+            receipt.with_cleanup(released, owed)
         }
     }
 }
@@ -426,53 +678,7 @@ impl InputController for MacosInputController {
         request: &InputRequest,
         operation: &OperationContext,
     ) -> mado_pilot_core::Result<InputReceipt> {
-        self.descriptor.validate(request)?;
-        let _guard = self.admission.admit(operation)?;
-        let (route, evidence, prior_attempts) = match self.select_route(request, operation) {
-            Ok(selected) => selected,
-            Err(receipt) => return Ok(receipt),
-        };
-
-        let mut submitted = 0usize;
-        let mut state = DriverState::default();
-        for event in request.sequence().events() {
-            let result = if let InputEvent::Delay(delay) = event {
-                wait_delay(*delay, operation).map_err(SubmissionFailure::from)
-            } else {
-                match operation.interruption() {
-                    Some(interruption) => Err(SubmissionFailure::before_event(InputFault::from(
-                        interruption,
-                    ))),
-                    None => self.driver.submit(
-                        route,
-                        request.focus(),
-                        event,
-                        request.pointer_geometry(),
-                        &mut state,
-                        operation,
-                    ),
-                }
-            };
-            if let Err(failure) = result {
-                return Ok(self.stopped_receipt(
-                    request,
-                    StoppedSubmission {
-                        route,
-                        evidence,
-                        prior_attempts,
-                        submitted,
-                        failure,
-                    },
-                    &mut state,
-                    operation,
-                ));
-            }
-            submitted += 1;
-        }
-        Ok(
-            InputReceipt::complete(request.target(), route, evidence, submitted)
-                .with_prior_attempts(prior_attempts),
-        )
+        self.execute_inner(request, operation)
     }
 
     fn close(&self, operation: &OperationContext) -> mado_pilot_core::Result<()> {

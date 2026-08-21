@@ -1189,6 +1189,25 @@ struct InputDescriptor {
 
 namespace detail {
 
+inline InputCapability project_input_capability(
+    const ::madopilot_input_capability_t& value) noexcept {
+    InputCapability out;
+    out.target = value.target;
+    out.operation = value.operation;
+    out.delivery = value.delivery;
+    out.support = value.support;
+    out.address_scope = value.address_scope;
+    if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION) != 0u) {
+        out.permission = value.permission;
+    }
+    if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE) != 0u) {
+        out.evidence = value.evidence;
+    }
+    out.focus_required = value.focus_required != 0;
+    out.pointer_spaces = value.pointer_spaces;
+    return out;
+}
+
 inline InputDescriptor project_input_descriptor(
     const ::madopilot_input_descriptor_t& value) noexcept {
     return InputDescriptor{
@@ -1238,6 +1257,61 @@ struct InputAttempt {
     std::optional<InputFault> fault;
     bool partial_native_effect = false;
 };
+
+namespace detail {
+
+inline InputReceiptInfo project_input_receipt_info(
+    const ::madopilot_input_receipt_info_t& value) noexcept {
+    InputReceiptInfo out;
+    out.target = value.target;
+    out.outcome = value.outcome;
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE) != 0u) {
+        out.selected_route = value.selected_route;
+    }
+    out.address_scope = value.address_scope;
+    out.attempt_count = value.attempt_count;
+    out.submitted = value.submitted;
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED) != 0u) {
+        out.last_submitted = value.last_submitted;
+    }
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE) != 0u) {
+        out.evidence = value.evidence;
+    }
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_FAULT) != 0u) {
+        out.fault = value.fault;
+    }
+    out.cleanup = value.cleanup;
+    out.cleanup_released = value.cleanup_released;
+    out.cleanup_owed = value.cleanup_owed;
+    out.partial_native_effect =
+        (value.flags & MADOPILOT_INPUT_RECEIPT_PARTIAL_NATIVE_EFFECT) != 0u;
+    out.used_fallback =
+        (value.flags & MADOPILOT_INPUT_RECEIPT_USED_FALLBACK) != 0u;
+    return out;
+}
+
+inline InputAttempt project_input_attempt(
+    const ::madopilot_input_attempt_t& value) noexcept {
+    InputAttempt out;
+    out.route = value.route;
+    out.address_scope = value.address_scope;
+    out.outcome = value.outcome;
+    out.submitted = value.submitted;
+    if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED) != 0u) {
+        out.last_submitted = value.last_submitted;
+    }
+    if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_EVIDENCE) != 0u) {
+        out.evidence = value.evidence;
+    }
+    if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_FAULT) != 0u) {
+        out.fault = value.fault;
+    }
+    out.partial_native_effect =
+        (value.flags & MADOPILOT_INPUT_ATTEMPT_PARTIAL_NATIVE_EFFECT) != 0u;
+    return out;
+}
+
+} // namespace detail
 
 /// Counts retained by one immutable diagnostic batch.
 struct DiagnosticBatchInfo {
@@ -1532,21 +1606,8 @@ public:
             return Result<InputCapability>::failure(Error::from_status(status));
         }
 
-        InputCapability out;
-        out.target = value.target;
-        out.operation = value.operation;
-        out.delivery = value.delivery;
-        out.support = value.support;
-        out.address_scope = value.address_scope;
-        if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION) != 0u) {
-            out.permission = value.permission;
-        }
-        if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE) != 0u) {
-            out.evidence = value.evidence;
-        }
-        out.focus_required = value.focus_required != 0;
-        out.pointer_spaces = value.pointer_spaces;
-        return Result<InputCapability>::success(out);
+        return Result<InputCapability>::success(
+            detail::project_input_capability(value));
     }
 
 private:
@@ -1882,8 +1943,9 @@ private:
 
 /// A call-local C projection of an input request.
 ///
-/// The projection owns its event-record array. Event text and delivery order
-/// still borrow the `InputRequest`, which must outlive the C call.
+/// Every `to_c()` call owns a fresh event-record array, and moving a projection
+/// rebinds its C pointer to the transferred array. Event text and delivery order
+/// still borrow the `InputRequest`, which must outlive the complete C call.
 class InputRequest::CView {
 public:
     explicit CView(const InputRequest& request) {
@@ -2168,43 +2230,28 @@ public:
         if (api_ == nullptr) {
             return detail::no_table<InputReceiptInfo>();
         }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_INPUT_RECEIPT_INFO)) {
+            return detail::unsupported<InputReceiptInfo>();
+        }
         auto value = detail::sized<::madopilot_input_receipt_info_t>();
         const Status status = api_->input_receipt_info(handle_, &value);
         if (!is_ok(status)) {
             return Result<InputReceiptInfo>::failure(Error::from_status(status));
         }
 
-        InputReceiptInfo out;
-        out.target = value.target;
-        out.outcome = value.outcome;
-        if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE) != 0u) {
-            out.selected_route = value.selected_route;
-        }
-        out.address_scope = value.address_scope;
-        out.attempt_count = value.attempt_count;
-        out.submitted = value.submitted;
-        if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED) != 0u) {
-            out.last_submitted = value.last_submitted;
-        }
-        if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE) != 0u) {
-            out.evidence = value.evidence;
-        }
-        if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_FAULT) != 0u) {
-            out.fault = value.fault;
-        }
-        out.cleanup = value.cleanup;
-        out.cleanup_released = value.cleanup_released;
-        out.cleanup_owed = value.cleanup_owed;
-        out.partial_native_effect =
-            (value.flags & MADOPILOT_INPUT_RECEIPT_PARTIAL_NATIVE_EFFECT) != 0u;
-        out.used_fallback =
-            (value.flags & MADOPILOT_INPUT_RECEIPT_USED_FALLBACK) != 0u;
-        return Result<InputReceiptInfo>::success(out);
+        return Result<InputReceiptInfo>::success(
+            detail::project_input_receipt_info(value));
     }
 
     Result<std::size_t> attempt_count() const {
         if (api_ == nullptr) {
             return detail::no_table<std::size_t>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_COUNT)) {
+            return detail::unsupported<std::size_t>();
         }
         std::size_t count = 0;
         const Status status =
@@ -2218,6 +2265,10 @@ public:
         if (api_ == nullptr) {
             return detail::no_table<InputAttempt>();
         }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_AT)) {
+            return detail::unsupported<InputAttempt>();
+        }
         auto value = detail::sized<::madopilot_input_attempt_t>();
         const Status status =
             api_->input_receipt_attempt_at(handle_, index, &value);
@@ -2225,23 +2276,8 @@ public:
             return Result<InputAttempt>::failure(Error::from_status(status));
         }
 
-        InputAttempt out;
-        out.route = value.route;
-        out.address_scope = value.address_scope;
-        out.outcome = value.outcome;
-        out.submitted = value.submitted;
-        if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED) != 0u) {
-            out.last_submitted = value.last_submitted;
-        }
-        if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_EVIDENCE) != 0u) {
-            out.evidence = value.evidence;
-        }
-        if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_FAULT) != 0u) {
-            out.fault = value.fault;
-        }
-        out.partial_native_effect =
-            (value.flags & MADOPILOT_INPUT_ATTEMPT_PARTIAL_NATIVE_EFFECT) != 0u;
-        return Result<InputAttempt>::success(out);
+        return Result<InputAttempt>::success(
+            detail::project_input_attempt(value));
     }
 
 private:
@@ -2273,6 +2309,10 @@ public:
         if (api_ == nullptr) {
             return detail::no_table<DiagnosticBatchInfo>();
         }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_INFO)) {
+            return detail::unsupported<DiagnosticBatchInfo>();
+        }
         auto value = detail::sized<::madopilot_diagnostic_batch_info_t>();
         const Status status = api_->diagnostic_batch_info(handle_, &value);
         if (!is_ok(status)) {
@@ -2288,6 +2328,11 @@ public:
     Result<DiagnosticRecord> record_at(std::size_t index) const {
         if (api_ == nullptr) {
             return detail::no_table<DiagnosticRecord>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT)) {
+            return detail::unsupported<DiagnosticRecord>();
         }
         auto value = detail::sized<::madopilot_diagnostic_record_t>();
         const Status status =
@@ -2367,6 +2412,11 @@ public:
     Result<DiagnosticDrain> drain() const {
         if (api_ == nullptr) {
             return detail::no_table<DiagnosticDrain>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT)) {
+            return detail::unsupported<DiagnosticDrain>();
         }
         DiagnosticDrainState state = MADOPILOT_DIAGNOSTIC_DRAIN_OPEN_EMPTY;
         ::madopilot_diagnostic_batch_t* batch = nullptr;
@@ -2521,14 +2571,16 @@ public:
 
     /// Sends one sequence. Partial and unexecuted outcomes are successful
     /// receipts. Validation, an unavailable ABI entry, a pre-admission refusal,
-    /// or a contained boundary failure produces a failed `Result`.
+    /// or a contained boundary failure produces a failed `Result`. The C++
+    /// owner requires the complete receipt lifecycle/accessor suffix.
     Result<InputReceipt> send_input(const InputRequest& request,
                                     const Operation& operation) const {
         if (api_ == nullptr) {
             return detail::no_table<InputReceipt>();
         }
-        if (!detail::has_entry(api_, extent_,
-                               MADOPILOT_API_SIZE_SESSION_SEND_INPUT)) {
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_AT)) {
             return detail::unsupported<InputReceipt>();
         }
 
@@ -2594,14 +2646,15 @@ public:
 
     /// Takes the engine's single diagnostic reader.
     ///
-    /// Diagnostics-off engines and repeated takes return an empty optional.
+    /// Diagnostics-off engines and repeated takes return an empty optional. The
+    /// C++ owner requires the complete reader/batch lifecycle and accessor suffix.
     Result<std::optional<DiagnosticReader>> take_diagnostic_reader() const {
         if (api_ == nullptr) {
             return detail::no_table<std::optional<DiagnosticReader>>();
         }
         if (!detail::has_entry(
                 api_, extent_,
-                MADOPILOT_API_SIZE_ENGINE_TAKE_DIAGNOSTIC_READER)) {
+                MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT)) {
             return detail::unsupported<std::optional<DiagnosticReader>>();
         }
 

@@ -1,0 +1,137 @@
+# Phase 2.2 controlled-stimulus transitions, measured on aarch64-apple-darwin at source
+# a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426 and tree
+# f4a707501748303adcec577df5f18fcd18f13f45.
+#
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0029 sets
+# the frozen pre-measurement budgets. This corrected-revision profile passes
+# those budgets alongside the passing single, same-scale, and mixed-scale
+# native rows behind the accepted pair decisions.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-2-controlled-transitions-aarch64-apple-darwin"
+workload = "native controlled open, retained-pressure recovery, resize, and close transitions"
+phase = "2.2"
+status = "measured"
+normative = true
+measurements_recorded = true
+# A committed profile under docs/benchmarks/ carries the budgets.
+
+[profile]
+fixture = "separately linked private macOS fixture Rust, protocol-v10, header, Objective-C, and renderer sources"
+fixture_sha256 = "51c6f991a942d30440f18a8b06e105ebb3bc15511a9e909ef696b300ba8d4c7b"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 cores, 32 GiB"
+os_version = "macOS 26.5.2 (25F84)"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release --features private-fixture; signed .app launch"
+warmup_iterations = 5
+sample_count = 50
+correctness_oracle = "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
+queue_policy = "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
+notes = "source commit a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426, tree f4a707501748303adcec577df5f18fcd18f13f45; toolchain rustc 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology three online non-mirrored displays; 3840x2160 logical/backing 1x at signed negative origin, 2560x1440 logical/5120x2880 backing 2x main, 1512x982 logical/3024x1964 backing 2x; mixed 2x/1x and same-scale 2x/2x seams; permissions/signing Screen Recording granted; event-post access granted; generated fixture bundles ad-hoc signed with approved identifiers; fixture executable sha256 fcecc1f820764605d5ca7fa1553d8084411b912f1fc7050230ecc402498c0cdb; executable paths deliberately omitted; lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 16777216
+rationale = "the retained ADR 0025 ceiling permits one transient resized-frame copy but rejects accumulation"
+
+[[measurement]]
+workload = "resize_recreation"
+correctness_oracle = "one acknowledged private resize advances epoch and geometry and returns the resized extent independently of the acknowledgement"
+result_correctness = 0
+latency_p50_ms = 52.555834
+latency_p95_ms = 61.353917
+latency_max_ms = 69.669959
+iteration_span_ms = 52.325739
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 8316
+steady_allocated_bytes = 7182
+allocated_growth_bytes = 0
+
+[[measurement]]
+workload = "open_first_frame"
+correctness_oracle = "each fresh capture-only session returns a correctly identified deterministic first frame and closes"
+result_correctness = 0
+latency_p50_ms = 98.200417
+latency_p95_ms = 109.305875
+latency_max_ms = 115.946083
+iteration_span_ms = 162.064123
+mapped_bytes_per_result = 5327872
+peak_allocated_bytes = 5335278
+steady_allocated_bytes = 4657
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 7504640
+  rationale = "the retained ADR 0025 resized-frame mapping ceiling"
+
+[[measurement]]
+workload = "retained_pressure_resume"
+correctness_oracle = "controlled publications fill the reported retained limit; releasing one slot resumes with an observable sequence gap"
+result_correctness = 0
+latency_p50_ms = 3.743334
+latency_p95_ms = 17.520750
+latency_max_ms = 17.898917
+iteration_span_ms = 969.924928
+mapped_bytes_per_result = 0
+stale_work_ratio = 0.837662338
+peak_allocated_bytes = 4671932
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+
+[[measurement]]
+workload = "close_drain"
+correctness_oracle = "explicit capture-session close reaches the closed state and remains idempotent"
+result_correctness = 0
+latency_p50_ms = 65.151709
+latency_p95_ms = 74.761417
+latency_max_ms = 79.895917
+iteration_span_ms = 163.712058
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 7246
+steady_allocated_bytes = 4657
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+  measure = "latency_p50"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 100.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 250.0
+  rationale = "frozen before implementation by the Phase 2.2 qualification plan"
+
+  [[measurement.budget]]
+  measure = "latency_max"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 1000.0
+  rationale = "frozen hard scenario bound from the Phase 2.2 qualification plan"

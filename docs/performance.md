@@ -10,9 +10,15 @@ for a workload is gate [`G-013`](validation-gates.md#g-013), which is resolved
 per workload and target rather than once. Phase 1 is resolved. ADR 0021
 invalidated the three historical macOS Phase 2 native profiles after source and
 correctness-oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
-now accepts the macOS diagnostic slice, and
+now accepts the macOS diagnostic slice,
 [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
-revision-bound macOS native input and public-language profile. The remaining
+revision-bound macOS native input and public-language profile. Accepted-design
+[ADR 0029](adr/0029-macos-process-directed-input.md) binds the Phase 2.2 macOS
+process-directed and controlled-stimulus lineage below. Final candidate
+`dec43d7` passes the exact-source controlled AppKit and game-like profiles
+under their frozen regression budgets. Independent `single`, exact two-display
+non-mirrored `same-scale`, and `mixed-scale` qualification matrices also pass,
+so all fourteen controlled release pair decisions are qualified. The remaining
 native workload and target gaps stay open.
 
 Nothing in this document is itself a measured result. The numbers live in the
@@ -106,6 +112,7 @@ A budget names one measure. The version-one vocabulary is:
 | `memory_growth` | bytes | Signed change in resident memory across the sampled run, so a decrease is negative. A hard gate: unbounded growth is a defect, not a slow result, and its predicate bounds growth rather than demanding an exact zero. |
 | `latency_p50` | milliseconds | Median of the per-iteration samples for one workload. |
 | `latency_p95` | milliseconds | The 95th percentile of the same samples. Distinct from `capture_to_result_latency_p95`, which is end-to-end from capture to committed result rather than one operation. |
+| `latency_max` | milliseconds | Slowest retained per-iteration sample for one workload. Frozen scenario bounds use it so one outlier cannot hide behind passing percentiles. |
 | `iteration_span_ms` | milliseconds | One clock reading across the whole sampled run, divided by the sample count. It covers everything an iteration does, including the correctness check, so it is an upper bound on the operation rather than a reading of it. Use it where a per-iteration percentile is not expressible; see below. |
 | `peak_allocated_bytes` | bytes | High-water mark of live heap bytes during the sampled run, above what was live before the workload's fixture existed. |
 | `steady_allocated_bytes` | bytes | Live heap bytes when the sampled run finished, above the same baseline, with the fixture still alive. |
@@ -123,20 +130,21 @@ one, `peak_allocated_bytes` counts bytes and `_bytes` separates it from a byte
 *rate* — and omits it when the `Unit` column above is the only answer the measure
 can have. `latency_p95` is milliseconds because every latency here is.
 
-Three vocabulary names differ from the key a profile records the value under,
+Four vocabulary names differ from the key a profile records the value under,
 which is the one place a reader can be caught out:
 
 | Vocabulary name | Recorded as |
 |---|---|
 | `latency_p50` | `latency_p50_ms` |
 | `latency_p95` | `latency_p95_ms` |
+| `latency_max` | `latency_max_ms` |
 | `memory_growth` | `allocated_growth_bytes`, when the measure is live heap rather than resident memory |
 
 A budget's `measure` may name either form; committed profiles use the recorded
-key everywhere except `latency_p50` and `latency_p95`, where they use the
-vocabulary name. Renaming to one convention would move every committed profile,
-the harness that prints them, and the drift test that compares the two, so the
-mapping is documented instead.
+key everywhere except `latency_p50`, `latency_p95`, and `latency_max`, where
+they use the vocabulary name. Renaming to one convention would move every
+committed profile, the harness that prints them, and the drift test that
+compares the two, so the mapping is documented instead.
 
 ### Live heap bytes and resident memory are different measures
 
@@ -460,9 +468,12 @@ the macOS input profile; ADR 0026 now replaces every Windows native gap:
 
 The two historical macOS files retain their old samples, environment metadata,
 and former budget blocks with `normative = false`; they do not gate current
-source. The macOS input requalification retained 300 correct samples with zero
-allocation growth after replacing stale six-event/two-key-pair expectations and
-giving every public-language sample an independent visual precondition.
+source. The macOS input requalification at final candidate `dec43d7` retained
+300 correct samples with maximum allocation growth 64 bytes under the
+4,096-byte hard gate. The harness provisions each C/C++ sample's fresh
+approved fixture outside its timed span and retains controller-owned
+mode-0500 executable/library pins per workload, so one sample cannot change
+the next sample's identity, lifecycle, or visual precondition.
 
 The post-review Windows run is bound to source commit
 `6873d4b05a13fd15cb3ffd961892b1153f606d78`, implementation tree
@@ -502,10 +513,93 @@ Windows. ADR 0026 records the probes and the bounded repairs. Production capture
 and input semantics were not changed to make a benchmark pass.
 
 The Phase 1 profiles historically passed all applicable comparisons at their
-recorded source revisions. Release acceptance still requires rerunning them at
-the eventual final Phase 2 revision; their committed Phase 1 ceilings do not
-move. Current macOS capture and transition profiles also remain required before
-Phase 2 exit.
+recorded source revisions. Release acceptance still requires final-source
+regression reruns; their committed Phase 1 ceilings do not move. The accepted
+Phase 2.2 controlled-stimulus lineage below now supplies the current macOS
+capture, transition, and owning-process-route measurements without treating
+them as comparable to the invalidated input-stimulus lineage. The broader
+production-capture acceptance matrix remains open under `G-013`.
+
+## Phase 2.2 macOS process-directed and controlled-stimulus lineage
+
+The macOS process-directed route changes what the `native-phase2` bench can
+truthfully measure, in two ways. Capture and transition stimulus moves from
+focus-dependent product input to acknowledged fixture-private commands, so the
+`capture` and `transitions` workload sets keep their CLI switches but start a
+new macOS profile lineage: a controlled-stimulus sample is not comparable with
+an input-stimulus sample, and the historical files above stay unchanged. And
+the route itself gains its own workload sets — `process-directed`,
+`process-directed-game-like`, and `process-diagnostics` — covering fixture
+command acknowledgement (`fixture_command_acknowledgement`), acknowledged
+stimulus to a strictly newer frame (`controlled_stimulus_to_frame`), static
+retained-latest and strictly-newer-expiry behavior, discovery/open with
+retained process authority (`discovery_open_retained_authority`), the
+per-event authority/preflight/post path (`event_authority_preflight_post`),
+release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
+overflow around process-directed events.
+
+The original five revision-bound profiles were measured on the approved Apple
+Silicon host at corrected pre-optimization source commit
+`a1eee9c14a0bd9a1ba92a5ceeff53d378c33f426` (implementation tree
+`f4a707501748303adcec577df5f18fcd18f13f45`). The controlled-capture,
+controlled-transition, and process-diagnostic records remain bound to that
+source. Benchmark bodies formerly attributed to `a471c2d` use a visual oracle
+absent from its source tree and remain rejected, non-normative evidence.
+
+The authority-timing-sensitive current profiles are measured at final source
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` (tree
+`109f77df9ef9f40b515245ab60a6036822ee7d78`):
+
+- `phase-2-2-process-directed-appkit-aarch64-apple-darwin`;
+- `phase-2-2-process-directed-game-like-aarch64-apple-darwin`.
+
+AppKit terminal p95 is `56.466375 ms` under the frozen `106.34 ms` ceiling;
+controlled game-like p95 is `56.699333 ms` under `112.18 ms`. Both profiles
+record zero correctness failures, one matching fixture event per terminal
+sequence, unchanged foreground and physical cursor, and zero post-warm-up
+allocation growth in every workload.
+
+The one-read gate is composite rather than a field in either benchmark row.
+Eight revision-bound controller, geometry-source, and native seam tests prove
+terminal route ordering, source-transform reuse without a Rust live query, one
+final ordinary authority call, and zero retained-window authority calls for
+cleanup. The measured rows independently prove latency, fixture observation,
+foreground/cursor stability, correctness, memory, and executable provenance
+without adding a private inventory counter to the timed path.
+
+The read count has a narrow scope. Before optimization, the same terminal
+`RequireUnchanged` pointer profile made four fresh inventory reads — route
+preflight, Rust live geometry, native preparation, and native final authority —
+and measured `212.674625 ms` / `224.368667 ms` p95. The optimized terminal
+one-event `RequireUnchanged` or `UseFrameSnapshot` path with default no-focus
+behavior and no later fallback has a deterministic one-final-read shape. A
+fallback-eligible route makes one early read plus the final read; terminal
+`ReprojectCurrent` makes one live-geometry read plus the final read. These are
+separate two-read paths. `RequireFocused`, cleanup, and multi-unit sequences are
+excluded from the one-read call-count scope.
+
+The committed files under `docs/benchmarks/` carry the exact measurements,
+profile metadata, executable hash, and in-process budgets. Every retained
+process-directed profile binds its result to one full Git commit id, tree id,
+fixture-source SHA-256 digest, and fixture-executable SHA-256 digest. The commit
+and tree in its opening provenance comment must exactly match the values in
+`[profile].notes`; `benchmark_block_drift` verifies those equalities and digest
+shapes for every committed process-directed profile. A newly generated native
+report also carries `benchmark_executable_sha256`, which must be retained when
+that report becomes a current profile. The
+[macOS input verification guide](macos-input-verification.md#current-native-input-performance-evidence)
+provides the runnable benchmark commands, and the tuning Change's
+[observed report](../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md)
+records their outputs and provenance. Game-like samples carry the fixture's
+explicit `mode=game-like renderer=opengl` fact, so they establish no result for
+another renderer, game, application, input stack, or anti-cheat system.
+
+These passing profiles are controlled-fixture regression evidence, not a
+real-time latency promise or evidence of exact-window delivery, application
+consumption, `RequireFocused`, `ReprojectCurrent`, or fallback performance.
+Timing did not replace topology qualification: independent `single`, exact
+two-display non-mirrored `same-scale`, and `mixed-scale` matrices each passed.
+All fourteen controlled pair decisions are release-qualified.
 
 ## Phase 2 Windows ownership prototype
 

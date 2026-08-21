@@ -24,8 +24,8 @@
 
 use mado_pilot_capture::{CaptureFault, CoordinateSupport, PixelFormat, TargetDescription};
 use mado_pilot_core::{
-    CapabilitySupport, GeometryFault, PermissionKind, PixelExtent, Result, Scale, TargetCapability,
-    TargetId, TargetKind, TargetPlacement,
+    CapabilitySupport, GeometryFault, PermissionKind, PermissionState, PixelExtent, Result, Scale,
+    TargetCapability, TargetId, TargetKind, TargetPlacement,
 };
 
 use crate::input::input_capability;
@@ -112,6 +112,7 @@ pub(crate) struct TargetMetadata {
     pub(crate) extent: PixelExtent,
     #[allow(dead_code)] // Read by the authorized-host screenRect acceptance matrix.
     pub(crate) placement: TargetPlacement,
+    pub(crate) process_directed: bool,
 }
 
 impl TargetMetadata {
@@ -119,9 +120,9 @@ impl TargetMetadata {
     ///
     /// The capability states what this Adapter implements and nothing more:
     /// capture through ScreenCaptureKit, every coordinate space the placement
-    /// supports, and `CGEvent` system input under Accessibility. `WindowMessage`
-    /// and `ProcessDirected` are absent because macOS offers no target-directed
-    /// channel, and advertising one would be a claim without an implementation.
+    /// supports, system input through `CGEventPost`, and process-directed input
+    /// only when this inventory snapshot admitted one ordinary window for the
+    /// owning process. Exact-window `WindowMessage` delivery remains absent.
     pub(crate) fn describe(&self, id: TargetId, kind: TargetKind) -> TargetDescription {
         TargetDescription::new(
             id,
@@ -134,8 +135,12 @@ impl TargetMetadata {
             CoordinateSupport::with_target_placement(),
         )
         .with_capability(
-            TargetCapability::new(kind, CapabilitySupport::Supported, input_capability(kind))
-                .with_capture_permission(PermissionKind::ScreenCapture),
+            TargetCapability::new(
+                kind,
+                CapabilitySupport::Supported,
+                input_capability(kind, self.process_directed),
+            )
+            .with_capture_permission(PermissionKind::ScreenCapture),
         )
     }
 }
@@ -157,6 +162,12 @@ pub(crate) struct Candidate {
 /// that could.
 pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
     let inventory = Inventory::acquire(wait).map_err(discovery_error)?;
+    let process_post_available = shim::process_authorization().is_ok_and(|observed| {
+        matches!(
+            observed.post_event_access,
+            PermissionState::Granted | PermissionState::NotGranted
+        )
+    });
     let mut candidates = Vec::with_capacity(inventory.len());
     for index in 0..inventory.len() {
         let Ok(info) = inventory.entry(index) else {
@@ -188,6 +199,7 @@ pub(crate) fn inventory(wait: std::time::Duration) -> Result<Vec<Candidate>> {
                 name,
                 extent,
                 placement,
+                process_directed: info.process_directed() && process_post_available,
             },
         });
     }
@@ -275,8 +287,8 @@ fn discovery_error(status: ShimStatus) -> mado_pilot_core::Error {
 mod tests {
     use mado_pilot_core::{
         CapabilitySupport, CoordinateSpace, GeometryFault, GeometryRevision, IdentityIssuer,
-        InputDelivery, InputOperationKind, PermissionKind, PixelExtent, Point, TargetKind,
-        TransformSnapshot,
+        InputDelivery, InputOperationKind, PermissionKind, PixelExtent, Point, SubmissionEvidence,
+        TargetKind, TransformSnapshot,
     };
 
     use super::{Fingerprint, NativeKey, TargetMetadata, frame_placement, placement_from_points};
@@ -290,15 +302,15 @@ mod tests {
             extent,
             placement: placement_from_points((0.0, 0.0), (1280.0, 800.0), 2.0, extent)
                 .expect("a doubled backing scale covers the frame"),
+            process_directed: true,
         }
     }
 
     #[test]
-    fn a_described_target_offers_capture_and_system_input_but_no_target_directed_route() {
-        // The negative half of this is the one that reverses quietly. macOS offers
-        // no channel an unfocused process may use to address one window or process,
-        // so either target-directed pair would be a capability claim with nothing
-        // behind it and could route a caller into focusing system input.
+    fn a_described_window_advertises_process_scoped_input_as_unqualified() {
+        // Process-directed support remains `Unknown` until its native matrix
+        // passes. Exact-window delivery remains unsupported rather than falling
+        // through to either process or system input.
         let issuer = IdentityIssuer::new();
         let id = issuer
             .issue_target(crate::provider::PROVIDER)
@@ -338,8 +350,7 @@ mod tests {
             assert_eq!(
                 system.permission(),
                 Some(PermissionKind::InputControl),
-                "Accessibility is the authorization input needs, named separately from \
-                 the one capture needs"
+                "post-event access is named separately from the authorization capture needs"
             );
             assert_eq!(
                 system.support(),
@@ -353,15 +364,56 @@ mod tests {
                 "a macOS target claimed exact-window {}",
                 kind.as_str()
             );
+            let process = input.pair(kind, InputDelivery::ProcessDirected);
             assert_eq!(
-                input.pair(kind, InputDelivery::ProcessDirected).support(),
-                CapabilitySupport::Unsupported,
-                "a macOS target claimed process-directed {}",
+                process.support(),
+                CapabilitySupport::Unknown,
+                "process-directed {} remains unqualified",
                 kind.as_str()
+            );
+            assert_eq!(
+                process.permission(),
+                Some(PermissionKind::InputControl),
+                "public Core Graphics post-event access is the process route's authorization"
+            );
+            assert_eq!(process.evidence(), Some(SubmissionEvidence::InvocationOnly));
+            assert!(
+                !process.focus_required(),
+                "process-directed delivery must not require target activation"
             );
             assert!(
                 system.focus_required(),
                 "system delivery reaches whatever is focused, so it needs the target to be"
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_without_current_process_authority_omits_process_directed_input() {
+        let issuer = IdentityIssuer::new();
+        let id = issuer
+            .issue_target(crate::provider::PROVIDER)
+            .expect("issued");
+        let mut metadata = metadata();
+        metadata.process_directed = false;
+
+        let input = metadata
+            .describe(id, TargetKind::Window)
+            .capability()
+            .input();
+
+        for kind in InputOperationKind::ALL {
+            assert_eq!(
+                input.pair(kind, InputDelivery::ProcessDirected).support(),
+                CapabilitySupport::Unsupported,
+                "a window without current process authority advertised process-directed {}",
+                kind.as_str()
+            );
+            assert_eq!(
+                input.pair(kind, InputDelivery::System).support(),
+                CapabilitySupport::Supported,
+                "snapshot admission must not remove system {}",
+                kind.as_str()
             );
         }
     }

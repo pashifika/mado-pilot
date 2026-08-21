@@ -140,6 +140,7 @@ impl Versioned for madopilot_match_options_t {
     // The same boundaries the input side declares: one structure has one layout,
     // whichever direction it travels in. Only the mandatory prefix differs.
     const PREFIXES: &'static [usize] = <Self as Input>::PREFIXES;
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self::cleared(struct_size)
@@ -159,6 +160,10 @@ impl Versioned for madopilot_match_t {
         template_id,
         bounds,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[(
+        covers!(madopilot_match_t, bounds: madopilot_pixel_rect_t),
+        size_of::<madopilot_match_t>(),
+    )];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -184,6 +189,10 @@ impl Versioned for madopilot_result_info_t {
         backend_version,
         searched,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[(
+        covers!(madopilot_result_info_t, searched: madopilot_pixel_rect_t),
+        size_of::<madopilot_result_info_t>(),
+    )];
 
     fn failure(struct_size: u32) -> Self {
         Self {

@@ -1,14 +1,23 @@
 //! Phase 2 native capture, input, lifecycle, and common-flow measurements.
 //!
 //! This benchmark owns a repository fixture process and refuses any other
-//! target. The fixture changes only deterministic colour or size state after a
-//! benchmark key stimulus, so every retained timing sample has an observable
-//! content, identity, or event oracle without capturing unrelated desktop data.
+//! target. macOS capture and transition profiles change deterministic fixture
+//! state only through the bounded private command plane; acknowledgements remain
+//! separate from strictly newer-frame oracles. The interactive `System` input
+//! set and Windows profile lineage retain their existing product-input stimulus.
 //!
 //! Ordinary `cargo test --all-targets` compiles this target and exits before it
 //! opens a native capability. A measurement is explicit because it needs an
 //! interactive, authorized release-target desktop and operator-supplied profile
 //! conditions.
+#[cfg(target_os = "macos")]
+#[allow(dead_code, unreachable_pub, unused_imports)]
+#[path = "support/macos_fixture.rs"]
+mod macos_fixture;
+#[cfg(target_os = "macos")]
+use mado_pilot_platform_macos::fixture_control as macos_fixture_control;
+#[cfg(target_os = "macos")]
+use mado_pilot_platform_macos::fixture_protocol as macos_fixture_protocol;
 
 use mado_pilot_testkit::bench_harness::Accounting;
 
@@ -25,122 +34,195 @@ fn main() {
 
 #[cfg(any(windows, target_os = "macos"))]
 mod native {
+    #[cfg(windows)]
     use std::io::{BufRead, BufReader};
+    #[cfg(target_os = "macos")]
+    use std::ops::Deref;
+    #[cfg(target_os = "macos")]
+    use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
-    use std::process::{Child, Command, Stdio};
+    use std::process::Command;
+    #[cfg(windows)]
+    use std::process::{Child, Stdio};
     use std::rc::Rc;
-    use std::sync::{Mutex, OnceLock, mpsc};
+    use std::sync::Arc;
+    #[cfg(target_os = "macos")]
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    #[cfg(windows)]
+    use std::sync::mpsc;
+    use std::sync::{Mutex, OnceLock};
     use std::thread;
     use std::time::{Duration, Instant};
 
+    const MAX_LANGUAGE_OUTPUT_BYTES: usize = 64 * 1_024;
+
+    #[cfg(target_os = "macos")]
+    static FIXTURE_FINALIZATION_SUCCEEDED: AtomicBool = AtomicBool::new(true);
+    #[cfg(target_os = "macos")]
+    static LANGUAGE_IDENTITY_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+    #[cfg(target_os = "macos")]
+    static LANGUAGE_OUTPUT_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+
+    #[cfg(windows)]
+    use mado_pilot::NativeEngineRequest;
+    #[cfg(target_os = "macos")]
+    use mado_pilot::{ActivityTag, FrameStamp};
     use mado_pilot::{
-        ContentDigest, DeliveryPlan, Engine, FocusPolicy, Frame, FrameRequest, InputDelivery,
-        InputEvent, InputOpenRequest, InputOperationKind, InputRequest, InputRequirement,
-        InputSequence, Key, NativeEngineRequest, OpenRequest, OperationContext, PixelExtent,
+        CleanupState, ContentDigest, DeliveryPlan, Engine, FocusPolicy, Frame, FrameRequest,
+        InputDelivery, InputEvent, InputOpenRequest, InputOperationKind, InputRequest,
+        InputRequirement, InputSequence, Key, OpenRequest, OperationContext, PixelExtent,
         PixelFormat, SequenceOutcome, Session, SessionRequest, Status, TargetId,
     };
+    #[cfg(target_os = "macos")]
+    use mado_pilot_testkit::bench_harness::bounded_child_output_checked;
     use mado_pilot_testkit::bench_harness::{
-        self, Benchmark, Plan, Profile, Sample, Workload, argument, enforce_hard_budgets, measure,
+        self, Benchmark, BoundedChildOutput, Plan, Profile, Sample, Workload, argument,
+        enforce_hard_budgets, measure,
     };
-    #[cfg(windows)]
-    use mado_pilot_testkit::bench_harness::{PrefixedLineMatch, classify_prefixed_line};
+    #[cfg(target_os = "macos")]
+    use mado_pilot_testkit::bench_harness::{
+        PHASE2_2_CAPTURE_LATENCY_BUDGETS, PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS,
+        PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS, PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS,
+        PHASE2_2_PROCESS_HEAP_LIMIT_BYTES, PHASE2_2_TRANSITION_LATENCY_BUDGETS,
+        enforce_latency_budgets,
+    };
 
+    #[cfg(windows)]
+    use mado_pilot_testkit::bench_harness::{
+        PrefixedLineMatch, bounded_child_output, classify_prefixed_line,
+    };
+
+    #[cfg(target_os = "macos")]
+    use mado_pilot_backend_opencv::OpenCvBackend;
+    #[cfg(target_os = "macos")]
+    use mado_pilot_platform_macos::{
+        MacosCaptureProvider, MacosPermissionProbe,
+        fixture_control::{
+            AuthenticatedFixtureProcess, DesktopInputState, ExecutableIdentity,
+            authenticate_fixture_peer, desktop_input_state, executable_identity,
+            process_executable_identity,
+        },
+    };
+    #[cfg(target_os = "macos")]
+    use mado_pilot_runtime::{
+        CaptureProvider, EngineOptions, EngineWiring, IdentityIssuer, InputProvider, Matcher,
+        PackageLoader, PermissionProbe,
+    };
+
+    #[cfg(target_os = "macos")]
+    use crate::macos_fixture_protocol as protocol;
     #[cfg(windows)]
     use mado_pilot::{
         CapabilitySupport, CoordinateSpace, InputAddressScope, InputReceipt, Point, PointerButton,
         SequenceLimits, SubmissionEvidence, TargetKind,
     };
+
     #[cfg(target_os = "macos")]
-    use mado_pilot_platform_macos::fixture_protocol as protocol;
+    use crate::macos_fixture::{
+        CancellationObservation, CommandAcknowledgement, FixtureController, LanguageExecutablePin,
+        LaunchMode, auxiliary_window_setup_is_proven, language_pins_are_unchanged,
+        post_use_identity_gate,
+    };
+    #[cfg(target_os = "macos")]
+    use mado_pilot::{
+        CancellationToken, CapabilitySupport, CoordinateSpace, DiagnosticDrain, DiagnosticKind,
+        DiagnosticLevel, DiagnosticOptions, DiagnosticReader, InputAddressScope, InputFault,
+        InputReceipt, Point, PointerGeometry, SubmissionEvidence, TargetKind,
+    };
     #[cfg(windows)]
     use mado_pilot_platform_windows::fixture_protocol as protocol;
+
+    #[cfg(target_os = "macos")]
+    struct NativeEngine {
+        engine: Engine,
+        provider: Arc<MacosCaptureProvider>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl NativeEngine {
+        fn authenticates_fixture_target(
+            &self,
+            target: TargetId,
+            process: AuthenticatedFixtureProcess,
+        ) -> bool {
+            self.provider
+                .fixture_target_has_authenticated_owner(target, |owner| {
+                    process.matches_live_owner(owner)
+                })
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Deref for NativeEngine {
+        type Target = Engine;
+
+        fn deref(&self) -> &Self::Target {
+            &self.engine
+        }
+    }
+
+    #[cfg(windows)]
+    type NativeEngine = Engine;
+
+    #[cfg(target_os = "macos")]
+    const FIXTURE_COMMAND_BOUND: Duration = Duration::from_millis(500);
 
     const OPERATION_WAIT: Duration = Duration::from_secs(2);
     const CLOSE_WAIT: Duration = Duration::from_secs(5);
     const PRESSURE_WAIT: Duration = Duration::from_millis(100);
     const FIXTURE_WAIT: Duration = Duration::from_secs(10);
+    #[cfg(target_os = "macos")]
+    const LANGUAGE_PROCESS_WAIT: Duration = Duration::from_secs(5);
+    #[cfg(windows)]
+    const LANGUAGE_PROCESS_WAIT: Duration = OPERATION_WAIT;
+
+    #[cfg(windows)]
+    const fn language_event(kind: u32, text_units: u32) -> protocol::EventSummary {
+        protocol::EventSummary { kind, text_units }
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn language_event(kind: u32, text_units: u32) -> protocol::EventSummary {
+        protocol::EventSummary {
+            kind,
+            text_units,
+            correlation: 0,
+        }
+    }
 
     const COMMON_LANGUAGE_EVENTS: [protocol::EventSummary; 3] = [
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_MOVE,
-            text_units: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: expected_key_units(),
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: expected_key_units(),
-        },
+        language_event(protocol::EVENT_POINTER_MOVE, 0),
+        language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
+        language_event(protocol::EVENT_KEY_UP, expected_key_units()),
     ];
 
     #[cfg(windows)]
     const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 15] = [
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_MOVE,
-            text_units: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_PRESS,
-            text_units: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_RELEASE,
-            text_units: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_PRESS,
-            text_units: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_RELEASE,
-            text_units: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_PRESS,
-            text_units: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_RELEASE,
-            text_units: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_POINTER_SCROLL,
-            text_units: 0,
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: expected_key_units(),
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: expected_key_units(),
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: expected_key_units(),
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_DOWN,
-            text_units: expected_key_units(),
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: expected_key_units(),
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_KEY_UP,
-            text_units: expected_key_units(),
-        },
-        protocol::EventSummary {
-            kind: protocol::EVENT_TEXT,
-            text_units: 3,
-        },
+        language_event(protocol::EVENT_POINTER_MOVE, 0),
+        language_event(protocol::EVENT_POINTER_PRESS, 0),
+        language_event(protocol::EVENT_POINTER_RELEASE, 0),
+        language_event(protocol::EVENT_POINTER_PRESS, 0),
+        language_event(protocol::EVENT_POINTER_RELEASE, 0),
+        language_event(protocol::EVENT_POINTER_PRESS, 0),
+        language_event(protocol::EVENT_POINTER_RELEASE, 0),
+        language_event(protocol::EVENT_POINTER_SCROLL, 0),
+        language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
+        language_event(protocol::EVENT_KEY_UP, expected_key_units()),
+        language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
+        language_event(protocol::EVENT_KEY_DOWN, expected_key_units()),
+        language_event(protocol::EVENT_KEY_UP, expected_key_units()),
+        language_event(protocol::EVENT_KEY_UP, expected_key_units()),
+        language_event(protocol::EVENT_TEXT, 3),
     ];
 
     #[cfg(target_os = "macos")]
-    const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 3] = COMMON_LANGUAGE_EVENTS;
+    const CPP_LANGUAGE_EVENTS: [protocol::EventSummary; 5] = [
+        COMMON_LANGUAGE_EVENTS[0],
+        COMMON_LANGUAGE_EVENTS[1],
+        COMMON_LANGUAGE_EVENTS[2],
+        language_event(protocol::EVENT_KEY_DOWN, 1),
+        language_event(protocol::EVENT_KEY_UP, 1),
+    ];
 
     static ARGUMENTS: OnceLock<Arguments> = OnceLock::new();
 
@@ -149,6 +231,12 @@ mod native {
         Capture,
         Transitions,
         Input,
+        #[cfg(target_os = "macos")]
+        ProcessDirected,
+        #[cfg(target_os = "macos")]
+        ProcessDirectedGameLike,
+        #[cfg(target_os = "macos")]
+        ProcessDiagnostics,
     }
 
     impl WorkloadSet {
@@ -157,6 +245,12 @@ mod native {
                 "capture" => Some(Self::Capture),
                 "transitions" => Some(Self::Transitions),
                 "input" => Some(Self::Input),
+                #[cfg(target_os = "macos")]
+                "process-directed" => Some(Self::ProcessDirected),
+                #[cfg(target_os = "macos")]
+                "process-directed-game-like" => Some(Self::ProcessDirectedGameLike),
+                #[cfg(target_os = "macos")]
+                "process-diagnostics" => Some(Self::ProcessDiagnostics),
                 _ => None,
             }
         }
@@ -164,48 +258,180 @@ mod native {
         fn measured_plan(self) -> Plan {
             match self {
                 Self::Capture => Plan::new(20, 200),
-                Self::Transitions => Plan::new(5, 20),
-                Self::Input => Plan::new(5, 50),
+                Self::Transitions | Self::Input => Plan::new(5, 50),
+                #[cfg(target_os = "macos")]
+                Self::ProcessDirected | Self::ProcessDirectedGameLike => Plan::new(5, 50),
+                #[cfg(target_os = "macos")]
+                Self::ProcessDiagnostics => Plan::new(20, 200),
             }
         }
 
         const fn workload(self) -> &'static str {
             match self {
-                Self::Capture => {
-                    "native steady capture, latest acquisition, and explicit CPU mapping"
+                Self::Capture => capture_workload_description(),
+                Self::Transitions => transition_workload_description(),
+
+                Self::Input => input_workload_description(),
+
+                #[cfg(target_os = "macos")]
+                Self::ProcessDirected => {
+                    "macOS AppKit process-directed discovery, posting, cleanup, and close"
                 }
-                Self::Transitions => {
-                    "native open, retained-pressure recovery, resize, and close transitions"
+                #[cfg(target_os = "macos")]
+                Self::ProcessDirectedGameLike => {
+                    "macOS OpenGL game-like process-directed discovery, posting, cleanup, and close"
                 }
-                Self::Input => "native input and the public Rust common flow",
+                #[cfg(target_os = "macos")]
+                Self::ProcessDiagnostics => {
+                    "macOS process-directed posting with diagnostics Off, Normal, Debug, and overflow"
+                }
             }
         }
 
         const fn queue_policy(self) -> &'static str {
             match self {
-                Self::Capture => {
-                    "session latest-wins queue depth 1; adapter finite retained-storage limit"
+                Self::Capture => capture_queue_policy(),
+                Self::Transitions => transition_queue_policy(),
+
+                Self::Input => input_queue_policy(),
+
+                #[cfg(target_os = "macos")]
+                Self::ProcessDirected | Self::ProcessDirectedGameLike => {
+                    "one fixture command outstanding; one process-directed sequence admitted; no fallback"
                 }
-                Self::Transitions => {
-                    "session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
-                }
-                Self::Input => {
-                    "session latest-wins queue depth 1; bounded input sequence executes serially"
+                #[cfg(target_os = "macos")]
+                Self::ProcessDiagnostics => {
+                    "diagnostics Off has no queue; Normal and Debug use capacity 64; overflow uses capacity 4; every sample drains"
                 }
             }
         }
     }
+    #[cfg(target_os = "macos")]
+    const fn input_workload_description() -> &'static str {
+        "native Rust System input plus released C and C++ ProcessDirected common flows"
+    }
 
-    #[derive(Debug)]
+    #[cfg(windows)]
+    const fn input_workload_description() -> &'static str {
+        "native interactive System input and the public Rust common flow"
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn input_queue_policy() -> &'static str {
+        "session latest-wins queue depth 1; Rust System and C/C++ explicit ProcessDirected sequences execute serially with no fallback"
+    }
+
+    #[cfg(windows)]
+    const fn input_queue_policy() -> &'static str {
+        "session latest-wins queue depth 1; bounded input sequence executes serially"
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn capture_workload_description() -> &'static str {
+        "native controlled capture, static retention, latest acquisition, and explicit CPU mapping"
+    }
+
+    #[cfg(windows)]
+    const fn capture_workload_description() -> &'static str {
+        "native steady capture, latest acquisition, and explicit CPU mapping"
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn transition_workload_description() -> &'static str {
+        "native controlled open, retained-pressure recovery, resize, and close transitions"
+    }
+
+    #[cfg(windows)]
+    const fn transition_workload_description() -> &'static str {
+        "native open, retained-pressure recovery, resize, and close transitions"
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn capture_queue_policy() -> &'static str {
+        "fixture command queue depth 1; session latest-wins queue depth 1; adapter finite retained-storage limit"
+    }
+
+    #[cfg(windows)]
+    const fn capture_queue_policy() -> &'static str {
+        "session latest-wins queue depth 1; adapter finite retained-storage limit"
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn transition_queue_policy() -> &'static str {
+        "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
+    }
+
+    #[derive(Clone)]
+    struct ExecutableArtifact {
+        path: PathBuf,
+        bytes: Arc<[u8]>,
+        #[cfg(target_os = "macos")]
+        identity: ExecutableIdentity,
+    }
+
+    impl ExecutableArtifact {
+        fn read(path: PathBuf, label: &str) -> Result<Self, String> {
+            let bytes: Arc<[u8]> = std::fs::read(&path)
+                .map_err(|_| format!("the {label} executable could not be read"))?
+                .into();
+            #[cfg(target_os = "macos")]
+            let identity = {
+                let identity_pin = LanguageExecutablePin::new(&path, Arc::clone(&bytes))?;
+                let identity = executable_identity(identity_pin.path())?;
+                drop(identity_pin);
+                identity
+            };
+            #[cfg(target_os = "macos")]
+            if std::fs::read(&path)
+                .ok()
+                .is_none_or(|observed| observed != bytes.as_ref())
+            {
+                return Err(format!(
+                    "the {label} executable changed while provenance was recorded"
+                ));
+            }
+            Ok(Self {
+                path,
+                bytes,
+                #[cfg(target_os = "macos")]
+                identity,
+            })
+        }
+
+        fn digest(&self) -> ContentDigest {
+            ContentDigest::of(&self.bytes)
+        }
+    }
+
+    #[cfg(windows)]
+    const fn transition_queue_policy() -> &'static str {
+        "session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
+    }
+
     struct Arguments {
         set: WorkloadSet,
         fixture_executable: PathBuf,
+        #[cfg(target_os = "macos")]
+        fixture_executable_bytes: Arc<[u8]>,
+        #[cfg(target_os = "macos")]
+        fixture_executable_identity: ExecutableIdentity,
         #[cfg(windows)]
         ordinary_fixture_executable: Option<PathBuf>,
-        c_executable: Option<PathBuf>,
-        cpp_executable: Option<PathBuf>,
+        c_executable: Option<ExecutableArtifact>,
+        cpp_executable: Option<ExecutableArtifact>,
+        language_library: Option<ExecutableArtifact>,
         hardware: String,
         os_version: String,
+        deployment_target: String,
+        #[cfg(target_os = "macos")]
+        benchmark_executable: PathBuf,
+        #[cfg(target_os = "macos")]
+        benchmark_executable_bytes: Arc<[u8]>,
+        #[cfg(target_os = "macos")]
+        benchmark_process: AuthenticatedFixtureProcess,
+        #[cfg(target_os = "macos")]
+        benchmark_executable_identity: ExecutableIdentity,
+        benchmark_executable_sha256: String,
         notes: String,
     }
 
@@ -218,37 +444,77 @@ mod native {
             };
             let set = required("--workload-set").and_then(|value| {
                 WorkloadSet::parse(&value).ok_or_else(|| {
-                    "--workload-set must be capture, transitions, or input".to_owned()
+                    "--workload-set must be capture, transitions, input, process-directed, \
+                     process-directed-game-like, or process-diagnostics"
+                        .to_owned()
                 })
             })?;
+
             let fixture_executable = PathBuf::from(required("--fixture-executable")?);
             if !fixture_executable.is_file() {
                 return Err("--fixture-executable does not name a built fixture binary".to_owned());
             }
-            let language_executable = |name: &str| -> Result<PathBuf, String> {
+            #[cfg(target_os = "macos")]
+            let fixture_executable_bytes: Arc<[u8]> = std::fs::read(&fixture_executable)
+                .map_err(|_| "the fixture executable could not be read".to_owned())?
+                .into();
+            #[cfg(target_os = "macos")]
+            let fixture_executable_identity = executable_identity(&fixture_executable)?;
+            #[cfg(target_os = "macos")]
+            if std::fs::read(&fixture_executable)
+                .ok()
+                .is_none_or(|bytes| bytes != fixture_executable_bytes.as_ref())
+            {
+                return Err(
+                    "the fixture executable changed while provenance was recorded".to_owned(),
+                );
+            }
+            let language_executable = |name: &str, label: &str| {
                 let executable = PathBuf::from(required(name)?);
-                if executable.is_file() {
-                    Ok(executable)
-                } else {
-                    Err(format!("{name} does not name a built executable"))
+                if !executable.is_file() {
+                    return Err(format!("{name} does not name a built executable"));
                 }
+                ExecutableArtifact::read(executable, label)
             };
             #[cfg(windows)]
             let ordinary_fixture_executable = if set == WorkloadSet::Input {
-                Some(language_executable("--ordinary-fixture-executable")?)
+                let executable = PathBuf::from(required("--ordinary-fixture-executable")?);
+                if !executable.is_file() {
+                    return Err(
+                        "--ordinary-fixture-executable does not name a built executable".to_owned(),
+                    );
+                }
+                Some(executable)
             } else {
                 None
             };
             let (c_executable, cpp_executable) = if set == WorkloadSet::Input {
                 (
-                    Some(language_executable("--c-executable")?),
-                    Some(language_executable("--cpp-executable")?),
+                    Some(language_executable("--c-executable", "C")?),
+                    Some(language_executable("--cpp-executable", "C++")?),
                 )
             } else {
                 (None, None)
             };
+            #[cfg(target_os = "macos")]
+            let language_library = if set == WorkloadSet::Input {
+                Some(language_executable(
+                    "--library",
+                    "MadoPilot dynamic library",
+                )?)
+            } else {
+                None
+            };
+            #[cfg(windows)]
+            let language_library: Option<ExecutableArtifact> = None;
             let hardware = required("--hardware")?;
             let os_version = required("--os-version")?;
+            #[cfg(target_os = "macos")]
+            let deployment_target = required("--deployment-target")?;
+            #[cfg(windows)]
+            let deployment_target = argument(arguments, "--deployment-target")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "unresolved".to_owned());
             let source_revision = required("--source-revision")?;
             let source_tree = required("--source-tree")?;
             let toolchain = required("--toolchain")?;
@@ -256,22 +522,119 @@ mod native {
             let display_topology = required("--display-topology")?;
             let permissions_signing = required("--permissions-signing")?;
             let language_memory = if set == WorkloadSet::Input {
-                "; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup"
+                format!(
+                    "; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while \
+                     peak_resident_bytes is the child process peak reported by the native OS after \
+                     owned-handle cleanup; each C/C++ child has a {} s execution bound, a 1 s \
+                     termination/reap allowance, and a 65536-byte stdout/stderr cap per stream",
+                    LANGUAGE_PROCESS_WAIT.as_secs()
+                )
             } else {
-                ""
+                String::new()
             };
+            #[cfg(target_os = "macos")]
+            let executable_binding = if set == WorkloadSet::Input {
+                "; benchmark and fixture SHA-256 bytes are bound to validity-checked static and live Security code identities; each C/C++ program retains unique executable and library pins inside controller-owned mode-0500 directories, every spawned child must match the executable pin's live code identity, and both directory/file identities and bytes are rechecked after each exit"
+            } else {
+                "; benchmark and fixture SHA-256 bytes are bound to validity-checked static and audit-token-selected live Security code identities"
+            };
+            #[cfg(windows)]
+            let executable_binding = "";
+            #[cfg(windows)]
+            let executable_digest = |path: &Path, label: &str| {
+                std::fs::read(path)
+                    .map(|bytes| ContentDigest::of(&bytes))
+                    .map_err(|_| format!("the {label} executable could not be hashed"))
+            };
+            let benchmark_executable = std::env::current_exe()
+                .map_err(|_| "the benchmark executable path is unavailable".to_owned())?;
+            #[cfg(target_os = "macos")]
+            let benchmark_executable_bytes: Arc<[u8]> = std::fs::read(&benchmark_executable)
+                .map_err(|_| "the benchmark executable could not be hashed".to_owned())?
+                .into();
+            #[cfg(target_os = "macos")]
+            let benchmark_executable_identity = executable_identity(&benchmark_executable)?;
+            #[cfg(target_os = "macos")]
+            if std::fs::read(&benchmark_executable)
+                .ok()
+                .is_none_or(|bytes| bytes != benchmark_executable_bytes.as_ref())
+            {
+                return Err(
+                    "the benchmark executable changed while provenance was recorded".to_owned(),
+                );
+            }
+            #[cfg(target_os = "macos")]
+            let benchmark_process = {
+                let (server, _client) = UnixStream::pair()
+                    .map_err(|_| "the benchmark identity socket could not be created".to_owned())?;
+                let process =
+                    authenticate_fixture_peer(&server, std::process::id(), &benchmark_executable)
+                        .ok_or_else(|| {
+                        "the running benchmark could not be audit-token authenticated".to_owned()
+                    })?;
+                if !process.matches_executable_identity(benchmark_executable_identity) {
+                    return Err(
+                        "the running benchmark image differs from its recorded identity".to_owned(),
+                    );
+                }
+                process
+            };
+            #[cfg(target_os = "macos")]
+            let benchmark_executable_sha256 =
+                ContentDigest::of(&benchmark_executable_bytes).to_string();
+            #[cfg(windows)]
+            let benchmark_executable_sha256 =
+                executable_digest(&benchmark_executable, "benchmark")?.to_string();
+            #[cfg(target_os = "macos")]
+            let fixture_binary = ContentDigest::of(&fixture_executable_bytes);
+            #[cfg(windows)]
+            let fixture_binary = executable_digest(&fixture_executable, "fixture")?;
+            let mut binary_hashes = format!("; fixture executable sha256 {fixture_binary}");
+            #[cfg(windows)]
+            if let Some(executable) = ordinary_fixture_executable.as_deref() {
+                let digest = executable_digest(executable, "ordinary fixture")?;
+                binary_hashes.push_str(&format!("; ordinary fixture executable sha256 {digest}"));
+            }
+            if let Some(executable) = c_executable.as_ref() {
+                binary_hashes.push_str(&format!("; C executable sha256 {}", executable.digest()));
+            }
+            if let Some(executable) = cpp_executable.as_ref() {
+                binary_hashes.push_str(&format!("; C++ executable sha256 {}", executable.digest()));
+            }
+            if let Some(library) = language_library.as_ref() {
+                binary_hashes.push_str(&format!(
+                    "; MadoPilot dynamic library sha256 {}",
+                    library.digest()
+                ));
+            }
             let notes = format!(
-                "source commit {source_revision}, tree {source_tree}; toolchain {toolchain}; GPU/driver {gpu_driver}; display topology {display_topology}; permissions/signing {permissions_signing}; fixture path deliberately omitted{language_memory}"
+                "source commit {source_revision}, tree {source_tree}; toolchain {toolchain}; GPU/driver {gpu_driver}; display topology {display_topology}; permissions/signing {permissions_signing}{binary_hashes}; executable paths deliberately omitted{executable_binding}{language_memory}"
             );
+
             Ok(Self {
                 set,
                 fixture_executable,
+                #[cfg(target_os = "macos")]
+                fixture_executable_bytes,
+                #[cfg(target_os = "macos")]
+                fixture_executable_identity,
                 #[cfg(windows)]
                 ordinary_fixture_executable,
-                hardware,
-                os_version,
                 c_executable,
                 cpp_executable,
+                language_library,
+                hardware,
+                os_version,
+                deployment_target,
+                #[cfg(target_os = "macos")]
+                benchmark_executable,
+                #[cfg(target_os = "macos")]
+                benchmark_executable_bytes,
+                #[cfg(target_os = "macos")]
+                benchmark_process,
+                #[cfg(target_os = "macos")]
+                benchmark_executable_identity,
+                benchmark_executable_sha256,
                 notes,
             })
         }
@@ -280,24 +643,41 @@ mod native {
     #[derive(Debug, Clone, Copy)]
     enum FixtureBehavior {
         Animate,
+        #[cfg(windows)]
         AnimateAndResize,
+        #[cfg(target_os = "macos")]
+        Static,
+        #[cfg(target_os = "macos")]
+        GameLike,
     }
 
     impl FixtureBehavior {
+        #[cfg(windows)]
         const fn argument(self) -> &'static str {
             match self {
                 Self::Animate => "--animate-on-input",
                 Self::AnimateAndResize => "--animate-and-resize-on-input",
             }
         }
+
+        #[cfg(target_os = "macos")]
+        const fn launch_mode(self) -> LaunchMode {
+            match self {
+                Self::Animate => LaunchMode::AnimateOnInput,
+                Self::Static => LaunchMode::ControlledStatic,
+                Self::GameLike => LaunchMode::ControlledGameLike,
+            }
+        }
     }
 
+    #[cfg(windows)]
     struct FixtureProcess {
         child: Child,
         lines: mpsc::Receiver<String>,
         reader: Option<thread::JoinHandle<()>>,
     }
 
+    #[cfg(windows)]
     impl FixtureProcess {
         fn spawn(behavior: FixtureBehavior) -> Self {
             let executable = &arguments().fixture_executable;
@@ -339,8 +719,13 @@ mod native {
             );
             fixture
         }
+
+        fn process_id(&self) -> u32 {
+            self.child.id()
+        }
+
         fn title(&self) -> String {
-            protocol::fixture_title(self.child.id())
+            protocol::fixture_title(self.process_id())
         }
 
         fn next_flow(&self, expected: &[protocol::EventSummary]) -> bool {
@@ -414,7 +799,6 @@ mod native {
                 && self.next_event(protocol::EVENT_KEY_UP, up_units, true)
         }
 
-        #[cfg(windows)]
         fn next_pointer_move(&self) -> bool {
             self.next_event(protocol::EVENT_POINTER_MOVE, 0, false)
         }
@@ -453,10 +837,152 @@ mod native {
         }
     }
 
+    #[cfg(windows)]
     impl Drop for FixtureProcess {
         fn drop(&mut self) {
             let _killed = self.child.kill();
             let _waited = self.child.wait();
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    struct FixtureProcess {
+        controller: Mutex<FixtureController>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl FixtureProcess {
+        fn spawn(behavior: FixtureBehavior) -> Self {
+            let controller = FixtureController::start(
+                &arguments().fixture_executable,
+                Arc::clone(&arguments().fixture_executable_bytes),
+                arguments().fixture_executable_identity,
+                behavior.launch_mode(),
+                FIXTURE_WAIT,
+            )
+            .unwrap_or_else(|error| panic!("the benchmark fixture could not start: {error}"));
+            Self {
+                controller: Mutex::new(controller),
+            }
+        }
+
+        fn process_id(&self) -> u32 {
+            self.with_controller(|controller| controller.process_id())
+        }
+
+        fn authenticated_process(&self) -> Option<AuthenticatedFixtureProcess> {
+            self.with_controller(|controller| controller.authenticated_process())
+        }
+
+        fn title(&self) -> String {
+            protocol::fixture_title(self.process_id())
+        }
+
+        fn launch_mode(&self) -> LaunchMode {
+            self.with_controller(|controller| controller.launch_mode())
+        }
+
+        fn command(
+            &self,
+            kind: protocol::FixtureCommandKind,
+            wait: Duration,
+        ) -> Result<CommandAcknowledgement, String> {
+            self.with_controller(|controller| controller.command(kind, wait))
+        }
+
+        fn begin_flow(&self, event_payload_tag: u64) -> bool {
+            self.with_controller(|controller| {
+                controller.reset_events(event_payload_tag, OPERATION_WAIT)
+            })
+        }
+
+        fn discard_setup_events(&self) -> bool {
+            self.with_controller(|controller| controller.discard_setup_events(OPERATION_WAIT))
+        }
+
+        fn begin_process_flow(&self, event_payload_tag: u64) -> Option<DesktopInputState> {
+            if !self.begin_flow(event_payload_tag) {
+                return None;
+            }
+            desktop_input_state().ok()
+        }
+
+        fn process_environment_unchanged(&self, baseline: DesktopInputState) -> bool {
+            desktop_input_state().is_ok_and(|observed| observed == baseline)
+        }
+
+        fn cancel_after_event(
+            &self,
+            expected: protocol::EventSummary,
+            cancellation: CancellationToken,
+            wait: Duration,
+        ) -> Result<thread::JoinHandle<CancellationObservation>, String> {
+            self.with_controller(|controller| {
+                controller.cancel_after_event(expected, cancellation, wait)
+            })
+        }
+
+        fn next_flow(&self, expected: &[protocol::EventSummary]) -> bool {
+            self.with_controller(|controller| controller.events_are_exact(expected, OPERATION_WAIT))
+        }
+
+        fn finish_flow_after_prefix(
+            &self,
+            expected_remaining: &[protocol::EventSummary],
+            expected_total: &[protocol::EventSummary],
+        ) -> bool {
+            self.with_controller(|controller| {
+                controller.remaining_events_are_exact(
+                    expected_remaining,
+                    expected_total,
+                    OPERATION_WAIT,
+                )
+            })
+        }
+
+        fn close_bounded(&self, wait: Duration) -> bool {
+            self.with_controller(|controller| controller.finish(wait))
+        }
+
+        fn next_key_pair(&self) -> bool {
+            let units = expected_key_units();
+            self.next_key_pair_with_units(units, units)
+        }
+
+        fn next_key_pair_with_units(&self, down_units: u32, up_units: u32) -> bool {
+            self.next_flow(&[
+                protocol::EventSummary {
+                    kind: protocol::EVENT_KEY_DOWN,
+                    text_units: down_units,
+                    correlation: 0,
+                },
+                protocol::EventSummary {
+                    kind: protocol::EVENT_KEY_UP,
+                    text_units: up_units,
+                    correlation: 0,
+                },
+            ])
+        }
+
+        fn with_controller<T>(&self, operation: impl FnOnce(&mut FixtureController) -> T) -> T {
+            let mut controller = self
+                .controller
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            operation(&mut controller)
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for FixtureProcess {
+        fn drop(&mut self) {
+            let controller = self
+                .controller
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !controller.finish(FIXTURE_WAIT) {
+                FIXTURE_FINALIZATION_SUCCEEDED.store(false, Ordering::Release);
+            }
         }
     }
 
@@ -650,14 +1176,18 @@ mod native {
     }
 
     struct Flow {
-        engine: Engine,
+        engine: NativeEngine,
         target: TargetId,
         fixture: Rc<FixtureProcess>,
     }
 
     impl Flow {
         fn from_fixture(fixture: Rc<FixtureProcess>) -> Self {
-            let process_id = fixture.child.id();
+            #[cfg(target_os = "macos")]
+            let process = fixture
+                .authenticated_process()
+                .expect("the benchmark fixture control peer remains authenticated");
+
             let engine = native_engine();
             require_permissions(&engine);
             let selection_deadline = Instant::now() + FIXTURE_WAIT;
@@ -665,7 +1195,14 @@ mod native {
                 let targets = engine
                     .discover(&bounded(OPERATION_WAIT))
                     .expect("the benchmark fixture is discoverable");
-                if let Ok(target) = protocol::select_unique_fixture(&targets, process_id) {
+                #[cfg(windows)]
+                let selected = protocol::select_unique_fixture(&targets, fixture.process_id());
+                #[cfg(target_os = "macos")]
+                let selected =
+                    protocol::select_unique_fixture(&targets, process.process_id(), |target| {
+                        engine.authenticates_fixture_target(target, process)
+                    });
+                if let Ok(target) = selected {
                     break target.id();
                 }
                 assert!(
@@ -710,6 +1247,17 @@ mod native {
             assert!(close(&session), "the fixture confirmation session closes");
         }
 
+        #[cfg(target_os = "macos")]
+        fn open_capture_session(&self) -> Session {
+            self.engine
+                .open_session(
+                    self.target,
+                    &SessionRequest::new().capturing(OpenRequest::new()),
+                    &bounded(OPERATION_WAIT),
+                )
+                .expect("the benchmark fixture opens capture")
+        }
+
         fn open_input_session(&self) -> Session {
             self.engine
                 .open_session(
@@ -743,6 +1291,22 @@ mod native {
         fn from_fixture(fixture: Rc<FixtureProcess>) -> Self {
             let flow = Flow::from_fixture(fixture);
             let session = flow.open_input_session();
+            Self::from_open_session(flow, session)
+        }
+
+        #[cfg(target_os = "macos")]
+        fn from_capture_fixture(fixture: Rc<FixtureProcess>) -> Self {
+            let flow = Flow::from_fixture(fixture);
+            #[cfg(target_os = "macos")]
+            assert!(
+                controlled_command_ok(&flow.fixture, protocol::FixtureCommandKind::YieldForeground,),
+                "the controlled capture fixture yields foreground before sampling"
+            );
+            let session = open_benchmark_capture_session(&flow);
+            Self::from_open_session(flow, session)
+        }
+
+        fn from_open_session(flow: Flow, session: Session) -> Self {
             let last = session
                 .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
                 .expect("the active fixture publishes a seed frame");
@@ -771,9 +1335,96 @@ mod native {
             let _closed = close(&state.session);
         }
     }
+
+    #[cfg(target_os = "macos")]
+    fn language_process_identity_matches(process_id: u32, expected: ExecutableIdentity) -> bool {
+        let observed = process_executable_identity(process_id);
+        let matches = observed == Ok(expected);
+        if !matches && !LANGUAGE_IDENTITY_FAILURE_REPORTED.swap(true, Ordering::AcqRel) {
+            match observed {
+                Ok(_) => eprintln!("language child identity rejected: live identity mismatch"),
+                Err(error) => eprintln!("language child identity rejected: {error}"),
+            }
+        }
+        matches
+    }
+
+    struct LanguageCommand {
+        command: Command,
+        #[cfg(target_os = "macos")]
+        pinned: Arc<LanguageExecutablePin>,
+        #[cfg(target_os = "macos")]
+        expected_identity: ExecutableIdentity,
+        #[cfg(target_os = "macos")]
+        library_pin: Arc<LanguageExecutablePin>,
+        #[cfg(windows)]
+        expected: ExecutableArtifact,
+    }
+
+    impl LanguageCommand {
+        fn command(&mut self) -> &mut Command {
+            &mut self.command
+        }
+
+        fn executable_is_unchanged(&self) -> bool {
+            #[cfg(target_os = "macos")]
+            {
+                language_pins_are_unchanged(&self.pinned, &self.library_pin)
+            }
+            #[cfg(windows)]
+            {
+                std::fs::read(&self.expected.path)
+                    .ok()
+                    .as_deref()
+                    .is_some_and(|bytes| bytes == self.expected.bytes.as_ref())
+            }
+        }
+
+        fn bounded_output(&mut self) -> BoundedChildOutput {
+            #[cfg(target_os = "macos")]
+            {
+                let expected = self.expected_identity;
+                let output = bounded_child_output_checked(
+                    &mut self.command,
+                    LANGUAGE_PROCESS_WAIT,
+                    MAX_LANGUAGE_OUTPUT_BYTES,
+                    move |process_id| language_process_identity_matches(process_id, expected),
+                );
+                if (!output.within_bounds
+                    || output.status.is_none_or(|status| !status.success())
+                    || !output.stderr.is_empty())
+                    && !LANGUAGE_OUTPUT_FAILURE_REPORTED.swap(true, Ordering::AcqRel)
+                {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    eprintln!(
+                        "language child output rejected: within-bounds={} status={:?} \
+                         stdout-bytes={} stderr-bytes={} stderr={stderr:?}",
+                        output.within_bounds,
+                        output.status,
+                        output.stdout.len(),
+                        output.stderr.len(),
+                    );
+                }
+                output
+            }
+            #[cfg(windows)]
+            {
+                bounded_child_output(
+                    &mut self.command,
+                    LANGUAGE_PROCESS_WAIT,
+                    MAX_LANGUAGE_OUTPUT_BYTES,
+                )
+            }
+        }
+    }
+
     #[derive(Clone)]
     struct LanguageProgram {
-        executable: PathBuf,
+        executable: ExecutableArtifact,
+        #[cfg(target_os = "macos")]
+        pinned: Arc<LanguageExecutablePin>,
+        #[cfg(target_os = "macos")]
+        library_pin: Arc<LanguageExecutablePin>,
         #[cfg(windows)]
         library_directory: PathBuf,
         example_name: &'static str,
@@ -782,24 +1433,61 @@ mod native {
 
     impl LanguageProgram {
         fn new(
-            executable: PathBuf,
+            executable: ExecutableArtifact,
+            library: Option<ExecutableArtifact>,
             example_name: &'static str,
             receipt_line: &'static str,
         ) -> Self {
+            #[cfg(target_os = "macos")]
+            let pinned = {
+                let pinned = Arc::new(
+                    LanguageExecutablePin::new(&executable.path, Arc::clone(&executable.bytes))
+                        .unwrap_or_else(|error| panic!("language executable pin failed: {error}")),
+                );
+                assert_eq!(
+                    executable_identity(pinned.path()),
+                    Ok(executable.identity),
+                    "the language pin retains the recorded executable code identity"
+                );
+                pinned
+            };
+            #[cfg(target_os = "macos")]
+            let library_pin = {
+                let library = library
+                    .as_ref()
+                    .expect("the macOS language program carries its dynamic library");
+                let pinned = Arc::new(
+                    LanguageExecutablePin::new(&library.path, Arc::clone(&library.bytes))
+                        .unwrap_or_else(|error| panic!("language library pin failed: {error}")),
+                );
+                assert_eq!(
+                    executable_identity(pinned.path()),
+                    Ok(library.identity),
+                    "the language library pin retains the recorded code identity"
+                );
+                pinned
+            };
             #[cfg(windows)]
             let library_directory = executable
+                .path
                 .parent()
                 .and_then(Path::parent)
                 .filter(|directory| directory.join("madopilot.dll").is_file())
                 .unwrap_or_else(|| {
                     panic!(
                         "{} has no madopilot.dll in its cargo profile directory",
-                        executable.display()
+                        executable.path.display()
                     )
                 })
                 .to_path_buf();
+            #[cfg(windows)]
+            let _unused_library = library;
             Self {
                 executable,
+                #[cfg(target_os = "macos")]
+                pinned,
+                #[cfg(target_os = "macos")]
+                library_pin,
                 #[cfg(windows)]
                 library_directory,
                 example_name,
@@ -807,11 +1495,24 @@ mod native {
             }
         }
 
-        fn command(&self) -> Command {
-            let command = Command::new(&self.executable);
+        fn command(&self) -> LanguageCommand {
+            #[cfg(target_os = "macos")]
+            {
+                let pinned = Arc::clone(&self.pinned);
+                let library_pin = Arc::clone(&self.library_pin);
+                let mut command = Command::new(pinned.path());
+                command.env("DYLD_INSERT_LIBRARIES", library_pin.path());
+                command.env("MADO_PILOT_EXPECT_LIBRARY_IMAGE", library_pin.path());
+                LanguageCommand {
+                    command,
+                    pinned,
+                    expected_identity: self.executable.identity,
+                    library_pin,
+                }
+            }
             #[cfg(windows)]
-            let command = {
-                let mut command = command;
+            {
+                let mut command = Command::new(&self.executable.path);
                 let existing = std::env::var_os("PATH").unwrap_or_default();
                 let mut search = vec![self.library_directory.clone()];
                 search.extend(std::env::split_paths(&existing));
@@ -820,9 +1521,11 @@ mod native {
                     std::env::join_paths(search)
                         .expect("the Windows child library path is representable"),
                 );
-                command
-            };
-            command
+                LanguageCommand {
+                    command,
+                    expected: self.executable.clone(),
+                }
+            }
         }
 
         fn expected_fixture_events(&self) -> &'static [protocol::EventSummary] {
@@ -832,6 +1535,13 @@ mod native {
                 &COMMON_LANGUAGE_EVENTS
             }
         }
+    }
+
+    fn language_common_fixture(
+        program: LanguageProgram,
+        _shared_fixture: Rc<FixtureProcess>,
+    ) -> LanguageProgram {
+        program
     }
 
     pub(super) fn run() {
@@ -847,10 +1557,12 @@ mod native {
                 "{error}\n{}",
                 concat!(
                     "usage: cargo bench --package mado-pilot --bench native-phase2 -- ",
-                    "--workload-set <capture|transitions|input> ",
+                    "--workload-set <capture|transitions|input|process-directed|",
+                    "process-directed-game-like|process-diagnostics> ",
                     "--fixture-executable <path> [--ordinary-fixture-executable <path> ",
-                    "--c-executable <path> --cpp-executable <path>] ",
+                    "--c-executable <path> --cpp-executable <path> --library <path>] ",
                     "--hardware <description> --os-version <description> ",
+                    "--deployment-target <description> ",
                     "--source-revision <commit> --source-tree <tree> ",
                     "--toolchain <versions> --gpu-driver <description> ",
                     "--display-topology <description> ",
@@ -860,117 +1572,96 @@ mod native {
             )
         });
         let set = parsed.set;
-        ARGUMENTS
-            .set(parsed)
-            .expect("benchmark arguments initialize exactly once");
+        assert!(
+            ARGUMENTS.set(parsed).is_ok(),
+            "benchmark arguments initialize exactly once"
+        );
         let plan = set.measured_plan();
         let workloads = workloads(set, plan);
         let args = arguments();
         let (id, fixture) = profile_identity(set);
+        #[cfg(target_os = "macos")]
+        {
+            let benchmark_live_identity_unchanged = args
+                .benchmark_process
+                .matches_executable_identity(args.benchmark_executable_identity);
+            let benchmark_static_identity_unchanged =
+                executable_identity(&args.benchmark_executable)
+                    .is_ok_and(|identity| identity == args.benchmark_executable_identity);
+            let benchmark_bytes_unchanged = std::fs::read(&args.benchmark_executable)
+                .ok()
+                .as_deref()
+                .is_some_and(|bytes| bytes == args.benchmark_executable_bytes.as_ref());
+            let fixture_static_identity_unchanged = executable_identity(&args.fixture_executable)
+                .is_ok_and(|identity| identity == args.fixture_executable_identity);
+            let fixture_bytes_unchanged = std::fs::read(&args.fixture_executable)
+                .ok()
+                .as_deref()
+                .is_some_and(|bytes| bytes == args.fixture_executable_bytes.as_ref());
+            let fixture_finalization_succeeded =
+                FIXTURE_FINALIZATION_SUCCEEDED.load(Ordering::Acquire);
+            assert!(
+                post_use_identity_gate(
+                    true,
+                    &[
+                        benchmark_live_identity_unchanged,
+                        benchmark_static_identity_unchanged,
+                        benchmark_bytes_unchanged,
+                        fixture_static_identity_unchanged,
+                        fixture_bytes_unchanged,
+                        fixture_finalization_succeeded,
+                    ],
+                ),
+                "benchmark provenance gate failed: benchmark-live={benchmark_live_identity_unchanged} \
+                 benchmark-static={benchmark_static_identity_unchanged} \
+                 benchmark-bytes={benchmark_bytes_unchanged} \
+                 fixture-static={fixture_static_identity_unchanged} \
+                 fixture-bytes={fixture_bytes_unchanged} \
+                 fixture-finalization={fixture_finalization_succeeded}"
+            );
+        }
         bench_harness::report(
             &Benchmark {
                 id,
                 workload: set.workload(),
-                phase: "2",
+                phase: benchmark_phase(set),
             },
             &Profile {
-                fixture: fixture.to_owned(),
+                fixture,
                 fixture_sha256: fixture_digest(set).to_string(),
+                benchmark_executable_sha256: Some(args.benchmark_executable_sha256.clone()),
                 hardware: args.hardware.clone(),
                 os_version: args.os_version.clone(),
+                deployment_target: Some(args.deployment_target.clone()),
                 build_profile: format!(
-                    "cargo bench, default features, debug_assertions={}; fixture cargo build --release",
-                    cfg!(debug_assertions)
+                    "cargo bench, default features, debug_assertions={}; {}",
+                    cfg!(debug_assertions),
+                    fixture_build_profile(),
                 ),
-                correctness_oracle: "every retained sample checks frame identity/content, transition state, receipt/event sequence, or complete common-flow outcome as its measurement states",
+                correctness_oracle: "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress",
                 queue_policy: set.queue_policy(),
-                notes: Some(args.notes.clone()),
+                notes: Some(profile_notes(set, &args.notes)),
             },
             plan,
             &workloads,
         );
         enforce_hard_budgets(&workloads);
+        enforce_premeasurement_budgets(set, &workloads);
     }
 
     fn workloads(set: WorkloadSet, plan: Plan) -> Vec<Workload> {
         match set {
-            WorkloadSet::Capture => {
-                vec![
-                    measure(
-                        "stimulus_to_frame",
-                        "one acknowledged deterministic fixture change produces a newer stamped frame carrying the opposite declared fill; intermediate publications are discarded and counted",
-                        plan,
-                        || {
-                            ActiveFlow::from_fixture(Rc::new(FixtureProcess::spawn(
-                                FixtureBehavior::Animate,
-                            )))
-                        },
-                        stimulus_to_frame,
-                    ),
-                    measure(
-                        "latest_acquisition",
-                        "after an exact stimulated publication advances the producer, latest returns a same-stream frame no older than that publication and reports the observed sequence gap",
-                        plan,
-                        || {
-                            ActiveFlow::from_fixture(Rc::new(FixtureProcess::spawn(
-                                FixtureBehavior::Animate,
-                            )))
-                        },
-                        latest_acquisition,
-                    ),
-                    measure(
-                        "cpu_map_bgra8",
-                        "the newer frame maps once to exact-size BGRA8 bytes carrying one declared fixture fill",
-                        plan,
-                        || {
-                            ActiveFlow::from_fixture(Rc::new(FixtureProcess::spawn(
-                                FixtureBehavior::Animate,
-                            )))
-                        },
-                        cpu_map,
-                    ),
-                ]
-            }
-            WorkloadSet::Transitions => {
-                let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::AnimateAndResize));
-                vec![
-                    measure(
-                        "resize_recreation",
-                        "one deterministic fixture resize advances epoch and geometry and returns the resized extent",
-                        plan,
-                        || ActiveFlow::from_fixture(Rc::clone(&fixture)),
-                        resize_recreation,
-                    ),
-                    measure(
-                        "open_first_frame",
-                        "each fresh session returns a correctly identified deterministic first frame and closes",
-                        plan,
-                        || Flow::from_fixture(Rc::clone(&fixture)),
-                        open_first_frame,
-                    ),
-                    measure(
-                        "retained_pressure_resume",
-                        "filling the reported retained limit rejects publication, releasing one slot resumes with an observable sequence gap",
-                        plan,
-                        || (),
-                        retained_pressure_resume,
-                    ),
-                    measure(
-                        "close_drain",
-                        "explicit close reaches the closed state and remains idempotent",
-                        plan,
-                        || Flow::from_fixture(Rc::clone(&fixture)),
-                        close_drain,
-                    ),
-                ]
-            }
+            WorkloadSet::Capture => capture_workloads(plan),
+            WorkloadSet::Transitions => transition_workloads(plan),
+
             WorkloadSet::Input => {
-                let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Animate));
+                let fixture = Rc::new(FixtureProcess::spawn(input_fixture_behavior()));
                 let args = arguments();
                 let c = LanguageProgram::new(
                     args.c_executable
                         .clone()
                         .expect("the input benchmark requires its C executable"),
+                    args.language_library.clone(),
                     c_example_name(),
                     "receipt: outcome 1 submitted 4 fault 0 cleanup 0",
                 );
@@ -978,6 +1669,7 @@ mod native {
                     args.cpp_executable
                         .clone()
                         .expect("the input benchmark requires its C++ executable"),
+                    args.language_library.clone(),
                     cpp_example_name(),
                     cpp_receipt_line(),
                 );
@@ -1005,9 +1697,9 @@ mod native {
                     ),
                     measure(
                         "c_common_flow",
-                        "the released C ABI performs the same bounded fixture flow in a fresh process",
+                        "the released C ABI uses explicit ProcessDirected delivery and checks its invocation-only receipt separately from exact owned-fixture events",
                         plan,
-                        || c.clone(),
+                        || language_common_fixture(c.clone(), Rc::clone(&fixture)),
                         language_common_flow,
                     ),
                     measure(
@@ -1021,7 +1713,7 @@ mod native {
                         "cpp_common_flow",
                         cpp_correctness_oracle(),
                         plan,
-                        || cpp.clone(),
+                        || language_common_fixture(cpp.clone(), Rc::clone(&fixture)),
                         language_common_flow,
                     ),
                 ];
@@ -1062,12 +1754,1126 @@ mod native {
                 );
                 workloads
             }
+            #[cfg(target_os = "macos")]
+            WorkloadSet::ProcessDirected => {
+                process_directed_workloads(plan, FixtureBehavior::Static)
+            }
+            #[cfg(target_os = "macos")]
+            WorkloadSet::ProcessDirectedGameLike => {
+                process_directed_workloads(plan, FixtureBehavior::GameLike)
+            }
+            #[cfg(target_os = "macos")]
+            WorkloadSet::ProcessDiagnostics => process_diagnostic_workloads(plan),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn capture_workloads(plan: Plan) -> Vec<Workload> {
+        vec![
+            measure(
+                "fixture_command_acknowledgement",
+                "one correlated private command acknowledgement has status success and stable window identity; it is neither a product receipt nor a visual outcome",
+                plan,
+                || Rc::new(FixtureProcess::spawn(FixtureBehavior::Static)),
+                fixture_command_acknowledgement,
+            ),
+            measure(
+                "controlled_stimulus_to_frame",
+                "one private command acknowledgement is followed independently by a strictly newer same-stream frame carrying exactly the requested approved fill",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                stimulus_to_frame,
+            ),
+            measure(
+                "static_latest_retained",
+                "without a private transition, latest returns a same-stream frame no older than the retained frame and preserves the declared pixels",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                static_latest_retained,
+            ),
+            measure(
+                "static_newer_repeated_pixels",
+                "without a private transition, a bounded strictly-newer request evaluates the exact later frame and observes the same declared pixels",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                static_newer_repeated_pixels,
+            ),
+            measure(
+                "latest_acquisition",
+                "after an acknowledged controlled publication advances the producer, latest returns a same-stream frame no older than that publication and reports the observed sequence gap",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                latest_acquisition,
+            ),
+            measure(
+                "cpu_map_bgra8",
+                "the independently observed newer frame maps once to exact-size BGRA8 bytes carrying one declared fixture fill",
+                plan,
+                || {
+                    ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Static,
+                    )))
+                },
+                cpu_map,
+            ),
+        ]
+    }
+
+    #[cfg(windows)]
+    fn capture_workloads(plan: Plan) -> Vec<Workload> {
+        vec![
+            measure(
+                "stimulus_to_frame",
+                "one acknowledged deterministic fixture change produces a newer stamped frame carrying the opposite declared fill; intermediate publications are discarded and counted",
+                plan,
+                || {
+                    ActiveFlow::from_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Animate,
+                    )))
+                },
+                stimulus_to_frame,
+            ),
+            measure(
+                "latest_acquisition",
+                "after an exact stimulated publication advances the producer, latest returns a same-stream frame no older than that publication and reports the observed sequence gap",
+                plan,
+                || {
+                    ActiveFlow::from_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Animate,
+                    )))
+                },
+                latest_acquisition,
+            ),
+            measure(
+                "cpu_map_bgra8",
+                "the newer frame maps once to exact-size BGRA8 bytes carrying one declared fixture fill",
+                plan,
+                || {
+                    ActiveFlow::from_fixture(Rc::new(FixtureProcess::spawn(
+                        FixtureBehavior::Animate,
+                    )))
+                },
+                cpu_map,
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    fn transition_workloads(plan: Plan) -> Vec<Workload> {
+        let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Static));
+        vec![
+            measure(
+                "resize_recreation",
+                "one acknowledged private resize advances epoch and geometry and returns the resized extent independently of the acknowledgement",
+                plan,
+                || ActiveFlow::from_capture_fixture(Rc::clone(&fixture)),
+                resize_recreation,
+            ),
+            measure(
+                "open_first_frame",
+                "each fresh capture-only session returns a correctly identified deterministic first frame and closes",
+                plan,
+                || Flow::from_fixture(Rc::clone(&fixture)),
+                open_first_frame,
+            ),
+            measure(
+                "retained_pressure_resume",
+                "controlled publications fill the reported retained limit; releasing one slot resumes with an observable sequence gap",
+                plan,
+                || (),
+                retained_pressure_resume,
+            ),
+            measure(
+                "close_drain",
+                "explicit capture-session close reaches the closed state and remains idempotent",
+                plan,
+                || Flow::from_fixture(Rc::clone(&fixture)),
+                close_drain,
+            ),
+        ]
+    }
+
+    #[cfg(windows)]
+    fn transition_workloads(plan: Plan) -> Vec<Workload> {
+        let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::AnimateAndResize));
+        vec![
+            measure(
+                "resize_recreation",
+                "one deterministic fixture resize advances epoch and geometry and returns the resized extent",
+                plan,
+                || ActiveFlow::from_fixture(Rc::clone(&fixture)),
+                resize_recreation,
+            ),
+            measure(
+                "open_first_frame",
+                "each fresh session returns a correctly identified deterministic first frame and closes",
+                plan,
+                || Flow::from_fixture(Rc::clone(&fixture)),
+                open_first_frame,
+            ),
+            measure(
+                "retained_pressure_resume",
+                "filling the reported retained limit rejects publication, releasing one slot resumes with an observable sequence gap",
+                plan,
+                || (),
+                retained_pressure_resume,
+            ),
+            measure(
+                "close_drain",
+                "explicit close reaches the closed state and remains idempotent",
+                plan,
+                || Flow::from_fixture(Rc::clone(&fixture)),
+                close_drain,
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    const PROCESS_DIAGNOSTIC_CAPACITY: usize = 64;
+    #[cfg(target_os = "macos")]
+    const PROCESS_OVERFLOW_CAPACITY: usize = 4;
+    #[cfg(target_os = "macos")]
+    const PROCESS_OVERFLOW_SUBMISSIONS: usize = 4;
+
+    #[cfg(target_os = "macos")]
+    const POINTER_EVENT: protocol::EventSummary = protocol::EventSummary {
+        kind: protocol::EVENT_POINTER_MOVE,
+        text_units: 0,
+        correlation: 0,
+    };
+
+    #[cfg(target_os = "macos")]
+    static NEXT_PROCESS_CORRELATION: AtomicU32 = AtomicU32::new(1);
+
+    #[cfg(target_os = "macos")]
+    fn process_row_activity(fingerprints: &[u64]) -> (ActivityTag, u32) {
+        let correlation = NEXT_PROCESS_CORRELATION.fetch_add(1, Ordering::Relaxed);
+        assert_ne!(correlation, 0, "benchmark row correlation exhausted");
+        let value = protocol::event_payload_activity_tag(correlation, fingerprints);
+        (
+            ActivityTag::new(value).expect("benchmark row activity tag is nonzero"),
+            correlation,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn correlated_event(
+        event: protocol::EventSummary,
+        correlation: u32,
+    ) -> protocol::EventSummary {
+        protocol::EventSummary {
+            correlation,
+            ..event
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_pointer_fingerprint(x: f64, y: f64) -> u64 {
+        protocol::event_payload_fingerprint(
+            protocol::EVENT_POINTER_MOVE,
+            5,
+            0,
+            0,
+            0,
+            x,
+            y,
+            0,
+            0,
+            0,
+            &[],
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_enter_fingerprints() -> [u64; 2] {
+        [
+            protocol::event_payload_fingerprint(
+                protocol::EVENT_KEY_DOWN,
+                10,
+                0,
+                0,
+                0,
+                0.0,
+                0.0,
+                0,
+                0,
+                0x24,
+                &[],
+            ),
+            protocol::event_payload_fingerprint(
+                protocol::EVENT_KEY_UP,
+                11,
+                0,
+                0,
+                0,
+                0.0,
+                0.0,
+                0,
+                0,
+                0x24,
+                &[],
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ProcessDiagnosticCase {
+        Off,
+        Normal,
+        Debug,
+        Overflow,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl ProcessDiagnosticCase {
+        fn options(self) -> DiagnosticOptions {
+            match self {
+                Self::Off => DiagnosticOptions::off(),
+                Self::Normal => DiagnosticOptions::normal(PROCESS_DIAGNOSTIC_CAPACITY)
+                    .expect("the process diagnostic capacity is valid"),
+                Self::Debug => DiagnosticOptions::debug(PROCESS_DIAGNOSTIC_CAPACITY)
+                    .expect("the process diagnostic capacity is valid"),
+                Self::Overflow => DiagnosticOptions::debug(PROCESS_OVERFLOW_CAPACITY)
+                    .expect("the process overflow capacity is valid"),
+            }
+        }
+
+        const fn submissions(self) -> usize {
+            match self {
+                Self::Overflow => PROCESS_OVERFLOW_SUBMISSIONS,
+                Self::Off | Self::Normal | Self::Debug => 1,
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_directed_workloads(plan: Plan, behavior: FixtureBehavior) -> Vec<Workload> {
+        vec![
+            measure(
+                "discovery_open_retained_authority",
+                "one fresh discovery selects the retained primary target while its process owns an additional ordinary window, exposes every explicit unknown process-scoped invocation-only pair, and opens required input before the shared deadline",
+                plan,
+                move || ProcessDiscoveryFlow::new(behavior),
+                discovery_open_retained_authority,
+            ),
+            measure(
+                "event_authority_preflight_post",
+                "with an additional same-process window present, one pointer event revalidates retained process authority, direct post-event authorization, and production posting; its invocation-only receipt and exact process event match without fallback, then a separately acknowledged controlled transition produces a strictly newer approved frame without attributing that visual change to input",
+                plan,
+                move || ProcessFlow::new(behavior, ProcessDiagnosticCase::Off),
+                event_authority_preflight_post,
+            ),
+            measure(
+                "release_cleanup",
+                "with an additional same-process window present, cancellation begins only after the fixture separately observes one key-down; the production receipt reports one possible effect and one bounded cleanup release, then an independent controlled transition produces a strictly newer approved frame",
+                plan,
+                move || ProcessFlow::new(behavior, ProcessDiagnosticCase::Off),
+                release_cleanup,
+            ),
+            measure(
+                "session_close",
+                "with an additional same-process window present, a fresh process-directed session closes within its own bound and repeated close is idempotent",
+                plan,
+                move || ProcessCloseFlow::new(behavior),
+                process_session_close,
+            ),
+            measure(
+                "fixture_controller_close",
+                "the private fixture controller acknowledges stop, closes its bounded channel, and confirms termination of the same authenticated NSWorkspace application within one shared deadline",
+                plan,
+                move || behavior,
+                fixture_controller_close,
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_diagnostic_workloads(plan: Plan) -> Vec<Workload> {
+        vec![
+            measure(
+                "event_diagnostics_off",
+                "the process-directed invocation-only receipt and separate pointer observation are exact and no diagnostic reader exists",
+                plan,
+                || ProcessFlow::new(FixtureBehavior::Static, ProcessDiagnosticCase::Off),
+                process_diagnostic_event,
+            ),
+            measure(
+                "event_diagnostics_normal",
+                "the invocation diagnostics drain exactly before the independently observed newer frame, which emits no normal records",
+                plan,
+                || ProcessFlow::new(FixtureBehavior::Static, ProcessDiagnosticCase::Normal),
+                process_diagnostic_event,
+            ),
+            measure(
+                "event_diagnostics_debug",
+                "input start, route-attempt, and terminal records drain in order before the newer-frame observation drains its debug pair separately",
+                plan,
+                || ProcessFlow::new(FixtureBehavior::Static, ProcessDiagnosticCase::Debug),
+                process_diagnostic_event,
+            ),
+            measure(
+                "event_diagnostic_overflow",
+                "four receipts and observations remain exact while input and subsequent newer-frame drains separately report every retained record and debug loss",
+                plan,
+                || ProcessFlow::new(FixtureBehavior::Static, ProcessDiagnosticCase::Overflow),
+                process_diagnostic_event,
+            ),
+        ]
+    }
+
+    #[cfg(target_os = "macos")]
+    struct ProcessDiscoveryFlow {
+        engine: NativeEngine,
+        fixture: Rc<FixtureProcess>,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl ProcessDiscoveryFlow {
+        fn new(behavior: FixtureBehavior) -> Self {
+            let engine = native_engine_with_diagnostics(DiagnosticOptions::off());
+            require_permissions(&engine);
+            let fixture = start_inactive_process_fixture(behavior, &engine);
+            let _seed_target = discover_process_target(&engine, &fixture);
+            Self { engine, fixture }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    #[derive(Debug, Clone, Copy)]
+    struct ProcessVisualCursor {
+        stamp: FrameStamp,
+        fill: u32,
+    }
+
+    #[cfg(target_os = "macos")]
+    struct ProcessFlow {
+        visual: Mutex<ProcessVisualCursor>,
+        _engine: NativeEngine,
+        fixture: Rc<FixtureProcess>,
+        session: Session,
+        pointer_request: InputRequest,
+        pointer_fingerprint: u64,
+        reader: Option<DiagnosticReader>,
+        diagnostics: ProcessDiagnosticCase,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl ProcessFlow {
+        fn new(behavior: FixtureBehavior, diagnostics: ProcessDiagnosticCase) -> Self {
+            let engine = native_engine_with_diagnostics(diagnostics.options());
+            require_permissions(&engine);
+            let fixture = start_inactive_process_fixture(behavior, &engine);
+            let reader = engine.take_diagnostic_reader();
+            let target = discover_process_target(&engine, &fixture);
+            let session = engine
+                .open_session(
+                    target,
+                    &process_session_request(true),
+                    &bounded(OPERATION_WAIT),
+                )
+                .expect("the process-directed benchmark session opens");
+            let seed = session
+                .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+                .expect("the process-directed fixture publishes its seed frame");
+            let mapping = seed
+                .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
+                .expect("the process-directed seed frame maps");
+            let fill = benchmark_mapping_fill(&mapping)
+                .expect("the process-directed target is the owned deterministic fixture");
+            let extent = seed.descriptor().extent();
+            let centre = Point::new(
+                CoordinateSpace::CapturePixels,
+                f64::from(extent.width()) / 2.0,
+                f64::from(extent.height()) / 2.0,
+            )
+            .expect("the process-directed benchmark point is finite");
+            let desktop = seed
+                .transform()
+                .convert_point(centre, CoordinateSpace::DesktopLogical)
+                .expect("the process benchmark point resolves to desktop logical");
+            let pointer_fingerprint = process_pointer_fingerprint(desktop.x(), desktop.y());
+            let pointer_request = InputRequest::new(
+                target,
+                InputSequence::new(vec![InputEvent::PointerMove(centre)])
+                    .expect("the process-directed benchmark event is bounded"),
+                DeliveryPlan::require(InputDelivery::ProcessDirected),
+            )
+            .with_focus(FocusPolicy::Preserve)
+            .with_pointer_geometry(PointerGeometry::require_unchanged_since(seed.stamp()));
+            if let Some(reader) = reader.as_ref() {
+                let _ = reader.drain();
+            }
+            Self {
+                visual: Mutex::new(ProcessVisualCursor {
+                    stamp: seed.stamp(),
+                    fill,
+                }),
+                _engine: engine,
+                fixture,
+                session,
+                pointer_request,
+                reader,
+                diagnostics,
+                pointer_fingerprint,
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for ProcessFlow {
+        fn drop(&mut self) {
+            let _closed = close(&self.session);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    struct ProcessCloseFlow {
+        _engine: NativeEngine,
+        fixture: Rc<FixtureProcess>,
+        target: TargetId,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl ProcessCloseFlow {
+        fn new(behavior: FixtureBehavior) -> Self {
+            let engine = native_engine_with_diagnostics(DiagnosticOptions::off());
+            require_permissions(&engine);
+            let fixture = start_inactive_process_fixture(behavior, &engine);
+            let target = discover_process_target(&engine, &fixture);
+            Self {
+                _engine: engine,
+                fixture,
+                target,
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn start_inactive_process_fixture(
+        behavior: FixtureBehavior,
+        engine: &NativeEngine,
+    ) -> Rc<FixtureProcess> {
+        let fixture = Rc::new(FixtureProcess::spawn(behavior));
+        assert_eq!(
+            fixture.launch_mode(),
+            behavior.launch_mode(),
+            "the ready mode/renderer facts match the requested profile"
+        );
+        confirm_auxiliary_window_setup(engine, &fixture);
+        assert!(
+            controlled_command_ok(&fixture, protocol::FixtureCommandKind::YieldForeground),
+            "the process-directed fixture yields foreground before sampling"
+        );
+        fixture
+    }
+
+    #[cfg(target_os = "macos")]
+    fn confirm_auxiliary_window_setup(engine: &NativeEngine, fixture: &FixtureProcess) {
+        let acknowledged =
+            controlled_command_ok(fixture, protocol::FixtureCommandKind::OpenAuxiliary);
+        let authenticated_window_ids = if acknowledged {
+            authenticated_fixture_window_inventory(engine, fixture)
+        } else {
+            Vec::new()
+        };
+        assert!(
+            auxiliary_window_setup_is_proven(acknowledged, &authenticated_window_ids),
+            "the acknowledged auxiliary-window setup is independently visible as two distinct \
+             live authenticated windows in production discovery"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn confirm_transient_auxiliary_window_setup(engine: &NativeEngine, fixture: &FixtureProcess) {
+        confirm_auxiliary_window_setup(engine, fixture);
+        assert!(
+            controlled_command_ok(fixture, protocol::FixtureCommandKind::CloseAuxiliary),
+            "the proven auxiliary window closes before title-selected language sampling"
+        );
+        let deadline = Instant::now() + FIXTURE_WAIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "production discovery did not retire the closed auxiliary window before language \
+                 sampling"
+            );
+            if authenticated_fixture_window_ids(engine, fixture, remaining)
+                .is_some_and(|window_ids| window_ids.len() == 1)
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn authenticated_fixture_window_inventory(
+        engine: &NativeEngine,
+        fixture: &FixtureProcess,
+    ) -> Vec<TargetId> {
+        let deadline = Instant::now() + FIXTURE_WAIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Vec::new();
+            }
+            if let Some(authenticated_window_ids) =
+                authenticated_fixture_window_ids(engine, fixture, remaining)
+                && auxiliary_window_setup_is_proven(true, &authenticated_window_ids)
+            {
+                return authenticated_window_ids;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn authenticated_fixture_window_ids(
+        engine: &NativeEngine,
+        fixture: &FixtureProcess,
+        wait: Duration,
+    ) -> Option<Vec<TargetId>> {
+        let targets = engine.discover(&bounded(wait)).ok()?;
+        let process = fixture.authenticated_process()?;
+        Some(
+            targets
+                .iter()
+                .filter(|target| target.capability().kind() == Some(TargetKind::Window))
+                .filter(|target| engine.authenticates_fixture_target(target.id(), process))
+                .map(mado_pilot::TargetDescription::id)
+                .collect(),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn discover_process_target(engine: &NativeEngine, fixture: &FixtureProcess) -> TargetId {
+        let deadline = Instant::now() + FIXTURE_WAIT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "the process-directed benchmark fixture was not discoverable before its deadline"
+            );
+            let Ok(targets) = engine.discover(&bounded(remaining)) else {
+                thread::sleep(Duration::from_millis(25));
+                continue;
+            };
+            let process = fixture
+                .authenticated_process()
+                .expect("the process fixture control peer remains authenticated");
+            if let Ok(target) =
+                protocol::select_unique_fixture(&targets, process.process_id(), |target| {
+                    engine.authenticates_fixture_target(target, process)
+                })
+            {
+                assert!(
+                    process_pairs_are_explicit(target),
+                    "the process-directed descriptor is explicit and truthful"
+                );
+                return target.id();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "exactly one process-qualified fixture becomes selectable"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_pairs_are_explicit(target: &mado_pilot::TargetDescription) -> bool {
+        target.capability().kind() == Some(TargetKind::Window)
+            && InputOperationKind::ALL.iter().all(|kind| {
+                let pair = target
+                    .capability()
+                    .input()
+                    .pair(*kind, InputDelivery::ProcessDirected);
+                pair.support() == CapabilitySupport::Unknown
+                    && pair.address_scope() == InputAddressScope::OwningProcess
+                    && pair.evidence() == Some(SubmissionEvidence::InvocationOnly)
+                    && !pair.focus_required()
+            })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_session_request(capturing: bool) -> SessionRequest {
+        let request = SessionRequest::new().requesting_input(
+            InputOpenRequest::new()
+                .with_requirement(InputRequirement::Required)
+                .requiring(InputOperationKind::Pointer, InputDelivery::ProcessDirected)
+                .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
+        );
+        if capturing {
+            request.capturing(OpenRequest::new())
+        } else {
+            request
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn discovery_open_retained_authority(flow: &ProcessDiscoveryFlow) -> Sample {
+        let operation = bounded(OPERATION_WAIT);
+        let started = Instant::now();
+        let targets = flow
+            .engine
+            .discover(&operation)
+            .expect("fresh retained-authority discovery completes");
+        let process = flow
+            .fixture
+            .authenticated_process()
+            .expect("the process fixture control peer remains authenticated");
+        let selected = protocol::select_unique_fixture(&targets, process.process_id(), |target| {
+            flow.engine.authenticates_fixture_target(target, process)
+        })
+        .expect("fresh discovery selects exactly the owned fixture");
+        let descriptor_ok = process_pairs_are_explicit(selected);
+        let session = flow
+            .engine
+            .open_session(selected.id(), &process_session_request(false), &operation)
+            .expect("fresh retained authority opens process-directed input");
+        let elapsed = started.elapsed();
+        let correct = descriptor_ok
+            && session.target() == selected.id()
+            && session.accepts_input()
+            && close(&session);
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn observe_controlled_process_visual(flow: &ProcessFlow) -> Option<usize> {
+        let before = *flow
+            .visual
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let expected_fill = alternate_benchmark_fill(before.fill)
+            .expect("the process fixture remains in one approved fill");
+
+        let operation = bounded(OPERATION_WAIT);
+        let mut cursor = before.stamp;
+        let mut observed_frames = 0usize;
+        loop {
+            let Ok(frame) = flow
+                .session
+                .acquire_frame(&FrameRequest::newer_than(cursor), &operation)
+            else {
+                return None;
+            };
+            observed_frames = observed_frames.checked_add(1)?;
+            let Ok(mapping) = frame.map(PixelFormat::Bgra8, &operation) else {
+                return None;
+            };
+            let fill = benchmark_mapping_fill(&mapping)?;
+            let stamp = frame.stamp();
+            if fill == expected_fill {
+                let exact = stamp.stream() == before.stamp.stream()
+                    && stamp.epoch() == before.stamp.epoch()
+                    && stamp.sequence() > before.stamp.sequence()
+                    && mapping.stamp() == stamp;
+                if exact {
+                    *flow
+                        .visual
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        ProcessVisualCursor { stamp, fill };
+                }
+                return exact.then_some(observed_frames);
+            }
+            cursor = stamp;
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn stimulate_and_observe_process_visual(flow: &ProcessFlow) -> Option<usize> {
+        controlled_command_ok(&flow.fixture, protocol::FixtureCommandKind::Transition)
+            .then(|| observe_controlled_process_visual(flow))
+            .flatten()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn event_authority_preflight_post(flow: &ProcessFlow) -> Sample {
+        let (activity_tag, correlation) = process_row_activity(&[flow.pointer_fingerprint]);
+        let environment = flow
+            .fixture
+            .begin_process_flow(activity_tag.get())
+            .expect("the pointer sample starts with empty events and an observed desktop state");
+        let expected = correlated_event(POINTER_EVENT, correlation);
+        let started = Instant::now();
+        let receipt = flow
+            .session
+            .send_input(
+                &flow.pointer_request,
+                &bounded(OPERATION_WAIT).with_activity_tag(activity_tag),
+            )
+            .expect("the process-directed pointer invocation returns a receipt");
+        let elapsed = started.elapsed();
+        let events_ok = flow.fixture.next_flow(&[expected]);
+        let visual_ok = stimulate_and_observe_process_visual(flow).is_some();
+        Sample::unmapped(
+            elapsed,
+            complete_process_receipt(&receipt, flow.session.target(), 1)
+                && events_ok
+                && visual_ok
+                && flow.fixture.process_environment_unchanged(environment),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    fn release_cleanup(flow: &ProcessFlow) -> Sample {
+        let cancellation = CancellationToken::new();
+        let fingerprints = process_enter_fingerprints();
+        let (activity_tag, correlation) = process_row_activity(&fingerprints);
+        let environment = flow
+            .fixture
+            .begin_process_flow(activity_tag.get())
+            .expect("the cleanup sample starts with empty events and an observed desktop state");
+        let pressed = correlated_event(
+            protocol::EventSummary {
+                kind: protocol::EVENT_KEY_DOWN,
+                text_units: expected_key_units(),
+                correlation: 0,
+            },
+            correlation,
+        );
+        let observer = flow
+            .fixture
+            .cancel_after_event(pressed, cancellation.clone(), OPERATION_WAIT)
+            .expect("the cleanup trigger owns the fixture event receiver");
+        let sequence = InputSequence::new(vec![
+            InputEvent::KeyPress(Key::Enter),
+            InputEvent::Delay(Duration::from_secs(5)),
+            InputEvent::KeyRelease(Key::Enter),
+        ])
+        .expect("the cleanup sequence stays within the shared limits");
+        let request = InputRequest::new(
+            flow.session.target(),
+            sequence,
+            DeliveryPlan::require(InputDelivery::ProcessDirected),
+        )
+        .with_focus(FocusPolicy::Preserve);
+        let operation = bounded(OPERATION_WAIT)
+            .with_activity_tag(activity_tag)
+            .with_cancellation(cancellation);
+        let receipt = flow.session.send_input(&request, &operation).ok();
+        let observed = observer
+            .join()
+            .expect("the cleanup observation helper remains contained");
+
+        let elapsed = observed
+            .cancelled_at()
+            .map_or(OPERATION_WAIT, |cancelled| cancelled.elapsed());
+        let expected_release = correlated_event(
+            protocol::EventSummary {
+                kind: protocol::EVENT_KEY_UP,
+                text_units: expected_key_units(),
+                correlation: 0,
+            },
+            correlation,
+        );
+        let release_ok = flow
+            .fixture
+            .finish_flow_after_prefix(&[expected_release], &[pressed, expected_release]);
+        let visual_ok = stimulate_and_observe_process_visual(flow).is_some();
+        let correct = observed.summary() == Some(pressed)
+            && receipt
+                .as_ref()
+                .is_some_and(|receipt| cleanup_receipt_is_exact(receipt, flow.session.target()))
+            && release_ok
+            && visual_ok
+            && flow.fixture.process_environment_unchanged(environment);
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_session_close(flow: &ProcessCloseFlow) -> Sample {
+        let session = flow
+            ._engine
+            .open_session(
+                flow.target,
+                &process_session_request(false),
+                &bounded(OPERATION_WAIT),
+            )
+            .expect("a fresh process-directed close sample opens");
+        let started = Instant::now();
+        let first = session.close(&bounded(Duration::from_secs(1)));
+        let elapsed = started.elapsed();
+        let second = session.close(&bounded(Duration::from_secs(1)));
+        let correct = first.is_ok()
+            && second.is_ok()
+            && session.is_closed()
+            && flow.fixture.process_id() != 0;
+        Sample::unmapped(elapsed, correct)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn fixture_controller_close(behavior: &FixtureBehavior) -> Sample {
+        let fixture = FixtureProcess::spawn(*behavior);
+        let started = Instant::now();
+        let correct = fixture.close_bounded(measured_close_bound());
+        Sample::unmapped(started.elapsed(), correct)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn complete_process_receipt(
+        receipt: &InputReceipt,
+        target: TargetId,
+        submitted: usize,
+    ) -> bool {
+        receipt.target() == target
+            && receipt.outcome() == SequenceOutcome::Complete
+            && receipt.submitted() == submitted
+            && receipt.last_submitted() == submitted.checked_sub(1)
+            && receipt.selected_route() == Some(InputDelivery::ProcessDirected)
+            && receipt.address_scope() == Some(InputAddressScope::OwningProcess)
+            && receipt.evidence() == Some(SubmissionEvidence::InvocationOnly)
+            && receipt.fault().is_none()
+            && receipt.cleanup() == CleanupState::NotNeeded
+            && !receipt.used_fallback()
+            && !receipt.partial_native_effect()
+            && receipt.attempts().len() == 1
+            && receipt.attempts()[0].route() == InputDelivery::ProcessDirected
+    }
+
+    #[cfg(target_os = "macos")]
+    fn cleanup_receipt_is_exact(receipt: &InputReceipt, target: TargetId) -> bool {
+        receipt.target() == target
+            && receipt.outcome() == SequenceOutcome::Partial
+            && receipt.submitted() == 1
+            && receipt.last_submitted() == Some(0)
+            && receipt.selected_route() == Some(InputDelivery::ProcessDirected)
+            && receipt.address_scope() == Some(InputAddressScope::OwningProcess)
+            && receipt.evidence() == Some(SubmissionEvidence::InvocationOnly)
+            && receipt.fault() == Some(InputFault::Cancelled)
+            && receipt.cleanup() == CleanupState::Complete
+            && receipt.possible_native_effect()
+            && !receipt.used_fallback()
+            && receipt.attempts().len() == 1
+            && receipt.attempts()[0].route() == InputDelivery::ProcessDirected
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_diagnostic_event(flow: &ProcessFlow) -> Sample {
+        let submissions = flow.diagnostics.submissions();
+        let fingerprints = vec![flow.pointer_fingerprint; submissions];
+        let (activity_tag, correlation) = process_row_activity(&fingerprints);
+        let environment = flow
+            .fixture
+            .begin_process_flow(activity_tag.get())
+            .expect("the diagnostic sample starts with empty events and an observed desktop state");
+        let mut receipts_correct = true;
+        let mut slowest = Duration::ZERO;
+        for _ in 0..submissions {
+            let started = Instant::now();
+            let receipt = flow
+                .session
+                .send_input(
+                    &flow.pointer_request,
+                    &bounded(OPERATION_WAIT).with_activity_tag(activity_tag),
+                )
+                .expect("the diagnostic process-directed invocation returns a receipt");
+            slowest = slowest.max(started.elapsed());
+            receipts_correct &= complete_process_receipt(&receipt, flow.session.target(), 1);
+        }
+        let expected_events = vec![correlated_event(POINTER_EVENT, correlation); submissions];
+        let events_correct = flow.fixture.next_flow(&expected_events);
+        let diagnostics_correct =
+            process_diagnostics_are_exact(flow.reader.as_ref(), flow.diagnostics, submissions);
+        let observed_frames = stimulate_and_observe_process_visual(flow);
+        let visual_diagnostics_correct = process_visual_diagnostics_are_exact(
+            flow.reader.as_ref(),
+            flow.diagnostics,
+            observed_frames,
+        );
+        Sample::unmapped(
+            slowest,
+            receipts_correct
+                && events_correct
+                && diagnostics_correct
+                && observed_frames.is_some()
+                && visual_diagnostics_correct
+                && flow.fixture.process_environment_unchanged(environment),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    struct ExpectedProcessDrain {
+        records: usize,
+        normal_losses: u64,
+        debug_losses: u64,
+        input_records: usize,
+        attempt_records: usize,
+        started_records: usize,
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_diagnostics_are_exact(
+        reader: Option<&DiagnosticReader>,
+        diagnostics: ProcessDiagnosticCase,
+        submissions: usize,
+    ) -> bool {
+        match diagnostics {
+            ProcessDiagnosticCase::Off => reader.is_none(),
+            ProcessDiagnosticCase::Normal => process_drain_matches(
+                reader,
+                ExpectedProcessDrain {
+                    records: submissions,
+                    normal_losses: 0,
+                    debug_losses: 0,
+                    input_records: submissions,
+                    attempt_records: 0,
+                    started_records: 0,
+                },
+            ),
+            ProcessDiagnosticCase::Debug => process_drain_matches(
+                reader,
+                ExpectedProcessDrain {
+                    records: submissions * 3,
+                    normal_losses: 0,
+                    debug_losses: 0,
+                    input_records: submissions,
+                    attempt_records: submissions,
+                    started_records: submissions,
+                },
+            ),
+            ProcessDiagnosticCase::Overflow => process_drain_matches(
+                reader,
+                ExpectedProcessDrain {
+                    records: PROCESS_OVERFLOW_CAPACITY,
+                    normal_losses: 0,
+                    debug_losses: (submissions * 2) as u64,
+                    input_records: PROCESS_OVERFLOW_CAPACITY,
+                    attempt_records: 0,
+                    started_records: 0,
+                },
+            ),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_drain_matches(
+        reader: Option<&DiagnosticReader>,
+        expected: ExpectedProcessDrain,
+    ) -> bool {
+        let Some(reader) = reader else {
+            return false;
+        };
+        let DiagnosticDrain::Batch(batch) = reader.drain() else {
+            return false;
+        };
+        let retained = batch.records();
+        let sequences_increase = retained
+            .windows(2)
+            .all(|pair| pair[0].sequence() < pair[1].sequence());
+        retained.len() == expected.records
+            && batch.losses().normal() == expected.normal_losses
+            && batch.losses().debug() == expected.debug_losses
+            && retained
+                .iter()
+                .filter(|record| record.kind() == DiagnosticKind::Input)
+                .count()
+                == expected.input_records
+            && retained
+                .iter()
+                .filter(|record| record.kind() == DiagnosticKind::RouteAttempt)
+                .count()
+                == expected.attempt_records
+            && retained
+                .iter()
+                .filter(|record| {
+                    record.kind() == DiagnosticKind::OperationStarted
+                        && record.level() == DiagnosticLevel::Debug
+                })
+                .count()
+                == expected.started_records
+            && sequences_increase
+            && matches!(reader.drain(), DiagnosticDrain::OpenEmpty)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_visual_diagnostics_are_exact(
+        reader: Option<&DiagnosticReader>,
+        diagnostics: ProcessDiagnosticCase,
+        observed_frames: Option<usize>,
+    ) -> bool {
+        let Some(observed_frames) = observed_frames else {
+            if let Some(reader) = reader {
+                let _ = reader.drain();
+            }
+            return false;
+        };
+        match diagnostics {
+            ProcessDiagnosticCase::Off => reader.is_none(),
+            ProcessDiagnosticCase::Normal => {
+                reader.is_some_and(|reader| matches!(reader.drain(), DiagnosticDrain::OpenEmpty))
+            }
+            ProcessDiagnosticCase::Debug => {
+                process_visual_drain_matches(reader, observed_frames, PROCESS_DIAGNOSTIC_CAPACITY)
+            }
+            ProcessDiagnosticCase::Overflow => {
+                process_visual_drain_matches(reader, observed_frames, PROCESS_OVERFLOW_CAPACITY)
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn process_visual_drain_matches(
+        reader: Option<&DiagnosticReader>,
+        observed_frames: usize,
+        capacity: usize,
+    ) -> bool {
+        let Some(generated_records) = observed_frames
+            .checked_mul(2)
+            .filter(|generated| *generated > 0)
+        else {
+            return false;
+        };
+        let Some(reader) = reader else {
+            return false;
+        };
+        let DiagnosticDrain::Batch(batch) = reader.drain() else {
+            return false;
+        };
+        let expected_records = generated_records.min(capacity);
+        let expected_debug_losses =
+            u64::try_from(generated_records - expected_records).unwrap_or(u64::MAX);
+        let retained = batch.records();
+        retained.len() == expected_records
+            && batch.losses().normal() == 0
+            && batch.losses().debug() == expected_debug_losses
+            && retained
+                .windows(2)
+                .all(|pair| pair[0].sequence() < pair[1].sequence())
+            && retained.chunks_exact(2).all(|pair| {
+                pair[0].level() == DiagnosticLevel::Debug
+                    && pair[0].kind() == DiagnosticKind::OperationStarted
+                    && pair[1].level() == DiagnosticLevel::Debug
+                    && pair[1].kind() == DiagnosticKind::Frame
+                    && pair[0].operation() == pair[1].operation()
+            })
+            && matches!(reader.drain(), DiagnosticDrain::OpenEmpty)
     }
 
     struct StimulatedFrame {
         correct: bool,
         mapped: u64,
+        #[cfg(target_os = "macos")]
+        elapsed_after_acknowledgement: Duration,
     }
 
     fn advance_to_stimulated_frame(
@@ -1077,7 +2883,10 @@ mod native {
         let before = state.last.stamp();
         let expected_fill = alternate_benchmark_fill(state.fill)
             .expect("the retained fixture fill is one of the two declared states");
-        let receipt_ok = send_frame_stimulus(&state.session);
+        let stimulus_acknowledged = send_confirmed_stimulus(&active.flow, &state.session);
+        #[cfg(target_os = "macos")]
+        let started_after_acknowledgement = Instant::now();
+
         let operation = bounded(OPERATION_WAIT);
         let mut cursor = before;
         let mut mapped = 0u64;
@@ -1094,28 +2903,50 @@ mod native {
             mapped = mapped.saturating_add(mapping.bytes().len() as u64);
             let fill = benchmark_mapping_fill(&mapping);
             if fill == Some(expected_fill) {
-                let event_ok = active.flow.fixture.next_key_pair();
                 let stamp = frame.stamp();
-                let correct = receipt_ok
-                    && event_ok
+                let correct = stimulus_acknowledged
                     && intermediate_content_ok
                     && stamp.stream() == before.stream()
                     && stamp.epoch() == before.epoch()
                     && stamp.sequence() > before.sequence();
                 state.last = frame;
                 state.fill = expected_fill;
-                return StimulatedFrame { correct, mapped };
+                return StimulatedFrame {
+                    correct,
+                    mapped,
+                    #[cfg(target_os = "macos")]
+                    elapsed_after_acknowledgement: started_after_acknowledgement.elapsed(),
+                };
             }
             intermediate_content_ok &= fill.is_some();
             cursor = frame.stamp();
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn fixture_command_acknowledgement(fixture: &Rc<FixtureProcess>) -> Sample {
+        let acknowledgement = fixture
+            .command(
+                protocol::FixtureCommandKind::Transition,
+                FIXTURE_COMMAND_BOUND,
+            )
+            .expect("the bounded private transition is acknowledged");
+        let result = acknowledgement.result();
+        let correct = result.status == 0
+            && result.before_window != 0
+            && result.before_window == result.after_window;
+        Sample::unmapped(acknowledgement.elapsed(), correct)
+    }
+
     fn stimulus_to_frame(active: &ActiveFlow) -> Sample {
         let mut state = lock_state(active);
         let before = state.last.stamp();
+        #[cfg(windows)]
         let started = Instant::now();
         let stimulated = advance_to_stimulated_frame(active, &mut state);
+        #[cfg(target_os = "macos")]
+        let elapsed = stimulated.elapsed_after_acknowledgement;
+        #[cfg(windows)]
         let elapsed = started.elapsed();
         let after = state.last.stamp();
         let delta = after
@@ -1124,6 +2955,49 @@ mod native {
             .saturating_sub(before.sequence().value());
         Sample::new(elapsed, stimulated.correct, stimulated.mapped)
             .with_stale_work(delta.saturating_sub(1), delta)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn static_latest_retained(active: &ActiveFlow) -> Sample {
+        let state = lock_state(active);
+        let before = state.last.stamp();
+        let started = Instant::now();
+        let latest = state
+            .session
+            .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+            .expect("latest retains the static fixture frame");
+        let elapsed = started.elapsed();
+        let mapping = latest
+            .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
+            .expect("the retained static frame maps");
+        let stamp = latest.stamp();
+        let correct = stamp.stream() == before.stream()
+            && (stamp.epoch() > before.epoch()
+                || (stamp.epoch() == before.epoch() && stamp.sequence() >= before.sequence()))
+            && benchmark_mapping_fill(&mapping) == Some(state.fill);
+        Sample::new(elapsed, correct, mapping.bytes().len() as u64)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn static_newer_repeated_pixels(active: &ActiveFlow) -> Sample {
+        let mut state = lock_state(active);
+        let before = state.last.stamp();
+        let started = Instant::now();
+        let frame = state
+            .session
+            .acquire_frame(&FrameRequest::newer_than(before), &bounded(OPERATION_WAIT))
+            .expect("the static capture publishes a later authoritative frame");
+        let elapsed = started.elapsed();
+        let mapping = frame
+            .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
+            .expect("the later static frame maps");
+        let stamp = frame.stamp();
+        let correct = stamp.stream() == before.stream()
+            && stamp.epoch() == before.epoch()
+            && stamp.sequence() > before.sequence()
+            && benchmark_mapping_fill(&mapping) == Some(state.fill);
+        state.last = frame;
+        Sample::new(elapsed, correct, mapping.bytes().len() as u64)
     }
 
     fn latest_acquisition(active: &ActiveFlow) -> Sample {
@@ -1195,7 +3069,8 @@ mod native {
 
     fn open_first_frame(flow: &Flow) -> Sample {
         let started = Instant::now();
-        let session = flow.open_input_session();
+        let session = open_benchmark_capture_session(flow);
+
         let frame = session
             .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
             .expect("a fresh session publishes its first frame");
@@ -1210,10 +3085,14 @@ mod native {
     }
 
     fn retained_pressure_resume(_: &()) -> Sample {
-        let flow = Flow::from_fixture(Rc::new(FixtureProcess::spawn(
-            FixtureBehavior::AnimateAndResize,
-        )));
-        let session = flow.open_input_session();
+        let flow = Flow::from_fixture(Rc::new(FixtureProcess::spawn(pressure_fixture_behavior())));
+        #[cfg(target_os = "macos")]
+        assert!(
+            controlled_command_ok(&flow.fixture, protocol::FixtureCommandKind::YieldForeground,),
+            "the retained-pressure fixture yields foreground before sampling"
+        );
+        let session = open_benchmark_capture_session(&flow);
+
         let capacity = session
             .description()
             .queue()
@@ -1274,13 +3153,10 @@ mod native {
         let old_extent = state.last.descriptor().extent();
         let started = Instant::now();
         assert!(
-            send_resize_stimulus(&state.session, before.geometry().value()),
-            "resize stimulus returns a complete receipt"
+            send_resize_stimulus(&active.flow, &state.session, before.geometry().value(),),
+            "resize stimulus is acknowledged"
         );
-        assert!(
-            resize_stimulus_observed(&active.flow.fixture),
-            "the fixture observes the resize stimulus"
-        );
+
         let frame = loop {
             let candidate = state
                 .session
@@ -1303,19 +3179,26 @@ mod native {
     }
 
     fn close_drain(flow: &Flow) -> Sample {
-        let session = flow.open_input_session();
+        let session = open_benchmark_capture_session(flow);
+
         let _seed = session
             .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
             .expect("the close sample owns a live session");
         let started = Instant::now();
-        let first = session.close(&bounded(CLOSE_WAIT));
+        let first = session.close(&bounded(measured_close_bound()));
         let elapsed = started.elapsed();
-        let second = session.close(&bounded(CLOSE_WAIT));
+        let second = session.close(&bounded(measured_close_bound()));
+
         let correct = first.is_ok() && second.is_ok() && session.is_closed();
         Sample::unmapped(elapsed, correct)
     }
 
     fn input_request_receipt(active: &ActiveFlow) -> Sample {
+        #[cfg(target_os = "macos")]
+        assert!(
+            active.flow.fixture.begin_flow(0),
+            "the input receipt sample starts with empty fixture event state"
+        );
         let state = lock_state(active);
         let started = Instant::now();
         let receipt_ok = send_key_pair(&state.session);
@@ -1422,10 +3305,15 @@ mod native {
             && !receipt.used_fallback()
             && !receipt.partial_native_effect()
             && receipt.fault().is_none()
-            && receipt.cleanup() == mado_pilot::CleanupState::NotNeeded
+            && receipt.cleanup() == CleanupState::NotNeeded
     }
 
     fn rust_common_flow(flow: &Flow) -> Sample {
+        #[cfg(target_os = "macos")]
+        assert!(
+            flow.fixture.begin_flow(0),
+            "the Rust common flow starts with empty fixture event state"
+        );
         let started = Instant::now();
         let session = flow.open_input_session();
         let frame = session
@@ -1435,28 +3323,35 @@ mod native {
             .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
             .expect("the common flow maps its frame");
         let correct = mapping_is_benchmark_content(&mapping)
-            && send_confirmed_stimulus(flow, &session)
+            && send_key_pair(&session)
+            && flow.fixture.next_key_pair()
             && close(&session);
         let elapsed = started.elapsed();
         Sample::new(elapsed, correct, mapping.bytes().len() as u64)
     }
     fn language_process_load(program: &LanguageProgram) -> Sample {
         let started = Instant::now();
-        let output = program.command().arg("--load-check").output();
+        let mut command = program.command();
+        command.command().arg("--load-check");
+        let output = command.bounded_output();
+        let executable_unchanged = command.executable_is_unchanged();
         let elapsed = started.elapsed();
-        let (correct, peak_resident) = match output {
-            Ok(output) if output.status.success() && output.stderr.is_empty() => {
-                let stdout = String::from_utf8(output.stdout).ok();
-                let peak = stdout.as_deref().and_then(language_peak_resident_bytes);
-                let complete = stdout.as_deref().is_some_and(|stdout| {
-                    language_abi_line_is_present(stdout, program.example_name)
-                        && stdout.lines().any(|line| {
-                            line == format!("{} complete (load check)", program.example_name)
-                        })
-                });
-                (complete && peak.is_some_and(|bytes| bytes > 0), peak)
-            }
-            _ => (false, None),
+        let (correct, peak_resident) = if executable_unchanged
+            && output.within_bounds
+            && output.status.is_some_and(|status| status.success())
+            && output.stderr.is_empty()
+        {
+            let stdout = String::from_utf8(output.stdout).ok();
+            let peak = stdout.as_deref().and_then(language_peak_resident_bytes);
+            let complete = stdout.as_deref().is_some_and(|stdout| {
+                language_abi_line_is_present(stdout, program.example_name)
+                    && stdout.lines().any(|line| {
+                        line == format!("{} complete (load check)", program.example_name)
+                    })
+            });
+            (complete && peak.is_some_and(|bytes| bytes > 0), peak)
+        } else {
+            (false, None)
         };
         let sample = Sample::unmapped(elapsed, correct);
         match peak_resident {
@@ -1465,19 +3360,100 @@ mod native {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn language_common_flow(program: &LanguageProgram) -> Sample {
+        let fixture = Rc::new(FixtureProcess::spawn(FixtureBehavior::Animate));
+        let engine = native_engine();
+        require_permissions(&engine);
+        confirm_transient_auxiliary_window_setup(&engine, &fixture);
+        assert!(
+            fixture.discard_setup_events(),
+            "fixture-only auxiliary-window events are retired before language sampling"
+        );
+        let title = fixture.title();
+        let started = Instant::now();
+        let mut command = program.command();
+        command.command().arg(title);
+        let BoundedChildOutput {
+            status,
+            stdout,
+            stderr,
+            within_bounds,
+        } = command.bounded_output();
+        let executable_unchanged = command.executable_is_unchanged();
+        let process_succeeded = within_bounds && status.is_some_and(|status| status.success());
+        let stderr_empty = within_bounds && stderr.is_empty();
+        let stdout = within_bounds
+            .then(|| String::from_utf8(stdout).ok())
+            .flatten();
+        let receipt_present = stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
+        let fixture_acknowledged = if process_succeeded || receipt_present {
+            fixture.next_flow(program.expected_fixture_events())
+        } else {
+            false
+        };
+        let elapsed = started.elapsed();
+        let mapped = stdout
+            .as_deref()
+            .and_then(language_mapping_bytes)
+            .unwrap_or(0);
+        let peak_resident = stdout.as_deref().and_then(language_peak_resident_bytes);
+        let abi_present = stdout
+            .as_deref()
+            .is_some_and(|stdout| language_abi_line_is_present(stdout, program.example_name));
+        let completion_present = stdout.as_deref().is_some_and(|stdout| {
+            stdout
+                .lines()
+                .any(|line| line == format!("{} complete", program.example_name))
+        });
+        let peak_present = peak_resident.is_some_and(|bytes| bytes > 0);
+        let correct = executable_unchanged
+            && process_succeeded
+            && stderr_empty
+            && fixture_acknowledged
+            && receipt_present
+            && abi_present
+            && completion_present
+            && mapped > 0
+            && peak_present;
+        if !correct {
+            eprintln!(
+                "{} common-flow rejection: executable={executable_unchanged} \
+                 process={process_succeeded} stderr-empty={stderr_empty} \
+                 fixture={fixture_acknowledged} receipt={receipt_present} abi={abi_present} \
+                 complete={completion_present} mapped={} peak={peak_present}",
+                program.example_name,
+                mapped > 0
+            );
+        }
+        let sample = Sample::new(elapsed, correct, mapped);
+        match peak_resident {
+            Some(bytes) => sample.with_peak_resident_bytes(bytes),
+            None => sample,
+        }
+    }
+
+    #[cfg(windows)]
     fn language_common_flow(program: &LanguageProgram) -> Sample {
         let fixture = FixtureProcess::spawn(FixtureBehavior::Animate);
         let title = fixture.title();
         let started = Instant::now();
-        let output = program.command().arg(title).output();
-        let (process_succeeded, stderr_empty, stdout) = match output {
-            Ok(output) => (
-                output.status.success(),
-                output.stderr.is_empty(),
-                String::from_utf8(output.stdout).ok(),
-            ),
-            Err(_) => (false, false, None),
-        };
+        let mut command = program.command();
+        command.command().arg(title);
+        let BoundedChildOutput {
+            status,
+            stdout,
+            stderr,
+            within_bounds,
+        } = command.bounded_output();
+        let executable_unchanged = command.executable_is_unchanged();
+        let process_succeeded = within_bounds && status.is_some_and(|status| status.success());
+        let stderr_empty = within_bounds && stderr.is_empty();
+        let stdout = within_bounds
+            .then(|| String::from_utf8(stdout).ok())
+            .flatten();
         let receipt_present = stdout
             .as_deref()
             .is_some_and(|stdout| stdout.lines().any(|line| line == program.receipt_line));
@@ -1493,7 +3469,8 @@ mod native {
             .and_then(language_mapping_bytes)
             .unwrap_or(0);
         let peak_resident = stdout.as_deref().and_then(language_peak_resident_bytes);
-        let correct = process_succeeded
+        let correct = executable_unchanged
+            && process_succeeded
             && stderr_empty
             && fixture_acknowledged
             && fixture_sequence_complete
@@ -1553,9 +3530,38 @@ mod native {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    #[cfg(target_os = "macos")]
+    fn controlled_command_ok(fixture: &FixtureProcess, kind: protocol::FixtureCommandKind) -> bool {
+        match fixture.command(kind, OPERATION_WAIT) {
+            Ok(acknowledgement) => {
+                let result = acknowledgement.result();
+                let accepted = result.status == 0
+                    && result.before_window != 0
+                    && result.before_window == result.after_window;
+                if !accepted {
+                    eprintln!(
+                        "benchmark fixture command {kind:?} returned an invalid acknowledgement: \
+                         {result:?}"
+                    );
+                }
+                accepted
+            }
+            Err(error) => {
+                eprintln!("benchmark fixture command {kind:?} failed: {error}");
+                false
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn send_confirmed_stimulus(flow: &Flow, _session: &Session) -> bool {
+        controlled_command_ok(&flow.fixture, protocol::FixtureCommandKind::Transition)
+    }
+
+    #[cfg(windows)]
     fn send_confirmed_stimulus(flow: &Flow, session: &Session) -> bool {
         assert!(
-            send_frame_stimulus(session),
+            send_key_pair(session),
             "the frame stimulus returns a complete receipt"
         );
         assert!(
@@ -1566,26 +3572,12 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn send_frame_stimulus(session: &Session) -> bool {
-        let sequence =
-            InputSequence::new(vec![InputEvent::Text("b".to_owned())]).expect("text is valid");
-        send_sequence(session, sequence, 1)
+    fn send_resize_stimulus(flow: &Flow, _session: &Session, _geometry: u64) -> bool {
+        controlled_command_ok(&flow.fixture, protocol::FixtureCommandKind::Resize)
     }
 
     #[cfg(windows)]
-    fn send_frame_stimulus(session: &Session) -> bool {
-        send_key_pair(session)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn send_resize_stimulus(session: &Session, _geometry: u64) -> bool {
-        let sequence =
-            InputSequence::new(vec![InputEvent::Text("bb".to_owned())]).expect("text is valid");
-        send_sequence(session, sequence, 1)
-    }
-
-    #[cfg(windows)]
-    fn send_resize_stimulus(session: &Session, geometry: u64) -> bool {
+    fn send_resize_stimulus(_flow: &Flow, session: &Session, geometry: u64) -> bool {
         let coordinate = if geometry.is_multiple_of(2) {
             24.0
         } else {
@@ -1595,17 +3587,38 @@ mod native {
             .expect("the resize stimulus point is finite");
         let sequence =
             InputSequence::new(vec![InputEvent::PointerMove(point)]).expect("the move is valid");
-        send_sequence(session, sequence, 1)
+        let sent = send_sequence(session, sequence, 1);
+        sent && _flow.fixture.next_pointer_move()
     }
 
     #[cfg(target_os = "macos")]
-    fn resize_stimulus_observed(fixture: &FixtureProcess) -> bool {
-        fixture.next_key_pair_with_units(2, 1)
+    fn open_benchmark_capture_session(flow: &Flow) -> Session {
+        flow.open_capture_session()
     }
 
     #[cfg(windows)]
-    fn resize_stimulus_observed(fixture: &FixtureProcess) -> bool {
-        fixture.next_pointer_move()
+    fn open_benchmark_capture_session(flow: &Flow) -> Session {
+        flow.open_input_session()
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn input_fixture_behavior() -> FixtureBehavior {
+        FixtureBehavior::Static
+    }
+
+    #[cfg(windows)]
+    const fn input_fixture_behavior() -> FixtureBehavior {
+        FixtureBehavior::Animate
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn pressure_fixture_behavior() -> FixtureBehavior {
+        FixtureBehavior::Static
+    }
+
+    #[cfg(windows)]
+    const fn pressure_fixture_behavior() -> FixtureBehavior {
+        FixtureBehavior::AnimateAndResize
     }
 
     fn send_key_pair(session: &Session) -> bool {
@@ -1632,7 +3645,7 @@ mod native {
         let complete = receipt.outcome() == SequenceOutcome::Complete
             && receipt.submitted() == submitted
             && receipt.fault().is_none()
-            && receipt.cleanup() == mado_pilot::CleanupState::NotNeeded;
+            && receipt.cleanup() == CleanupState::NotNeeded;
         if !complete {
             eprintln!("benchmark stimulus receipt: {receipt:?}");
         }
@@ -1679,6 +3692,107 @@ mod native {
         } else {
             None
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn enforce_premeasurement_budgets(set: WorkloadSet, workloads: &[Workload]) {
+        let latency = match set {
+            WorkloadSet::Capture => PHASE2_2_CAPTURE_LATENCY_BUDGETS.as_slice(),
+            WorkloadSet::Transitions => PHASE2_2_TRANSITION_LATENCY_BUDGETS.as_slice(),
+            WorkloadSet::Input => &[],
+            WorkloadSet::ProcessDirected => PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS.as_slice(),
+            WorkloadSet::ProcessDirectedGameLike => {
+                PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS.as_slice()
+            }
+            WorkloadSet::ProcessDiagnostics => {
+                PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS.as_slice()
+            }
+        };
+        enforce_latency_budgets(workloads, latency);
+        if matches!(
+            set,
+            WorkloadSet::ProcessDirected
+                | WorkloadSet::ProcessDirectedGameLike
+                | WorkloadSet::ProcessDiagnostics
+        ) {
+            for workload in workloads {
+                assert!(
+                    workload.peak_allocated_bytes() <= PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
+                    "{} exceeded the frozen 16 MiB process-directed live Rust heap ceiling: {} bytes",
+                    workload.name(),
+                    workload.peak_allocated_bytes(),
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn enforce_premeasurement_budgets(_set: WorkloadSet, _workloads: &[Workload]) {}
+
+    #[cfg(target_os = "macos")]
+    const fn benchmark_phase(set: WorkloadSet) -> &'static str {
+        match set {
+            WorkloadSet::Input => "2",
+            WorkloadSet::Capture
+            | WorkloadSet::Transitions
+            | WorkloadSet::ProcessDirected
+            | WorkloadSet::ProcessDirectedGameLike
+            | WorkloadSet::ProcessDiagnostics => "2.2",
+        }
+    }
+
+    #[cfg(windows)]
+    const fn benchmark_phase(_set: WorkloadSet) -> &'static str {
+        "2"
+    }
+
+    #[cfg(target_os = "macos")]
+    fn profile_notes(set: WorkloadSet, notes: &str) -> String {
+        let lineage = match set {
+            WorkloadSet::Capture => {
+                "lineage=controlled-private-command-capture; mode=default renderer=appkit-background"
+            }
+            WorkloadSet::Transitions => {
+                "lineage=controlled-private-command-transitions; mode=default renderer=appkit-background"
+            }
+            WorkloadSet::Input => {
+                "lineage=rust-System-unchanged-cross-language-ProcessDirected-cutover; mode=default renderer=appkit-background"
+            }
+            WorkloadSet::ProcessDirected => {
+                "lineage=process-directed-appkit; mode=default renderer=appkit-background stimulus=private-control"
+            }
+            WorkloadSet::ProcessDirectedGameLike => {
+                "lineage=process-directed-game-like; mode=game-like renderer=opengl stimulus=private-control"
+            }
+            WorkloadSet::ProcessDiagnostics => {
+                "lineage=process-directed-diagnostics; mode=default renderer=appkit-background stimulus=private-control"
+            }
+        };
+        format!("{notes}; {lineage}")
+    }
+
+    #[cfg(windows)]
+    fn profile_notes(_set: WorkloadSet, notes: &str) -> String {
+        notes.to_owned()
+    }
+
+    #[cfg(target_os = "macos")]
+    const fn fixture_build_profile() -> &'static str {
+        "fixture cargo build --release --features private-fixture; signed .app; controlled NSWorkspace new-instance launch"
+    }
+
+    #[cfg(windows)]
+    const fn fixture_build_profile() -> &'static str {
+        "fixture cargo build --release"
+    }
+    #[cfg(target_os = "macos")]
+    const fn measured_close_bound() -> Duration {
+        Duration::from_secs(1)
+    }
+
+    #[cfg(windows)]
+    const fn measured_close_bound() -> Duration {
+        CLOSE_WAIT
     }
 
     fn mapping_matches_fills(
@@ -1771,13 +3885,33 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn native_engine() -> Engine {
-        mado_pilot::macos_engine(NativeEngineRequest::new())
-            .expect("the macOS benchmark engine builds")
+    fn native_engine() -> NativeEngine {
+        native_engine_with_diagnostics(DiagnosticOptions::off())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn native_engine_with_diagnostics(diagnostics: DiagnosticOptions) -> NativeEngine {
+        let backend = OpenCvBackend::new().expect("the required OpenCV backend initializes");
+        let issuer = Arc::new(IdentityIssuer::new());
+        let engine_id = issuer.engine();
+        let provider = Arc::new(MacosCaptureProvider::new(issuer));
+        let engine = Engine::new_with_options(
+            EngineWiring {
+                engine: engine_id,
+                capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
+                matcher: Matcher::new(Arc::new(backend)),
+                loader: PackageLoader::new(),
+                input: Some(Arc::clone(&provider) as Arc<dyn InputProvider>),
+                permission: Some(Arc::new(MacosPermissionProbe::new()) as Arc<dyn PermissionProbe>),
+            },
+            EngineOptions::new().with_diagnostics(diagnostics),
+        )
+        .expect("the macOS benchmark engine builds");
+        NativeEngine { engine, provider }
     }
 
     #[cfg(windows)]
-    fn native_engine() -> Engine {
+    fn native_engine() -> NativeEngine {
         mado_pilot::windows_engine(NativeEngineRequest::new())
             .expect("the Windows benchmark engine builds")
     }
@@ -1803,7 +3937,7 @@ mod native {
 
     #[cfg(target_os = "macos")]
     const fn cpp_correctness_oracle() -> &'static str {
-        "the released C++ wrapper performs the same bounded fixture flow in a fresh process"
+        "the released C++ wrapper uses explicit ProcessDirected delivery and checks its invocation-only receipt separately from exact owned-fixture events"
     }
 
     #[cfg(windows)]
@@ -1813,7 +3947,7 @@ mod native {
 
     #[cfg(target_os = "macos")]
     const fn cpp_receipt_line() -> &'static str {
-        "receipt: outcome 1 submitted 4 evidence 1 cleanup 0"
+        "receipt: outcome 1 submitted 5 evidence 1 cleanup 0"
     }
 
     #[cfg(windows)]
@@ -1822,7 +3956,7 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn require_permissions(engine: &Engine) {
+    fn require_permissions(engine: &NativeEngine) {
         let report = engine
             .permissions(&bounded(OPERATION_WAIT))
             .expect("the macOS benchmark reads permissions without prompting");
@@ -1835,7 +3969,7 @@ mod native {
     }
 
     #[cfg(windows)]
-    fn require_permissions(_engine: &Engine) {}
+    fn require_permissions(_engine: &NativeEngine) {}
 
     #[cfg(target_os = "macos")]
     const fn input_delivery() -> InputDelivery {
@@ -1859,7 +3993,7 @@ mod native {
 
     #[cfg(target_os = "macos")]
     const fn expected_key_units() -> u32 {
-        1
+        0
     }
 
     #[cfg(windows)]
@@ -1875,11 +4009,6 @@ mod native {
     #[cfg(windows)]
     const fn benchmark_fill_rgb() -> u32 {
         protocol::BENCHMARK_FILL_RGB
-    }
-
-    #[cfg(target_os = "macos")]
-    fn ready_line_is_approved(line: &str, process_id: u32) -> bool {
-        protocol::fixture_ready_context_is_approved(line, process_id)
     }
 
     #[cfg(windows)]
@@ -1905,20 +4034,33 @@ mod native {
     }
 
     #[cfg(target_os = "macos")]
-    fn profile_identity(set: WorkloadSet) -> (&'static str, &'static str) {
+    fn profile_identity(set: WorkloadSet) -> (&'static str, String) {
         let id = match set {
-            WorkloadSet::Capture => "phase-2-native-capture-aarch64-apple-darwin",
-            WorkloadSet::Transitions => "phase-2-native-transitions-aarch64-apple-darwin",
+            WorkloadSet::Capture => "phase-2-2-controlled-capture-aarch64-apple-darwin",
+            WorkloadSet::Transitions => "phase-2-2-controlled-transitions-aarch64-apple-darwin",
             WorkloadSet::Input => "phase-2-native-input-aarch64-apple-darwin",
+            WorkloadSet::ProcessDirected => {
+                "phase-2-2-process-directed-appkit-aarch64-apple-darwin"
+            }
+            WorkloadSet::ProcessDirectedGameLike => {
+                "phase-2-2-process-directed-game-like-aarch64-apple-darwin"
+            }
+            WorkloadSet::ProcessDiagnostics => {
+                "phase-2-2-process-directed-diagnostics-aarch64-apple-darwin"
+            }
         };
         (
             id,
-            "crates/platform/macos fixture Rust, protocol, header, and Objective-C sources",
+            format!(
+                "separately linked private macOS fixture Rust, protocol-v{}, header, \
+                 Objective-C, and renderer sources",
+                protocol::FIXTURE_CONTROL_VERSION
+            ),
         )
     }
 
     #[cfg(windows)]
-    fn profile_identity(set: WorkloadSet) -> (&'static str, &'static str) {
+    fn profile_identity(set: WorkloadSet) -> (&'static str, String) {
         let id = match set {
             WorkloadSet::Capture => "phase-2-native-capture-x86_64-pc-windows-msvc",
             WorkloadSet::Transitions => "phase-2-native-transitions-x86_64-pc-windows-msvc",
@@ -1929,6 +4071,6 @@ mod native {
         } else {
             "crates/platform/windows fixture Rust and protocol sources"
         };
-        (id, fixture)
+        (id, fixture.to_owned())
     }
 }

@@ -27,14 +27,22 @@ sample changed that state, so later samples could fail before submitting input.
 The C and C++ examples also print different reviewed receipt summaries: the C
 example names `fault`, while the C++ wrapper names `evidence`.
 
-A fresh signed fixture run proved the current behavior directly. Each language
-example reported four submitted events, found the expected condition in a newer
-frame, emitted one pointer movement and one key-down/key-up pair at the fixture,
-and completed. The post-review benchmark refresh retained 50 correct samples
-for each of its six workloads at source
+A fresh signed fixture run proved the behavior directly. Each language example
+reported four submitted events, found the expected condition in a newer frame,
+emitted one pointer movement and one key-down/key-up pair at the fixture, and
+completed. The original accepted profile retained 50 correct samples for each
+of its six workloads at source
 `c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848`, tree
-`f4ba20b5797e03cbea3582a750dd3f828e3d8fe4`. The tracked profile is
-[`phase-2-native-input-aarch64-apple-darwin.toml`](../benchmarks/phase-2-native-input-aarch64-apple-darwin.toml).
+`f4ba20b5797e03cbea3582a750dd3f828e3d8fe4`.
+
+The 2026-08-21 requalification reran the full profile after protocol-v11,
+validity-first executable/library binding, and bounded child-containment changes.
+Measured product source `dec43d7b6c91d415f2028e188e89fa289cb9c1c9`,
+tree `109f77df9ef9f40b515245ab60a6036822ee7d78`, retained all 300
+samples with zero correctness failures and maximum allocation growth 64 bytes.
+The tracked current profile is
+[`phase-2-native-input-aarch64-apple-darwin.toml`](../benchmarks/phase-2-native-input-aarch64-apple-darwin.toml);
+the `c4bc8135` result remains historical evidence for its named source.
 
 ## Decision
 
@@ -140,27 +148,32 @@ Phase 1 reruns remain open.
 
 ## Verification
 
-The accepted profile came from the release fixture and the full 5-warmup,
-50-sample input workload set:
+The current accepted profile came from the release fixture and the full
+5-warmup, 50-sample input workload set. The command names the workspace-enforced
+macOS deployment floor explicitly. The historical `c4bc8135` run used the same
+floor; the current command binds the tracked protocol-v11 profile to
+`dec43d7`.
 
 ```sh
 cargo build --locked --release -p mado-pilot-platform-macos \
-  --bin mado-pilot-macos-input-fixture
+  --features private-fixture --bin mado-pilot-macos-input-fixture
 cargo run --locked -p mado-pilot-capi --example c-abi-check -- \
-  --label "Apple M1 Pro macOS 26.5.2 (25F84)"
+  --label "macOS 26.5.2 arm64 candidate dec43d7"
 cargo bench --locked -p mado-pilot --bench native-phase2 -- \
   --workload-set input \
   --fixture-executable "$PWD/target/mado-pilot-fixtures/MadoPilotInputFixture.app/Contents/MacOS/mado-pilot-macos-input-fixture" \
   --c-executable "$PWD/target/debug/c-abi-check/macos-native-input" \
   --cpp-executable "$PWD/target/debug/c-abi-check/macos-native-input-cpp" \
-  --source-revision c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848 \
-  --source-tree f4ba20b5797e03cbea3582a750dd3f828e3d8fe4 \
-  --toolchain "rustc 1.97.1 (8bab26f4f 2026-07-14); C/C++ Apple clang 21.0.0" \
+  --library "$PWD/target/debug/deps/libmadopilot.dylib" \
+  --source-revision dec43d7b6c91d415f2028e188e89fa289cb9c1c9 \
+  --source-tree 109f77df9ef9f40b515245ab60a6036822ee7d78 \
+  --toolchain "rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5" \
   --gpu-driver "Apple integrated GPU; system driver stack" \
   --hardware "Apple M1 Pro, 10 cores, 32 GiB" \
   --os-version "macOS 26.5.2 (25F84)" \
-  --display-topology "one built-in 3024x1964 Retina display at scale 2" \
-  --permissions-signing "Screen Recording granted; Accessibility granted; generated fixture bundle ad-hoc signed with approved identifier"
+  --deployment-target "macOS 26.5.2" \
+  --display-topology "three online non-mirrored displays; signed-origin display 3840x2160 1x; main display 2560x1440 logical / 5120x2880 backing 2x; built-in display 1512x982 logical / 3024x1964 backing 2x; mixed-scale validator authoritative" \
+  --permissions-signing "Screen Recording granted; event-post access granted; target and foreground bundles structurally ad-hoc signed"
 ```
 
 Before the benchmark command, the release fixture was copied into the documented

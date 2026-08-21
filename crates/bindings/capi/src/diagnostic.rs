@@ -8,18 +8,17 @@ use std::mem::size_of;
 
 use mado_pilot::{
     DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticOperationKind,
-    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord, InputOperationKind,
-    Lifecycle, SearchDiagnosticOutcome,
+    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord, Lifecycle,
+    SearchDiagnosticOutcome,
 };
 
-use crate::boundary::{self, Out, Versioned, inputs, prefixes};
+use crate::boundary::{self, Out, Versioned, covers, inputs, prefixes};
 use crate::engine::{EngineHandle, madopilot_engine_t};
 use crate::error::Fault;
 use crate::handle::opaque;
 use crate::input::{
     cleanup_state_code, input_address_scope_code, input_delivery_code, input_fault_code,
-    input_operation_code, permission_kind_code, permission_state_code, sequence_outcome_code,
-    submission_evidence_code,
+    permission_kind_code, permission_state_code, sequence_outcome_code, submission_evidence_code,
 };
 use crate::status::{
     MADOPILOT_ERROR_CATEGORY_ENGINE, MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK,
@@ -87,6 +86,7 @@ impl Versioned for madopilot_diagnostic_batch_info_t {
         discarded_normal,
         discarded_debug,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -140,6 +140,10 @@ impl Versioned for madopilot_diagnostic_record_t {
         cleanup_released,
         cleanup_owed,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[(
+        covers!(madopilot_diagnostic_record_t, reserved: u32),
+        std::mem::offset_of!(madopilot_diagnostic_record_t, requested),
+    )];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -494,6 +498,7 @@ fn record(
             value.permission_kind = permission_kind_code(payload.permission);
             if let Some(state) = payload.state {
                 value.permission_state = permission_state_code(state);
+
                 value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE;
             }
             if let Some(status) = payload.fault {
@@ -559,6 +564,7 @@ const fn diagnostic_operation_code(
         DiagnosticOperationKind::Search => MADOPILOT_DIAGNOSTIC_OPERATION_SEARCH,
         DiagnosticOperationKind::InputSubmission => MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_SUBMISSION,
         DiagnosticOperationKind::SessionClose => MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_CLOSE,
+
         _ => 0,
     }
 }
@@ -569,10 +575,4 @@ const fn lifecycle_code(lifecycle: Lifecycle) -> madopilot_lifecycle_t {
         Lifecycle::Closing => MADOPILOT_LIFECYCLE_CLOSING,
         Lifecycle::Closed => MADOPILOT_LIFECYCLE_CLOSED,
     }
-}
-
-#[allow(dead_code)]
-const fn input_operation_bit(kind: InputOperationKind) -> u32 {
-    let code = input_operation_code(kind);
-    if code > 0 { 1 << (code - 1) } else { 0 }
 }

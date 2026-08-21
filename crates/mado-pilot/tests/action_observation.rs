@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use mado_pilot::{
-    ActivityTag, CancellationToken, Continuity, CoordinateSpace, DeliveryPlan, DiagnosticDrain,
-    DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, EngineOptions, FindRequest,
-    FrameOrder, FrameRequest, InputDelivery, InputEvent, InputOpenRequest, InputRequest,
+    ActivityTag, CancellationToken, CapabilitySupport, Continuity, CoordinateSpace, DeliveryPlan,
+    DiagnosticDrain, DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, EngineOptions,
+    FindRequest, FrameOrder, FrameRequest, InputAddressScope, InputCapability, InputDelivery,
+    InputEvent, InputOpenRequest, InputOperationKind, InputRequest, InputRequirement,
     InputSequence, Key, MatchOptions, MonotonicInstant, OpenRequest, OperationContext, PixelFormat,
     SequenceOutcome, SessionRequest, Status, SubmissionEvidence,
 };
@@ -23,8 +24,33 @@ fn enter(target: mado_pilot::TargetId) -> InputRequest {
     )
 }
 
+fn process_directed_enter(target: mado_pilot::TargetId) -> InputRequest {
+    InputRequest::new(
+        target,
+        InputSequence::new(vec![InputEvent::KeyPress(Key::Enter)])
+            .expect("one valid logical event"),
+        DeliveryPlan::require(InputDelivery::ProcessDirected),
+    )
+}
+
+fn process_directed_keyboard_capability() -> InputCapability {
+    InputCapability::none()
+        .with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::ProcessDirected,
+            CapabilitySupport::Unknown,
+            SubmissionEvidence::InvocationOnly,
+        )
+        .with_pair(
+            InputOperationKind::Keyboard,
+            InputDelivery::System,
+            CapabilitySupport::Supported,
+            SubmissionEvidence::SystemInputAdmission,
+        )
+}
+
 #[test]
-fn submission_and_a_newer_visual_observation_remain_independent_correlated_facts() {
+fn process_directed_invocation_and_newer_visual_observation_remain_independent_facts() {
     let issuer = Arc::new(IdentityIssuer::new());
     let capture = Arc::new(
         ControlledCapture::new(
@@ -34,7 +60,10 @@ fn submission_and_a_newer_visual_observation_remain_independent_correlated_facts
         )
         .expect("valid controlled capture"),
     );
-    let input = Arc::new(ControlledInput::new(capture.target()));
+    let input = Arc::new(ControlledInput::with_capability(
+        capture.target(),
+        process_directed_keyboard_capability(),
+    ));
     let engine = mado_pilot::Engine::new(EngineWiring {
         engine: issuer.engine(),
         capture: capture.clone(),
@@ -50,10 +79,39 @@ fn submission_and_a_newer_visual_observation_remain_independent_correlated_facts
             capture.target(),
             &SessionRequest::new()
                 .capturing(OpenRequest::new())
-                .requesting_input(InputOpenRequest::new()),
+                .requesting_input(
+                    InputOpenRequest::new()
+                        .with_requirement(InputRequirement::Required)
+                        .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
+                ),
             &operation,
         )
         .expect("capture and input opened");
+    let process_pair = session
+        .input_descriptor()
+        .capability()
+        .pair(InputOperationKind::Keyboard, InputDelivery::ProcessDirected);
+    assert_eq!(process_pair.support(), CapabilitySupport::Unknown);
+    assert!(process_pair.may_attempt());
+    assert_eq!(
+        process_pair.address_scope(),
+        InputAddressScope::OwningProcess
+    );
+    assert_eq!(
+        process_pair.evidence(),
+        Some(SubmissionEvidence::InvocationOnly)
+    );
+
+    assert_eq!(
+        session
+            .input_descriptor()
+            .capability()
+            .pair(InputOperationKind::Keyboard, InputDelivery::System)
+            .support(),
+        CapabilitySupport::Supported,
+        "system input is separately available but not selected implicitly"
+    );
+
     let template = engine
         .prepare_template(
             &match_fixtures::planted_template("expected-state"),
@@ -81,13 +139,25 @@ fn submission_and_a_newer_visual_observation_remain_independent_correlated_facts
     assert_eq!(precondition.result().stamp(), before.stamp());
 
     let receipt = session
-        .send_input(&enter(session.target()), &operation)
+        .send_input(&process_directed_enter(session.target()), &operation)
         .expect("the sequence was admitted");
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
     assert_eq!(receipt.submitted(), 1);
     assert_eq!(
-        receipt.evidence(),
-        Some(SubmissionEvidence::SystemInputAdmission)
+        receipt.selected_route(),
+        Some(InputDelivery::ProcessDirected)
+    );
+    assert_eq!(
+        receipt.address_scope(),
+        Some(InputAddressScope::OwningProcess)
+    );
+    assert_eq!(receipt.evidence(), Some(SubmissionEvidence::InvocationOnly));
+    assert!(!receipt.used_fallback());
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(
+        input.admitted()[0].routes,
+        vec![InputDelivery::ProcessDirected],
+        "caller opt-in permits no implicit system route"
     );
 
     capture
@@ -166,6 +236,97 @@ fn submission_and_a_newer_visual_observation_remain_independent_correlated_facts
     assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
     assert_eq!(receipt.submitted(), 1);
     assert!(expected.result().is_empty());
+}
+
+#[test]
+fn gated_process_pair_refuses_without_substituting_available_system_input() {
+    let issuer = Arc::new(IdentityIssuer::new());
+    let capture = Arc::new(
+        ControlledCapture::new(
+            Arc::clone(&issuer),
+            match_fixtures::SCENE,
+            PixelFormat::Rgba8,
+        )
+        .expect("valid controlled capture"),
+    );
+    let capability = InputCapability::none().with_pair(
+        InputOperationKind::Keyboard,
+        InputDelivery::System,
+        CapabilitySupport::Supported,
+        SubmissionEvidence::SystemInputAdmission,
+    );
+    let input = Arc::new(ControlledInput::with_capability(
+        capture.target(),
+        capability,
+    ));
+    let engine = mado_pilot::Engine::new(EngineWiring {
+        engine: issuer.engine(),
+        capture: capture.clone(),
+        matcher: Matcher::new(Arc::new(ControlledMatcher::new(PixelFormat::Rgba8))),
+        loader: PackageLoader::new(),
+        input: Some(input.clone()),
+        permission: None,
+    })
+    .expect("the controlled adapters share one provider");
+    let operation = OperationContext::new();
+
+    let gated = engine
+        .open_session(
+            capture.target(),
+            &SessionRequest::new()
+                .capturing(OpenRequest::new())
+                .requesting_input(
+                    InputOpenRequest::new()
+                        .with_requirement(InputRequirement::Required)
+                        .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected),
+                ),
+            &operation,
+        )
+        .expect_err("an unqualified process pair cannot be established");
+    assert_eq!(gated.status(), Status::Unsupported);
+
+    let session = engine
+        .open_session(
+            capture.target(),
+            &SessionRequest::new()
+                .capturing(OpenRequest::new())
+                .requesting_input(InputOpenRequest::new()),
+            &operation,
+        )
+        .expect("the separately supported system pair may establish input");
+    assert_eq!(
+        session
+            .input_descriptor()
+            .capability()
+            .pair(InputOperationKind::Keyboard, InputDelivery::System)
+            .support(),
+        CapabilitySupport::Supported
+    );
+
+    let receipt = session
+        .send_input(&process_directed_enter(session.target()), &operation)
+        .expect("route-local refusal is an immutable unexecuted receipt");
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.selected_route(), None);
+    assert_eq!(receipt.submitted(), 0);
+    assert!(!receipt.used_fallback());
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(
+        receipt.attempts()[0].route(),
+        InputDelivery::ProcessDirected
+    );
+    assert_eq!(
+        receipt.attempts()[0].address_scope(),
+        InputAddressScope::OwningProcess
+    );
+    assert_eq!(
+        receipt.attempts()[0].fault(),
+        Some(mado_pilot::InputFault::UnsupportedCombination)
+    );
+    assert!(input.admitted().is_empty());
+    assert!(input.submitted_events().is_empty());
+
+    session.close(&operation).expect("closed");
 }
 
 #[test]

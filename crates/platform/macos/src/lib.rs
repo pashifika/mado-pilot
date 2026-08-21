@@ -38,8 +38,9 @@
 //! Nothing here requests a permission or presents permission UI. Discovery and
 //! open preflight Screen Recording with the non-prompting Core Graphics check and
 //! refuse before reaching the framework query that would otherwise show the system
-//! dialog. Screen Recording and Accessibility are reported separately, and neither
-//! stands in for the other.
+//! dialog. Screen Recording and public Core Graphics post-event access are
+//! reported separately. The legacy Accessibility observation is retained only as
+//! paired migration evidence and cannot replace either decision.
 //!
 //! # Ownership
 //!
@@ -64,8 +65,13 @@
 mod availability;
 #[cfg(target_os = "macos")]
 mod discovery;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "private-fixture"))]
 #[doc(hidden)]
+#[allow(missing_docs)]
+pub mod fixture_control;
+#[cfg(all(target_os = "macos", feature = "private-fixture"))]
+#[doc(hidden)]
+#[allow(missing_docs)]
 pub mod fixture_protocol;
 #[cfg(target_os = "macos")]
 mod input;

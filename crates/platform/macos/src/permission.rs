@@ -1,15 +1,15 @@
-//! Non-prompting Screen Recording and Accessibility probes.
+//! Non-prompting Screen Recording and event-post access probes.
 //!
-//! macOS authorizes screen capture and input control separately, so this reports
+//! macOS authorizes screen capture and input posting separately, so this reports
 //! them separately and never lets one stand in for the other. Neither probe calls
-//! a permission-request API, opens System Settings, or presents any interface: the
-//! Core Graphics preflight and the Accessibility trust check both read the
-//! decision the operating system has already made. The variants of both that can
-//! prompt exist, and this package deliberately does not call them.
+//! a permission-request API, opens System Settings, or presents any interface.
+//! Input control uses the public Core Graphics post-event preflight as its
+//! authorization truth. The legacy Accessibility observation is read alongside it
+//! only for migration qualification and cannot promote or demote that result.
 //!
 //! An authorization is not a promise. macOS can revoke either between a probe and
-//! the operation it was meant to clear, so discovery, open, and every published
-//! frame still report their own typed outcome.
+//! the operation it was meant to clear, so discovery, open, and every irreversible
+//! input event still report their own typed outcome.
 
 use std::fmt;
 
@@ -52,7 +52,9 @@ impl PermissionProbe for MacosPermissionProbe {
         let context = shim::execution_context();
         let state = match kind {
             PermissionKind::ScreenCapture => shim::probe_screen_capture(),
-            PermissionKind::InputControl => shim::probe_accessibility(),
+            PermissionKind::InputControl => {
+                shim::process_authorization().map(|observed| observed.post_event_access)
+            }
             // A permission kind this build does not know about has no macOS
             // authorization behind it here. Reporting it as unavailable says the
             // concept is absent from this Adapter rather than that it is refused.
@@ -117,7 +119,7 @@ mod tests {
     use super::MacosPermissionProbe;
 
     #[test]
-    fn the_two_authorizations_are_read_independently() {
+    fn screen_capture_and_post_event_access_are_read_independently() {
         let probe = MacosPermissionProbe::new();
 
         let report = probe
@@ -146,7 +148,7 @@ mod tests {
             .expect("first read succeeds");
         let second = probe
             .report(&OperationContext::new())
-            .expect("reading capture again cannot change accessibility");
+            .expect("reading capture again cannot change post-event access");
 
         assert_eq!(first.input().state(), second.input().state());
         assert_eq!(first.capture().state(), second.capture().state());

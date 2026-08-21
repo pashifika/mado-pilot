@@ -447,10 +447,13 @@ pub fn windows_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine>
 /// input.
 ///
 /// Present on macOS builds only. Discovery is picker-free, capture is
-/// ScreenCaptureKit, input is `CGEvent` system delivery, and the two
-/// authorizations macOS grants separately are reported separately; none of those
-/// types reaches this API, which speaks the same platform-neutral vocabulary the
-/// replay engine does.
+/// ScreenCaptureKit, and input keeps focus-dependent `System` separate from the
+/// candidate, caller-selected `ProcessDirected` route on gated windows. The latter
+/// remains owning-process scoped, unknown in application compatibility, and
+/// invocation-only in evidence; the per-target descriptor reports whether it
+/// is currently attemptable. Neither native route nor either authorization
+/// type reaches this API, which speaks the same platform-neutral vocabulary on
+/// both release targets.
 ///
 /// Construction touches no macOS API, requests no authorization, and presents
 /// nothing: it selects adapters. Every native call, including the two

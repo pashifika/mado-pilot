@@ -101,9 +101,9 @@ impl CleanupBudget {
 
     /// Returns the context cleanup runs under, in `request`'s clock domain.
     ///
-    /// A fresh context every time, sharing only the clock: the deadline is this
-    /// budget's, and there is no cancellation token, because the request's own
-    /// interruption is usually what caused the failure being cleaned up.
+    /// A fresh context every time, sharing the clock and opaque activity tag:
+    /// the deadline is this budget's, and there is no cancellation token, because
+    /// the request's own interruption is usually what caused the failure being cleaned up.
     ///
     /// A monotonic domain so near its end that the duration is unrepresentable
     /// leaves cleanup with no deadline and bounded by its event count alone. That
@@ -115,7 +115,10 @@ impl CleanupBudget {
     pub fn context(self, request: &OperationContext) -> OperationContext {
         let clock = request.clock();
         let started: MonotonicInstant = clock.now();
-        let context = OperationContext::new().with_clock(clock);
+        let mut context = OperationContext::new().with_clock(clock);
+        if let Some(activity_tag) = request.activity_tag() {
+            context = context.with_activity_tag(activity_tag);
+        }
         match started.checked_add(self.max_duration) {
             Some(deadline) => context.with_deadline(deadline),
             None => context,
@@ -146,7 +149,9 @@ mod tests {
 
     use super::CleanupBudget;
     use crate::request::SequenceLimits;
-    use mado_pilot_core::{CancellationToken, Clock, MonotonicInstant, OperationContext};
+    use mado_pilot_core::{
+        ActivityTag, CancellationToken, Clock, MonotonicInstant, OperationContext,
+    };
 
     /// A clock a test moves by hand.
     ///
@@ -200,14 +205,16 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_does_not_inherit_the_requests_interruption() {
+    fn cleanup_preserves_identity_without_inheriting_the_requests_interruption() {
         let clock = Arc::new(ManualClock::new());
         let token = CancellationToken::new();
         token.cancel();
+        let activity_tag = ActivityTag::new(0x434c_4541_4e55_5001).expect("nonzero activity tag");
         let request = OperationContext::new()
             .with_clock(clock.clone())
             .with_deadline(MonotonicInstant::ORIGIN)
-            .with_cancellation(token);
+            .with_cancellation(token)
+            .with_activity_tag(activity_tag);
         assert!(
             request.interruption().is_some(),
             "the request is the interrupted one"
@@ -223,6 +230,11 @@ mod tests {
         assert!(
             cleanup.cancellation().is_none(),
             "the request's token is not carried into cleanup"
+        );
+        assert_eq!(
+            cleanup.activity_tag(),
+            Some(activity_tag),
+            "cleanup releases remain correlated with the sequence that pressed the state"
         );
     }
 

@@ -1,6 +1,9 @@
 # ADR 0016: macOS input delivery surface and focus authority
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0029](0029-macos-process-directed-input.md) for
+  the system-only delivery surface; retained for the `System` focus authority,
+  non-prompting permission, controlled-linkage, no-private-window-control, and
+  no-implicit-fallback rules
 - **Date:** 2026-08-02
 - **Amended:** 2026-08-10
 - **Resolves gate:** _none_

@@ -294,10 +294,14 @@ receipt is already the operation's terminal outcome, so a late interruption
 cannot replace it with a second result.
 
 `MADOPILOT_OPERATION_HAS_ACTIVITY_TAG` makes the nonzero `activity_tag` available
-on every diagnostic record that operation produces. The value is opaque:
-changing or omitting it cannot affect admission, ordering, deadline,
-cancellation, identity, or result semantics. It correlates observations; it does
-not establish causality.
+on every diagnostic record that operation produces. The value is opaque
+correlation metadata, not a confidentiality boundary; callers must not place
+secrets in it. A platform route may carry it in documented native observational
+metadata. In particular, macOS `ProcessDirected` copies it to the Core Graphics
+event-source user-data field so the addressed process can correlate an observed
+event. Changing or omitting it cannot affect admission, ordering, deadline,
+cancellation, identity, posting, or result semantics. It correlates observations;
+it does not establish causality.
 
 ## Statuses, owned errors, and admitted receipts
 
@@ -401,9 +405,10 @@ Its `known_pairs`, `supported_pairs`, and `unknown_pairs` keep attemptability
 separate from positive application-compatibility evidence.
 
 `engine_permission` is a probe, never a request. It presents no UI and calls no
-permission-request API. macOS reports Screen Recording and Accessibility
-separately. Only `MADOPILOT_PERMISSION_STATE_GRANTED` is authorization;
-`UNKNOWN`, `NOT_GRANTED`, and `UNAVAILABLE` promise no operation will succeed.
+permission-request API. macOS reports Screen Recording and input-control —
+the public non-prompting event-post-access preflight — separately. Only
+`MADOPILOT_PERMISSION_STATE_GRANTED` is authorization; `UNKNOWN`,
+`NOT_GRANTED`, and `UNAVAILABLE` promise no operation will succeed.
 The optional diagnostic is redacted, and its string views borrow from the
 retained engine. Windows advertises no readable permission mechanism:
 `MADOPILOT_ENGINE_READS_PERMISSIONS` is clear and `engine_permission` returns
@@ -499,8 +504,16 @@ Windows advertises exact-window `WindowMessage` for ordinary retained
 top-level windows as unknown-but-attemptable with target-queue-admission
 evidence. The dedicated fixture raises the same route to supported with
 target-protocol acknowledgement. Both remain separate from Windows system
-routes. macOS advertises system routes only. The negotiated capability report,
-not a platform guess in the caller, decides what may be admitted.
+routes. The macOS implementation reports system routes plus process-directed
+pairs with owning-process scope, unknown compatibility, and invocation-only
+evidence for retained top-level windows. Final candidate `dec43d7` passed the
+controlled profiles; independent `single`, exact two-display non-mirrored
+`same-scale`, and `mixed-scale` matrices passed for all fourteen controlled
+pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted.
+Additional windows in
+the same process do not revoke that scope, and no exact-window route exists on
+macOS. The negotiated capability report, not a platform guess in the caller,
+decides what may be admitted.
 
 ## Bounded diagnostic stream
 

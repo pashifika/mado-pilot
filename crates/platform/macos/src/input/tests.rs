@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mado_pilot_core::{
-    CancellationToken, CapabilitySupport, Clock, CoordinateSpace, IdentityIssuer, InputCapability,
-    InputDelivery, InputOperationKind, Lifecycle, MonotonicInstant, OperationContext, Point,
-    ProviderId, Status, TargetId, TargetKind,
+    CancellationToken, CapabilitySupport, Clock, CoordinateSpace, GeometryRevision, IdentityIssuer,
+    InputCapability, InputDelivery, InputOperationKind, Lifecycle, MonotonicInstant,
+    OperationContext, PixelExtent, Point, ProviderId, Status, StreamCursor, SubmissionEvidence,
+    TargetId, TargetKind, TransformSnapshot,
 };
 use mado_pilot_input::{
     CleanupBudget, CleanupState, DeliveryPlan, FocusPolicy, InputController, InputDescriptor,
@@ -20,9 +21,10 @@ use mado_pilot_input::{
 };
 
 use super::{
-    DriverState, InputDriver, MacosInputController, SubmissionFailure, SystemButtonState,
-    SystemKeyState, input_capability,
+    DriverState, GeometryLedger, InputDriver, MacosInputController, PendingTextRelease,
+    SubmissionFailure, SystemButtonState, SystemKeyState, input_capability,
 };
+use crate::shim::NativeBounds;
 
 fn target() -> TargetId {
     IdentityIssuer::new()
@@ -31,7 +33,7 @@ fn target() -> TargetId {
 }
 
 fn window_descriptor(target: TargetId) -> InputDescriptor {
-    InputDescriptor::new(target, input_capability(TargetKind::Window))
+    InputDescriptor::new(target, input_capability(TargetKind::Window, true))
 }
 
 fn point() -> Point {
@@ -68,19 +70,34 @@ fn system(target: TargetId, sequence: InputSequence) -> InputRequest {
     .with_focus(FocusPolicy::RequireFocused)
 }
 
+fn process_directed(target: TargetId, sequence: InputSequence) -> InputRequest {
+    InputRequest::new(
+        target,
+        sequence,
+        DeliveryPlan::require(InputDelivery::ProcessDirected),
+    )
+}
+
 /// What a scripted driver was asked to do, in order.
 #[derive(Debug, Clone, PartialEq)]
 enum Action {
     Preflight(InputDelivery),
     Submit(InputDelivery),
-    Release(PressedState),
+    Release(InputDelivery, PressedState),
+    ReleasePending(InputDelivery),
 }
 
 /// A driver whose every outcome the test writes.
 #[derive(Debug, Default)]
 struct ScriptedDriver {
     log: Mutex<Vec<Action>>,
+    early_authority: Mutex<Vec<(InputDelivery, bool)>>,
     preflight: Mutex<Option<InputFault>>,
+    /// Refuses one selected route at preflight while leaving the others available.
+    refuse_preflight_route: Mutex<Option<(InputDelivery, InputFault)>>,
+    /// Refuses route-state creation after preflight, before any native effect.
+    refuse_begin_route: Mutex<Option<(InputDelivery, InputFault)>>,
+    begun_routes: Mutex<Vec<InputDelivery>>,
     /// Fails the delivery at this zero-based index with this failure.
     fail_delivery_at: Mutex<Option<(usize, SubmissionFailure)>>,
     /// Refuses every release from this zero-based index onward.
@@ -88,6 +105,8 @@ struct ScriptedDriver {
     /// Moves the test's clock forward at this delivery index, so an operation can
     /// expire part-way through a sequence rather than before it starts.
     advance_at: Mutex<Option<(usize, Arc<ManualClock>, Duration)>>,
+    /// Cancels the operation after this many successful native submissions.
+    cancel_after: Mutex<Option<(usize, CancellationToken)>>,
     submitted: Mutex<usize>,
     released: Mutex<usize>,
 }
@@ -108,6 +127,25 @@ impl ScriptedDriver {
         *driver.preflight.lock().expect("uncontended") = Some(fault);
         Arc::new(driver)
     }
+    fn refusing_route_preflight(
+        mut self: Arc<Self>,
+        route: InputDelivery,
+        fault: InputFault,
+    ) -> Arc<Self> {
+        let driver = Arc::get_mut(&mut self).expect("uniquely owned");
+        *driver.refuse_preflight_route.lock().expect("uncontended") = Some((route, fault));
+        self
+    }
+
+    fn refusing_route_begin(
+        mut self: Arc<Self>,
+        route: InputDelivery,
+        fault: InputFault,
+    ) -> Arc<Self> {
+        let driver = Arc::get_mut(&mut self).expect("uniquely owned");
+        *driver.refuse_begin_route.lock().expect("uncontended") = Some((route, fault));
+        self
+    }
 
     fn refusing_releases_from(mut self: Arc<Self>, index: usize) -> Arc<Self> {
         let driver = Arc::get_mut(&mut self).expect("uniquely owned");
@@ -125,9 +163,26 @@ impl ScriptedDriver {
         *driver.advance_at.lock().expect("uncontended") = Some((index, clock, step));
         self
     }
+    fn cancelling_after(
+        mut self: Arc<Self>,
+        submitted: usize,
+        token: CancellationToken,
+    ) -> Arc<Self> {
+        let driver = Arc::get_mut(&mut self).expect("uniquely owned");
+        *driver.cancel_after.lock().expect("uncontended") = Some((submitted, token));
+        self
+    }
 
     fn actions(&self) -> Vec<Action> {
         self.log.lock().expect("uncontended").clone()
+    }
+
+    fn begun_routes(&self) -> Vec<InputDelivery> {
+        self.begun_routes.lock().expect("uncontended").clone()
+    }
+
+    fn early_authority(&self) -> Vec<(InputDelivery, bool)> {
+        self.early_authority.lock().expect("uncontended").clone()
     }
 
     fn record(&self, action: Action) {
@@ -140,12 +195,38 @@ impl InputDriver for ScriptedDriver {
         &self,
         delivery: InputDelivery,
         _focus: FocusPolicy,
+        require_early_authority: bool,
         _operation: &OperationContext,
     ) -> Result<(), InputFault> {
         self.record(Action::Preflight(delivery));
+        self.early_authority
+            .lock()
+            .expect("uncontended")
+            .push((delivery, require_early_authority));
+        if let Some((route, fault)) = *self.refuse_preflight_route.lock().expect("uncontended")
+            && route == delivery
+        {
+            return Err(fault);
+        }
         match *self.preflight.lock().expect("uncontended") {
             Some(fault) => Err(fault),
             None => Ok(()),
+        }
+    }
+
+    fn begin_route(
+        &self,
+        delivery: InputDelivery,
+        _state: &mut DriverState,
+        _operation: &OperationContext,
+    ) -> Result<(), InputFault> {
+        self.begun_routes
+            .lock()
+            .expect("uncontended")
+            .push(delivery);
+        match *self.refuse_begin_route.lock().expect("uncontended") {
+            Some((route, fault)) if route == delivery => Err(fault),
+            _ => Ok(()),
         }
     }
 
@@ -153,7 +234,7 @@ impl InputDriver for ScriptedDriver {
         &self,
         delivery: InputDelivery,
         _focus: FocusPolicy,
-        _event: &InputEvent,
+        event: &InputEvent,
         _geometry: PointerGeometry,
         state: &mut DriverState,
         _operation: &OperationContext,
@@ -168,14 +249,25 @@ impl InputDriver for ScriptedDriver {
         {
             clock.advance(*step);
         }
+        if let Some((cancel_after, token)) = self.cancel_after.lock().expect("uncontended").as_ref()
+            && *cancel_after == index + 1
+        {
+            token.cancel();
+        }
         if let Some((at, failure)) = *self.fail_delivery_at.lock().expect("uncontended")
             && at == index
         {
+            if failure.invoked_native_units == 1 && matches!(event, InputEvent::Text(_)) {
+                state.pending_text_release = Some(PendingTextRelease {
+                    route: delivery,
+                    flags: 0,
+                });
+            }
             return Err(failure);
         }
         // The scripted driver records pressed state the way the native one does,
         // so cleanup has something to release.
-        match _event {
+        match event {
             InputEvent::PointerPress(button) => state.buttons.push(SystemButtonState {
                 logical: *button,
                 native: 0,
@@ -189,14 +281,42 @@ impl InputDriver for ScriptedDriver {
         Ok(())
     }
 
+    fn release_pending(
+        &self,
+        delivery: InputDelivery,
+        state: &mut DriverState,
+        operation: &OperationContext,
+    ) -> Result<bool, InputFault> {
+        let Some(pending) = state.pending_text_release else {
+            return Ok(false);
+        };
+        assert_eq!(pending.route, delivery);
+        self.record(Action::ReleasePending(delivery));
+        if let Some(interruption) = operation.interruption() {
+            return Err(InputFault::from(interruption));
+        }
+        let mut released = self.released.lock().expect("uncontended");
+        let index = *released;
+        *released += 1;
+        drop(released);
+        if matches!(
+            *self.refuse_release_from.lock().expect("uncontended"),
+            Some(from) if index >= from
+        ) {
+            return Err(InputFault::SubmissionFailed);
+        }
+        state.pending_text_release = None;
+        Ok(true)
+    }
+
     fn release(
         &self,
-        _delivery: InputDelivery,
+        delivery: InputDelivery,
         pressed: PressedState,
         _state: &mut DriverState,
         operation: &OperationContext,
     ) -> Result<(), InputFault> {
-        self.record(Action::Release(pressed));
+        self.record(Action::Release(delivery, pressed));
         if let Some(interruption) = operation.interruption() {
             return Err(InputFault::from(interruption));
         }
@@ -249,6 +369,354 @@ fn a_supported_system_sequence_reports_exact_counts_and_the_system_mechanism() {
     assert_eq!(receipt.attempts()[0].route(), InputDelivery::System);
     assert!(!receipt.used_fallback());
     assert_eq!(receipt.cleanup(), CleanupState::NotNeeded);
+}
+
+#[test]
+fn an_unqualified_process_sequence_reaches_only_the_process_route() {
+    let target = target();
+    let driver = ScriptedDriver::new();
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+
+    let receipt = controller
+        .execute(&process_directed(target, click()), &OperationContext::new())
+        .expect("an unknown-but-available route reaches native preflight");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
+    assert_eq!(
+        receipt.selected_route(),
+        Some(InputDelivery::ProcessDirected)
+    );
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+        ]
+    );
+    assert_eq!(
+        driver.begun_routes(),
+        vec![InputDelivery::ProcessDirected],
+        "one sequence creates route-private state exactly once"
+    );
+    assert_eq!(
+        driver.early_authority(),
+        vec![(InputDelivery::ProcessDirected, false)],
+        "a terminal native-event route defers mutable authority to its final commit gate"
+    );
+}
+
+#[test]
+fn a_delay_only_terminal_route_keeps_early_authority() {
+    let target = target();
+    let driver = ScriptedDriver::new();
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let sequence = InputSequence::new(vec![InputEvent::Delay(Duration::ZERO)]).expect("valid");
+
+    let receipt = controller
+        .execute(
+            &process_directed(target, sequence),
+            &OperationContext::new(),
+        )
+        .expect("delay-only sequence still selects a live route");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
+    assert_eq!(
+        driver.early_authority(),
+        vec![(InputDelivery::ProcessDirected, true)],
+        "without a native commit there is nowhere else to establish target authority"
+    );
+}
+
+#[test]
+fn terminal_process_target_loss_is_reported_from_the_first_commit_gate() {
+    let target = target();
+    let driver =
+        ScriptedDriver::failing_at(0, SubmissionFailure::before_event(InputFault::TargetLost));
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+
+    let receipt = controller
+        .execute(&process_directed(target, click()), &OperationContext::new())
+        .expect("a final-gate refusal produces a receipt");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.fault(), Some(InputFault::TargetLost));
+    assert_eq!(receipt.submitted(), 0);
+    assert_eq!(receipt.selected_route(), None);
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(
+        receipt.attempts()[0].route(),
+        InputDelivery::ProcessDirected
+    );
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+        ],
+        "terminal mutable target loss is observed only after route selection"
+    );
+    assert_eq!(
+        driver.early_authority(),
+        vec![(InputDelivery::ProcessDirected, false)]
+    );
+}
+
+#[test]
+fn explicit_process_fallback_uses_system_only_after_zero_effect_refusal() {
+    let target = target();
+    let driver = ScriptedDriver::new().refusing_route_preflight(
+        InputDelivery::ProcessDirected,
+        InputFault::UnsupportedCombination,
+    );
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let request = InputRequest::new(
+        target,
+        click(),
+        DeliveryPlan::ordered(vec![InputDelivery::ProcessDirected, InputDelivery::System])
+            .expect("valid"),
+    )
+    .with_focus(FocusPolicy::RequireFocused);
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("the caller explicitly permitted system fallback");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+    assert!(receipt.used_fallback());
+    assert_eq!(receipt.attempts().len(), 2);
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Preflight(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+        ]
+    );
+    assert_eq!(
+        driver.early_authority(),
+        vec![
+            (InputDelivery::ProcessDirected, true),
+            (InputDelivery::System, false),
+        ],
+        "only a route with a later caller-ordered fallback needs a zero-effect authority decision"
+    );
+}
+
+#[test]
+fn early_process_target_loss_can_use_explicit_zero_effect_fallback() {
+    let target = target();
+    let driver = ScriptedDriver::new()
+        .refusing_route_preflight(InputDelivery::ProcessDirected, InputFault::TargetLost);
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let request = InputRequest::new(
+        target,
+        click(),
+        DeliveryPlan::ordered(vec![InputDelivery::ProcessDirected, InputDelivery::System])
+            .expect("valid"),
+    )
+    .with_focus(FocusPolicy::RequireFocused);
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("early target loss has no effect, so explicit fallback remains available");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+    assert!(receipt.used_fallback());
+    assert_eq!(receipt.attempts()[0].fault(), Some(InputFault::TargetLost));
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Preflight(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+            Action::Submit(InputDelivery::System),
+        ],
+    );
+}
+
+#[test]
+fn a_selected_process_route_never_reopens_ordered_fallback() {
+    let target = target();
+    let driver =
+        ScriptedDriver::failing_at(0, SubmissionFailure::before_event(InputFault::TargetLost));
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let request = InputRequest::new(
+        target,
+        click(),
+        DeliveryPlan::ordered(vec![InputDelivery::ProcessDirected, InputDelivery::System])
+            .expect("valid"),
+    )
+    .with_focus(FocusPolicy::RequireFocused);
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("a selected route owns its final refusal");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Unexecuted);
+    assert_eq!(receipt.fault(), Some(InputFault::TargetLost));
+    assert!(!receipt.used_fallback());
+    assert_eq!(receipt.attempts().len(), 1);
+    assert_eq!(
+        receipt.attempts()[0].route(),
+        InputDelivery::ProcessDirected
+    );
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+        ],
+        "submission starts the selected route even when its first post is refused"
+    );
+    assert_eq!(
+        driver.early_authority(),
+        vec![(InputDelivery::ProcessDirected, true)],
+        "the later route required an early zero-effect authority decision"
+    );
+}
+
+#[test]
+fn process_source_allocation_failure_can_use_explicit_zero_effect_fallback() {
+    let target = target();
+    let driver = ScriptedDriver::new()
+        .refusing_route_begin(InputDelivery::ProcessDirected, InputFault::SubmissionFailed);
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let request = InputRequest::new(
+        target,
+        click(),
+        DeliveryPlan::ordered(vec![InputDelivery::ProcessDirected, InputDelivery::System])
+            .expect("valid"),
+    )
+    .with_focus(FocusPolicy::RequireFocused);
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("source allocation failed before effect, so explicit fallback remains available");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Complete);
+    assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
+    assert_eq!(
+        driver.begun_routes(),
+        vec![InputDelivery::ProcessDirected, InputDelivery::System]
+    );
+    assert_eq!(receipt.attempts().len(), 2);
+    assert_eq!(
+        receipt.attempts()[0].fault(),
+        Some(InputFault::SubmissionFailed)
+    );
+}
+
+#[test]
+fn possible_process_effect_closes_fallback_and_cleans_up_on_that_route() {
+    let target = target();
+    let driver = ScriptedDriver::failing_at(
+        3,
+        SubmissionFailure::after_native_units(InputFault::NotAuthorized, 1),
+    );
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let request = InputRequest::new(
+        target,
+        chord(),
+        DeliveryPlan::ordered(vec![InputDelivery::ProcessDirected, InputDelivery::System])
+            .expect("valid"),
+    )
+    .with_focus(FocusPolicy::RequireFocused);
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("possible native effect is a terminal receipt");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
+    assert_eq!(
+        receipt.selected_route(),
+        Some(InputDelivery::ProcessDirected)
+    );
+    assert_eq!(receipt.submitted(), 3);
+    assert!(receipt.partial_native_effect());
+    assert!(!receipt.used_fallback());
+    assert_eq!(receipt.cleanup(), CleanupState::Complete);
+    assert_eq!(receipt.cleanup_released(), 3);
+    assert!(
+        driver.actions().iter().all(|action| !matches!(
+            action,
+            Action::Preflight(InputDelivery::System) | Action::Submit(InputDelivery::System)
+        )),
+        "system fallback is closed once process-directed input may have had effect"
+    );
+    assert_eq!(
+        driver
+            .actions()
+            .into_iter()
+            .filter_map(|action| match action {
+                Action::Release(route, pressed) => Some((route, pressed)),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                InputDelivery::ProcessDirected,
+                PressedState::Key(Key::Character('c')),
+            ),
+            (
+                InputDelivery::ProcessDirected,
+                PressedState::Button(PointerButton::Primary),
+            ),
+            (
+                InputDelivery::ProcessDirected,
+                PressedState::Key(Key::Modifier(Modifier::Meta)),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn cancellation_between_process_events_preserves_count_and_bounded_cleanup() {
+    let target = target();
+    let cancellation = CancellationToken::new();
+    let driver = ScriptedDriver::new().cancelling_after(1, cancellation.clone());
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let operation = OperationContext::new().with_cancellation(cancellation);
+
+    let receipt = controller
+        .execute(&process_directed(target, chord()), &operation)
+        .expect("mid-sequence cancellation retains possible-effect evidence");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
+    assert_eq!(
+        receipt.selected_route(),
+        Some(InputDelivery::ProcessDirected)
+    );
+    assert_eq!(receipt.submitted(), 1);
+    assert_eq!(receipt.fault(), Some(InputFault::Cancelled));
+    assert_eq!(receipt.cleanup(), CleanupState::Complete);
+    assert_eq!(receipt.cleanup_released(), 1);
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+            Action::Release(
+                InputDelivery::ProcessDirected,
+                PressedState::Key(Key::Modifier(Modifier::Meta)),
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -355,7 +823,7 @@ fn a_preserving_request_against_a_focus_requiring_window_is_refused() {
 #[test]
 fn a_display_target_accepts_a_pointer_sequence_without_any_focus_policy() {
     let target = target();
-    let descriptor = InputDescriptor::new(target, input_capability(TargetKind::Display));
+    let descriptor = InputDescriptor::new(target, input_capability(TargetKind::Display, false));
     let driver = ScriptedDriver::new();
     let controller = MacosInputController::with_driver(descriptor, Arc::clone(&driver) as _);
 
@@ -376,7 +844,7 @@ fn a_display_target_accepts_a_pointer_sequence_without_any_focus_policy() {
 #[test]
 fn a_keystroke_to_a_display_is_refused_because_nothing_there_can_receive_it() {
     let target = target();
-    let descriptor = InputDescriptor::new(target, input_capability(TargetKind::Display));
+    let descriptor = InputDescriptor::new(target, input_capability(TargetKind::Display, false));
     let controller = MacosInputController::with_driver(descriptor, ScriptedDriver::new() as _);
 
     let receipt = controller
@@ -422,7 +890,7 @@ fn a_stop_part_way_releases_exactly_what_that_sequence_had_pressed() {
             .actions()
             .into_iter()
             .filter_map(|action| match action {
-                Action::Release(pressed) => Some(pressed),
+                Action::Release(_, pressed) => Some(pressed),
                 _ => None,
             })
             .collect::<Vec<_>>(),
@@ -544,7 +1012,7 @@ fn a_native_effect_before_any_event_completed_is_partial_and_not_unexecuted() {
     let target = target();
     let driver = ScriptedDriver::failing_at(
         0,
-        SubmissionFailure::during_event(InputFault::SubmissionFailed),
+        SubmissionFailure::after_native_units(InputFault::SubmissionFailed, 1),
     );
     let controller =
         MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
@@ -559,6 +1027,103 @@ fn a_native_effect_before_any_event_completed_is_partial_and_not_unexecuted() {
     assert_eq!(receipt.selected_route(), Some(InputDelivery::System));
 }
 
+#[test]
+fn an_unmatched_native_text_down_is_reported_and_released_without_retaining_text() {
+    let target = target();
+    let driver = ScriptedDriver::failing_at(
+        0,
+        SubmissionFailure::after_native_units(InputFault::NotAuthorized, 1),
+    );
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let sequence =
+        InputSequence::new(vec![InputEvent::Text("private payload".to_owned())]).expect("valid");
+
+    let receipt = controller
+        .execute(
+            &process_directed(target, sequence),
+            &OperationContext::new(),
+        )
+        .expect("partial native effect produces a receipt");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
+    assert_eq!(receipt.submitted(), 0);
+    assert!(receipt.partial_native_effect());
+    assert_eq!(receipt.cleanup(), CleanupState::Complete);
+    assert_eq!(receipt.cleanup_owed(), 1);
+    assert_eq!(receipt.cleanup_released(), 1);
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+            Action::ReleasePending(InputDelivery::ProcessDirected),
+        ]
+    );
+    assert!(!format!("{receipt:?}").contains("private payload"));
+}
+
+#[test]
+fn an_unmatched_native_text_down_reports_incomplete_when_release_is_refused() {
+    let target = target();
+    let driver = ScriptedDriver::failing_at(
+        0,
+        SubmissionFailure::after_native_units(InputFault::NotAuthorized, 1),
+    )
+    .refusing_releases_from(0);
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let sequence =
+        InputSequence::new(vec![InputEvent::Text("private payload".to_owned())]).expect("valid");
+
+    let receipt = controller
+        .execute(
+            &process_directed(target, sequence),
+            &OperationContext::new(),
+        )
+        .expect("partial native effect produces a receipt");
+
+    assert_eq!(receipt.cleanup(), CleanupState::Incomplete);
+    assert_eq!(receipt.cleanup_owed(), 1);
+    assert_eq!(receipt.cleanup_released(), 0);
+    assert!(!format!("{receipt:?}").contains("private payload"));
+}
+
+#[test]
+fn pending_text_release_uses_cleanup_budget_before_older_pressed_state() {
+    let target = target();
+    let driver = ScriptedDriver::failing_at(
+        1,
+        SubmissionFailure::after_native_units(InputFault::NotAuthorized, 1),
+    );
+    let controller =
+        MacosInputController::with_driver(window_descriptor(target), Arc::clone(&driver) as _);
+    let sequence = InputSequence::new(vec![
+        InputEvent::KeyPress(Key::Modifier(Modifier::Shift)),
+        InputEvent::Text("private payload".to_owned()),
+    ])
+    .expect("valid");
+    let request = process_directed(target, sequence)
+        .with_cleanup_budget(CleanupBudget::at_most(1, Duration::from_millis(50)));
+
+    let receipt = controller
+        .execute(&request, &OperationContext::new())
+        .expect("partial native effect produces a receipt");
+
+    assert_eq!(receipt.outcome(), SequenceOutcome::Partial);
+    assert_eq!(receipt.cleanup(), CleanupState::Exhausted);
+    assert_eq!(receipt.cleanup_owed(), 2);
+    assert_eq!(receipt.cleanup_released(), 1);
+    assert_eq!(
+        driver.actions(),
+        vec![
+            Action::Preflight(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+            Action::Submit(InputDelivery::ProcessDirected),
+            Action::ReleasePending(InputDelivery::ProcessDirected),
+        ]
+    );
+}
 #[test]
 fn a_failure_before_the_first_event_took_effect_is_unexecuted() {
     let target = target();
@@ -685,7 +1250,7 @@ fn a_request_for_another_target_never_reaches_the_driver() {
 
 #[test]
 fn the_advertised_capability_is_what_admission_decides_against() {
-    let capability = input_capability(TargetKind::Window);
+    let capability = input_capability(TargetKind::Window, true);
 
     for kind in InputOperationKind::ALL {
         let system = capability.pair(kind, InputDelivery::System);
@@ -700,6 +1265,14 @@ fn the_advertised_capability_is_what_admission_decides_against() {
                 .support(),
             CapabilitySupport::Unsupported
         );
+        let process = capability.pair(kind, InputDelivery::ProcessDirected);
+        assert_eq!(process.support(), CapabilitySupport::Unknown);
+        assert_eq!(
+            process.permission(),
+            Some(mado_pilot_core::PermissionKind::InputControl)
+        );
+        assert_eq!(process.evidence(), Some(SubmissionEvidence::InvocationOnly));
+        assert!(!process.focus_required());
     }
     assert!(
         !InputCapability::none().is_available(),
@@ -718,5 +1291,95 @@ fn the_advertised_capability_is_what_admission_decides_against() {
                 .accepts_pointer_space(space),
             "macOS capture publishes an authoritative placement, so {space} resolves"
         );
+        assert!(
+            capability
+                .pair(InputOperationKind::Pointer, InputDelivery::ProcessDirected)
+                .accepts_pointer_space(space),
+            "process-directed pointer uses the same capture-derived transforms"
+        );
     }
+}
+
+#[test]
+fn source_geometry_survives_movement_and_restoration() {
+    let ledger = GeometryLedger::default();
+    let mut cursor =
+        StreamCursor::new(IdentityIssuer::new().issue_stream().expect("issued stream"));
+    let first_revision = GeometryRevision::FIRST;
+    let moved_revision = first_revision.next().expect("next geometry revision");
+    let restored_revision = moved_revision.next().expect("next geometry revision");
+    let first_stamp = cursor
+        .publish(first_revision)
+        .expect("published first frame");
+    let moved_stamp = cursor
+        .publish(moved_revision)
+        .expect("published moved frame");
+    let restored_stamp = cursor
+        .publish(restored_revision)
+        .expect("published restored frame");
+    let first_transform =
+        TransformSnapshot::with_target_extent(first_revision, PixelExtent::new(1_280, 960));
+    let moved_transform =
+        TransformSnapshot::with_target_extent(moved_revision, PixelExtent::new(1_280, 960));
+    let restored_transform =
+        TransformSnapshot::with_target_extent(restored_revision, PixelExtent::new(1_280, 960));
+    let first_bounds = NativeBounds {
+        origin: (120.0, 80.0),
+        size: (640.0, 480.0),
+        scale: 2.0,
+    };
+    let moved_bounds = NativeBounds {
+        origin: (480.0, 240.0),
+        ..first_bounds
+    };
+
+    ledger.record(first_stamp, first_transform, first_bounds);
+    ledger.record(moved_stamp, moved_transform, moved_bounds);
+    ledger.record(restored_stamp, restored_transform, first_bounds);
+
+    assert_eq!(
+        ledger.source_geometry(first_stamp),
+        Some((first_transform, first_bounds)),
+        "UseFrameSnapshot keeps the source transform after movement and restoration"
+    );
+    assert_eq!(
+        ledger.source_geometry(moved_stamp),
+        Some((moved_transform, moved_bounds)),
+        "each retained revision keeps its same-sample raw native bounds"
+    );
+}
+
+#[test]
+fn source_geometry_history_is_finite_and_retires_oldest_first() {
+    let ledger = GeometryLedger::default();
+    let mut cursor =
+        StreamCursor::new(IdentityIssuer::new().issue_stream().expect("issued stream"));
+    let mut revision = GeometryRevision::FIRST;
+    let first_stamp = cursor.publish(revision).expect("published first frame");
+    let first_transform =
+        TransformSnapshot::with_target_extent(revision, PixelExtent::new(640, 480));
+    let bounds = NativeBounds {
+        origin: (0.0, 0.0),
+        size: (640.0, 480.0),
+        scale: 1.0,
+    };
+    ledger.record(first_stamp, first_transform, bounds);
+    let mut second = None;
+
+    for index in 1..=super::GEOMETRY_HISTORY_REVISIONS {
+        revision = revision.next().expect("geometry history revision");
+        let stamp = cursor.publish(revision).expect("published geometry frame");
+        let transform = TransformSnapshot::with_target_extent(revision, PixelExtent::new(640, 480));
+        ledger.record(stamp, transform, bounds);
+        if index == 1 {
+            second = Some((stamp, transform));
+        }
+    }
+
+    assert_eq!(ledger.source_geometry(first_stamp), None);
+    let (second_stamp, second_transform) = second.expect("second revision retained");
+    assert_eq!(
+        ledger.source_geometry(second_stamp),
+        Some((second_transform, bounds))
+    );
 }

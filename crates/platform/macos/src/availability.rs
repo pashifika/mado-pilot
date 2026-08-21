@@ -34,8 +34,8 @@ pub(crate) fn ensure_capture_available() -> Result<()> {
     })
 }
 
-/// Reports whether the linked shim's surface version and structure sizes are the
-/// ones this build mirrors.
+/// Reports whether the linked shim's version, structure sizes, and process-field
+/// offsets are the ones this build mirrors.
 ///
 /// A mismatch means the compiled shim and these declarations disagree about the
 /// boundary's layout, which is a build defect rather than a host limitation.
@@ -43,8 +43,10 @@ pub(crate) fn ensure_capture_available() -> Result<()> {
 pub(crate) fn linked_shim_agrees() -> bool {
     static AGREES: OnceLock<bool> = OnceLock::new();
     *AGREES.get_or_init(|| {
-        let (version, sizes) = shim::linked_layout();
-        version == shim::ABI_VERSION && sizes == shim::declared_layout()
+        let (version, sizes, offsets) = shim::linked_layout();
+        version == shim::ABI_VERSION
+            && sizes == shim::declared_layout()
+            && offsets == shim::declared_process_offsets()
     })
 }
 

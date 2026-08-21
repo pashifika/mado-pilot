@@ -1,12 +1,12 @@
-#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
-#![cfg(target_os = "macos")]
-
 //! Keychain-independent structural verification for the dedicated input fixture.
 //!
 //! The test copies generated build output into a private temporary bundle, ad-hoc
 //! signs only that copy, asks `codesign` to verify its structure, and executes a
 //! metadata-only reporting mode. It never creates a window, requests permission,
 //! reads TCC, changes focus, or posts input.
+
+#![cfg_attr(not(target_os = "macos"), allow(missing_docs))]
+#![cfg(all(target_os = "macos", feature = "private-fixture"))]
 
 use std::fs;
 use std::path::{Path, PathBuf};

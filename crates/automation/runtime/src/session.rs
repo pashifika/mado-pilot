@@ -513,16 +513,10 @@ impl Session {
             for attempt in receipt.attempts() {
                 let attempt = *attempt;
                 self.debug(observed, operation, || {
-                    DiagnosticPayload::RouteAttempt(RouteAttemptDiagnostic {
-                        target: receipt.target(),
-                        route: attempt.route(),
-                        address_scope: attempt.address_scope(),
-                        evidence: attempt.evidence(),
-                        outcome: attempt.outcome(),
-                        submitted: attempt.submitted() as u64,
-                        partial_native_effect: attempt.partial_native_effect(),
-                        fault: attempt.fault(),
-                    })
+                    DiagnosticPayload::RouteAttempt(RouteAttemptDiagnostic::from_attempt(
+                        receipt.target(),
+                        attempt,
+                    ))
                 });
             }
         }
@@ -599,8 +593,8 @@ mod tests {
 
     use mado_pilot_capture::{CaptureProvider, Continuity, FrameRequest, OpenRequest, PixelFormat};
     use mado_pilot_core::{
-        ClipPolicy, IdentityIssuer, MonotonicInstant, OperationContext, PixelExtent, PixelRect,
-        Status,
+        ClipPolicy, IdentityIssuer, Lifecycle, MonotonicInstant, OperationContext, PixelExtent,
+        PixelRect, Status,
     };
     use mado_pilot_testkit::{ControlledCapture, ControlledMatcher, ManualClock, match_fixtures};
     use mado_pilot_vision::{
@@ -862,7 +856,7 @@ mod tests {
             record.payload(),
             DiagnosticPayload::Lifecycle(lifecycle)
                 if lifecycle.target == Some(target)
-                    && lifecycle.lifecycle == mado_pilot_core::Lifecycle::Closed
+                    && lifecycle.lifecycle == Lifecycle::Closed
                     && lifecycle.fault == Some(Status::TargetLost)
         ));
     }

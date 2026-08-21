@@ -41,12 +41,18 @@ crates/bindings/capi/examples/c/macos-native-input.c
 crates/bindings/capi/examples/cpp/native-input.cpp
 ```
 
-Release acceptance remains incomplete. The revision-bound macOS current-display
-matrix passes, but its shared external-display matrix and both Windows
-interactive matrices still require their approved physical topologies. macOS
-capture needs Screen Recording and input needs Accessibility; MadoPilot probes
-both without prompting. A green run that skipped a permissioned native scenario
-is not evidence that scenario ran.
+Release acceptance is complete for the fourteen controlled macOS
+owning-process pairs. Final measured candidate
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` passed the controlled
+AppKit, game-like, and native input/public-language profiles. Independent
+`single`, exact two-display non-mirrored `same-scale`, and three-display
+`mixed-scale` matrices passed without substituting one topology for another.
+The release decision is 14 qualified, 0 rejected, and 0 unexecuted.
+The shared external-display matrix and both Windows interactive matrices still
+require their approved physical topologies. macOS capture needs Screen Recording
+and input needs event-post access; MadoPilot probes both without
+prompting. A green run that skipped a permissioned native scenario is not
+evidence that scenario ran.
 
 The public workflow still neither recognizes text nor waits on a condition.
 Adding a package here is not a claim that its behavior exists.
@@ -63,13 +69,13 @@ Adding a package here is not a claim that its behavior exists.
 | Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
 | Native capture | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; the macOS current-display matrix passes while Windows and shared-display acceptance remain open |
-| Native input submission | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; system and exact-window routes are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
+| Native input submission | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
 | Bounded diagnostic observation | Implemented through Rust, C ABI 1.2, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and privacy-reviewed records |
 | OCR, watchers | Not implemented |
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.2 while preserving the released ABI 1.0 prefix; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.2 |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 is resolved on both targets. The Phase 2.2 input-diagnostic and native input/public-language profiles are accepted on macOS, and diagnostic hard correctness and bounded-growth gates run in both release-target CI jobs; named-host Windows timing plus the remaining macOS capture/transition and Windows native profiles stay open |
+| Numeric performance budgets | Phase 1 is resolved on both targets. The Phase 2.2 input-diagnostic profile and final `dec43d7` native input/public-language, process-directed AppKit, and controlled game-like profiles are accepted on macOS. Independent `single`, `same-scale`, and `mixed-scale` owning-process matrices pass. Diagnostic hard correctness and bounded-growth gates run in both release-target CI jobs; named-host Windows timing plus the remaining Windows native profiles stay open |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled
@@ -207,7 +213,7 @@ cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<
 | [docs/performance.md](docs/performance.md) | Benchmark profiles, Phase 1 budgets, and the invalidated/requalification status of Phase 2 native evidence |
 | [docs/third-party-dependencies.md](docs/third-party-dependencies.md) | Dependency license, source, advisory, and native-deployment policy |
 | [docs/windows-input-verification.md](docs/windows-input-verification.md) | Windows input capability matrix, focus/UIPI behavior, fixture privacy bounds, and native checks |
-| [docs/macos-input-verification.md](docs/macos-input-verification.md) | macOS input capability matrix, Accessibility and focus behavior, fixture privacy bounds, and native checks |
+| [docs/macos-input-verification.md](docs/macos-input-verification.md) | macOS input capability matrix, authorization and focus behavior, process-directed qualification, fixture privacy bounds, and native checks |
 | [docs/releases/](docs/releases/) | Canonical release notes and exact artifact limitations |
 | [docs/adr/](docs/adr/) | Architecture decision records, and [the template](docs/adr/0000-template.md) with the rule for when one is required |
 | [docs/evidence/](docs/evidence/) | The measurements behind decisions that rest on them |
@@ -228,11 +234,11 @@ tracked replay sequences and files, and injects no input. The native workflow is
 now reachable from the public facade and keeps the same commitments: both
 platform packages capture and submit input with no elevation and redacted fixture
 evidence; macOS reads its two authorizations without prompting and reads the
-Accessibility decision again before every event; Windows reports that it reads
-no separate authorization rather than having one invented for it. Receipts state
-native submission evidence and never claim application consumption. The C ABI
-and C++ wrapper preserve the same explicit capability, permission, route,
-receipt, diagnostic, and ownership contracts.
+event-post decision again before every irreversible event on both routes;
+Windows reports that it reads no separate authorization rather than having one
+invented for it. Receipts state native submission evidence and never claim
+application consumption. The C ABI and C++ wrapper preserve the same explicit
+capability, permission, route, receipt, diagnostic, and ownership contracts.
 
 ## Contributing
 

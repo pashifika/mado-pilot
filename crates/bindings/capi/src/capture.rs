@@ -206,6 +206,7 @@ impl Versioned for madopilot_frame_stamp_t {
         sequence,
         geometry,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self::cleared(struct_size)
@@ -226,6 +227,10 @@ impl Versioned for madopilot_frame_info_t {
         stride,
         bounds,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[(
+        covers!(madopilot_frame_info_t, bounds: madopilot_pixel_rect_t),
+        size_of::<madopilot_frame_info_t>(),
+    )];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -258,6 +263,10 @@ impl Versioned for madopilot_image_t {
         bytes,
         region,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[(
+        covers!(madopilot_image_t, region: madopilot_pixel_rect_t),
+        size_of::<madopilot_image_t>(),
+    )];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -290,6 +299,7 @@ impl Versioned for madopilot_session_info_t {
         accepts_input,
         reserved,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {

@@ -62,11 +62,11 @@ owns and where they genuinely differ.
 |---|---|---|
 | Adapter package | `mado-pilot-platform-windows` | `mado-pilot-platform-macos` |
 | Capture ownership | Windows Graphics Capture streams and Direct3D 11 resource lifetime (implemented) | ScreenCaptureKit streams and Core Video frame lifetime (implemented) |
-| Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text and no `WindowMessage` or `ProcessDirected` route (implemented in the platform package) |
-| Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and Accessibility reported separately without permission UI; input re-reads the Accessibility decision before every irreversible event (implemented) |
+| Input ownership | System pointer/keyboard/text plus explicit exact-window `WindowMessage`: ordinary retained top-level windows are unknown-but-attemptable with target-queue evidence, while the dedicated fixture is supported with protocol acknowledgement (implemented in the platform package) | `CGEvent` system pointer/keyboard/text plus an explicitly selected owning-process `ProcessDirected` route. Final protocol-v11 candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. Their release decision is 14 qualified, 0 rejected, and 0 unexecuted. No `WindowMessage` route exists |
+| Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
 | Native verification host | `windows-2025` CI plus the ADR 0026 named interactive Core i7-12700KF / RTX 4080 Windows 11 Pro 26200 host | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | unresolved | macOS 26.5.2; older versions unsupported |
-| Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) production-capture acceptance matrix and budgets; [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts diagnostic timing and the original `native-phase2` workload sets; [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` timing, memory, queue-pressure, and cleanup ceilings | [`G-013`](validation-gates.md#g-013) macOS capture/transition and final-source Phase 2 regression profiles; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics and [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts native input/public-language costs |
+| Open gates | [`G-001`](validation-gates.md#g-001) minimum; [`G-013`](validation-gates.md#g-013) production-capture acceptance matrix and budgets; [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts diagnostic timing and the original `native-phase2` workload sets; [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` timing, memory, queue-pressure, and cleanup ceilings | [`G-013`](validation-gates.md#g-013) broader production-capture acceptance and final-source regression reruns; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the current native input/public-language costs, and accepted-design [ADR 0029](adr/0029-macos-process-directed-input.md) accepts the final `dec43d7` controlled process-directed profiles and all fourteen topology-qualified owning-process pairs |
 
 Detailed capabilities, permission outcomes, coordinate transforms, native
 resource ownership, and unsupported-system behavior are added by the changes
@@ -270,7 +270,7 @@ prefix.
 | `crates/automation/assets` | `mado-pilot-assets` | Versioned manifest, validation, deterministic loading, and source-resolution contracts |
 | `crates/adapter/replay` | `mado-pilot-adapter-replay` | Deterministic replay capture from file and memory sources |
 | `crates/platform/windows` | `mado-pilot-platform-windows` | Picker-free Windows window/display discovery, WGC/D3D11 capture, system input, ordinary exact-window queue submission with unknown compatibility, and fixture-acknowledged exact-window submission, wired into the runtime and facade by `mado_pilot::windows_engine`; Windows exposes no separate capture/input authorization state, and receipts report integrity/UIPI failures without elevation |
-| `crates/platform/macos` | `mado-pilot-platform-macos` | Non-prompting macOS target discovery, permission probes, ScreenCaptureKit capture, and `CGEvent` system input, wired into the runtime and the facade by `mado_pilot::macos_engine` |
+| `crates/platform/macos` | `mado-pilot-platform-macos` | Non-prompting macOS target discovery, permission probes, ScreenCaptureKit capture, `CGEvent` system input, and gated process-directed input to the retained window's owning process, wired into the runtime and the facade by `mado_pilot::macos_engine` |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Planned ONNX Runtime OCR and execution-provider adapter |
 | `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
@@ -804,15 +804,15 @@ responsibilities a later phase takes on.
 | Monotonic clock domain, operation deadlines, cancellation, terminal-outcome arbitration | Implemented in `mado-pilot-core` |
 | Public statuses and structured errors | Implemented in `mado-pilot-core` |
 | Target kind, capability, permission, and redacted-diagnostic vocabulary | Implemented in `mado-pilot-core`; both capture Adapters report window/display capture and coordinate capabilities, and the macOS Adapter reports the authorization capture needs |
-| Non-prompting permission probe contract | Implemented in `mado-pilot-core`; the macOS Adapter implements it for Screen Recording and Accessibility separately, and no Windows probe exists yet |
+| Non-prompting permission probe contract | Implemented in `mado-pilot-core`; the macOS Adapter implements it for Screen Recording and event-post access separately, and no Windows probe exists yet |
 | Native window and display discovery | Implemented on both targets with picker-free, deterministically ordered enumeration and provider-qualified identities |
 | Capture contracts, immutable frames, frame views, CPU mapping | Implemented in `mado-pilot-capture` |
 | Adapter-facing opaque frame storage, storage publication, terminal stream faults | Implemented in `mado-pilot-capture`; Windows adds independently retained D3D11 storage and macOS detached Core Video storage, each with lazy CPU mapping |
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
 | Windows native capture ownership policy | Implemented for the production Adapter's two-frame WGC pool, extent-derived process-shared retained maximum capped at 40, 128 MiB surface / 2 GiB session / 4 GiB process safety ceilings, lease-safe reuse, resize retirement, callback fence, and teardown. [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts the `native-phase2` capture/transition profiles, while the separate revision-bound 1280×720/dual-4K acceptance matrix and callback-copy/staging/resident budgets remain open under `G-013` |
 | macOS shim language and containment rules | Decided in [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the retained `G-003` measurements, and implemented in `mado-pilot-platform-macos` with the containment, ownership, autorelease, fence, teardown, panic, and linkage tests the record named. The containment and ownership cases need a host that has granted Screen Recording and report a skip elsewhere |
-| macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, reference-counted native session lifetime, and idempotent teardown. The lifetime is verified by running the ownership scenarios with the shim compiled under AddressSanitizer, which is step 10 of the [contributing](../CONTRIBUTING.md) sequence and needs the same granted host those scenarios do. The detached budget remains a reviewed bound; ADR 0021 invalidated the historical native performance acceptance pending revision-bound requalification |
-| macOS input route and focus authority | Decided in [ADR 0016](adr/0016-macos-input-delivery-surface-and-focus-authority.md) and refined by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md): `System` only with no exact-window or process-directed pair on any macOS target, Accessibility re-read before every irreversible event, application-level activation followed by bounded public Accessibility read-back of the exact retained window, and AppKit and HIToolbox loaded rather than linked |
+| macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, reference-counted native session lifetime, and idempotent teardown. The lifetime is verified by running the ownership scenarios with the shim compiled under AddressSanitizer, which is step 10 of the [contributing](../CONTRIBUTING.md) sequence and needs the same granted host those scenarios do. The detached budget remains a reviewed bound; ADR 0021 invalidated the historical native performance acceptance, and accepted-design [ADR 0029](adr/0029-macos-process-directed-input.md) keeps its prior current-topology measurements historical pending exact-source reruns |
+| macOS input route and focus authority | Decided in [ADR 0016](adr/0016-macos-input-delivery-surface-and-focus-authority.md), refined by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md), and extended by [ADR 0029](adr/0029-macos-process-directed-input.md): separate `System` and explicit owning-process `ProcessDirected` routes with no exact-window pair on any macOS target; the public `CGPreflightPostEventAccess` decision is re-read before every irreversible event with the legacy Accessibility observation retained as a paired qualification-only fact; `System` alone uses application activation and bounded public Accessibility read-back. Process-directed preflight retains mutable authority for delay-only or fallback-eligible routes, while a terminal native-event route defers duplicate mutable window authority and source-geometry comparison to one final native commit. Cleanup still revalidates the original process lifetime without a window inventory read. Independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices pass; release publication is qualified for all fourteen controlled pairs |
 | Native window and display capture | Implemented on both targets, and reachable from the public composition root through the target-specific facade constructors |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
@@ -824,7 +824,7 @@ responsibilities a later phase takes on.
 | OCR, watchers, and scheduling | Not implemented |
 | Bounded engine-scoped diagnostic observation | Implemented in `mado-pilot-runtime` and the facade with allocation-free `Off`, finite `Normal`/`Debug` streams, strict record order, exact loss counts, immutable owned batches, independent reader lifetime, and privacy-reviewed payloads; exposed through C ABI 1.2 and the C++ wrapper |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
-| Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text with no window-message or process-directed route. Both are reached through `mado-pilot-runtime`, the facade, the ABI 1.2 C table, and the C++ wrapper |
+| Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text and process-directed pointer/keyboard/text with owning-process scope, unknown compatibility, and invocation-only evidence; final candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. No macOS window-message route exists. Both implementations are reached through `mado-pilot-runtime`, the facade, the ABI 1.2 C table, and the C++ wrapper |
 | Asset manifests and directory, memory, and archive loading | Implemented in `mado-pilot-assets` |
 | Asset archive container, manifest format, and safety ceilings | Implemented and conformance-tested; decided in [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 | Asset resolution into OCR model sources | Not implemented |
@@ -838,7 +838,7 @@ responsibilities a later phase takes on.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.2 as a header-only adapter, including typed native capability, permission, input policy, owned receipt/attempt views, diagnostics, and partial-failure values; decided in [ADR 0005](adr/0005-cpp-wrapper-shape-and-cmake-surface.md) and extended without a second ABI |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Set for all Phase 1 workloads on both release targets by [ADR 0008](adr/0008-phase-1-performance-budgets.md). [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) keeps historical macOS capture and transition profiles non-normative after source and oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts macOS Phase 2.2 diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts macOS native input/public-language costs, [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts Windows diagnostics plus the original `native-phase2` workload sets, and [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary exact-window submission latency/memory plus queue-pressure and cleanup ceilings. Windows production-capture acceptance, macOS capture/transitions, and final-source regression reruns stay open under [`G-013`](validation-gates.md#g-013) |
+| Numeric performance budgets | Set for all Phase 1 workloads on both release targets by [ADR 0008](adr/0008-phase-1-performance-budgets.md). [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) keeps the historical macOS input-stimulus capture and transition profiles non-normative after source and oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts macOS Phase 2.2 diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the current macOS native input/public-language costs, and accepted-design [ADR 0029](adr/0029-macos-process-directed-input.md) accepts final candidate `dec43d7` controlled AppKit/game-like profiles and all fourteen topology-qualified owning-process pairs. [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts Windows diagnostics plus the original `native-phase2` workload sets, and [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary exact-window submission latency/memory plus queue-pressure and cleanup ceilings. Broader production-capture acceptance and final-source regression reruns outside these lineages stay open under [`G-013`](validation-gates.md#g-013) |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for the frozen ABI 1.0 header and current ABI 1.2 surface. The ABI 1.0 caller compiles against its immutable header, negotiates only its declared table extent, and runs against the current library. The unreleased 1.1 fixture is removed; current-header C and Rust checks refuse minimum minor 1 and oversized minor-zero extents |
@@ -1050,6 +1050,11 @@ opaque `ActivityTag`. The sequence is the only total order. Timestamps and
 activity tags are observational correlation and never change admission,
 scheduling, identity, deadlines, cancellation, or result semantics.
 
+Activity tags are non-secret metadata. The macOS `ProcessDirected` adapter copies
+a nonzero tag to its per-sequence Core Graphics event source so the addressed
+process can correlate native observations; that field remains outside admission,
+authority, posting, and receipt semantics.
+
 Producers never wait for capacity, call host code, or format a log line. A full or
 contended stream discards the record and accounts for the exact normal/debug loss
 in the next committed immutable batch. Draining reports `Batch`, `OpenEmpty`, or
@@ -1189,36 +1194,138 @@ strictly newer visual condition as an independent success oracle.
 `mado-pilot-platform-macos` implements `InputProvider` over the same retained
 target records capture uses, so an input request and a capture session name the
 same snapshot-scoped identity. A window advertises pointer, keyboard, and text
-over `InputDelivery::System` and requires focus; a display advertises pointer only
-and requires none. No macOS target advertises `WindowMessage` or
-`ProcessDirected` for any operation, because macOS exposes no qualifying route
-with those address scopes. A request that requires one fails admission before
-any event, and nothing substitutes system input for it.
+over `InputDelivery::System` and requires focus; a display advertises pointer
+only and requires none. A retained, currently eligible window additionally
+reports pointer, keyboard, and text over explicit
+`InputDelivery::ProcessDirected` with `InputAddressScope::OwningProcess`,
+`CapabilitySupport::Unknown`, and `SubmissionEvidence::InvocationOnly`. The
+route imposes no focus requirement by default, but a caller-selected
+`RequireFocused` predicate is honored without activation. Additional windows in
+the same process do not revoke that process-scoped capability. Independent
+`single`, exact two-display non-mirrored `same-scale`, and `mixed-scale`
+matrices passed for final candidate `dec43d7`; all fourteen controlled release
+pairs are qualified. No macOS target
+advertises `WindowMessage`, because macOS exposes no exact-window channel. A
+request that requires an unavailable route fails admission before any event,
+and nothing substitutes system input for it. `System` is attempted only when
+the caller explicitly listed that ordered fallback, its focus policy permits
+it, and the process route refused during its fallback-preserving early
+preflight with zero possible effect.
 
-The system route invokes `CGEventPost` at the HID event tap. macOS discards a
-synthesized event from an untrusted process rather than failing the call, so the
-non-prompting Accessibility trust check is read again immediately before every
-irreversible event, together with target liveness, focus, and — for a pointer
-event — the geometry the coordinate was resolved against. A revocation observed
-mid-sequence stops submission with the count already invoked.
+The system route invokes `CGEventPost` at the HID event tap; the process route
+invokes `CGEventPostToPid` against the owning process. macOS discards a
+synthesized event from an unauthorized process rather than failing the call, so
+the public non-prompting `CGPreflightPostEventAccess` decision is read again
+immediately before every irreversible event on both routes, together with
+deadline, cancellation, route authority, any caller-selected focus predicate,
+and pointer geometry required by that policy. The contract name
+`InputControl` denotes that post-event authority even when macOS groups the
+grant under an Accessibility-labelled settings pane. Legacy
+`AXIsProcessTrusted` is not post authority; it remains a paired qualification
+fact and is consulted separately only when focus must be established. A
+revocation observed mid-sequence stops submission with the count already
+invoked.
+
+`ProcessDirected` truthfully addresses a process, not one exact window. The
+controller derives the need for mutable early authority once per route attempt.
+An attempt with a later caller-ordered route, or a delay-only sequence with no
+native event, retains the early bounded shareable-content observation so target
+loss is a zero-effect refusal and fallback semantics do not change. A terminal
+ordinary route carries the retained logical `SCWindow`, original process
+lifetime, and source-frame geometry forward without repeating that mutable
+observation in Rust. Immediately before each irreversible ordinary post, one
+native commit gate obtains the authoritative bounded shareable-content
+inventory and joins the retained object, original process lifetime, and current
+PID relationship. The retained window must still be present, equal, on screen,
+open, unminimized, layer zero, and finite; its owner must still be the original
+retained process lifetime. Numeric PID and window metadata only narrow the
+lookup and cannot authorize a replacement. Additional same-process windows,
+including ScreenCaptureKit auxiliary windows, do not revoke process scope and
+may receive or otherwise react to the event. Callers that require exact-window
+consumption reject this capability before input.
+
+A caller-selected `RequireFocused` predicate travels in the size-versioned
+process-post request and is observed inside that same final native operation,
+immediately before `CGEventPostToPid`. An early adapter-side focus observation
+is a cheap refusal, not final authority; it can refuse an unfocused retained
+window with `FocusRequired`, or an unobservable predicate with `NotAuthorized`,
+before event construction. If focus changes during reversible event
+construction, the final native predicate refuses before posting. Cleanup
+deliberately performs no retained-window inventory read: it revalidates the
+original process lifetime, route, authorization, deadline, and cancellation,
+but requires no focus predicate, ordinary target visibility, or pointer
+geometry. This lets bounded release of sequence-owned state continue when the
+original window moved, minimized, or closed, while a replacement process still
+cannot receive it.
+The route never activates or raises the target and never moves the physical
+cursor. A non-move pointer event with no sequence-resolved location reads the
+current physical cursor and refuses unless that point lies inside the target
+rectangle selected by the active geometry policy. The route returns
+invocation-only evidence. A returned void call closes fallback and proves
+neither queue admission nor application consumption, so a caller verifies
+intended effect on strictly newer frames from the retained capture stream.
+Publication is governed by
+[ADR 0029](adr/0029-macos-process-directed-input.md).
+
+The frozen one-event terminal profile uses `RequireUnchanged`, preserving focus,
+and no fallback. Its pre-optimization form performed four fresh shareable-content
+inventory reads and measured `212.674625 ms` AppKit / `224.368667 ms`
+controlled game-like p95. Source
+`a471c2d51428a25dd11e42572b73cf5e86ef7478` introduced the deterministic
+one-authority-read shape, but its retained benchmark bodies are source/oracle-
+misbound and provide no latency result. Final exact-source candidate
+`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` passed the controlled
+AppKit profile at `56.466375 ms` p95 and controlled game-like profile at
+`56.699333 ms` p95, with zero correctness failures and zero allocation
+growth. A fallback-eligible ordinary route retains one early read
+plus the final read; `ReprojectCurrent` likewise performs one current-geometry
+read plus final native authority. Those two-read paths, `RequireFocused`,
+cleanup, and multi-unit sequences are outside the one-read scope. The measured
+figures are controlled regression evidence, not a real-time bound or general
+application/game compatibility claim.
 
 Coordinates resolve into the global point plane `CGEvent` accepts, which is the
 same top-left-origin plane macOS capture publishes placement in, so a Retina or
-signed multi-display coordinate is posted without rounding. Input first queries
-current shareable content, narrows by the discovery PID and window number, and
-requires logical equality with the `SCWindow` retained by the discovery filter.
-Focus then requires the owning application's public Accessibility object to be
-frontmost and its focused window to correspond one-to-one with that freshly
-verified frame through `kAXPositionAttribute` and `kAXSizeAttribute`. The
-shareable-content identity and frame are read again after the Accessibility
-snapshot; missing attributes, changed geometry, an unequal window, or zero or
-multiple matches establish no focus. Numeric metadata and geometry only narrow
-and join live observations; neither can select a replacement.
-`ActivateIfRequired` activates the owning *application* and repeats that bounded
+signed multi-display coordinate is posted without rounding. Every pointer
+request carries its source-frame transform. `RequireUnchanged` projects with
+that transform and carries the same frame's raw
+`SCStreamFrameInfoScreenRect` and raw backing scale into the final native
+comparison. Exact desktop origin and scale must match; source and live point
+sizes are each quantized at the raw scale and compared as backing-pixel
+extents. Raw point sizes are not compared for exact floating-point equality,
+because a fractional window can differ from the transform's normalized
+logical extent while preserving the same backing extent. Effective content
+scale and captured content extent cannot substitute for the raw bounds when
+ScreenCaptureKit downscales a frame. Movement or resize refuses after
+reversible event construction and before posting.
+`UseFrameSnapshot` also projects from the source transform but deliberately
+tolerates current movement while retaining exact-window and process-lifetime
+authority. The macOS target ledger retains the 64 most recent distinct geometry
+revisions per live stream; a retired source is `UnsupportedCoordinate`, never a
+reconstruction from current geometry. `ReprojectCurrent` obtains a live Rust
+transform, resolves against it, and requires the final native bounds to remain
+equal.
+Pointer scroll events carry the sequence's last resolved global location with
+their deltas and never inherit an ambient Core Graphics location. A fixture
+restore can first publish
+a strictly newer frame with transient pre-restore geometry; qualification waits
+for a strictly newer frame whose geometry and controlled content both match,
+rather than treating frame order alone as restoration.
+
+Focus is mandatory for `System` windows and is evaluated for
+`ProcessDirected` when the caller selects `RequireFocused`. The owning
+application's public Accessibility object must be frontmost and its focused
+window must correspond one-to-one with the freshly verified frame through
+`kAXPositionAttribute` and `kAXSizeAttribute`. The shareable-content identity
+and frame are read again after the Accessibility snapshot; missing authority or
+attributes, changed geometry, an unequal window, or zero or multiple matches
+fail before posting. Numeric metadata and geometry only narrow and join live
+observations; neither can select a replacement. `ActivateIfRequired` activates
+the owning application only for the `System` route and repeats that bounded
 read-back, reporting `FocusRefused` when the exact retained window cannot be
-established as focused. It does not pass
-`NSApplicationActivateIgnoringOtherApps`, use a private Accessibility window
-identifier, or move another application's windows. A same-process replacement
+established as focused. `ProcessDirected` never activates. Neither route passes
+`NSApplicationActivateIgnoringOtherApps`, uses a private Accessibility window
+identifier, or moves another application's windows. A same-process replacement
 that recycles the number makes the old public `TargetId` report `TargetLost`.
 
 Pressed buttons and keys belong only to the sequence that pressed them, and a
@@ -1232,22 +1339,51 @@ process-qualified title, one flat fill colour, and a bounded report of event kin
 and UTF-16 unit counts; it never retains characters. Its reproducible OSS bundle
 mode uses an ad-hoc signature with the stable signing identifier
 `dev.mado-pilot.macos-input-fixture` and no certificate identity. The generated
-bundle is structurally verified without a keychain. Because macOS cannot submit
-without focusing, successful native invocation remains an explicit user-focused
-check; structural signature validity proves neither a TCC decision nor an
-application consuming input.
+bundle is structurally verified without a keychain. A private version-11 control
+protocol drives bounded deterministic window, foreground, recorder, and
+termination transitions and an opt-in game-like OpenGL renderer mode reported
+as an explicit ready fact, so capture evidence never depends on focus, ambient
+redraws, or product input. `System` submission remains an explicit user-focused
+check.
+
+The qualification controller obtains each new fixture instance through the
+absolute-path AppKit loader, retains the returned `NSRunningApplication`, and
+accepts its private socket peer only when kernel credentials bind that exact
+PID, user, canonical executable, and audit-token lifetime. The artifact SHA-256
+is paired with a validity-first Security.framework unique code identity; the
+peer's audit-token-selected running identity must match before ready facts are
+trusted. The benchmark's own process uses the same binding. Each C and C++
+workload retains unique executable and dynamic-library pins inside
+controller-owned mode-0500 directories; every child must match the executable
+pin's live code identity, and both directory/file identities and bytes are
+rechecked after each exit. Each `ProcessDirected`
+renderer matrix first runs a target-only launch
+that proves `RequireFocused` succeeds while that retained window is already
+focused, then terminates it. The main lifecycle starts the independently
+identified foreground bundle before an inactive target; its focus-policy row
+proves `RequireFocused` refuses without effect. No input request activates either
+target. Receipt, bounded fixture observation, and newer-frame visual result
+remain separate facts.
+Structural signature validity proves neither a TCC decision nor an application
+input.
 The capability matrix, commands, privacy limits, bundling/signing step, and manual
 procedure are in [macos-input-verification.md](macos-input-verification.md).
 
 Input adds no crate and no eager framework: AppKit, HIToolbox, and the public
-Security.framework code-signing API are opened from absolute system paths on first
-use, exactly as ScreenCaptureKit is, and the fixture's window is compiled into a
-separate archive no released artifact links.
+Security.framework code-signing API are opened from absolute system paths on
+first use, exactly as ScreenCaptureKit is; `CGEventPostToPid` and
+`CGPreflightPostEventAccess` are resolved by symbol from the absolute
+CoreGraphics path so their availability is a typed result; and the fixture's
+window, control protocol, and event recorder are compiled into a separate
+archive no released artifact links.
 
 The system route, per-event authorization rule, activation authority, and linkage
 arrangement are recorded in
-[ADR 0016](adr/0016-macos-input-delivery-surface-and-focus-authority.md); ADR 0023
-defines the current route and evidence vocabulary.
+[ADR 0016](adr/0016-macos-input-delivery-surface-and-focus-authority.md); the
+process-directed route, its owning-process authority, its authorization truth
+source, and its per-pair publication gate are recorded in
+[ADR 0029](adr/0029-macos-process-directed-input.md); ADR 0023 defines the
+current route and evidence vocabulary.
 
 ### Windows native capture ownership
 
@@ -1446,9 +1582,9 @@ authorized host, and it is the one case where the containment rules ADR 0012 fix
 are not enough on their own.
 
 Authorization comes first because it decides whether anything else may run.
-Screen Recording and Accessibility are read through separate non-prompting checks
-and reported as separate outcomes; neither stands in for the other, and the
-options-taking variants that can prompt are never called. The framework's own
+Screen Recording and event-post access are read through separate non-prompting
+checks and reported as separate outcomes; neither stands in for the other, and
+the request-capable variants that can prompt are never called. The framework's own
 shareable-content query presents the system dialog when a process has no decision
 yet, so discovery and open preflight the capture authorization and refuse with a
 typed access-denied outcome before reaching it. An unauthorized host therefore gets
@@ -1543,9 +1679,18 @@ Adapter budgets. ADR 0020 recorded macOS capture, mapping, lifecycle, and Rust
 input/common-flow costs for an earlier tree. Source drift and repaired liveness
 and benchmark oracles invalidated those numbers under
 [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md).
-[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) requalifies the
-native input and public-language profile only; the macOS capture and transition
-workloads remain open under Phase 2 [`G-013`](validation-gates.md#g-013).
+[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
+earlier native input and public-language profile. Accepted-design
+[ADR 0029](adr/0029-macos-process-directed-input.md) preserves the complete
+pre-optimization qualification as historical evidence. Source `a471c2d` retains
+historical three-display native rows, but its attributed AppKit/game-like
+benchmark bodies are source/oracle-misbound. Final candidate `dec43d7` passes
+the exact-source controlled profiles and independent `single`, exact
+two-display non-mirrored `same-scale`, and `mixed-scale` native matrices.
+All fourteen controlled release pairs are qualified. The broader
+production-capture matrix
+and final-source regression reruns outside that lineage remain open under
+Phase 2 [`G-013`](validation-gates.md#g-013).
 
 CPU conversion is not part of the detach. The detached buffer keeps the native row
 padding, and a mapping produces the caller's bytes at exactly the packed stride the
@@ -2125,10 +2270,15 @@ The source-defined diagnostic benchmark measures capture/mapping, input
 submission, and explicit close/drain with diagnostics `Off`, `Normal`, `Debug`,
 and under four-slot pressure. ADR 0024 accepts the `aarch64-apple-darwin`
 diagnostic regression ceilings; release-target CI runs the correctness and
-bounded-growth smoke plan. ADR 0025 separately accepts the revision-bound
-macOS native input and Rust/C/C++ public-language profile. Windows diagnostic
-timing, every Windows native profile, and the macOS capture and transition
-profiles remain explicit `G-013` gaps.
+bounded-growth smoke plan. ADR 0025 accepts the current revision-bound macOS
+native input and Rust/C/C++ public-language profile. Accepted-design ADR 0029
+retains `a471c2d` native rows only as historical evidence and rejects its
+source/oracle-misbound benchmark bodies. Final candidate `dec43d7` passes
+exact-source controlled AppKit/game-like profiles and independent `single`,
+exact two-display non-mirrored `same-scale`, and `mixed-scale` native matrices.
+All fourteen controlled release pairs are qualified. The production-capture
+matrix and final-source reruns outside that lineage remain explicit `G-013`
+gaps.
 
 ### Phase 0 completion contract
 
@@ -2160,14 +2310,14 @@ against.
 
 | Verification class | Status | Phase 0 |
 |---|---|---|
-| Numeric runtime performance budgets | Implemented for Phase 1 by [ADR 0008](adr/0008-phase-1-performance-budgets.md): four committed profiles carry both-target measurements and the two `kind = "hard"` predicates are enforced in-process on `cargo bench` and `cargo test`. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts macOS Phase 2.2 diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts current macOS native input/public-language costs, [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts Windows diagnostics and the original `native-phase2` capture/transition/input profiles, and [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` latency, memory, queue-pressure, and cleanup budgets. Historical macOS capture/transitions remain non-normative under [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md); Windows production-capture acceptance, current macOS capture/transitions, and final-source Phase 1 reruns remain open | Not applicable; no performance-sensitive implementation existed |
+| Numeric runtime performance budgets | Implemented for Phase 1 by [ADR 0008](adr/0008-phase-1-performance-budgets.md): four committed profiles carry both-target measurements and the two `kind = "hard"` predicates are enforced in-process on `cargo bench` and `cargo test`. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts macOS Phase 2.2 diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts current macOS native input/public-language costs, [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts Windows diagnostics and the original `native-phase2` capture/transition/input profiles, [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` latency, memory, queue-pressure, and cleanup budgets, and [ADR 0029](adr/0029-macos-process-directed-input.md) accepts the optimized controlled macOS terminal profile gates without treating them as release pair qualification. Historical macOS capture/transitions remain non-normative under [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md); Windows production-capture acceptance, current macOS capture/transitions, and final-source Phase 1 reruns remain open | Not applicable; no performance-sensitive implementation existed |
 | ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field; structure-prefix tests cover inputs and outputs in both directions; and the immutable `tests/abi-compat/v1/` caller compiles against its released header, negotiates only that table extent, and runs against the current ABI 1.2 library. The unreleased `v1.1` fixture is removed, while current-header C and Rust checks prove minimum minor 1 is rejected. ABI 1.0 was resolved under [`G-010`](validation-gates.md#g-010) by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md); ABI 1.2 is recorded by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md) | Not applicable; no ABI existed |
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | OCR, watcher, input, and diagnostic contract suites | Input contracts, controlled input doubles, diagnostic concurrency/loss/privacy cases, and facade action-correlation tests are implemented. Both platform Adapters add deterministic controller cases and native integration procedures; OCR and watcher suites remain not applicable | Not applicable |
-| Native permission behavior and permission probes | Implemented on macOS and enforceable: Screen Recording and Accessibility are read separately through non-prompting checks, discovery and open preflight capture authorization, macOS input re-reads the Accessibility decision before every irreversible event and treats an unavailable or unreadable state as unauthorized, and no permission-request API is called. The facade, C ABI, and C++ wrapper expose the same non-prompting states. Windows advertises no permission-probe capability; its input path compares integrity non-promptingly, proves the same-integrity dedicated fixture path and higher-integrity ordinary refusal path natively, and retains controlled-driver coverage for receipt edge cases | Not applicable; no permission was requested or probed |
+| Native permission behavior and permission probes | Implemented on macOS and enforceable: Screen Recording and event-post access are read separately through non-prompting checks, discovery and open preflight capture authorization, macOS input re-reads the public `CGPreflightPostEventAccess` decision before every irreversible event on both routes and treats an unavailable or unreadable state as unauthorized, the legacy Accessibility observation is retained only as a paired qualification fact, and no permission-request API is called. The facade, C ABI, and C++ wrapper expose the same non-prompting states. Windows advertises no permission-probe capability; its input path compares integrity non-promptingly, proves the same-integrity dedicated fixture path and higher-integrity ordinary refusal path natively, and retains controlled-driver coverage for receipt edge cases | Not applicable; no permission was requested or probed |
 | Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for staged current/previous discovery generations, two-frame WGC detachment, an extent-derived process-shared retained maximum capped at 40, checked 128 MiB surfaces and 2 GiB session / 4 GiB process retained-byte ceilings, deterministic multi-session contention/release behavior, producer leases bound to queued/quarantined native ownership, lock-free drop debt, lazy mapping, resize generations, callback admission fencing, apartment-safe asynchronous native teardown, typed terminal loss, runtime-resolved optional exports, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). The revision-bound 600-frame/dual-4K acceptance report and Phase 2 `G-013` performance budgets remain open, so release support is not yet claimed | Not applicable; no native capture existed |
 | Windows input submission and cleanup | Implemented and enforceable in `mado-pilot-platform-windows` for separate `System` and explicit exact-window `WindowMessage` routes, ordinary `Unknown` compatibility with target-queue evidence, fixture `Supported` compatibility with protocol acknowledgement, retained-authority pre/post fences, conservative message translation, focus and signed-coordinate policies, system native-record accounting, integrity/UIPI classification, non-fallback after native submission begins, bounded sequence-owned same-route cleanup, target loss, cancellation/deadline races, and close. [ADR 0027](adr/0027-windows-window-message-queue-submission.md) supersedes ADR 0022's ordinary system-only consequence without claiming application consumption or generation-atomic `HWND` safety. Native ordinary/fixture, negative-consumer, queue-pressure, lifecycle, single-display, same-DPI and mixed-DPI topology, unrelated-foreground, visual/no-visual, and higher-integrity/UIPI refusal rows are recorded; same-value recurrence remains an explicit unproved row |
-| macOS input submission and cleanup | Implemented and enforceable in `mado-pilot-platform-macos` for the target-kind capability matrix, system-stream admission evidence, absence of any window-message or process-directed pair, focus outcomes, Retina and signed multi-display point mapping, layout-resolved keys and refused modifier-only characters, sequence-owned modifier flags, surrogate-safe text chunking, non-fallback after possible effect, bounded sequence-owned cleanup, target loss, cancellation/deadline races, and close. Exact-window focus joins current shareable-content identity to a public read-only Accessibility focused-window snapshot and never raises an Accessibility window; successful submission is not presented as application consumption |
+| macOS input submission and cleanup | Implemented and enforceable in `mado-pilot-platform-macos` for the target-kind capability matrix, system-stream admission evidence, process-directed input with owning-process scope, unknown compatibility, and invocation-only evidence, absence of any window-message pair, route-sensitive early authority, one final native retained-window/process-lifetime commit per ordinary native unit, source-frame `RequireUnchanged` comparison, live `ReprojectCurrent`, snapshot projection, release-purpose cleanup without a retained-window inventory read, focus outcomes, Retina and signed multi-display point mapping, layout-resolved keys and refused modifier-only characters, sequence-owned modifier flags, surrogate-safe text chunking, non-fallback after possible effect, bounded sequence-owned cleanup, target loss, cancellation/deadline races, and close. Exact-window focus joins current shareable-content identity to a public read-only Accessibility focused-window snapshot and never raises an Accessibility window; successful submission is not presented as application consumption. Final candidate `dec43d7` passed the controlled profiles and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices. All fourteen controlled release pairs are qualified |
 | macOS shim containment and native ownership | Implemented in `mado-pilot-platform-macos` for exception containment at every entry point and callback trampoline, panic containment on the Rust side of every callback, per-work-item autorelease pooling, disable-and-drain callback fencing, detached Core Video storage from a finite budget, lazy CPU mapping at an exact stride, frame-authoritative Retina and signed multi-display geometry, and retryable idempotent teardown. Enforceability is uneven and stated rather than averaged: the surface-layout, status, geometry, panic-containment, and linkage cases run anywhere, while the containment, ownership-on-failure, autorelease, fence, and teardown cases need a host that has granted Screen Recording and report a skip with that reason elsewhere. The linkage rule is met by controlled dynamic loading rather than the weak framework linking [ADR 0012](adr/0012-macos-shim-language-and-containment.md) described, because Cargo does not propagate a dependency's `rustc-link-arg` to the final link | Not applicable; no native shim existed |
 | Native dependency packaging and clean-system loading | Partly applicable. Phase 1 declares one native dependency, OpenCV, and records its licence and deployment requirements; clean-system loading and packaging remain open under [`G-007`](validation-gates.md#g-007) | Not applicable; no native dependency was declared |
 

@@ -23,6 +23,8 @@
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
 #elif defined(__APPLE__)
+#include <dlfcn.h>
+#include <limits.h>
 #include <sys/resource.h>
 #include <time.h>
 #endif
@@ -63,7 +65,6 @@ typedef enum madopilot_example_route_contract {
     MADOPILOT_EXAMPLE_ROUTE_ACKNOWLEDGED_FIXTURE = 2
 } madopilot_example_route_contract_t;
 
-
 static int expect(int condition, const char* what)
 {
     if (!condition) {
@@ -72,6 +73,7 @@ static int expect(int condition, const char* what)
     }
     return condition;
 }
+
 static int capability_matches_contract(
     const madopilot_input_capability_t* capability,
     madopilot_example_route_contract_t contract)
@@ -85,6 +87,15 @@ static int capability_matches_contract(
         return capability->support == MADOPILOT_CAPABILITY_SUPPORTED &&
                capability->evidence ==
                    MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT;
+    }
+    if (MADOPILOT_EXAMPLE_DELIVERY ==
+        MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED) {
+        return capability->support == MADOPILOT_CAPABILITY_UNKNOWN &&
+               capability->address_scope ==
+                   MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS &&
+               capability->evidence ==
+                   MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY &&
+               capability->focus_required == 0;
     }
     return capability->support == MADOPILOT_CAPABILITY_SUPPORTED ||
            (MADOPILOT_EXAMPLE_ALLOWS_UNKNOWN &&
@@ -589,14 +600,16 @@ static int deliver(const madopilot_api_t* api,
     return expect(info.outcome == MADOPILOT_SEQUENCE_COMPLETE &&
                       info.submitted ==
                           (uint64_t)(sizeof(events) / sizeof(events[0])) &&
+                      info.attempt_count == UINT64_C(1) &&
                       (info.flags & (MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE |
                                      MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE)) ==
                           (MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE |
                            MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE) &&
+                      (info.flags & MADOPILOT_INPUT_RECEIPT_USED_FALLBACK) == 0 &&
                       info.selected_route == MADOPILOT_EXAMPLE_DELIVERY &&
                       info.address_scope == address_scope &&
                       info.evidence == evidence,
-                  "the bounded native sequence completed with truthful route evidence");
+                  "the bounded native route completed once with truthful evidence");
 }
 
 static int run_native(const madopilot_api_t* api, const char* title, int check_only,
@@ -844,6 +857,30 @@ static void report_peak_resident_bytes(void)
            (unsigned long long)peak_resident_bytes());
 }
 
+static int expected_library_image(const madopilot_api_t* api)
+{
+#if defined(__APPLE__)
+    const char* expected = getenv("MADO_PILOT_EXPECT_LIBRARY_IMAGE");
+    if (expected == NULL) {
+        return 1;
+    }
+    Dl_info information;
+    char actual_path[PATH_MAX];
+    char expected_path[PATH_MAX];
+    memset(&information, 0, sizeof(information));
+    return expect(api != NULL &&
+                      dladdr((const void*)api, &information) != 0 &&
+                      information.dli_fname != NULL &&
+                      realpath(information.dli_fname, actual_path) != NULL &&
+                      realpath(expected, expected_path) != NULL &&
+                      strcmp(actual_path, expected_path) == 0,
+                  "the loaded MadoPilot library is the pinned benchmark artifact");
+#else
+    (void)api;
+    return 1;
+#endif
+}
+
 
 int main(int argc, char** argv)
 {
@@ -901,6 +938,9 @@ int main(int argc, char** argv)
                 "negotiate ABI 1.2") ||
         !expect(api->struct_size >= MADOPILOT_API_SIZE_SESSION_SEND_INPUT,
                 "the negotiated table contains the ABI 1.2 input suffix")) {
+        return 1;
+    }
+    if (!expected_library_image(api)) {
         return 1;
     }
 

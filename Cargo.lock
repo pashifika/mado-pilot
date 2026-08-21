@@ -316,6 +316,7 @@ dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
  "mado-pilot-input",
+ "serde_json",
 ]
 
 [[package]]
