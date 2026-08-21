@@ -9,8 +9,9 @@ Windows-target lint passed on predecessor `df1c45d`. The complete
 `df1c45d..dec43d7` diff is exactly
 `crates/mado-pilot/benches/native-phase2.rs` — a benchmark-harness file
 outside product, fixture, and native-test source — so those revision-bound
-native results apply to `dec43d7`. Hosted CI for final source/test commit
-`7ce1602` and its evidence-only successor is pending.
+native results apply to `dec43d7`. Hosted CI passed on source/test commit
+`7ce1602` with evidence head `8c19a17`; the later CI-summary successor changes
+documentation only.
 
 Subsequent test-only commit `5f1fdb6177d7ec02d2f8eb841f0786432299b0c2`
 tightens the minimized/off-screen qualification to require an eventual typed
@@ -50,7 +51,7 @@ topology.
 | Native input / public-language profile | six workloads, 300 retained samples; zero correctness failures; maximum allocation growth 64 bytes; profile SHA-256 `90b33b1f40286fe64d51bcde69340303faafd2145d06f9c3ed8fed5d1877598a` |
 | Memory / environment gates | zero process-profile allocation growth; foreground and physical cursor unchanged; one matching fixture event per terminal sequence |
 | ASan / ABI / packaging (`dec43d7`) | 254 ASan library tests passed; C ABI 1.2 table 592 bytes; frozen ABI 1.0 prefix 424 bytes and 222 layout lines held; C/C++/CMake, linkage, signing, and panic containment passed |
-| Hosted CI | pending push for final source/test commit `7ce1602` and its evidence-only successor; three diagnostic runs passed repository policy, branch flow, and macOS while hosted Windows established the conservative closed-pipe result now asserted by `7ce1602` |
+| Hosted CI | repository policy, branch flow, Windows x86_64, and macOS Apple Silicon passed on source/test commit `7ce1602` with evidence head `8c19a17`; the later CI-summary successor changes documentation only |
 | Detailed current procedure and outcomes | [`verification-procedure.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/verification-procedure.md) and [`observed-report.md`](../../../rasen/changes/macos-process-directed-performance-tuning/evidence/observed-report.md) |
 
 The full input benchmark provisions each C/C++ sample's fresh approved

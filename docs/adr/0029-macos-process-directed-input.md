@@ -9,8 +9,9 @@
   deterministic one-read proofs, sanitizer, and ABI/C++/CMake checks passed on
   predecessor `df1c45d`; the complete `df1c45d..dec43d7` diff is exactly
   `crates/mado-pilot/benches/native-phase2.rs`, a benchmark-harness file, so
-  those revision-bound results apply to `dec43d7`. Hosted CI for final
-  source/test commit `7ce1602` and its evidence-only successor is pending push.
+  those revision-bound results apply to `dec43d7`. Hosted CI passed on
+  source/test commit `7ce1602` with evidence head `8c19a17`; the later
+  CI-summary successor changes documentation only.
   Release-level pair publication remains 0 qualified, 0 rejected, and 14
   unexecuted because disconnected `single` and exact two-display non-mirrored
   `same-scale` matrices are unavailable.

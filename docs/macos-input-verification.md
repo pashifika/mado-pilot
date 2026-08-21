@@ -12,8 +12,9 @@ controlled pairs**. Final candidate
 game-like, and native input/public-language profiles. The three-display
 `mixed-scale` native rows, deterministic one-read proofs, sanitizer, and
 ABI/C++/CMake checks passed on predecessor `df1c45d` and apply to `dec43d7`
-because their complete diff is the benchmark harness alone. Hosted CI for final
-source/test commit `7ce1602` and its evidence-only successor is pending push.
+because their complete diff is the benchmark harness alone. Hosted CI passed on
+source/test commit `7ce1602` with evidence head `8c19a17`; the later CI-summary
+successor changes documentation only.
 The disconnected `single` and exact two-display non-mirrored `same-scale` rows
 remain unavailable, so no release pair is promoted. Nothing
 here qualifies arbitrary applications, arbitrary games, exact-window delivery,
