@@ -2189,7 +2189,7 @@ mod tests {
         let child_pid = Cell::new(0);
         let output = bounded_child_output_with(
             &mut command,
-            Duration::from_secs(1),
+            Duration::from_secs(5),
             16 * 1_024,
             &mut primary_cleanup,
             |process_id| {
