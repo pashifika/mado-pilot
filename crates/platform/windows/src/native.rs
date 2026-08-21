@@ -1130,7 +1130,11 @@ impl SessionCore {
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
-        if !self.domain.try_copy(lease.texture(), &source)? {
+        if !self.domain.try_copy(
+            lease.texture(),
+            &source,
+            u64::try_from(descriptor.byte_len()).expect("validated frame byte length fits u64"),
+        )? {
             let _drop = self.state.try_record_drop();
             return Ok(());
         }

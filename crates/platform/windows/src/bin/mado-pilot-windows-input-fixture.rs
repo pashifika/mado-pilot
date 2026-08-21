@@ -45,21 +45,27 @@ mod fixture {
         BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HGDIOBJ, PAINTSTRUCT,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::HiDpi::{
+        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW, KillTimer,
         MSG, PostQuitMessage, RegisterClassExW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
         SWP_NOZORDER, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, WM_COPYDATA,
-        WM_DESTROY, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
+        WM_DESTROY, WM_PAINT, WM_TIMER, WNDCLASSEXW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP,
     };
     use windows::core::{Error, PCWSTR, Result};
 
     static RECORDS: Mutex<VecDeque<EventSummary>> = Mutex::new(VecDeque::new());
     static ANIMATE_ON_INPUT: AtomicBool = AtomicBool::new(false);
     static RESIZE_ON_INPUT: AtomicBool = AtomicBool::new(false);
+    static CONTINUOUS_ANIMATION: AtomicBool = AtomicBool::new(false);
     static LARGE_WINDOW: AtomicBool = AtomicBool::new(false);
     static CURRENT_FILL_RGB: AtomicU32 = AtomicU32::new(FILL_RGB);
     static REPORTED_EVENTS: AtomicU32 = AtomicU32::new(0);
     const RESIZE_REPAINT_TIMER: usize = 1;
+    const CONTINUOUS_ANIMATION_TIMER: usize = 2;
+    const CONTINUOUS_ANIMATION_INTERVAL_MS: u32 = 16;
     const RESIZE_REPAINT_INTERVAL_MS: u32 = 16;
     const RESIZE_REPAINT_COUNT: u32 = 4;
     static RESIZE_REPAINTS_REMAINING: AtomicU32 = AtomicU32::new(0);
@@ -68,6 +74,7 @@ mod fixture {
     pub(super) struct Options {
         animate_on_input: bool,
         resize_on_input: bool,
+        production_capture: bool,
     }
 
     impl Options {
@@ -81,10 +88,12 @@ mod fixture {
                         options.animate_on_input = true;
                         options.resize_on_input = true;
                     }
+                    "--production-capture" => options.production_capture = true,
                     _ => {
                         return Err(format!(
                             "unknown argument `{argument}`; expected --animate-on-input, \
-                             --resize-on-input, or --animate-and-resize-on-input"
+                             --resize-on-input, --animate-and-resize-on-input, or \
+                             --production-capture"
                         ));
                     }
                 }
@@ -101,8 +110,16 @@ mod fixture {
     }
 
     pub(super) fn run(options: Options) -> Result<()> {
+        if options.production_capture {
+            // SAFETY: production mode fixes process DPI awareness before this
+            // thread calls any DPI-sensitive USER32 function.
+            unsafe {
+                SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
+            }
+        }
         ANIMATE_ON_INPUT.store(options.animate_on_input, Ordering::Release);
         RESIZE_ON_INPUT.store(options.resize_on_input, Ordering::Release);
+        CONTINUOUS_ANIMATION.store(options.production_capture, Ordering::Release);
         LARGE_WINDOW.store(false, Ordering::Release);
         CURRENT_FILL_RGB.store(FILL_RGB, Ordering::Release);
         REPORTED_EVENTS.store(0, Ordering::Release);
@@ -124,18 +141,23 @@ mod fixture {
         if unsafe { RegisterClassExW(&raw const class) } == 0 {
             return Err(Error::from_thread());
         }
+        let (extended_style, style, width, height) = if options.production_capture {
+            (WS_EX_TOPMOST, WS_POPUP, 1_280, 720)
+        } else {
+            (Default::default(), WS_OVERLAPPEDWINDOW, 640, 420)
+        };
         // SAFETY: the registered class and title remain alive for this call;
         // the fixture supplies no parent, menu, or application-owned payload.
         let hwnd = unsafe {
             CreateWindowExW(
-                Default::default(),
+                extended_style,
                 PCWSTR(class_name.as_ptr()),
                 PCWSTR(title.as_ptr()),
-                WS_OVERLAPPEDWINDOW,
+                style,
                 160,
                 160,
-                640,
-                420,
+                width,
+                height,
                 None,
                 None,
                 Some(HINSTANCE(module.0)),
@@ -145,6 +167,21 @@ mod fixture {
         // SAFETY: hwnd is a live top-level window owned by this thread.
         unsafe {
             let _was_visible = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        if options.production_capture {
+            // SAFETY: hwnd is live on its owning GUI thread. A null callback
+            // posts deterministic animation ticks to this same window.
+            if unsafe {
+                SetTimer(
+                    Some(hwnd),
+                    CONTINUOUS_ANIMATION_TIMER,
+                    CONTINUOUS_ANIMATION_INTERVAL_MS,
+                    None,
+                )
+            } == 0
+            {
+                return Err(Error::from_thread());
+            }
         }
 
         let mut output = io::stdout().lock();
@@ -188,6 +225,10 @@ mod fixture {
             }
             WM_TIMER if sender.0 == RESIZE_REPAINT_TIMER => {
                 repaint_after_resize(hwnd);
+                LRESULT(0)
+            }
+            WM_TIMER if sender.0 == CONTINUOUS_ANIMATION_TIMER => {
+                animate_and_repaint(hwnd);
                 LRESULT(0)
             }
             WM_DESTROY => {
@@ -292,6 +333,17 @@ mod fixture {
             FILL_RGB
         };
         CURRENT_FILL_RGB.store(next, Ordering::Release);
+    }
+
+    fn animate_and_repaint(hwnd: HWND) {
+        if !CONTINUOUS_ANIMATION.load(Ordering::Acquire) {
+            return;
+        }
+        apply_benchmark_animation();
+        // SAFETY: hwnd is live during timer dispatch; invalidation schedules
+        // one controlled repaint without exposing unrelated desktop content.
+        let _invalidated =
+            unsafe { windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false) };
     }
 
     fn apply_benchmark_resize(hwnd: HWND) {

@@ -112,22 +112,25 @@ pub(crate) fn logical_to_physical(hwnd: HWND, point: &mut POINT) -> bool {
 }
 
 pub(crate) fn monitor_scale(monitor: HMONITOR) -> Option<f64> {
-    if let Some(function) = scale_factor_for_monitor_fn() {
-        let mut percent = 0;
-        // SAFETY: percent is writable and monitor came from current enumeration.
-        if unsafe { function(monitor, &raw mut percent) }.is_ok() && percent > 0 {
-            return Some(f64::from(percent) / 100.0);
+    if let Some(function) = dpi_for_monitor_fn() {
+        let mut dpi_x = 0;
+        let mut dpi_y = 0;
+        // SAFETY: both outputs are writable and monitor is a current handle.
+        if unsafe { function(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y) }.is_ok()
+            && dpi_x > 0
+            && dpi_y > 0
+        {
+            return Some((f64::from(dpi_x) + f64::from(dpi_y)) / 192.0);
         }
     }
 
-    let function = dpi_for_monitor_fn()?;
-    let mut dpi_x = 0;
-    let mut dpi_y = 0;
-    // SAFETY: both outputs are writable and monitor is a current handle.
-    unsafe { function(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y) }
-        .ok()
-        .ok()?;
-    (dpi_x > 0 && dpi_y > 0).then_some((f64::from(dpi_x) + f64::from(dpi_y)) / 192.0)
+    let function = scale_factor_for_monitor_fn()?;
+    let mut percent = 0;
+    // SAFETY: percent is writable and monitor came from current enumeration.
+    unsafe { function(monitor, &raw mut percent) }
+        .is_ok()
+        .then_some(f64::from(percent) / 100.0)
+        .filter(|scale| *scale > 0.0)
 }
 
 fn dpi_for_window_fn() -> Option<GetDpiForWindowFn> {

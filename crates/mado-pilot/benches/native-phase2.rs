@@ -36,6 +36,8 @@ fn main() {
 mod native {
     #[cfg(windows)]
     use std::io::{BufRead, BufReader};
+    #[cfg(windows)]
+    use std::mem::size_of;
     #[cfg(target_os = "macos")]
     use std::ops::Deref;
     #[cfg(target_os = "macos")]
@@ -76,8 +78,8 @@ mod native {
     #[cfg(target_os = "macos")]
     use mado_pilot_testkit::bench_harness::bounded_child_output_checked;
     use mado_pilot_testkit::bench_harness::{
-        self, Benchmark, BoundedChildOutput, Plan, Profile, Sample, Workload, argument,
-        enforce_hard_budgets, measure,
+        self, Benchmark, BoundedChildOutput, CaptureResources, Plan, Profile, Sample, Workload,
+        argument, enforce_hard_budgets, measure,
     };
     #[cfg(target_os = "macos")]
     use mado_pilot_testkit::bench_harness::{
@@ -131,7 +133,21 @@ mod native {
         InputReceipt, Point, PointerGeometry, SubmissionEvidence, TargetKind,
     };
     #[cfg(windows)]
+    use mado_pilot_platform_windows::benchmark::{
+        CaptureMetricsSnapshot, capture_metrics, reset_capture_metrics,
+    };
+    #[cfg(windows)]
     use mado_pilot_platform_windows::fixture_protocol as protocol;
+    #[cfg(windows)]
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    #[cfg(windows)]
+    use windows::Win32::System::Threading::GetCurrentProcess;
+    #[cfg(windows)]
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos,
+    };
+    #[cfg(windows)]
+    use windows::core::PCWSTR;
 
     #[cfg(target_os = "macos")]
     struct NativeEngine {
@@ -236,6 +252,10 @@ mod native {
         Input,
         #[cfg(target_os = "macos")]
         ProductionCapture,
+        #[cfg(windows)]
+        ProductionCapture1280,
+        #[cfg(windows)]
+        ProductionCaptureDual4k,
         #[cfg(target_os = "macos")]
         ProductionTransitions,
         #[cfg(target_os = "macos")]
@@ -256,6 +276,10 @@ mod native {
                 "input" => Some(Self::Input),
                 #[cfg(target_os = "macos")]
                 "production-capture" => Some(Self::ProductionCapture),
+                #[cfg(windows)]
+                "production-capture-1280x720" => Some(Self::ProductionCapture1280),
+                #[cfg(windows)]
+                "production-capture-dual-4k" => Some(Self::ProductionCaptureDual4k),
                 #[cfg(target_os = "macos")]
                 "production-transitions" => Some(Self::ProductionTransitions),
                 #[cfg(target_os = "macos")]
@@ -270,10 +294,14 @@ mod native {
 
         fn measured_plan(self) -> Plan {
             match self {
+                #[cfg(windows)]
+                Self::ProductionCaptureDual4k => Plan::new(20, 300),
                 Self::Capture => Plan::new(20, 200),
                 Self::Transitions | Self::Input => Plan::new(5, 50),
                 #[cfg(target_os = "macos")]
                 Self::ProductionCapture => Plan::new(20, 200),
+                #[cfg(windows)]
+                Self::ProductionCapture1280 => Plan::new(20, 600),
                 #[cfg(target_os = "macos")]
                 Self::ProductionTransitions
                 | Self::ResizeAllocation
@@ -298,6 +326,14 @@ mod native {
                 #[cfg(target_os = "macos")]
                 Self::ProductionCapture => {
                     "macOS production capture publication age, acquisition, mapping, and retained progress"
+                }
+                #[cfg(windows)]
+                Self::ProductionCaptureDual4k => {
+                    "Windows dual-4K mixed-DPI production capture, cross-seam movement, callback detachment, mapping, and dual-session pressure"
+                }
+                #[cfg(windows)]
+                Self::ProductionCapture1280 => {
+                    "Windows 1280x720 production capture arrival, callback detachment, mapping, retained progress, and queue pressure"
                 }
                 #[cfg(target_os = "macos")]
                 Self::ProductionTransitions => {
@@ -332,6 +368,14 @@ mod native {
                 #[cfg(target_os = "macos")]
                 Self::ProductionCapture => {
                     "session latest-wins queue depth 1; adapter finite retained-storage limit; no input stimulus"
+                }
+                #[cfg(windows)]
+                Self::ProductionCaptureDual4k => {
+                    "two WGC producer pools depth 2; two session latest-wins queues depth 1; shared Adapter retained-byte budget; fixture 16 ms repaint timer"
+                }
+                #[cfg(windows)]
+                Self::ProductionCapture1280 => {
+                    "WGC producer pool depth 2; session latest-wins queue depth 1; Adapter finite retained-storage limit; fixture 16 ms repaint timer"
                 }
                 #[cfg(target_os = "macos")]
                 Self::ProductionTransitions => {
@@ -403,17 +447,23 @@ mod native {
         "fixture command queue depth 1; session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
     }
 
-    fn profile_correctness_oracle(_set: WorkloadSet) -> &'static str {
+    fn profile_correctness_oracle(set: WorkloadSet) -> &'static str {
         #[cfg(target_os = "macos")]
         if matches!(
-            _set,
+            set,
             WorkloadSet::ProductionCapture | WorkloadSet::ProductionTransitions
         ) {
             return "every retained sample checks production frame identity, frame-authoritative geometry, declared fixture content, finite retained progress, exact mapping, or bounded lifecycle outcome; the resize command is stimulus only and never substitutes for a captured result";
         }
+        #[cfg(windows)]
+        if matches!(
+            set,
+            WorkloadSet::ProductionCapture1280 | WorkloadSet::ProductionCaptureDual4k
+        ) {
+            return "every retained sample checks strictly newer topology-qualified production frames, exact BGRA8 mapping and declared fixture content, callback-copy accounting, finite retained progress, or observable latest-wins pressure";
+        }
         "every retained sample checks complete frame identity/content, transition state, invocation-only receipt, separate fixture event, diagnostics, or common-flow outcome as its measurement states; a private acknowledgement never substitutes for product delivery or visual progress"
     }
-
     #[derive(Clone)]
     struct ExecutableArtifact {
         path: PathBuf,
@@ -497,8 +547,10 @@ mod native {
             };
             let set = required("--workload-set").and_then(|value| {
                 WorkloadSet::parse(&value).ok_or_else(|| {
-                    "--workload-set must be capture, transitions, input, resize-allocation, \
-                     process-directed, process-directed-game-like, or process-diagnostics"
+                    "--workload-set must be capture, transitions, input, production-capture, \
+                     production-capture-1280x720, production-capture-dual-4k, \
+                     production-transitions, resize-allocation, process-directed, \
+                     process-directed-game-like, or process-diagnostics"
                         .to_owned()
                 })
             })?;
@@ -698,6 +750,8 @@ mod native {
         Animate,
         #[cfg(windows)]
         AnimateAndResize,
+        #[cfg(windows)]
+        ProductionCapture,
         #[cfg(target_os = "macos")]
         Static,
         #[cfg(target_os = "macos")]
@@ -710,6 +764,7 @@ mod native {
             match self {
                 Self::Animate => "--animate-on-input",
                 Self::AnimateAndResize => "--animate-and-resize-on-input",
+                Self::ProductionCapture => "--production-capture",
             }
         }
 
@@ -779,6 +834,26 @@ mod native {
 
         fn title(&self) -> String {
             protocol::fixture_title(self.process_id())
+        }
+
+        fn move_to(&self, x: i32, y: i32) {
+            let class = protocol::CLASS_NAME
+                .encode_utf16()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+            let title = self
+                .title()
+                .encode_utf16()
+                .chain(Some(0))
+                .collect::<Vec<_>>();
+            // SAFETY: both strings are terminated and remain live for this
+            // lookup; the PID-qualified fixture title is unique.
+            let hwnd = unsafe { FindWindowW(PCWSTR(class.as_ptr()), PCWSTR(title.as_ptr())) }
+                .expect("the exact benchmark fixture window remains live");
+            // SAFETY: hwnd is the live fixture popup. The benchmark changes only
+            // its signed desktop placement and preserves z-order and activation.
+            unsafe { SetWindowPos(hwnd, None, x, y, 1_280, 720, SWP_NOZORDER | SWP_NOACTIVATE) }
+                .expect("the benchmark fixture moves to the requested signed desktop position");
         }
 
         fn next_flow(&self, expected: &[protocol::EventSummary]) -> bool {
@@ -1300,7 +1375,6 @@ mod native {
             assert!(close(&session), "the fixture confirmation session closes");
         }
 
-        #[cfg(target_os = "macos")]
         fn open_capture_session(&self) -> Session {
             self.engine
                 .open_session(
@@ -1347,7 +1421,6 @@ mod native {
             Self::from_open_session(flow, session)
         }
 
-        #[cfg(target_os = "macos")]
         fn from_capture_fixture(fixture: Rc<FixtureProcess>) -> Self {
             let flow = Flow::from_fixture(fixture);
             #[cfg(target_os = "macos")]
@@ -1355,7 +1428,7 @@ mod native {
                 controlled_command_ok(&flow.fixture, protocol::FixtureCommandKind::YieldForeground,),
                 "the controlled capture fixture yields foreground before sampling"
             );
-            let session = open_benchmark_capture_session(&flow);
+            let session = open_production_capture_session(&flow);
             Self::from_open_session(flow, session)
         }
 
@@ -1386,6 +1459,108 @@ mod native {
                 .get_mut()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let _closed = close(&state.session);
+        }
+    }
+
+    #[cfg(windows)]
+    struct DualDisplayFlow {
+        _engine: Engine,
+        _fixture: FixtureProcess,
+        state: Mutex<Vec<DualDisplayState>>,
+    }
+
+    #[cfg(windows)]
+    struct DualDisplayState {
+        session: Session,
+        last: Frame,
+        origin: (f64, f64),
+        scale: f64,
+        fixture_point: (f64, f64),
+    }
+
+    #[cfg(windows)]
+    impl DualDisplayFlow {
+        fn spawn() -> Self {
+            assert_capture_resources_released();
+            reset_capture_metrics();
+            let fixture = FixtureProcess::spawn(FixtureBehavior::ProductionCapture);
+            let engine = native_engine();
+            require_permissions(&engine);
+            let targets = engine
+                .discover(&bounded(OPERATION_WAIT))
+                .expect("the dual-4K production displays are discoverable");
+            let mut displays = Vec::new();
+            for target in targets
+                .iter()
+                .filter(|target| target.capability().kind() == Some(TargetKind::Display))
+            {
+                let session = engine
+                    .open_session(
+                        target.id(),
+                        &SessionRequest::new().capturing(OpenRequest::new()),
+                        &bounded(OPERATION_WAIT),
+                    )
+                    .expect("each declared display opens production capture");
+                let last = session
+                    .acquire_frame(&FrameRequest::latest(), &bounded(OPERATION_WAIT))
+                    .expect("each declared display publishes a seed frame");
+                assert_eq!(
+                    last.descriptor().extent(),
+                    PixelExtent::new(3_840, 2_160),
+                    "the dual-display profile refuses any non-4K display",
+                );
+                let placement = last
+                    .transform()
+                    .target()
+                    .expect("each Windows display frame carries authoritative placement");
+                let origin = placement.desktop_origin();
+                displays.push(DualDisplayState {
+                    session,
+                    last,
+                    origin,
+                    scale: placement.scale().x(),
+                    fixture_point: (0.0, 0.0),
+                });
+            }
+            displays.sort_by(|left, right| left.origin.0.total_cmp(&right.origin.0));
+            assert_eq!(
+                displays.len(),
+                2,
+                "the dual-4K profile requires exactly two online displays",
+            );
+            assert!(
+                displays[0].origin == (-3_840.0, 0.0)
+                    && displays[1].origin == (0.0, 0.0)
+                    && (displays[0].scale - 1.25).abs() < f64::EPSILON
+                    && (displays[1].scale - 1.5).abs() < f64::EPSILON,
+                "the dual-4K profile requires signed secondary 125% and primary 150% placement; observed {:?}",
+                displays
+                    .iter()
+                    .map(|display| (display.origin, display.scale))
+                    .collect::<Vec<_>>(),
+            );
+
+            fixture.move_to(-640, 600);
+            displays[0].fixture_point = (-320.0, 960.0);
+            displays[1].fixture_point = (320.0, 960.0);
+            Self {
+                _engine: engine,
+                _fixture: fixture,
+                state: Mutex::new(displays),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for DualDisplayFlow {
+        fn drop(&mut self) {
+            let displays = self
+                .state
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for display in displays {
+                let _closed = close(&display.session);
+            }
         }
     }
 
@@ -1611,6 +1786,7 @@ mod native {
                 concat!(
                     "usage: cargo bench --package mado-pilot --bench native-phase2 -- ",
                     "--workload-set <capture|transitions|input|production-capture|",
+                    "production-capture-1280x720|production-capture-dual-4k|",
                     "production-transitions|resize-allocation|process-directed|",
                     "process-directed-game-like|process-diagnostics> ",
                     "--fixture-executable <path> [--ordinary-fixture-executable <path> ",
@@ -1688,7 +1864,8 @@ mod native {
                 os_version: args.os_version.clone(),
                 deployment_target: Some(args.deployment_target.clone()),
                 build_profile: format!(
-                    "cargo bench, default features, debug_assertions={}; {}",
+                    "cargo bench, {}debug_assertions={}; {}",
+                    benchmark_build_features(set),
                     cfg!(debug_assertions),
                     fixture_build_profile(),
                 ),
@@ -1709,6 +1886,10 @@ mod native {
             WorkloadSet::Transitions => transition_workloads(plan),
             #[cfg(target_os = "macos")]
             WorkloadSet::ProductionCapture => production_capture_workloads(plan),
+            #[cfg(windows)]
+            WorkloadSet::ProductionCapture1280 => production_capture_1280_workloads(plan),
+            #[cfg(windows)]
+            WorkloadSet::ProductionCaptureDual4k => production_capture_dual_4k_workloads(plan),
             #[cfg(target_os = "macos")]
             WorkloadSet::ProductionTransitions => production_transition_workloads(plan),
             #[cfg(target_os = "macos")]
@@ -1950,6 +2131,64 @@ mod native {
                 production_retained_pressure_resume,
             ),
         ]
+    }
+
+    #[cfg(windows)]
+    fn production_capture_1280_workloads(plan: Plan) -> Vec<Workload> {
+        let workloads = vec![
+            measure(
+                "steady_frame_acquisition",
+                "one strictly newer 1280x720 production frame arrives from the fixture timer, preserves declared content and frame-authoritative geometry, and reports observable sequence gaps",
+                plan,
+                production_active_1280,
+                production_steady_acquisition,
+            ),
+            measure(
+                "callback_copy",
+                "successful callback-side detach copies account for every producer publication observed before one exact mapped 1280x720 result",
+                plan,
+                production_active_1280,
+                windows_callback_copy,
+            ),
+            measure(
+                "latest_acquisition",
+                "after timer-driven production progress, latest returns a same-stream 1280x720 frame no older than the proven publication and reports observable queue pressure",
+                plan,
+                production_active_1280,
+                production_latest_acquisition,
+            ),
+            measure(
+                "cpu_map_bgra8",
+                "one timer-driven 1280x720 production frame maps once to exact-size BGRA8 bytes carrying declared fixture content",
+                plan,
+                production_active_1280,
+                production_cpu_map,
+            ),
+        ];
+        assert_capture_resources_released();
+        workloads
+    }
+
+    #[cfg(windows)]
+    fn production_capture_dual_4k_workloads(plan: Plan) -> Vec<Workload> {
+        let workloads = vec![
+            measure(
+                "dual_display_frame_arrival",
+                "one strictly newer frame arrives from each topology-qualified 4K display while the deterministic fixture straddles their signed-origin seam; both exact mappings carry declared fixture content",
+                plan,
+                DualDisplayFlow::spawn,
+                dual_display_arrival,
+            ),
+            measure(
+                "dual_display_callback_copy",
+                "callback-side detach copies account for both 4K display sessions before two exact mapped results carry declared fixture content across the signed-origin seam",
+                plan,
+                DualDisplayFlow::spawn,
+                dual_display_callback_copy,
+            ),
+        ];
+        assert_capture_resources_released();
+        workloads
     }
 
     #[cfg(windows)]
@@ -3201,7 +3440,6 @@ mod native {
         Sample::new(elapsed, correct, mapped).with_stale_work(delta.saturating_sub(1), delta)
     }
 
-    #[cfg(target_os = "macos")]
     fn production_steady_acquisition(active: &ActiveFlow) -> Sample {
         let mut state = lock_state(active);
         let before = state.last.stamp();
@@ -3225,13 +3463,238 @@ mod native {
             && stamp.sequence() > before.sequence()
             && frame.transform().geometry() == stamp.geometry()
             && mapping.stamp() == stamp
-            && benchmark_mapping_fill(&mapping) == Some(state.fill);
+            && mapping_is_benchmark_content(&mapping);
         let mapped = mapping.bytes().len() as u64;
         state.last = frame;
         Sample::new(elapsed, correct, mapped).with_stale_work(delta.saturating_sub(1), delta)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(windows)]
+    fn production_active_1280() -> ActiveFlow {
+        assert_capture_resources_released();
+        reset_capture_metrics();
+        let active = ActiveFlow::from_capture_fixture(Rc::new(FixtureProcess::spawn(
+            FixtureBehavior::ProductionCapture,
+        )));
+        assert_eq!(
+            active
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .last
+                .descriptor()
+                .extent(),
+            PixelExtent::new(1_280, 720),
+            "the production fixture exposes an exact 1280x720 capture surface",
+        );
+        active
+    }
+
+    #[cfg(windows)]
+    fn windows_callback_copy(active: &ActiveFlow) -> Sample {
+        let mut state = lock_state(active);
+        let before_stamp = state.last.stamp();
+        let before_metrics = capture_metrics();
+        let operation = bounded(OPERATION_WAIT);
+        let frame = state
+            .session
+            .acquire_frame(&FrameRequest::newer_than(before_stamp), &operation)
+            .expect("production callback copy publishes a strictly newer frame");
+        let mapping = frame
+            .map(PixelFormat::Bgra8, &operation)
+            .expect("the callback-copy result maps for its content oracle");
+        let after_metrics = capture_metrics();
+        let copies = after_metrics
+            .callback_copies
+            .saturating_sub(before_metrics.callback_copies);
+        let copied_bytes = after_metrics
+            .copied_bytes
+            .saturating_sub(before_metrics.copied_bytes);
+        let callback_time = after_metrics
+            .callback_copy_time
+            .saturating_sub(before_metrics.callback_copy_time);
+        let elapsed = callback_time / u32::try_from(copies).unwrap_or(u32::MAX).max(1);
+        let stamp = frame.stamp();
+        let delta = stamp
+            .sequence()
+            .value()
+            .saturating_sub(before_stamp.sequence().value());
+        let mapped = u64::try_from(mapping.bytes().len()).expect("mapped bytes fit u64");
+        let correct = stamp.stream() == before_stamp.stream()
+            && stamp.epoch() == before_stamp.epoch()
+            && stamp.sequence() > before_stamp.sequence()
+            && frame.descriptor().extent() == PixelExtent::new(1_280, 720)
+            && mapping.stamp() == stamp
+            && mapping_is_benchmark_content(&mapping)
+            && copies > 0
+            && copied_bytes == mapped.saturating_mul(copies)
+            && after_metrics.detached_textures_peak > 0
+            && after_metrics.staging_textures_peak > 0;
+        state.last = frame;
+        Sample::new(elapsed, correct, mapped)
+            .with_stale_work(delta.saturating_sub(1), delta)
+            .with_capture_resources(capture_resources(copied_bytes, after_metrics, 2))
+            .with_peak_resident_bytes(peak_resident_bytes())
+    }
+
+    #[cfg(windows)]
+    fn dual_display_arrival(flow: &DualDisplayFlow) -> Sample {
+        dual_display_sample(flow, false)
+    }
+
+    #[cfg(windows)]
+    fn dual_display_callback_copy(flow: &DualDisplayFlow) -> Sample {
+        dual_display_sample(flow, true)
+    }
+
+    #[cfg(windows)]
+    fn dual_display_sample(flow: &DualDisplayFlow, callback_only: bool) -> Sample {
+        let mut displays = flow
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before_metrics = capture_metrics();
+        let started = Instant::now();
+        let frames = displays
+            .iter()
+            .map(|display| {
+                display
+                    .session
+                    .acquire_frame(
+                        &FrameRequest::newer_than(display.last.stamp()),
+                        &bounded(OPERATION_WAIT),
+                    )
+                    .expect("each 4K display publishes a strictly newer frame")
+            })
+            .collect::<Vec<_>>();
+        let arrival = started.elapsed();
+        let mut correct = true;
+        let mut mapped_bytes = 0_u64;
+        let mut stale = 0_u64;
+        let mut scheduled = 0_u64;
+        for (display, frame) in displays.iter_mut().zip(frames) {
+            let before = display.last.stamp();
+            let mapping = frame
+                .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
+                .expect("each 4K display frame maps to BGRA8");
+            let stamp = frame.stamp();
+            let delta = stamp
+                .sequence()
+                .value()
+                .saturating_sub(before.sequence().value());
+            let placement = frame
+                .transform()
+                .target()
+                .expect("each 4K display frame retains placement");
+            let desktop_point = Point::new(
+                CoordinateSpace::DesktopLogical,
+                display.fixture_point.0,
+                display.fixture_point.1,
+            )
+            .expect("the fixture sample point is finite");
+            let capture_point = frame
+                .transform()
+                .convert_point(desktop_point, CoordinateSpace::CapturePixels)
+                .expect("the display transform resolves the fixture point");
+            let identity_ok = stamp.stream() == before.stream()
+                && stamp.epoch() == before.epoch()
+                && stamp.sequence() > before.sequence()
+                && frame.descriptor().extent() == PixelExtent::new(3_840, 2_160)
+                && mapping.stamp() == stamp;
+            let placement_ok = placement.desktop_origin() == display.origin
+                && (placement.scale().x() - display.scale).abs() < f64::EPSILON;
+            let pixel_ok = mapping_pixel_is_benchmark_content(&mapping, capture_point);
+            correct &= identity_ok && placement_ok && pixel_ok;
+            mapped_bytes = mapped_bytes.saturating_add(
+                u64::try_from(mapping.bytes().len()).expect("mapped bytes fit u64"),
+            );
+            stale = stale.saturating_add(delta.saturating_sub(1));
+            scheduled = scheduled.saturating_add(delta);
+            display.last = frame;
+        }
+        if callback_only {
+            let deadline = Instant::now() + OPERATION_WAIT;
+            while capture_metrics().callback_copies == before_metrics.callback_copies {
+                assert!(
+                    Instant::now() < deadline,
+                    "the dual-display callback metric observes production progress",
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        let after_metrics = capture_metrics();
+        let copies = after_metrics
+            .callback_copies
+            .saturating_sub(before_metrics.callback_copies);
+        let copied_bytes = after_metrics
+            .copied_bytes
+            .saturating_sub(before_metrics.copied_bytes);
+        let callback_time = after_metrics
+            .callback_copy_time
+            .saturating_sub(before_metrics.callback_copy_time);
+        let callback_elapsed = callback_time / u32::try_from(copies).unwrap_or(u32::MAX).max(1);
+        let surface_bytes = 3_840_u64 * 2_160 * 4;
+        correct &= (!callback_only || copies > 0)
+            && copied_bytes == surface_bytes.saturating_mul(copies)
+            && mapped_bytes == surface_bytes.saturating_mul(2)
+            && after_metrics.detached_textures_peak >= 4
+            && after_metrics.staging_textures_peak > 0;
+        Sample::new(
+            if callback_only {
+                callback_elapsed
+            } else {
+                arrival
+            },
+            correct,
+            mapped_bytes,
+        )
+        .with_stale_work(stale, scheduled)
+        .with_capture_resources(capture_resources(copied_bytes, after_metrics, 4))
+        .with_peak_resident_bytes(peak_resident_bytes())
+    }
+
+    #[cfg(windows)]
+    const fn capture_resources(
+        copied_bytes: u64,
+        metrics: CaptureMetricsSnapshot,
+        producer_resources: u64,
+    ) -> CaptureResources {
+        CaptureResources {
+            copied_bytes,
+            detached_textures_peak: metrics.detached_textures_peak,
+            staging_textures_peak: metrics.staging_textures_peak,
+            gpu_resources_peak: producer_resources
+                .saturating_add(metrics.detached_textures_peak)
+                .saturating_add(metrics.staging_textures_peak),
+        }
+    }
+
+    #[cfg(windows)]
+    fn peak_resident_bytes() -> u64 {
+        let mut counters = PROCESS_MEMORY_COUNTERS::default();
+        let bytes = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>())
+            .expect("PROCESS_MEMORY_COUNTERS size fits u32");
+        counters.cb = bytes;
+        // SAFETY: the pseudo handle names this process and counters is writable
+        // for the complete native structure declared by bytes.
+        unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, bytes) }
+            .expect("the benchmark reads its process memory counters");
+        u64::try_from(counters.PeakWorkingSetSize).unwrap_or(u64::MAX)
+    }
+
+    #[cfg(windows)]
+    fn assert_capture_resources_released() {
+        let metrics = capture_metrics();
+        assert_eq!(
+            (
+                metrics.detached_textures_live,
+                metrics.staging_textures_live,
+            ),
+            (0, 0),
+            "the preceding production capture workload releases every owned GPU resource",
+        );
+    }
+
     fn production_latest_acquisition(active: &ActiveFlow) -> Sample {
         let mut state = lock_state(active);
         let before = state.last.stamp();
@@ -3263,14 +3726,13 @@ mod native {
             && stamp.sequence() >= progressed_stamp.sequence()
             && latest.transform().geometry() == stamp.geometry()
             && mapping.stamp() == stamp
-            && benchmark_mapping_fill(&mapping) == Some(state.fill)
+            && mapping_is_benchmark_content(&mapping)
             && delta > 0;
         state.last = latest;
         Sample::new(elapsed, correct, mapping.bytes().len() as u64)
             .with_stale_work(delta.saturating_sub(1), delta)
     }
 
-    #[cfg(target_os = "macos")]
     fn production_cpu_map(active: &ActiveFlow) -> Sample {
         let mut state = lock_state(active);
         let before = state.last.stamp();
@@ -3291,7 +3753,7 @@ mod native {
             && frame.transform().geometry() == stamp.geometry()
             && mapping.stamp() == stamp
             && mapping.bytes().len() == mapping.descriptor().byte_len()
-            && benchmark_mapping_fill(&mapping) == Some(state.fill);
+            && mapping_is_benchmark_content(&mapping);
         let mapped = mapping.bytes().len() as u64;
         state.last = frame;
         Sample::new(elapsed, correct, mapped)
@@ -3959,6 +4421,10 @@ mod native {
         flow.open_input_session()
     }
 
+    fn open_production_capture_session(flow: &Flow) -> Session {
+        flow.open_capture_session()
+    }
+
     #[cfg(target_os = "macos")]
     const fn input_fixture_behavior() -> FixtureBehavior {
         FixtureBehavior::Static
@@ -4027,6 +4493,49 @@ mod native {
 
     fn mapping_is_benchmark_content(mapping: &mado_pilot::CpuMapping) -> bool {
         benchmark_mapping_fill(mapping).is_some()
+    }
+
+    #[cfg(windows)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a validated in-frame capture point is integral and bounded by the 4K descriptor"
+    )]
+    fn mapping_pixel_is_benchmark_content(mapping: &mado_pilot::CpuMapping, point: Point) -> bool {
+        let descriptor = mapping.descriptor();
+        let x = point.x();
+        let y = point.y();
+        if x < 0.0 || y < 0.0 || x.fract() != 0.0 || y.fract() != 0.0 {
+            return false;
+        }
+        let x = x as usize;
+        let y = y as usize;
+        let width = descriptor.extent().width() as usize;
+        let height = descriptor.extent().height() as usize;
+        if x >= width || y >= height {
+            return false;
+        }
+        let Some(offset) = y
+            .checked_mul(descriptor.stride())
+            .and_then(|row| x.checked_mul(4).and_then(|column| row.checked_add(column)))
+        else {
+            return false;
+        };
+        let Some(seen) = mapping.bytes().get(offset..offset.saturating_add(3)) else {
+            return false;
+        };
+        [protocol::FILL_RGB, benchmark_fill_rgb()]
+            .into_iter()
+            .any(|fill| {
+                let wanted = [
+                    (fill & 0xff) as u8,
+                    ((fill >> 8) & 0xff) as u8,
+                    ((fill >> 16) & 0xff) as u8,
+                ];
+                seen.iter().zip(wanted).all(|(observed, expected)| {
+                    observed.abs_diff(expected) <= protocol::FILL_TOLERANCE
+                })
+            })
     }
 
     fn benchmark_mapping_fill(mapping: &mado_pilot::CpuMapping) -> Option<u32> {
@@ -4148,6 +4657,18 @@ mod native {
     #[cfg(windows)]
     fn profile_notes(_set: WorkloadSet, notes: &str) -> String {
         notes.to_owned()
+    }
+
+    fn benchmark_build_features(set: WorkloadSet) -> &'static str {
+        #[cfg(windows)]
+        if matches!(
+            set,
+            WorkloadSet::ProductionCapture1280 | WorkloadSet::ProductionCaptureDual4k
+        ) {
+            return "default features; platform/windows benchmark-instrumentation dev feature; ";
+        }
+        let _ = set;
+        "default features, "
     }
 
     #[cfg(target_os = "macos")]
@@ -4444,6 +4965,12 @@ mod native {
             WorkloadSet::Capture => "phase-2-native-capture-x86_64-pc-windows-msvc",
             WorkloadSet::Transitions => "phase-2-native-transitions-x86_64-pc-windows-msvc",
             WorkloadSet::Input => "phase-2-native-input-x86_64-pc-windows-msvc",
+            WorkloadSet::ProductionCapture1280 => {
+                "phase-2-production-capture-1280x720-x86_64-pc-windows-msvc"
+            }
+            WorkloadSet::ProductionCaptureDual4k => {
+                "phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc"
+            }
         };
         let fixture = if set == WorkloadSet::Input {
             "crates/platform/windows dedicated and ordinary fixture Rust sources plus shared protocol"

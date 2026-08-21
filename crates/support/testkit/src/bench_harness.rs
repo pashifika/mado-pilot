@@ -1091,6 +1091,19 @@ impl Plan {
     }
 }
 
+/// Native GPU-resource costs observed while producing one benchmark result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureResources {
+    /// Bytes copied out of producer-owned surfaces.
+    pub copied_bytes: u64,
+    /// Maximum simultaneously live Adapter-owned detached textures.
+    pub detached_textures_peak: u64,
+    /// Maximum simultaneously live CPU-readable staging textures.
+    pub staging_textures_peak: u64,
+    /// Maximum simultaneously live producer, detached, and staging textures.
+    pub gpu_resources_peak: u64,
+}
+
 /// What one iteration of a workload reports.
 #[derive(Debug)]
 pub struct Sample {
@@ -1099,6 +1112,7 @@ pub struct Sample {
     mapped: u64,
     peak_resident: Option<u64>,
     stale: Option<(u64, u64)>,
+    capture_resources: Option<CaptureResources>,
 }
 
 impl Sample {
@@ -1111,6 +1125,7 @@ impl Sample {
             mapped,
             peak_resident: None,
             stale: None,
+            capture_resources: None,
         }
     }
 
@@ -1142,6 +1157,13 @@ impl Sample {
         self.peak_resident = Some(bytes);
         self
     }
+
+    /// Associates native capture-copy and GPU-resource costs with this sample.
+    #[must_use]
+    pub const fn with_capture_resources(mut self, resources: CaptureResources) -> Self {
+        self.capture_resources = Some(resources);
+        self
+    }
 }
 
 /// One workload's samples, and what they cost besides time.
@@ -1158,6 +1180,10 @@ pub struct Workload {
     peak_bytes: usize,
     steady_bytes: usize,
     peak_resident_bytes: Option<u64>,
+    copied_bytes: Option<u64>,
+    detached_textures_peak: Option<u64>,
+    staging_textures_peak: Option<u64>,
+    gpu_resources_peak: Option<u64>,
     growth_bytes: i64,
 }
 
@@ -1281,6 +1307,10 @@ where
     let mut scheduled = 0u64;
     let mut mapped = 0;
     let mut peak_resident_bytes: Option<u64> = None;
+    let mut copied_bytes: Option<u64> = None;
+    let mut detached_textures_peak: Option<u64> = None;
+    let mut staging_textures_peak: Option<u64> = None;
+    let mut gpu_resources_peak: Option<u64> = None;
     let span = Instant::now();
     for _ in 0..plan.samples {
         let sample = workload(&fixture);
@@ -1298,6 +1328,24 @@ where
         if let Some(sample_peak) = sample.peak_resident {
             peak_resident_bytes = Some(peak_resident_bytes.unwrap_or_default().max(sample_peak));
         }
+        if let Some(resources) = sample.capture_resources {
+            copied_bytes = Some(copied_bytes.unwrap_or_default().max(resources.copied_bytes));
+            detached_textures_peak = Some(
+                detached_textures_peak
+                    .unwrap_or_default()
+                    .max(resources.detached_textures_peak),
+            );
+            staging_textures_peak = Some(
+                staging_textures_peak
+                    .unwrap_or_default()
+                    .max(resources.staging_textures_peak),
+            );
+            gpu_resources_peak = Some(
+                gpu_resources_peak
+                    .unwrap_or_default()
+                    .max(resources.gpu_resources_peak),
+            );
+        }
         elapsed.push(sample.elapsed);
     }
     let span = span.elapsed();
@@ -1313,6 +1361,10 @@ where
         peak_bytes: PEAK.load(Ordering::Relaxed).saturating_sub(before_fixture),
         steady_bytes: ending.saturating_sub(before_fixture),
         peak_resident_bytes,
+        copied_bytes,
+        detached_textures_peak,
+        staging_textures_peak,
+        gpu_resources_peak,
         stale,
         scheduled,
         growth_bytes: i64::try_from(ending).unwrap_or(i64::MAX)
@@ -1448,6 +1500,18 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
         );
         println!("iteration_span_ms = {:.6}", workload.iteration_span_ms());
         println!("mapped_bytes_per_result = {}", workload.mapped);
+        if let Some(bytes) = workload.copied_bytes {
+            println!("copied_bytes_per_result = {bytes}");
+        }
+        if let Some(textures) = workload.detached_textures_peak {
+            println!("detached_textures_peak = {textures}");
+        }
+        if let Some(textures) = workload.staging_textures_peak {
+            println!("staging_textures_peak = {textures}");
+        }
+        if let Some(resources) = workload.gpu_resources_peak {
+            println!("gpu_resources_peak = {resources}");
+        }
         if let Some(ratio) = workload.stale_work_ratio() {
             println!("stale_work_ratio = {ratio:.9}");
         }
@@ -2312,6 +2376,10 @@ mod tests {
             peak_bytes: 0,
             steady_bytes: 0,
             peak_resident_bytes: None,
+            copied_bytes: None,
+            detached_textures_peak: None,
+            staging_textures_peak: None,
+            gpu_resources_peak: None,
             growth_bytes: 0,
         }
     }
@@ -2420,6 +2488,10 @@ mod tests {
             peak_bytes: 0,
             steady_bytes: 0,
             peak_resident_bytes: None,
+            copied_bytes: None,
+            detached_textures_peak: None,
+            staging_textures_peak: None,
+            gpu_resources_peak: None,
             growth_bytes: 0,
         };
 
