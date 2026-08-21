@@ -11,7 +11,9 @@ The accepted Phase 2.2 macOS profiles prove controlled fixture stimulus and owni
 
 Initial runs exposed two independent findings. Repeated fixture launches caused an invalid-source apparatus failure and were replaced with one authenticated fixture lifetime. The transition row then retained 9,856 Rust heap bytes because the existing 64-revision `GeometryLedger` grew its `VecDeque` lazily and pushed a 65th entry before retirement, allowing capacity 128. Focused samples produced the exact capacity sequence 1,408, 4,224, 9,856, and 21,120 bytes. The fix keeps a small history for fixed-geometry targets, reserves the 64-entry bound only on the first geometry change, and retires before insertion at the bound.
 
-Integrated source `5dbc4b30b5166c0de589110a237279d728f9d406`, tree `559c5c8af74e54dee674a12350980ff9214624f1`, then retained 1,150 production samples with zero correctness failures and zero allocation growth. The tracked profiles are [`phase-2-production-capture-aarch64-apple-darwin.toml`](../benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml) and [`phase-2-production-transitions-aarch64-apple-darwin.toml`](../benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml).
+A post-budget final-source rerun exposed one further apparatus lifetime: the retained-pressure fixture was started before four unrelated long workloads and could sit idle for about three minutes before use. Moving its one-time creation into that workload's untimed setup preserves one fixture across all pressure samples without overlapping unrelated fixture lifetimes or changing the measured product operation.
+
+Final source `7ba689c6496030af38ded5d3af9b9fd1d6234d29`, tree `42b80aa2318f428728b733cd68ab42e6b8863251`, retained 1,150 production samples with zero correctness failures and zero allocation growth while enforcing every accepted budget. The tracked profiles are [`phase-2-production-capture-aarch64-apple-darwin.toml`](../benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml) and [`phase-2-production-transitions-aarch64-apple-darwin.toml`](../benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml).
 
 ## Decision
 

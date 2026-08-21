@@ -613,8 +613,8 @@ All fourteen controlled pair decisions are release-qualified.
 
 [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
 production-capture and production-transition profiles at source
-`5dbc4b30b5166c0de589110a237279d728f9d406`, tree
-`559c5c8af74e54dee674a12350980ff9214624f1`, on the approved exactly-two-display
+`7ba689c6496030af38ded5d3af9b9fd1d6234d29`, tree
+`42b80aa2318f428728b733cd68ab42e6b8863251`, on the approved exactly-two-display
 mixed-scale Apple Silicon host. The two profiles retain 1,150 samples across
 eight workloads with zero correctness failures and zero allocation growth.
 
