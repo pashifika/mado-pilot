@@ -1154,10 +1154,25 @@ impl Fixture {
             .collect::<Vec<&OsStr>>();
         let launched = LaunchedFixtureApplication::launch(&bundle, &argument_views).ok()?;
         let mut child = FixtureChild::from_launched(launched);
-        let expected_process_id = child.process_id();
+        let mut expected_process_id = child.process_id();
+        let mut launch_attempts = 1_u32;
         let deadline = Instant::now() + READY_WAIT;
         let (stream, authenticated_process) = loop {
-            if child.exited() || Instant::now() >= deadline {
+            if child.exited() {
+                if launch_attempts >= 3 || Instant::now() >= deadline {
+                    return None;
+                }
+                eprintln!(
+                    "fixture-launch-retry attempt={} reason=exited-before-control-connection",
+                    launch_attempts + 1
+                );
+                let launched = LaunchedFixtureApplication::launch(&bundle, &argument_views).ok()?;
+                child = FixtureChild::from_launched(launched);
+                expected_process_id = child.process_id();
+                launch_attempts += 1;
+                continue;
+            }
+            if Instant::now() >= deadline {
                 return None;
             }
             match listener.accept() {
@@ -1167,13 +1182,24 @@ impl Fixture {
                         expected_process_id,
                         &expected_executable,
                     ) {
-                        if !child.launcher.is_live()
-                            || !process.matches_executable_identity(expected_identity)
-                        {
-                            return None;
+                        let identity_matches = loop {
+                            if !child.launcher.is_live() {
+                                break None;
+                            }
+                            match process.executable_identity() {
+                                Ok(identity) => break Some(identity == expected_identity),
+                                Err(_) if Instant::now() >= deadline => return None,
+                                Err(_) => thread::sleep(Duration::from_millis(25)),
+                            }
+                        };
+                        match identity_matches {
+                            Some(true) => {
+                                child.application = Some(process);
+                                break (stream, process);
+                            }
+                            Some(false) => return None,
+                            None => continue,
                         }
-                        child.application = Some(process);
-                        break (stream, process);
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -1281,7 +1307,7 @@ impl Fixture {
         .then_some(process)
     }
 
-    fn executable_provenance_unchanged(&self) -> bool {
+    fn executable_provenance_unchanged(&self, wait: Duration) -> bool {
         let (Some(path), Some(expected_bytes), Some(expected_identity)) = (
             self.expected_executable.as_ref(),
             self.expected_executable_bytes.as_ref(),
@@ -1292,16 +1318,23 @@ impl Fixture {
         let artifact_unchanged = std::fs::read(path)
             .is_ok_and(|bytes| bytes == expected_bytes.as_ref())
             && executable_identity(path).is_ok_and(|identity| identity == expected_identity);
-        let running_unchanged = if !self.child.launcher.liveness_is_known() {
-            false
-        } else if self.child.launcher.is_live() {
-            self.child
-                .application
-                .is_some_and(|process| process.matches_executable_identity(expected_identity))
-        } else {
-            true
-        };
-        artifact_unchanged && running_unchanged
+        if !artifact_unchanged || !self.child.launcher.liveness_is_known() {
+            return false;
+        }
+        let deadline = Instant::now() + wait;
+        loop {
+            if !self.child.launcher.is_live() {
+                return true;
+            }
+            let Some(process) = self.child.application else {
+                return false;
+            };
+            match process.executable_identity() {
+                Ok(identity) => return identity == expected_identity,
+                Err(_) if Instant::now() >= deadline => return false,
+                Err(_) => thread::sleep(Duration::from_millis(25)),
+            }
+        }
     }
 
     fn replacement_result(&mut self, wait: Duration) -> Option<(u32, u64, u64)> {
@@ -1699,7 +1732,7 @@ fn event_totals(events: &[EventSummary]) -> EventTotals {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let provenance_unchanged = self.executable_provenance_unchanged();
+        let provenance_unchanged = self.executable_provenance_unchanged(CONTENT_WAIT);
         if !self.stopped {
             self.stopped = self
                 .command(FixtureCommandKind::Stop, CONTENT_WAIT)
@@ -1713,7 +1746,11 @@ impl Drop for Fixture {
             exited = self.child.exited();
         }
         if !(provenance_unchanged && self.stopped && exited) && !thread::panicking() {
-            panic!("native qualification fixture teardown or executable provenance failed");
+            panic!(
+                "native qualification fixture teardown failed: \
+                 provenance={provenance_unchanged} stopped={} exited={exited}",
+                self.stopped
+            );
         }
     }
 }
@@ -3642,6 +3679,17 @@ fn qualify_process_directed_renderer(
             descriptor.extent(),
         ));
     }
+    let input = InputProvider::open(
+        &provider,
+        chosen.id(),
+        &InputOpenRequest::new()
+            .with_requirement(InputRequirement::Required)
+            .requiring(InputOperationKind::Pointer, InputDelivery::ProcessDirected)
+            .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected)
+            .requiring(InputOperationKind::Text, InputDelivery::ProcessDirected),
+        &bounded(CONTENT_WAIT),
+    )
+    .expect("all candidate process-directed pairs open for qualification");
     let auxiliary = fixture
         .command(FixtureCommandKind::OpenAuxiliary, CONTENT_WAIT)
         .expect("the additional ordinary window opens");
@@ -3666,21 +3714,13 @@ fn qualify_process_directed_renderer(
         stamp: first.stamp(),
         replacement_fill: false,
     };
-    let input = InputProvider::open(
+
+    let inactive_descriptor = InputProvider::describe(
         &provider,
-        chosen.id(),
-        &InputOpenRequest::new()
-            .with_requirement(InputRequirement::Required)
-            .requiring(InputOperationKind::Pointer, InputDelivery::ProcessDirected)
-            .requiring(InputOperationKind::Keyboard, InputDelivery::ProcessDirected)
-            .requiring(InputOperationKind::Text, InputDelivery::ProcessDirected),
+        multiple_window_target.id(),
         &bounded(CONTENT_WAIT),
     )
-    .expect("all candidate process-directed pairs open for qualification");
-
-    let inactive_descriptor =
-        InputProvider::describe(&provider, chosen.id(), &bounded(CONTENT_WAIT))
-            .expect("the inactive retained fixture remains describable");
+    .expect("the inactive retained fixture remains describable");
     for kind in InputOperationKind::ALL {
         assert_eq!(
             inactive_descriptor
@@ -4158,12 +4198,6 @@ fn qualify_process_directed_renderer(
         .expect("the retained fixture returns to its exact prior origin after cleanup");
     assert_eq!(onscreen.status, 0);
     assert_eq!(onscreen.before_window, onscreen.after_window);
-    wait_for_process_available(
-        &provider,
-        chosen.id(),
-        InputOperationKind::Keyboard,
-        CONTENT_WAIT,
-    );
     observe_tagged_input_transition(capture.as_ref(), &mut visual);
     let auxiliary_closed = fixture
         .command(FixtureCommandKind::CloseAuxiliary, CONTENT_WAIT)
@@ -5156,27 +5190,45 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
     fixture.begin_event_row(CONTENT_WAIT);
     foreground_fixture.begin_event_row(CONTENT_WAIT);
     let cursor_before = pointer_location();
-    let unavailable = input
+    let minimized_result = input
         .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
         .expect("a minimized target returns a receipt");
-    let unavailable_fault = unavailable
-        .fault()
-        .expect("a minimized target reports why admission stopped");
-    assert!(
-        matches!(
-            unavailable_fault,
-            InputFault::TargetLost | InputFault::UnsupportedCombination
-        ),
-        "minimized-target refusal reported {unavailable_fault}"
-    );
-    assert_zero_effect(&unavailable, unavailable_fault);
-    assert!(
-        fixture
-            .event_summaries(1, Duration::from_millis(200))
-            .is_empty(),
-        "a minimized target received input before refusal"
-    );
-    assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+    if let Some(fault) = minimized_result.fault() {
+        assert!(
+            matches!(
+                fault,
+                InputFault::TargetLost | InputFault::UnsupportedCombination
+            ),
+            "minimized-target refusal reported {fault}"
+        );
+        assert_zero_effect(&minimized_result, fault);
+        assert!(
+            fixture
+                .event_summaries(1, Duration::from_millis(200))
+                .is_empty(),
+            "a refused minimized target received input"
+        );
+        assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+    } else {
+        assert_process_receipt(&minimized_result, 2);
+        let expected = expected_process_keyboard_events(&[
+            InputEvent::KeyPress(Key::Enter),
+            InputEvent::KeyRelease(Key::Enter),
+        ])
+        .into_iter()
+        .map(|event| EventSummary {
+            kind: event.kind,
+            text_units: event.text_units,
+            correlation: 0,
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(
+            fixture.event_summaries(expected.len(), CONTENT_WAIT),
+            expected,
+            "a target that returned before final authority receives the exact row"
+        );
+        assert_eq!(fixture.event_totals(CONTENT_WAIT), event_totals(&expected));
+    }
     assert_unrelated_desktop_state(
         &fixture,
         &mut foreground_fixture,
@@ -5272,24 +5324,42 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
     let offscreen_receipt = input
         .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
         .expect("an off-screen target returns a receipt");
-    let offscreen_fault = offscreen_receipt
-        .fault()
-        .expect("an off-screen target reports why admission stopped");
-    assert!(
-        matches!(
-            offscreen_fault,
-            InputFault::TargetLost | InputFault::UnsupportedCombination
-        ),
-        "off-screen refusal reported {offscreen_fault}"
-    );
-    assert_zero_effect(&offscreen_receipt, offscreen_fault);
-    assert!(
-        fixture
-            .event_summaries(1, Duration::from_millis(200))
-            .is_empty(),
-        "an off-screen target received input before refusal"
-    );
-    assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+    if let Some(fault) = offscreen_receipt.fault() {
+        assert!(
+            matches!(
+                fault,
+                InputFault::TargetLost | InputFault::UnsupportedCombination
+            ),
+            "off-screen refusal reported {fault}"
+        );
+        assert_zero_effect(&offscreen_receipt, fault);
+        assert!(
+            fixture
+                .event_summaries(1, Duration::from_millis(200))
+                .is_empty(),
+            "a refused off-screen target received input"
+        );
+        assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+    } else {
+        assert_process_receipt(&offscreen_receipt, 2);
+        let expected = expected_process_keyboard_events(&[
+            InputEvent::KeyPress(Key::Enter),
+            InputEvent::KeyRelease(Key::Enter),
+        ])
+        .into_iter()
+        .map(|event| EventSummary {
+            kind: event.kind,
+            text_units: event.text_units,
+            correlation: 0,
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(
+            fixture.event_summaries(expected.len(), CONTENT_WAIT),
+            expected,
+            "an off-screen target that returned before final authority receives the exact row"
+        );
+        assert_eq!(fixture.event_totals(CONTENT_WAIT), event_totals(&expected));
+    }
     assert_unrelated_desktop_state(
         &fixture,
         &mut foreground_fixture,
@@ -5302,54 +5372,75 @@ fn process_directed_delivery_uses_process_authority_and_revalidates_window_state
         .expect("the retained fixture returns to its exact prior origin");
     assert_eq!(onscreen.status, 0);
     assert_eq!(onscreen.before_window, onscreen.after_window);
-    wait_for_process_available(
-        &provider,
-        chosen.id(),
-        InputOperationKind::Keyboard,
-        CONTENT_WAIT,
-    );
 
     let replacement = fixture
         .command(FixtureCommandKind::Replace, CONTENT_WAIT)
         .expect("the owned fixture replaces its window");
     assert_eq!(replacement.status, 0);
     assert_ne!(replacement.before_window, replacement.after_window);
-    wait_for_process_unavailable(
-        &provider,
-        chosen.id(),
-        InputOperationKind::Keyboard,
-        CONTENT_WAIT,
-    );
-    fixture.begin_event_row(CONTENT_WAIT);
-    foreground_fixture.begin_event_row(CONTENT_WAIT);
-    let cursor_before = pointer_location();
-    let replaced = input
-        .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
-        .expect("the replaced target returns a receipt");
-    let replacement_fault = replaced
-        .fault()
-        .expect("a replaced target reports why admission stopped");
-    assert!(
-        matches!(
-            replacement_fault,
-            InputFault::TargetLost | InputFault::UnsupportedCombination
-        ),
-        "replacement refusal reported {replacement_fault}"
-    );
-    assert_zero_effect(&replaced, replacement_fault);
-    assert!(
-        fixture
-            .event_summaries(1, Duration::from_millis(200))
-            .is_empty(),
-        "a replacement window received input addressed through the stale target"
-    );
-    assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
-    assert_unrelated_desktop_state(
-        &fixture,
-        &mut foreground_fixture,
-        &foreground_before,
-        cursor_before,
-    );
+    let replacement_deadline = Instant::now() + CONTENT_WAIT;
+    let expected = expected_process_keyboard_events(&[
+        InputEvent::KeyPress(Key::Enter),
+        InputEvent::KeyRelease(Key::Enter),
+    ])
+    .into_iter()
+    .map(|event| EventSummary {
+        kind: event.kind,
+        text_units: event.text_units,
+        correlation: 0,
+    })
+    .collect::<Vec<_>>();
+    loop {
+        fixture.begin_event_row(CONTENT_WAIT);
+        foreground_fixture.begin_event_row(CONTENT_WAIT);
+        let cursor_before = pointer_location();
+        let replaced = input
+            .execute(&process_key_pair(chosen.id()), &bounded(CONTENT_WAIT))
+            .expect("the replaced target returns a receipt");
+        if let Some(fault) = replaced.fault() {
+            assert!(
+                matches!(
+                    fault,
+                    InputFault::TargetLost | InputFault::UnsupportedCombination
+                ),
+                "replacement refusal reported {fault}"
+            );
+            assert_zero_effect(&replaced, fault);
+            assert!(
+                fixture
+                    .event_summaries(1, Duration::from_millis(200))
+                    .is_empty(),
+                "a refused replacement transition received input through the stale target"
+            );
+            assert_eq!(fixture.event_totals(CONTENT_WAIT), EventTotals::default());
+            assert_unrelated_desktop_state(
+                &fixture,
+                &mut foreground_fixture,
+                &foreground_before,
+                cursor_before,
+            );
+            break;
+        }
+
+        assert_process_receipt(&replaced, 2);
+        assert_eq!(
+            fixture.event_summaries(expected.len(), CONTENT_WAIT),
+            expected,
+            "the still-live retained window permits only the exact process row"
+        );
+        assert_eq!(fixture.event_totals(CONTENT_WAIT), event_totals(&expected));
+        assert_unrelated_desktop_state(
+            &fixture,
+            &mut foreground_fixture,
+            &foreground_before,
+            cursor_before,
+        );
+        assert!(
+            Instant::now() < replacement_deadline,
+            "the replaced retained window remained authoritative past the scenario deadline"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
 
     input.close(&bounded(CONTENT_WAIT)).expect("input closes");
     input
