@@ -1258,10 +1258,12 @@ but requires no focus predicate, ordinary target visibility, or pointer
 geometry. This lets bounded release of sequence-owned state continue when the
 original window moved, minimized, or closed, while a replacement process still
 cannot receive it.
-The route never activates or raises the target, never reads or moves the
-physical cursor, and
-returns invocation-only evidence. A returned void call closes fallback and
-proves neither queue admission nor application consumption, so a caller verifies
+The route never activates or raises the target and never moves the physical
+cursor. A non-move pointer event with no sequence-resolved location reads the
+current physical cursor and refuses unless that point lies inside the target
+rectangle selected by the active geometry policy. The route returns
+invocation-only evidence. A returned void call closes fallback and proves
+neither queue admission nor application consumption, so a caller verifies
 intended effect on strictly newer frames from the retained capture stream.
 Publication is governed by
 [ADR 0029](adr/0029-macos-process-directed-input.md).

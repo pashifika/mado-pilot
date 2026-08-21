@@ -213,14 +213,15 @@ the shim:
    original process lifetime and PID relationship, and the caller-selected focus
    predicate when `RequireFocused` applies;
 2. constructs one `CGEvent`;
-3. repeats the caller-selected focus predicate when `RequireFocused` applies;
-4. performs one authoritative shareable-content inventory read and proves that
+3. performs one authoritative shareable-content inventory read and proves that
    the exact retained logical `SCWindow` is still present, equal, open,
    unminimized, on screen, at window layer zero, and finite;
-5. applies the selected geometry policy — compares the final rectangle with the
-   source frame for `RequireUnchanged`, compares it with the Rust live mapping
-   for `ReprojectCurrent`, or retains snapshot mapping while still checking
-   target authority for `UseFrameSnapshot`;
+4. repeats the caller-selected focus predicate when `RequireFocused` applies;
+   the combined observer returns a later exact-window bounds sample;
+5. applies the selected geometry policy to the latest authoritative bounds —
+   compares them with the source frame for `RequireUnchanged`, compares them
+   with the Rust live mapping for `ReprojectCurrent`, or retains snapshot
+   mapping while still checking target authority for `UseFrameSnapshot`;
 6. repeats authorization and original process lifetime/PID checks, then checks
    the deadline and cancellation immediately before the irreversible call;
 7. enters `CGEventPostToPid`.
@@ -240,8 +241,12 @@ geometry check, because cleanup must still release only state this sequence
 pressed after those facts change. It never posts to a replacement process.
 
 The route never activates or raises the target application or window, posts
-through the system event stream, reads or moves the physical cursor, installs
-an event tap, injects a helper, or uses a private Accessibility identifier.
+through the system event stream, moves the physical cursor, installs an event
+tap, injects a helper, or uses a private Accessibility identifier. A press,
+release, or scroll with no sequence-resolved pointer reads the current physical
+cursor location, retains it only when it lies inside the target rectangle
+selected by the active geometry policy, and otherwise refuses with
+`UnsupportedCoordinate`.
 Application effect is evaluated only by caller-selected searches on frames from
 the retained capture stream whose identity is strictly newer than the source
 observation; a complete receipt can coexist with no visual change, and the

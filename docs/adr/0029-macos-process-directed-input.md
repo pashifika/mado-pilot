@@ -120,10 +120,11 @@ owning-process scope, on these rules:
    final native authority gate and is outside the one-read terminal profile.
    The one-read count is proved by revision-bound controller, geometry-source,
    and native seam tests; benchmark timing and fixture observation do not
-   observe that private call count. A pointer
-   scroll carries the sequence's last resolved global desktop location
-   alongside its wheel deltas; it never inherits an ambient Core Graphics
-   location.
+   observe that private call count. A process-addressed press, release, or
+   scroll reuses the sequence's last resolved global desktop location. If the
+   sequence has none, it reads the current physical cursor location, retains it
+   only when it lies inside the target rectangle selected by the active geometry
+   policy, and otherwise refuses. The route never moves the physical cursor.
 4. **One private event source per sequence.** Each sequence owns one
    `CGEventSourceStatePrivate` source, reused for every ordinary and
    sequence-owned release event and disposed exactly once on every terminal
