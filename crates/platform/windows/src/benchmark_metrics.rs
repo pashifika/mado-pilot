@@ -550,6 +550,15 @@ mod tests {
     }
 
     #[test]
+    fn completion_before_baseline_published_afterward_remains_ineligible() {
+        let ring = CallbackMetricRing::<4>::new();
+        let baseline = baseline_at(&ring, 2);
+        publish(&ring, 3, 5, 7, 1, 11, 13);
+
+        assert_eq!(ring.observation_after(baseline, 3, 5, 7), Ok(None));
+    }
+
+    #[test]
     fn another_session_callback_cannot_satisfy_the_requested_frame() {
         let ring = CallbackMetricRing::<4>::new();
         let baseline = baseline_at(&ring, 0);

@@ -36,15 +36,15 @@ use std::sync::mpsc;
 
 #[cfg(windows)]
 use mado_pilot::{
-    CapabilitySupport, CoordinateSpace, InputAddressScope, InputReceipt, Point, PointerButton,
-    SequenceLimits, SubmissionEvidence, TargetKind,
+    CapabilitySupport, CoordinateSpace, FrameStamp, InputAddressScope, InputReceipt, Point,
+    PointerButton, SequenceLimits, SubmissionEvidence, TargetKind,
 };
 
 #[cfg(windows)]
 use mado_pilot_platform_windows::benchmark::{
-    CallbackCopyObservation, CallbackMetricBaseline, CaptureMetricsSnapshot,
-    callback_metric_baseline, callback_observation_after, capture_metrics,
-    dual_display_fixture_points, dual_display_seam_x, reset_capture_metrics,
+    CallbackCopyObservation, CaptureMetricsSnapshot, callback_metric_baseline,
+    callback_observation_after, capture_metrics, dual_display_fixture_points, dual_display_seam_x,
+    reset_capture_metrics,
 };
 #[cfg(windows)]
 use mado_pilot_platform_windows::fixture_protocol as protocol;
@@ -967,22 +967,10 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
     let mut state = lock_state(active);
     let before_stamp = state.last.stamp();
     let operation = bounded(OPERATION_WAIT);
-    let baseline = callback_metric_baseline();
-    let callback_floor = state
-        .session
-        .acquire_frame(&FrameRequest::latest(), &operation)
-        .expect("production callback copy observes the current queue floor");
-    let callback_floor_stamp = callback_floor.stamp();
-    assert_eq!(callback_floor_stamp.stream(), before_stamp.stream());
-    drop(callback_floor);
-    let frame = state
-        .session
-        .acquire_frame(&FrameRequest::newer_than(callback_floor_stamp), &operation)
-        .expect("production callback copy publishes after its metric baseline");
+    let (frame, observation) = acquire_correlated_frame(&state.session, before_stamp, &operation);
     let mapping = frame
         .map(PixelFormat::Bgra8, &operation)
         .expect("the callback-copy result maps for its content oracle");
-    let observation = correlated_callback(baseline, &frame);
     let after_metrics = capture_metrics();
     let stamp = frame.stamp();
     let delta = stamp
@@ -1028,21 +1016,7 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
     let started = Instant::now();
     let frames = displays
         .iter()
-        .map(|display| {
-            let baseline = callback_metric_baseline();
-            let callback_floor = display
-                .session
-                .acquire_frame(&FrameRequest::latest(), &operation)
-                .expect("each 4K display exposes its current queue floor");
-            let callback_floor_stamp = callback_floor.stamp();
-            assert_eq!(callback_floor_stamp.stream(), display.last.stamp().stream());
-            drop(callback_floor);
-            let frame = display
-                .session
-                .acquire_frame(&FrameRequest::newer_than(callback_floor_stamp), &operation)
-                .expect("each 4K display publishes after its own metric baseline");
-            (baseline, frame)
-        })
+        .map(|display| acquire_correlated_frame(&display.session, display.last.stamp(), &operation))
         .collect::<Vec<_>>();
     let arrival = started.elapsed();
     let mut correct = true;
@@ -1052,12 +1026,11 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
     let mut stale = 0_u64;
     let mut scheduled = 0_u64;
     let surface_bytes = 3_840_u64 * 2_160 * 4;
-    for (display, (baseline, frame)) in displays.iter_mut().zip(frames) {
+    for (display, (frame, observation)) in displays.iter_mut().zip(frames) {
         let before = display.last.stamp();
         let mapping = frame
             .map(PixelFormat::Bgra8, &operation)
             .expect("each 4K display frame maps to BGRA8");
-        let observation = correlated_callback(baseline, &frame);
         let stamp = frame.stamp();
         let delta = stamp
             .sequence()
@@ -1118,10 +1091,40 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
 }
 
 #[cfg(windows)]
-fn correlated_callback(baseline: CallbackMetricBaseline, frame: &Frame) -> CallbackCopyObservation {
-    callback_observation_after(baseline, frame.stamp())
-        .expect("callback instrumentation remains coherent and lossless")
-        .expect("the acquired frame has its own completed post-baseline callback")
+fn acquire_correlated_frame(
+    session: &Session,
+    after: FrameStamp,
+    operation: &OperationContext,
+) -> (Frame, CallbackCopyObservation) {
+    let baseline = callback_metric_baseline();
+    let mut floor = after;
+    loop {
+        let queued = session
+            .acquire_frame(&FrameRequest::latest(), operation)
+            .expect("the session exposes its current queue floor");
+        let queued_stamp = queued.stamp();
+        assert_eq!(queued_stamp.stream(), floor.stream());
+        assert!(
+            queued_stamp.epoch() > floor.epoch()
+                || (queued_stamp.epoch() == floor.epoch()
+                    && queued_stamp.sequence() >= floor.sequence()),
+            "the latest queue floor never moves backward"
+        );
+        floor = queued_stamp;
+        drop(queued);
+
+        let frame = session
+            .acquire_frame(&FrameRequest::newer_than(floor), operation)
+            .expect("the session publishes within the shared callback deadline");
+        match callback_observation_after(baseline, frame.stamp())
+            .expect("callback instrumentation remains coherent and lossless")
+        {
+            Some(observation) => return (frame, observation),
+            None => {
+                floor = frame.stamp();
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
