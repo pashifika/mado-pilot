@@ -20,8 +20,8 @@ The original capture and transition profiles remain bound to source `0208798`.
 Pre-landing review then found that the capture harness implemented the
 detached/staging/total resource ceilings as equality requirements even though
 this ADR declares upper bounds. Repaired source
-`9bfc0c023db4d39e7caa59aa38b196477b971e3a`, tree
-`be1c57127d495f1345a6619f1851acde627430f0`, reran all four capture workloads
+`c6ff39a9461c128d9a53e4896a34cb65e3c419a3`, tree
+`8f2766a9b55c9964f57a096a720ec4a404ad3756`, reran all four capture workloads
 against unchanged numeric ceilings. The transition profile remains applicable
 at its original revision: the complete intervening diff changes
 benchmark-only callback correlation, dual-display movement, the capture

@@ -682,7 +682,7 @@ or representation only while the ADR's detachment and lifetime tests still pass.
 
 [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
 accepts separate 1280×720 capture and transition profiles. Repaired capture
-source `9bfc0c0`, tree `be1c571`, retained 600 samples across four workloads
+source `c6ff39a`, tree `8f2766a`, retained 600 samples across four workloads
 with zero correctness failures, zero allocation growth, and every unchanged
 budget enforced. The historical transition profile remains at `0208798` under
 a reviewed applicability decision.
@@ -691,7 +691,7 @@ The capture profile records arrival, one frame-stamp-correlated callback copy,
 latest acquisition, and BGRA8 mapping separately. The repaired run reports one
 exact 3,686,400-byte callback copy, two detached textures, one staging texture,
 five total producer/detached/staging textures, zero steady stale work, a
-7,417,895-byte live Rust heap peak, and a 66,306,048-byte resident peak.
+7,417,893-byte live Rust heap peak, and a 66,310,144-byte resident peak.
 Resource counts are nonzero upper bounds; valid lower counts pass.
 
 ADR 0031 follows the three-times-measurement policy for target-specific p50,
@@ -703,18 +703,19 @@ topology, and operation shape, not game or real-time guarantees.
 ## Phase 2 Windows dual-4K production-capture acceptance
 
 [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the repaired mixed-DPI dual-4K profile at final source `9bfc0c0`, tree
-`be1c571`. The stationary pair retains 600 strictly newer samples per display
+accepts the repaired mixed-DPI dual-4K profile at final source `c6ff39a`, tree
+`8f2766a`. The stationary pair retains 600 strictly newer samples per display
 while sharing each capture/mapping interaction. A distinct no-warm-up workload
 retains 300 frame pairs while moving the controlled fixture across the signed
 seam.
 
 The final stationary rows report zero correctness failures, 392 bytes growth,
-exact 66,355,200-byte mappings/copies, seven detached textures, one staging
-texture, twelve total resources, a `0.488491049` stale ratio, 99,583,137 bytes
-live Rust heap, and 219,181,056 bytes resident. The moving row reports zero
-correctness failures, 552 bytes growth, six/one/eleven resources, a
-`0.485420240` stale ratio, 99,577,144 bytes heap, and 255,475,712 bytes
+exact 66,355,200-byte mappings, a 165,888,000-byte five-surface copy interval,
+eight detached textures, one staging texture, thirteen total resources, a
+`0.477579451` stale ratio, 99,583,153 bytes live Rust heap, and 219,348,992
+bytes resident. The moving row reports zero correctness failures, 160 bytes
+growth, a five-surface copy interval, seven/one/twelve resources, a
+`0.485861183` stale ratio, 99,577,160 bytes heap, and 321,396,736 bytes
 resident.
 
 The moving p50/p95/maximum ceilings are 60/75/75 ms, derived above two repaired

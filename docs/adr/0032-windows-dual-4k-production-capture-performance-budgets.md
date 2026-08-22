@@ -26,8 +26,8 @@ precursor runs with coherent frame-stamp-bound callback records. Both retained
 correctness failures and bounded allocation growth. The larger moving
 observations were 19.5257 ms p50, 21.4397 ms p95, and 24.9960 ms maximum.
 
-Final source `9bfc0c023db4d39e7caa59aa38b196477b971e3a`, tree
-`be1c57127d495f1345a6619f1851acde627430f0`, added the derived moving-seam
+Final source `c6ff39a9461c128d9a53e4896a34cb65e3c419a3`, tree
+`8f2766a9b55c9964f57a096a720ec4a404ad3756`, added the derived moving-seam
 latency gates and reran the complete stationary and moving profile with every
 gate enforced in-process. Every supervised benchmark and fixture process
 reached a terminal state.
@@ -42,9 +42,16 @@ application/game compatibility or real-time guarantee.
 Latency ceilings use three times the largest applicable retained observation,
 rounded upward with scheduling margin:
 
+The repaired oracle deliberately drains each session's queue floor and waits for
+a later callback completed after one shared sample baseline. Across six repaired
+runs, the largest arrival observations were 20.0007 ms p50, 40.6720 ms p95, and
+58.3643 ms maximum. The 75/150/200 ms ceilings apply the same three-times,
+readable-rounding policy to that corrected operation shape; they do not excuse a
+failed sample.
+
 | Workload | p50 ceiling | p95 ceiling | maximum |
 |---|---:|---:|---:|
-| `dual_display_frame_arrival` | 20 ms | 100 ms | 150 ms |
+| `dual_display_frame_arrival` | 75 ms | 150 ms | 200 ms |
 | `dual_display_callback_copy` | 0.2 ms | 0.5 ms | 1.5 ms |
 | `dual_display_moving_seam` | 60 ms | 75 ms | 75 ms |
 

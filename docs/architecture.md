@@ -144,7 +144,8 @@ repeats it for native objects. The revision-bound permissioned current-display
 suite and exact owned-window replacement oracle pass on that host. ADR 0014's
 earlier cross-scale movement probe remains design evidence rather than a
 substitute for the release candidate's shared external-display matrix. The
-Windows minimum remains open.
+Windows half is fixed by ADR 0019 at serviced Windows 11 25H2 build family
+26200, including the isolated controlled unsupported-capability result.
 
 ## Integration surfaces
 

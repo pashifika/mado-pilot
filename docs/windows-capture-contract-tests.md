@@ -2,9 +2,10 @@
 
 This plan translates
 [ADR 0013](adr/0013-windows-capture-frame-detachment.md) into tests for
-`mado-pilot-platform-windows`. The production Adapter and its controlled test
-layers now exist; this document distinguishes that implementation evidence from
-the larger host matrix still required for release acceptance.
+`mado-pilot-platform-windows`. The production Adapter, controlled tests, and
+approved interactive Windows host matrix now exist; this document distinguishes
+their revision-bound evidence from the remaining cross-platform final-source
+Phase 1 and release checks.
 
 The implementation uses both layers below:
 

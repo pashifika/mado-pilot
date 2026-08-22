@@ -3,8 +3,8 @@
 ## Scope and source
 
 The current 1280x720 production-capture profile is requalified on clean source
-`9bfc0c023db4d39e7caa59aa38b196477b971e3a`, tree
-`be1c57127d495f1345a6619f1851acde627430f0`. The production-transition profile
+`c6ff39a9461c128d9a53e4896a34cb65e3c419a3`, tree
+`8f2766a9b55c9964f57a096a720ec4a404ad3756`. The production-transition profile
 remains bound to its accepted source `0208798d9542aaae3a956d3e774c9ce57468bc9d`,
 tree `cac0020edbf5b3d28a4dcd5df41e020dc0c6257d`; the complete intervening diff
 changes no transition workload, oracle, fixture mode, or accepted limit.
@@ -24,14 +24,14 @@ native-phase2 --bench --workload-set production-capture-1280x720 \
   --fixture-executable <absolute built fixture> \
   --hardware <approved host> --os-version <approved OS> \
   --deployment-target "Windows 11 25H2 build family 26200" \
-  --source-revision 9bfc0c023db4d39e7caa59aa38b196477b971e3a \
-  --source-tree be1c57127d495f1345a6619f1851acde627430f0 \
+  --source-revision c6ff39a9461c128d9a53e4896a34cb65e3c419a3 \
+  --source-tree 8f2766a9b55c9964f57a096a720ec4a404ad3756 \
   --toolchain <recorded versions> --gpu-driver <recorded driver> \
   --display-topology <qualified single-display topology> \
   --permissions-signing <approved classification>
 ```
 
-- benchmark executable SHA-256: `0a82933f17fe9e37418604636829eb751a43a558d715b1234c85db9e93aea40c`;
+- benchmark executable SHA-256: `0212181ef0c6ff8c2e0fbdb72ad0cd23f7597a9ca29311256a94a58405b58182`;
 - fixture executable SHA-256: `7a0eacf152ea77f30f791d82e58e90424f8fe75457225bbe246df13a6554c7ed`.
 
 The first repaired capture run passed on an earlier repair commit, then was
@@ -47,13 +47,13 @@ growth.
 
 | Workload | p50 | p95 | maximum | mapped bytes | copied bytes | live heap peak |
 |---|---:|---:|---:|---:|---:|---:|
-| `steady_frame_acquisition` | 19.6759 ms | 40.3248 ms | 41.4159 ms | 3,686,400 | n/a | 7,417,895 B |
-| `callback_copy` | 0.0958 ms | 0.3510 ms | 0.4569 ms | 3,686,400 | 3,686,400 | 7,411,900 B |
-| `latest_acquisition` | 0.0011 ms | 0.0033 ms | 0.0558 ms | 3,686,400 | n/a | 7,411,852 B |
-| `cpu_map_bgra8` | 1.4218 ms | 2.7636 ms | 5.3529 ms | 3,686,400 | n/a | 7,411,852 B |
+| `steady_frame_acquisition` | 19.9394 ms | 40.7947 ms | 43.2769 ms | 3,686,400 | n/a | 7,417,893 B |
+| `callback_copy` | 0.0941 ms | 0.3571 ms | 0.5691 ms | 3,686,400 | 3,686,400 | 7,411,898 B |
+| `latest_acquisition` | 0.0010 ms | 0.0036 ms | 0.0253 ms | 3,686,400 | n/a | 7,411,852 B |
+| `cpu_map_bgra8` | 1.3888 ms | 2.4473 ms | 4.9018 ms | 3,686,400 | n/a | 7,411,850 B |
 
 `callback_copy` observed two detached textures, one staging texture, five total
-producer/detached/staging resources, zero stale work, and a 66,306,048-byte
+producer/detached/staging resources, zero stale work, and a 66,310,144-byte
 resident peak. These satisfy ADR 0031 without treating the resource counts as
 exact equality requirements: each count must be present, nonzero, and no greater
 than its accepted ceiling. Copied and mapped bytes remain exact.

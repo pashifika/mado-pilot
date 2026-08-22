@@ -152,7 +152,7 @@ qualification when it differs.
 | Field | Windows | macOS |
 |---|---|---|
 | Hardware | Core i7-12700KF, 20 threads, 32 GiB | Apple M1 Pro, 10 CPU cores, 32 GiB |
-| OS | Windows 11 Pro 25H2, build family 26200; qualified host `26200.9168` | macOS 26.5.2 (`25F84`) |
+| OS | Windows 11 Pro 25H2, build family 26200; qualified host `26200.8894` | macOS 26.5.2 (`25F84`) |
 | GPU/driver | NVIDIA GeForce RTX 4080, `32.0.15.9186` dated 2026-01-20 | integrated 16-core Apple M1 Pro GPU; driver supplied by macOS 26.5.2 |
 | Native toolchain | Visual Studio 2022 17.14.37, MSVC 19.44.35228, Windows SDK 10.0.26100.0, CMake 3.29.5 | Apple Clang 21.0.0, SDK 26.5, CMake 4.4.2 |
 | Shared product toolchain | Rust 1.97.1; OpenCV 4.14.0 | Rust 1.97.1; OpenCV 4.14.0 |

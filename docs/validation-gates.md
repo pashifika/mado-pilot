@@ -88,7 +88,7 @@ replacement acceptance item.
 The 2026-08-22 Windows positive run used Pro build `26200.9168`, SDK
 `10.0.26100.0`, and clean source `834a58f`; build, lazy-import, native Rust,
 product-DLL, C/C++, frozen ABI 1.0, ownership, fixture, and CMake rows passed.
-Final repair source `9bfc0c0` then used the isolated missing-WinRT-D3D-export
+Final repair source `c6ff39a` then used the isolated missing-WinRT-D3D-export
 apparatus: Rust, C, and C++ loaded successfully, discovery returned typed
 `Unsupported`, and the ordinary supported paths passed after restoration.
 
@@ -520,15 +520,15 @@ no historical profile or source attribution.
 
 [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
 accepts the separate Windows 1280×720 profiles. The capture profile was
-requalified on repaired source `9bfc0c0`, tree `be1c571`; all four workloads
+requalified on repaired source `c6ff39a`, tree `8f2766a`; all four workloads
 passed unchanged numeric ceilings with zero correctness/allocation failures,
 exact mapping/copy bytes, and nonzero resource counts at or below their limits.
 The unchanged transition profile remains revision-bound to `0208798` under a
 reviewed complete-diff applicability decision.
 
 [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the repaired mixed-DPI dual-4K profile at final source `9bfc0c0`, tree
-`be1c571`. It retains 600 stationary samples per display plus 300 controlled
+accepts the repaired mixed-DPI dual-4K profile at final source `c6ff39a`, tree
+`8f2766a`. It retains 600 stationary samples per display plus 300 controlled
 moving-seam samples, binds each frame to its own post-baseline callback record,
 and passes every latency, mapping/copy, resource, stale-work, heap, resident,
 correctness, and growth gate.
