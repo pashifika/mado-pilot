@@ -53,8 +53,9 @@ pub mod fixture_protocol;
 pub mod benchmark {
     pub use crate::benchmark_metrics::{
         CallbackCopyObservation, CallbackMetricBaseline, CallbackObservationError,
-        CaptureMetricsSnapshot, callback_metric_baseline, callback_observation_after,
-        capture_metrics, dual_display_fixture_points, dual_display_seam_x, reset_capture_metrics,
+        CaptureMetricsSnapshot, callback_copied_bytes_between, callback_metric_baseline,
+        callback_observation_after, capture_metrics, dual_display_fixture_points,
+        dual_display_seam_x, reset_capture_metrics,
     };
 }
 #[cfg(windows)]

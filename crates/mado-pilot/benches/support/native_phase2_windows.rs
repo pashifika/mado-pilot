@@ -42,9 +42,9 @@ use mado_pilot::{
 
 #[cfg(windows)]
 use mado_pilot_platform_windows::benchmark::{
-    CallbackCopyObservation, CaptureMetricsSnapshot, callback_metric_baseline,
-    callback_observation_after, capture_metrics, dual_display_fixture_points, dual_display_seam_x,
-    reset_capture_metrics,
+    CallbackCopyObservation, CallbackMetricBaseline, CaptureMetricsSnapshot,
+    callback_copied_bytes_between, callback_metric_baseline, callback_observation_after,
+    capture_metrics, dual_display_fixture_points, dual_display_seam_x, reset_capture_metrics,
 };
 #[cfg(windows)]
 use mado_pilot_platform_windows::fixture_protocol as protocol;
@@ -967,10 +967,17 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
     let mut state = lock_state(active);
     let before_stamp = state.last.stamp();
     let operation = bounded(OPERATION_WAIT);
-    let (frame, observation) = acquire_correlated_frame(&state.session, before_stamp, &operation);
+    let sample_start = callback_metric_baseline();
+    let exact_baseline = callback_metric_baseline();
+    let (frame, observation) =
+        acquire_correlated_frame(&state.session, before_stamp, exact_baseline, &operation);
     let mapping = frame
         .map(PixelFormat::Bgra8, &operation)
         .expect("the callback-copy result maps for its content oracle");
+    let sample_end = callback_metric_baseline();
+    let copied_bytes =
+        callback_copied_bytes_between(sample_start, sample_end, &[frame.stamp().stream().get()])
+            .expect("the 1280 callback-copy interval remains coherent and bounded");
     let after_metrics = capture_metrics();
     let stamp = frame.stamp();
     let delta = stamp
@@ -991,11 +998,7 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
     state.last = frame;
     Sample::new(observation.callback_copy_time, correct, mapped)
         .with_stale_work(delta.saturating_sub(1), delta)
-        .with_capture_resources(capture_resources(
-            observation.interval_copied_bytes,
-            after_metrics,
-            2,
-        ))
+        .with_capture_resources(capture_resources(copied_bytes, after_metrics, 2))
         .with_peak_resident_bytes(peak_resident_bytes())
 }
 
@@ -1013,15 +1016,21 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let operation = bounded(OPERATION_WAIT);
+    let sample_start = callback_metric_baseline();
+    let exact_baselines = (0..displays.len())
+        .map(|_| callback_metric_baseline())
+        .collect::<Vec<_>>();
     let started = Instant::now();
     let frames = displays
         .iter()
-        .map(|display| acquire_correlated_frame(&display.session, display.last.stamp(), &operation))
+        .zip(exact_baselines)
+        .map(|(display, baseline)| {
+            acquire_correlated_frame(&display.session, display.last.stamp(), baseline, &operation)
+        })
         .collect::<Vec<_>>();
     let arrival = started.elapsed();
     let mut correct = true;
     let mut mapped_bytes = 0_u64;
-    let mut copied_bytes = 0_u64;
     let mut callback_time = Duration::ZERO;
     let mut stale = 0_u64;
     let mut scheduled = 0_u64;
@@ -1062,12 +1071,18 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
             identity_ok && placement_ok && pixel_ok && observation.copied_bytes == surface_bytes;
         mapped_bytes = mapped_bytes
             .saturating_add(u64::try_from(mapping.bytes().len()).expect("mapped bytes fit u64"));
-        copied_bytes = copied_bytes.saturating_add(observation.interval_copied_bytes);
         callback_time = callback_time.saturating_add(observation.callback_copy_time);
         stale = stale.saturating_add(delta.saturating_sub(1));
         scheduled = scheduled.saturating_add(delta);
         display.last = frame;
     }
+    let sample_end = callback_metric_baseline();
+    let streams = displays
+        .iter()
+        .map(|display| display.last.stamp().stream().get())
+        .collect::<Vec<_>>();
+    let copied_bytes = callback_copied_bytes_between(sample_start, sample_end, &streams)
+        .expect("the dual-display callback-copy interval remains coherent and bounded");
     let after_metrics = capture_metrics();
     let callback_elapsed =
         callback_time / u32::try_from(displays.len()).expect("two displays fit u32");
@@ -1093,9 +1108,9 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
 fn acquire_correlated_frame(
     session: &Session,
     after: FrameStamp,
+    baseline: CallbackMetricBaseline,
     operation: &OperationContext,
 ) -> (Frame, CallbackCopyObservation) {
-    let baseline = callback_metric_baseline();
     let mut floor = after;
     loop {
         let queued = session

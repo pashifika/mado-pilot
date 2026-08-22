@@ -66,8 +66,6 @@ pub struct CallbackCopyObservation {
     pub callback_copy_time: Duration,
     /// Bytes submitted by this callback-side detach copy.
     pub copied_bytes: u64,
-    /// Same-session bytes copied after the baseline through this frame.
-    pub interval_copied_bytes: u64,
 }
 
 /// Why a callback observation cannot be used as benchmark evidence.
@@ -92,6 +90,7 @@ struct CallbackMetricSlot {
     epoch: AtomicU64,
     frame_sequence: AtomicU64,
     completed_at_nanos: AtomicU64,
+    published_at_nanos: AtomicU64,
     elapsed_nanos: AtomicU64,
     copied_bytes: AtomicU64,
 }
@@ -109,6 +108,7 @@ struct CallbackRecord {
     epoch: u64,
     frame_sequence: u64,
     completed_at_nanos: u64,
+    published_at_nanos: u64,
     elapsed_nanos: u64,
     copied_bytes: u64,
 }
@@ -121,6 +121,7 @@ impl CallbackMetricSlot {
             stream: AtomicU64::new(0),
             epoch: AtomicU64::new(0),
             frame_sequence: AtomicU64::new(0),
+            published_at_nanos: AtomicU64::new(0),
             completed_at_nanos: AtomicU64::new(0),
             elapsed_nanos: AtomicU64::new(0),
             copied_bytes: AtomicU64::new(0),
@@ -147,6 +148,7 @@ impl<const N: usize> CallbackMetricRing<N> {
             slot.epoch.store(0, Ordering::Relaxed);
             slot.frame_sequence.store(0, Ordering::Relaxed);
             slot.completed_at_nanos.store(0, Ordering::Relaxed);
+            slot.published_at_nanos.store(0, Ordering::Relaxed);
             slot.elapsed_nanos.store(0, Ordering::Relaxed);
             slot.copied_bytes.store(0, Ordering::Relaxed);
         }
@@ -200,6 +202,8 @@ impl<const N: usize> CallbackMetricRing<N> {
             .store(record.frame_sequence, Ordering::Relaxed);
         slot.completed_at_nanos
             .store(record.completed_at_nanos, Ordering::Relaxed);
+        slot.published_at_nanos
+            .store(record.published_at_nanos, Ordering::Relaxed);
         slot.elapsed_nanos
             .store(record.elapsed_nanos, Ordering::Relaxed);
         slot.copied_bytes
@@ -230,6 +234,7 @@ impl<const N: usize> CallbackMetricRing<N> {
             epoch: slot.epoch.load(Ordering::Relaxed),
             frame_sequence: slot.frame_sequence.load(Ordering::Relaxed),
             completed_at_nanos: slot.completed_at_nanos.load(Ordering::Relaxed),
+            published_at_nanos: slot.published_at_nanos.load(Ordering::Relaxed),
             elapsed_nanos: slot.elapsed_nanos.load(Ordering::Relaxed),
             copied_bytes: slot.copied_bytes.load(Ordering::Relaxed),
         };
@@ -275,40 +280,59 @@ impl<const N: usize> CallbackMetricRing<N> {
             return Ok(None);
         };
 
-        let mut interval_copied_bytes = 0_u64;
-        let mut target_seen = false;
-        for slot in &self.slots {
-            let Some(record) = Self::read_slot(slot)? else {
-                continue;
-            };
-            if record.stream != stream
-                || record.completed_at_nanos <= baseline.completed_at_nanos
-                || record.completed_at_nanos > target.completed_at_nanos
-                || record.epoch > target.epoch
-                || (record.epoch == target.epoch && record.frame_sequence > target.frame_sequence)
-            {
-                continue;
-            }
-            interval_copied_bytes = interval_copied_bytes
-                .checked_add(record.copied_bytes)
-                .ok_or(CallbackObservationError::Invalidated)?;
-            target_seen |= record.epoch == epoch && record.frame_sequence == frame_sequence;
-        }
-        if !target_seen
-            || self.losses.load(Ordering::Acquire) != baseline.losses
-            || self
-                .next
-                .load(Ordering::Acquire)
-                .saturating_sub(baseline.cursor)
-                > capacity
-        {
+        if self.losses.load(Ordering::Acquire) != baseline.losses {
             return Err(CallbackObservationError::Invalidated);
         }
         Ok(Some(CallbackCopyObservation {
             callback_copy_time: Duration::from_nanos(target.elapsed_nanos),
             copied_bytes: target.copied_bytes,
-            interval_copied_bytes,
         }))
+    }
+
+    fn copied_bytes_between(
+        &self,
+        start: CallbackMetricBaseline,
+        end: CallbackMetricBaseline,
+        streams: &[u64],
+    ) -> Result<u64, CallbackObservationError> {
+        let capacity = u64::try_from(N).expect("callback observation capacity fits u64");
+        if start.losses != end.losses
+            || self.losses.load(Ordering::Acquire) != start.losses
+            || end.cursor < start.cursor
+            || end.cursor.saturating_sub(start.cursor) > capacity
+            || end.completed_at_nanos < start.completed_at_nanos
+        {
+            return Err(CallbackObservationError::Invalidated);
+        }
+        let mut copied_bytes = 0_u64;
+        for slot in &self.slots {
+            if slot.sequence.load(Ordering::Acquire) % 2 == 1 {
+                return Err(CallbackObservationError::Invalidated);
+            }
+            let Some(record) = Self::read_slot(slot)? else {
+                continue;
+            };
+            if !streams.contains(&record.stream)
+                || record.completed_at_nanos <= start.completed_at_nanos
+                || record.published_at_nanos <= start.completed_at_nanos
+                || record.published_at_nanos > end.completed_at_nanos
+            {
+                continue;
+            }
+            copied_bytes = copied_bytes
+                .checked_add(record.copied_bytes)
+                .ok_or(CallbackObservationError::Invalidated)?;
+        }
+        if self.losses.load(Ordering::Acquire) != start.losses
+            || self
+                .next
+                .load(Ordering::Acquire)
+                .saturating_sub(start.cursor)
+                > capacity
+        {
+            return Err(CallbackObservationError::Invalidated);
+        }
+        Ok(copied_bytes)
     }
 }
 
@@ -396,6 +420,16 @@ pub fn callback_observation_after(
     )
 }
 
+/// Sums coherent callback-copy bytes for selected streams over one sample.
+#[cfg(feature = "benchmark-instrumentation")]
+pub fn callback_copied_bytes_between(
+    start: CallbackMetricBaseline,
+    end: CallbackMetricBaseline,
+    streams: &[u64],
+) -> Result<u64, CallbackObservationError> {
+    CALLBACK_OBSERVATIONS.copied_bytes_between(start, end, streams)
+}
+
 pub(crate) fn time_callback_copy(_copied_bytes: u64, _stream: u64) -> CallbackCopyTimer {
     CallbackCopyTimer {
         #[cfg(feature = "benchmark-instrumentation")]
@@ -460,6 +494,7 @@ impl CompletedCallbackCopy {
                 epoch: stamp.epoch().value(),
                 frame_sequence: stamp.sequence().value(),
                 completed_at_nanos: self.completed_at_nanos,
+                published_at_nanos: callback_now_nanos(),
                 elapsed_nanos: self.elapsed_nanos,
                 copied_bytes: self.copied_bytes,
             });
@@ -530,6 +565,7 @@ mod tests {
             epoch,
             frame_sequence,
             completed_at_nanos,
+            published_at_nanos: completed_at_nanos,
             elapsed_nanos,
             copied_bytes,
         }
@@ -567,6 +603,7 @@ mod tests {
         slot.stream.store(7, Ordering::Relaxed);
         slot.epoch.store(11, Ordering::Relaxed);
         slot.frame_sequence.store(13, Ordering::Relaxed);
+        slot.published_at_nanos.store(1, Ordering::Relaxed);
         slot.completed_at_nanos.store(1, Ordering::Relaxed);
         slot.elapsed_nanos.store(17, Ordering::Relaxed);
         slot.copied_bytes.store(19, Ordering::Relaxed);
@@ -579,7 +616,6 @@ mod tests {
             Ok(Some(CallbackCopyObservation {
                 callback_copy_time: Duration::from_nanos(17),
                 copied_bytes: 19,
-                interval_copied_bytes: 19,
             }))
         );
     }
@@ -614,19 +650,33 @@ mod tests {
     #[test]
     fn interval_bytes_include_intervening_same_session_copies_only() {
         let ring = CallbackMetricRing::<4>::new();
-        let baseline = baseline_at(&ring, 0);
+        let start = baseline_at(&ring, 0);
         publish(&ring, 1, 10, 100, 1, 11, 100);
         publish(&ring, 2, 20, 200, 2, 22, 999);
         publish(&ring, 1, 10, 101, 3, 33, 200);
+        let end = baseline_at(&ring, 4);
 
         assert_eq!(
-            ring.observation_after(baseline, 1, 10, 101),
+            ring.observation_after(start, 1, 10, 101),
             Ok(Some(CallbackCopyObservation {
                 callback_copy_time: Duration::from_nanos(33),
                 copied_bytes: 200,
-                interval_copied_bytes: 300,
             }))
         );
+        assert_eq!(ring.copied_bytes_between(start, end, &[1]), Ok(300));
+        assert_eq!(ring.copied_bytes_between(start, end, &[2]), Ok(999));
+    }
+
+    #[test]
+    fn sample_interval_excludes_prestart_and_postend_publications() {
+        let ring = CallbackMetricRing::<4>::new();
+        publish(&ring, 1, 10, 99, 1, 11, 50);
+        let start = baseline_at(&ring, 2);
+        publish(&ring, 1, 10, 100, 3, 22, 100);
+        let end = baseline_at(&ring, 4);
+        publish(&ring, 1, 10, 101, 5, 33, 200);
+
+        assert_eq!(ring.copied_bytes_between(start, end, &[1]), Ok(100));
     }
     #[test]
     fn out_of_order_callbacks_remain_bound_to_their_session_and_frame() {
@@ -642,7 +692,6 @@ mod tests {
             Ok(Some(CallbackCopyObservation {
                 callback_copy_time: Duration::from_nanos(11),
                 copied_bytes: 111,
-                interval_copied_bytes: 111,
             }))
         );
         assert_eq!(
@@ -650,7 +699,6 @@ mod tests {
             Ok(Some(CallbackCopyObservation {
                 callback_copy_time: Duration::from_nanos(22),
                 copied_bytes: 222,
-                interval_copied_bytes: 222,
             }))
         );
     }
@@ -669,7 +717,6 @@ mod tests {
             Ok(Some(CallbackCopyObservation {
                 callback_copy_time: Duration::from_nanos(11),
                 copied_bytes: 111,
-                interval_copied_bytes: 111,
             }))
         );
     }
