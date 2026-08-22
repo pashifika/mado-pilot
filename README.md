@@ -41,18 +41,23 @@ crates/bindings/capi/examples/c/macos-native-input.c
 crates/bindings/capi/examples/cpp/native-input.cpp
 ```
 
-Release acceptance is complete for the fourteen controlled macOS
-owning-process pairs. Final measured candidate
-`dec43d7b6c91d415f2028e188e89fa289cb9c1c9` passed the controlled
-AppKit, game-like, and native input/public-language profiles. Independent
-`single`, exact two-display non-mirrored `same-scale`, and three-display
-`mixed-scale` matrices passed without substituting one topology for another.
-The release decision is 14 qualified, 0 rejected, and 0 unexecuted.
-The shared external-display matrix and both Windows interactive matrices still
-require their approved physical topologies. macOS capture needs Screen Recording
-and input needs event-post access; MadoPilot probes both without
-prompting. A green run that skipped a permissioned native scenario is not
-evidence that scenario ran.
+Native release acceptance now covers all fourteen controlled macOS
+owning-process pairs, the accepted macOS production capture and transition
+profiles, the qualified Windows 11 25H2 floor including its controlled native
+unsupported path, and the repaired Windows 1280×720 and mixed-DPI dual-4K
+production profiles. The dual profile includes 600 stationary samples per
+display and 300 moving-seam frame pairs with per-frame callback correlation.
+Each lineage remains bound to its own source, topology, stimulus, oracle, and
+target-specific budgets. Windows final-source Phase 1 and repository verification
+run on the exact exit candidate under unchanged ceilings. Apple Silicon Phase 1
+remains attributed to `d8336be` and applies by reviewed complete diff;
+exact-candidate hosted checks bind both release targets. Historical profiles and
+hosted CI never substitute for interactive native rows.
+
+macOS capture needs Screen Recording and input needs event-post access;
+MadoPilot probes both without prompting. Windows has no permission probe and
+reports integrity/UIPI outcomes without elevation. A green run that skipped a
+permissioned or interactive native scenario is not evidence that scenario ran.
 
 The public workflow still neither recognizes text nor waits on a condition.
 Adding a package here is not a claim that its behavior exists.
@@ -68,14 +73,14 @@ Adding a package here is not a claim that its behavior exists.
 | Template-matching contracts, ordering, suppression, source correlation | Implemented |
 | Template matching against a real image | Implemented on OpenCV 4 for the Phase 1 profile |
 | Deterministic Rust workflow: discovery, capture, mapping, assets, matching, close | Implemented over replay input |
-| Native capture | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; the macOS current-display matrix passes while Windows and shared-display acceptance remain open |
+| Native capture | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; ADR 0030 accepts macOS production capture/transitions, ADR 0031 accepts Windows 1280×720 production capture/transitions, and ADR 0032 accepts Windows mixed-DPI dual-4K production capture |
 | Native input submission | Implemented in both adapters and exposed through Rust, C ABI 1.2, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
 | Bounded diagnostic observation | Implemented through Rust, C ABI 1.2, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and privacy-reviewed records |
 | OCR, watchers | Not implemented |
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.2 while preserving the released ABI 1.0 prefix; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.2 |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 is resolved on both targets. The Phase 2.2 input-diagnostic profile and final `dec43d7` native input/public-language, process-directed AppKit, and controlled game-like profiles are accepted on macOS. Independent `single`, `same-scale`, and `mixed-scale` owning-process matrices pass. Diagnostic hard correctness and bounded-growth gates run in both release-target CI jobs; named-host Windows timing plus the remaining Windows native profiles stay open |
+| Numeric performance budgets | Phase 1 ceilings are frozen on both targets. Windows reruns pass on the exact exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete diff. Phase 2 accepts macOS diagnostics, native input/public-language, controlled owning-process, and production capture/transition profiles; Windows diagnostics, controlled `native-phase2`, ordinary `WindowMessage`, 1280×720 production, and corrected mixed-DPI dual-4K production profiles; benchmark-drift, correctness, allocation, memory, mapped/copy-byte, stale-work, and target-specific latency gates remain enforced |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled
@@ -99,8 +104,8 @@ the full status table, the package inventory, and the dependency rules.
 [`v0.1.0`](docs/releases/v0.1.0.md) is the published developer-facing source,
 Rust API, C ABI 1.0, and C++ API baseline for the deterministic workflow.
 [`v0.2.1`](docs/releases/v0.2.1.md) is the in-progress native
-capture/input/observation source release; it is not released while the
-Windows production-capture and shared-display acceptance gaps remain.
+capture/input/observation source release; it remains unreleased until its
+protected branch, exact-head checks, tag, and release-record flow completes.
 Neither version publishes crates to crates.io or provides prebuilt libraries,
 installers, CMake install/export metadata, pkg-config metadata, or bundled
 OpenCV. A tracked release-note file is the canonical release body.
@@ -110,10 +115,10 @@ OpenCV. A tracked release-note file is the canonical release body.
 Version one targets `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`. Hosted
 CI builds and tests both natively, but it never substitutes for an interactive
 display, permission, input, device, or target-loss matrix. The qualified macOS
-floor is Apple Silicon macOS 26.5.2 build 25F84. The Windows 11 25H2 candidate
-remains a proposal until its approved desktop host runs the boundary plan; no
-minimum Windows support claim is active. Remaining version-one decisions are
-tracked in [docs/validation-gates.md](docs/validation-gates.md).
+floor is Apple Silicon macOS 26.5.2 build 25F84. The qualified Windows floor is
+Windows 11 25H2 build family 26200 on a currently serviced x64 desktop
+installation; the retained boundary run used Pro build 26200.9168. Remaining
+version-one decisions are tracked in [docs/validation-gates.md](docs/validation-gates.md).
 
 ## Integration surfaces
 

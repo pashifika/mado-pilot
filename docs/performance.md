@@ -18,8 +18,11 @@ process-directed and controlled-stimulus lineage below. Final candidate
 `dec43d7` passes the exact-source controlled AppKit and game-like profiles
 under their frozen regression budgets. Independent `single`, exact two-display
 non-mirrored `same-scale`, and `mixed-scale` qualification matrices also pass,
-so all fourteen controlled release pair decisions are qualified. The remaining
-native workload and target gaps stay open.
+so all fourteen controlled release pair decisions are qualified. ADRs 0030,
+0031, and 0032 accept the target-specific production profiles. Windows
+final-source Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs
+remain attributed to `d8336be` and apply by reviewed complete diff. Both keep
+their unchanged ceilings and never re-derive a budget.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -102,7 +105,7 @@ A budget names one measure. The version-one vocabulary is:
 | `capture_to_result_latency_p50` | milliseconds | End-to-end latency percentile from frame capture to committed result. |
 | `capture_to_result_latency_p95` | milliseconds | As above, at the 95th percentile. |
 | `peak_memory` | bytes | Peak resident memory during the run. |
-| `peak_resident_bytes` | bytes | High-water resident set of a measured child process, reported by the native operating system after that owned child exits. Optional because in-process workloads do not create one. |
+| `peak_resident_bytes` | bytes | High-water resident set of the measured native benchmark process or a separately measured child process, reported by the native operating system. Optional because workloads without a native process observation do not emit it. |
 | `steady_memory` | bytes | Resident memory in steady state. |
 | `mapped_bytes_per_result` | bytes | Frame bytes mapped into CPU memory per produced result, full-frame or region of interest. |
 | `stale_work_ratio` | ratio | Share of scheduled work that was dropped, coalesced, superseded, rejected, queue-expired, or discarded as stale. |
@@ -117,6 +120,10 @@ A budget names one measure. The version-one vocabulary is:
 | `peak_allocated_bytes` | bytes | High-water mark of live heap bytes during the sampled run, above what was live before the workload's fixture existed. |
 | `steady_allocated_bytes` | bytes | Live heap bytes when the sampled run finished, above the same baseline, with the fixture still alive. |
 | `allocated_growth_bytes` | bytes | Signed change in live heap bytes across the sampled run alone. A hard gate, on the same terms as `memory_growth`. |
+| `copied_bytes_per_result` | bytes | Producer-surface bytes copied while producing one retained sample. The report keeps the largest sample, so unexpected duplicate copies remain visible. |
+| `detached_textures_peak` | count | Maximum simultaneously live Adapter-owned detached textures during one workload. |
+| `staging_textures_peak` | count | Maximum simultaneously live CPU-readable staging textures during one workload. |
+| `gpu_resources_peak` | count | Maximum simultaneously live producer, detached, and staging textures during one workload. |
 
 A phase that needs a measure outside this list adds it here in the same change,
 with its unit and its meaning.
@@ -451,11 +458,16 @@ records, and still return four complete receipts on both targets.
 
 ## Phase 2 native performance status
 
-Phase 2's affected [`G-013`](validation-gates.md#g-013) workloads are partially
-resolved. [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+Phase 2's affected [`G-013`](validation-gates.md#g-013) production and
+target-specific native profiles are accepted. Windows final-source Phase 1
+reruns pass on the exact exit candidate; Apple Silicon runs remain attributed
+to `d8336be` and apply by reviewed complete diff. Both keep their unchanged
+ceilings.
+[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
 invalidated the three macOS profiles originally accepted by
 [ADR 0020](adr/0020-phase-2-native-performance-budgets.md). ADR 0025 replaced
-the macOS input profile; ADR 0026 now replaces every Windows native gap:
+the macOS input profile, while ADR 0026 accepts the controlled Windows native
+profiles:
 
 | Workload set | Target | Profile | Current status |
 |---|---|---|---|
@@ -513,12 +525,15 @@ Windows. ADR 0026 records the probes and the bounded repairs. Production capture
 and input semantics were not changed to make a benchmark pass.
 
 The Phase 1 profiles historically passed all applicable comparisons at their
-recorded source revisions. Release acceptance still requires final-source
-regression reruns; their committed Phase 1 ceilings do not move. The accepted
-Phase 2.2 controlled-stimulus lineage below now supplies the current macOS
-capture, transition, and owning-process-route measurements without treating
-them as comparable to the invalidated input-stimulus lineage. The broader
-production-capture acceptance matrix remains open under `G-013`.
+recorded source revisions. Windows reruns them on the exact exit candidate;
+Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete
+diff. Neither target moves its committed ceilings. The accepted Phase 2.2
+controlled-stimulus lineage below
+supplies the current macOS capture, transition, and owning-process-route
+measurements without treating them as comparable to the invalidated
+input-stimulus lineage. ADRs 0030, 0031, and 0032 separately accept the complete
+macOS, Windows 1280×720, and corrected Windows dual-4K production-capture
+lineages.
 
 ## Phase 2.2 macOS process-directed and controlled-stimulus lineage
 
@@ -537,6 +552,14 @@ retained process authority (`discovery_open_retained_authority`), the
 per-event authority/preflight/post path (`event_authority_preflight_post`),
 release cleanup and session close, and diagnostics `Off`/`Normal`/`Debug` and
 overflow around process-directed events.
+
+The macOS-only `resize-allocation` workload set is the focused regression seam
+for allocation retained across controlled geometry changes. It measures the
+fixture resize command separately from `resize_recreation`, uses five warm-ups
+and fifty retained samples, and applies the repository hard correctness and
+4,096-byte growth gates without defining an independent latency ceiling. It is
+non-normative diagnostic evidence and does not replace the complete
+`transitions` or production-capture acceptance profiles.
 
 The original five revision-bound profiles were measured on the approved Apple
 Silicon host at corrected pre-optimization source commit
@@ -601,6 +624,39 @@ Timing did not replace topology qualification: independent `single`, exact
 two-display non-mirrored `same-scale`, and `mixed-scale` matrices each passed.
 All fourteen controlled pair decisions are release-qualified.
 
+## Phase 2 macOS production-capture acceptance
+
+[ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
+production-capture and production-transition profiles at measured source
+`d182300cd8710891ded6cba17184c44d6d58a114`, tree
+`c570343d334a5c77415e6a885ef8821c731b0ad5`, on the approved exactly-two-display
+mixed-scale Apple Silicon host. The two profiles retain 1,150 samples across
+eight workloads with zero correctness failures and zero allocation growth while
+enforcing latency, live-heap, mapped-byte, correctness, and growth budgets.
+
+Natural `publication_age`, strictly-newer acquisition, latest acquisition,
+BGRA8 mapping, and retained-pressure recovery are recorded separately from
+fresh-session startup, controlled resize recreation, and close drain. Mapped
+rows carry exactly one 1280x904 BGRA8 frame (`4,628,480` bytes). The deliberate
+retained-pressure row reports a stale ratio near `0.835` only after filling the
+finite retained budget and proving blocked/resumed publication; ordinary
+production publication and acquisition report zero stale work.
+
+The resize investigation did not establish an unbounded general capture leak.
+It identified the documented 64-revision macOS source-geometry history growing
+in power-of-two allocation steps and briefly retaining capacity 128 because
+retirement followed insertion. The implementation now keeps a small history
+for fixed-geometry targets, reserves the complete bound only on the first
+geometry change, and retires before insertion at the bound. The exact
+production resize row changed from `9,856` bytes to zero post-warm-up growth.
+
+ADR 0030's target-specific p50, p95, and maximum ceilings follow the established
+three-times-measurement policy. They are regression gates for this fixture,
+host, topology, and operation shape, not real-time or application/game
+compatibility claims. Production capture uses a 32 MiB peak live Rust heap
+ceiling; transitions use 16 MiB. Every row remains subject to zero correctness
+failures and at most 4,096 bytes of allocation growth.
+
 ## Phase 2 Windows ownership prototype
 
 The G-002 prototype resolves a correctness and ownership gate; it does not set
@@ -629,11 +685,53 @@ Each 600-frame 3840×2160 display row copied 23,887,872,000 bytes and mapped
 publishing a WGC surface or by reusing leased content; it may optimize scheduling
 or representation only while the ADR's detachment and lifetime tests still pass.
 
-The production Windows capture portion of
-[`G-013`](validation-gates.md#g-013) remains open independently of the
-`native-phase2` profile accepted by ADR 0026. Its acceptance profile must budget
-capture arrival, callback-copy p95, mapped and copied bytes, detached/staging
-and resident memory, drops and stale work under pressure, session startup,
-resize recreation, close drain, and reset recovery at 1280×720 and on the named
-dual-4K topology. The complete workload and correctness obligations are in
+## Phase 2 Windows 1280x720 production-capture acceptance
+
+[ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
+accepts separate 1280×720 capture and transition profiles. Shared-marker capture
+source `f50285a`, tree `4c2f23f`, retained 600 samples across four workloads
+with zero correctness failures, zero allocation growth, and every unchanged
+budget enforced. Repaired transition source `7c31752`, tree `4e99487`, reran all
+five lifecycle workloads with zero correctness failures and every unchanged
+latency, mapping, memory, growth, and cleanup gate enforced.
+
+The capture profile records arrival, one frame-stamp-correlated callback copy,
+latest acquisition, and BGRA8 mapping separately. The shared-marker run reports
+one exact 3,686,400-byte callback copy, two detached textures, one staging
+texture, five total producer/detached/staging textures, zero steady stale work,
+a 7,417,467-byte live Rust heap peak, and a 66,506,752-byte resident peak.
+Resource counts are nonzero upper bounds; valid lower counts pass.
+
+ADR 0031 follows the three-times-measurement policy for target-specific p50,
+p95, and maximum ceilings. Both profiles use a 32 MiB live Rust heap ceiling,
+a 256 MiB native process resident ceiling, zero correctness failures, and at
+most 4,096 bytes growth. They are regression gates for the named host, fixture,
+topology, and operation shape, not game or real-time guarantees.
+
+## Phase 2 Windows dual-4K production-capture acceptance
+
+[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
+accepts the corrected mixed-DPI dual-4K profile at shared-predicate source
+`f50285a`, tree `4c2f23f`. The stationary pair retains 600 strictly newer
+samples per display while sharing each capture/mapping interaction. A distinct
+no-warm-up workload retains 300 frame pairs while moving the controlled fixture
+across the signed seam.
+
+The final stationary rows report zero correctness failures, zero growth, exact
+66,355,200-byte mappings, a 199,065,600-byte six-surface copy interval, seven
+detached textures, one staging texture, twelve total resources, a `0.455782313`
+stale ratio, 99,582,727 bytes live Rust heap, and 219,213,824 bytes resident.
+The moving row reports zero correctness failures, 320 bytes growth, a
+six-surface copy interval, six/one/eleven resources, a `0.474145486` stale
+ratio, 99,576,732 bytes heap, and 288,911,360 bytes resident.
+
+Two corrected-marker precursor runs establish the moving 125/175/225 ms
+p50/p95/maximum ceilings through ADR 0032's three-times/readable-rounding
+policy. Both requested marker positions and each frame's coherent post-baseline
+stream/epoch/sequence callback record must match under one absolute deadline.
+ADR 0032 retains 384 MiB heap, 1 GiB resident, copy, texture, and stale-work
+ceilings for all three workloads. Windows production-capture `G-013` is
+complete. Windows Phase 1 reruns pass on the exact exit candidate; Apple Silicon
+runs remain attributed to `d8336be` and apply by reviewed complete diff.
+The complete workload and correctness obligations are in
 [windows-capture-contract-tests.md](windows-capture-contract-tests.md).

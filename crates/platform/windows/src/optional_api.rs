@@ -33,6 +33,9 @@ type CreateDirect3D11DeviceFromDxgiDeviceFn =
     unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT;
 
 const MDT_EFFECTIVE_DPI: i32 = 0;
+#[cfg(feature = "qualification-unsupported-api")]
+const QUALIFY_MISSING_DIRECT3D_DEVICE: &str =
+    "MADO_PILOT_WINDOWS_QUALIFY_MISSING_CREATE_DIRECT3D11_DEVICE";
 
 pub(crate) fn geometry_api_available() -> bool {
     logical_to_physical_fn().is_some()
@@ -112,22 +115,25 @@ pub(crate) fn logical_to_physical(hwnd: HWND, point: &mut POINT) -> bool {
 }
 
 pub(crate) fn monitor_scale(monitor: HMONITOR) -> Option<f64> {
-    if let Some(function) = scale_factor_for_monitor_fn() {
-        let mut percent = 0;
-        // SAFETY: percent is writable and monitor came from current enumeration.
-        if unsafe { function(monitor, &raw mut percent) }.is_ok() && percent > 0 {
-            return Some(f64::from(percent) / 100.0);
+    if let Some(function) = dpi_for_monitor_fn() {
+        let mut dpi_x = 0;
+        let mut dpi_y = 0;
+        // SAFETY: both outputs are writable and monitor is a current handle.
+        if unsafe { function(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y) }.is_ok()
+            && dpi_x > 0
+            && dpi_y > 0
+        {
+            return Some((f64::from(dpi_x) + f64::from(dpi_y)) / 192.0);
         }
     }
 
-    let function = dpi_for_monitor_fn()?;
-    let mut dpi_x = 0;
-    let mut dpi_y = 0;
-    // SAFETY: both outputs are writable and monitor is a current handle.
-    unsafe { function(monitor, MDT_EFFECTIVE_DPI, &raw mut dpi_x, &raw mut dpi_y) }
-        .ok()
-        .ok()?;
-    (dpi_x > 0 && dpi_y > 0).then_some((f64::from(dpi_x) + f64::from(dpi_y)) / 192.0)
+    let function = scale_factor_for_monitor_fn()?;
+    let mut percent = 0;
+    // SAFETY: percent is writable and monitor came from current enumeration.
+    unsafe { function(monitor, &raw mut percent) }
+        .is_ok()
+        .then_some(f64::from(percent) / 100.0)
+        .filter(|scale| *scale > 0.0)
 }
 
 fn dpi_for_window_fn() -> Option<GetDpiForWindowFn> {
@@ -171,6 +177,10 @@ fn ro_uninitialize_fn() -> Option<RoUninitializeFn> {
 }
 
 fn create_direct3d_device_fn() -> Option<CreateDirect3D11DeviceFromDxgiDeviceFn> {
+    #[cfg(feature = "qualification-unsupported-api")]
+    if std::env::var_os(QUALIFY_MISSING_DIRECT3D_DEVICE).is_some() {
+        return None;
+    }
     static FUNCTION: OnceLock<Option<CreateDirect3D11DeviceFromDxgiDeviceFn>> = OnceLock::new();
     *FUNCTION.get_or_init(|| load_d3d11(b"CreateDirect3D11DeviceFromDXGIDevice\0"))
 }

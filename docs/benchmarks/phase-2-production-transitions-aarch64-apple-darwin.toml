@@ -1,0 +1,171 @@
+# Phase 2 production capture transitions, measured on aarch64-apple-darwin at source
+# d182300cd8710891ded6cba17184c44d6d58a114 and tree
+# c570343d334a5c77415e6a885ef8821c731b0ad5.
+#
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0030 sets
+# the target-specific regression budgets. This profile is independent of the
+# frozen historical native and Phase 2.2 controlled-stimulus profiles.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-production-transitions-aarch64-apple-darwin"
+workload = "macOS production capture startup, controlled resize, and close transitions"
+phase = "2"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "separately linked private macOS fixture Rust, protocol-v11, header, Objective-C, and renderer sources"
+fixture_sha256 = "c5576c5290003c723f1d3797ab1c6032e935a9e04ab42d50ce5dc9108bc029ea"
+benchmark_executable_sha256 = "754c8234085ab1855630923326402d7a071e23c0174e8148f1d8ce0ed8e24af7"
+release_target = "aarch64-apple-darwin"
+hardware = "Apple M1 Pro, 10 cores, 32 GiB"
+os_version = "macOS 26.5.2 (25F84)"
+deployment_target = "macOS 26.5.2"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release --features private-fixture; signed .app; controlled NSWorkspace new-instance launch"
+warmup_iterations = 5
+sample_count = 50
+correctness_oracle = "every retained sample checks production frame identity, frame-authoritative geometry, declared fixture content, finite retained progress, exact mapping, or bounded lifecycle outcome; the resize command is stimulus only and never substitutes for a captured result"
+queue_policy = "session latest-wins queue depth 1; one bounded private resize stimulus; adapter finite retained-storage limit"
+notes = "source commit d182300cd8710891ded6cba17184c44d6d58a114, tree c570343d334a5c77415e6a885ef8821c731b0ad5; toolchain rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology exactly two online non-mirrored displays; signed-origin 3840x2160 1x; main 2560x1440 logical / 5120x2880 backing 2x; mixed-scale connection method unrestricted; permissions/signing Screen Recording granted; event-post access granted; target bundle structurally ad-hoc signed; fixture executable sha256 40a33a5ceefff9ff01afef52b694799d2a1af91cc355a9d1020dda2a68891374; executable paths deliberately omitted; benchmark and fixture SHA-256 bytes are bound to validity-checked static and audit-token-selected live Security code identities; lineage=production-capture-transitions; mode=default renderer=appkit-background resize-stimulus=private-control"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 16777216
+rationale = "ADR 0030 permits more than three times the measured production-transition live Rust heap peak"
+
+[[measurement]]
+workload = "open_first_frame"
+correctness_oracle = "each fresh production capture session returns one correctly identified and mapped first frame, then closes"
+result_correctness = 0
+latency_p50_ms = 89.774583
+latency_p95_ms = 97.587625
+latency_max_ms = 109.289916
+iteration_span_ms = 152.894145
+mapped_bytes_per_result = 4628480
+peak_allocated_bytes = 4635745
+steady_allocated_bytes = 3684
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p50"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p95"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 400.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured maximum"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4628480
+rationale = "one exact 1280x904 BGRA8 fixture mapping"
+
+[[measurement]]
+workload = "resize_recreation"
+correctness_oracle = "one bounded private resize stimulus drives the production capture session; only the independently observed new epoch, geometry, extent, and frame-authoritative transform satisfy the oracle"
+result_correctness = 0
+latency_p50_ms = 52.034250
+latency_p95_ms = 73.230708
+latency_max_ms = 99.592917
+iteration_span_ms = 53.055412
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 18879
+steady_allocated_bytes = 17441
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 175.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p50"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 250.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p95"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 300.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured maximum"
+
+[[measurement]]
+workload = "close_drain"
+correctness_oracle = "explicit production capture close drains within its bound, reaches the closed state, and remains idempotent"
+result_correctness = 0
+latency_p50_ms = 63.066125
+latency_p95_ms = 67.622291
+latency_max_ms = 84.241667
+iteration_span_ms = 154.776187
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 7041
+steady_allocated_bytes = 3620
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 250.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p50"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 300.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured p95"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 300.0
+rationale = "ADR 0030 rounds above three times the largest applicable measured maximum"

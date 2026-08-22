@@ -1364,6 +1364,20 @@ fn source_geometry_history_is_finite_and_retires_oldest_first() {
         scale: 1.0,
     };
     ledger.record(first_stamp, first_transform, bounds);
+    {
+        let streams = ledger
+            .streams
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let history = streams
+            .get(&first_stamp.stream())
+            .expect("the first revision creates one stream history");
+        assert_eq!(history.len(), 1);
+        assert!(
+            history.capacity() < super::GEOMETRY_HISTORY_REVISIONS,
+            "an unchanged stream does not reserve the full movement history"
+        );
+    }
     let mut second = None;
 
     for index in 1..=super::GEOMETRY_HISTORY_REVISIONS {
@@ -1374,6 +1388,21 @@ fn source_geometry_history_is_finite_and_retires_oldest_first() {
         if index == 1 {
             second = Some((stamp, transform));
         }
+    }
+    {
+        let streams = ledger
+            .streams
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let history = streams
+            .get(&first_stamp.stream())
+            .expect("the live stream history remains registered");
+        assert_eq!(history.len(), super::GEOMETRY_HISTORY_REVISIONS);
+        assert_eq!(
+            history.capacity(),
+            super::GEOMETRY_HISTORY_REVISIONS,
+            "the fixed logical history bound does not retain a doubled allocation"
+        );
     }
 
     assert_eq!(ledger.source_geometry(first_stamp), None);

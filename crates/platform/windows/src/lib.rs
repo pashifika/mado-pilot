@@ -41,11 +41,23 @@
 #[cfg(windows)]
 mod availability;
 #[cfg(windows)]
+mod benchmark_metrics;
+#[cfg(windows)]
 mod discovery;
 #[cfg(windows)]
 #[doc(hidden)]
 #[allow(missing_docs)]
 pub mod fixture_protocol;
+#[cfg(all(windows, feature = "benchmark-instrumentation"))]
+#[doc(hidden)]
+pub mod benchmark {
+    pub use crate::benchmark_metrics::{
+        CallbackCopyObservation, CallbackMetricBaseline, CallbackObservationError,
+        CaptureMetricsSnapshot, benchmark_marker_pixel_matches, callback_copied_bytes_between,
+        callback_metric_baseline, callback_observation_after, capture_metrics,
+        dual_display_fixture_marker_points, dual_display_seam_x, reset_capture_metrics,
+    };
+}
 #[cfg(windows)]
 mod input;
 #[cfg(windows)]

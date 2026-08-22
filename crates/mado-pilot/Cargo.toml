@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsupported-api"]
+
 [dependencies]
 mado-pilot-adapter-replay = { path = "../adapter/replay" }
 mado-pilot-backend-opencv = { path = "../backend/opencv" }
@@ -26,6 +29,7 @@ mado-pilot-platform-macos = { path = "../platform/macos" }
 
 [target.'cfg(windows)'.dev-dependencies]
 windows.workspace = true
+mado-pilot-platform-windows = { path = "../platform/windows", features = ["benchmark-instrumentation"] }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 mado-pilot-platform-macos = { path = "../platform/macos", features = ["private-fixture"] }

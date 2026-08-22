@@ -2,9 +2,10 @@
 
 This plan translates
 [ADR 0013](adr/0013-windows-capture-frame-detachment.md) into tests for
-`mado-pilot-platform-windows`. The production Adapter and its controlled test
-layers now exist; this document distinguishes that implementation evidence from
-the larger host matrix still required for release acceptance.
+`mado-pilot-platform-windows`. The production Adapter, controlled tests, and
+approved interactive Windows host matrix now exist; this document distinguishes
+their revision-bound evidence from Windows exact-candidate Phase 1 checks, Apple
+Silicon Phase 1 reviewed applicability, repository checks, and release checks.
 
 The implementation uses both layers below:
 
@@ -44,10 +45,12 @@ case, which skips with a reason only when WGC is unavailable. On a supported
 host, failure to discover the test-owned target is a test failure. The tests do
 not capture an unrelated desktop or application.
 
-The remaining release-acceptance evidence is the revision-bound 600-frame and
-dual-4K host matrix below, including resource-zeroing counters and Phase 2
-`G-013` profiles and budgets. A skip is not support evidence, and the current
-Change does not claim that matrix has run.
+[ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
+accepts the revision-bound 120-warm-up/600-frame 1280×720 production matrix.
+[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
+accepts the exact two-display mixed-DPI dual-4K matrix. Both retain
+resource-zeroing observations and affected `G-013` budgets; a skip remains
+ineligible as support evidence.
 
 ## Privacy review
 
@@ -142,17 +145,21 @@ identifiers, with no captured payload.
 
 ## Performance obligations
 
-G-002 chooses correctness and ownership, not numeric product budgets. The
-production Change must add Phase 2 `G-013` profiles that measure at least:
+G-002 chooses correctness and ownership, not numeric product budgets. ADR 0031
+accepts the 1280×720 `G-013` profiles for:
 
 - capture arrival and callback-copy p50/p95 latency;
 - full-frame copied bytes and lazy mapped bytes;
-- detached-texture, staging, process-resident, and relevant GPU-memory peaks;
-- producer progress, queue drops, stale/coalesced work, and recovery after
-  pressure;
+- detached-texture, staging, process-resident, and total GPU-resource peaks;
+- producer progress, stale/coalesced work, and recovery after pressure;
 - session startup, resize recreation, callback drain, complete close, and
-  admission-stop-to-device-terminal teardown;
-- 1280×720 and two-display 4K workloads on the named Windows host.
+  target-loss replacement recovery.
+
+ADR 0032 accepts the same applicable capture, mapping, resource, progress, and
+cleanup facts for the exact two-display 4K topology. It requires one shared
+600-sample stationary pass per display plus 300 retained frame pairs while the
+fixture moves across the signed seam. Both requested-position markers and each
+frame's coherent post-baseline stream/epoch/sequence callback record must match.
 
 Every timed sample keeps its correctness oracle. A throughput improvement that
 changes retained pixels, pins producer slots, exceeds a bound, or hides a drop
@@ -165,9 +172,15 @@ require an interactive Windows session and therefore may not be available on a
 headless pull-request runner. A skipped native case must report why it did not
 run; a skip is not support evidence.
 
-Before Windows native capture receives release support acceptance, the project
-must retain a revision-bound, redacted report from the named host, link every
-remaining case above to its test, set the affected `G-013` budgets, and pass the
-full shared and native matrix. [docs/architecture.md](architecture.md) therefore
-records the Adapter implementation separately from that still-open release
-evidence.
+Windows native production-capture acceptance is complete on repaired source.
+The revision-bound reports link every applicable case above to its test, retain
+accepted and rejected attempts, bind exact source/artifact identities and
+approved metadata, enforce the affected `G-013` budgets, and pass the shared and
+native matrices:
+
+- [`windows-production-capture.md`](evidence/phase-2-native/windows-production-capture.md);
+- [`windows-dual-4k-production-capture.md`](evidence/phase-2-native/windows-dual-4k-production-capture.md).
+
+[docs/architecture.md](architecture.md) records both accepted production
+lineages separately from Windows exact-candidate Phase 1 evidence, Apple Silicon
+Phase 1 reviewed applicability, and release evidence.

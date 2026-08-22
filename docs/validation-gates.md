@@ -40,7 +40,7 @@ registry is itself a Phase 0 deliverable.
 
 | ID | Unresolved decision | Due | Blocks | Status |
 |---|---|---|---|---|
-| [`G-001`](#g-001) | Minimum Windows version; macOS fixed by ADR 0014 | Before Phase 2 exit | Windows support claim and release | Open for Windows; macOS resolved |
+| [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Windows and macOS support claims | Resolved by [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md) and [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md) |
 | [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open |
@@ -52,18 +52,20 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md), macOS diagnostics by [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md), macOS native input by [ADR 0025](adr/0025-macos-native-input-performance-budgets.md), and Windows diagnostics plus the `native-phase2` workload sets by [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md); Windows production-capture acceptance, macOS capture/transitions, and final-source Phase 1 reruns remain open |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by ADR 0008, and the affected Phase 2 diagnostic, native input, controlled ownership, production capture/transition, and corrected dual-4K workloads resolved by ADRs 0024–0032. Windows Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete diff, preserving the existing ceilings rather than making another budget decision |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
 
-**Decision and remaining question.** [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md)
-fixes the macOS implementation and deployment floor at Apple Silicon macOS 26.5.2
-(25F84), SDK 26.5. Earlier macOS versions are unqualified and unsupported. The
-exact minimum supported Windows version remains unresolved.
+**Decision.** [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
+fixes the Windows floor at Windows 11 25H2 build family 26200 on a currently
+serviced x64 desktop installation. [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md)
+fixes the macOS floor at Apple Silicon macOS 26.5.2 (25F84), SDK 26.5.
 
-**Required evidence.** Windows still needs build and load probes on its candidate
-oldest system. macOS deployment metadata and controlled linkage are pinned. Its
+**Required evidence.** Windows build, process-load, SDK, API-availability,
+unsupported-capability, native Rust, C, and C++ evidence is retained in
+[`windows-minimum-system.md`](evidence/g-001/windows-minimum-system.md). macOS
+deployment metadata and controlled linkage are pinned. Its
 2026-08-01 permissioned ASan run passed all 95 library tests with live display and
 window capture, signed and mixed-scale placement checks, retained-filter discovery,
 and no sanitizer finding. Two later manual runs moved the window fully onto a 2x
@@ -83,17 +85,23 @@ unchanged. ScreenCaptureKit remained quiescent rather than reporting explicit
 loss, so the Adapter correctly did not infer `TargetLost`. This closes the macOS
 replacement acceptance item.
 
+The 2026-08-22 Windows positive run used Pro build `26200.9168`, SDK
+`10.0.26100.0`, and clean source `834a58f`; build, lazy-import, native Rust,
+product-DLL, C/C++, frozen ABI 1.0, ownership, fixture, and CMake rows passed.
+Final repair source `c6ff39a` then used the isolated missing-WinRT-D3D-export
+apparatus: Rust, C, and C++ loaded successfully, discovery returned typed
+`Unsupported`, and the ordinary supported paths passed after restoration.
+
 **Due.** Before Phase 2 exit.
 
 **Blocks.** The Windows support claim and release.
 
-**Status.** The macOS minimum, cross-scale movement, and owned-window replacement
-acceptance are resolved by ADR 0014 and its qualified-host evidence. The Windows
-minimum remains open.
+**Status.** Resolved. ADR 0019 accepts the Windows minimum; ADR 0014 accepts the
+macOS minimum, cross-scale movement, and owned-window replacement boundary.
 
-**Resolution.** A Windows ADR must record its chosen minimum and build, process-load,
-SDK, API-availability, unsupported-capability, native Rust, C, and C++ probes on the
-approved oldest desktop host. ADR 0014 records the complete macOS resolution.
+**Resolution.** ADR 0019 records the Windows minimum and its build, process-load,
+SDK, API-availability, unsupported-capability boundary, native Rust, C, and C++
+evidence. ADR 0014 records the complete macOS resolution.
 
 ## G-002
 
@@ -466,10 +474,10 @@ crossings. It is not material at this size of work, and the ADR records why that
 conclusion does not automatically transfer to a later phase's per-frame entry
 point.
 
-**Phase 2 remains open.** [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
-accepts the `aarch64-apple-darwin` diagnostic profile. ADR 0026 replaces the
-matching Windows timing gap with a measured `x86_64-pc-windows-msvc` profile.
-Both targets retain 200 samples after 20 warmups for each of ten
+**Phase 2 is resolved for `v0.2.1`.**
+[ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the
+`aarch64-apple-darwin` diagnostic profile. ADR 0026 accepts the matching Windows
+profile. Both targets retain 200 samples after 20 warmups for each of ten
 capture/mapping, input, overflow, and close/drain workloads, with zero oracle
 failures and allocation growth, exact mapped-byte accounting, and per-workload
 regression ceilings.
@@ -499,12 +507,39 @@ reuse of a 1,024-event fixture for 2,050 redacted summaries, a missing child-onl
 Cargo profile DLL path, and a C++ oracle that expected macOS submission evidence
 on Windows. The ADR records the bounded repairs and target-specific oracle.
 
-The Windows `native-phase2` capture profile does not substitute for the separate
-production-capture acceptance required by
-[windows-capture-contract-tests.md](windows-capture-contract-tests.md): callback
-copy/staging/resident measures and the named 1280×720/dual-4K matrix remain
-unmeasured. That profile, current macOS capture and transition profiles, and the
-final-source Phase 1 regression reruns remain required before Phase 2 exit.
+[ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
+separate macOS production-capture and production-transition profiles at measured
+source `d182300cd8710891ded6cba17184c44d6d58a114`, tree
+`c570343d334a5c77415e6a885ef8821c731b0ad5`. Their eight workloads retain 1,150
+correct samples with zero allocation growth and exact mapped-byte accounting on
+the approved exactly-two-display mixed-scale host. The executable harness now
+enforces every accepted latency, live-heap, mapped-byte, correctness, and growth
+budget and requires the fixture's exact next frame-authoritative target geometry
+after resize. The ADR retains the rejected enforcement-repair attempt and changes
+no historical profile or source attribution.
+
+[ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
+accepts the separate Windows 1280×720 profiles. Shared-marker source `f50285a`,
+tree `4c2f23f`, reran all four capture workloads with zero
+correctness/allocation failures, exact mapping/copy bytes, and nonzero resource
+counts at or below their limits. Transition source `7c31752`, tree `4e99487`,
+reran all five lifecycle workloads after callback completion/binding
+instrumentation changed their publication path; every unchanged gate passed.
+
+[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
+accepts the corrected mixed-DPI dual-4K profile at shared-predicate source
+`f50285a`, tree `4c2f23f`. It retains 600 stationary samples per display plus
+300 controlled moving-seam samples, requires requested-position markers on both
+frames, binds each frame to its own post-baseline callback record, and passes
+every latency, mapping/copy, resource, stale-work, heap, resident, correctness,
+growth, and cleanup gate.
+
+The Windows controlled `native-phase2`, ADR 0031 1280×720, and ADR 0032 dual-4K
+profiles remain distinct. Historical measurements keep their original source
+identities. Windows final-source Phase 1 reruns pass on the exact exit candidate;
+Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete
+diff. Both preserve their existing ceilings rather than creating another profile
+lineage.
 
 OCR, watcher scheduling, and acceleration remain open for the phases that
 introduce them.

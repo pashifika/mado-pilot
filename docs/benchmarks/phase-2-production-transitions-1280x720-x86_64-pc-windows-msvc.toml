@@ -1,0 +1,292 @@
+# Phase 2 Windows 1280x720 production transitions, measured on repaired source
+# 7c31752bc632a26c4ba61faa0567ac78e2218ea0 and tree
+# 4e99487e184b3edfcbd62e31299599d2fbe13c7d.
+#
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0031 sets
+# target-specific regression budgets; ADR 0032 separately governs dual-4K.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc"
+workload = "Windows 1280x720 production capture startup, retained pressure, resize recreation, and close drain"
+phase = "2"
+status = "measured"
+normative = true
+measurements_recorded = true
+# A committed profile under docs/benchmarks/ carries the budgets.
+
+[profile]
+fixture = "crates/platform/windows fixture Rust and protocol sources"
+fixture_sha256 = "5a0513e46df67ad3b279d18584d83bb620d14ce9bc828f39bfcaa7e4a992fe5b"
+benchmark_executable_sha256 = "3c082b1717879747b671c34a31c3606ef00700e1cd3624d81163ef55d8a12e1f"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF, 32 GiB RAM, NVIDIA GeForce RTX 4080"
+os_version = "Windows 11 Pro 25H2 build 26200.9168"
+deployment_target = "Windows 11 25H2 build family 26200"
+build_profile = "cargo bench, default features; platform/windows benchmark-instrumentation dev feature; debug_assertions=false; fixture cargo build --release"
+warmup_iterations = 1
+sample_count = 3
+correctness_oracle = "every retained sample checks exact 1280x720 production startup, finite retained-pressure recovery, frame-authoritative resize recreation, typed target-loss and replacement recovery, or bounded idempotent close"
+queue_policy = "WGC producer pool depth 2; session latest-wins queue depth 1; finite retained storage; 16 ms repaint timer; one bounded pointer resize stimulus"
+notes = "source commit 7c31752bc632a26c4ba61faa0567ac78e2218ea0, tree 4e99487e184b3edfcbd62e31299599d2fbe13c7d; toolchain rustc 1.97.1; cargo 1.97.1; MSVC 19.44.35228; Windows SDK 10.0.26100.0; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080, driver 32.0.15.9186; display topology one online non-mirrored primary; 3840x2160 physical; 2560x1440 logical; 144 DPI; signed rectangle [0,0,3840,2160); permissions/signing unelevated interactive desktop; unsigned repository fixture; Windows exposes no separate capture permission; fixture executable sha256 93f60dde8c469e188a467b6f122d91d8295c07de11c000a8f7cb26626a1f2ec0; executable paths deliberately omitted"
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 33554432
+rationale = "ADR 0031 permits more than three times the largest measured live Rust heap peak"
+
+[[budget]]
+measure = "peak_resident_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 268435456
+rationale = "ADR 0031 rounds above three times the largest measured native benchmark process resident peak"
+
+[[measurement]]
+workload = "open_first_frame"
+correctness_oracle = "each fresh production capture-only session returns and maps one exact 1280x720 declared-content frame, then closes"
+result_correctness = 0
+latency_p50_ms = 104.409100
+latency_p95_ms = 110.773300
+latency_max_ms = 110.773300
+iteration_span_ms = 120.370333
+mapped_bytes_per_result = 3686400
+peak_allocated_bytes = 3732539
+steady_allocated_bytes = 43595
+allocated_growth_bytes = 0
+peak_resident_bytes = 59289600
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3686400
+rationale = "ADR 0031 fixes the exact mapped-byte total for open_first_frame"
+
+[[measurement]]
+workload = "retained_pressure_resume"
+correctness_oracle = "timer-driven 1280x720 production fills the reported retained limit; one blocked publication remains observable and releasing one slot resumes with a sequence gap"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 4.624700
+latency_p95_ms = 4.624700
+latency_max_ms = 4.624700
+iteration_span_ms = 1486.528800
+mapped_bytes_per_result = 0
+stale_work_ratio = 0.750000000
+peak_allocated_bytes = 3726400
+steady_allocated_bytes = 25544
+allocated_growth_bytes = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 100.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 100.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 100.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0031 fixes the exact mapped-byte total for retained_pressure_resume"
+
+[[measurement]]
+workload = "resize_recreation"
+correctness_oracle = "one bounded pointer stimulus resizes the production fixture between exact 1280x720 and 1440x810 surfaces; only a new epoch, geometry, extent, and transform satisfy the oracle"
+result_correctness = 0
+latency_p50_ms = 80.425400
+latency_p95_ms = 103.617600
+latency_max_ms = 103.617600
+iteration_span_ms = 83.205966
+mapped_bytes_per_result = 4665600
+peak_allocated_bytes = 8391792
+steady_allocated_bytes = 3725688
+allocated_growth_bytes = -979200
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 250.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4665600
+rationale = "ADR 0031 fixes the exact mapped-byte total for resize_recreation"
+
+[[measurement]]
+workload = "target_loss_recovery"
+correctness_oracle = "closing the owned production target yields typed TargetLost while a retained mapping survives; a fresh PID-qualified replacement opens and maps exact 1280x720 content"
+warmup_iterations = 0
+sample_count = 1
+result_correctness = 0
+latency_p50_ms = 368.518300
+latency_p95_ms = 368.518300
+latency_max_ms = 368.518300
+iteration_span_ms = 673.544200
+mapped_bytes_per_result = 7372800
+peak_allocated_bytes = 3726448
+steady_allocated_bytes = 48
+allocated_growth_bytes = 48
+peak_resident_bytes = 71221248
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1250.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1250.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1250.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 7372800
+rationale = "ADR 0031 fixes the exact mapped-byte total for target_loss_recovery"
+
+[[measurement]]
+workload = "close_drain"
+correctness_oracle = "explicit production capture-only close drains within its bound, reaches the closed state, and remains idempotent"
+result_correctness = 0
+latency_p50_ms = 2.378100
+latency_p95_ms = 2.489600
+latency_max_ms = 2.489600
+iteration_span_ms = 118.849066
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 39904
+steady_allocated_bytes = 37456
+allocated_growth_bytes = 0
+peak_resident_bytes = 71221248
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 10.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 10.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 10.0
+rationale = "ADR 0031 rounds above three times the largest final-source or reviewed precursor measurement"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 0
+rationale = "ADR 0031 fixes the exact mapped-byte total for close_drain"

@@ -829,6 +829,51 @@ cleanup:
 
     return worked && failures == 0;
 }
+
+static int run_unsupported_native(const madopilot_api_t* api)
+{
+    madopilot_source_t source;
+    madopilot_engine_options_t options;
+    madopilot_operation_t operation;
+    madopilot_engine_t* engine = NULL;
+    madopilot_target_list_t* targets = NULL;
+    madopilot_error_t* error = NULL;
+    madopilot_status_t status;
+    int worked = 0;
+
+    memset(&source, 0, sizeof(source));
+    source.struct_size = (uint32_t)sizeof(source);
+    source.kind = MADOPILOT_EXAMPLE_SOURCE_KIND;
+    memset(&options, 0, sizeof(options));
+    options.struct_size = (uint32_t)sizeof(options);
+    if (!bounded_operation(api, UINT64_C(5000000000), &operation) ||
+        !require_ok(api,
+                    api->engine_create_with_options(
+                        &source, &options, &operation, &engine, &error),
+                    &error, "unsupported engine_create_with_options")) {
+        goto cleanup;
+    }
+    if (!bounded_operation(api, UINT64_C(5000000000), &operation)) {
+        goto cleanup;
+    }
+    status = api->engine_discover(engine, &operation, &targets, &error);
+    worked = expect(status == MADOPILOT_STATUS_UNSUPPORTED && targets == NULL &&
+                        error != NULL,
+                    "native lazy availability returns typed unsupported");
+
+cleanup:
+    if (targets != NULL) {
+        api->target_list_release(targets);
+    }
+    if (engine != NULL) {
+        api->engine_release(engine);
+    }
+    if (error != NULL) {
+        api->error_release(error);
+    }
+    return worked && failures == 0;
+}
+
 static uint64_t peak_resident_bytes(void)
 {
 #if defined(_WIN32)
@@ -890,11 +935,14 @@ int main(int argc, char** argv)
     const char* title = NULL;
     int check_only = 0;
     int load_only = 0;
+    int unsupported_only = 0;
     madopilot_example_route_contract_t contract =
         MADOPILOT_EXAMPLE_ROUTE_DEFAULT;
 
     if (argc == 2 && strcmp(argv[1], "--load-check") == 0) {
         load_only = 1;
+    } else if (argc == 2 && strcmp(argv[1], "--unsupported-check") == 0) {
+        unsupported_only = 1;
     } else if (argc == 2 && strcmp(argv[1], "--check") == 0) {
         check_only = 1;
     } else if (argc == 3 && strcmp(argv[1], "--ordinary") == 0 &&
@@ -909,8 +957,8 @@ int main(int argc, char** argv)
         title = argv[1];
     } else {
         fprintf(stderr,
-                "usage: %s --load-check | --check | [--ordinary | "
-                "--acknowledged] \"<full fixture window title>\"\n",
+                "usage: %s --load-check | --unsupported-check | --check | "
+                "[--ordinary | --acknowledged] \"<full fixture window title>\"\n",
                 argv[0]);
         return 2;
     }
@@ -951,6 +999,14 @@ int main(int argc, char** argv)
         printf("contract: ordinary\n");
     } else if (contract == MADOPILOT_EXAMPLE_ROUTE_ACKNOWLEDGED_FIXTURE) {
         printf("contract: acknowledged\n");
+    }
+    if (unsupported_only) {
+        if (!run_unsupported_native(api)) {
+            return 1;
+        }
+        report_peak_resident_bytes();
+        printf("%s complete (unsupported check)\n", MADOPILOT_EXAMPLE_NAME);
+        return 0;
     }
     if (load_only) {
         report_peak_resident_bytes();

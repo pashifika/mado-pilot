@@ -197,6 +197,12 @@ distinct successor, if the successor cannot be captured independently, or if the
 retained original mapping changes. The accepted qualified-host record is
 [`docs/evidence/g-001/macos-owned-window-replacement.md`](docs/evidence/g-001/macos-owned-window-replacement.md).
 
+The minimum supported Windows boundary is Windows 11 25H2 build family 26200 on
+a currently serviced x64 desktop installation, accepted by
+[ADR 0019](docs/adr/0019-windows-qualified-system-and-controlled-availability.md).
+Windows SDK 10.0.26100.0 is the supported build input, not the runtime floor.
+Earlier Windows versions are unsupported and unqualified.
+
 The Windows capture adapter adds no prerequisite beyond that environment. The
 production adapter uses the target-gated `windows` crate for Windows Graphics
 Capture, Direct3D 11, and DXGI, and needs no NuGet package, Windows App SDK,
@@ -249,16 +255,17 @@ reserving interactive hardware. A passing hosted job is not permission, display,
 GPU/device, signing, input, target-loss, or minimum-system evidence.
 
 Bind every retained run to the candidate commit and tree, or add a review that
-covers the complete intervening diff. The scheduled release matrices are:
+covers the complete intervening diff. The accepted release matrices are:
 
-- Windows routine single-display evidence on the approved Windows 11 desktop,
-  followed outside work hours by both shared 4K displays for mixed-DPI,
-  signed-origin, movement, capture, mapping, pointer-input, device-reset/removal,
-  target-loss, Rust, C, and C++ cases.
-- macOS routine current-display evidence on the qualified Apple Silicon macOS
-  26.5.2 host, followed by one shared external display for the signed-origin,
-  scale, movement, capture, mapping, pointer-input, target-loss, Rust, C, and C++
-  cases.
+- Windows single-display 1280×720 evidence on the approved Windows 11 desktop
+  and exactly two non-mirrored 3840×2160 displays for mixed-DPI, signed-origin,
+  movement, capture, mapping, pointer-input, device-reset/removal, target-loss,
+  Rust, C, and C++ cases. Shared-display availability is an operational
+  prerequisite, not a timing oracle.
+- macOS exactly two online non-mirrored displays with different effective
+  scales on the qualified Apple Silicon macOS 26.5.2 host, covering signed
+  placement, movement, capture, mapping, pointer-input, target-loss, Rust, C,
+  and C++ cases regardless of physical connection method.
 
 Use dedicated fixtures. Evidence may retain approved host/toolchain metadata,
 typed outcomes, timings, counts, and source identities; it must not retain

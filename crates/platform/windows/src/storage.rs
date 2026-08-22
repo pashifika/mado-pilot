@@ -26,6 +26,7 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::core::Interface;
 
+use crate::benchmark_metrics;
 use crate::optional_api::create_direct3d_device;
 
 const LOCK_POLL_INTERVAL: Duration = Duration::from_millis(2);
@@ -327,12 +328,15 @@ impl DeviceDomain {
         &self,
         target: &ID3D11Texture2D,
         source: &ID3D11Texture2D,
-    ) -> std::result::Result<bool, CaptureFault> {
+        copied_bytes: u64,
+        stream: u64,
+    ) -> std::result::Result<Option<benchmark_metrics::CompletedCallbackCopy>, CaptureFault> {
         let _context = match self.context_gate.try_lock() {
             Ok(context) => context,
-            Err(TryLockError::WouldBlock) => return Ok(false),
+            Err(TryLockError::WouldBlock) => return Ok(None),
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
+        let timer = benchmark_metrics::time_callback_copy(copied_bytes, stream);
         // SAFETY: target was created from source's descriptor in this device
         // domain and neither texture is mutable through a public owner.
         unsafe { self.context.CopyResource(target, source) };
@@ -346,7 +350,7 @@ impl DeviceDomain {
         // A void D3D11 context command reports removal through the device.
         // SAFETY: GetDeviceRemovedReason reads device state only.
         unsafe { self.device.GetDeviceRemovedReason() }.map_err(native_fault)?;
-        Ok(true)
+        Ok(Some(timer.finish()))
     }
 
     fn read_texture(
@@ -385,6 +389,7 @@ impl DeviceDomain {
         }
         .map_err(classify_native_error)?;
         let staging = staging.ok_or(CaptureFault::SourceInvalid)?;
+        let _staging_metric = benchmark_metrics::staging_texture_created();
         // SAFETY: both resources belong to this device and have compatible
         // dimensions, format, sample description, mip count, and array size.
         unsafe { self.context.CopyResource(&staging, texture) };
@@ -538,6 +543,12 @@ impl fmt::Debug for PooledTexture {
     }
 }
 
+impl Drop for PooledTexture {
+    fn drop(&mut self) {
+        benchmark_metrics::record_detached_texture_destroyed();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TextureShape {
     width: u32,
@@ -607,6 +618,7 @@ impl TexturePool {
                 .domain
                 .create_default_texture(descriptor)
                 .map_err(classify_native_error)?;
+            benchmark_metrics::record_detached_texture_created();
             state.allocated += 1;
             PooledTexture {
                 texture,

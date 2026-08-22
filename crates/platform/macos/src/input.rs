@@ -207,14 +207,17 @@ impl GeometryLedger {
                 return;
             }
         }
+        if !history.is_empty() && history.capacity() < GEOMETRY_HISTORY_REVISIONS {
+            history.reserve_exact(GEOMETRY_HISTORY_REVISIONS - history.len());
+        }
+        if history.len() == GEOMETRY_HISTORY_REVISIONS {
+            history.pop_front();
+        }
         history.push_back(GeometryEntry {
             stamp,
             transform,
             native_bounds,
         });
-        if history.len() > GEOMETRY_HISTORY_REVISIONS {
-            history.pop_front();
-        }
     }
 
     /// Retires the entry a finished stream left behind.

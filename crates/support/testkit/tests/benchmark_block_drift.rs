@@ -20,14 +20,34 @@ use mado_pilot_testkit::bench_harness::{
     Benchmark, LatencyBudget, PHASE2_2_CAPTURE_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS, PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
-    PHASE2_2_TRANSITION_LATENCY_BUDGETS, benchmark_block,
+    PHASE2_2_TRANSITION_LATENCY_BUDGETS, PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES,
+    PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS, PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT,
+    PHASE2_PRODUCTION_TRANSITION_HEAP_LIMIT_BYTES, PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS,
+    PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS,
+    PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_COPIED_BYTES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_DETACHED_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_GPU_RESOURCES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STAGING_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS, benchmark_block,
 };
 
 /// Every committed benchmark profile, by repository path and content.
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 17] = [
+const PROFILES: [(&str, &str); 22] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -124,10 +144,40 @@ const PROFILES: [(&str, &str); 17] = [
             "../../../../docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
 ];
 
-/// The Phase 2.2 profiles and the latency ceilings enforced by their benchmark.
-const PHASE2_2_PROFILES: [(&str, &str, &[LatencyBudget]); 5] = [
+/// Native profiles and the latency ceilings enforced by their benchmark.
+const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 10] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -162,6 +212,41 @@ const PHASE2_2_PROFILES: [(&str, &str, &[LatencyBudget]); 5] = [
             "../../../../docs/benchmarks/phase-2-2-process-directed-diagnostics-aarch64-apple-darwin.toml"
         ),
         &PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml"
+        ),
+        &PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml"
+        ),
+        &PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS,
     ),
 ];
 
@@ -385,13 +470,17 @@ fn expected_latency_blocks(budgets: &[LatencyBudget]) -> Vec<BudgetBlock<'static
                 ("latency_p95", budget.p95()),
                 ("latency_max", budget.hard_max()),
             ]
-            .map(|(measure, limit)| BudgetBlock {
-                workload: Some(budget.workload()),
-                measure: Some(measure),
-                kind: Some("absolute"),
-                unit: Some("milliseconds"),
-                direction: Some("at_most"),
-                limit: Some(limit.as_secs_f64() * 1_000.0),
+            .map(|(measure, limit)| {
+                let micros = u32::try_from(limit.as_micros())
+                    .expect("every frozen latency ceiling fits u32 microseconds");
+                BudgetBlock {
+                    workload: Some(budget.workload()),
+                    measure: Some(measure),
+                    kind: Some("absolute"),
+                    unit: Some("milliseconds"),
+                    direction: Some("at_most"),
+                    limit: Some(f64::from(micros) / 1_000.0),
+                }
             })
         })
         .collect()
@@ -424,8 +513,8 @@ fn the_harness_emits_exactly_the_benchmark_keys_a_committed_profile_carries() {
 }
 
 #[test]
-fn phase2_2_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
-    for (path, profile, enforced) in PHASE2_2_PROFILES {
+fn native_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
+    for (path, profile, enforced) in NATIVE_LATENCY_PROFILES {
         let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
             .into_iter()
             .filter(|budget| {
@@ -468,6 +557,310 @@ fn process_profiles_state_the_same_live_heap_ceiling_the_harness_enforces() {
             }],
             "{path} must record the frozen process-directed live-heap ceiling \
              enforced by `native-phase2`"
+        );
+    }
+}
+
+#[test]
+fn macos_production_profiles_state_the_resource_budgets_the_harness_enforces() {
+    let capture = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml"
+    );
+    let transitions = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml"
+    );
+    let mapped_limit = f64::from(
+        u32::try_from(PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT)
+            .expect("the accepted macOS mapped-byte limit fits u32"),
+    );
+
+    for (path, profile, heap_limit, mapped_workloads) in [
+        (
+            "capture",
+            capture,
+            PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES,
+            &[
+                "publication_age",
+                "steady_frame_acquisition",
+                "latest_acquisition",
+                "cpu_map_bgra8",
+            ][..],
+        ),
+        (
+            "transitions",
+            transitions,
+            PHASE2_PRODUCTION_TRANSITION_HEAP_LIMIT_BYTES,
+            &["open_first_frame"][..],
+        ),
+    ] {
+        let blocks = budget_blocks(profile);
+        let heap = blocks
+            .iter()
+            .find(|budget| {
+                budget.workload.is_none() && budget.measure == Some("peak_allocated_bytes")
+            })
+            .unwrap_or_else(|| panic!("{path} profile is missing its live-heap ceiling"));
+        assert_eq!(heap.kind, Some("absolute"));
+        assert_eq!(heap.unit, Some("bytes"));
+        assert_eq!(heap.direction, Some("at_most"));
+        assert_eq!(
+            heap.limit,
+            Some(f64::from(
+                u32::try_from(heap_limit).expect("the accepted macOS heap limit fits u32")
+            ))
+        );
+
+        let mapped_blocks: Vec<&BudgetBlock<'_>> = blocks
+            .iter()
+            .filter(|budget| budget.measure == Some("mapped_bytes_per_result"))
+            .collect();
+        assert_eq!(
+            mapped_blocks.len(),
+            mapped_workloads.len(),
+            "{path} profile has stale or missing mapped-byte ceilings",
+        );
+        for workload in mapped_workloads {
+            let mapped = mapped_blocks
+                .iter()
+                .find(|budget| budget.workload == Some(*workload))
+                .unwrap_or_else(|| panic!("{path} profile is missing {workload}'s mapped ceiling"));
+            assert_eq!(mapped.kind, Some("absolute"));
+            assert_eq!(mapped.unit, Some("bytes"));
+            assert_eq!(mapped.direction, Some("at_most"));
+            assert_eq!(mapped.limit, Some(mapped_limit));
+        }
+    }
+}
+
+#[test]
+fn windows_1280_profiles_state_the_resource_budgets_the_harness_enforces() {
+    let capture = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml"
+    );
+    let transitions = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml"
+    );
+    let as_f64 = |value: u64| {
+        f64::from(u32::try_from(value).expect("each accepted Windows resource limit fits u32"))
+    };
+
+    for (path, profile, heap_limit) in [
+        (
+            "capture",
+            capture,
+            PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES,
+        ),
+        (
+            "transitions",
+            transitions,
+            PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
+        ),
+    ] {
+        let blocks = budget_blocks(profile);
+        let global = |measure| {
+            blocks
+                .iter()
+                .find(|budget| budget.workload.is_none() && budget.measure == Some(measure))
+                .unwrap_or_else(|| panic!("{path} profile is missing {measure}"))
+        };
+        for (measure, limit) in [
+            (
+                "peak_allocated_bytes",
+                f64::from(
+                    u32::try_from(heap_limit).expect("the accepted Windows heap limit fits u32"),
+                ),
+            ),
+            (
+                "peak_resident_bytes",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES),
+            ),
+        ] {
+            let recorded = global(measure);
+            assert_eq!(recorded.kind, Some("absolute"));
+            assert_eq!(recorded.unit, Some("bytes"));
+            assert_eq!(recorded.direction, Some("at_most"));
+            assert_eq!(recorded.limit, Some(limit));
+        }
+    }
+
+    let capture_blocks = budget_blocks(capture);
+    for (measure, unit, limit) in [
+        (
+            "copied_bytes_per_result",
+            "bytes",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT),
+        ),
+        (
+            "detached_textures_peak",
+            "count",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT),
+        ),
+        (
+            "staging_textures_peak",
+            "count",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT),
+        ),
+        (
+            "gpu_resources_peak",
+            "count",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT),
+        ),
+    ] {
+        let recorded = capture_blocks
+            .iter()
+            .find(|budget| {
+                budget.workload == Some("callback_copy") && budget.measure == Some(measure)
+            })
+            .unwrap_or_else(|| panic!("capture profile is missing callback_copy {measure}"));
+        assert_eq!(recorded.kind, Some("absolute"));
+        assert_eq!(recorded.unit, Some(unit));
+        assert_eq!(recorded.direction, Some("at_most"));
+        assert_eq!(recorded.limit, Some(limit));
+    }
+    let stale = capture_blocks
+        .iter()
+        .find(|budget| {
+            budget.workload == Some("callback_copy") && budget.measure == Some("stale_work_ratio")
+        })
+        .expect("capture profile is missing callback_copy stale_work_ratio");
+    assert_eq!(stale.kind, Some("absolute"));
+    assert_eq!(stale.unit, Some("ratio"));
+    assert_eq!(stale.direction, Some("at_most"));
+    assert_eq!(
+        stale.limit,
+        Some(PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT)
+    );
+
+    for (name, profile, expected) in [
+        (
+            "capture",
+            capture,
+            &[
+                ("steady_frame_acquisition", 3_686_400.0),
+                ("callback_copy", 3_686_400.0),
+                ("latest_acquisition", 3_686_400.0),
+                ("cpu_map_bgra8", 3_686_400.0),
+            ][..],
+        ),
+        (
+            "transitions",
+            transitions,
+            &[
+                ("open_first_frame", 3_686_400.0),
+                ("retained_pressure_resume", 0.0),
+                ("resize_recreation", 4_665_600.0),
+                ("target_loss_recovery", 7_372_800.0),
+                ("close_drain", 0.0),
+            ][..],
+        ),
+    ] {
+        let blocks = budget_blocks(profile);
+        let mapped = blocks
+            .iter()
+            .filter(|budget| budget.measure == Some("mapped_bytes_per_result"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mapped.len(),
+            expected.len(),
+            "{name} mapped workload set drifted"
+        );
+        for (workload, limit) in expected {
+            let recorded = mapped
+                .iter()
+                .find(|budget| budget.workload == Some(*workload))
+                .unwrap_or_else(|| panic!("{name} is missing {workload}'s mapped ceiling"));
+            assert_eq!(recorded.kind, Some("absolute"));
+            assert_eq!(recorded.unit, Some("bytes"));
+            assert_eq!(recorded.direction, Some("at_most"));
+            assert_eq!(recorded.limit, Some(*limit));
+        }
+    }
+}
+
+#[test]
+fn windows_dual_4k_profile_states_the_resource_budgets_the_harness_enforces() {
+    let profile = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml"
+    );
+    let blocks = budget_blocks(profile);
+    let as_f64 = |value: u64| {
+        f64::from(u32::try_from(value).expect("each accepted dual-4K resource limit fits u32"))
+    };
+    let global = |measure| {
+        blocks
+            .iter()
+            .find(|budget| budget.workload.is_none() && budget.measure == Some(measure))
+            .unwrap_or_else(|| panic!("dual-4K profile is missing {measure}"))
+    };
+    for (measure, limit) in [
+        (
+            "peak_allocated_bytes",
+            f64::from(
+                u32::try_from(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES)
+                    .expect("the accepted dual-4K heap limit fits u32"),
+            ),
+        ),
+        (
+            "peak_resident_bytes",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES),
+        ),
+    ] {
+        let recorded = global(measure);
+        assert_eq!(recorded.kind, Some("absolute"));
+        assert_eq!(recorded.unit, Some("bytes"));
+        assert_eq!(recorded.direction, Some("at_most"));
+        assert_eq!(recorded.limit, Some(limit));
+    }
+
+    for workload in [
+        "dual_display_frame_arrival",
+        "dual_display_callback_copy",
+        "dual_display_moving_seam",
+    ] {
+        for (measure, unit, limit) in [
+            ("mapped_bytes_per_result", "bytes", 66_355_200.0),
+            (
+                "copied_bytes_per_result",
+                "bytes",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_COPIED_BYTES_LIMIT),
+            ),
+            (
+                "detached_textures_peak",
+                "count",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_DETACHED_TEXTURES_LIMIT),
+            ),
+            (
+                "staging_textures_peak",
+                "count",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STAGING_TEXTURES_LIMIT),
+            ),
+            (
+                "gpu_resources_peak",
+                "count",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_GPU_RESOURCES_LIMIT),
+            ),
+        ] {
+            let recorded = blocks
+                .iter()
+                .find(|budget| budget.workload == Some(workload) && budget.measure == Some(measure))
+                .unwrap_or_else(|| panic!("{workload} is missing {measure}"));
+            assert_eq!(recorded.kind, Some("absolute"));
+            assert_eq!(recorded.unit, Some(unit));
+            assert_eq!(recorded.direction, Some("at_most"));
+            assert_eq!(recorded.limit, Some(limit));
+        }
+        let stale = blocks
+            .iter()
+            .find(|budget| {
+                budget.workload == Some(workload) && budget.measure == Some("stale_work_ratio")
+            })
+            .unwrap_or_else(|| panic!("{workload} is missing stale_work_ratio"));
+        assert_eq!(stale.kind, Some("absolute"));
+        assert_eq!(stale.unit, Some("ratio"));
+        assert_eq!(stale.direction, Some("at_most"));
+        assert_eq!(
+            stale.limit,
+            Some(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT)
         );
     }
 }

@@ -18,6 +18,9 @@ use windows::Win32::Graphics::Gdi::{
     ClientToScreen, EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetClientRect, GetWindowTextLengthW, GetWindowTextW, IsWindow,
     IsWindowVisible,
@@ -30,6 +33,24 @@ use crate::optional_api::{logical_to_physical, monitor_scale, window_dpi};
 use crate::storage::validate_surface;
 
 const DEFAULT_DPI: u32 = 96;
+
+struct ThreadDpiContext(DPI_AWARENESS_CONTEXT);
+
+impl ThreadDpiContext {
+    fn per_monitor() -> Self {
+        // SAFETY: this changes only the calling thread and returns the context
+        // that Drop restores before control leaves the display query.
+        Self(unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) })
+    }
+}
+
+impl Drop for ThreadDpiContext {
+    fn drop(&mut self) {
+        // SAFETY: self.0 is exactly the context returned when this guard changed
+        // the current thread, and restoration happens on that same thread.
+        let _restored = unsafe { SetThreadDpiAwarenessContext(self.0) };
+    }
+}
 
 /// The stable native lookup key. It is never exposed through a public contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -145,6 +166,7 @@ pub(crate) fn current_placement(key: NativeKey, extent: PixelExtent) -> Option<T
             window_placement(hwnd, extent)
         }
         NativeKey::Display(raw) => {
+            let _dpi = ThreadDpiContext::per_monitor();
             let monitor = HMONITOR(std::ptr::with_exposed_provenance_mut::<c_void>(raw));
             let (_, bounds) = monitor_metadata(monitor)?;
             monitor_placement(monitor, bounds, extent).ok()
@@ -196,6 +218,7 @@ fn window_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candid
 }
 
 fn display_candidates(factory: &IGraphicsCaptureItemInterop) -> Result<Vec<Candidate>> {
+    let _dpi = ThreadDpiContext::per_monitor();
     let mut candidates = Vec::new();
     for raw in monitor_handles()? {
         // SAFETY: the value came directly from EnumDisplayMonitors.

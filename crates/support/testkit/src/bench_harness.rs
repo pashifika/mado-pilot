@@ -1091,6 +1091,19 @@ impl Plan {
     }
 }
 
+/// Native GPU-resource costs observed while producing one benchmark result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CaptureResources {
+    /// Bytes copied out of producer-owned surfaces.
+    pub copied_bytes: u64,
+    /// Maximum simultaneously live Adapter-owned detached textures.
+    pub detached_textures_peak: u64,
+    /// Maximum simultaneously live CPU-readable staging textures.
+    pub staging_textures_peak: u64,
+    /// Maximum simultaneously live producer, detached, and staging textures.
+    pub gpu_resources_peak: u64,
+}
+
 /// What one iteration of a workload reports.
 #[derive(Debug)]
 pub struct Sample {
@@ -1099,6 +1112,7 @@ pub struct Sample {
     mapped: u64,
     peak_resident: Option<u64>,
     stale: Option<(u64, u64)>,
+    capture_resources: Option<CaptureResources>,
 }
 
 impl Sample {
@@ -1111,6 +1125,7 @@ impl Sample {
             mapped,
             peak_resident: None,
             stale: None,
+            capture_resources: None,
         }
     }
 
@@ -1131,15 +1146,22 @@ impl Sample {
         self
     }
 
-    /// Associates the measured child process's peak resident set with this sample.
+    /// Associates the measured native process's peak resident set with this sample.
     ///
-    /// This is separate from the Rust global-allocator counters because a
-    /// separately linked C or C++ process has its own allocator and address
-    /// space. The child reports this value from its native process API after it
-    /// has released the flow's owned handles.
+    /// This is separate from the Rust global-allocator counters because it
+    /// includes native allocations and may describe either the benchmark
+    /// process itself or a separately linked C or C++ child after owned-handle
+    /// cleanup.
     #[must_use]
     pub const fn with_peak_resident_bytes(mut self, bytes: u64) -> Self {
         self.peak_resident = Some(bytes);
+        self
+    }
+
+    /// Associates native capture-copy and GPU-resource costs with this sample.
+    #[must_use]
+    pub const fn with_capture_resources(mut self, resources: CaptureResources) -> Self {
+        self.capture_resources = Some(resources);
         self
     }
 }
@@ -1149,6 +1171,8 @@ impl Sample {
 pub struct Workload {
     name: &'static str,
     oracle: &'static str,
+    warmup_iterations: usize,
+    sample_count: usize,
     elapsed: Vec<Duration>,
     incorrect: usize,
     stale: u64,
@@ -1158,6 +1182,10 @@ pub struct Workload {
     peak_bytes: usize,
     steady_bytes: usize,
     peak_resident_bytes: Option<u64>,
+    copied_bytes: Option<u64>,
+    detached_textures_peak: Option<u64>,
+    staging_textures_peak: Option<u64>,
+    gpu_resources_peak: Option<u64>,
     growth_bytes: i64,
 }
 
@@ -1231,6 +1259,42 @@ impl Workload {
         self.peak_bytes
     }
 
+    /// Maximum bytes mapped by one retained result.
+    #[must_use]
+    pub const fn mapped_bytes_per_result(&self) -> u64 {
+        self.mapped
+    }
+
+    /// Peak resident bytes reported for this native workload.
+    #[must_use]
+    pub const fn peak_resident_bytes(&self) -> Option<u64> {
+        self.peak_resident_bytes
+    }
+
+    /// Maximum producer-surface bytes copied during one retained sample.
+    #[must_use]
+    pub const fn copied_bytes(&self) -> Option<u64> {
+        self.copied_bytes
+    }
+
+    /// Maximum simultaneously live detached textures.
+    #[must_use]
+    pub const fn detached_textures_peak(&self) -> Option<u64> {
+        self.detached_textures_peak
+    }
+
+    /// Maximum simultaneously live CPU-readable staging textures.
+    #[must_use]
+    pub const fn staging_textures_peak(&self) -> Option<u64> {
+        self.staging_textures_peak
+    }
+
+    /// Maximum simultaneously live producer, detached, and staging textures.
+    #[must_use]
+    pub const fn gpu_resources_peak(&self) -> Option<u64> {
+        self.gpu_resources_peak
+    }
+
     /// Share of observed producer work skipped before a retained result.
     #[must_use]
     pub fn stale_work_ratio(&self) -> Option<f64> {
@@ -1244,7 +1308,117 @@ impl Workload {
     }
 }
 
-/// Runs `workload` through its warmup and its samples.
+struct WorkloadAccumulator {
+    name: &'static str,
+    oracle: &'static str,
+    elapsed: Vec<Duration>,
+    incorrect: usize,
+    mapped: u64,
+    peak_resident_bytes: Option<u64>,
+    copied_bytes: Option<u64>,
+    detached_textures_peak: Option<u64>,
+    staging_textures_peak: Option<u64>,
+    gpu_resources_peak: Option<u64>,
+    stale: u64,
+    scheduled: u64,
+}
+
+impl WorkloadAccumulator {
+    fn new(name: &'static str, oracle: &'static str, samples: usize) -> Self {
+        Self {
+            name,
+            oracle,
+            elapsed: Vec::with_capacity(samples),
+            incorrect: 0,
+            mapped: 0,
+            peak_resident_bytes: None,
+            copied_bytes: None,
+            detached_textures_peak: None,
+            staging_textures_peak: None,
+            gpu_resources_peak: None,
+            stale: 0,
+            scheduled: 0,
+        }
+    }
+
+    fn observe(&mut self, sample: Sample) {
+        if !sample.correct {
+            self.incorrect += 1;
+        }
+        if let Some((sample_stale, sample_total)) = sample.stale {
+            self.stale = self.stale.saturating_add(sample_stale);
+            self.scheduled = self.scheduled.saturating_add(sample_total);
+        }
+        self.mapped = self.mapped.max(sample.mapped);
+        if let Some(sample_peak) = sample.peak_resident {
+            self.peak_resident_bytes = Some(
+                self.peak_resident_bytes
+                    .unwrap_or_default()
+                    .max(sample_peak),
+            );
+        }
+        if let Some(resources) = sample.capture_resources {
+            self.copied_bytes = Some(
+                self.copied_bytes
+                    .unwrap_or_default()
+                    .max(resources.copied_bytes),
+            );
+            self.detached_textures_peak = Some(
+                self.detached_textures_peak
+                    .unwrap_or_default()
+                    .max(resources.detached_textures_peak),
+            );
+            self.staging_textures_peak = Some(
+                self.staging_textures_peak
+                    .unwrap_or_default()
+                    .max(resources.staging_textures_peak),
+            );
+            self.gpu_resources_peak = Some(
+                self.gpu_resources_peak
+                    .unwrap_or_default()
+                    .max(resources.gpu_resources_peak),
+            );
+        }
+        self.elapsed.push(sample.elapsed);
+    }
+
+    fn finish(
+        self,
+        plan: Plan,
+        iteration_span: Duration,
+        before_fixture: usize,
+        after_warmup: usize,
+        ending: usize,
+    ) -> Workload {
+        Workload {
+            name: self.name,
+            oracle: self.oracle,
+            warmup_iterations: plan.warmup,
+            sample_count: plan.samples,
+            elapsed: self.elapsed,
+            incorrect: self.incorrect,
+            mapped: self.mapped,
+            iteration_span,
+            peak_bytes: PEAK.load(Ordering::Relaxed).saturating_sub(before_fixture),
+            steady_bytes: ending.saturating_sub(before_fixture),
+            peak_resident_bytes: self.peak_resident_bytes,
+            copied_bytes: self.copied_bytes,
+            detached_textures_peak: self.detached_textures_peak,
+            staging_textures_peak: self.staging_textures_peak,
+            gpu_resources_peak: self.gpu_resources_peak,
+            stale: self.stale,
+            scheduled: self.scheduled,
+            growth_bytes: i64::try_from(ending).unwrap_or(i64::MAX)
+                - i64::try_from(after_warmup).unwrap_or(i64::MAX),
+        }
+    }
+}
+
+/// Runs `workload` through its warmup and retained samples.
+///
+/// Progress records go to stderr before and after the measured region. They
+/// keep long native runs observable without perturbing individual sample
+/// latency or the post-warmup allocation counters.
 ///
 /// The three memory numbers are differences against two baselines rather than
 /// absolute totals, because an absolute total would include every earlier
@@ -1263,61 +1437,100 @@ pub fn measure<F, M>(
 where
     M: FnOnce() -> F,
 {
-    // Allocated before the baseline is taken and never grown afterwards, so the
-    // harness's own record of the run does not appear as the workload's memory.
-    let mut elapsed = Vec::with_capacity(plan.samples);
-
+    eprintln!(
+        "benchmark-progress workload={name} phase=setup warmups={} samples={}",
+        plan.warmup, plan.samples
+    );
+    let mut result = WorkloadAccumulator::new(name, oracle, plan.samples);
     let before_fixture = live();
     let fixture = make();
+
+    eprintln!("benchmark-progress workload={name} phase=warmup");
     for _ in 0..plan.warmup {
         workload(&fixture);
     }
-
+    eprintln!("benchmark-progress workload={name} phase=sampling");
     let after_warmup = live();
     PEAK.store(after_warmup, Ordering::Relaxed);
 
-    let mut incorrect = 0;
-    let mut stale = 0u64;
-    let mut scheduled = 0u64;
-    let mut mapped = 0;
-    let mut peak_resident_bytes: Option<u64> = None;
     let span = Instant::now();
     for _ in 0..plan.samples {
-        let sample = workload(&fixture);
-        if !sample.correct {
-            incorrect += 1;
-        }
-        // The largest of the retained samples, not the last one: a change that
-        // maps twice on every sampled iteration except the final one would
-        // otherwise report the low number and satisfy its budget.
-        if let Some((sample_stale, sample_total)) = sample.stale {
-            stale = stale.saturating_add(sample_stale);
-            scheduled = scheduled.saturating_add(sample_total);
-        }
-        mapped = mapped.max(sample.mapped);
-        if let Some(sample_peak) = sample.peak_resident {
-            peak_resident_bytes = Some(peak_resident_bytes.unwrap_or_default().max(sample_peak));
-        }
-        elapsed.push(sample.elapsed);
+        result.observe(workload(&fixture));
     }
     let span = span.elapsed();
-
     let ending = live();
-    Workload {
-        name,
-        oracle,
-        elapsed,
-        incorrect,
-        mapped,
-        iteration_span: span / u32::try_from(plan.samples).unwrap_or(u32::MAX),
-        peak_bytes: PEAK.load(Ordering::Relaxed).saturating_sub(before_fixture),
-        steady_bytes: ending.saturating_sub(before_fixture),
-        peak_resident_bytes,
-        stale,
-        scheduled,
-        growth_bytes: i64::try_from(ending).unwrap_or(i64::MAX)
-            - i64::try_from(after_warmup).unwrap_or(i64::MAX),
+    eprintln!(
+        "benchmark-progress workload={name} phase=complete elapsed_ms={:.3}",
+        span.as_secs_f64() * 1_000.0
+    );
+
+    result.finish(
+        plan,
+        span / u32::try_from(plan.samples).unwrap_or(u32::MAX),
+        before_fixture,
+        after_warmup,
+        ending,
+    )
+}
+
+/// Measures two latency views of the same native operation.
+///
+/// This is for a workload whose one expensive system interaction produces two
+/// independent timing results. It invokes the operation once per warmup and
+/// retained iteration, avoiding duplicate capture, mapping, and GPU memory.
+pub fn measure_pair<F, M>(
+    first: (&'static str, &'static str),
+    second: (&'static str, &'static str),
+    plan: Plan,
+    make: M,
+    workload: fn(&F) -> (Sample, Sample),
+) -> [Workload; 2]
+where
+    M: FnOnce() -> F,
+{
+    eprintln!(
+        "benchmark-progress workloads={},{} phase=setup warmups={} samples={}",
+        first.0, second.0, plan.warmup, plan.samples
+    );
+    let mut first_result = WorkloadAccumulator::new(first.0, first.1, plan.samples);
+    let mut second_result = WorkloadAccumulator::new(second.0, second.1, plan.samples);
+    let before_fixture = live();
+    let fixture = make();
+
+    eprintln!(
+        "benchmark-progress workloads={},{} phase=warmup",
+        first.0, second.0
+    );
+    for _ in 0..plan.warmup {
+        workload(&fixture);
     }
+    eprintln!(
+        "benchmark-progress workloads={},{} phase=sampling",
+        first.0, second.0
+    );
+    let after_warmup = live();
+    PEAK.store(after_warmup, Ordering::Relaxed);
+
+    let span = Instant::now();
+    for _ in 0..plan.samples {
+        let (first_sample, second_sample) = workload(&fixture);
+        first_result.observe(first_sample);
+        second_result.observe(second_sample);
+    }
+    let span = span.elapsed();
+    let ending = live();
+    eprintln!(
+        "benchmark-progress workloads={},{} phase=complete elapsed_ms={:.3}",
+        first.0,
+        second.0,
+        span.as_secs_f64() * 1_000.0
+    );
+
+    let iteration_span = span / u32::try_from(plan.samples).unwrap_or(u32::MAX);
+    [
+        first_result.finish(plan, iteration_span, before_fixture, after_warmup, ending),
+        second_result.finish(plan, iteration_span, before_fixture, after_warmup, ending),
+    ]
 }
 
 // --- Reporting ---------------------------------------------------------------
@@ -1439,6 +1652,12 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
         println!("[[measurement]]");
         println!("workload = \"{}\"", workload.name);
         println!("correctness_oracle = \"{}\"", workload.oracle);
+        if workload.warmup_iterations != plan.warmup {
+            println!("warmup_iterations = {}", workload.warmup_iterations);
+        }
+        if workload.sample_count != plan.samples {
+            println!("sample_count = {}", workload.sample_count);
+        }
         println!("result_correctness = {}", workload.incorrect);
         println!("latency_p50_ms = {:.6}", workload.percentile(0.50));
         println!("latency_p95_ms = {:.6}", workload.percentile(0.95));
@@ -1448,6 +1667,18 @@ pub fn report(benchmark: &Benchmark, profile: &Profile, plan: Plan, workloads: &
         );
         println!("iteration_span_ms = {:.6}", workload.iteration_span_ms());
         println!("mapped_bytes_per_result = {}", workload.mapped);
+        if let Some(bytes) = workload.copied_bytes {
+            println!("copied_bytes_per_result = {bytes}");
+        }
+        if let Some(textures) = workload.detached_textures_peak {
+            println!("detached_textures_peak = {textures}");
+        }
+        if let Some(textures) = workload.staging_textures_peak {
+            println!("staging_textures_peak = {textures}");
+        }
+        if let Some(resources) = workload.gpu_resources_peak {
+            println!("gpu_resources_peak = {resources}");
+        }
         if let Some(ratio) = workload.stale_work_ratio() {
             println!("stale_work_ratio = {ratio:.9}");
         }
@@ -1550,6 +1781,200 @@ pub const PHASE2_2_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 1] = [LatencyBudg
     Duration::from_millis(250),
     Duration::from_secs(1),
 )];
+
+/// Phase 2 macOS production-capture latency ceilings accepted by ADR 0030.
+pub const PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS: [LatencyBudget; 5] = [
+    LatencyBudget::new(
+        "publication_age",
+        Duration::from_millis(5),
+        Duration::from_millis(15),
+        Duration::from_millis(50),
+    ),
+    LatencyBudget::new(
+        "steady_frame_acquisition",
+        Duration::from_millis(75),
+        Duration::from_millis(150),
+        Duration::from_millis(250),
+    ),
+    LatencyBudget::new(
+        "latest_acquisition",
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+        Duration::from_millis(1),
+    ),
+    LatencyBudget::new(
+        "cpu_map_bgra8",
+        Duration::from_millis(1),
+        Duration::from_millis(2),
+        Duration::from_millis(10),
+    ),
+    LatencyBudget::new(
+        "retained_pressure_resume",
+        Duration::from_millis(10),
+        Duration::from_millis(50),
+        Duration::from_millis(75),
+    ),
+];
+
+/// Phase 2 macOS production-transition latency ceilings accepted by ADR 0030.
+pub const PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 3] = [
+    LatencyBudget::new(
+        "open_first_frame",
+        Duration::from_millis(350),
+        Duration::from_millis(350),
+        Duration::from_millis(400),
+    ),
+    LatencyBudget::new(
+        "resize_recreation",
+        Duration::from_millis(175),
+        Duration::from_millis(250),
+        Duration::from_millis(300),
+    ),
+    LatencyBudget::new(
+        "close_drain",
+        Duration::from_millis(250),
+        Duration::from_millis(300),
+        Duration::from_millis(300),
+    ),
+];
+
+/// Maximum live Rust heap for the macOS production-capture profile.
+pub const PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES: usize = 32 * 1_024 * 1_024;
+
+/// Maximum live Rust heap for the macOS production-transition profile.
+pub const PHASE2_PRODUCTION_TRANSITION_HEAP_LIMIT_BYTES: usize = 16 * 1_024 * 1_024;
+
+/// Maximum mapped bytes for one macOS production fixture frame.
+pub const PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT: u64 = 4_628_480;
+
+/// Phase 2 Windows 1280x720 production-capture ceilings accepted by ADR 0031.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS: [LatencyBudget; 4] = [
+    LatencyBudget::new(
+        "steady_frame_acquisition",
+        Duration::from_millis(75),
+        Duration::from_millis(150),
+        Duration::from_millis(200),
+    ),
+    LatencyBudget::new(
+        "callback_copy",
+        Duration::from_micros(500),
+        Duration::from_micros(1_500),
+        Duration::from_millis(5),
+    ),
+    LatencyBudget::new(
+        "latest_acquisition",
+        Duration::from_micros(5),
+        Duration::from_micros(15),
+        Duration::from_micros(150),
+    ),
+    LatencyBudget::new(
+        "cpu_map_bgra8",
+        Duration::from_millis(6),
+        Duration::from_millis(15),
+        Duration::from_millis(20),
+    ),
+];
+
+/// Phase 2 Windows 1280x720 production-transition ceilings accepted by ADR 0031.
+pub const PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS: [LatencyBudget; 5] = [
+    LatencyBudget::new(
+        "open_first_frame",
+        Duration::from_millis(350),
+        Duration::from_millis(350),
+        Duration::from_millis(350),
+    ),
+    LatencyBudget::new(
+        "retained_pressure_resume",
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    ),
+    LatencyBudget::new(
+        "resize_recreation",
+        Duration::from_millis(250),
+        Duration::from_millis(350),
+        Duration::from_millis(350),
+    ),
+    LatencyBudget::new(
+        "target_loss_recovery",
+        Duration::from_millis(1_250),
+        Duration::from_millis(1_250),
+        Duration::from_millis(1_250),
+    ),
+    LatencyBudget::new(
+        "close_drain",
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+    ),
+];
+
+/// Maximum live Rust heap for the Windows 1280x720 production-capture profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES: usize = 32 * 1_024 * 1_024;
+
+/// Maximum live Rust heap for the Windows 1280x720 transition profile.
+pub const PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES: usize = 32 * 1_024 * 1_024;
+
+/// Maximum resident high-water mark for either Windows 1280x720 profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES: u64 = 256 * 1_024 * 1_024;
+
+/// Maximum callback-copy bytes retained by one Windows 1280x720 sample.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT: u64 = 1_280 * 720 * 4;
+
+/// Maximum live detached textures in the Windows 1280x720 capture profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT: u64 = 2;
+
+/// Maximum live staging textures in the Windows 1280x720 capture profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT: u64 = 1;
+
+/// Maximum live producer, detached, and staging textures in that profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT: u64 = 5;
+
+/// Maximum sustained stale work in the Windows 1280x720 capture profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT: f64 = 0.02;
+
+/// Phase 2 Windows dual-4K production-capture ceilings accepted by ADR 0032.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS: [LatencyBudget; 3] = [
+    LatencyBudget::new(
+        "dual_display_frame_arrival",
+        Duration::from_millis(75),
+        Duration::from_millis(150),
+        Duration::from_millis(200),
+    ),
+    LatencyBudget::new(
+        "dual_display_callback_copy",
+        Duration::from_micros(200),
+        Duration::from_micros(500),
+        Duration::from_micros(1_500),
+    ),
+    LatencyBudget::new(
+        "dual_display_moving_seam",
+        Duration::from_millis(125),
+        Duration::from_millis(175),
+        Duration::from_millis(225),
+    ),
+];
+
+/// Maximum live Rust heap for the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES: usize = 384 * 1_024 * 1_024;
+
+/// Maximum resident high-water mark for the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES: u64 = 1_024 * 1_024 * 1_024;
+
+/// Maximum callback-copy bytes retained by one Windows dual-4K sample.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_COPIED_BYTES_LIMIT: u64 = 3_840 * 2_160 * 4 * 6;
+
+/// Maximum live detached textures in the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_DETACHED_TEXTURES_LIMIT: u64 = 10;
+
+/// Maximum live staging textures in the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STAGING_TEXTURES_LIMIT: u64 = 1;
+
+/// Maximum live producer, detached, and staging textures in that profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_GPU_RESOURCES_LIMIT: u64 = 15;
+
+/// Maximum sustained stale work in the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT: f64 = 0.75;
 
 const fn phase2_2_process_latency_budgets(event_p95: Duration) -> [LatencyBudget; 5] {
     [
@@ -1689,6 +2114,23 @@ pub fn enforce_latency_budgets(workloads: &[Workload], budgets: &[LatencyBudget]
     }
 }
 
+/// Requires one present nonzero observation at or below an accepted ceiling.
+///
+/// # Panics
+///
+/// Panics when the observation is absent, zero, or exceeds `limit`.
+#[track_caller]
+pub fn nonzero_at_most(name: &str, observed: Option<u64>, limit: u64) -> u64 {
+    let observed =
+        observed.unwrap_or_else(|| panic!("{name} must report one observed resource count"));
+    assert!(observed > 0, "{name} must report a nonzero resource count");
+    assert!(
+        observed <= limit,
+        "{name} exceeded its accepted upper bound: {observed} > {limit}"
+    );
+    observed
+}
+
 // --- Hard budgets --------------------------------------------------------------
 
 /// The `kind = "hard"` predicates every committed profile states, enforced by
@@ -1821,7 +2263,8 @@ mod tests {
         ChildContainment, ChildExitObservation, LatencyBudget, PipeReaderEvent, PipeStream, Plan,
         PrefixedLineMatch, PrimaryChildCleanup, Sample, Workload, bounded_child_output,
         bounded_child_output_checked, bounded_child_output_with, classify_prefixed_line,
-        enforce_latency_budgets, measure, process_is_live, wait_for_child_exit,
+        enforce_latency_budgets, measure, measure_pair, nonzero_at_most, process_is_live,
+        wait_for_child_exit,
     };
     use std::cell::Cell;
     use std::fs::{self, OpenOptions};
@@ -2243,10 +2686,48 @@ mod tests {
         assert_eq!(workload.stale_work_ratio(), Some(0.25));
     }
 
+    struct PairedFixture {
+        iterations: Cell<u64>,
+    }
+
+    fn paired_sample(fixture: &PairedFixture) -> (Sample, Sample) {
+        let iteration = fixture.iterations.get() + 1;
+        fixture.iterations.set(iteration);
+        (
+            Sample::unmapped(Duration::from_millis(iteration), true),
+            Sample::unmapped(Duration::from_millis(iteration * 10), true),
+        )
+    }
+
+    #[test]
+    fn paired_measurement_invokes_one_operation_per_iteration() {
+        let [first, second] = measure_pair(
+            ("first", "the first timing view is retained"),
+            ("second", "the second timing view is retained"),
+            Plan::new(2, 3),
+            || PairedFixture {
+                iterations: Cell::new(0),
+            },
+            paired_sample,
+        );
+
+        assert_eq!(first.elapsed, [3, 4, 5].map(Duration::from_millis).to_vec());
+        assert_eq!(
+            second.elapsed,
+            [30, 40, 50].map(Duration::from_millis).to_vec()
+        );
+        assert_eq!(first.warmup_iterations, 2);
+        assert_eq!(second.warmup_iterations, 2);
+        assert_eq!(first.sample_count, 3);
+        assert_eq!(second.sample_count, 3);
+    }
+
     fn timed_workload(name: &'static str, elapsed: Vec<Duration>) -> Workload {
         Workload {
             name,
             oracle: "the synthetic timing sample is accepted",
+            warmup_iterations: 0,
+            sample_count: 1,
             elapsed,
             incorrect: 0,
             stale: 0,
@@ -2256,6 +2737,10 @@ mod tests {
             peak_bytes: 0,
             steady_bytes: 0,
             peak_resident_bytes: None,
+            copied_bytes: None,
+            detached_textures_peak: None,
+            staging_textures_peak: None,
+            gpu_resources_peak: None,
             growth_bytes: 0,
         }
     }
@@ -2324,6 +2809,30 @@ mod tests {
     }
 
     #[test]
+    fn nonzero_upper_bounds_accept_below_and_equal_observations() {
+        assert_eq!(nonzero_at_most("resource", Some(1), 2), 1);
+        assert_eq!(nonzero_at_most("resource", Some(2), 2), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeded its accepted upper bound")]
+    fn nonzero_upper_bounds_reject_an_above_limit_observation() {
+        let _observed = nonzero_at_most("resource", Some(3), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "must report a nonzero resource count")]
+    fn nonzero_upper_bounds_reject_zero() {
+        let _observed = nonzero_at_most("resource", Some(0), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "must report one observed resource count")]
+    fn nonzero_upper_bounds_reject_a_missing_observation() {
+        let _observed = nonzero_at_most("resource", None, 2);
+    }
+
+    #[test]
     fn a_wrong_role_observation_is_not_skipped_before_the_expected_target() {
         assert_eq!(
             classify_prefixed_line(
@@ -2355,6 +2864,8 @@ mod tests {
         let workload = Workload {
             name: "nearest-rank",
             oracle: "the selected order statistic is exact",
+            warmup_iterations: 0,
+            sample_count: 50,
             elapsed: (1..=50).map(Duration::from_millis).collect(),
             incorrect: 0,
             stale: 0,
@@ -2364,6 +2875,10 @@ mod tests {
             peak_bytes: 0,
             steady_bytes: 0,
             peak_resident_bytes: None,
+            copied_bytes: None,
+            detached_textures_peak: None,
+            staging_textures_peak: None,
+            gpu_resources_peak: None,
             growth_bytes: 0,
         };
 

@@ -2,25 +2,25 @@
 
 This directory records the build, process-load, SDK, availability, controlled-
 linkage, and unsupported-capability probes for
-[`G-001`](../../validation-gates.md#g-001). The macOS boundary is accepted by
-[ADR 0014](../../adr/0014-macos-qualified-host-and-frame-placement.md). The
-Windows boundary remains a candidate until the approved desktop host executes
-the Windows matrix below on the final reviewed source.
+[`G-001`](../../validation-gates.md#g-001). The Windows boundary is accepted by
+[ADR 0019](../../adr/0019-windows-qualified-system-and-controlled-availability.md)
+and the macOS boundary by
+[ADR 0014](../../adr/0014-macos-qualified-host-and-frame-placement.md).
 
-## Candidate boundaries
+## Accepted boundaries
 
-| Target | Candidate deployment floor | Qualified host | Build SDK |
+| Target | Deployment floor | Qualified host | Build SDK |
 |---|---|---|---|
-| `x86_64-pc-windows-msvc` | Windows 11 25H2, build family `26200`, on a currently serviced x64 desktop installation | Windows 11 Pro 25H2, build `26200.8894` | Windows SDK `10.0.26100.0` |
+| `x86_64-pc-windows-msvc` | Windows 11 25H2, build family `26200`, on a currently serviced x64 desktop installation | Windows 11 Pro 25H2, build `26200.9168` | Windows SDK `10.0.26100.0` |
 | `aarch64-apple-darwin` | macOS `26.5.2` | Apple Silicon macOS `26.5.2` (`25F84`) | macOS SDK `26.5` |
 
-The Windows row is deliberately conservative and remains proposed. Windows 10
-1903/build 18362 supplies the picker-free HWND interop API, and Windows 10
-1809/build 17763 supplies the free-threaded frame pool, but those releases and
-SDK families are out of support in 2026 and no approved oldest host exists.
-Windows 11 24H2/build 26100 is not inferred from GitHub's Windows Server 2025
-runner: a server SKU is not the selected desktop support boundary. An older
-Windows floor requires its own oldest-host run and replacement ADR.
+The Windows boundary is deliberately conservative. Windows 10 1903/build 18362
+supplies the picker-free HWND interop API, and Windows 10 1809/build 17763
+supplies the free-threaded frame pool, but those releases and SDK families are
+out of support in 2026 and have no approved oldest host. Windows Server 2025 CI
+remains supporting native build and contract evidence; a server SKU does not
+replace the accepted desktop boundary. Lowering the floor requires its own
+oldest-host run and replacement ADR.
 
 The API and SDK baselines were checked on 2026-08-09 against Microsoft's current
 references:
@@ -32,10 +32,11 @@ references:
 
 ## Reviewed source
 
-The initial probe is bound to `origin/dev/0.2.0` commit
-`4de3308a7f3619223eca1556e183982d944d4a41`, tree
-`3b69262eb8908b05d7b839ba912ee67ca267244d`. Later acceptance must name the
-final exit-PR revision and either rerun or review the complete intervening diff.
+The accepted Windows probe is bound to clean commit
+`834a58f6c28ab94f3f7a6d5901e3370b07e93155`, tree
+`3294863552d502a64f60f59449560d7b71f4e8b7`. The macOS records below retain
+their own revision identities. Later release acceptance must rerun affected rows
+or review the complete intervening diff.
 
 ## macOS result
 
@@ -91,7 +92,7 @@ boundary checks:
 cargo test --locked --package mado-pilot-platform-windows --test loader_imports -- --nocapture
 cargo test --locked --package mado-pilot-platform-windows --all-targets -- --test-threads=1
 cargo build --locked --package mado-pilot-capi
-cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture
+cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "Windows 11 25H2 G-001" --windows-native-fixture
 ```
 
@@ -106,23 +107,26 @@ Acceptance requires all of the following:
    the version-sensitive DPI, WinRT activation, and WinRT-D3D exports.
 4. Native discovery, picker-free capture, retained-frame progress, mapping,
    fixture input, cleanup, C, and C++ complete without fallback.
-5. Missing controlled modules, exports, factories, or `IsSupported == false`
-   still converge on typed `Unsupported` before capture. If no host exercises
-   that negative branch, the result names the observation gap instead of claiming
-   it ran.
+5. A controlled missing `CreateDirect3D11DeviceFromDXGIDevice` export converges
+   on typed `Unsupported` before capture in Rust, C, and C++, then ordinary
+   supported discovery succeeds after the isolated apparatus is absent.
 
-## Current Windows gap
+## Windows result
 
-No qualifying desktop runner was reachable for the initial probe. The repository
-has no self-hosted GitHub Actions runner, and `windows-2025` is Windows Server
-2025. PR #29 passed the exact reviewed tree on that server runner, including WGC,
-mapping, the dedicated input fixture, C, C++, frozen headers, ownership, and
-CMake. That remains cross-target deterministic evidence only; it is not relabeled
-as a Windows 11 oldest-desktop probe.
+The approved desktop completed the positive boundary on 2026-08-22. The full
+repository sequence and focused loader, Windows all-target, native capture,
+acknowledged fixture input, product-DLL, ABI 1.2, frozen ABI 1.0, C, C++,
+ownership, and CMake rows passed on the reviewed source.
 
-Until the approved host completes the matrix, the proposed Windows minimum is not
-a support claim, [`G-001`](../../validation-gates.md#g-001) remains open for
-Windows, and the platform support tables remain unchanged.
+Final repair source `9bfc0c0` completed the controlled negative row without
+changing an operating-system file: isolated child processes suppressed one lazy
+WinRT-D3D export before resolver caching. Rust, C, and C++ engines loaded and
+returned typed `Unsupported` from discovery; normal discovery and fixture flows
+passed after restoration. The detailed, privacy-reviewed record is
+[`windows-minimum-system.md`](windows-minimum-system.md).
+
+The user-focused `System` input and ordinary `WindowMessage` rows remain part of
+their separate interactive matrix.
 
 ## Privacy
 

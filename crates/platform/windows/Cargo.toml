@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+benchmark-instrumentation = []
+qualification-unsupported-api = []
+
 [target.'cfg(windows)'.dependencies]
 mado-pilot-core = { path = "../../automation/core" }
 mado-pilot-capture = { path = "../../automation/capture" }
