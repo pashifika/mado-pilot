@@ -1259,6 +1259,12 @@ impl Workload {
         self.peak_bytes
     }
 
+    /// Maximum bytes mapped by one retained result.
+    #[must_use]
+    pub const fn mapped_bytes_per_result(&self) -> u64 {
+        self.mapped
+    }
+
     /// Peak resident bytes reported for this native workload.
     #[must_use]
     pub const fn peak_resident_bytes(&self) -> Option<u64> {
@@ -1831,6 +1837,15 @@ pub const PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 3] = [
         Duration::from_millis(300),
     ),
 ];
+
+/// Maximum live Rust heap for the macOS production-capture profile.
+pub const PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES: usize = 32 * 1_024 * 1_024;
+
+/// Maximum live Rust heap for the macOS production-transition profile.
+pub const PHASE2_PRODUCTION_TRANSITION_HEAP_LIMIT_BYTES: usize = 16 * 1_024 * 1_024;
+
+/// Maximum mapped bytes for one macOS production fixture frame.
+pub const PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT: u64 = 4_628_480;
 
 /// Phase 2 Windows 1280x720 production-capture ceilings accepted by ADR 0031.
 pub const PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS: [LatencyBudget; 4] = [

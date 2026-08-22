@@ -22,8 +22,9 @@ use mado_pilot_testkit::bench_harness::{
     PHASE2_2_CAPTURE_LATENCY_BUDGETS, PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS, PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_HEAP_LIMIT_BYTES, PHASE2_2_TRANSITION_LATENCY_BUDGETS,
-    PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS, PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS,
-    enforce_latency_budgets,
+    PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES, PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS,
+    PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT, PHASE2_PRODUCTION_TRANSITION_HEAP_LIMIT_BYTES,
+    PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS, enforce_latency_budgets,
 };
 
 #[cfg(target_os = "macos")]
@@ -46,8 +47,8 @@ use mado_pilot_runtime::{
 #[cfg(target_os = "macos")]
 use crate::macos_fixture::{
     CancellationObservation, CommandAcknowledgement, FixtureController, LanguageExecutablePin,
-    LaunchMode, auxiliary_window_setup_is_proven, language_pins_are_unchanged,
-    post_use_identity_gate,
+    LaunchMode, auxiliary_window_setup_is_proven, controlled_resize_logical_size_matches,
+    expected_controlled_resize_logical_size, language_pins_are_unchanged, post_use_identity_gate,
 };
 #[cfg(target_os = "macos")]
 use crate::macos_fixture_protocol as protocol;
@@ -1660,6 +1661,46 @@ fn enforce_premeasurement_budgets(set: WorkloadSet, workloads: &[Workload]) {
         WorkloadSet::ProcessDiagnostics => PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS.as_slice(),
     };
     enforce_latency_budgets(workloads, latency);
+    let (heap_limit, mapped_workloads): (Option<usize>, &[&str]) = match set {
+        WorkloadSet::ProductionCapture => (
+            Some(PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES),
+            &[
+                "publication_age",
+                "steady_frame_acquisition",
+                "latest_acquisition",
+                "cpu_map_bgra8",
+            ],
+        ),
+        WorkloadSet::ProductionTransitions => (
+            Some(PHASE2_PRODUCTION_TRANSITION_HEAP_LIMIT_BYTES),
+            &["open_first_frame"],
+        ),
+        _ => (None, &[]),
+    };
+    if let Some(limit) = heap_limit {
+        for workload in workloads {
+            assert!(
+                workload.peak_allocated_bytes() <= limit,
+                "{} exceeded the accepted macOS production live Rust heap ceiling: {} > {} bytes",
+                workload.name(),
+                workload.peak_allocated_bytes(),
+                limit,
+            );
+        }
+    }
+    for name in mapped_workloads {
+        let workload = workloads
+            .iter()
+            .find(|workload| workload.name() == *name)
+            .unwrap_or_else(|| panic!("the macOS production profile omitted {name}"));
+        assert!(
+            workload.mapped_bytes_per_result() <= PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT,
+            "{} exceeded the accepted macOS production mapped-byte ceiling: {} > {} bytes",
+            workload.name(),
+            workload.mapped_bytes_per_result(),
+            PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT,
+        );
+    }
     if matches!(
         set,
         WorkloadSet::ProcessDirected

@@ -20,8 +20,9 @@ use mado_pilot_testkit::bench_harness::{
     Benchmark, LatencyBudget, PHASE2_2_CAPTURE_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS, PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
-    PHASE2_2_TRANSITION_LATENCY_BUDGETS, PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS,
-    PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS,
+    PHASE2_2_TRANSITION_LATENCY_BUDGETS, PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES,
+    PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS, PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT,
+    PHASE2_PRODUCTION_TRANSITION_HEAP_LIMIT_BYTES, PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS,
     PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT,
     PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT,
     PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT,
@@ -557,6 +558,77 @@ fn process_profiles_state_the_same_live_heap_ceiling_the_harness_enforces() {
             "{path} must record the frozen process-directed live-heap ceiling \
              enforced by `native-phase2`"
         );
+    }
+}
+
+#[test]
+fn macos_production_profiles_state_the_resource_budgets_the_harness_enforces() {
+    let capture = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml"
+    );
+    let transitions = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml"
+    );
+    let mapped_limit = f64::from(
+        u32::try_from(PHASE2_PRODUCTION_MAPPED_BYTES_LIMIT)
+            .expect("the accepted macOS mapped-byte limit fits u32"),
+    );
+
+    for (path, profile, heap_limit, mapped_workloads) in [
+        (
+            "capture",
+            capture,
+            PHASE2_PRODUCTION_CAPTURE_HEAP_LIMIT_BYTES,
+            &[
+                "publication_age",
+                "steady_frame_acquisition",
+                "latest_acquisition",
+                "cpu_map_bgra8",
+            ][..],
+        ),
+        (
+            "transitions",
+            transitions,
+            PHASE2_PRODUCTION_TRANSITION_HEAP_LIMIT_BYTES,
+            &["open_first_frame"][..],
+        ),
+    ] {
+        let blocks = budget_blocks(profile);
+        let heap = blocks
+            .iter()
+            .find(|budget| {
+                budget.workload.is_none() && budget.measure == Some("peak_allocated_bytes")
+            })
+            .unwrap_or_else(|| panic!("{path} profile is missing its live-heap ceiling"));
+        assert_eq!(heap.kind, Some("absolute"));
+        assert_eq!(heap.unit, Some("bytes"));
+        assert_eq!(heap.direction, Some("at_most"));
+        assert_eq!(
+            heap.limit,
+            Some(f64::from(
+                u32::try_from(heap_limit).expect("the accepted macOS heap limit fits u32")
+            ))
+        );
+
+        let mapped_blocks: Vec<&BudgetBlock<'_>> = blocks
+            .iter()
+            .filter(|budget| budget.measure == Some("mapped_bytes_per_result"))
+            .collect();
+        assert_eq!(
+            mapped_blocks.len(),
+            mapped_workloads.len(),
+            "{path} profile has stale or missing mapped-byte ceilings",
+        );
+        for workload in mapped_workloads {
+            let mapped = mapped_blocks
+                .iter()
+                .find(|budget| budget.workload == Some(*workload))
+                .unwrap_or_else(|| panic!("{path} profile is missing {workload}'s mapped ceiling"));
+            assert_eq!(mapped.kind, Some("absolute"));
+            assert_eq!(mapped.unit, Some("bytes"));
+            assert_eq!(mapped.direction, Some("at_most"));
+            assert_eq!(mapped.limit, Some(mapped_limit));
+        }
     }
 }
 

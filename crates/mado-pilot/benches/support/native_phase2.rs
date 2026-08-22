@@ -1492,6 +1492,24 @@ fn resize_recreation(active: &ActiveFlow) -> Sample {
     let mut state = lock_state(active);
     let before = state.last.stamp();
     let old_extent = state.last.descriptor().extent();
+    #[cfg(target_os = "macos")]
+    let expected_logical_size = {
+        let placement = state
+            .last
+            .transform()
+            .target()
+            .expect("the macOS fixture frame carries authoritative target placement");
+        expected_controlled_resize_logical_size(placement.logical_size()).unwrap_or_else(|| {
+            let scale = placement.scale();
+            panic!(
+                "the macOS fixture starts from one declared target geometry: \
+                 extent={old_extent:?} logical={:?} scale={}x{}",
+                placement.logical_size(),
+                scale.x(),
+                scale.y(),
+            )
+        })
+    };
     let started = Instant::now();
     assert!(
         send_resize_stimulus(&active.flow, &state.session, before.geometry().value(),),
@@ -1520,6 +1538,11 @@ fn resize_recreation(active: &ActiveFlow) -> Sample {
     let correct = frame.stamp().epoch() > before.epoch()
         && frame.stamp().geometry() > before.geometry()
         && frame.transform().geometry() == frame.stamp().geometry();
+    #[cfg(target_os = "macos")]
+    let correct = correct
+        && frame.transform().target().is_some_and(|placement| {
+            controlled_resize_logical_size_matches(placement.logical_size(), expected_logical_size)
+        });
     state.last = frame;
     Sample::unmapped(elapsed, correct)
 }

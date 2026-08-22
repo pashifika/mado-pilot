@@ -42,6 +42,34 @@ const GRACEFUL_CLOSE_WAIT: Duration = Duration::from_millis(100);
 const EVENT_QUIET_WAIT: Duration = Duration::from_millis(100);
 const MAX_FIXTURE_LAUNCH_ATTEMPTS: u32 = 3;
 
+const CONTROLLED_BASE_LOGICAL_SIZE: (f64, f64) = (640.0, 452.0);
+const CONTROLLED_RESIZED_LOGICAL_SIZE: (f64, f64) = (688.0, 484.0);
+const POINT_COMPARISON_EPSILON: f64 = 0.5;
+
+fn logical_size_matches(actual: (f64, f64), expected: (f64, f64)) -> bool {
+    (actual.0 - expected.0).abs() <= POINT_COMPARISON_EPSILON
+        && (actual.1 - expected.1).abs() <= POINT_COMPARISON_EPSILON
+}
+
+/// Returns the exact target geometry produced by the fixture's next private resize.
+pub(crate) fn expected_controlled_resize_logical_size(current: (f64, f64)) -> Option<(f64, f64)> {
+    if logical_size_matches(current, CONTROLLED_BASE_LOGICAL_SIZE) {
+        Some(CONTROLLED_RESIZED_LOGICAL_SIZE)
+    } else if logical_size_matches(current, CONTROLLED_RESIZED_LOGICAL_SIZE) {
+        Some(CONTROLLED_BASE_LOGICAL_SIZE)
+    } else {
+        None
+    }
+}
+
+/// Confirms frame-authoritative target geometry matches the fixture's declared state.
+pub(crate) fn controlled_resize_logical_size_matches(
+    actual: (f64, f64),
+    expected: (f64, f64),
+) -> bool {
+    logical_size_matches(actual, expected)
+}
+
 fn remove_language_pin(directory: &Path, path: &Path) {
     let _writable = std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700));
     let _file_removed = std::fs::remove_file(path);
@@ -1247,7 +1275,8 @@ impl Drop for LaunchGuard {
 mod tests {
     use super::{
         LanguageExecutablePin, MAX_OUTPUT_LINE_BYTES, ReaderMessage,
-        auxiliary_window_setup_is_proven, discard_setup_events_until_quiet,
+        auxiliary_window_setup_is_proven, controlled_resize_logical_size_matches,
+        discard_setup_events_until_quiet, expected_controlled_resize_logical_size,
         finish_reader_output_is_clean, fixture_bundle, language_pins_are_unchanged,
         next_fixture_run_nonce, post_use_identity_gate, read_bounded_lines, strict_event_reset,
     };
@@ -1274,6 +1303,38 @@ mod tests {
             fixture_bundle(Path::new("/tmp/mado-pilot-macos-input-fixture")),
             None
         );
+    }
+
+    #[test]
+    fn controlled_resize_geometry_tracks_the_fixture_toggle() {
+        assert_eq!(
+            expected_controlled_resize_logical_size((640.0, 451.75)),
+            Some((688.0, 484.0)),
+        );
+        assert_eq!(
+            expected_controlled_resize_logical_size((687.999_98, 483.75)),
+            Some((640.0, 452.0)),
+        );
+        assert!(controlled_resize_logical_size_matches(
+            (688.0, 483.75),
+            (688.0, 484.0),
+        ));
+        assert!(controlled_resize_logical_size_matches(
+            (640.0, 451.75),
+            (640.0, 452.0),
+        ));
+    }
+
+    #[test]
+    fn controlled_resize_geometry_rejects_unknown_or_wrong_geometry() {
+        assert_eq!(
+            expected_controlled_resize_logical_size((700.0, 484.0)),
+            None,
+        );
+        assert!(!controlled_resize_logical_size_matches(
+            (688.0, 480.0),
+            (688.0, 484.0),
+        ));
     }
     #[test]
     fn language_pin_pair_rejects_either_replaced_file() {
