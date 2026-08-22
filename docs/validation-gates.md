@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md), macOS diagnostics by [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md), macOS native input by [ADR 0025](adr/0025-macos-native-input-performance-budgets.md), Windows diagnostics plus the controlled `native-phase2` workload sets by [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md), macOS production capture/transitions by [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md), Windows 1280×720 production capture/transitions by [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md), and Windows dual-4K production capture by [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md); final-source Phase 1 reruns remain open |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by ADR 0008, and the affected Phase 2 diagnostic, native input, controlled ownership, production capture/transition, and corrected dual-4K workloads resolved by ADRs 0024–0032. Exact-candidate Phase 1 reruns preserve those ceilings as exit evidence rather than another budget decision |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -474,10 +474,10 @@ crossings. It is not material at this size of work, and the ADR records why that
 conclusion does not automatically transfer to a later phase's per-frame entry
 point.
 
-**Phase 2 remains open.** [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
-accepts the `aarch64-apple-darwin` diagnostic profile. ADR 0026 replaces the
-matching Windows timing gap with a measured `x86_64-pc-windows-msvc` profile.
-Both targets retain 200 samples after 20 warmups for each of ten
+**Phase 2 is resolved for `v0.2.1`.**
+[ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the
+`aarch64-apple-darwin` diagnostic profile. ADR 0026 accepts the matching Windows
+profile. Both targets retain 200 samples after 20 warmups for each of ten
 capture/mapping, input, overflow, and close/drain workloads, with zero oracle
 failures and allocation growth, exact mapped-byte accounting, and per-workload
 regression ceilings.
@@ -523,20 +523,22 @@ accepts the separate Windows 1280×720 profiles. The capture profile was
 requalified on repaired source `c6ff39a`, tree `8f2766a`; all four workloads
 passed unchanged numeric ceilings with zero correctness/allocation failures,
 exact mapping/copy bytes, and nonzero resource counts at or below their limits.
-The unchanged transition profile remains revision-bound to `0208798` under a
-reviewed complete-diff applicability decision.
+Transition source `7c31752`, tree `4e99487`, reran all five lifecycle workloads
+after callback completion/binding instrumentation changed their publication
+path; every unchanged gate passed.
 
 [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the repaired mixed-DPI dual-4K profile at final source `c6ff39a`, tree
-`8f2766a`. It retains 600 stationary samples per display plus 300 controlled
-moving-seam samples, binds each frame to its own post-baseline callback record,
-and passes every latency, mapping/copy, resource, stale-work, heap, resident,
-correctness, and growth gate.
+accepts the corrected mixed-DPI dual-4K profile at budget-enforced source
+`fdcac29`, tree `c906aa8`. It retains 600 stationary samples per display plus
+300 controlled moving-seam samples, requires requested-position markers on both
+frames, binds each frame to its own post-baseline callback record, and passes
+every latency, mapping/copy, resource, stale-work, heap, resident, correctness,
+growth, and cleanup gate.
 
 The Windows controlled `native-phase2`, ADR 0031 1280×720, and ADR 0032 dual-4K
 profiles remain distinct. Historical measurements keep their original source
-identities. Final-source Phase 1 regression reruns remain the cross-platform
-Phase 2 `G-013` workload evidence for the eventual release candidate.
+identities. Final-source Phase 1 reruns preserve their existing ceilings and
+remain exact-candidate exit evidence rather than another profile lineage.
 
 OCR, watcher scheduling, and acceleration remain open for the phases that
 introduce them.

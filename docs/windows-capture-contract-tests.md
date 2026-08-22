@@ -4,8 +4,8 @@ This plan translates
 [ADR 0013](adr/0013-windows-capture-frame-detachment.md) into tests for
 `mado-pilot-platform-windows`. The production Adapter, controlled tests, and
 approved interactive Windows host matrix now exist; this document distinguishes
-their revision-bound evidence from the remaining cross-platform final-source
-Phase 1 and release checks.
+their revision-bound evidence from exact-candidate Phase 1, repository, and
+release checks.
 
 The implementation uses both layers below:
 
@@ -158,8 +158,8 @@ accepts the 1280×720 `G-013` profiles for:
 ADR 0032 accepts the same applicable capture, mapping, resource, progress, and
 cleanup facts for the exact two-display 4K topology. It requires one shared
 600-sample stationary pass per display plus 300 retained frame pairs while the
-fixture moves across the signed seam. Each frame must match its own coherent
-post-baseline callback record by stream, epoch, and sequence.
+fixture moves across the signed seam. Both requested-position markers and each
+frame's coherent post-baseline stream/epoch/sequence callback record must match.
 
 Every timed sample keeps its correctness oracle. A throughput improvement that
 changes retained pixels, pins producer slots, exceeds a bound, or hides a drop
@@ -182,4 +182,4 @@ native matrices:
 - [`windows-dual-4k-production-capture.md`](evidence/phase-2-native/windows-dual-4k-production-capture.md).
 
 [docs/architecture.md](architecture.md) records both accepted production
-lineages separately from still-open final-source Phase 1 evidence.
+lineages separately from exact-candidate Phase 1 and release evidence.

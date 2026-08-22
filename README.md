@@ -48,9 +48,10 @@ unsupported path, and the repaired Windows 1280×720 and mixed-DPI dual-4K
 production profiles. The dual profile includes 600 stationary samples per
 display and 300 moving-seam frame pairs with per-frame callback correlation.
 Each lineage remains bound to its own source, topology, stimulus, oracle, and
-target-specific budgets. Final-source Phase 1 regression reruns and the complete
-release verification sequence remain open; no historical profile or hosted-CI
-result substitutes for them.
+target-specific budgets. Final-source Phase 1 and repository verification run
+on the exact exit candidate under unchanged ceilings; the exit evidence binds
+that head to its hosted checks. Historical profiles and hosted CI never
+substitute for interactive native rows.
 
 macOS capture needs Screen Recording and input needs event-post access;
 MadoPilot probes both without prompting. Windows has no permission probe and
@@ -78,7 +79,7 @@ Adding a package here is not a claim that its behavior exists.
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.2 while preserving the released ABI 1.0 prefix; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.2 |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 ceilings are frozen on both targets and await final-source reruns. Phase 2 accepts macOS diagnostics, native input/public-language, controlled owning-process, and production capture/transition profiles; Windows diagnostics, controlled `native-phase2`, ordinary `WindowMessage`, 1280×720 production, and mixed-DPI dual-4K production profiles; benchmark-drift, correctness, allocation, memory, mapped/copy-byte, stale-work, and target-specific latency gates remain enforced |
+| Numeric performance budgets | Phase 1 ceilings are frozen on both targets and rerun unchanged for the exact exit candidate. Phase 2 accepts macOS diagnostics, native input/public-language, controlled owning-process, and production capture/transition profiles; Windows diagnostics, controlled `native-phase2`, ordinary `WindowMessage`, 1280×720 production, and corrected mixed-DPI dual-4K production profiles; benchmark-drift, correctness, allocation, memory, mapped/copy-byte, stale-work, and target-specific latency gates remain enforced |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled
@@ -102,8 +103,8 @@ the full status table, the package inventory, and the dependency rules.
 [`v0.1.0`](docs/releases/v0.1.0.md) is the published developer-facing source,
 Rust API, C ABI 1.0, and C++ API baseline for the deterministic workflow.
 [`v0.2.1`](docs/releases/v0.2.1.md) is the in-progress native
-capture/input/observation source release; it is not released while the
-final-source regression acceptance remains.
+capture/input/observation source release; it remains unreleased until its
+protected branch, exact-head checks, tag, and release-record flow completes.
 Neither version publishes crates to crates.io or provides prebuilt libraries,
 installers, CMake install/export metadata, pkg-config metadata, or bundled
 OpenCV. A tracked release-note file is the canonical release body.

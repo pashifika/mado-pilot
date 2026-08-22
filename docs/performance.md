@@ -19,8 +19,9 @@ process-directed and controlled-stimulus lineage below. Final candidate
 under their frozen regression budgets. Independent `single`, exact two-display
 non-mirrored `same-scale`, and `mixed-scale` qualification matrices also pass,
 so all fourteen controlled release pair decisions are qualified. ADRs 0030,
-0031, and 0032 accept the target-specific production profiles; final-source
-Phase 1 regression reruns remain the Phase 2 performance gap.
+0031, and 0032 accept the target-specific production profiles. Final-source
+Phase 1 reruns remain exact-candidate evidence under their unchanged ceilings;
+they never re-derive a budget.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -457,8 +458,9 @@ records, and still return four complete receipts on both targets.
 ## Phase 2 native performance status
 
 Phase 2's affected [`G-013`](validation-gates.md#g-013) production and
-target-specific native profiles are accepted; final-source Phase 1 regression
-reruns remain open under their unchanged ceilings. [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+target-specific native profiles are accepted. Final-source Phase 1 reruns use
+the unchanged ceilings and are bound to the exact exit candidate.
+[ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
 invalidated the three macOS profiles originally accepted by
 [ADR 0020](adr/0020-phase-2-native-performance-budgets.md). ADR 0025 replaced
 the macOS input profile, while ADR 0026 accepts the controlled Windows native
@@ -520,13 +522,13 @@ Windows. ADR 0026 records the probes and the bounded repairs. Production capture
 and input semantics were not changed to make a benchmark pass.
 
 The Phase 1 profiles historically passed all applicable comparisons at their
-recorded source revisions. Release acceptance still requires final-source
-regression reruns; their committed Phase 1 ceilings do not move. The accepted
-Phase 2.2 controlled-stimulus lineage below supplies the current macOS capture,
-transition, and owning-process-route measurements without treating them as
-comparable to the invalidated input-stimulus lineage. ADRs 0030, 0031, and 0032
-separately accept the complete macOS, Windows 1280×720, and Windows dual-4K
-production-capture lineages.
+recorded source revisions. The exit candidate reruns them without moving their
+committed ceilings. The accepted Phase 2.2 controlled-stimulus lineage below
+supplies the current macOS capture, transition, and owning-process-route
+measurements without treating them as comparable to the invalidated
+input-stimulus lineage. ADRs 0030, 0031, and 0032 separately accept the complete
+macOS, Windows 1280×720, and corrected Windows dual-4K production-capture
+lineages.
 
 ## Phase 2.2 macOS process-directed and controlled-stimulus lineage
 
@@ -684,8 +686,9 @@ or representation only while the ADR's detachment and lifetime tests still pass.
 accepts separate 1280×720 capture and transition profiles. Repaired capture
 source `c6ff39a`, tree `8f2766a`, retained 600 samples across four workloads
 with zero correctness failures, zero allocation growth, and every unchanged
-budget enforced. The historical transition profile remains at `0208798` under
-a reviewed applicability decision.
+budget enforced. Repaired transition source `7c31752`, tree `4e99487`, reran all
+five lifecycle workloads with zero correctness failures and every unchanged
+latency, mapping, memory, growth, and cleanup gate enforced.
 
 The capture profile records arrival, one frame-stamp-correlated callback copy,
 latest acquisition, and BGRA8 mapping separately. The repaired run reports one
@@ -703,26 +706,27 @@ topology, and operation shape, not game or real-time guarantees.
 ## Phase 2 Windows dual-4K production-capture acceptance
 
 [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the repaired mixed-DPI dual-4K profile at final source `c6ff39a`, tree
-`8f2766a`. The stationary pair retains 600 strictly newer samples per display
-while sharing each capture/mapping interaction. A distinct no-warm-up workload
-retains 300 frame pairs while moving the controlled fixture across the signed
-seam.
+accepts the corrected mixed-DPI dual-4K profile at budget-enforced source
+`fdcac29`, tree `c906aa8`. The stationary pair retains 600 strictly newer
+samples per display while sharing each capture/mapping interaction. A distinct
+no-warm-up workload retains 300 frame pairs while moving the controlled fixture
+across the signed seam.
 
-The final stationary rows report zero correctness failures, 392 bytes growth,
-exact 66,355,200-byte mappings, a 165,888,000-byte five-surface copy interval,
-eight detached textures, one staging texture, thirteen total resources, a
-`0.477579451` stale ratio, 99,583,153 bytes live Rust heap, and 219,348,992
-bytes resident. The moving row reports zero correctness failures, 160 bytes
-growth, a five-surface copy interval, seven/one/twelve resources, a
-`0.485861183` stale ratio, 99,577,160 bytes heap, and 321,396,736 bytes
+The final stationary rows report zero correctness failures, zero growth, exact
+66,355,200-byte mappings, a 199,065,600-byte six-surface copy interval, eight
+detached textures, one staging texture, thirteen total resources, a
+`0.456767768` stale ratio, 99,583,805 bytes live Rust heap, and 219,111,424
+bytes resident. The moving row reports zero correctness failures, -232 bytes
+growth, a six-surface copy interval, seven/one/twelve resources, a
+`0.489795918` stale ratio, 99,577,812 bytes heap, and 321,548,288 bytes
 resident.
 
-The moving p50/p95/maximum ceilings are 60/75/75 ms, derived above two repaired
-same-source precursor runs. Every acquired frame must match its own coherent
-post-baseline callback record by stream, epoch, and sequence. ADR 0032 retains
-384 MiB heap, 1 GiB resident, copy, texture, and stale-work ceilings for all
-three workloads. Windows production-capture `G-013` is complete; final-source
-Phase 1 reruns remain cross-platform candidate work.
+Two corrected-marker precursor runs establish the moving 125/175/225 ms
+p50/p95/maximum ceilings through ADR 0032's three-times/readable-rounding
+policy. Both requested marker positions and each frame's coherent post-baseline
+stream/epoch/sequence callback record must match under one absolute deadline.
+ADR 0032 retains 384 MiB heap, 1 GiB resident, copy, texture, and stale-work
+ceilings for all three workloads. Windows production-capture `G-013` is
+complete; final-source Phase 1 checks remain exact-candidate exit evidence.
 The complete workload and correctness obligations are in
 [windows-capture-contract-tests.md](windows-capture-contract-tests.md).

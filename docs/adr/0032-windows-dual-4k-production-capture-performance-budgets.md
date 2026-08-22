@@ -1,6 +1,6 @@
 # ADR 0032: Windows dual-4K production capture performance budgets
 
-- **Status:** Proposed — corrected-oracle final run pending
+- **Status:** Accepted
 - **Date:** 2026-08-22
 - **Resolves gate:** The remaining Windows dual-4K production-capture portion of [`G-013`](../validation-gates.md#g-013)
 - **Supersedes:** none; ADR 0031 continues to govern its separate 1280x720 capture and transition profiles
@@ -32,6 +32,13 @@ strictly newer frame containing the prior placement therefore fails. Two
 unchanged-source precursor runs retained 300 corrected moving pairs apiece with
 zero correctness failures. Their moving p50/p95/maximum values were
 `41.0535/45.6627/71.4985 ms` and `40.9366/51.1564/71.1795 ms`.
+
+Budget-enforced source `fdcac294f602c172bdcebd44efddef2a7b858d18`,
+tree `c906aa870ccdd67d3608f979320bfcddb7b8259d`, then reran the complete
+stationary and corrected moving profile. All three workloads passed the
+committed 125/175/225 ms movement ceilings and every unchanged correctness,
+mapping/copy, resource, stale-work, heap, resident, growth, and cleanup gate.
+Every supervised benchmark and fixture process reached a terminal state.
 
 ## Decision
 

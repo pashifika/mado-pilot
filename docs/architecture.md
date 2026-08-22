@@ -22,10 +22,10 @@ owning-process-scoped `ProcessDirected` input.
 
 The qualified Windows floor, both platform native/public-language matrices,
 macOS production capture/transitions, Windows 1280×720 production
-capture/transitions, and Windows mixed-DPI dual-4K production capture have
-accepted revision-bound evidence and target-specific budgets. Final-source
-Phase 1 regression reruns and the complete release verification sequence remain
-open; release-target CI remains a per-publication gate. OCR, watchers,
+capture/transitions, and corrected Windows mixed-DPI dual-4K production capture
+have accepted revision-bound evidence and target-specific budgets. Exact
+final-source Phase 1, repository, and release-target checks are bound to each
+exit candidate without relabeling the interactive evidence. OCR, watchers,
 scheduling, and release packaging remain future work.
 See [Implementation status](#implementation-status).
 
@@ -68,7 +68,7 @@ owns and where they genuinely differ.
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
 | Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build 26200.9168, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation; earlier versions unsupported | macOS 26.5.2; older versions unsupported |
-| Open gates | [`G-013`](validation-gates.md#g-013) final-source Phase 1 reruns; [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts diagnostic timing and the original controlled `native-phase2` workload sets, [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` timing/memory/pressure/cleanup ceilings, [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md) accepts 1280×720 production capture/transitions, and [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md) accepts mixed-DPI dual-4K production capture | [`G-013`](validation-gates.md#g-013) final-source regression reruns; [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts native input/public-language costs, [ADR 0029](adr/0029-macos-process-directed-input.md) accepts the final controlled process-directed profiles and all fourteen topology-qualified owning-process pairs, and [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts production capture and transition budgets |
+| Candidate verification | Exact final-source Phase 1/repository checks and release-target CI are candidate-bound exit evidence; ADRs 0026, 0028, 0031, and 0032 retain their separate Windows workload sources | Exact final-source Phase 1/repository checks and release-target CI are candidate-bound exit evidence; ADRs 0024, 0025, 0029, and 0030 retain their separate macOS workload sources |
 
 Detailed capabilities, permission outcomes, coordinate transforms, native
 resource ownership, and unsupported-system behavior are added by the changes
@@ -1709,8 +1709,8 @@ two-display non-mirrored `same-scale`, and `mixed-scale` native matrices.
 All fourteen controlled release pairs are qualified, and
 [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
 macOS production-capture matrix, and [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the remaining Windows production matrix. Final-source regression reruns
-remain open under Phase 2 [`G-013`](validation-gates.md#g-013).
+accepts the corrected remaining Windows production matrix. Final-source Phase 1
+reruns use their unchanged ceilings and remain exact-candidate exit evidence.
 
 CPU conversion is not part of the detach. The detached buffer keeps the native row
 padding, and a mapping produces the caller's bytes at exactly the packed stride the
@@ -2297,8 +2297,9 @@ source/oracle-misbound benchmark bodies. Final candidate `dec43d7` passes
 exact-source controlled AppKit/game-like profiles and independent `single`,
 exact two-display non-mirrored `same-scale`, and `mixed-scale` native matrices.
 All fourteen controlled release pairs are qualified. ADR 0030 accepts the macOS
-production-capture matrix, and ADR 0032 accepts the remaining Windows dual-4K
-production matrix. Final-source reruns remain the explicit `G-013` gap.
+production-capture matrix, and ADR 0032 accepts the corrected remaining Windows
+dual-4K production matrix. Final-source reruns use unchanged Phase 1 ceilings
+and are retained against the exact exit candidate.
 
 ### Phase 0 completion contract
 
@@ -2330,7 +2331,7 @@ against.
 
 | Verification class | Status | Phase 0 |
 |---|---|---|
-| Numeric runtime performance budgets | Implemented for Phase 1 by [ADR 0008](adr/0008-phase-1-performance-budgets.md): four committed profiles carry both-target measurements and the two `kind = "hard"` predicates are enforced in-process on `cargo bench` and `cargo test`. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts macOS Phase 2.2 diagnostics, [ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts current macOS native input/public-language costs, [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts Windows diagnostics and the original controlled `native-phase2` capture/transition/input profiles, [ADR 0028](adr/0028-windows-window-message-performance-budgets.md) accepts ordinary `WindowMessage` latency/memory/queue-pressure/cleanup budgets, [ADR 0029](adr/0029-macos-process-directed-input.md) accepts optimized controlled macOS terminal gates, [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts macOS production capture/transitions, [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md) accepts Windows 1280×720 production capture/transitions, and [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md) accepts Windows mixed-DPI dual-4K production capture. Final-source Phase 1 reruns remain open | Not applicable; no performance-sensitive implementation existed |
+| Numeric runtime performance budgets | Implemented for Phase 1 by [ADR 0008](adr/0008-phase-1-performance-budgets.md): four committed profiles carry both-target measurements and the two `kind = "hard"` predicates are enforced in-process on `cargo bench` and `cargo test`. ADRs 0024, 0025, 0026, 0028, 0029, 0030, 0031, and 0032 accept the current target-specific Phase 2 diagnostic, native input, controlled ownership, production capture/transition, and corrected moving-seam profiles. Exact-candidate Phase 1 reruns preserve their existing ceilings and remain separate exit evidence | Not applicable; no performance-sensitive implementation existed |
 | ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field; structure-prefix tests cover inputs and outputs in both directions; and the immutable `tests/abi-compat/v1/` caller compiles against its released header, negotiates only that table extent, and runs against the current ABI 1.2 library. The unreleased `v1.1` fixture is removed, while current-header C and Rust checks prove minimum minor 1 is rejected. ABI 1.0 was resolved under [`G-010`](validation-gates.md#g-010) by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md); ABI 1.2 is recorded by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md) | Not applicable; no ABI existed |
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | OCR, watcher, input, and diagnostic contract suites | Input contracts, controlled input doubles, diagnostic concurrency/loss/privacy cases, and facade action-correlation tests are implemented. Both platform Adapters add deterministic controller cases and native integration procedures; OCR and watcher suites remain not applicable | Not applicable |
