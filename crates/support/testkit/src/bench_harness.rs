@@ -1146,12 +1146,12 @@ impl Sample {
         self
     }
 
-    /// Associates the measured child process's peak resident set with this sample.
+    /// Associates the measured native process's peak resident set with this sample.
     ///
-    /// This is separate from the Rust global-allocator counters because a
-    /// separately linked C or C++ process has its own allocator and address
-    /// space. The child reports this value from its native process API after it
-    /// has released the flow's owned handles.
+    /// This is separate from the Rust global-allocator counters because it
+    /// includes native allocations and may describe either the benchmark
+    /// process itself or a separately linked C or C++ child after owned-handle
+    /// cleanup.
     #[must_use]
     pub const fn with_peak_resident_bytes(mut self, bytes: u64) -> Self {
         self.peak_resident = Some(bytes);
@@ -1257,6 +1257,36 @@ impl Workload {
     #[must_use]
     pub const fn peak_allocated_bytes(&self) -> usize {
         self.peak_bytes
+    }
+
+    /// Peak resident bytes reported for this native workload.
+    #[must_use]
+    pub const fn peak_resident_bytes(&self) -> Option<u64> {
+        self.peak_resident_bytes
+    }
+
+    /// Maximum producer-surface bytes copied during one retained sample.
+    #[must_use]
+    pub const fn copied_bytes(&self) -> Option<u64> {
+        self.copied_bytes
+    }
+
+    /// Maximum simultaneously live detached textures.
+    #[must_use]
+    pub const fn detached_textures_peak(&self) -> Option<u64> {
+        self.detached_textures_peak
+    }
+
+    /// Maximum simultaneously live CPU-readable staging textures.
+    #[must_use]
+    pub const fn staging_textures_peak(&self) -> Option<u64> {
+        self.staging_textures_peak
+    }
+
+    /// Maximum simultaneously live producer, detached, and staging textures.
+    #[must_use]
+    pub const fn gpu_resources_peak(&self) -> Option<u64> {
+        self.gpu_resources_peak
     }
 
     /// Share of observed producer work skipped before a retained result.
@@ -1801,6 +1831,92 @@ pub const PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS: [LatencyBudget; 3] = [
         Duration::from_millis(300),
     ),
 ];
+
+/// Phase 2 Windows 1280x720 production-capture ceilings accepted by ADR 0031.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS: [LatencyBudget; 4] = [
+    LatencyBudget::new(
+        "steady_frame_acquisition",
+        Duration::from_millis(75),
+        Duration::from_millis(150),
+        Duration::from_millis(200),
+    ),
+    LatencyBudget::new(
+        "callback_copy",
+        Duration::from_micros(500),
+        Duration::from_micros(1_500),
+        Duration::from_millis(5),
+    ),
+    LatencyBudget::new(
+        "latest_acquisition",
+        Duration::from_micros(5),
+        Duration::from_micros(15),
+        Duration::from_micros(150),
+    ),
+    LatencyBudget::new(
+        "cpu_map_bgra8",
+        Duration::from_millis(6),
+        Duration::from_millis(15),
+        Duration::from_millis(20),
+    ),
+];
+
+/// Phase 2 Windows 1280x720 production-transition ceilings accepted by ADR 0031.
+pub const PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS: [LatencyBudget; 5] = [
+    LatencyBudget::new(
+        "open_first_frame",
+        Duration::from_millis(350),
+        Duration::from_millis(350),
+        Duration::from_millis(350),
+    ),
+    LatencyBudget::new(
+        "retained_pressure_resume",
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+        Duration::from_millis(100),
+    ),
+    LatencyBudget::new(
+        "resize_recreation",
+        Duration::from_millis(250),
+        Duration::from_millis(350),
+        Duration::from_millis(350),
+    ),
+    LatencyBudget::new(
+        "target_loss_recovery",
+        Duration::from_millis(1_250),
+        Duration::from_millis(1_250),
+        Duration::from_millis(1_250),
+    ),
+    LatencyBudget::new(
+        "close_drain",
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+        Duration::from_millis(10),
+    ),
+];
+
+/// Maximum live Rust heap for the Windows 1280x720 production-capture profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES: usize = 32 * 1_024 * 1_024;
+
+/// Maximum live Rust heap for the Windows 1280x720 transition profile.
+pub const PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES: usize = 32 * 1_024 * 1_024;
+
+/// Maximum resident high-water mark for either Windows 1280x720 profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES: u64 = 256 * 1_024 * 1_024;
+
+/// Maximum callback-copy bytes retained by one Windows 1280x720 sample.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT: u64 = 1_280 * 720 * 4;
+
+/// Maximum live detached textures in the Windows 1280x720 capture profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT: u64 = 2;
+
+/// Maximum live staging textures in the Windows 1280x720 capture profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT: u64 = 1;
+
+/// Maximum live producer, detached, and staging textures in that profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT: u64 = 5;
+
+/// Maximum sustained stale work in the Windows 1280x720 capture profile.
+pub const PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT: f64 = 0.02;
 
 const fn phase2_2_process_latency_budgets(event_p95: Duration) -> [LatencyBudget; 5] {
     [

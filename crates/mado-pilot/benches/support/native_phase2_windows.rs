@@ -4,7 +4,17 @@
 use mado_pilot::NativeEngineRequest;
 #[cfg(windows)]
 use mado_pilot_testkit::bench_harness::{
-    CaptureResources, PrefixedLineMatch, bounded_child_output, classify_prefixed_line, measure_pair,
+    CaptureResources, PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS,
+    PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS, PrefixedLineMatch,
+    bounded_child_output, classify_prefixed_line, enforce_latency_budgets, measure_pair,
 };
 #[cfg(windows)]
 use std::io::{BufRead, BufReader};
@@ -1413,11 +1423,72 @@ const fn pressure_fixture_behavior() -> FixtureBehavior {
 }
 
 #[cfg(windows)]
-fn enforce_premeasurement_budgets(_set: WorkloadSet, _workloads: &[Workload]) {
-    // The new Windows production profiles remain measurement candidates
-    // until an exact-source native run and ADR accept target-specific
-    // latency and live-heap ceilings. Unconditional correctness, growth,
-    // and mapped-byte hard gates are enforced separately.
+fn enforce_premeasurement_budgets(set: WorkloadSet, workloads: &[Workload]) {
+    let (latency, heap_limit) = match set {
+        WorkloadSet::ProductionCapture1280 => (
+            PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS.as_slice(),
+            PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES,
+        ),
+        WorkloadSet::ProductionTransitions1280 => (
+            PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS.as_slice(),
+            PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
+        ),
+        WorkloadSet::ProductionCaptureDual4k
+        | WorkloadSet::Capture
+        | WorkloadSet::Transitions
+        | WorkloadSet::Input => return,
+    };
+    enforce_latency_budgets(workloads, latency);
+    for workload in workloads {
+        assert!(
+            workload.peak_allocated_bytes() <= heap_limit,
+            "{} exceeded the accepted Windows production live Rust heap ceiling: {} bytes",
+            workload.name(),
+            workload.peak_allocated_bytes(),
+        );
+        if let Some(resident) = workload.peak_resident_bytes() {
+            assert!(
+                resident <= PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES,
+                "{} exceeded the accepted Windows production resident ceiling: {resident} bytes",
+                workload.name(),
+            );
+        }
+        if set == WorkloadSet::ProductionCapture1280
+            && let Some(ratio) = workload.stale_work_ratio()
+        {
+            assert!(
+                ratio <= PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT,
+                "{} exceeded the accepted Windows production stale-work ceiling: {ratio}",
+                workload.name(),
+            );
+        }
+    }
+    if set == WorkloadSet::ProductionCapture1280 {
+        let callback = workloads
+            .iter()
+            .find(|workload| workload.name() == "callback_copy")
+            .expect("the accepted Windows capture profile includes callback_copy");
+        assert_eq!(
+            callback.copied_bytes(),
+            Some(PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT),
+            "callback_copy exceeded one exact 1280x720 producer-surface copy"
+        );
+        assert_eq!(
+            callback.detached_textures_peak(),
+            Some(PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT),
+            "callback_copy changed the accepted detached-texture peak"
+        );
+        assert_eq!(
+            callback.staging_textures_peak(),
+            Some(PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT),
+            "callback_copy changed the accepted staging-texture peak"
+        );
+        assert_eq!(
+            callback.gpu_resources_peak(),
+            Some(PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT),
+            "callback_copy changed the accepted total GPU-resource peak"
+        );
+    }
 }
 
 #[cfg(windows)]
