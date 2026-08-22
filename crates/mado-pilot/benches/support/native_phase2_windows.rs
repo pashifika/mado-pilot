@@ -1004,14 +1004,22 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
 }
 
 #[cfg(windows)]
+fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
+    dual_display_samples_with_content(flow, false)
+}
+
+#[cfg(windows)]
 fn dual_display_moving_seam(flow: &DualDisplayFlow) -> Sample {
     flow.move_across_seam();
-    let (arrival, _callback) = dual_display_samples(flow);
+    let (arrival, _callback) = dual_display_samples_with_content(flow, true);
     arrival
 }
 
 #[cfg(windows)]
-fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
+fn dual_display_samples_with_content(
+    flow: &DualDisplayFlow,
+    wait_for_moved_content: bool,
+) -> (Sample, Sample) {
     let mut displays = flow
         .state
         .lock()
@@ -1030,37 +1038,48 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
             acquire_correlated_frame(&display.session, floor, sample_start, &operation)
         })
         .collect::<Vec<_>>();
-    let arrival = started.elapsed();
+    let acquired = started.elapsed();
     let mut correct = true;
     let mut mapped_bytes = 0_u64;
     let mut callback_time = Duration::ZERO;
     let mut stale = 0_u64;
     let mut scheduled = 0_u64;
     let surface_bytes = 3_840_u64 * 2_160 * 4;
-    for (display, (frame, observation)) in displays.iter_mut().zip(frames) {
+    for (display, (mut frame, mut observation)) in displays.iter_mut().zip(frames) {
         let before = display.last.stamp();
-        let mapping = frame
-            .map(PixelFormat::Bgra8, &operation)
-            .expect("each 4K display frame maps to BGRA8");
-        let stamp = frame.stamp();
-        let delta = stamp
-            .sequence()
-            .value()
-            .saturating_sub(before.sequence().value());
-        let placement = frame
-            .transform()
-            .target()
-            .expect("each 4K display frame retains placement");
         let desktop_point = Point::new(
             CoordinateSpace::DesktopLogical,
             display.fixture_point.0,
             display.fixture_point.1,
         )
         .expect("the fixture sample point is finite");
-        let capture_point = frame
-            .transform()
-            .convert_point(desktop_point, CoordinateSpace::CapturePixels)
-            .expect("the display transform resolves the fixture point");
+        let (frame, observation, mapping, stamp, placement, pixel_ok) = loop {
+            let mapping = frame
+                .map(PixelFormat::Bgra8, &operation)
+                .expect("each 4K display frame maps to BGRA8");
+            let stamp = frame.stamp();
+            let placement = frame
+                .transform()
+                .target()
+                .expect("each 4K display frame retains placement");
+            let capture_point = frame
+                .transform()
+                .convert_point(desktop_point, CoordinateSpace::CapturePixels)
+                .expect("the display transform resolves the fixture point");
+            let pixel_ok = mapping_pixel_is_benchmark_content(&mapping, capture_point);
+            if pixel_ok || !wait_for_moved_content {
+                break (frame, observation, mapping, stamp, placement, pixel_ok);
+            }
+            let floor = stamp;
+            drop(mapping);
+            drop(frame);
+            (frame, observation) =
+                acquire_correlated_frame(&display.session, floor, sample_start, &operation);
+        };
+        let delta = stamp
+            .sequence()
+            .value()
+            .saturating_sub(before.sequence().value());
         let identity_ok = stamp.stream() == before.stream()
             && stamp.epoch() == before.epoch()
             && stamp.sequence() > before.sequence()
@@ -1068,7 +1087,6 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
             && mapping.stamp() == stamp;
         let placement_ok = placement.desktop_origin() == display.origin
             && (placement.scale().x() - display.scale).abs() < f64::EPSILON;
-        let pixel_ok = mapping_pixel_is_benchmark_content(&mapping, capture_point);
         correct &=
             identity_ok && placement_ok && pixel_ok && observation.copied_bytes == surface_bytes;
         mapped_bytes = mapped_bytes
@@ -1078,6 +1096,11 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
         scheduled = scheduled.saturating_add(delta);
         display.last = frame;
     }
+    let arrival = if wait_for_moved_content {
+        started.elapsed()
+    } else {
+        acquired
+    };
     let sample_end = callback_metric_baseline();
     let streams = displays
         .iter()
