@@ -755,12 +755,18 @@ records `G-001` through `G-014` with the decision, the required evidence, the du
 phase, the blocking scope, the status, and the resolution rule for each. No gate
 blocked Phase 0.
 
-Eight remain open, one is deferred, and five are resolved. The deferred one is
+Seven remain open, one is deferred, and six are resolved. The deferred one is
 [`G-011`](validation-gates.md#g-011), native-frame extension discovery, which
 sits on the future roadmap and does not block version one. `G-009` is resolved by
 [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) and `G-010` by
 [ADR 0007](adr/0007-phase-1-c-abi-freeze.md); both are recorded under
 [Public naming baseline](#public-naming-baseline).
+
+`G-001` is resolved by
+[ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
+and [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md), whose
+accepted release-target floors and qualified-host constraints are recorded in
+[Platform baseline](#platform-baseline).
 
 `G-002` is resolved by
 [ADR 0013](adr/0013-windows-capture-frame-detachment.md), whose production
