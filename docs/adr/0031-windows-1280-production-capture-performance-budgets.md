@@ -17,18 +17,17 @@ lifecycle records go to stderr outside the measured region and identify setup,
 warm-up, sampling, completion, child readiness, and bounded child termination.
 
 The original capture and transition profiles were bound to source `0208798`.
-Round-one repair source `c6ff39a9461c128d9a53e4896a34cb65e3c419a3`,
-tree `8f2766a9b55c9964f57a096a720ec4a404ad3756`, reran all four capture workloads
-after changing resource and callback enforcement.
+Round-one source `c6ff39a` repaired resource and callback enforcement. Round-two
+source `7c31752`, tree `4e99487`, reran all five transition workloads after
+completion/binding instrumentation changed their publication path.
 
-Independent review rejected the transition applicability decision because
-benchmark instrumentation now publishes completion/binding records on every
-transition frame path. Repaired source
-`7c31752bc632a26c4ba61faa0567ac78e2218ea0`, tree
-`4e99487e184b3edfcbd62e31299599d2fbe13c7d`, reran all five transition workloads
-on the exact single-display topology against unchanged numeric ceilings. Every
-correctness, latency, mapped-byte, live-heap, resident-memory, growth, and
-cleanup gate passed.
+Fresh non-author review then observed that the new placement markers are painted
+by the shared production fixture mode used by 1280 capture. Source
+`f50285a630b07dcf10a675a0e94d34a735aa163c`, tree
+`4c2f23f851669932dee304e46d2c947721598549`, therefore reran all four capture
+workloads on the exact single-display topology. Every correctness, latency,
+mapped/copy-byte, live-heap, resident-memory, resource, stale-work, growth, and
+cleanup gate passed without changing a numeric ceiling.
 
 ## Decision
 

@@ -683,18 +683,18 @@ or representation only while the ADR's detachment and lifetime tests still pass.
 ## Phase 2 Windows 1280x720 production-capture acceptance
 
 [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
-accepts separate 1280×720 capture and transition profiles. Repaired capture
-source `c6ff39a`, tree `8f2766a`, retained 600 samples across four workloads
+accepts separate 1280×720 capture and transition profiles. Shared-marker capture
+source `f50285a`, tree `4c2f23f`, retained 600 samples across four workloads
 with zero correctness failures, zero allocation growth, and every unchanged
 budget enforced. Repaired transition source `7c31752`, tree `4e99487`, reran all
 five lifecycle workloads with zero correctness failures and every unchanged
 latency, mapping, memory, growth, and cleanup gate enforced.
 
 The capture profile records arrival, one frame-stamp-correlated callback copy,
-latest acquisition, and BGRA8 mapping separately. The repaired run reports one
-exact 3,686,400-byte callback copy, two detached textures, one staging texture,
-five total producer/detached/staging textures, zero steady stale work, a
-7,417,893-byte live Rust heap peak, and a 66,310,144-byte resident peak.
+latest acquisition, and BGRA8 mapping separately. The shared-marker run reports
+one exact 3,686,400-byte callback copy, two detached textures, one staging
+texture, five total producer/detached/staging textures, zero steady stale work,
+a 7,417,467-byte live Rust heap peak, and a 66,506,752-byte resident peak.
 Resource counts are nonzero upper bounds; valid lower counts pass.
 
 ADR 0031 follows the three-times-measurement policy for target-specific p50,
@@ -706,20 +706,19 @@ topology, and operation shape, not game or real-time guarantees.
 ## Phase 2 Windows dual-4K production-capture acceptance
 
 [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the corrected mixed-DPI dual-4K profile at budget-enforced source
-`fdcac29`, tree `c906aa8`. The stationary pair retains 600 strictly newer
+accepts the corrected mixed-DPI dual-4K profile at shared-predicate source
+`f50285a`, tree `4c2f23f`. The stationary pair retains 600 strictly newer
 samples per display while sharing each capture/mapping interaction. A distinct
 no-warm-up workload retains 300 frame pairs while moving the controlled fixture
 across the signed seam.
 
 The final stationary rows report zero correctness failures, zero growth, exact
-66,355,200-byte mappings, a 199,065,600-byte six-surface copy interval, eight
-detached textures, one staging texture, thirteen total resources, a
-`0.456767768` stale ratio, 99,583,805 bytes live Rust heap, and 219,111,424
-bytes resident. The moving row reports zero correctness failures, -232 bytes
-growth, a six-surface copy interval, seven/one/twelve resources, a
-`0.489795918` stale ratio, 99,577,812 bytes heap, and 321,548,288 bytes
-resident.
+66,355,200-byte mappings, a 199,065,600-byte six-surface copy interval, seven
+detached textures, one staging texture, twelve total resources, a `0.455782313`
+stale ratio, 99,582,727 bytes live Rust heap, and 219,213,824 bytes resident.
+The moving row reports zero correctness failures, 320 bytes growth, a
+six-surface copy interval, six/one/eleven resources, a `0.474145486` stale
+ratio, 99,576,732 bytes heap, and 288,911,360 bytes resident.
 
 Two corrected-marker precursor runs establish the moving 125/175/225 ms
 p50/p95/maximum ceilings through ADR 0032's three-times/readable-rounding

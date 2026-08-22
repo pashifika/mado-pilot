@@ -2,9 +2,9 @@
 
 ## Scope and source
 
-The current 1280x720 production-capture profile is requalified on clean source
-`c6ff39a9461c128d9a53e4896a34cb65e3c419a3`, tree
-`8f2766a9b55c9964f57a096a720ec4a404ad3756`. The production-transition profile
+The current 1280x720 production-capture profile is requalified on shared-marker
+source `f50285a630b07dcf10a675a0e94d34a735aa163c`, tree
+`4c2f23f851669932dee304e46d2c947721598549`. The production-transition profile
 was rerun on repaired source `7c31752bc632a26c4ba61faa0567ac78e2218ea0`,
 tree `4e99487e184b3edfcbd62e31299599d2fbe13c7d`, after independent review
 invalidated its earlier applicability decision.
@@ -24,20 +24,20 @@ native-phase2 --bench --workload-set production-capture-1280x720 \
   --fixture-executable <absolute built fixture> \
   --hardware <approved host> --os-version <approved OS> \
   --deployment-target "Windows 11 25H2 build family 26200" \
-  --source-revision c6ff39a9461c128d9a53e4896a34cb65e3c419a3 \
-  --source-tree 8f2766a9b55c9964f57a096a720ec4a404ad3756 \
+  --source-revision f50285a630b07dcf10a675a0e94d34a735aa163c \
+  --source-tree 4c2f23f851669932dee304e46d2c947721598549 \
   --toolchain <recorded versions> --gpu-driver <recorded driver> \
   --display-topology <qualified single-display topology> \
   --permissions-signing <approved classification>
 ```
 
-- benchmark executable SHA-256: `0212181ef0c6ff8c2e0fbdb72ad0cd23f7597a9ca29311256a94a58405b58182`;
-- fixture executable SHA-256: `7a0eacf152ea77f30f791d82e58e90424f8fe75457225bbe246df13a6554c7ed`.
+- benchmark executable SHA-256: `9e1e0b4255f00c8567ad6714311e66f71f58c6c666a94db33ab3662e50d01010`;
+- fixture executable SHA-256: `725dcced8b71c0f5d9f875559594f17005495c5873d4c6a6efbf709056e7f073`.
 
-The first repaired capture run passed on an earlier repair commit, then was
-invalidated when dual-display correlation and budget enforcement changed the
-benchmark source. The retained run above is the later exact-source run. Earlier
-argument/setup failures emitted no measurement and were rejected.
+Round-one source `c6ff39a` passed after callback/resource repair. Fresh review
+then found that shared production marker painting changed this fixture mode.
+The retained `f50285a` run above requalifies that exact operation and artifact;
+earlier argument/setup failures emitted no measurement and remain rejected.
 
 ## Accepted capture results
 
@@ -47,13 +47,13 @@ growth.
 
 | Workload | p50 | p95 | maximum | mapped bytes | copied bytes | live heap peak |
 |---|---:|---:|---:|---:|---:|---:|
-| `steady_frame_acquisition` | 19.9394 ms | 40.7947 ms | 43.2769 ms | 3,686,400 | n/a | 7,417,893 B |
-| `callback_copy` | 0.0941 ms | 0.3571 ms | 0.5691 ms | 3,686,400 | 3,686,400 | 7,411,898 B |
-| `latest_acquisition` | 0.0010 ms | 0.0036 ms | 0.0253 ms | 3,686,400 | n/a | 7,411,852 B |
-| `cpu_map_bgra8` | 1.3888 ms | 2.4473 ms | 4.9018 ms | 3,686,400 | n/a | 7,411,850 B |
+| `steady_frame_acquisition` | 19.8553 ms | 40.7298 ms | 41.6363 ms | 3,686,400 | n/a | 7,417,467 B |
+| `callback_copy` | 0.0827 ms | 0.2242 ms | 0.8707 ms | 3,686,400 | 3,686,400 | 7,411,472 B |
+| `latest_acquisition` | 0.0011 ms | 0.0036 ms | 0.0044 ms | 3,686,400 | n/a | 7,411,424 B |
+| `cpu_map_bgra8` | 1.3605 ms | 2.8779 ms | 4.6277 ms | 3,686,400 | n/a | 7,411,424 B |
 
 `callback_copy` observed two detached textures, one staging texture, five total
-producer/detached/staging resources, zero stale work, and a 66,310,144-byte
+producer/detached/staging resources, zero stale work, and a 66,506,752-byte
 resident peak. These satisfy ADR 0031 without treating the resource counts as
 exact equality requirements: each count must be present, nonzero, and no greater
 than its accepted ceiling. Copied and mapped bytes remain exact.

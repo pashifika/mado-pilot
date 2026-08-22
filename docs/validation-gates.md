@@ -519,17 +519,16 @@ after resize. The ADR retains the rejected enforcement-repair attempt and change
 no historical profile or source attribution.
 
 [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
-accepts the separate Windows 1280×720 profiles. The capture profile was
-requalified on repaired source `c6ff39a`, tree `8f2766a`; all four workloads
-passed unchanged numeric ceilings with zero correctness/allocation failures,
-exact mapping/copy bytes, and nonzero resource counts at or below their limits.
-Transition source `7c31752`, tree `4e99487`, reran all five lifecycle workloads
-after callback completion/binding instrumentation changed their publication
-path; every unchanged gate passed.
+accepts the separate Windows 1280×720 profiles. Shared-marker source `f50285a`,
+tree `4c2f23f`, reran all four capture workloads with zero
+correctness/allocation failures, exact mapping/copy bytes, and nonzero resource
+counts at or below their limits. Transition source `7c31752`, tree `4e99487`,
+reran all five lifecycle workloads after callback completion/binding
+instrumentation changed their publication path; every unchanged gate passed.
 
 [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the corrected mixed-DPI dual-4K profile at budget-enforced source
-`fdcac29`, tree `c906aa8`. It retains 600 stationary samples per display plus
+accepts the corrected mixed-DPI dual-4K profile at shared-predicate source
+`f50285a`, tree `4c2f23f`. It retains 600 stationary samples per display plus
 300 controlled moving-seam samples, requires requested-position markers on both
 frames, binds each frame to its own post-baseline callback record, and passes
 every latency, mapping/copy, resource, stale-work, heap, resident, correctness,

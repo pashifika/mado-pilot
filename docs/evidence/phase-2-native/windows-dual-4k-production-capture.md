@@ -2,9 +2,9 @@
 
 ## Scope and source
 
-This record qualifies the corrected Windows mixed-DPI dual-4K profile on clean
-source `fdcac294f602c172bdcebd44efddef2a7b858d18`, tree
-`c906aa870ccdd67d3608f979320bfcddb7b8259d`.
+This record qualifies the corrected Windows mixed-DPI dual-4K profile on
+shared-oracle source `f50285a630b07dcf10a675a0e94d34a735aa163c`, tree
+`4c2f23f851669932dee304e46d2c947721598549`.
 
 The approved host ran Windows 11 Pro 25H2 build `26200.9168` on an Intel Core
 i7-12700KF with 32 GiB RAM and an NVIDIA GeForce RTX 4080, driver
@@ -24,15 +24,15 @@ native-phase2 --bench --workload-set production-capture-dual-4k \
   --fixture-executable <absolute built fixture> \
   --hardware <approved host> --os-version <approved OS> \
   --deployment-target "Windows 11 25H2 build family 26200" \
-  --source-revision fdcac294f602c172bdcebd44efddef2a7b858d18 \
-  --source-tree c906aa870ccdd67d3608f979320bfcddb7b8259d \
+  --source-revision f50285a630b07dcf10a675a0e94d34a735aa163c \
+  --source-tree 4c2f23f851669932dee304e46d2c947721598549 \
   --toolchain <recorded versions> --gpu-driver <recorded driver> \
   --display-topology <qualified dual-4K topology> \
   --permissions-signing <approved classification>
 ```
 
-- benchmark executable SHA-256: `2e96b490c463a7a4b2eb010ad1d51e2af9c7fec33b441d72c6d26e8e82eefc2f`;
-- fixture executable SHA-256: `93f60dde8c469e188a467b6f122d91d8295c07de11c000a8f7cb26626a1f2ec0`.
+- benchmark executable SHA-256: `9e1e0b4255f00c8567ad6714311e66f71f58c6c666a94db33ab3662e50d01010`;
+- fixture executable SHA-256: `725dcced8b71c0f5d9f875559594f17005495c5873d4c6a6efbf709056e7f073`.
 
 ## Review defects and rejected attempts
 
@@ -63,12 +63,11 @@ fixture placement. Those runs remain truthful evidence for their older oracle,
 but not for corrected movement latency or release acceptance.
 
 Corrected source `7c31752` added fixed third-color markers on both display
-halves and a deterministic test that rejects every immediately prior placement
-across the 300-step schedule. Two unchanged-source precursor runs passed and
-measured moving p50/p95/maximum values of `41.0535/45.6627/71.4985 ms` and
-`40.9366/51.1564/71.1795 ms`. ADR 0032 applied its three-times/readable-rounding
-policy to derive 125/175/225 ms. Final source `fdcac29` then passed the separate
-budget-enforced profile below.
+halves. Two unchanged-source precursor runs passed and established the
+125/175/225 ms ceilings. Budget-enforced source `fdcac29` passed separately.
+Fresh review then required the synthetic prior-placement regression to call the
+same marker-color predicate as production mapped-frame sampling. Shared-predicate
+source `f50285a` reran and passed the final profile below.
 
 ## Accepted final results
 
@@ -78,12 +77,12 @@ Every row reported zero correctness failures.
 
 | Workload | p50 | p95 | maximum | mapped/copy bytes | detached/staging/total | stale ratio | growth | resident peak |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `dual_display_frame_arrival` | 19.6206 ms | 38.9474 ms | 43.1449 ms | 66,355,200 / 199,065,600 | 8 / 1 / 13 | 0.456767768 | 0 B | 219,111,424 B |
-| `dual_display_callback_copy` | 0.05765 ms | 0.08940 ms | 0.33250 ms | 66,355,200 / 199,065,600 | 8 / 1 / 13 | 0.456767768 | 0 B | 219,111,424 B |
-| `dual_display_moving_seam` | 40.9370 ms | 51.8592 ms | 71.9731 ms | 66,355,200 / 199,065,600 | 7 / 1 / 12 | 0.489795918 | -232 B | 321,548,288 B |
+| `dual_display_frame_arrival` | 19.8419 ms | 40.2103 ms | 42.0395 ms | 66,355,200 / 199,065,600 | 7 / 1 / 12 | 0.455782313 | 0 B | 219,213,824 B |
+| `dual_display_callback_copy` | 0.05905 ms | 0.08885 ms | 0.16980 ms | 66,355,200 / 199,065,600 | 7 / 1 / 12 | 0.455782313 | 0 B | 219,213,824 B |
+| `dual_display_moving_seam` | 40.9684 ms | 50.4713 ms | 71.2279 ms | 66,355,200 / 199,065,600 | 6 / 1 / 11 | 0.474145486 | 320 B | 288,911,360 B |
 
-Live Rust heap peaks were 99,583,805 bytes for the stationary pair and
-99,577,812 bytes for movement. All values satisfy ADR 0032.
+Live Rust heap peaks were 99,582,727 bytes for the stationary pair and
+99,576,732 bytes for movement. All values satisfy ADR 0032.
 
 ## Moving-seam and callback oracle
 

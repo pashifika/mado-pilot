@@ -33,12 +33,13 @@ unchanged-source precursor runs retained 300 corrected moving pairs apiece with
 zero correctness failures. Their moving p50/p95/maximum values were
 `41.0535/45.6627/71.4985 ms` and `40.9366/51.1564/71.1795 ms`.
 
-Budget-enforced source `fdcac294f602c172bdcebd44efddef2a7b858d18`,
-tree `c906aa870ccdd67d3608f979320bfcddb7b8259d`, then reran the complete
-stationary and corrected moving profile. All three workloads passed the
-committed 125/175/225 ms movement ceilings and every unchanged correctness,
-mapping/copy, resource, stale-work, heap, resident, growth, and cleanup gate.
-Every supervised benchmark and fixture process reached a terminal state.
+Budget-enforced source `fdcac29` first passed the committed 125/175/225 ms
+movement ceilings and every unchanged gate. Fresh review then required the
+prior-placement regression to call the same marker-color predicate as production
+sampling. Shared-predicate source `f50285a630b07dcf10a675a0e94d34a735aa163c`,
+tree `4c2f23f851669932dee304e46d2c947721598549`, reran the complete profile and
+passed every latency, correctness, mapping/copy, resource, stale-work, heap,
+resident, growth, and cleanup gate. Every supervised process terminated.
 
 ## Decision
 

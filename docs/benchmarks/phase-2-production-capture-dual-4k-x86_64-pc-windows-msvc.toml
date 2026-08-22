@@ -1,6 +1,6 @@
-# Phase 2 Windows dual-4K production capture, requalified on corrected source
-# fdcac294f602c172bdcebd44efddef2a7b858d18 and tree
-# c906aa870ccdd67d3608f979320bfcddb7b8259d. Earlier runs retain their
+# Phase 2 Windows dual-4K production capture, requalified on shared-oracle source
+# f50285a630b07dcf10a675a0e94d34a735aa163c and tree
+# 4c2f23f851669932dee304e46d2c947721598549. Earlier runs retain their
 # historical oracle and source identities in evidence.
 
 format_version = 1
@@ -17,7 +17,7 @@ measurements_recorded = true
 [profile]
 fixture = "crates/platform/windows fixture Rust and protocol sources"
 fixture_sha256 = "5a0513e46df67ad3b279d18584d83bb620d14ce9bc828f39bfcaa7e4a992fe5b"
-benchmark_executable_sha256 = "2e96b490c463a7a4b2eb010ad1d51e2af9c7fec33b441d72c6d26e8e82eefc2f"
+benchmark_executable_sha256 = "9e1e0b4255f00c8567ad6714311e66f71f58c6c666a94db33ab3662e50d01010"
 release_target = "x86_64-pc-windows-msvc"
 hardware = "Intel Core i7-12700KF, 32 GiB RAM, NVIDIA GeForce RTX 4080"
 os_version = "Windows 11 Pro 25H2 build 26200.9168"
@@ -27,7 +27,7 @@ warmup_iterations = 20
 sample_count = 600
 correctness_oracle = "every retained sample checks strictly newer topology-qualified production frames, exact BGRA8 mapping and declared fixture content, callback-copy accounting, finite retained progress, or observable latest-wins pressure"
 queue_policy = "two WGC producer pools depth 2; two session latest-wins queues depth 1; shared Adapter retained-byte budget; fixture 16 ms repaint timer"
-notes = "source commit fdcac294f602c172bdcebd44efddef2a7b858d18, tree c906aa870ccdd67d3608f979320bfcddb7b8259d; toolchain rustc 1.97.1; cargo 1.97.1; MSVC 19.44.35228; Windows SDK 10.0.26100.0; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080, driver 32.0.15.9186; display topology exactly two online non-mirrored 3840x2160 displays; primary 144 DPI scale 1.5 at [0,0,3840,2160); secondary 120 DPI scale 1.25 at [-3840,0,0,2160); signed-origin seam; permissions/signing unelevated interactive desktop; unsigned repository fixture; Windows exposes no separate capture permission; fixture executable sha256 93f60dde8c469e188a467b6f122d91d8295c07de11c000a8f7cb26626a1f2ec0; executable paths deliberately omitted"
+notes = "source commit f50285a630b07dcf10a675a0e94d34a735aa163c, tree 4c2f23f851669932dee304e46d2c947721598549; toolchain rustc 1.97.1; cargo 1.97.1; MSVC 19.44.35228; Windows SDK 10.0.26100.0; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080, driver 32.0.15.9186; display topology exactly two online non-mirrored 3840x2160 displays; primary 144 DPI scale 1.5 at [0,0,3840,2160); secondary 120 DPI scale 1.25 at [-3840,0,0,2160); signed-origin seam; permissions/signing unelevated interactive desktop; unsigned repository fixture; Windows exposes no separate capture permission; fixture executable sha256 725dcced8b71c0f5d9f875559594f17005495c5873d4c6a6efbf709056e7f073; executable paths deliberately omitted"
 [[budget]]
 measure = "result_correctness"
 kind = "hard"
@@ -60,20 +60,20 @@ rationale = "ADR 0032 rounds above three times the largest measured native bench
 workload = "dual_display_frame_arrival"
 correctness_oracle = "one strictly newer frame arrives from each topology-qualified 4K display while the deterministic fixture straddles their signed-origin seam; both exact mappings carry declared fixture content"
 result_correctness = 0
-latency_p50_ms = 19.620600
-latency_p95_ms = 38.947400
-latency_max_ms = 43.144900
-iteration_span_ms = 40.723258
+latency_p50_ms = 19.841900
+latency_p95_ms = 40.210300
+latency_max_ms = 42.039500
+iteration_span_ms = 42.716902
 mapped_bytes_per_result = 66355200
 copied_bytes_per_result = 199065600
-detached_textures_peak = 8
+detached_textures_peak = 7
 staging_textures_peak = 1
-gpu_resources_peak = 13
-stale_work_ratio = 0.456767768
-peak_allocated_bytes = 99583805
-steady_allocated_bytes = 66405245
+gpu_resources_peak = 12
+stale_work_ratio = 0.455782313
+peak_allocated_bytes = 99582727
+steady_allocated_bytes = 66404559
 allocated_growth_bytes = 0
-peak_resident_bytes = 219111424
+peak_resident_bytes = 219213824
 
 [[measurement.budget]]
 measure = "latency_p50"
@@ -150,20 +150,20 @@ rationale = "three-times policy rounded above the largest observed dual-display 
 workload = "dual_display_callback_copy"
 correctness_oracle = "callback-side detach copies account for both 4K display sessions before two exact mapped results carry declared fixture content across the signed-origin seam"
 result_correctness = 0
-latency_p50_ms = 0.057650
-latency_p95_ms = 0.089400
-latency_max_ms = 0.332500
-iteration_span_ms = 40.723258
+latency_p50_ms = 0.059050
+latency_p95_ms = 0.088850
+latency_max_ms = 0.169800
+iteration_span_ms = 42.716902
 mapped_bytes_per_result = 66355200
 copied_bytes_per_result = 199065600
-detached_textures_peak = 8
+detached_textures_peak = 7
 staging_textures_peak = 1
-gpu_resources_peak = 13
-stale_work_ratio = 0.456767768
-peak_allocated_bytes = 99583805
-steady_allocated_bytes = 66405245
+gpu_resources_peak = 12
+stale_work_ratio = 0.455782313
+peak_allocated_bytes = 99582727
+steady_allocated_bytes = 66404559
 allocated_growth_bytes = 0
-peak_resident_bytes = 219111424
+peak_resident_bytes = 219213824
 
 [[measurement.budget]]
 measure = "latency_p50"
@@ -242,20 +242,20 @@ correctness_oracle = "300 strictly newer correlated frame pairs follow the contr
 warmup_iterations = 0
 sample_count = 300
 result_correctness = 0
-latency_p50_ms = 40.937000
-latency_p95_ms = 51.859200
-latency_max_ms = 71.973100
-iteration_span_ms = 41.790998
+latency_p50_ms = 40.968400
+latency_p95_ms = 50.471300
+latency_max_ms = 71.227900
+iteration_span_ms = 41.766044
 mapped_bytes_per_result = 66355200
 copied_bytes_per_result = 199065600
-detached_textures_peak = 7
+detached_textures_peak = 6
 staging_textures_peak = 1
-gpu_resources_peak = 12
-stale_work_ratio = 0.489795918
-peak_allocated_bytes = 99577812
-steady_allocated_bytes = 66398860
-allocated_growth_bytes = -232
-peak_resident_bytes = 321548288
+gpu_resources_peak = 11
+stale_work_ratio = 0.474145486
+peak_allocated_bytes = 99576732
+steady_allocated_bytes = 66398172
+allocated_growth_bytes = 320
+peak_resident_bytes = 288911360
 
 [[measurement.budget]]
 measure = "latency_p50"
