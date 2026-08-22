@@ -263,8 +263,11 @@ impl<const N: usize> CompletionRing<N> {
         slot: &CompletionSlot,
     ) -> Result<Option<(u64, CompletionRecord)>, CallbackObservationError> {
         let before = slot.sequence.load(Ordering::Acquire);
-        if before == 0 || before % 2 == 1 {
+        if before == 0 {
             return Ok(None);
+        }
+        if before % 2 == 1 {
+            return Err(CallbackObservationError::Invalidated);
         }
         let record = CompletionRecord {
             stream: slot.stream.load(Ordering::Relaxed),
@@ -313,9 +316,6 @@ impl<const N: usize> CompletionRing<N> {
         }
         let mut copied_bytes = 0_u64;
         for slot in &self.slots {
-            if slot.sequence.load(Ordering::Acquire) % 2 == 1 {
-                return Err(CallbackObservationError::Invalidated);
-            }
             let Some((_cursor, record)) = Self::read_slot(slot)? else {
                 continue;
             };
@@ -866,6 +866,32 @@ mod tests {
         let _postend = complete(&store, 1, 5, 33, 200);
 
         assert_eq!(store.copied_bytes_between(start, end, &[1]), Ok(100));
+    }
+
+    #[test]
+    fn in_progress_completion_invalidates_the_sample_total() {
+        let store = CallbackMetricStore::<2>::new();
+        let start = baseline_at(&store, 0);
+        let reservation = store
+            .completions
+            .reserve()
+            .expect("one completion reservation succeeds");
+        let end = baseline_at(&store, 1);
+
+        assert_eq!(
+            store.copied_bytes_between(start, end, &[1]),
+            Err(CallbackObservationError::Invalidated)
+        );
+
+        store.completions.publish(
+            reservation,
+            CompletionRecord {
+                stream: 1,
+                completed_at_nanos: 1,
+                elapsed_nanos: 30,
+                copied_bytes: 40,
+            },
+        );
     }
 
     #[test]
