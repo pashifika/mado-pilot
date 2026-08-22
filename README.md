@@ -80,7 +80,7 @@ Adding a package here is not a claim that its behavior exists.
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.2 while preserving the released ABI 1.0 prefix; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.2 |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 ceilings are frozen on both targets and rerun unchanged for the exact exit candidate. Phase 2 accepts macOS diagnostics, native input/public-language, controlled owning-process, and production capture/transition profiles; Windows diagnostics, controlled `native-phase2`, ordinary `WindowMessage`, 1280×720 production, and corrected mixed-DPI dual-4K production profiles; benchmark-drift, correctness, allocation, memory, mapped/copy-byte, stale-work, and target-specific latency gates remain enforced |
+| Numeric performance budgets | Phase 1 ceilings are frozen on both targets. Windows reruns pass on the exact exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete diff. Phase 2 accepts macOS diagnostics, native input/public-language, controlled owning-process, and production capture/transition profiles; Windows diagnostics, controlled `native-phase2`, ordinary `WindowMessage`, 1280×720 production, and corrected mixed-DPI dual-4K production profiles; benchmark-drift, correctness, allocation, memory, mapped/copy-byte, stale-work, and target-specific latency gates remain enforced |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled

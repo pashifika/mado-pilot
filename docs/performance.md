@@ -19,9 +19,10 @@ process-directed and controlled-stimulus lineage below. Final candidate
 under their frozen regression budgets. Independent `single`, exact two-display
 non-mirrored `same-scale`, and `mixed-scale` qualification matrices also pass,
 so all fourteen controlled release pair decisions are qualified. ADRs 0030,
-0031, and 0032 accept the target-specific production profiles. Final-source
-Phase 1 reruns remain exact-candidate evidence under their unchanged ceilings;
-they never re-derive a budget.
+0031, and 0032 accept the target-specific production profiles. Windows
+final-source Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs
+remain attributed to `d8336be` and apply by reviewed complete diff. Both keep
+their unchanged ceilings and never re-derive a budget.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -522,8 +523,10 @@ Windows. ADR 0026 records the probes and the bounded repairs. Production capture
 and input semantics were not changed to make a benchmark pass.
 
 The Phase 1 profiles historically passed all applicable comparisons at their
-recorded source revisions. The exit candidate reruns them without moving their
-committed ceilings. The accepted Phase 2.2 controlled-stimulus lineage below
+recorded source revisions. Windows reruns them on the exact exit candidate;
+Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete
+diff. Neither target moves its committed ceilings. The accepted Phase 2.2
+controlled-stimulus lineage below
 supplies the current macOS capture, transition, and owning-process-route
 measurements without treating them as comparable to the invalidated
 input-stimulus lineage. ADRs 0030, 0031, and 0032 separately accept the complete
@@ -726,6 +729,7 @@ policy. Both requested marker positions and each frame's coherent post-baseline
 stream/epoch/sequence callback record must match under one absolute deadline.
 ADR 0032 retains 384 MiB heap, 1 GiB resident, copy, texture, and stale-work
 ceilings for all three workloads. Windows production-capture `G-013` is
-complete; final-source Phase 1 checks remain exact-candidate exit evidence.
+complete. Windows Phase 1 reruns pass on the exact exit candidate; Apple Silicon
+runs remain attributed to `d8336be` and apply by reviewed complete diff.
 The complete workload and correctness obligations are in
 [windows-capture-contract-tests.md](windows-capture-contract-tests.md).

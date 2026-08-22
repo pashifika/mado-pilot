@@ -1709,8 +1709,10 @@ two-display non-mirrored `same-scale`, and `mixed-scale` native matrices.
 All fourteen controlled release pairs are qualified, and
 [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
 macOS production-capture matrix, and [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the corrected remaining Windows production matrix. Final-source Phase 1
-reruns use their unchanged ceilings and remain exact-candidate exit evidence.
+accepts the corrected remaining Windows production matrix. Windows final-source
+Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs remain
+attributed to `d8336be` and apply by reviewed complete diff under unchanged
+ceilings.
 
 CPU conversion is not part of the detach. The detached buffer keeps the native row
 padding, and a mapping produces the caller's bytes at exactly the packed stride the
@@ -2298,8 +2300,9 @@ exact-source controlled AppKit/game-like profiles and independent `single`,
 exact two-display non-mirrored `same-scale`, and `mixed-scale` native matrices.
 All fourteen controlled release pairs are qualified. ADR 0030 accepts the macOS
 production-capture matrix, and ADR 0032 accepts the corrected remaining Windows
-dual-4K production matrix. Final-source reruns use unchanged Phase 1 ceilings
-and are retained against the exact exit candidate.
+dual-4K production matrix. Windows final-source Phase 1 reruns pass on the exact
+exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by
+reviewed complete diff under unchanged ceilings.
 
 ### Phase 0 completion contract
 
@@ -2331,7 +2334,7 @@ against.
 
 | Verification class | Status | Phase 0 |
 |---|---|---|
-| Numeric runtime performance budgets | Implemented for Phase 1 by [ADR 0008](adr/0008-phase-1-performance-budgets.md): four committed profiles carry both-target measurements and the two `kind = "hard"` predicates are enforced in-process on `cargo bench` and `cargo test`. ADRs 0024, 0025, 0026, 0028, 0029, 0030, 0031, and 0032 accept the current target-specific Phase 2 diagnostic, native input, controlled ownership, production capture/transition, and corrected moving-seam profiles. Exact-candidate Phase 1 reruns preserve their existing ceilings and remain separate exit evidence | Not applicable; no performance-sensitive implementation existed |
+| Numeric runtime performance budgets | Implemented for Phase 1 by [ADR 0008](adr/0008-phase-1-performance-budgets.md): four committed profiles carry both-target measurements and the two `kind = "hard"` predicates are enforced in-process on `cargo bench` and `cargo test`. ADRs 0024, 0025, 0026, 0028, 0029, 0030, 0031, and 0032 accept the current target-specific Phase 2 diagnostic, native input, controlled ownership, production capture/transition, and corrected moving-seam profiles. Windows Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete diff, with unchanged ceilings on both targets | Not applicable; no performance-sensitive implementation existed |
 | ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field; structure-prefix tests cover inputs and outputs in both directions; and the immutable `tests/abi-compat/v1/` caller compiles against its released header, negotiates only that table extent, and runs against the current ABI 1.2 library. The unreleased `v1.1` fixture is removed, while current-header C and Rust checks prove minimum minor 1 is rejected. ABI 1.0 was resolved under [`G-010`](validation-gates.md#g-010) by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md); ABI 1.2 is recorded by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md) | Not applicable; no ABI existed |
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
 | OCR, watcher, input, and diagnostic contract suites | Input contracts, controlled input doubles, diagnostic concurrency/loss/privacy cases, and facade action-correlation tests are implemented. Both platform Adapters add deterministic controller cases and native integration procedures; OCR and watcher suites remain not applicable | Not applicable |

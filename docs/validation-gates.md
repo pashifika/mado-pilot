@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by ADR 0008, and the affected Phase 2 diagnostic, native input, controlled ownership, production capture/transition, and corrected dual-4K workloads resolved by ADRs 0024–0032. Exact-candidate Phase 1 reruns preserve those ceilings as exit evidence rather than another budget decision |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by ADR 0008, and the affected Phase 2 diagnostic, native input, controlled ownership, production capture/transition, and corrected dual-4K workloads resolved by ADRs 0024–0032. Windows Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete diff, preserving the existing ceilings rather than making another budget decision |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -536,8 +536,10 @@ growth, and cleanup gate.
 
 The Windows controlled `native-phase2`, ADR 0031 1280×720, and ADR 0032 dual-4K
 profiles remain distinct. Historical measurements keep their original source
-identities. Final-source Phase 1 reruns preserve their existing ceilings and
-remain exact-candidate exit evidence rather than another profile lineage.
+identities. Windows final-source Phase 1 reruns pass on the exact exit candidate;
+Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete
+diff. Both preserve their existing ceilings rather than creating another profile
+lineage.
 
 OCR, watcher scheduling, and acceleration remain open for the phases that
 introduce them.

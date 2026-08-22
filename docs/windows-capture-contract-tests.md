@@ -4,8 +4,8 @@ This plan translates
 [ADR 0013](adr/0013-windows-capture-frame-detachment.md) into tests for
 `mado-pilot-platform-windows`. The production Adapter, controlled tests, and
 approved interactive Windows host matrix now exist; this document distinguishes
-their revision-bound evidence from exact-candidate Phase 1, repository, and
-release checks.
+their revision-bound evidence from Windows exact-candidate Phase 1 checks, Apple
+Silicon Phase 1 reviewed applicability, repository checks, and release checks.
 
 The implementation uses both layers below:
 
@@ -182,4 +182,5 @@ native matrices:
 - [`windows-dual-4k-production-capture.md`](evidence/phase-2-native/windows-dual-4k-production-capture.md).
 
 [docs/architecture.md](architecture.md) records both accepted production
-lineages separately from exact-candidate Phase 1 and release evidence.
+lineages separately from Windows exact-candidate Phase 1 evidence, Apple Silicon
+Phase 1 reviewed applicability, and release evidence.
