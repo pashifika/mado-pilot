@@ -18,8 +18,9 @@ process-directed and controlled-stimulus lineage below. Final candidate
 `dec43d7` passes the exact-source controlled AppKit and game-like profiles
 under their frozen regression budgets. Independent `single`, exact two-display
 non-mirrored `same-scale`, and `mixed-scale` qualification matrices also pass,
-so all fourteen controlled release pair decisions are qualified. The remaining
-native workload and target gaps stay open.
+so all fourteen controlled release pair decisions are qualified. ADRs 0030,
+0031, and 0032 accept the target-specific production profiles; final-source
+Phase 1 regression reruns remain the Phase 2 performance gap.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -455,11 +456,13 @@ records, and still return four complete receipts on both targets.
 
 ## Phase 2 native performance status
 
-Phase 2's affected [`G-013`](validation-gates.md#g-013) workloads are partially
-resolved. [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+Phase 2's affected [`G-013`](validation-gates.md#g-013) production and
+target-specific native profiles are accepted; final-source Phase 1 regression
+reruns remain open under their unchanged ceilings. [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
 invalidated the three macOS profiles originally accepted by
 [ADR 0020](adr/0020-phase-2-native-performance-budgets.md). ADR 0025 replaced
-the macOS input profile; ADR 0026 now replaces every Windows native gap:
+the macOS input profile, while ADR 0026 accepts the controlled Windows native
+profiles:
 
 | Workload set | Target | Profile | Current status |
 |---|---|---|---|
@@ -519,10 +522,11 @@ and input semantics were not changed to make a benchmark pass.
 The Phase 1 profiles historically passed all applicable comparisons at their
 recorded source revisions. Release acceptance still requires final-source
 regression reruns; their committed Phase 1 ceilings do not move. The accepted
-Phase 2.2 controlled-stimulus lineage below now supplies the current macOS
-capture, transition, and owning-process-route measurements without treating
-them as comparable to the invalidated input-stimulus lineage. The broader
-production-capture acceptance matrix remains open under `G-013`.
+Phase 2.2 controlled-stimulus lineage below supplies the current macOS capture,
+transition, and owning-process-route measurements without treating them as
+comparable to the invalidated input-stimulus lineage. ADRs 0030, 0031, and 0032
+separately accept the complete macOS, Windows 1280×720, and Windows dual-4K
+production-capture lineages.
 
 ## Phase 2.2 macOS process-directed and controlled-stimulus lineage
 

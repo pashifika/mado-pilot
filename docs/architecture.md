@@ -12,19 +12,21 @@ test them, so that this document never describes behavior a reader cannot use.
 
 **Status: Phase 1 complete; the Phase 2 native capture, input, and bounded
 observation vertical slice reaches the Rust, C, and C++ surfaces.** The
-platform-neutral core contracts, capture contracts with the deterministic replay
-adapter, asset package loading, OpenCV CPU matching, runtime orchestration,
-engine-scoped diagnostics, Rust facade, C ABI 1.2, and header-only C++ wrapper
-are implemented. The picker-free Windows Adapter implements window/display
-discovery, WGC/D3D11 capture, system input, and explicit exact-window
-`WindowMessage` submission with separate ordinary queue and fixture
-acknowledgement evidence. The macOS Adapter implements discovery,
-ScreenCaptureKit capture,
-and `CGEvent` system input. The post-review Windows interactive matrix, public
-facade, ABI boundary, and 50-sample performance profile pass on the approved
-development host; release-target CI remains a per-publication gate. OCR,
-watchers, scheduling, and release packaging remain future work. The macOS shared
-external-display matrix remains a release-acceptance gap.
+platform-neutral core contracts, deterministic replay, asset loading, OpenCV
+CPU matching, runtime orchestration, engine-scoped diagnostics, Rust facade,
+C ABI 1.2, and header-only C++ wrapper are implemented. The picker-free Windows
+Adapter implements window/display discovery, WGC/D3D11 capture, system input,
+and explicit exact-window `WindowMessage` submission. The macOS Adapter
+implements discovery, ScreenCaptureKit capture, `CGEvent` system input, and
+owning-process-scoped `ProcessDirected` input.
+
+The qualified Windows floor, both platform native/public-language matrices,
+macOS production capture/transitions, Windows 1280×720 production
+capture/transitions, and Windows mixed-DPI dual-4K production capture have
+accepted revision-bound evidence and target-specific budgets. Final-source
+Phase 1 regression reruns and the complete release verification sequence remain
+open; release-target CI remains a per-publication gate. OCR, watchers,
+scheduling, and release packaging remain future work.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -817,7 +819,7 @@ responsibilities a later phase takes on.
 | Deterministic replay capture from file and memory sources | Implemented in `mado-pilot-adapter-replay` |
 | Windows native capture ownership policy | Implemented for the production Adapter's two-frame WGC pool, extent-derived process-shared retained maximum capped at 40, 128 MiB surface / 2 GiB session / 4 GiB process safety ceilings, lease-safe reuse, resize retirement, callback fence, and teardown. [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md) accepts the controlled `native-phase2` capture/transition profiles, [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md) accepts the separate 1280×720 production capture/transition matrix, and [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md) accepts the mixed-DPI dual-4K production matrix and callback-copy/staging/resident budgets |
 | macOS shim language and containment rules | Decided in [ADR 0012](adr/0012-macos-shim-language-and-containment.md) on the retained `G-003` measurements, and implemented in `mado-pilot-platform-macos` with the containment, ownership, autorelease, fence, teardown, panic, and linkage tests the record named. The containment and ownership cases need a host that has granted Screen Recording and report a skip elsewhere |
-| macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, reference-counted native session lifetime, and idempotent teardown. The lifetime is verified by running the ownership scenarios with the shim compiled under AddressSanitizer, which is step 10 of the [contributing](../CONTRIBUTING.md) sequence and needs the same granted host those scenarios do. The detached budget remains a reviewed bound; ADR 0021 invalidated the historical native performance acceptance, and accepted-design [ADR 0029](adr/0029-macos-process-directed-input.md) keeps its prior current-topology measurements historical pending exact-source reruns |
+| macOS native capture ownership policy | Implemented for the production Adapter's fixed-depth producer queue, finite eight-buffer detached budget, off-queue reconfiguration, callback fence, reference-counted native session lifetime, bounded source-geometry history, and idempotent teardown. Permissioned AddressSanitizer ownership scenarios remain part of the contributing sequence. [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md) keeps the former input-stimulus capture/transition profiles historical, [ADR 0029](adr/0029-macos-process-directed-input.md) accepts the separate controlled-stimulus lineage, and [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the final production capture/transition matrix |
 | macOS input route and focus authority | Decided in [ADR 0016](adr/0016-macos-input-delivery-surface-and-focus-authority.md), refined by [ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md), and extended by [ADR 0029](adr/0029-macos-process-directed-input.md): separate `System` and explicit owning-process `ProcessDirected` routes with no exact-window pair on any macOS target; the public `CGPreflightPostEventAccess` decision is re-read before every irreversible event with the legacy Accessibility observation retained as a paired qualification-only fact; `System` alone uses application activation and bounded public Accessibility read-back. Process-directed preflight retains mutable authority for delay-only or fallback-eligible routes, while a terminal native-event route defers duplicate mutable window authority and source-geometry comparison to one final native commit. Cleanup still revalidates the original process lifetime without a window inventory read. Independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices pass; release publication is qualified for all fourteen controlled pairs |
 | Native window and display capture | Implemented on both targets, and reachable from the public composition root through the target-specific facade constructors |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
@@ -1439,8 +1441,8 @@ Explicit mapping may return `ResourceLimitExceeded`. The queue policy remains
 fixed after open, so resize refuses a larger extent before recreation when that
 extent could not preserve the advertised local maximum. Open and resize also
 report `ResourceLimitExceeded` before allocation when a shape or byte
-reservation cannot be admitted. These are reviewed safety ceilings, not the
-still-open Phase 2 `G-013` performance budgets.
+reservation cannot be admitted. These reviewed safety ceilings are distinct
+from the accepted ADR 0031 and ADR 0032 production performance budgets.
 
 The session handoff is capacity one and truthfully reports `LatestWins`: when two
 frames publish before observation, the newer frame is returned with its own next
