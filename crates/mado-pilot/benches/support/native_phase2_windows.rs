@@ -4,7 +4,7 @@
 use mado_pilot::NativeEngineRequest;
 #[cfg(windows)]
 use mado_pilot_testkit::bench_harness::{
-    PrefixedLineMatch, bounded_child_output, classify_prefixed_line, measure_pair,
+    CaptureResources, PrefixedLineMatch, bounded_child_output, classify_prefixed_line, measure_pair,
 };
 #[cfg(windows)]
 use std::io::{BufRead, BufReader};

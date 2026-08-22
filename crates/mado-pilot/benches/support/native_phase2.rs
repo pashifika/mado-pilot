@@ -22,8 +22,8 @@ use mado_pilot::{
     SequenceOutcome, Session, SessionRequest, Status, TargetId,
 };
 use mado_pilot_testkit::bench_harness::{
-    self, Benchmark, BoundedChildOutput, CaptureResources, Plan, Profile, Sample, Workload,
-    argument, enforce_hard_budgets, measure,
+    self, Benchmark, BoundedChildOutput, Plan, Profile, Sample, Workload, argument,
+    enforce_hard_budgets, measure,
 };
 const OPERATION_WAIT: Duration = Duration::from_secs(2);
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
