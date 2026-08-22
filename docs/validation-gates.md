@@ -43,7 +43,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Windows and macOS support claims | Resolved by [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md) and [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md) |
 | [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
-| [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open |
+| [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open; [proposed ADR 0033](adr/0033-default-ocr-model-profile.md) awaits Windows qualification |
 | [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 implementation | Default watcher policy | Open |
 | [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open |
 | [`G-007`](#g-007) | Native dependency bundling profiles | Before Phase 5 implementation | Release packaging | Open |
@@ -186,22 +186,31 @@ property it preserves.
 
 ## G-004
 
-**Unresolved decision.** The default OCR model, its language set, size,
-preprocessing metadata, expected hash, and license.
+**Decision in progress.** [Proposed ADR 0033](adr/0033-default-ocr-model-profile.md)
+conditionally selects RapidOCR v3.9.2's PP-OCRv4 mobile detector plus PP-OCRv6
+small recognizer, with exact bytes, digests, vocabulary, language,
+preprocessing/decoder, normalization, ordering, confidence, license, and
+controlled-host deployment metadata.
 
-**Required evidence.** A cross-target quality fixture showing reproducible
-recognition results on both release targets, plus a license review confirming
-redistribution is permitted.
+**Required evidence.** The immutable v3 quality fixture must reproduce exact text,
+region count, source-relative geometry, ordering, confidence validity, and stable
+outcomes on both release targets. Model/fixture provenance and licenses and the
+controlled host-provided obligations must remain compatible.
 
 **Due.** Before Phase 3 implementation.
 
 **Blocks.** The default OCR profile.
 
-**Status.** Open.
+**Status.** Open. The Apple Silicon matrix is complete: the conditional candidate
+is the only one that passes all 42 regions. The required
+`x86_64-pc-windows-msvc` report is absent, so neither ADR 0033 nor a default OCR
+profile is accepted.
 
-**Resolution.** An ADR recording the model choice, the fixture results, and the
-license and deployment obligations, followed by an update to
-[third-party-dependencies.md](third-party-dependencies.md).
+**Resolution.** Run every v3 Windows row from the fixed source, reconcile the
+selected candidate against the Apple report, independently review quality,
+provenance, license, privacy, and deployment, then accept ADR 0033 and update
+[third-party-dependencies.md](third-party-dependencies.md) only if no mandatory
+row is missing or divergent.
 
 ## G-005
 

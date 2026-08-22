@@ -81,6 +81,10 @@ jobs:
         shell: bash
         run: cargo run --locked --package mado-pilot-dependency-check
 
+      - name: Check G-004 OCR profile evidence
+        shell: bash
+        run: python3 docs/evidence/g-004/validate.py
+
       - name: Check formatting
         shell: bash
         run: cargo fmt --all --check

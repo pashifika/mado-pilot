@@ -796,6 +796,13 @@ weak framework linking the record described; see
 [The macOS native boundary](#the-macos-native-boundary) and
 [macOS native capture ownership](#macos-native-capture-ownership).
 
+`G-004` remains open. [Proposed ADR 0033](adr/0033-default-ocr-model-profile.md)
+conditionally selects RapidOCR v3.9.2's PP-OCRv4 mobile detector plus PP-OCRv6
+small recognizer under a controlled host-provided, digest-verified profile. The
+candidate is the only one that passes the 42-region Apple Silicon v3 fixture;
+Windows qualification is absent. This narrows the decision without adding model
+bytes, ONNX Runtime, an OCR contract/backend, default wiring, or a support claim.
+
 ## Implementation status
 
 Phase 0 established the repository and implemented no product behavior. Phase 1
@@ -831,7 +838,7 @@ responsibilities a later phase takes on.
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
-| OCR and model loading | Not implemented |
+| OCR and model loading | Not implemented; `G-004` has one conditional Apple-qualified candidate under proposed ADR 0033 but remains open pending Windows qualification |
 | OCR, watchers, and scheduling | Not implemented |
 | Bounded engine-scoped diagnostic observation | Implemented in `mado-pilot-runtime` and the facade with allocation-free `Off`, finite `Normal`/`Debug` streams, strict record order, exact loss counts, immutable owned batches, independent reader lifetime, and privacy-reviewed payloads; exposed through C ABI 1.2 and the C++ wrapper |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
