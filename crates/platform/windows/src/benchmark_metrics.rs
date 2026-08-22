@@ -385,11 +385,11 @@ impl CallbackCopyTimer {
         {
             let elapsed_nanos =
                 u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            return CompletedCallbackCopy {
+            CompletedCallbackCopy {
                 copied_bytes: self.copied_bytes,
                 elapsed_nanos,
                 stream: self.stream,
-            };
+            }
         }
         #[cfg(not(feature = "benchmark-instrumentation"))]
         {
