@@ -967,6 +967,7 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
     let mut state = lock_state(active);
     let before_stamp = state.last.stamp();
     let operation = bounded(OPERATION_WAIT);
+    let baseline = callback_metric_baseline();
     let callback_floor = state
         .session
         .acquire_frame(&FrameRequest::latest(), &operation)
@@ -974,7 +975,6 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
     let callback_floor_stamp = callback_floor.stamp();
     assert_eq!(callback_floor_stamp.stream(), before_stamp.stream());
     drop(callback_floor);
-    let baseline = callback_metric_baseline();
     let frame = state
         .session
         .acquire_frame(&FrameRequest::newer_than(callback_floor_stamp), &operation)
@@ -1029,6 +1029,7 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
     let frames = displays
         .iter()
         .map(|display| {
+            let baseline = callback_metric_baseline();
             let callback_floor = display
                 .session
                 .acquire_frame(&FrameRequest::latest(), &operation)
@@ -1036,7 +1037,6 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
             let callback_floor_stamp = callback_floor.stamp();
             assert_eq!(callback_floor_stamp.stream(), display.last.stamp().stream());
             drop(callback_floor);
-            let baseline = callback_metric_baseline();
             let frame = display
                 .session
                 .acquire_frame(&FrameRequest::newer_than(callback_floor_stamp), &operation)

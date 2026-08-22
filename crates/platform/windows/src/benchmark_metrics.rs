@@ -8,7 +8,10 @@
 use mado_pilot_core::FrameStamp;
 
 #[cfg(feature = "benchmark-instrumentation")]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    LazyLock,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::Duration;
 #[cfg(feature = "benchmark-instrumentation")]
 use std::time::Instant;
@@ -19,6 +22,8 @@ const CALLBACK_OBSERVATION_CAPACITY: usize = 64;
 #[cfg(feature = "benchmark-instrumentation")]
 static CALLBACK_OBSERVATIONS: CallbackMetricRing<CALLBACK_OBSERVATION_CAPACITY> =
     CallbackMetricRing::new();
+#[cfg(feature = "benchmark-instrumentation")]
+static CALLBACK_CLOCK_ORIGIN: LazyLock<Instant> = LazyLock::new(Instant::now);
 #[cfg(feature = "benchmark-instrumentation")]
 static DETACHED_LIVE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "benchmark-instrumentation")]
@@ -50,6 +55,7 @@ pub struct CaptureMetricsSnapshot {
 pub struct CallbackMetricBaseline {
     cursor: u64,
     losses: u64,
+    completed_at_nanos: u64,
 }
 
 /// One coherently published completed callback detach-copy operation.
@@ -83,6 +89,7 @@ struct CallbackMetricSlot {
     stream: AtomicU64,
     epoch: AtomicU64,
     frame_sequence: AtomicU64,
+    completed_at_nanos: AtomicU64,
     elapsed_nanos: AtomicU64,
     copied_bytes: AtomicU64,
 }
@@ -94,6 +101,17 @@ struct CallbackReservation {
 }
 
 #[cfg(feature = "benchmark-instrumentation")]
+#[derive(Clone, Copy)]
+struct CallbackRecord {
+    stream: u64,
+    epoch: u64,
+    frame_sequence: u64,
+    completed_at_nanos: u64,
+    elapsed_nanos: u64,
+    copied_bytes: u64,
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
 impl CallbackMetricSlot {
     const fn new() -> Self {
         Self {
@@ -101,6 +119,7 @@ impl CallbackMetricSlot {
             stream: AtomicU64::new(0),
             epoch: AtomicU64::new(0),
             frame_sequence: AtomicU64::new(0),
+            completed_at_nanos: AtomicU64::new(0),
             elapsed_nanos: AtomicU64::new(0),
             copied_bytes: AtomicU64::new(0),
         }
@@ -125,6 +144,7 @@ impl<const N: usize> CallbackMetricRing<N> {
             slot.stream.store(0, Ordering::Relaxed);
             slot.epoch.store(0, Ordering::Relaxed);
             slot.frame_sequence.store(0, Ordering::Relaxed);
+            slot.completed_at_nanos.store(0, Ordering::Relaxed);
             slot.elapsed_nanos.store(0, Ordering::Relaxed);
             slot.copied_bytes.store(0, Ordering::Relaxed);
         }
@@ -134,6 +154,7 @@ impl<const N: usize> CallbackMetricRing<N> {
         CallbackMetricBaseline {
             cursor: self.next.load(Ordering::Acquire),
             losses: self.losses.load(Ordering::Acquire),
+            completed_at_nanos: callback_now_nanos(),
         }
     }
 
@@ -166,47 +187,29 @@ impl<const N: usize> CallbackMetricRing<N> {
         Some(CallbackReservation { cursor })
     }
 
-    fn publish(
-        &self,
-        reservation: CallbackReservation,
-        stream: u64,
-        epoch: u64,
-        frame_sequence: u64,
-        elapsed_nanos: u64,
-        copied_bytes: u64,
-    ) {
+    fn publish(&self, reservation: CallbackReservation, record: CallbackRecord) {
         let capacity = u64::try_from(N).expect("callback observation capacity fits u64");
         let index = usize::try_from((reservation.cursor - 1) % capacity)
             .expect("callback observation index fits usize");
         let slot = &self.slots[index];
-        slot.stream.store(stream, Ordering::Relaxed);
-        slot.epoch.store(epoch, Ordering::Relaxed);
-        slot.frame_sequence.store(frame_sequence, Ordering::Relaxed);
-        slot.elapsed_nanos.store(elapsed_nanos, Ordering::Relaxed);
-        slot.copied_bytes.store(copied_bytes, Ordering::Relaxed);
+        slot.stream.store(record.stream, Ordering::Relaxed);
+        slot.epoch.store(record.epoch, Ordering::Relaxed);
+        slot.frame_sequence
+            .store(record.frame_sequence, Ordering::Relaxed);
+        slot.completed_at_nanos
+            .store(record.completed_at_nanos, Ordering::Relaxed);
+        slot.elapsed_nanos
+            .store(record.elapsed_nanos, Ordering::Relaxed);
+        slot.copied_bytes
+            .store(record.copied_bytes, Ordering::Relaxed);
         slot.sequence
             .store(reservation.cursor * 2, Ordering::Release);
     }
-
-    fn record(
-        &self,
-        stream: u64,
-        epoch: u64,
-        frame_sequence: u64,
-        elapsed_nanos: u64,
-        copied_bytes: u64,
-    ) {
+    fn record(&self, record: CallbackRecord) {
         let Some(reservation) = self.reserve() else {
             return;
         };
-        self.publish(
-            reservation,
-            stream,
-            epoch,
-            frame_sequence,
-            elapsed_nanos,
-            copied_bytes,
-        );
+        self.publish(reservation, record);
     }
 
     fn invalidate(&self) {
@@ -228,23 +231,15 @@ impl<const N: usize> CallbackMetricRing<N> {
         if current < baseline.cursor || current.saturating_sub(baseline.cursor) > capacity {
             return Err(CallbackObservationError::Invalidated);
         }
-        for cursor in baseline.cursor.saturating_add(1)..=current {
-            let published = cursor
-                .checked_mul(2)
-                .ok_or(CallbackObservationError::Invalidated)?;
-            let index = usize::try_from((cursor - 1) % capacity)
-                .expect("callback observation index fits usize");
-            let slot = &self.slots[index];
+        for slot in &self.slots {
             let before = slot.sequence.load(Ordering::Acquire);
-            if before == published - 1 {
-                return Ok(None);
-            }
-            if before != published {
-                return Err(CallbackObservationError::Invalidated);
+            if before == 0 || before % 2 == 1 {
+                continue;
             }
             let observed_stream = slot.stream.load(Ordering::Relaxed);
             let observed_epoch = slot.epoch.load(Ordering::Relaxed);
             let observed_sequence = slot.frame_sequence.load(Ordering::Relaxed);
+            let completed_at_nanos = slot.completed_at_nanos.load(Ordering::Relaxed);
             let elapsed_nanos = slot.elapsed_nanos.load(Ordering::Relaxed);
             let copied_bytes = slot.copied_bytes.load(Ordering::Relaxed);
             if slot.sequence.load(Ordering::Acquire) != before {
@@ -254,6 +249,9 @@ impl<const N: usize> CallbackMetricRing<N> {
                 && observed_epoch == epoch
                 && observed_sequence == frame_sequence
             {
+                if completed_at_nanos <= baseline.completed_at_nanos {
+                    return Ok(None);
+                }
                 if self.losses.load(Ordering::Acquire) != baseline.losses {
                     return Err(CallbackObservationError::Invalidated);
                 }
@@ -269,6 +267,11 @@ impl<const N: usize> CallbackMetricRing<N> {
             Ok(None)
         }
     }
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
+fn callback_now_nanos() -> u64 {
+    u64::try_from(CALLBACK_CLOCK_ORIGIN.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Returns the bounded signed-X fixture placement for one moving-seam sample.
@@ -376,6 +379,8 @@ pub(crate) struct CompletedCallbackCopy {
     #[cfg(feature = "benchmark-instrumentation")]
     elapsed_nanos: u64,
     #[cfg(feature = "benchmark-instrumentation")]
+    completed_at_nanos: u64,
+    #[cfg(feature = "benchmark-instrumentation")]
     stream: u64,
 }
 
@@ -388,6 +393,7 @@ impl CallbackCopyTimer {
             CompletedCallbackCopy {
                 copied_bytes: self.copied_bytes,
                 elapsed_nanos,
+                completed_at_nanos: callback_now_nanos(),
                 stream: self.stream,
             }
         }
@@ -406,13 +412,14 @@ impl CompletedCallbackCopy {
                 CALLBACK_OBSERVATIONS.invalidate();
                 return;
             }
-            CALLBACK_OBSERVATIONS.record(
-                self.stream,
-                stamp.epoch().value(),
-                stamp.sequence().value(),
-                self.elapsed_nanos,
-                self.copied_bytes,
-            );
+            CALLBACK_OBSERVATIONS.record(CallbackRecord {
+                stream: self.stream,
+                epoch: stamp.epoch().value(),
+                frame_sequence: stamp.sequence().value(),
+                completed_at_nanos: self.completed_at_nanos,
+                elapsed_nanos: self.elapsed_nanos,
+                copied_bytes: self.copied_bytes,
+            });
         }
     }
 }
@@ -458,40 +465,72 @@ fn decrement(live: &AtomicU64) {
 mod tests {
     use super::*;
 
+    fn baseline_at<const N: usize>(
+        ring: &CallbackMetricRing<N>,
+        completed_at_nanos: u64,
+    ) -> CallbackMetricBaseline {
+        let mut baseline = ring.baseline();
+        baseline.completed_at_nanos = completed_at_nanos;
+        baseline
+    }
+
+    const fn record(
+        stream: u64,
+        epoch: u64,
+        frame_sequence: u64,
+        completed_at_nanos: u64,
+        elapsed_nanos: u64,
+        copied_bytes: u64,
+    ) -> CallbackRecord {
+        CallbackRecord {
+            stream,
+            epoch,
+            frame_sequence,
+            completed_at_nanos,
+            elapsed_nanos,
+            copied_bytes,
+        }
+    }
+
     fn publish(
         ring: &CallbackMetricRing<4>,
         stream: u64,
         epoch: u64,
         frame_sequence: u64,
+        completed_at_nanos: u64,
         elapsed_nanos: u64,
         copied_bytes: u64,
     ) {
         let reservation = ring.reserve().expect("the local ring has capacity");
         ring.publish(
             reservation,
-            stream,
-            epoch,
-            frame_sequence,
-            elapsed_nanos,
-            copied_bytes,
+            record(
+                stream,
+                epoch,
+                frame_sequence,
+                completed_at_nanos,
+                elapsed_nanos,
+                copied_bytes,
+            ),
         );
     }
 
     #[test]
     fn an_in_progress_generation_cannot_be_accepted_as_a_mixed_record() {
         let ring = CallbackMetricRing::<4>::new();
-        let baseline = ring.baseline();
+        let baseline = baseline_at(&ring, 0);
         let reservation = ring.reserve().expect("the first slot is available");
         let slot = &ring.slots[0];
         slot.stream.store(7, Ordering::Relaxed);
         slot.epoch.store(11, Ordering::Relaxed);
         slot.frame_sequence.store(13, Ordering::Relaxed);
+        slot.completed_at_nanos.store(1, Ordering::Relaxed);
         slot.elapsed_nanos.store(17, Ordering::Relaxed);
         slot.copied_bytes.store(19, Ordering::Relaxed);
 
         assert_eq!(ring.observation_after(baseline, 7, 11, 13), Ok(None));
 
-        ring.publish(reservation, 7, 11, 13, 17, 19);
+        ring.publish(reservation, record(7, 11, 13, 1, 17, 19));
         assert_eq!(
             ring.observation_after(baseline, 7, 11, 13),
             Ok(Some(CallbackCopyObservation {
@@ -504,8 +543,8 @@ mod tests {
     #[test]
     fn a_prebaseline_callback_cannot_satisfy_a_later_frame() {
         let ring = CallbackMetricRing::<4>::new();
-        publish(&ring, 3, 5, 7, 11, 13);
-        let baseline = ring.baseline();
+        publish(&ring, 3, 5, 7, 1, 11, 13);
+        let baseline = baseline_at(&ring, 2);
 
         assert_eq!(ring.observation_after(baseline, 3, 5, 7), Ok(None));
     }
@@ -513,8 +552,8 @@ mod tests {
     #[test]
     fn another_session_callback_cannot_satisfy_the_requested_frame() {
         let ring = CallbackMetricRing::<4>::new();
-        let baseline = ring.baseline();
-        publish(&ring, 1, 10, 20, 30, 40);
+        let baseline = baseline_at(&ring, 0);
+        publish(&ring, 1, 10, 20, 1, 30, 40);
 
         assert_eq!(ring.observation_after(baseline, 2, 10, 20), Ok(None));
     }
@@ -522,11 +561,11 @@ mod tests {
     #[test]
     fn out_of_order_callbacks_remain_bound_to_their_session_and_frame() {
         let ring = CallbackMetricRing::<4>::new();
-        let baseline = ring.baseline();
+        let baseline = baseline_at(&ring, 0);
         let first = ring.reserve().expect("first reservation succeeds");
         let second = ring.reserve().expect("second reservation succeeds");
-        ring.publish(second, 2, 20, 200, 22, 222);
-        ring.publish(first, 1, 10, 100, 11, 111);
+        ring.publish(second, record(2, 20, 200, 1, 22, 222));
+        ring.publish(first, record(1, 10, 100, 2, 11, 111));
 
         assert_eq!(
             ring.observation_after(baseline, 1, 10, 100),
@@ -545,15 +584,33 @@ mod tests {
     }
 
     #[test]
+    fn a_late_lower_reservation_completed_after_the_baseline_is_visible() {
+        let ring = CallbackMetricRing::<4>::new();
+        let first = ring.reserve().expect("first reservation succeeds");
+        let second = ring.reserve().expect("second reservation succeeds");
+        ring.publish(second, record(2, 20, 200, 1, 22, 222));
+        let baseline = baseline_at(&ring, 1);
+        ring.publish(first, record(1, 10, 100, 2, 11, 111));
+
+        assert_eq!(
+            ring.observation_after(baseline, 1, 10, 100),
+            Ok(Some(CallbackCopyObservation {
+                callback_copy_time: Duration::from_nanos(11),
+                copied_bytes: 111,
+            }))
+        );
+    }
+
+    #[test]
     fn contended_instrumentation_invalidates_the_baseline() {
         let ring = CallbackMetricRing::<1>::new();
-        let baseline = ring.baseline();
+        let baseline = baseline_at(&ring, 0);
         let first = ring.reserve().expect("first reservation succeeds");
         assert!(
             ring.reserve().is_none(),
             "an in-progress slot is not overwritten"
         );
-        ring.publish(first, 1, 10, 20, 30, 40);
+        ring.publish(first, record(1, 10, 20, 1, 30, 40));
 
         assert_eq!(
             ring.observation_after(baseline, 1, 10, 20),
