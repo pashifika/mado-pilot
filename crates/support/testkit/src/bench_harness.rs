@@ -1918,6 +1918,43 @@ pub const PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT: u64 = 5;
 /// Maximum sustained stale work in the Windows 1280x720 capture profile.
 pub const PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT: f64 = 0.02;
 
+/// Phase 2 Windows dual-4K production-capture ceilings accepted by ADR 0032.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS: [LatencyBudget; 2] = [
+    LatencyBudget::new(
+        "dual_display_frame_arrival",
+        Duration::from_millis(20),
+        Duration::from_millis(100),
+        Duration::from_millis(150),
+    ),
+    LatencyBudget::new(
+        "dual_display_callback_copy",
+        Duration::from_micros(200),
+        Duration::from_micros(500),
+        Duration::from_micros(1_500),
+    ),
+];
+
+/// Maximum live Rust heap for the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES: usize = 384 * 1_024 * 1_024;
+
+/// Maximum resident high-water mark for the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES: u64 = 1_024 * 1_024 * 1_024;
+
+/// Maximum callback-copy bytes retained by one Windows dual-4K sample.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_COPIED_BYTES_LIMIT: u64 = 3_840 * 2_160 * 4 * 6;
+
+/// Maximum live detached textures in the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_DETACHED_TEXTURES_LIMIT: u64 = 10;
+
+/// Maximum live staging textures in the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STAGING_TEXTURES_LIMIT: u64 = 1;
+
+/// Maximum live producer, detached, and staging textures in that profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_GPU_RESOURCES_LIMIT: u64 = 15;
+
+/// Maximum sustained stale work in the Windows dual-4K production profile.
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT: f64 = 0.75;
+
 const fn phase2_2_process_latency_budgets(event_p95: Duration) -> [LatencyBudget; 5] {
     [
         LatencyBudget::new(

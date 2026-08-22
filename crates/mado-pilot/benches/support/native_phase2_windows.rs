@@ -12,6 +12,14 @@ use mado_pilot_testkit::bench_harness::{
     PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES,
     PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT,
     PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_COPIED_BYTES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_DETACHED_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_GPU_RESOURCES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STAGING_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT,
     PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
     PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS, PrefixedLineMatch,
     bounded_child_output, classify_prefixed_line, enforce_latency_budgets, measure_pair,
@@ -1424,19 +1432,26 @@ const fn pressure_fixture_behavior() -> FixtureBehavior {
 
 #[cfg(windows)]
 fn enforce_premeasurement_budgets(set: WorkloadSet, workloads: &[Workload]) {
-    let (latency, heap_limit) = match set {
+    let (latency, heap_limit, resident_limit, stale_limit) = match set {
         WorkloadSet::ProductionCapture1280 => (
             PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS.as_slice(),
             PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES,
+            PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES,
+            Some(PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT),
+        ),
+        WorkloadSet::ProductionCaptureDual4k => (
+            PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS.as_slice(),
+            PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES,
+            PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES,
+            Some(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT),
         ),
         WorkloadSet::ProductionTransitions1280 => (
             PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS.as_slice(),
             PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
+            PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES,
+            None,
         ),
-        WorkloadSet::ProductionCaptureDual4k
-        | WorkloadSet::Capture
-        | WorkloadSet::Transitions
-        | WorkloadSet::Input => return,
+        WorkloadSet::Capture | WorkloadSet::Transitions | WorkloadSet::Input => return,
     };
     enforce_latency_budgets(workloads, latency);
     for workload in workloads {
@@ -1448,46 +1463,88 @@ fn enforce_premeasurement_budgets(set: WorkloadSet, workloads: &[Workload]) {
         );
         if let Some(resident) = workload.peak_resident_bytes() {
             assert!(
-                resident <= PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES,
+                resident <= resident_limit,
                 "{} exceeded the accepted Windows production resident ceiling: {resident} bytes",
                 workload.name(),
             );
         }
-        if set == WorkloadSet::ProductionCapture1280
+        if let Some(limit) = stale_limit
             && let Some(ratio) = workload.stale_work_ratio()
         {
             assert!(
-                ratio <= PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT,
+                ratio <= limit,
                 "{} exceeded the accepted Windows production stale-work ceiling: {ratio}",
                 workload.name(),
             );
         }
     }
-    if set == WorkloadSet::ProductionCapture1280 {
-        let callback = workloads
-            .iter()
-            .find(|workload| workload.name() == "callback_copy")
-            .expect("the accepted Windows capture profile includes callback_copy");
-        assert_eq!(
-            callback.copied_bytes(),
-            Some(PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT),
-            "callback_copy exceeded one exact 1280x720 producer-surface copy"
-        );
-        assert_eq!(
-            callback.detached_textures_peak(),
-            Some(PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT),
-            "callback_copy changed the accepted detached-texture peak"
-        );
-        assert_eq!(
-            callback.staging_textures_peak(),
-            Some(PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT),
-            "callback_copy changed the accepted staging-texture peak"
-        );
-        assert_eq!(
-            callback.gpu_resources_peak(),
-            Some(PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT),
-            "callback_copy changed the accepted total GPU-resource peak"
-        );
+    match set {
+        WorkloadSet::ProductionCapture1280 => {
+            let callback = workloads
+                .iter()
+                .find(|workload| workload.name() == "callback_copy")
+                .expect("the accepted Windows capture profile includes callback_copy");
+            assert_eq!(
+                callback.copied_bytes(),
+                Some(PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT),
+                "callback_copy exceeded one exact 1280x720 producer-surface copy"
+            );
+            assert_eq!(
+                callback.detached_textures_peak(),
+                Some(PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT),
+                "callback_copy changed the accepted detached-texture peak"
+            );
+            assert_eq!(
+                callback.staging_textures_peak(),
+                Some(PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT),
+                "callback_copy changed the accepted staging-texture peak"
+            );
+            assert_eq!(
+                callback.gpu_resources_peak(),
+                Some(PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT),
+                "callback_copy changed the accepted total GPU-resource peak"
+            );
+        }
+        WorkloadSet::ProductionCaptureDual4k => {
+            for workload in workloads {
+                let copied = workload
+                    .copied_bytes()
+                    .expect("each accepted dual-4K workload reports callback-copy bytes");
+                assert!(
+                    copied <= PHASE2_WINDOWS_PRODUCTION_DUAL_4K_COPIED_BYTES_LIMIT,
+                    "{} exceeded the accepted dual-4K callback-copy ceiling: {copied} bytes",
+                    workload.name(),
+                );
+                let detached = workload
+                    .detached_textures_peak()
+                    .expect("each accepted dual-4K workload reports detached textures");
+                assert!(
+                    detached <= PHASE2_WINDOWS_PRODUCTION_DUAL_4K_DETACHED_TEXTURES_LIMIT,
+                    "{} exceeded the accepted dual-4K detached-texture ceiling: {detached}",
+                    workload.name(),
+                );
+                let staging = workload
+                    .staging_textures_peak()
+                    .expect("each accepted dual-4K workload reports staging textures");
+                assert!(
+                    staging <= PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STAGING_TEXTURES_LIMIT,
+                    "{} exceeded the accepted dual-4K staging-texture ceiling: {staging}",
+                    workload.name(),
+                );
+                let resources = workload
+                    .gpu_resources_peak()
+                    .expect("each accepted dual-4K workload reports total GPU resources");
+                assert!(
+                    resources <= PHASE2_WINDOWS_PRODUCTION_DUAL_4K_GPU_RESOURCES_LIMIT,
+                    "{} exceeded the accepted dual-4K total GPU-resource ceiling: {resources}",
+                    workload.name(),
+                );
+            }
+        }
+        WorkloadSet::ProductionTransitions1280
+        | WorkloadSet::Capture
+        | WorkloadSet::Transitions
+        | WorkloadSet::Input => {}
     }
 }
 
