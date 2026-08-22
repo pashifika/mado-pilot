@@ -969,7 +969,7 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
     let operation = bounded(OPERATION_WAIT);
     let floor = current_callback_floor(&state.session, before_stamp, &operation);
     let sample_start = callback_metric_baseline();
-    let exact_baseline = callback_metric_baseline();
+    let exact_baseline = sample_start;
     let (frame, observation) =
         acquire_correlated_frame(&state.session, floor, exact_baseline, &operation);
     let mapping = frame
@@ -1022,16 +1022,12 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
         .map(|display| current_callback_floor(&display.session, display.last.stamp(), &operation))
         .collect::<Vec<_>>();
     let sample_start = callback_metric_baseline();
-    let exact_baselines = (0..displays.len())
-        .map(|_| callback_metric_baseline())
-        .collect::<Vec<_>>();
     let started = Instant::now();
     let frames = displays
         .iter()
         .zip(floors)
-        .zip(exact_baselines)
-        .map(|((display, floor), baseline)| {
-            acquire_correlated_frame(&display.session, floor, baseline, &operation)
+        .map(|(display, floor)| {
+            acquire_correlated_frame(&display.session, floor, sample_start, &operation)
         })
         .collect::<Vec<_>>();
     let arrival = started.elapsed();
