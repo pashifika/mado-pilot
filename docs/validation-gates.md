@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md), macOS diagnostics by [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md), macOS native input by [ADR 0025](adr/0025-macos-native-input-performance-budgets.md), Windows diagnostics plus the controlled `native-phase2` workload sets by [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md), macOS production capture/transitions by [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md), and Windows 1280×720 production capture/transitions by [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md); Windows dual-4K production capture and final-source Phase 1 reruns remain open |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md), macOS diagnostics by [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md), macOS native input by [ADR 0025](adr/0025-macos-native-input-performance-budgets.md), Windows diagnostics plus the controlled `native-phase2` workload sets by [ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md), macOS production capture/transitions by [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md), Windows 1280×720 production capture/transitions by [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md), and Windows dual-4K production capture by [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md); final-source Phase 1 reruns remain open |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -527,10 +527,17 @@ correctness failures, at most 48 bytes allocation growth, exact mapped/copy
 accounting, and bounded detached, staging, total GPU-resource, live-heap, and
 resident observations.
 
-The Windows controlled `native-phase2` profile remains distinct. The scheduled
-mixed-DPI dual-4K production profile and final-source Phase 1 regression reruns
-remain required before Phase 2 exit. No dual-4K budget is inferred from the
-1280×720 result.
+[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
+accepts the remaining Windows mixed-DPI dual-4K production profile at final
+source `121d41a9eea341b7345a8b0dda4918b1f61ec74e`, tree
+`7e694a070d1e300642033b56aef499b8238c08ca`. The shared 600-iteration pass
+retained 600 samples per display with zero correctness failures, negative
+allocation growth, exact two-frame mapping, bounded callback-copy/resource
+counts, and all accepted gates enforced in-process.
+
+The Windows controlled `native-phase2`, ADR 0031 1280×720, and ADR 0032 dual-4K
+profiles remain distinct. Final-source Phase 1 regression reruns are the
+remaining Phase 2 `G-013` workload evidence.
 
 OCR, watcher scheduling, and acceleration remain open for the phases that
 introduce them.

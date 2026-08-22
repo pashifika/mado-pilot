@@ -697,9 +697,26 @@ a 256 MiB native process resident ceiling, zero correctness failures, and at
 most 4,096 bytes growth. They are regression gates for the named host, fixture,
 topology, and operation shape, not game or real-time guarantees.
 
-The dual-4K production-capture portion of
-[`G-013`](validation-gates.md#g-013) remains open independently. Its scheduled
-profile must cover 600 frames per display in one shared arrival/callback-copy
-pass on the named mixed-DPI signed-origin topology before ceilings are accepted
-or explicitly withheld. The complete workload and correctness obligations are
-in [windows-capture-contract-tests.md](windows-capture-contract-tests.md).
+## Phase 2 Windows dual-4K production-capture acceptance
+
+[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
+accepts the separate mixed-DPI dual-4K profile at final source
+`121d41a9eea341b7345a8b0dda4918b1f61ec74e`, tree
+`7e694a070d1e300642033b56aef499b8238c08ca`. One shared 600-iteration pass
+retains arrival and callback-copy timing for 600 strictly newer frames per
+display without duplicating capture or mapping work.
+
+The final run reports zero correctness failures, `-392` bytes allocation growth,
+exact 66,355,200-byte two-frame mappings, 132,710,400 callback-copy bytes, eight
+detached textures, one staging texture, thirteen total producer/detached/staging
+textures, a `0.206349206` stale-work ratio, 99,581,711 bytes live Rust heap, and
+285,569,024 bytes resident high-water memory. Two reviewed precursors retained
+the same correctness, progress, mapping, bounded resource, and growth results.
+
+ADR 0032 applies the target-specific three-times timing policy with 384 MiB
+live-heap and 1 GiB resident ceilings plus explicit copy, texture, and stale-work
+bounds. The profile is a regression gate for the named host, exact topology,
+fixture, and operation shape, not a game or real-time guarantee. Windows
+production-capture `G-013` is complete; final-source Phase 1 reruns remain open.
+The complete workload and correctness obligations are in
+[windows-capture-contract-tests.md](windows-capture-contract-tests.md).

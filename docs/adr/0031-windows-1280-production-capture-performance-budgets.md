@@ -36,7 +36,7 @@ Latency ceilings use three times the largest applicable p50, p95, and maximum fr
 
 Both profiles require zero correctness failures, at most 4,096 bytes of post-warm-up allocation growth, at most 32 MiB of live Rust heap, and at most 256 MiB native process resident high-water memory. Mapped-byte ceilings are exact for each workload. The capture profile additionally caps one retained callback-copy sample at 3,686,400 copied bytes, two detached textures, one staging texture, five total producer/detached/staging textures, and a 0.02 stale-work ratio. Retained-pressure stale ratio is intentional evidence of filling finite storage and is not a steady-capture ceiling.
 
-The dual-4K profile has no accepted numeric ceilings in this ADR. Its source entry point retains 600 samples per display in one shared pass, but `G-013` remains open for its mixed-DPI signed-origin run and any resulting profile or explicit withholding decision.
+ADR 0032 separately accepts the dual-4K profile from its own mixed-DPI signed-origin evidence. No dual-4K ceiling is inferred from this 1280x720 result, and no ADR 0031 ceiling is changed by that later decision.
 
 ## Alternatives
 
@@ -59,4 +59,4 @@ The exact source binding, commands, aggregate measurements, lifecycle observatio
 - [`phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml`](../benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml);
 - [`phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml`](../benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml).
 
-Profile-key drift, hard-budget drift, latency-budget parity, workspace tests, workspace clippy, and both hosted release-target jobs cover the code and profile structure. The physical dual-4K acceptance row remains separately scheduled and open.
+Profile-key drift, hard-budget drift, latency-budget parity, workspace tests, workspace clippy, and both hosted release-target jobs cover the code and profile structure. ADR 0032 records the separately accepted physical dual-4K row.

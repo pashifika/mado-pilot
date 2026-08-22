@@ -66,3 +66,9 @@ The largest native process resident peak was 72,896,512 bytes. Mapped-byte obser
 No retained record contains captured pixels or hashes, recognized or input text, credentials, user paths, PIDs, raw window/display identifiers, unrelated window titles, process inventories, or unrelated desktop metadata. Executable paths and rejected raw output remain untracked.
 
 ADR 0031 accepts only the two 1280x720 profiles. The mixed-DPI dual-4K profile remains open under `G-013`; it must run outside 08:00-19:00 local time with both qualified displays online before any dual-4K ceiling is accepted.
+
+## Successor dual-4K decision
+
+ADR 0032 later accepts the independently measured mixed-DPI dual-4K profile.
+This record and both ADR 0031 profiles remain scoped to 1280x720 and retain
+their original source, measurements, and ceilings.

@@ -45,10 +45,11 @@ host, failure to discover the test-owned target is a test failure. The tests do
 not capture an unrelated desktop or application.
 
 [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
-accepts the revision-bound 120-warm-up/600-frame 1280×720 production matrix,
-resource-zeroing observations, and affected `G-013` budgets. The remaining
-release-acceptance evidence is the scheduled dual-4K host matrix below. A skip
-is not support evidence.
+accepts the revision-bound 120-warm-up/600-frame 1280×720 production matrix.
+[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
+accepts the exact two-display mixed-DPI dual-4K matrix. Both retain
+resource-zeroing observations and affected `G-013` budgets; a skip remains
+ineligible as support evidence.
 
 ## Privacy review
 
@@ -153,9 +154,9 @@ accepts the 1280×720 `G-013` profiles for:
 - session startup, resize recreation, callback drain, complete close, and
   target-loss replacement recovery.
 
-The scheduled two-display 4K run must measure the same applicable capture,
-mapping, resource, progress, and cleanup facts on the named host before its
-profile is accepted or its ceilings are explicitly withheld.
+ADR 0032 accepts the same applicable capture, mapping, resource, progress, and
+cleanup facts for the exact two-display 4K topology after a shared 600-sample
+pass per display.
 
 Every timed sample keeps its correctness oracle. A throughput improvement that
 changes retained pixels, pins producer slots, exceeds a bound, or hides a drop
@@ -168,10 +169,13 @@ require an interactive Windows session and therefore may not be available on a
 headless pull-request runner. A skipped native case must report why it did not
 run; a skip is not support evidence.
 
-Before Windows native capture receives final release support acceptance, the
-project must retain the scheduled dual-4K revision-bound redacted report, link
-every remaining case above to its test, set or explicitly withhold the remaining
-`G-013` budgets, and pass the full shared and native matrix. The accepted 1280×720
-report is [`windows-production-capture.md`](evidence/phase-2-native/windows-production-capture.md).
-[docs/architecture.md](architecture.md) therefore records partial production
-acceptance separately from the still-open dual-4K release evidence.
+Windows native production-capture acceptance is complete. The revision-bound
+reports link every applicable case above to its test, retain exact source and
+approved metadata, enforce the affected `G-013` budgets, and pass the shared and
+native matrices:
+
+- [`windows-production-capture.md`](evidence/phase-2-native/windows-production-capture.md);
+- [`windows-dual-4k-production-capture.md`](evidence/phase-2-native/windows-dual-4k-production-capture.md).
+
+[docs/architecture.md](architecture.md) records both accepted production
+lineages separately from still-open final-source Phase 1 evidence.

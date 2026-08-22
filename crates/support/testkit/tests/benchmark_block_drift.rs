@@ -30,6 +30,14 @@ use mado_pilot_testkit::bench_harness::{
     PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES,
     PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT,
     PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_COPIED_BYTES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_DETACHED_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_GPU_RESOURCES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STAGING_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT,
     PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
     PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS, benchmark_block,
 };
@@ -38,7 +46,7 @@ use mado_pilot_testkit::bench_harness::{
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 21] = [
+const PROFILES: [(&str, &str); 22] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -159,10 +167,16 @@ const PROFILES: [(&str, &str); 21] = [
             "../../../../docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
 ];
 
 /// Native profiles and the latency ceilings enforced by their benchmark.
-const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 9] = [
+const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 10] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -225,6 +239,13 @@ const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 9] = [
             "../../../../docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS,
     ),
 ];
 
@@ -624,6 +645,77 @@ fn windows_1280_profiles_state_the_resource_budgets_the_harness_enforces() {
             .and_then(|budget| budget.limit),
         Some(PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT)
     );
+}
+
+#[test]
+fn windows_dual_4k_profile_states_the_resource_budgets_the_harness_enforces() {
+    let profile = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml"
+    );
+    let blocks = budget_blocks(profile);
+    let as_f64 = |value: u64| {
+        f64::from(u32::try_from(value).expect("each accepted dual-4K resource limit fits u32"))
+    };
+    let global = |measure| {
+        blocks
+            .iter()
+            .find(|budget| budget.workload.is_none() && budget.measure == Some(measure))
+            .unwrap_or_else(|| panic!("dual-4K profile is missing {measure}"))
+    };
+    assert_eq!(
+        global("peak_allocated_bytes").limit,
+        Some(f64::from(
+            u32::try_from(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES)
+                .expect("the accepted dual-4K heap limit fits u32")
+        ))
+    );
+    assert_eq!(
+        global("peak_resident_bytes").limit,
+        Some(as_f64(
+            PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES
+        ))
+    );
+
+    for workload in ["dual_display_frame_arrival", "dual_display_callback_copy"] {
+        for (measure, unit, limit) in [
+            (
+                "copied_bytes_per_result",
+                "bytes",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_COPIED_BYTES_LIMIT),
+            ),
+            (
+                "detached_textures_peak",
+                "count",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_DETACHED_TEXTURES_LIMIT),
+            ),
+            (
+                "staging_textures_peak",
+                "count",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STAGING_TEXTURES_LIMIT),
+            ),
+            (
+                "gpu_resources_peak",
+                "count",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_GPU_RESOURCES_LIMIT),
+            ),
+        ] {
+            let recorded = blocks
+                .iter()
+                .find(|budget| budget.workload == Some(workload) && budget.measure == Some(measure))
+                .unwrap_or_else(|| panic!("{workload} is missing {measure}"));
+            assert_eq!(recorded.unit, Some(unit));
+            assert_eq!(recorded.limit, Some(limit));
+        }
+        assert_eq!(
+            blocks
+                .iter()
+                .find(|budget| {
+                    budget.workload == Some(workload) && budget.measure == Some("stale_work_ratio")
+                })
+                .and_then(|budget| budget.limit),
+            Some(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT)
+        );
+    }
 }
 
 #[test]
