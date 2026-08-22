@@ -13,8 +13,12 @@ and report a typed backend-unavailable outcome when a file is absent or differs.
 The repository, crate packages, and release archives do not contain model bytes
 and do not download them at runtime.
 
-The selected profile cannot be accepted until the identical v3 fixture passes on
-Windows. The Apple result alone establishes no Windows support or default.
+The identical v3 fixture produces matching v4 candidate outcomes on Windows and
+Apple Silicon. Independent review nevertheless withholds the default: the
+evaluator does not bind executed fixture bytes or installed RapidOCR code bytes,
+and its unexpected-region threshold precedes expected-region matching. Those
+gaps require a new evaluator identity and complete reruns on both targets before
+this otherwise compatible controlled-host profile can be accepted.
 
 ## Model provenance and terms
 

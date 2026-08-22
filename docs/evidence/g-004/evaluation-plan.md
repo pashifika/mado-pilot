@@ -120,7 +120,7 @@ shape produced on Apple Silicon; no host-local path enters tracked evidence.
 
 Version 0.3.0 qualifies horizontal Japanese game UI text: hiragana, katakana,
 common kanji represented by the fixture, basic Latin letters, ASCII digits, and
-the declared punctuation `.,/%+-[]!>#`. Text is normalized to Unicode NFC and
+the declared punctuation `.,/%+-[]!>#:`. Text is normalized to Unicode NFC and
 leading or trailing Unicode whitespace is removed. Internal whitespace, case,
 and width are preserved. There is no case folding, width folding, translation,
 handwriting, document-layout recovery, or vertical-text support. The profile must

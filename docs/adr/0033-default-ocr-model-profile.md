@@ -1,10 +1,8 @@
 # ADR 0033: Default OCR model profile
 
-- **Status:** Proposed; `G-004` remains open pending Windows qualification
-- **Date:** 2026-08-22
-- **Resolves gate:** [`G-004`](../validation-gates.md#g-004) only after the
-  selected v3 fixture passes the hardened v4 evaluator on
-  `x86_64-pc-windows-msvc` and this record is accepted
+- **Status:** Proposed; `G-004` remains open after independent evidence review
+- **Date:** 2026-08-23
+- **Resolves gate:** not yet
 - **Supersedes:** none
 
 ## Context
@@ -32,27 +30,40 @@ candidate record. V4 reran the unchanged v3 fixture after enforcing the complete
 tool environment, CPU-only provider, input/output names, types, and shapes, and
 embedded vocabulary before inference.
 
-On Apple Silicon, only the PP-OCRv4 mobile detector paired with the PP-OCRv6 small
-recognizer passes all 42 regions under hardened v4. The PP-OCRv5 detector misses
-one mission row; the smaller/faster PP-OCRv6 tiny detector and PP-OCRv6 small
-detector each miss one dense-tooltip row. All failures are stable over ten
-passes. The selected Apple process used 25,979,900 model bytes, a 2,650.097 ms
-median five-image suite, and 1,012,318,208 peak resident bytes in the
-evaluation-only Python/RapidOCR/OpenCV/ONNX Runtime process. Those observations
-select among candidates; they are not a Rust backend budget or support claim.
+On both release targets, only the PP-OCRv4 mobile detector paired with the
+PP-OCRv6 small recognizer passes all 42 regions under hardened v4. The PP-OCRv5
+detector misses one mission row; the smaller/faster PP-OCRv6 tiny detector and
+PP-OCRv6 small detector each miss one dense-tooltip row. Every candidate-level
+outcome and deterministic image gate field matches across targets over ten
+measured passes.
 
-The required Windows row has not run. Therefore this ADR is proposed and `G-004`
-remains open.
+The conditional candidate used 25,979,900 model bytes. Its median/p95 five-image
+suite was 2,650.097/2,661.246 ms on Apple Silicon and
+2,311.958/2,504.966 ms on Windows. The Apple evaluation-only
+Python/RapidOCR/OpenCV/ONNX Runtime process peaked at 1,012,318,208 resident
+bytes. The Windows `GetProcessMemoryInfo` collector returned no value and did
+not preserve the native failure reason, so the Windows report records `null`.
+These observations compare candidates; they are not a Rust backend budget or
+support claim.
+
+Independent review found that v4 does not hash the fixture bytes it opens, binds
+the installed RapidOCR package only by its reported version rather than executed
+code bytes, and removes observations below the unexpected-region threshold
+before expected-region matching. It also permits a raw-report path outside
+ignored ephemera. Correcting these findings changes the evaluator digest and
+requires a complete rerun on both release targets.
 
 ## Decision
 
-Conditionally select profile `g-004-rapidocr-ppocrv4-det-v6-rec-small-v1` for the
-Windows qualification row. It becomes the Phase 3 default only if the exact v3
-fixture passes unchanged on `x86_64-pc-windows-msvc` and this ADR is accepted.
-Until then no default identifier, backend wiring, or OCR support statement is
-available.
+Withhold a Phase 3 default OCR profile. Candidate
+`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1` is the only conditional profile
+whose declared v4 outcomes pass unchanged on both `aarch64-apple-darwin` and
+`x86_64-pc-windows-msvc`, but the independent-review findings prevent those
+reports from accepting the gate. No backend, default wiring, or OCR support is
+available until a corrected evaluator and complete two-target rerun supersede
+this evidence.
 
-The immutable candidate is:
+The conditional candidate identity is:
 
 - detector `ch_PP-OCRv4_det_mobile.onnx`, 4,745,517 bytes, SHA-256
   `d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9`;
@@ -98,11 +109,11 @@ runtime bundling remains open under `G-007`.
 - **PP-OCRv5 multilingual mobile pair.** Rejected by unchanged case/width exact-
   text rows. Case-folding or width-folding after observing output would erase UI
   distinctions the profile intentionally preserves.
-- **PP-OCRv6 tiny detector plus small recognizer.** Rejected on Apple by one dense-
-  tooltip exact-text row. Its lower 759,742,464-byte evaluation peak and faster
-  suite cannot waive correctness.
-- **PP-OCRv6 small detector plus small recognizer.** Rejected on the same dense-
-  tooltip row and was slower/larger than the qualifying hybrid.
+- **PP-OCRv6 tiny detector plus small recognizer.** Rejected on both targets by
+  one dense-tooltip exact-text row. Its lower Apple evaluation peak and faster
+  suites cannot waive correctness.
+- **PP-OCRv6 small detector plus small recognizer.** Rejected on both targets by
+  the same dense-tooltip row and was slower/larger than the qualifying hybrid.
 - **Treat decoder confidence `>= 0.80` as quality.** Rejected by evidence: exact
   ground-truth text received materially different model-local means. Confidence
   remains observable and caller-usable but cannot replace the exact fixture.
@@ -115,20 +126,21 @@ runtime bundling remains open under `G-007`.
 
 ## Consequences
 
-The Windows operator must run all four candidates with the hardened v4 evaluator
-and unchanged v3 fixture/tool versions; only an unchanged pass for the
-conditionally selected profile can
-advance this ADR. A target-specific failure, missing row, digest difference, or
-source drift keeps `G-004` open.
+All four candidates ran on both release targets with the v4 evaluator and
+unchanged declared v3 fixture/tool versions. The conditional profile passed and
+the other candidates reproduced the same rejected gate rows, but the evaluator
+binding and oracle findings keep `G-004` open.
 
-If accepted, later OCR contract/backend Changes consume this profile by reference
-and cannot silently change detector, recognizer, vocabulary, preprocessing,
-decoder, normalization, order, confidence semantics, deployment, or digests. A
-change requires new cross-target evidence and an ADR that supersedes this one.
+Later OCR contract/backend Changes cannot consume a default profile yet. The
+corrected evaluator must preserve the frozen oracle, bind executed fixture and
+RapidOCR code bytes, constrain raw output to ignored ephemera, record actionable
+measurement failures, and rerun every candidate on both targets. Only reviewed
+replacement evidence may accept this profile or another candidate.
 
-The implementation must prioritize bounded native memory and session lifetime.
-The approximately 965 MiB Apple evaluation-process peak is not accepted as a
-product ceiling. The backend Change must establish repeatable native load/
+Any later implementation must prioritize bounded native memory and session
+lifetime. The approximately 965 MiB Apple evaluation-process peak is not
+accepted as a product ceiling, and the Windows collector returned no peak value
+or failure reason. The backend Change must establish repeatable native load/
 inference profiles, finite image/model/session bounds, allocation and resident
 budgets, and failure before unsafe allocation. No OCR API or support claim is
 created by this proposed record.
@@ -139,13 +151,17 @@ created by this proposed record.
 fixes the oracle and amendments. [`../evidence/g-004/candidates.json`](../evidence/g-004/candidates.json)
 fixes every component identity and controlled path.
 [`../evidence/g-004/report-aarch64-apple-darwin.json`](../evidence/g-004/report-aarch64-apple-darwin.json)
-retains sanitized Apple outcomes; the required Windows report is absent.
+retains sanitized Apple outcomes.
+[`../evidence/g-004/report-x86_64-pc-windows-msvc.json`](../evidence/g-004/report-x86_64-pc-windows-msvc.json)
+retains sanitized Windows outcomes, binds the Apple report by SHA-256, and
+records the matching cross-target gates plus unresolved review findings.
 [`../evidence/g-004/dependency-review.md`](../evidence/g-004/dependency-review.md)
 records licenses and deployment obligations.
 
-`python3 docs/evidence/g-004/validate.py` runs in repository-policy CI and fails on
-current or historical digest drift, profile/path/size/vocabulary inconsistency,
-changed frozen v1–v4 outcomes, stale v4 tool/session/source identity, privacy
-payloads, or a premature gate promotion. Acceptance additionally requires
-independent review of both target reports and exact merge-revision checks through
-the protected pull request to `dev/0.3.0`.
+`python3 docs/evidence/g-004/validate.py` runs in repository-policy CI and fails
+on current or historical digest drift, profile/path/size/vocabulary
+inconsistency, changed frozen Apple or Windows outcomes, stale v4 declared
+tool/session/source identity, cross-target gate divergence, privacy schema
+drift, or a falsely resolved decision. The protected pull request to
+`dev/0.3.0` retains the Windows evidence and open gaps; accepting the ADR needs
+fresh two-target reports under the corrected evaluator identity.

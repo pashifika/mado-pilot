@@ -192,12 +192,14 @@ lockfile and the advisory database as they stand at that time.
 
 ### G-004 conditional OCR profile
 
-`G-004` remains open pending Windows qualification. Proposed ADR 0033
-conditionally selects RapidOCR v3.9.2's `ch_PP-OCRv4_det_mobile.onnx` plus
-`PP-OCRv6_rec_small.onnx`, 25,979,900 bytes total, through an explicit
-caller-selected model root and fixed safe relative paths. The exact SHA-256
-values, model/vocabulary shapes, preprocessing/decoder, fixture terms, and public
-provenance are recorded in
+`G-004` remains open. RapidOCR v3.9.2's `ch_PP-OCRv4_det_mobile.onnx` plus
+`PP-OCRv6_rec_small.onnx`, 25,979,900 bytes total, produce matching passing v4
+outcomes on both release targets through an explicit caller-selected model root
+and fixed safe relative paths. Independent review found that executed fixture
+and RapidOCR code bytes are not fully bound and that the confidence threshold is
+applied before expected-region matching, so no default profile is accepted. The
+exact SHA-256 values, model/vocabulary shapes, preprocessing/decoder, fixture
+terms, public provenance, cross-target outcomes, and open gaps are recorded in
 [evidence/g-004/](evidence/g-004/README.md).
 
 The profile is controlled host-provided: MadoPilot bundles and downloads nothing,

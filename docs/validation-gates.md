@@ -43,7 +43,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Windows and macOS support claims | Resolved by [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md) and [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md) |
 | [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
-| [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open; [proposed ADR 0033](adr/0033-default-ocr-model-profile.md) awaits Windows qualification |
+| [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open; [proposed ADR 0033](adr/0033-default-ocr-model-profile.md) has matching target outcomes but awaits hardened evidence |
 | [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 implementation | Default watcher policy | Open |
 | [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open |
 | [`G-007`](#g-007) | Native dependency bundling profiles | Before Phase 5 implementation | Release packaging | Open |
@@ -187,8 +187,8 @@ property it preserves.
 ## G-004
 
 **Decision in progress.** [Proposed ADR 0033](adr/0033-default-ocr-model-profile.md)
-conditionally selects RapidOCR v3.9.2's PP-OCRv4 mobile detector plus PP-OCRv6
-small recognizer, with exact bytes, digests, vocabulary, language,
+conditionally identifies RapidOCR v3.9.2's PP-OCRv4 mobile detector plus
+PP-OCRv6 small recognizer, with exact bytes, digests, vocabulary, language,
 preprocessing/decoder, normalization, ordering, confidence, license, and
 controlled-host deployment metadata.
 
@@ -203,16 +203,19 @@ host-provided obligations must match.
 
 **Blocks.** The default OCR profile.
 
-**Status.** Open. The hardened Apple Silicon v4 matrix is complete: the
-conditional candidate is the only one that passes all 42 regions plus every
-tool/session/vocabulary identity row. The required `x86_64-pc-windows-msvc`
-report is absent, so neither ADR 0033 nor a default OCR profile is accepted.
+**Status.** Open. The hardened v4 matrix is complete on Apple Silicon and
+`x86_64-pc-windows-msvc`: the conditional candidate is the only one that passes
+all 42 regions plus every declared tool/session/vocabulary identity row, and the
+other three candidates reproduce the same rejected gate rows. Independent
+review found that the evaluator does not bind fixture bytes at use or installed
+RapidOCR code bytes and applies the unexpected-region threshold before
+expected-region matching. Those gaps prevent acceptance despite matching output.
 
-**Resolution.** Run every v4 Windows row from the fixed source and v3 fixture,
-reconcile the selected candidate against the Apple report, and independently
-review quality, provenance, license, privacy, and deployment, then accept ADR 0033
-and update [third-party-dependencies.md](third-party-dependencies.md) only if no
-mandatory row is missing or divergent.
+**Resolution.** Harden the evaluator without weakening the frozen oracle, bind
+the executed fixture and RapidOCR code bytes, constrain private raw output to
+ignored ephemera, rerun the complete matrix on both release targets under the new
+source identity, and independently review the replacement reports. Only then may
+ADR 0033 accept a default profile and unblock Phase 3 implementation.
 
 ## G-005
 

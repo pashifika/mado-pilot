@@ -31,6 +31,22 @@ def load_json(path: Path) -> dict[str, object]:
         fail(f"{path.relative_to(ROOT)} must contain one JSON object")
     return value
 
+def require_exact_keys(
+    value: object,
+    expected: set[str],
+    field: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        fail(f"{field} must be an object")
+    actual = set(value)
+    if actual != expected:
+        fail(
+            f"{field} keys drifted: "
+            f"missing={sorted(expected - actual)!r}, extra={sorted(actual - expected)!r}"
+        )
+    return value
+
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -365,6 +381,26 @@ def validate_candidates() -> None:
 
 def validate_apple_report() -> None:
     report = load_json(EVIDENCE / "report-aarch64-apple-darwin.json")
+    require_exact_keys(
+        report,
+        {
+            "schema_version",
+            "report_kind",
+            "qualification_stage",
+            "target",
+            "product_base_revision",
+            "metadata_clarification",
+            "host",
+            "tools",
+            "profile",
+            "stages",
+            "apple_decision",
+            "privacy",
+        },
+        "Apple report",
+    )
+    if report.get("report_kind") != "g-004-cross-candidate-qualification":
+        fail("Apple report kind drifted")
     if report.get("schema_version") != 2:
         fail("Apple report schema_version must be 2")
     if report.get("qualification_stage") != "v4":
@@ -373,6 +409,16 @@ def validate_apple_report() -> None:
         fail("Apple report target must be aarch64-apple-darwin")
     if report.get("product_base_revision") != "f3608424dde88f835f35653be8113f7a2009431b":
         fail("Apple report product baseline drifted")
+    if report.get("host") != {
+        "target": "aarch64-apple-darwin",
+        "os": "Darwin",
+        "os_release": "25.5.0",
+        "os_version": "Darwin Kernel Version 25.5.0: Tue Jun  9 22:18:58 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6000",
+        "architecture": "arm64",
+        "logical_cpu_count": 10,
+        "physical_memory_bytes": 34359738368,
+    }:
+        fail("Apple host identity is invalid")
 
     stages = report.get("stages")
     if (
@@ -403,7 +449,18 @@ def validate_apple_report() -> None:
         "v3": "superseded-evaluator-unenforced-identity",
         "v4": "apple-complete-windows-pending",
     }
+    expected_stage_reasons = {
+        "v1": "Two recognizers failed exact text; the universal confidence floor was disproved before v2.",
+        "v2": "The first amended candidate exposed a tooltip manifest-order authoring defect; all non-order rows passed.",
+        "v3": "The fixture results are retained, but the evaluator did not enforce every pinned package version or loaded ONNX/vocabulary field.",
+        "v4": "The evaluator enforced the complete pinned environment and exact CPU session/input/output/vocabulary identity before inference.",
+    }
     for stage in stages:
+        require_exact_keys(
+            stage,
+            {"id", "status", "reason", "candidates", "frozen_candidates_sha256"},
+            f"Apple stage {stage.get('id')}",
+        )
         stage_id = stage["id"]
         candidates = stage.get("candidates")
         if not isinstance(candidates, list) or not candidates:
@@ -414,8 +471,11 @@ def validate_apple_report() -> None:
             or observed_hash != expected_stage_hashes[stage_id]
         ):
             fail(f"Apple frozen {stage_id} candidate outcomes changed")
-        if stage.get("status") != expected_stage_statuses[stage_id]:
-            fail(f"Apple stage {stage_id} status changed")
+        if (
+            stage.get("status") != expected_stage_statuses[stage_id]
+            or stage.get("reason") != expected_stage_reasons[stage_id]
+        ):
+            fail(f"Apple stage {stage_id} metadata changed")
 
     historical_identities = {
         "v1": {
@@ -588,26 +648,24 @@ def validate_apple_report() -> None:
         fail("Apple report pixel-format clarification drifted")
 
     decision = report.get("apple_decision")
-    if not isinstance(decision, dict):
-        fail("Apple decision record is missing")
-    if decision.get("selected_candidate_for_windows") != selected:
-        fail("Apple selected candidate drifted")
-    if decision.get("other_v4_candidates_rejected") != [
-        "ppocrv5-det-v6-rec-small",
-        "ppocrv6-det-tiny-rec-small",
-        "ppocrv6-multilingual-small",
-    ]:
-        fail("Apple rejected v4 candidate list drifted")
-    if decision.get("g004_status") != "open-pending-windows":
-        fail("Apple evidence must keep G-004 open pending Windows")
+    if decision != {
+        "selected_candidate_for_windows": selected,
+        "reason": "Only this candidate passed every v4 environment, model/session/vocabulary, text, count, geometry, ordering, confidence-validity, stability, digest, license, and deployment row.",
+        "other_v4_candidates_rejected": [
+            "ppocrv5-det-v6-rec-small",
+            "ppocrv6-det-tiny-rec-small",
+            "ppocrv6-multilingual-small",
+        ],
+        "g004_status": "open-pending-windows",
+    }:
+        fail("Apple decision record drifted")
 
-    privacy = report.get("privacy")
-    if not isinstance(privacy, dict) or any(value is not expected for value, expected in (
-        (privacy.get("approved_expected_fixture_text_only"), True),
-        (privacy.get("unexpected_recognized_text_retained"), False),
-        (privacy.get("game_screenshot_pixels_or_text_retained"), False),
-        (privacy.get("host_paths_retained"), False),
-    )):
+    if report.get("privacy") != {
+        "approved_expected_fixture_text_only": True,
+        "unexpected_recognized_text_retained": False,
+        "game_screenshot_pixels_or_text_retained": False,
+        "host_paths_retained": False,
+    }:
         fail("Apple report privacy declaration drifted")
 
     def reject_unapproved_payload(value: object) -> None:
@@ -623,6 +681,286 @@ def validate_apple_report() -> None:
             fail("Apple report contains a host-local path")
 
     reject_unapproved_payload(report)
+
+def validate_windows_report() -> None:
+    report = load_json(EVIDENCE / "report-x86_64-pc-windows-msvc.json")
+    require_exact_keys(
+        report,
+        {
+            "schema_version",
+            "report_kind",
+            "qualification_stage",
+            "target",
+            "product_base_revision",
+            "host",
+            "tools",
+            "profile",
+            "candidates",
+            "frozen_candidates_sha256",
+            "cross_target_decision",
+            "privacy",
+        },
+        "Windows report",
+    )
+    if report.get("schema_version") != 1:
+        fail("Windows report schema_version must be 1")
+    if report.get("report_kind") != "g-004-cross-candidate-qualification":
+        fail("Windows report kind drifted")
+    if report.get("qualification_stage") != "v4":
+        fail("Windows report must use the hardened v4 evaluator")
+    if report.get("target") != "x86_64-pc-windows-msvc":
+        fail("Windows report target must be x86_64-pc-windows-msvc")
+    if report.get("product_base_revision") != "f3608424dde88f835f35653be8113f7a2009431b":
+        fail("Windows report product baseline drifted")
+
+    if report.get("host") != {
+        "target": "x86_64-pc-windows-msvc",
+        "os": "Windows",
+        "os_release": "11",
+        "os_version": "10.0.26200",
+        "architecture": "AMD64",
+        "logical_cpu_count": 20,
+        "physical_memory_bytes": 34197635072,
+    }:
+        fail("Windows host identity is invalid")
+
+    requirements: dict[str, str] = {}
+    expected_python = None
+    for line in (EVIDENCE / "tool-requirements.txt").read_text(encoding="utf-8").splitlines():
+        if line.startswith("# Python "):
+            expected_python = line.removeprefix("# Python ").split(";", 1)[0]
+        elif line and not line.startswith("#"):
+            name, version = line.split("==", 1)
+            requirements[name] = version
+    expected_tools = {
+        "python": expected_python,
+        "packages": requirements,
+        "modules": {
+            "onnxruntime": "1.29.0",
+            "opencv": "5.0.0",
+            "pillow": "12.3.0",
+        },
+        "onnxruntime_available_providers": [
+            "AzureExecutionProvider",
+            "CPUExecutionProvider",
+        ],
+    }
+    if report.get("tools") != expected_tools:
+        fail("Windows v4 tool environment drifted")
+    if report.get("profile") != {
+        "provider": "CPUExecutionProvider",
+        "intra_op_threads": 1,
+        "inter_op_threads": 1,
+        "cpu_memory_arena": False,
+        "orientation_classifier": False,
+        "warmup_passes": 2,
+        "measured_passes": 10,
+    }:
+        fail("Windows v4 execution profile drifted")
+
+    candidate_record = load_json(EVIDENCE / "candidates.json")
+    candidate_lookup = {
+        candidate["id"]: candidate for candidate in candidate_record["candidates"]
+    }
+    fixture = load_json(FIXTURES / "fixture-manifest.json")
+    fixture_lookup = {image["file"]: image for image in fixture["images"]}
+    current_identity = {
+        "evaluator_sha256": sha256(EVIDENCE / "evaluate.py"),
+        "fixture_manifest_sha256": sha256(FIXTURES / "fixture-manifest.json"),
+        "candidates_sha256": sha256(EVIDENCE / "candidates.json"),
+        "tool_requirements_sha256": sha256(EVIDENCE / "tool-requirements.txt"),
+    }
+    expected_candidate_ids = [
+        "ppocrv4-det-v6-rec-small",
+        "ppocrv5-det-v6-rec-small",
+        "ppocrv6-det-tiny-rec-small",
+        "ppocrv6-multilingual-small",
+    ]
+    selected = expected_candidate_ids[0]
+    candidates = report.get("candidates")
+    if (
+        not isinstance(candidates, list)
+        or [candidate.get("candidate_id") for candidate in candidates if isinstance(candidate, dict)]
+        != expected_candidate_ids
+    ):
+        fail("Windows v4 candidate matrix drifted")
+    frozen_payload = json.dumps(
+        candidates,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    observed_candidates_sha256 = hashlib.sha256(frozen_payload).hexdigest()
+    if (
+        report.get("frozen_candidates_sha256") != observed_candidates_sha256
+        or observed_candidates_sha256
+        != "c6e6a5dab741ef7ad3bda5587cf4ce8138570da92dc2262d3823ca5b5bdf88da"
+    ):
+        fail("Windows frozen v4 candidate outcomes changed")
+
+    expected_vocabulary = {
+        "metadata_key": "character",
+        "encoding": "UTF-8 lines",
+        "count": 18708,
+        "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+        "missing_fixture_characters": [],
+    }
+    for candidate in candidates:
+        candidate_id = candidate["candidate_id"]
+        if candidate.get("fixture_profile_id") != "g-004-japanese-ui-v3":
+            fail(f"Windows v4 candidate {candidate_id} uses the wrong fixture")
+        if candidate.get("source_identity") != current_identity:
+            fail(f"Windows v4 candidate {candidate_id} source identity is stale")
+        if candidate.get("stable_gate_outcomes") is not True:
+            fail(f"Windows v4 candidate {candidate_id} is unstable")
+
+        expected_candidate = candidate_lookup[candidate_id]
+        expected_models = []
+        for role in ("detector", "recognizer"):
+            model = expected_candidate[role]
+            expected_model = {
+                "role": role,
+                "id": model["id"],
+                "relative_controlled_path": model["relative_controlled_path"],
+                "bytes": model["bytes"],
+                "sha256": model["sha256"],
+                "session": {
+                    "providers": ["CPUExecutionProvider"],
+                    "inputs": model["inputs"],
+                    "outputs": model["outputs"],
+                },
+            }
+            if role == "recognizer":
+                expected_model["vocabulary"] = expected_vocabulary
+            expected_models.append(expected_model)
+        if candidate.get("models") != expected_models:
+            fail(f"Windows v4 candidate {candidate_id} loaded model identity drifted")
+
+        aggregate = candidate.get("aggregate")
+        if not isinstance(aggregate, dict):
+            fail(f"Windows v4 candidate {candidate_id} aggregate is missing")
+        initialization = aggregate.get("initialization_ms")
+        median = aggregate.get("suite_median_ms")
+        p95 = aggregate.get("suite_p95_ms")
+        maximum = aggregate.get("suite_maximum_ms")
+        if (
+            not all(isinstance(value, (int, float)) and value > 0 for value in (
+                initialization,
+                median,
+                p95,
+                maximum,
+            ))
+            or not median <= p95 <= maximum
+            or aggregate.get("process_peak_resident_bytes") is not None
+        ):
+            fail(f"Windows v4 candidate {candidate_id} aggregate is invalid")
+
+        images = candidate.get("images")
+        if not isinstance(images, list) or [image.get("file") for image in images] != list(fixture_lookup):
+            fail(f"Windows v4 candidate {candidate_id} image matrix drifted")
+        for image in images:
+            expected_image = fixture_lookup[image["file"]]
+            if image.get("fixture_sha256") != expected_image["sha256"]:
+                fail(f"Windows v4 candidate {candidate_id} fixture digest drifted")
+            if image.get("expected_region_count") != len(expected_image["regions"]):
+                fail(f"Windows v4 candidate {candidate_id} expected count drifted")
+
+        if candidate_id == selected:
+            if candidate.get("pass") is not True or candidate.get("failure_categories") != []:
+                fail("Windows selected v4 candidate no longer passes")
+            for image in images:
+                expected_count = image["expected_region_count"]
+                if (
+                    image.get("observed_region_count") != expected_count
+                    or image.get("exact_text_count") != expected_count
+                    or image.get("geometry_pass_count") != expected_count
+                    or image.get("confidence_pass_count") != expected_count
+                    or image.get("unexpected_region_count") != 0
+                    or image.get("order_pass") is not True
+                    or image.get("pass") is not True
+                ):
+                    fail(f"Windows selected v4 candidate fails {image['file']}")
+        elif (
+            candidate.get("pass") is not False
+            or candidate.get("failure_categories")
+            != ["ordering_mismatch", "text_mismatch", "unexpected_region"]
+        ):
+            fail(f"Windows rejected v4 candidate {candidate_id} outcome drifted")
+
+    apple_path = EVIDENCE / "report-aarch64-apple-darwin.json"
+    expected_decision = {
+        "apple_report_sha256": sha256(apple_path),
+        "conditional_profile_id": "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1",
+        "conditional_candidate": selected,
+        "candidate_gate_outcomes_match_apple": True,
+        "image_gate_outcomes_match_apple": True,
+        "other_v4_candidates_rejected": expected_candidate_ids[1:],
+        "unresolved_evidence_gaps": [
+            "fixture_bytes_not_bound_at_evaluation_time",
+            "rapidocr_code_bytes_not_bound_to_declared_revision",
+            "unexpected_region_threshold_applied_before_expected_matching",
+            "raw_report_path_not_constrained_to_ignored_ephemera",
+            "windows_peak_resident_failure_reason_not_recorded",
+        ],
+        "g004_status": "open-independent-review-findings",
+    }
+    if report.get("cross_target_decision") != expected_decision:
+        fail("Windows cross-target decision drifted")
+
+    apple_report = load_json(apple_path)
+    apple_candidates = apple_report["stages"][3]["candidates"]
+    apple_lookup = {
+        candidate["candidate_id"]: candidate for candidate in apple_candidates
+    }
+    candidate_gate_fields = ("stable_gate_outcomes", "failure_categories", "pass")
+    image_gate_fields = (
+        "file",
+        "fixture_sha256",
+        "expected_region_count",
+        "observed_region_count",
+        "exact_text_count",
+        "geometry_pass_count",
+        "confidence_pass_count",
+        "unexpected_region_count",
+        "order_pass",
+        "pass",
+    )
+    for candidate in candidates:
+        candidate_id = candidate["candidate_id"]
+        apple_candidate = apple_lookup.get(candidate_id)
+        if apple_candidate is None:
+            fail(f"Apple v4 candidate {candidate_id} is missing")
+        if any(candidate.get(field) != apple_candidate.get(field) for field in candidate_gate_fields):
+            fail(f"candidate gate outcome diverged for {candidate_id}")
+        apple_images = apple_candidate.get("images")
+        if not isinstance(apple_images, list) or len(candidate["images"]) != len(apple_images):
+            fail(f"image matrix diverged for {candidate_id}")
+        for windows_image, apple_image in zip(candidate["images"], apple_images, strict=True):
+            if any(windows_image.get(field) != apple_image.get(field) for field in image_gate_fields):
+                fail(f"image gate outcome diverged for {candidate_id}/{windows_image['file']}")
+
+    if report.get("privacy") != {
+        "approved_expected_fixture_text_only": True,
+        "unexpected_recognized_text_retained": False,
+        "game_screenshot_pixels_or_text_retained": False,
+        "host_paths_retained": False,
+    }:
+        fail("Windows report privacy declaration drifted")
+
+    def reject_unapproved_payload(value: object) -> None:
+        if isinstance(value, dict):
+            if any(key in {"text", "observed", "raw"} for key in value):
+                fail("Windows report contains unapproved recognized payload fields")
+            for nested in value.values():
+                reject_unapproved_payload(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                reject_unapproved_payload(nested)
+        elif isinstance(value, str) and ("/Users/" in value or "\\Users\\" in value):
+            fail("Windows report contains a host-local path")
+
+    reject_unapproved_payload(report)
+
 
 
 def validate_requirements() -> None:
@@ -646,6 +984,7 @@ def main() -> None:
     validate_candidates()
     validate_apple_report()
     validate_requirements()
+    validate_windows_report()
     print("G-004 fixture and candidate evidence: OK")
 
 
