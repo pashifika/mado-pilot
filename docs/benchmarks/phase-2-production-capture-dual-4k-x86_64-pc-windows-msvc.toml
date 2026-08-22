@@ -262,24 +262,24 @@ measure = "latency_p50"
 kind = "absolute"
 unit = "milliseconds"
 direction = "at_most"
-limit = 60.0
-rationale = "ADR 0032 rounds above three times the largest repaired exact-source movement measurement"
+limit = 125.0
+rationale = "ADR 0032 rounds above three times the largest corrected marker-convergence precursor p50"
 
 [[measurement.budget]]
 measure = "latency_p95"
 kind = "absolute"
 unit = "milliseconds"
 direction = "at_most"
-limit = 75.0
-rationale = "ADR 0032 rounds above three times the largest repaired exact-source movement measurement"
+limit = 175.0
+rationale = "ADR 0032 rounds above three times the largest corrected marker-convergence precursor p95"
 
 [[measurement.budget]]
 measure = "latency_max"
 kind = "absolute"
 unit = "milliseconds"
 direction = "at_most"
-limit = 75.0
-rationale = "ADR 0032 rounds above three times the largest repaired exact-source movement measurement"
+limit = 225.0
+rationale = "ADR 0032 rounds above three times the largest corrected marker-convergence precursor maximum"
 
 [[measurement.budget]]
 measure = "mapped_bytes_per_result"

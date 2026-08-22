@@ -5,9 +5,9 @@
 The current 1280x720 production-capture profile is requalified on clean source
 `c6ff39a9461c128d9a53e4896a34cb65e3c419a3`, tree
 `8f2766a9b55c9964f57a096a720ec4a404ad3756`. The production-transition profile
-remains bound to its accepted source `0208798d9542aaae3a956d3e774c9ce57468bc9d`,
-tree `cac0020edbf5b3d28a4dcd5df41e020dc0c6257d`; the complete intervening diff
-changes no transition workload, oracle, fixture mode, or accepted limit.
+was rerun on repaired source `7c31752bc632a26c4ba61faa0567ac78e2218ea0`,
+tree `4e99487e184b3edfcbd62e31299599d2fbe13c7d`, after independent review
+invalidated its earlier applicability decision.
 
 The approved host ran Windows 11 Pro 25H2 build `26200.9168` on an Intel Core
 i7-12700KF with 32 GiB RAM and an NVIDIA GeForce RTX 4080, driver
@@ -58,6 +58,21 @@ resident peak. These satisfy ADR 0031 without treating the resource counts as
 exact equality requirements: each count must be present, nonzero, and no greater
 than its accepted ceiling. Copied and mapped bytes remain exact.
 
+## Accepted transition results
+
+The exact-source transition rerun passed every unchanged ADR 0031 budget:
+
+| Workload | p50 | p95 | maximum | mapped bytes | growth | live heap peak |
+|---|---:|---:|---:|---:|---:|---:|
+| `open_first_frame` | 104.4091 ms | 110.7733 ms | 110.7733 ms | 3,686,400 | 0 B | 3,732,539 B |
+| `retained_pressure_resume` | 4.6247 ms | 4.6247 ms | 4.6247 ms | 0 | 0 B | 3,726,400 B |
+| `resize_recreation` | 80.4254 ms | 103.6176 ms | 103.6176 ms | 4,665,600 | -979,200 B | 8,391,792 B |
+| `target_loss_recovery` | 368.5183 ms | 368.5183 ms | 368.5183 ms | 7,372,800 | 48 B | 3,726,448 B |
+| `close_drain` | 2.3781 ms | 2.4896 ms | 2.4896 ms | 0 | 0 B | 39,904 B |
+
+The largest resident observation was 71,221,248 bytes. The run retained zero
+correctness failures; every fixture process reached a terminal state.
+
 ## Repair applicability and lifecycle
 
 Each callback observation now publishes count-equivalent identity, elapsed time,
@@ -68,8 +83,9 @@ its own baseline.
 
 The benchmark and fixture reported setup, warm-up, sampling, completion,
 readiness, stopping, and terminal exit outside measured regions. No fixture
-process remained after the run. The separately accepted transition profile is
-unchanged and retains its original measurements and source identity.
+process remained after either retained run. The transition result now carries
+its repaired source and executable identities rather than an applicability
+claim.
 
 ## Privacy and exclusions
 

@@ -1949,9 +1949,9 @@ pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS: [LatencyBudget; 3] 
     ),
     LatencyBudget::new(
         "dual_display_moving_seam",
-        Duration::from_millis(60),
-        Duration::from_millis(75),
-        Duration::from_millis(75),
+        Duration::from_millis(125),
+        Duration::from_millis(175),
+        Duration::from_millis(225),
     ),
 ];
 

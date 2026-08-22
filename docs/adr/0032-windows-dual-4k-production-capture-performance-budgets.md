@@ -1,6 +1,6 @@
 # ADR 0032: Windows dual-4K production capture performance budgets
 
-- **Status:** Accepted
+- **Status:** Proposed — corrected-oracle final run pending
 - **Date:** 2026-08-22
 - **Resolves gate:** The remaining Windows dual-4K production-capture portion of [`G-013`](../validation-gates.md#g-013)
 - **Supersedes:** none; ADR 0031 continues to govern its separate 1280x720 capture and transition profiles
@@ -19,18 +19,19 @@ callback fields could mix generations, one process-wide callback could be
 credited to both sessions, and the required 300-frame moving-seam phase had not
 run. That profile remains historical evidence and is not final acceptance.
 
-Repaired source `90a8babb7258bd4d8381fc172033a793a2c2ad14`, tree
-`84a167718320f33a814f26f93277d488b1b6e980`, completed two unchanged-source
-precursor runs with coherent frame-stamp-bound callback records. Both retained
-600 stationary samples per display plus 300 moving-seam samples with zero
-correctness failures and bounded allocation growth. The larger moving
-observations were 19.5257 ms p50, 21.4397 ms p95, and 24.9960 ms maximum.
+The `90a8bab` precursor and `c6ff39a` final profiles introduced the movement
+phase, but their uniform-background point oracle could accept an immediately
+prior fixture placement. Those runs retain their historical source identities
+and resource/accounting evidence; they are not budget provenance for the
+corrected movement operation.
 
-Final source `c6ff39a9461c128d9a53e4896a34cb65e3c419a3`, tree
-`8f2766a9b55c9964f57a096a720ec4a404ad3756`, added the derived moving-seam
-latency gates and reran the complete stationary and moving profile with every
-gate enforced in-process. Every supervised benchmark and fixture process
-reached a terminal state.
+Corrected source `7c31752bc632a26c4ba61faa0567ac78e2218ea0`, tree
+`4e99487e184b3edfcbd62e31299599d2fbe13c7d`, draws one deterministic marker in
+each display half and requires both requested-position marker pixels. A
+strictly newer frame containing the prior placement therefore fails. Two
+unchanged-source precursor runs retained 300 corrected moving pairs apiece with
+zero correctness failures. Their moving p50/p95/maximum values were
+`41.0535/45.6627/71.4985 ms` and `40.9366/51.1564/71.1795 ms`.
 
 ## Decision
 
@@ -40,20 +41,24 @@ seam, repository fixture, and named workload oracles. It is not an
 application/game compatibility or real-time guarantee.
 
 Latency ceilings use three times the largest applicable retained observation,
-rounded upward with scheduling margin:
+rounded upward to the next readable 25 ms boundary:
 
-The repaired oracle deliberately drains each session's queue floor and waits for
-a later callback completed after one shared sample baseline. Across six repaired
-runs, the largest arrival observations were 20.0007 ms p50, 40.6720 ms p95, and
-58.3643 ms maximum. The 75/150/200 ms ceilings apply the same three-times,
-readable-rounding policy to that corrected operation shape; they do not excuse a
-failed sample.
+The repaired stationary oracle deliberately drains each session's queue floor
+and waits for a later callback completed after one shared sample baseline.
+Across six repaired runs, the largest arrival observations were 20.0007 ms p50,
+40.6720 ms p95, and 58.3643 ms maximum. The 75/150/200 ms ceilings apply the
+same three-times, readable-rounding policy to that operation shape.
+
+For corrected marker convergence, the two `7c31752` precursor maxima above
+produce raw three-times bounds of 123.1605, 153.4692, and 214.4955 ms. Rounding
+upward establishes 125/175/225 ms without treating retries, frame age, or delay
+as correctness evidence.
 
 | Workload | p50 ceiling | p95 ceiling | maximum |
 |---|---:|---:|---:|
 | `dual_display_frame_arrival` | 75 ms | 150 ms | 200 ms |
 | `dual_display_callback_copy` | 0.2 ms | 0.5 ms | 1.5 ms |
-| `dual_display_moving_seam` | 60 ms | 75 ms | 75 ms |
+| `dual_display_moving_seam` | 125 ms | 175 ms | 225 ms |
 
 Every workload also requires zero correctness failures, at most 4,096 bytes of
 post-warm-up allocation growth, at most 384 MiB live Rust heap, at most 1 GiB
@@ -65,9 +70,10 @@ ratio.
 The moving workload retains exactly 300 samples with no warm-up samples. Its
 deterministic triangular schedule advances the 1280x720 fixture in 16-pixel
 steps between physical X `-960` and `-320`, keeping it across the negative-X
-seam. Each move is confirmed through DPI-aware `GetWindowRect`; one declared
-content point remains inside each display half. Both acquired frames must match
-their own post-baseline callback record by stream, epoch, and frame sequence.
+seam. DPI-aware `GetWindowRect` confirms every move. One fixed 16x16 marker
+remains in each display half; both independently captured frames must contain
+their requested marker center and match their own post-baseline callback record
+by stream, epoch, and frame sequence.
 
 ## Alternatives
 

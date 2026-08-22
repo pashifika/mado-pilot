@@ -10,23 +10,25 @@
 ADR 0026 accepted the existing Windows controlled native and diagnostic profiles but deliberately left the production-capture matrix open. Those profiles did not expose callback-copy time, copied bytes, detached/staging/total GPU-resource peaks, native process resident memory, natural timer-driven publication, retained-pressure recovery, or the complete startup/resize/target-loss/close lifecycle at exactly 1280x720.
 
 The successor entry points add those observations without relabeling historical
-profiles. The production fixture repaints only a deterministic 16x16 patch on
-its 16 ms timer, avoiding whole-window flashing while continuing to drive
-natural compositor publication. Workload and fixture lifecycle records go to
-stderr outside the measured region and identify setup, warm-up, sampling,
-completion, child readiness, and bounded child termination.
+profiles. The production fixture repaints one deterministic changing patch and
+two static placement markers on its 16 ms timer, avoiding whole-window flashing
+while continuing to drive natural compositor publication. Workload and fixture
+lifecycle records go to stderr outside the measured region and identify setup,
+warm-up, sampling, completion, child readiness, and bounded child termination.
 
-The original capture and transition profiles remain bound to source `0208798`.
-Pre-landing review then found that the capture harness implemented the
-detached/staging/total resource ceilings as equality requirements even though
-this ADR declares upper bounds. Repaired source
-`c6ff39a9461c128d9a53e4896a34cb65e3c419a3`, tree
-`8f2766a9b55c9964f57a096a720ec4a404ad3756`, reran all four capture workloads
-against unchanged numeric ceilings. The transition profile remains applicable
-at its original revision: the complete intervening diff changes
-benchmark-only callback correlation, dual-display movement, the capture
-resource predicate, and an opt-in availability apparatus, but no transition
-workload, oracle, fixture mode, or accepted limit.
+The original capture and transition profiles were bound to source `0208798`.
+Round-one repair source `c6ff39a9461c128d9a53e4896a34cb65e3c419a3`,
+tree `8f2766a9b55c9964f57a096a720ec4a404ad3756`, reran all four capture workloads
+after changing resource and callback enforcement.
+
+Independent review rejected the transition applicability decision because
+benchmark instrumentation now publishes completion/binding records on every
+transition frame path. Repaired source
+`7c31752bc632a26c4ba61faa0567ac78e2218ea0`, tree
+`4e99487e184b3edfcbd62e31299599d2fbe13c7d`, reran all five transition workloads
+on the exact single-display topology against unchanged numeric ceilings. Every
+correctness, latency, mapped-byte, live-heap, resident-memory, growth, and
+cleanup gate passed.
 
 ## Decision
 
