@@ -48,10 +48,11 @@ unsupported path, and the repaired Windows 1280×720 and mixed-DPI dual-4K
 production profiles. The dual profile includes 600 stationary samples per
 display and 300 moving-seam frame pairs with per-frame callback correlation.
 Each lineage remains bound to its own source, topology, stimulus, oracle, and
-target-specific budgets. Final-source Phase 1 and repository verification run
-on the exact exit candidate under unchanged ceilings; the exit evidence binds
-that head to its hosted checks. Historical profiles and hosted CI never
-substitute for interactive native rows.
+target-specific budgets. Windows final-source Phase 1 and repository verification
+run on the exact exit candidate under unchanged ceilings. Apple Silicon Phase 1
+remains attributed to `d8336be` and applies by reviewed complete diff;
+exact-candidate hosted checks bind both release targets. Historical profiles and
+hosted CI never substitute for interactive native rows.
 
 macOS capture needs Screen Recording and input needs event-post access;
 MadoPilot probes both without prompting. Windows has no permission probe and
