@@ -1722,12 +1722,26 @@ fn mapping_is_benchmark_content(mapping: &mado_pilot::CpuMapping) -> bool {
 }
 
 #[cfg(windows)]
+fn mapping_pixel_is_benchmark_content(mapping: &mado_pilot::CpuMapping, point: Point) -> bool {
+    mapping_pixel_matches_any(mapping, point, [protocol::FILL_RGB, benchmark_fill_rgb()])
+}
+
+#[cfg(windows)]
+fn mapping_pixel_is_benchmark_marker(mapping: &mado_pilot::CpuMapping, point: Point) -> bool {
+    mapping_pixel_matches_any(mapping, point, [protocol::BENCHMARK_MARKER_RGB])
+}
+
+#[cfg(windows)]
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "a validated in-frame capture point is integral and bounded by the 4K descriptor"
 )]
-fn mapping_pixel_is_benchmark_content(mapping: &mado_pilot::CpuMapping, point: Point) -> bool {
+fn mapping_pixel_matches_any<const N: usize>(
+    mapping: &mado_pilot::CpuMapping,
+    point: Point,
+    fills: [u32; N],
+) -> bool {
     let descriptor = mapping.descriptor();
     let x = point.x();
     let y = point.y();
@@ -1750,18 +1764,16 @@ fn mapping_pixel_is_benchmark_content(mapping: &mado_pilot::CpuMapping, point: P
     let Some(seen) = mapping.bytes().get(offset..offset.saturating_add(3)) else {
         return false;
     };
-    [protocol::FILL_RGB, benchmark_fill_rgb()]
-        .into_iter()
-        .any(|fill| {
-            let wanted = [
-                (fill & 0xff) as u8,
-                ((fill >> 8) & 0xff) as u8,
-                ((fill >> 16) & 0xff) as u8,
-            ];
-            seen.iter()
-                .zip(wanted)
-                .all(|(observed, expected)| observed.abs_diff(expected) <= protocol::FILL_TOLERANCE)
-        })
+    fills.into_iter().any(|fill| {
+        let wanted = [
+            (fill & 0xff) as u8,
+            ((fill >> 8) & 0xff) as u8,
+            ((fill >> 16) & 0xff) as u8,
+        ];
+        seen.iter()
+            .zip(wanted)
+            .all(|(observed, expected)| observed.abs_diff(expected) <= protocol::FILL_TOLERANCE)
+    })
 }
 
 fn benchmark_mapping_fill(mapping: &mado_pilot::CpuMapping) -> Option<u32> {

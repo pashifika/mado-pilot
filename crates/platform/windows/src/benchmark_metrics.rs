@@ -555,20 +555,36 @@ pub fn dual_display_seam_x(index: u32) -> i32 {
     LEFT + i32::try_from(step).expect("bounded seam step fits i32") * STEP
 }
 
-/// Returns one declared-content point on each side of the moving fixture.
+/// Returns the placement-marker center on each side of the moving fixture.
 #[cfg(feature = "benchmark-instrumentation")]
 #[must_use]
-pub fn dual_display_fixture_points(window_x: i32, window_y: i32) -> [(f64, f64); 2] {
+pub fn dual_display_fixture_marker_points(window_x: i32, window_y: i32) -> [(f64, f64); 2] {
+    use crate::fixture_protocol::{
+        BENCHMARK_LEFT_MARKER_X, BENCHMARK_MARKER_SIZE, BENCHMARK_MARKER_Y,
+        BENCHMARK_RIGHT_MARKER_X,
+    };
+
     const FIXTURE_WIDTH: i32 = 1_280;
-    const FIXTURE_HEIGHT: i32 = 720;
     assert!(
         window_x < 0 && window_x + FIXTURE_WIDTH > 0,
         "the moving fixture must straddle the signed desktop seam"
     );
-    let vertical = f64::from(window_y) + f64::from(FIXTURE_HEIGHT) / 2.0;
+    assert!(
+        window_x + BENCHMARK_LEFT_MARKER_X + BENCHMARK_MARKER_SIZE <= 0
+            && window_x + BENCHMARK_RIGHT_MARKER_X >= 0,
+        "each moving fixture marker must remain on its declared display"
+    );
+    let center = BENCHMARK_MARKER_SIZE / 2;
+    let vertical = f64::from(window_y + BENCHMARK_MARKER_Y + center);
     [
-        (f64::from(window_x) / 2.0, vertical),
-        (f64::from(window_x + FIXTURE_WIDTH) / 2.0, vertical),
+        (
+            f64::from(window_x + BENCHMARK_LEFT_MARKER_X + center),
+            vertical,
+        ),
+        (
+            f64::from(window_x + BENCHMARK_RIGHT_MARKER_X + center),
+            vertical,
+        ),
     ]
 }
 
@@ -929,14 +945,42 @@ mod tests {
     }
 
     #[test]
-    fn moving_fixture_points_stay_inside_opposite_display_halves() {
+    fn moving_fixture_marker_points_stay_inside_opposite_display_halves() {
         for index in 0..300 {
             let x = dual_display_seam_x(index);
-            let [left, right] = dual_display_fixture_points(x, 600);
+            let [left, right] = dual_display_fixture_marker_points(x, 600);
             assert!(f64::from(x) < left.0 && left.0 < 0.0);
             assert!(0.0 < right.0 && right.0 < f64::from(x + 1_280));
             assert_eq!(left.1, 960.0);
             assert_eq!(right.1, 960.0);
+        }
+    }
+
+    #[test]
+    fn strictly_newer_frame_with_prior_fixture_placement_is_rejected() {
+        const WINDOW_Y: i32 = 600;
+        const MARKER_CLIENT_X: [i32; 2] = [64, 1_200];
+        const MARKER_CLIENT_Y: i32 = 352;
+        const MARKER_SIZE: i32 = 16;
+
+        fn contains_marker(window_x: i32, window_y: i32, marker_x: i32, point: (f64, f64)) -> bool {
+            let left = f64::from(window_x + marker_x);
+            let top = f64::from(window_y + MARKER_CLIENT_Y);
+            point.0 >= left
+                && point.0 < left + f64::from(MARKER_SIZE)
+                && point.1 >= top
+                && point.1 < top + f64::from(MARKER_SIZE)
+        }
+
+        let positions = (0..300).map(dual_display_seam_x).collect::<Vec<_>>();
+        for pair in positions.windows(2) {
+            let prior_x = pair[0];
+            let requested_x = pair[1];
+            let points = dual_display_fixture_marker_points(requested_x, WINDOW_Y);
+            for (marker_x, point) in MARKER_CLIENT_X.into_iter().zip(points) {
+                assert!(contains_marker(requested_x, WINDOW_Y, marker_x, point));
+                assert!(!contains_marker(prior_x, WINDOW_Y, marker_x, point));
+            }
         }
     }
 }

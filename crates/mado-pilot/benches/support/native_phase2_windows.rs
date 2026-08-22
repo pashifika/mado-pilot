@@ -44,7 +44,8 @@ use mado_pilot::{
 use mado_pilot_platform_windows::benchmark::{
     CallbackCopyObservation, CallbackMetricBaseline, CaptureMetricsSnapshot,
     callback_copied_bytes_between, callback_metric_baseline, callback_observation_after,
-    capture_metrics, dual_display_fixture_points, dual_display_seam_x, reset_capture_metrics,
+    capture_metrics, dual_display_fixture_marker_points, dual_display_seam_x,
+    reset_capture_metrics,
 };
 #[cfg(windows)]
 use mado_pilot_platform_windows::fixture_protocol as protocol;
@@ -690,7 +691,7 @@ impl DualDisplayFlow {
         };
         let x = dual_display_seam_x(index);
         self._fixture.move_to(x, 600);
-        let points = dual_display_fixture_points(x, 600);
+        let points = dual_display_fixture_marker_points(x, 600);
         let mut displays = self
             .state
             .lock()
@@ -1066,7 +1067,11 @@ fn dual_display_samples_with_content(
                 .transform()
                 .convert_point(desktop_point, CoordinateSpace::CapturePixels)
                 .expect("the display transform resolves the fixture point");
-            let pixel_ok = mapping_pixel_is_benchmark_content(&mapping, capture_point);
+            let pixel_ok = if wait_for_moved_content {
+                mapping_pixel_is_benchmark_marker(&mapping, capture_point)
+            } else {
+                mapping_pixel_is_benchmark_content(&mapping, capture_point)
+            };
             if pixel_ok || !wait_for_moved_content {
                 break (frame, observation, mapping, stamp, placement, pixel_ok);
             }

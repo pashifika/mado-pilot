@@ -36,9 +36,10 @@ mod fixture {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     use mado_pilot_platform_windows::fixture_protocol::{
-        ACKNOWLEDGED, BENCHMARK_FILL_RGB, CLASS_NAME, COPYDATA_TAG, EVENT_KEY_DOWN,
-        EVENT_POINTER_MOVE, EventSummary, FILL_RGB, MAX_PACKET_BYTES, MAX_RECORDED_EVENTS,
-        fixture_title, format_event_line, is_query, summarize,
+        ACKNOWLEDGED, BENCHMARK_FILL_RGB, BENCHMARK_LEFT_MARKER_X, BENCHMARK_MARKER_RGB,
+        BENCHMARK_MARKER_SIZE, BENCHMARK_MARKER_Y, BENCHMARK_RIGHT_MARKER_X, CLASS_NAME,
+        COPYDATA_TAG, EVENT_KEY_DOWN, EVENT_POINTER_MOVE, EventSummary, FILL_RGB, MAX_PACKET_BYTES,
+        MAX_RECORDED_EVENTS, fixture_title, format_event_line, is_query, summarize,
     };
     use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
@@ -338,6 +339,29 @@ mod fixture {
                 let _filled = unsafe { FillRect(device, &raw const patch, patch_brush) };
                 // SAFETY: patch_brush is process-owned and no longer needed after FillRect.
                 let _deleted = unsafe { DeleteObject(HGDIOBJ(patch_brush.0)) };
+                let markers = [
+                    RECT {
+                        left: BENCHMARK_LEFT_MARKER_X,
+                        top: BENCHMARK_MARKER_Y,
+                        right: BENCHMARK_LEFT_MARKER_X + BENCHMARK_MARKER_SIZE,
+                        bottom: BENCHMARK_MARKER_Y + BENCHMARK_MARKER_SIZE,
+                    },
+                    RECT {
+                        left: BENCHMARK_RIGHT_MARKER_X,
+                        top: BENCHMARK_MARKER_Y,
+                        right: BENCHMARK_RIGHT_MARKER_X + BENCHMARK_MARKER_SIZE,
+                        bottom: BENCHMARK_MARKER_Y + BENCHMARK_MARKER_SIZE,
+                    },
+                ];
+                // SAFETY: marker_brush is process-owned and remains live for both
+                // bounded fills before it is deleted.
+                let marker_brush = unsafe { CreateSolidBrush(colorref(BENCHMARK_MARKER_RGB)) };
+                for marker in &markers {
+                    // SAFETY: device, marker, and marker_brush are live for this fill.
+                    let _filled = unsafe { FillRect(device, marker, marker_brush) };
+                }
+                // SAFETY: marker_brush is no longer selected or needed after FillRect.
+                let _deleted = unsafe { DeleteObject(HGDIOBJ(marker_brush.0)) };
             }
         }
         // SAFETY: balances BeginPaint for this WM_PAINT dispatch.

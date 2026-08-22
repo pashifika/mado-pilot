@@ -47,6 +47,16 @@ pub const MAX_PACKET_BYTES: usize = HEADER_BYTES + InputEvent::MAX_TEXT_CHARS * 
 pub const FILL_RGB: u32 = 0x0020_4060;
 /// The alternate deterministic fill used only by the opt-in benchmark mode.
 pub const BENCHMARK_FILL_RGB: u32 = 0x00c4_5b2e;
+/// The placement-specific marker used only by production benchmark fixtures.
+pub const BENCHMARK_MARKER_RGB: u32 = 0x0040_d080;
+/// Client-space X origin of the marker that remains on the negative-X display.
+pub const BENCHMARK_LEFT_MARKER_X: i32 = 64;
+/// Client-space X origin of the marker that remains on the positive-X display.
+pub const BENCHMARK_RIGHT_MARKER_X: i32 = 1_200;
+/// Client-space Y origin shared by both placement markers.
+pub const BENCHMARK_MARKER_Y: i32 = 352;
+/// Width and height of each square placement marker.
+pub const BENCHMARK_MARKER_SIZE: i32 = 16;
 /// Per-channel tolerance used when a captured benchmark frame is checked.
 pub const FILL_TOLERANCE: u8 = 8;
 
