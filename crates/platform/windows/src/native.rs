@@ -136,6 +136,7 @@ impl<T> NativeOwnership<T> {
 
 struct SessionCore {
     target_kind: TargetKind,
+    stream: StreamId,
     key: NativeKey,
     state: StreamState,
     geometry: GeometryRegistration,
@@ -282,6 +283,7 @@ impl NativeSession {
         let callbacks = Arc::new(CallbackControl::default());
         let core = Arc::new(SessionCore {
             target_kind: kind,
+            stream,
             key,
             state: StreamState::with_target_extent(stream),
             geometry: GeometryRegistration::new(geometry, stream),
@@ -1120,6 +1122,7 @@ impl SessionCore {
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
+        let captured_at = frame_time(&transition, native_time);
 
         let lease = self.textures.try_acquire(native_descriptor).map_err(|_| {
             self.domain
@@ -1130,14 +1133,16 @@ impl SessionCore {
             let _drop = self.state.try_record_drop();
             return Ok(());
         };
-        if !self.domain.try_copy(
+        let Some(callback_copy) = self.domain.try_copy(
             lease.texture(),
             &source,
             u64::try_from(descriptor.byte_len()).expect("validated frame byte length fits u64"),
-        )? {
+            self.stream.get(),
+        )?
+        else {
             let _drop = self.state.try_record_drop();
             return Ok(());
-        }
+        };
 
         // CopyResource has been issued and the private texture owns the future
         // GPU result. Release the WGC frame before constructing or publishing a
@@ -1146,7 +1151,6 @@ impl SessionCore {
         drop(surface);
         drop(frame);
 
-        let captured_at = frame_time(&transition, native_time);
         let continuity = if transition.pending_discontinuity {
             Continuity::Discontinuous
         } else if transition.pending_geometry_change {
@@ -1173,7 +1177,10 @@ impl SessionCore {
                     storage,
                     continuity,
                 },
-                |frame| self.geometry.publish(frame),
+                move |frame| {
+                    self.geometry.publish(frame);
+                    callback_copy.publish(frame.stamp());
+                },
             )
             .map_err(|refused| {
                 if refused.error().status() == mado_pilot_core::Status::Closed {

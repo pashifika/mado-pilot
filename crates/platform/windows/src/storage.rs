@@ -329,13 +329,14 @@ impl DeviceDomain {
         target: &ID3D11Texture2D,
         source: &ID3D11Texture2D,
         copied_bytes: u64,
-    ) -> std::result::Result<bool, CaptureFault> {
+        stream: u64,
+    ) -> std::result::Result<Option<benchmark_metrics::CompletedCallbackCopy>, CaptureFault> {
         let _context = match self.context_gate.try_lock() {
             Ok(context) => context,
-            Err(TryLockError::WouldBlock) => return Ok(false),
+            Err(TryLockError::WouldBlock) => return Ok(None),
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         };
-        let timer = benchmark_metrics::time_callback_copy(copied_bytes);
+        let timer = benchmark_metrics::time_callback_copy(copied_bytes, stream);
         // SAFETY: target was created from source's descriptor in this device
         // domain and neither texture is mutable through a public owner.
         unsafe { self.context.CopyResource(target, source) };
@@ -349,8 +350,7 @@ impl DeviceDomain {
         // A void D3D11 context command reports removal through the device.
         // SAFETY: GetDeviceRemovedReason reads device state only.
         unsafe { self.device.GetDeviceRemovedReason() }.map_err(native_fault)?;
-        timer.finish();
-        Ok(true)
+        Ok(Some(timer.finish()))
     }
 
     fn read_texture(

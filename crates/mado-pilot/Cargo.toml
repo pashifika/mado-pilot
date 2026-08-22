@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsupported-api"]
+
 [dependencies]
 mado-pilot-adapter-replay = { path = "../adapter/replay" }
 mado-pilot-backend-opencv = { path = "../backend/opencv" }

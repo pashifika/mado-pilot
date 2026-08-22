@@ -51,13 +51,41 @@
 //! from inside a cargo-launched process is a worse failure mode than a missing
 //! artifact with an actionable message.
 
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+use mado_pilot::{NativeEngineRequest, OperationContext, Status};
+
 use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+const QUALIFY_MISSING_DIRECT3D_DEVICE: &str =
+    "MADO_PILOT_WINDOWS_QUALIFY_MISSING_CREATE_DIRECT3D11_DEVICE";
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+const UNSUPPORTED_RUST_CHILD: &str = "--windows-unsupported-rust-child";
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+const SUPPORTED_RUST_CHILD: &str = "--windows-supported-rust-child";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(all(windows, feature = "qualification-unsupported-api"))]
+    if let Some(mode) = env::args()
+        .find(|argument| argument == UNSUPPORTED_RUST_CHILD || argument == SUPPORTED_RUST_CHILD)
+    {
+        return run_windows_rust_qualification_child(mode == UNSUPPORTED_RUST_CHILD);
+    }
+    let unsupported_qualification = windows_unsupported_qualification_requested();
+    #[cfg(not(all(windows, feature = "qualification-unsupported-api")))]
+    if unsupported_qualification {
+        return Err(
+            "`--windows-unsupported-qualification` requires a Windows qualification build".into(),
+        );
+    }
+    #[cfg(all(windows, feature = "qualification-unsupported-api"))]
+    if unsupported_qualification {
+        check_windows_rust_qualification_children()?;
+    }
     let label = label();
     let paths = Paths::discover()?;
 
@@ -148,6 +176,64 @@ fn label() -> String {
 /// Whether this run must launch and exercise the dedicated Windows fixture.
 fn windows_native_fixture_requested() -> bool {
     env::args().any(|argument| argument == "--windows-native-fixture")
+}
+
+fn windows_unsupported_qualification_requested() -> bool {
+    env::args().any(|argument| argument == "--windows-unsupported-qualification")
+}
+
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+fn run_windows_rust_qualification_child(
+    expect_unsupported: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let engine = mado_pilot::windows_engine(NativeEngineRequest::new())?;
+    let result = engine.discover(&OperationContext::new());
+    if expect_unsupported {
+        let error = result.expect_err("the controlled missing export refuses discovery");
+        if error.status() != Status::Unsupported {
+            return Err(format!(
+                "the controlled missing export returned {:?}, not Unsupported",
+                error.status()
+            )
+            .into());
+        }
+        println!("rust native unsupported discovery complete");
+    } else {
+        let _targets = result?;
+        println!("rust native supported discovery complete");
+    }
+    Ok(())
+}
+
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+fn check_windows_rust_qualification_children() -> Result<(), Box<dyn std::error::Error>> {
+    let current = env::current_exe()?;
+    for (argument, unsupported, expected) in [
+        (
+            UNSUPPORTED_RUST_CHILD,
+            true,
+            "rust native unsupported discovery complete",
+        ),
+        (
+            SUPPORTED_RUST_CHILD,
+            false,
+            "rust native supported discovery complete",
+        ),
+    ] {
+        let mut command = Command::new(&current);
+        command.arg(argument);
+        if unsupported {
+            command.env(QUALIFY_MISSING_DIRECT3D_DEVICE, "1");
+        }
+        let output = command.output()?;
+        report_output("Windows Rust availability child", &output);
+        let stdout = String::from_utf8(output.stdout)?;
+        print!("{stdout}");
+        if !output.status.success() || !stdout.contains(expected) {
+            return Err(format!("Windows Rust availability child `{argument}` failed").into());
+        }
+    }
+    Ok(())
 }
 
 /// Which compiler and which dialect a source is built with.
@@ -848,6 +934,10 @@ fn run_native_c_example(
         .join("crates/bindings/capi/examples/c")
         .join(format!("{name}.c"));
     let program = compile(paths, Language::C, name, &source, true)?;
+    #[cfg(all(windows, feature = "qualification-unsupported-api"))]
+    if windows_unsupported_qualification_requested() {
+        check_unsupported_native_program(paths, &program, name, "C")?;
+    }
     if targets.is_empty() {
         check_native_program(paths, &program, name, "C", None)?;
     } else {
@@ -897,6 +987,28 @@ fn check_native_program(
     Ok(())
 }
 
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+fn check_unsupported_native_program(
+    paths: &Paths,
+    program: &Path,
+    name: &str,
+    language: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::new(program);
+    command.arg("--unsupported-check");
+    command.env(QUALIFY_MISSING_DIRECT3D_DEVICE, "1");
+    reachable(paths, &mut command)?;
+    let output = command.output()?;
+    report_output(&format!("unsupported native {language} example"), &output);
+    let stdout = String::from_utf8(output.stdout)?;
+    print!("{stdout}");
+    if !output.status.success() || !stdout.contains(&format!("{name} complete (unsupported check)"))
+    {
+        return Err(format!("the {name} unsupported native {language} check failed").into());
+    }
+    Ok(())
+}
+
 /// Compiles, links, and runs the C++ example, which answers the same questions.
 fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::Error>> {
     let source = paths
@@ -932,6 +1044,10 @@ fn run_native_cpp_example(
         .root
         .join("crates/bindings/capi/examples/cpp/native-input.cpp");
     let program = compile(paths, Language::Cpp, name, &source, true)?;
+    #[cfg(all(windows, feature = "qualification-unsupported-api"))]
+    if windows_unsupported_qualification_requested() {
+        check_unsupported_native_program(paths, &program, name, "C++")?;
+    }
     if targets.is_empty() {
         check_native_program(paths, &program, name, "C++", None)?;
     } else {

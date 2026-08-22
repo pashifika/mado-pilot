@@ -1934,7 +1934,7 @@ pub const PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT: u64 = 5;
 pub const PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT: f64 = 0.02;
 
 /// Phase 2 Windows dual-4K production-capture ceilings accepted by ADR 0032.
-pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS: [LatencyBudget; 2] = [
+pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS: [LatencyBudget; 3] = [
     LatencyBudget::new(
         "dual_display_frame_arrival",
         Duration::from_millis(20),
@@ -1946,6 +1946,12 @@ pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS: [LatencyBudget; 2] 
         Duration::from_micros(200),
         Duration::from_micros(500),
         Duration::from_micros(1_500),
+    ),
+    LatencyBudget::new(
+        "dual_display_moving_seam",
+        Duration::from_millis(60),
+        Duration::from_millis(75),
+        Duration::from_millis(75),
     ),
 ];
 
@@ -2108,6 +2114,23 @@ pub fn enforce_latency_budgets(workloads: &[Workload], budgets: &[LatencyBudget]
     }
 }
 
+/// Requires one present nonzero observation at or below an accepted ceiling.
+///
+/// # Panics
+///
+/// Panics when the observation is absent, zero, or exceeds `limit`.
+#[track_caller]
+pub fn nonzero_at_most(name: &str, observed: Option<u64>, limit: u64) -> u64 {
+    let observed =
+        observed.unwrap_or_else(|| panic!("{name} must report one observed resource count"));
+    assert!(observed > 0, "{name} must report a nonzero resource count");
+    assert!(
+        observed <= limit,
+        "{name} exceeded its accepted upper bound: {observed} > {limit}"
+    );
+    observed
+}
+
 // --- Hard budgets --------------------------------------------------------------
 
 /// The `kind = "hard"` predicates every committed profile states, enforced by
@@ -2240,7 +2263,8 @@ mod tests {
         ChildContainment, ChildExitObservation, LatencyBudget, PipeReaderEvent, PipeStream, Plan,
         PrefixedLineMatch, PrimaryChildCleanup, Sample, Workload, bounded_child_output,
         bounded_child_output_checked, bounded_child_output_with, classify_prefixed_line,
-        enforce_latency_budgets, measure, measure_pair, process_is_live, wait_for_child_exit,
+        enforce_latency_budgets, measure, measure_pair, nonzero_at_most, process_is_live,
+        wait_for_child_exit,
     };
     use std::cell::Cell;
     use std::fs::{self, OpenOptions};
@@ -2782,6 +2806,30 @@ mod tests {
                 Duration::from_millis(40),
             )],
         );
+    }
+
+    #[test]
+    fn nonzero_upper_bounds_accept_below_and_equal_observations() {
+        assert_eq!(nonzero_at_most("resource", Some(1), 2), 1);
+        assert_eq!(nonzero_at_most("resource", Some(2), 2), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeded its accepted upper bound")]
+    fn nonzero_upper_bounds_reject_an_above_limit_observation() {
+        let _observed = nonzero_at_most("resource", Some(3), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "must report a nonzero resource count")]
+    fn nonzero_upper_bounds_reject_zero() {
+        let _observed = nonzero_at_most("resource", Some(0), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "must report one observed resource count")]
+    fn nonzero_upper_bounds_reject_a_missing_observation() {
+        let _observed = nonzero_at_most("resource", None, 2);
     }
 
     #[test]

@@ -33,6 +33,9 @@ type CreateDirect3D11DeviceFromDxgiDeviceFn =
     unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT;
 
 const MDT_EFFECTIVE_DPI: i32 = 0;
+#[cfg(feature = "qualification-unsupported-api")]
+const QUALIFY_MISSING_DIRECT3D_DEVICE: &str =
+    "MADO_PILOT_WINDOWS_QUALIFY_MISSING_CREATE_DIRECT3D11_DEVICE";
 
 pub(crate) fn geometry_api_available() -> bool {
     logical_to_physical_fn().is_some()
@@ -174,6 +177,10 @@ fn ro_uninitialize_fn() -> Option<RoUninitializeFn> {
 }
 
 fn create_direct3d_device_fn() -> Option<CreateDirect3D11DeviceFromDxgiDeviceFn> {
+    #[cfg(feature = "qualification-unsupported-api")]
+    if std::env::var_os(QUALIFY_MISSING_DIRECT3D_DEVICE).is_some() {
+        return None;
+    }
     static FUNCTION: OnceLock<Option<CreateDirect3D11DeviceFromDxgiDeviceFn>> = OnceLock::new();
     *FUNCTION.get_or_init(|| load_d3d11(b"CreateDirect3D11DeviceFromDXGIDevice\0"))
 }

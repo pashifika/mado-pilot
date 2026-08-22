@@ -23,6 +23,7 @@ use mado_pilot_testkit::bench_harness::{
     PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
     PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS, PrefixedLineMatch,
     bounded_child_output, classify_prefixed_line, enforce_latency_budgets, measure_pair,
+    nonzero_at_most,
 };
 #[cfg(windows)]
 use std::io::{BufRead, BufReader};
@@ -41,17 +42,24 @@ use mado_pilot::{
 
 #[cfg(windows)]
 use mado_pilot_platform_windows::benchmark::{
-    CaptureMetricsSnapshot, capture_metrics, reset_capture_metrics,
+    CallbackCopyObservation, CallbackMetricBaseline, CaptureMetricsSnapshot,
+    callback_metric_baseline, callback_observation_after, capture_metrics,
+    dual_display_fixture_points, dual_display_seam_x, reset_capture_metrics,
 };
 #[cfg(windows)]
 use mado_pilot_platform_windows::fixture_protocol as protocol;
 #[cfg(windows)]
-use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+use windows::Win32::Foundation::RECT;
 #[cfg(windows)]
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::Threading::GetCurrentProcess;
 #[cfg(windows)]
+use windows::Win32::UI::HiDpi::{
+    DPI_AWARENESS_CONTEXT, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext,
+};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, PostMessageW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WM_CLOSE,
+    FindWindowW, GetWindowRect, PostMessageW, SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WM_CLOSE,
 };
 #[cfg(windows)]
 use windows::core::PCWSTR;
@@ -114,6 +122,26 @@ const fn capture_queue_policy() -> &'static str {
 #[cfg(windows)]
 const fn transition_queue_policy() -> &'static str {
     "session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
+}
+
+#[cfg(windows)]
+struct ThreadDpiContext(DPI_AWARENESS_CONTEXT);
+
+#[cfg(windows)]
+impl ThreadDpiContext {
+    fn per_monitor() -> Self {
+        // SAFETY: this changes only the benchmark thread and returns the context
+        // restored by Drop before the move operation returns.
+        Self(unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) })
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ThreadDpiContext {
+    fn drop(&mut self) {
+        // SAFETY: self.0 is the exact prior context returned on this thread.
+        let _restored = unsafe { SetThreadDpiAwarenessContext(self.0) };
+    }
 }
 
 #[cfg(windows)]
@@ -193,11 +221,26 @@ impl FixtureProcess {
     }
 
     fn move_to(&self, x: i32, y: i32) {
+        let _dpi = ThreadDpiContext::per_monitor();
         let hwnd = self.window();
         // SAFETY: hwnd is the live fixture popup. The benchmark changes only
         // its signed desktop placement and preserves z-order and activation.
         unsafe { SetWindowPos(hwnd, None, x, y, 1_280, 720, SWP_NOZORDER | SWP_NOACTIVATE) }
             .expect("the benchmark fixture moves to the requested signed desktop position");
+        let mut observed = RECT::default();
+        // SAFETY: hwnd remains the live fixture popup and observed is writable.
+        unsafe { GetWindowRect(hwnd, &raw mut observed) }
+            .expect("the benchmark fixture exposes its moved rectangle");
+        assert_eq!(
+            observed,
+            RECT {
+                left: x,
+                top: y,
+                right: x + 1_280,
+                bottom: y + 720,
+            },
+            "the fixture reaches the exact requested moving-seam placement"
+        );
     }
 
     fn close_window(&self) -> bool {
@@ -543,6 +586,7 @@ impl Drop for OrdinaryInputFlow {
 struct DualDisplayFlow {
     _engine: Engine,
     _fixture: FixtureProcess,
+    movement_index: Mutex<u32>,
     state: Mutex<Vec<DualDisplayState>>,
 }
 
@@ -586,6 +630,10 @@ impl DualDisplayFlow {
                 PixelExtent::new(3_840, 2_160),
                 "the dual-display profile refuses any non-4K display",
             );
+            let seeded_mapping = last
+                .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
+                .expect("each seed frame primes the steady mapped-frame allocation");
+            drop(seeded_mapping);
             let placement = last
                 .transform()
                 .target()
@@ -623,7 +671,33 @@ impl DualDisplayFlow {
         Self {
             _engine: engine,
             _fixture: fixture,
+            movement_index: Mutex::new(0),
             state: Mutex::new(displays),
+        }
+    }
+
+    fn move_across_seam(&self) {
+        let index = {
+            let mut next = self
+                .movement_index
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let index = *next;
+            *next = next
+                .checked_add(1)
+                .expect("the bounded movement sample index remains representable");
+            index
+        };
+        let x = dual_display_seam_x(index);
+        self._fixture.move_to(x, 600);
+        let points = dual_display_fixture_points(x, 600);
+        let mut displays = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(displays.len(), points.len());
+        for (display, point) in displays.iter_mut().zip(points) {
+            display.fixture_point = point;
         }
     }
 }
@@ -692,7 +766,14 @@ fn production_capture_dual_4k_workloads(plan: Plan) -> Vec<Workload> {
         DualDisplayFlow::spawn,
         dual_display_samples,
     );
-    let workloads = vec![arrival, callback_copy];
+    let moving = measure(
+        "dual_display_moving_seam",
+        "300 strictly newer correlated frame pairs follow the controlled fixture across the signed mixed-DPI seam with exact placement, mapping, callback-copy, and cleanup evidence",
+        Plan::new(0, 300),
+        DualDisplayFlow::spawn,
+        dual_display_moving_seam,
+    );
+    let workloads = vec![arrival, callback_copy, moving];
     assert_capture_resources_released();
     workloads
 }
@@ -885,26 +966,24 @@ fn production_recovery_setup() {
 fn windows_callback_copy(active: &ActiveFlow) -> Sample {
     let mut state = lock_state(active);
     let before_stamp = state.last.stamp();
-    let before_metrics = capture_metrics();
     let operation = bounded(OPERATION_WAIT);
+    let callback_floor = state
+        .session
+        .acquire_frame(&FrameRequest::latest(), &operation)
+        .expect("production callback copy observes the current queue floor");
+    let callback_floor_stamp = callback_floor.stamp();
+    assert_eq!(callback_floor_stamp.stream(), before_stamp.stream());
+    drop(callback_floor);
+    let baseline = callback_metric_baseline();
     let frame = state
         .session
-        .acquire_frame(&FrameRequest::newer_than(before_stamp), &operation)
-        .expect("production callback copy publishes a strictly newer frame");
+        .acquire_frame(&FrameRequest::newer_than(callback_floor_stamp), &operation)
+        .expect("production callback copy publishes after its metric baseline");
     let mapping = frame
         .map(PixelFormat::Bgra8, &operation)
         .expect("the callback-copy result maps for its content oracle");
+    let observation = correlated_callback(baseline, &frame);
     let after_metrics = capture_metrics();
-    let copies = after_metrics
-        .callback_copies
-        .saturating_sub(before_metrics.callback_copies);
-    let copied_bytes = after_metrics
-        .copied_bytes
-        .saturating_sub(before_metrics.copied_bytes);
-    let callback_time = after_metrics
-        .callback_copy_time
-        .saturating_sub(before_metrics.callback_copy_time);
-    let elapsed = callback_time / u32::try_from(copies).unwrap_or(u32::MAX).max(1);
     let stamp = frame.stamp();
     let delta = stamp
         .sequence()
@@ -917,15 +996,26 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
         && frame.descriptor().extent() == PixelExtent::new(1_280, 720)
         && mapping.stamp() == stamp
         && mapping_is_benchmark_content(&mapping)
-        && copies > 0
-        && copied_bytes == mapped.saturating_mul(copies)
+        && observation.copied_bytes == mapped
+        && after_metrics.callback_observation_losses == 0
         && after_metrics.detached_textures_peak > 0
         && after_metrics.staging_textures_peak > 0;
     state.last = frame;
-    Sample::new(elapsed, correct, mapped)
+    Sample::new(observation.callback_copy_time, correct, mapped)
         .with_stale_work(delta.saturating_sub(1), delta)
-        .with_capture_resources(capture_resources(copied_bytes, after_metrics, 2))
+        .with_capture_resources(capture_resources(
+            observation.copied_bytes,
+            after_metrics,
+            2,
+        ))
         .with_peak_resident_bytes(peak_resident_bytes())
+}
+
+#[cfg(windows)]
+fn dual_display_moving_seam(flow: &DualDisplayFlow) -> Sample {
+    flow.move_across_seam();
+    let (arrival, _callback) = dual_display_samples(flow);
+    arrival
 }
 
 #[cfg(windows)]
@@ -934,30 +1024,40 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
         .state
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let before_metrics = capture_metrics();
+    let operation = bounded(OPERATION_WAIT);
     let started = Instant::now();
     let frames = displays
         .iter()
         .map(|display| {
-            display
+            let callback_floor = display
                 .session
-                .acquire_frame(
-                    &FrameRequest::newer_than(display.last.stamp()),
-                    &bounded(OPERATION_WAIT),
-                )
-                .expect("each 4K display publishes a strictly newer frame")
+                .acquire_frame(&FrameRequest::latest(), &operation)
+                .expect("each 4K display exposes its current queue floor");
+            let callback_floor_stamp = callback_floor.stamp();
+            assert_eq!(callback_floor_stamp.stream(), display.last.stamp().stream());
+            drop(callback_floor);
+            let baseline = callback_metric_baseline();
+            let frame = display
+                .session
+                .acquire_frame(&FrameRequest::newer_than(callback_floor_stamp), &operation)
+                .expect("each 4K display publishes after its own metric baseline");
+            (baseline, frame)
         })
         .collect::<Vec<_>>();
     let arrival = started.elapsed();
     let mut correct = true;
     let mut mapped_bytes = 0_u64;
+    let mut copied_bytes = 0_u64;
+    let mut callback_time = Duration::ZERO;
     let mut stale = 0_u64;
     let mut scheduled = 0_u64;
-    for (display, frame) in displays.iter_mut().zip(frames) {
+    let surface_bytes = 3_840_u64 * 2_160 * 4;
+    for (display, (baseline, frame)) in displays.iter_mut().zip(frames) {
         let before = display.last.stamp();
         let mapping = frame
-            .map(PixelFormat::Bgra8, &bounded(OPERATION_WAIT))
+            .map(PixelFormat::Bgra8, &operation)
             .expect("each 4K display frame maps to BGRA8");
+        let observation = correlated_callback(baseline, &frame);
         let stamp = frame.stamp();
         let delta = stamp
             .sequence()
@@ -985,36 +1085,22 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
         let placement_ok = placement.desktop_origin() == display.origin
             && (placement.scale().x() - display.scale).abs() < f64::EPSILON;
         let pixel_ok = mapping_pixel_is_benchmark_content(&mapping, capture_point);
-        correct &= identity_ok && placement_ok && pixel_ok;
+        correct &=
+            identity_ok && placement_ok && pixel_ok && observation.copied_bytes == surface_bytes;
         mapped_bytes = mapped_bytes
             .saturating_add(u64::try_from(mapping.bytes().len()).expect("mapped bytes fit u64"));
+        copied_bytes = copied_bytes.saturating_add(observation.copied_bytes);
+        callback_time = callback_time.saturating_add(observation.callback_copy_time);
         stale = stale.saturating_add(delta.saturating_sub(1));
         scheduled = scheduled.saturating_add(delta);
         display.last = frame;
     }
-    let deadline = Instant::now() + OPERATION_WAIT;
-    while capture_metrics().callback_copies == before_metrics.callback_copies {
-        assert!(
-            Instant::now() < deadline,
-            "the dual-display callback metric observes production progress",
-        );
-        thread::sleep(Duration::from_millis(1));
-    }
     let after_metrics = capture_metrics();
-    let copies = after_metrics
-        .callback_copies
-        .saturating_sub(before_metrics.callback_copies);
-    let copied_bytes = after_metrics
-        .copied_bytes
-        .saturating_sub(before_metrics.copied_bytes);
-    let callback_time = after_metrics
-        .callback_copy_time
-        .saturating_sub(before_metrics.callback_copy_time);
-    let callback_elapsed = callback_time / u32::try_from(copies).unwrap_or(u32::MAX).max(1);
-    let surface_bytes = 3_840_u64 * 2_160 * 4;
-    correct &= copies > 0
-        && copied_bytes == surface_bytes.saturating_mul(copies)
-        && mapped_bytes == surface_bytes.saturating_mul(2)
+    let callback_elapsed =
+        callback_time / u32::try_from(displays.len()).expect("two displays fit u32");
+    correct &= mapped_bytes == surface_bytes.saturating_mul(2)
+        && copied_bytes == surface_bytes.saturating_mul(2)
+        && after_metrics.callback_observation_losses == 0
         && after_metrics.detached_textures_peak >= 4
         && after_metrics.staging_textures_peak > 0;
     let resources = capture_resources(copied_bytes, after_metrics, 4);
@@ -1029,6 +1115,13 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
             .with_capture_resources(resources)
             .with_peak_resident_bytes(resident),
     )
+}
+
+#[cfg(windows)]
+fn correlated_callback(baseline: CallbackMetricBaseline, frame: &Frame) -> CallbackCopyObservation {
+    callback_observation_after(baseline, frame.stamp())
+        .expect("callback instrumentation remains coherent and lossless")
+        .expect("the acquired frame has its own completed post-baseline callback")
 }
 
 #[cfg(windows)]
@@ -1489,20 +1582,20 @@ fn enforce_premeasurement_budgets(set: WorkloadSet, workloads: &[Workload]) {
                 Some(PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT),
                 "callback_copy exceeded one exact 1280x720 producer-surface copy"
             );
-            assert_eq!(
+            nonzero_at_most(
+                "callback_copy detached-texture peak",
                 callback.detached_textures_peak(),
-                Some(PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT),
-                "callback_copy changed the accepted detached-texture peak"
+                PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT,
             );
-            assert_eq!(
+            nonzero_at_most(
+                "callback_copy staging-texture peak",
                 callback.staging_textures_peak(),
-                Some(PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT),
-                "callback_copy changed the accepted staging-texture peak"
+                PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT,
             );
-            assert_eq!(
+            nonzero_at_most(
+                "callback_copy total GPU-resource peak",
                 callback.gpu_resources_peak(),
-                Some(PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT),
-                "callback_copy changed the accepted total GPU-resource peak"
+                PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT,
             );
         }
         WorkloadSet::ProductionCaptureDual4k => {

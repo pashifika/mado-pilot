@@ -31,6 +31,9 @@ crate-type = ["lib", "cdylib"]
 name = "c-boundary"
 harness = false
 
+[features]
+qualification-unsupported-api = ["mado-pilot/qualification-unsupported-api"]
+
 [dependencies]
 mado-pilot = { path = "../../mado-pilot" }
 

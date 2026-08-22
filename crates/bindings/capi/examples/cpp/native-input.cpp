@@ -841,16 +841,44 @@ bool expected_library_image(const madopilot::Api&)
 }
 #endif
 
+bool run_unsupported_native(const madopilot::Api& api)
+{
+    madopilot::Operation operation;
+    if (!bounded_operation(api, UINT64_C(5000000000), operation)) {
+        return false;
+    }
+    const madopilot::Source source = native_source();
+    madopilot::EngineOptions options;
+    auto created = api.create_engine(source, options, operation);
+    if (!created) {
+        return report_failure("unsupported Api::create_engine", created.error());
+    }
+    madopilot::Engine engine = created.take();
+    if (!bounded_operation(api, UINT64_C(5000000000), operation)) {
+        return false;
+    }
+    auto discovered = engine.discover(operation);
+    if (discovered) {
+        return expect(false, "native lazy availability refuses discovery");
+    }
+    return expect(discovered.error().status() == MADOPILOT_STATUS_UNSUPPORTED,
+                  "native lazy availability returns typed unsupported");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
     bool check_only = false;
     bool load_only = false;
+    bool unsupported_only = false;
     std::string_view title;
     RouteContract contract = RouteContract::platform_default;
     if (argc == 2 && std::string_view(argv[1]) == "--load-check") {
         load_only = true;
+    } else if (argc == 2 &&
+               std::string_view(argv[1]) == "--unsupported-check") {
+        unsupported_only = true;
     } else if (argc == 2 && std::string_view(argv[1]) == "--check") {
         check_only = true;
     } else if (argc == 3 && std::string_view(argv[1]) == "--ordinary" &&
@@ -866,8 +894,8 @@ int main(int argc, char** argv)
         title = argv[1];
     } else {
         std::fprintf(stderr,
-                     "usage: %s --load-check | --check | [--ordinary | "
-                     "--acknowledged] \"<full fixture window title>\"\n",
+                     "usage: %s --load-check | --unsupported-check | --check | "
+                     "[--ordinary | --acknowledged] \"<full fixture window title>\"\n",
                      argv[0]);
         return 2;
     }
@@ -897,6 +925,14 @@ int main(int argc, char** argv)
                 static_cast<unsigned>(build.value().table_size));
     if (contract != RouteContract::platform_default) {
         std::printf("contract: %s\n", route_contract_name(contract));
+    }
+    if (unsupported_only) {
+        if (!run_unsupported_native(api)) {
+            return 1;
+        }
+        report_peak_resident_bytes();
+        std::printf("%s complete (unsupported check)\n", EXAMPLE_NAME);
+        return 0;
     }
     if (load_only) {
         report_peak_resident_bytes();
