@@ -67,9 +67,9 @@ show a picker, or silently substitute another capture or input mechanism.
 ## Verification
 
 The complete retained result is
-[`windows-minimum-system.md`](../evidence/g-001/windows-minimum-system.md), bound
-to clean source commit `834a58f6c28ab94f3f7a6d5901e3370b07e93155`,
-tree `3294863552d502a64f60f59449560d7b71f4e8b7`. It records:
+[`windows-minimum-system.md`](../evidence/g-001/windows-minimum-system.md).
+The original positive matrix remains bound to clean source `834a58f`, tree
+`3294863`; it records:
 
 - Windows 11 Pro 25H2 build `26200.9168`, which Microsoft's current-version
   table listed as the latest serviced 25H2 build;
@@ -78,12 +78,19 @@ tree `3294863552d502a64f60f59449560d7b71f4e8b7`. It records:
 - successful product-DLL process load, current ABI 1.2 and frozen ABI 1.0
   negotiation, C, C++, ownership, fixture-backed native flows, and CMake
   consumers;
-- a passing `loader_imports` check with provider discovery reachable and no eager
-  controlled exports;
+- a passing `loader_imports` check with provider discovery reachable and no
+  eager controlled exports; and
 - passing native discovery, WGC capture, retained-frame progress, mapping,
   acknowledged fixture input, lifecycle, and cleanup rows without fallback.
 
-The positive host did not force missing modules, exports, activation factories,
-or `IsSupported == false`; that native negative branch remains an explicit
-observation gap rather than a claimed pass. Lowering the floor requires a
-replacement ADR and a new oldest-host matrix.
+Final repair source `9bfc0c0`, tree `be1c571`, adds the required controlled
+negative result. An off-by-default qualification feature makes the named
+WinRT-D3D export unavailable only inside isolated child processes, before the
+resolver cache, without modifying the host. Rust, C, and C++ engines load, then
+discovery returns typed `Unsupported`; removing the child-only environment value
+restores successful Rust and fixture-backed C/C++ discovery. This closes the
+native unsupported-capability row without changing the support floor or an
+ordinary production artifact.
+
+Lowering the floor still requires a replacement ADR and a new oldest-host
+matrix.

@@ -2,73 +2,79 @@
 
 ## Scope and source
 
-This record qualifies the 1280x720 production-capture and production-transition profiles on final source commit `0208798d9542aaae3a956d3e774c9ce57468bc9d`, tree `cac0020edbf5b3d28a4dcd5df41e020dc0c6257d`. It does not qualify the separately scheduled dual-4K profile.
+The current 1280x720 production-capture profile is requalified on clean source
+`9bfc0c023db4d39e7caa59aa38b196477b971e3a`, tree
+`be1c57127d495f1345a6619f1851acde627430f0`. The production-transition profile
+remains bound to its accepted source `0208798d9542aaae3a956d3e774c9ce57468bc9d`,
+tree `cac0020edbf5b3d28a4dcd5df41e020dc0c6257d`; the complete intervening diff
+changes no transition workload, oracle, fixture mode, or accepted limit.
 
-The approved host ran Windows 11 Pro 25H2 build `26200.9168` on an Intel Core i7-12700KF with 32 GiB RAM and an NVIDIA GeForce RTX 4080, driver `32.0.15.9186`. The run used Rust/Cargo 1.97.1, MSVC 19.44.35228, Windows SDK 10.0.26100.0, and OpenCV 4.14.0. It was unelevated on an interactive desktop with one online, non-mirrored primary display: 3840x2160 physical, 2560x1440 logical, 144 DPI, signed physical rectangle `[0,0,3840,2160)`.
+The approved host ran Windows 11 Pro 25H2 build `26200.9168` on an Intel Core
+i7-12700KF with 32 GiB RAM and an NVIDIA GeForce RTX 4080, driver
+`32.0.15.9186`. Toolchains were Rust/Cargo 1.97.1, MSVC 19.44.35228, Windows SDK
+10.0.26100.0, and OpenCV 4.14.0. The capture rerun used an unelevated
+interactive desktop with one online non-mirrored primary display: 3840x2160
+physical, 2560x1440 logical, 144 DPI, physical rectangle `[0,0,3840,2160)`.
 
-The final release benchmark executable SHA-256 was `63dc6186337cfd84d4430376afb0a1773f47f912ebfa105987439b8644dd6aa1`. The release fixture executable SHA-256 was `07151c066fc139bde56046cd1812b1d553243a27292569e86b33bd97003b226c`; its tracked source digest was `e2daf522336997f841bd8813c62371e001c7ef96dfe3e3ae44fafaa35a6d67eb`.
-
-## Procedure and process observation
-
-The release benchmark and fixture were built from the bound source, then the benchmark executable was launched directly with an argument vector for each workload set:
+## Requalification command and identity
 
 ```text
 native-phase2 --bench --workload-set production-capture-1280x720 \
-  --fixture-executable <release fixture> \
-  --hardware <approved host> --os-version <approved build> \
+  --target x86_64-pc-windows-msvc \
+  --fixture-executable <absolute built fixture> \
+  --hardware <approved host> --os-version <approved OS> \
   --deployment-target "Windows 11 25H2 build family 26200" \
-  --source-revision 0208798d9542aaae3a956d3e774c9ce57468bc9d \
-  --source-tree cac0020edbf5b3d28a4dcd5df41e020dc0c6257d \
+  --source-revision 9bfc0c023db4d39e7caa59aa38b196477b971e3a \
+  --source-tree be1c57127d495f1345a6619f1851acde627430f0 \
   --toolchain <recorded versions> --gpu-driver <recorded driver> \
-  --display-topology <qualified single display> \
-  --permissions-signing <unelevated and unsigned fixture>
-
-native-phase2 --bench --workload-set production-transitions-1280x720 <same metadata>
+  --display-topology <qualified single-display topology> \
+  --permissions-signing <approved classification>
 ```
 
-Each set ran twice on the reviewed precursor and once on final source. A supervisor retained stdout as a profile candidate and streamed stderr live. The records identified each workload's setup, warm-up, sampling, and completion phases plus every fixture's transient PID, behavior, readiness, stopping, and exit. PIDs were observed only for process control and were not retained. All six benchmark processes exited `0`; every spawned fixture reached a terminal state; post-run process queries found no remaining fixture. The final two runs enforced every ADR 0031 budget in-process.
+- benchmark executable SHA-256: `0a82933f17fe9e37418604636829eb751a43a558d715b1234c85db9e93aea40c`;
+- fixture executable SHA-256: `7a0eacf152ea77f30f791d82e58e90424f8fe75457225bbe246df13a6554c7ed`.
 
-A PTY rendering that duplicated wrapped characters and a shell-redirection attempt that split quoted metadata were rejected before budget selection. Neither contributed measurement values. Final source and both accepted precursors used a direct argument vector and produced intact parseable metadata.
+The first repaired capture run passed on an earlier repair commit, then was
+invalidated when dual-display correlation and budget enforcement changed the
+benchmark source. The retained run above is the later exact-source run. Earlier
+argument/setup failures emitted no measurement and were rejected.
 
-## Capture results
+## Accepted capture results
 
-Each accepted capture run used 30 warm-ups and 150 samples for each of four workloads: 120 aggregate warm-ups and 600 retained frames. All three runs reported zero correctness failures, zero allocation growth, exact 3,686,400-byte mappings, and zero stale work where stale work was applicable.
+The run retained 150 samples for each of four workloads after 30 warm-ups per
+workload. Every workload reported zero correctness failures and zero allocation
+growth.
 
-The table records the largest observation across final source and both accepted precursors:
+| Workload | p50 | p95 | maximum | mapped bytes | copied bytes | live heap peak |
+|---|---:|---:|---:|---:|---:|---:|
+| `steady_frame_acquisition` | 19.6759 ms | 40.3248 ms | 41.4159 ms | 3,686,400 | n/a | 7,417,895 B |
+| `callback_copy` | 0.0958 ms | 0.3510 ms | 0.4569 ms | 3,686,400 | 3,686,400 | 7,411,900 B |
+| `latest_acquisition` | 0.0011 ms | 0.0033 ms | 0.0558 ms | 3,686,400 | n/a | 7,411,852 B |
+| `cpu_map_bgra8` | 1.4218 ms | 2.7636 ms | 5.3529 ms | 3,686,400 | n/a | 7,411,852 B |
 
-| Workload | largest p50 | largest p95 | largest maximum | largest live Rust heap |
-|---|---:|---:|---:|---:|
-| `steady_frame_acquisition` | 19.9035 ms | 44.4918 ms | 59.3198 ms | 7,416,613 bytes |
-| `callback_copy` | 0.1136 ms | 0.4144 ms | 1.0699 ms | 7,410,618 bytes |
-| `latest_acquisition` | 0.0013 ms | 0.0038 ms | 0.0188 ms | 7,410,570 bytes |
-| `cpu_map_bgra8` | 1.8841 ms | 3.8514 ms | 6.4503 ms | 7,410,570 bytes |
+`callback_copy` observed two detached textures, one staging texture, five total
+producer/detached/staging resources, zero stale work, and a 66,306,048-byte
+resident peak. These satisfy ADR 0031 without treating the resource counts as
+exact equality requirements: each count must be present, nonzero, and no greater
+than its accepted ceiling. Copied and mapped bytes remain exact.
 
-All three callback-copy runs reported exactly 3,686,400 copied bytes per retained result, two detached textures, one staging texture, five total producer/detached/staging textures, and a largest resident peak of 66,203,648 bytes.
+## Repair applicability and lifecycle
 
-## Transition results
+Each callback observation now publishes count-equivalent identity, elapsed time,
+and copied bytes as one frame-stamp-bound record. A record is visible before its
+frame can be acquired; contention or overwrite invalidates the profile. The
+1280 callback row requires the exact acquired stream/epoch/sequence record after
+its own baseline.
 
-All three transition runs reported zero correctness failures. All allocation growth was at or below 48 bytes; resize released 979,200 bytes relative to its post-warm-up baseline.
+The benchmark and fixture reported setup, warm-up, sampling, completion,
+readiness, stopping, and terminal exit outside measured regions. No fixture
+process remained after the run. The separately accepted transition profile is
+unchanged and retains its original measurements and source identity.
 
-The table records the largest observation across final source and both accepted precursors:
+## Privacy and exclusions
 
-| Workload | largest p50 | largest p95 | largest maximum | largest live Rust heap |
-|---|---:|---:|---:|---:|
-| `open_first_frame` | 105.3187 ms | 105.7658 ms | 105.7658 ms | 3,730,605 bytes |
-| `retained_pressure_resume` | 27.2020 ms | 27.2020 ms | 27.2020 ms | 3,724,466 bytes |
-| `resize_recreation` | 80.8781 ms | 103.8856 ms | 103.8856 ms | 8,389,858 bytes |
-| `target_loss_recovery` | 368.5875 ms | 368.5875 ms | 368.5875 ms | 3,724,514 bytes |
-| `close_drain` | 2.3540 ms | 2.5039 ms | 2.5039 ms | 37,970 bytes |
-
-The largest native process resident peak was 72,896,512 bytes. Mapped-byte observations were exact: 3,686,400 for open, zero for pressure and close, 4,665,600 for the 1440x810 resize result, and 7,372,800 for retained-old plus replacement mappings during target-loss recovery. Retained pressure reported a deliberate stale ratio of 0.8 after filling finite storage.
-
-## Privacy and remaining gap
-
-No retained record contains captured pixels or hashes, recognized or input text, credentials, user paths, PIDs, raw window/display identifiers, unrelated window titles, process inventories, or unrelated desktop metadata. Executable paths and rejected raw output remain untracked.
-
-ADR 0031 accepts only the two 1280x720 profiles. The mixed-DPI dual-4K profile remains open under `G-013`; it must run outside 08:00-19:00 local time with both qualified displays online before any dual-4K ceiling is accepted.
-
-## Successor dual-4K decision
-
-ADR 0032 later accepts the independently measured mixed-DPI dual-4K profile.
-This record and both ADR 0031 profiles remain scoped to 1280x720 and retain
-their original source, measurements, and ceilings.
+No retained record contains captured pixels or hashes, recognized or input text,
+credentials, user paths, PIDs, raw HWND/display identifiers, unrelated window
+titles, process inventories, or unrelated desktop metadata. Executable paths and
+raw console output remain untracked. Physical device removal, TDR, and driver
+upgrade were not performed and are not claimed.

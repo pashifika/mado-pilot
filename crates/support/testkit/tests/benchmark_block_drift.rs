@@ -748,7 +748,11 @@ fn windows_dual_4k_profile_states_the_resource_budgets_the_harness_enforces() {
         ))
     );
 
-    for workload in ["dual_display_frame_arrival", "dual_display_callback_copy"] {
+    for workload in [
+        "dual_display_frame_arrival",
+        "dual_display_callback_copy",
+        "dual_display_moving_seam",
+    ] {
         for (measure, unit, limit) in [
             (
                 "copied_bytes_per_result",

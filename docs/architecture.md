@@ -1565,13 +1565,19 @@ thread that touches WinRT is initialized by the Adapter first.
 
 The controlled unit and synthetic-window tests remain linked from the acceptance
 suite. [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
-accepts the revision-bound 120-warm-up/600-frame 1280×720 production matrix and
-its callback-copy, staging, resident, transition, and cleanup budgets.
+accepts the repaired 1280×720 capture matrix, its nonzero upper-bounded resource
+counts, and the applicable historical transition profile.
 [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the final-source mixed-DPI dual-4K matrix and its callback-copy, mapping,
-stale-work, heap, resident, and GPU-resource bounds. Final-source Phase 1 reruns
-remain open under [`G-013`](validation-gates.md#g-013). The Adapter is reachable
-from the public composition root through `mado_pilot::windows_engine`.
+accepts 600 stationary frames per display plus 300 controlled moving-seam frame
+pairs. Benchmark-only callback instrumentation publishes one fixed-capacity,
+allocation-free record with stream/epoch/sequence, elapsed copy time, and bytes
+before its frame becomes observable; loss, contention, or overwrite invalidates
+the profile.
+
+ADR 0019's native negative boundary is exercised through an off-by-default
+qualification feature that suppresses one lazy WinRT-D3D export before resolver
+caching in isolated child processes. Ordinary builds contain no active override.
+The Adapter remains reachable through `mado_pilot::windows_engine`.
 
 ### macOS native capture ownership
 

@@ -1,10 +1,7 @@
-# Phase 2 Windows 1280x720 production capture, measured on final source
-# 0208798d9542aaae3a956d3e774c9ce57468bc9d and tree
-# cac0020edbf5b3d28a4dcd5df41e020dc0c6257d.
-#
-# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0031 sets
-# target-specific regression budgets. The dual-4K production profile remains
-# withheld until its separately scheduled interactive run completes.
+# Phase 2 Windows 1280x720 production capture, requalified on repaired source
+# 9bfc0c023db4d39e7caa59aa38b196477b971e3a and tree
+# be1c57127d495f1345a6619f1851acde627430f0. The prior profile remains
+# revision-bound in ADR 0031 and its evidence rather than being relabeled.
 
 format_version = 1
 
@@ -20,7 +17,7 @@ measurements_recorded = true
 [profile]
 fixture = "crates/platform/windows fixture Rust and protocol sources"
 fixture_sha256 = "e2daf522336997f841bd8813c62371e001c7ef96dfe3e3ae44fafaa35a6d67eb"
-benchmark_executable_sha256 = "63dc6186337cfd84d4430376afb0a1773f47f912ebfa105987439b8644dd6aa1"
+benchmark_executable_sha256 = "0a82933f17fe9e37418604636829eb751a43a558d715b1234c85db9e93aea40c"
 release_target = "x86_64-pc-windows-msvc"
 hardware = "Intel Core i7-12700KF, 32 GiB RAM, NVIDIA GeForce RTX 4080"
 os_version = "Windows 11 Pro 25H2 build 26200.9168"
@@ -30,7 +27,7 @@ warmup_iterations = 30
 sample_count = 150
 correctness_oracle = "every retained sample checks strictly newer topology-qualified production frames, exact BGRA8 mapping and declared fixture content, callback-copy accounting, finite retained progress, or observable latest-wins pressure"
 queue_policy = "WGC producer pool depth 2; session latest-wins queue depth 1; Adapter finite retained-storage limit; fixture 16 ms repaint timer"
-notes = "source commit 0208798d9542aaae3a956d3e774c9ce57468bc9d, tree cac0020edbf5b3d28a4dcd5df41e020dc0c6257d; toolchain rustc 1.97.1; cargo 1.97.1; MSVC 19.44.35228; Windows SDK 10.0.26100.0; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080, driver 32.0.15.9186; display topology one online non-mirrored primary; 3840x2160 physical; 2560x1440 logical; 144 DPI; signed rectangle [0,0,3840,2160); permissions/signing unelevated interactive desktop; unsigned repository fixture; Windows exposes no separate capture permission; fixture executable sha256 adf4ae223e0f9fe605d4f28c6ddea7f0b106735439c1b069cff7821aa314745b; executable paths deliberately omitted"
+notes = "source commit 9bfc0c023db4d39e7caa59aa38b196477b971e3a, tree be1c57127d495f1345a6619f1851acde627430f0; toolchain rustc 1.97.1; cargo 1.97.1; MSVC 19.44.35228; Windows SDK 10.0.26100.0; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080, driver 32.0.15.9186; display topology one online non-mirrored primary; 3840x2160 physical; 2560x1440 logical; 144 DPI; signed rectangle [0,0,3840,2160); permissions/signing unelevated interactive desktop; unsigned repository fixture; Windows exposes no separate capture permission; fixture executable sha256 7a0eacf152ea77f30f791d82e58e90424f8fe75457225bbe246df13a6554c7ed; executable paths deliberately omitted"
 [[budget]]
 measure = "result_correctness"
 kind = "hard"
@@ -63,14 +60,14 @@ rationale = "ADR 0031 rounds above three times the largest measured native bench
 workload = "steady_frame_acquisition"
 correctness_oracle = "one strictly newer 1280x720 production frame arrives from the fixture timer, preserves declared content and frame-authoritative geometry, and reports observable sequence gaps"
 result_correctness = 0
-latency_p50_ms = 19.903500
-latency_p95_ms = 42.374100
-latency_max_ms = 57.213400
-iteration_span_ms = 27.459376
+latency_p50_ms = 19.675900
+latency_p95_ms = 40.324800
+latency_max_ms = 41.415900
+iteration_span_ms = 26.887708
 mapped_bytes_per_result = 3686400
 stale_work_ratio = 0.000000000
-peak_allocated_bytes = 7416613
-steady_allocated_bytes = 3729709
+peak_allocated_bytes = 7417895
+steady_allocated_bytes = 3730991
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -112,25 +109,24 @@ unit = "ratio"
 direction = "at_most"
 limit = 0.02
 rationale = "two exact-source runs observed no stale work; this rejects sustained latest-wins loss"
-
 [[measurement]]
 workload = "callback_copy"
 correctness_oracle = "successful callback-side detach copies account for every producer publication observed before one exact mapped 1280x720 result"
 result_correctness = 0
-latency_p50_ms = 0.098800
-latency_p95_ms = 0.334000
-latency_max_ms = 0.583200
-iteration_span_ms = 27.023507
+latency_p50_ms = 0.095800
+latency_p95_ms = 0.351000
+latency_max_ms = 0.456900
+iteration_span_ms = 28.690432
 mapped_bytes_per_result = 3686400
 copied_bytes_per_result = 3686400
 detached_textures_peak = 2
 staging_textures_peak = 1
 gpu_resources_peak = 5
 stale_work_ratio = 0.000000000
-peak_allocated_bytes = 7410618
-steady_allocated_bytes = 3723714
+peak_allocated_bytes = 7411900
+steady_allocated_bytes = 3724996
 allocated_growth_bytes = 0
-peak_resident_bytes = 65835008
+peak_resident_bytes = 66306048
 
 [[measurement.budget]]
 measure = "latency_p50"
@@ -203,19 +199,18 @@ unit = "count"
 direction = "at_most"
 limit = 5
 rationale = "two producer, two detached, and one staging texture are simultaneously live"
-
 [[measurement]]
 workload = "latest_acquisition"
 correctness_oracle = "after timer-driven production progress, latest returns a same-stream 1280x720 frame no older than the proven publication and reports observable queue pressure"
 result_correctness = 0
-latency_p50_ms = 0.001000
-latency_p95_ms = 0.003400
-latency_max_ms = 0.014100
-iteration_span_ms = 27.245782
+latency_p50_ms = 0.001100
+latency_p95_ms = 0.003300
+latency_max_ms = 0.055800
+iteration_span_ms = 27.481725
 mapped_bytes_per_result = 3686400
 stale_work_ratio = 0.000000000
-peak_allocated_bytes = 7410570
-steady_allocated_bytes = 3723666
+peak_allocated_bytes = 7411852
+steady_allocated_bytes = 3724948
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -257,18 +252,17 @@ unit = "ratio"
 direction = "at_most"
 limit = 0.02
 rationale = "two exact-source runs observed no stale work; this rejects sustained latest-wins loss"
-
 [[measurement]]
 workload = "cpu_map_bgra8"
 correctness_oracle = "one timer-driven 1280x720 production frame maps once to exact-size BGRA8 bytes carrying declared fixture content"
 result_correctness = 0
-latency_p50_ms = 1.730500
-latency_p95_ms = 3.498600
-latency_max_ms = 5.175900
-iteration_span_ms = 28.232120
+latency_p50_ms = 1.421800
+latency_p95_ms = 2.763600
+latency_max_ms = 5.352900
+iteration_span_ms = 26.695984
 mapped_bytes_per_result = 3686400
-peak_allocated_bytes = 7410570
-steady_allocated_bytes = 3723666
+peak_allocated_bytes = 7411852
+steady_allocated_bytes = 3724948
 allocated_growth_bytes = 0
 
 [[measurement.budget]]

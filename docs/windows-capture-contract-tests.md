@@ -155,8 +155,10 @@ accepts the 1280×720 `G-013` profiles for:
   target-loss replacement recovery.
 
 ADR 0032 accepts the same applicable capture, mapping, resource, progress, and
-cleanup facts for the exact two-display 4K topology after a shared 600-sample
-pass per display.
+cleanup facts for the exact two-display 4K topology. It requires one shared
+600-sample stationary pass per display plus 300 retained frame pairs while the
+fixture moves across the signed seam. Each frame must match its own coherent
+post-baseline callback record by stream, epoch, and sequence.
 
 Every timed sample keeps its correctness oracle. A throughput improvement that
 changes retained pixels, pins producer slots, exceeds a bound, or hides a drop
@@ -169,8 +171,9 @@ require an interactive Windows session and therefore may not be available on a
 headless pull-request runner. A skipped native case must report why it did not
 run; a skip is not support evidence.
 
-Windows native production-capture acceptance is complete. The revision-bound
-reports link every applicable case above to its test, retain exact source and
+Windows native production-capture acceptance is complete on repaired source.
+The revision-bound reports link every applicable case above to its test, retain
+accepted and rejected attempts, bind exact source/artifact identities and
 approved metadata, enforce the affected `G-013` budgets, and pass the shared and
 native matrices:
 

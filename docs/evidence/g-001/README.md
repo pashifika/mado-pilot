@@ -107,23 +107,26 @@ Acceptance requires all of the following:
    the version-sensitive DPI, WinRT activation, and WinRT-D3D exports.
 4. Native discovery, picker-free capture, retained-frame progress, mapping,
    fixture input, cleanup, C, and C++ complete without fallback.
-5. Missing controlled modules, exports, factories, or `IsSupported == false`
-   still converge on typed `Unsupported` before capture. If no host exercises
-   that negative branch, the result names the observation gap instead of claiming
-   it ran.
+5. A controlled missing `CreateDirect3D11DeviceFromDXGIDevice` export converges
+   on typed `Unsupported` before capture in Rust, C, and C++, then ordinary
+   supported discovery succeeds after the isolated apparatus is absent.
 
 ## Windows result
 
-The approved desktop completed the boundary on 2026-08-22. The full repository
-sequence and focused loader, Windows all-target, native capture, acknowledged
-fixture input, product-DLL, ABI 1.2, frozen ABI 1.0, C, C++, ownership, and CMake
-rows passed on the reviewed source. The detailed, privacy-reviewed record is
+The approved desktop completed the positive boundary on 2026-08-22. The full
+repository sequence and focused loader, Windows all-target, native capture,
+acknowledged fixture input, product-DLL, ABI 1.2, frozen ABI 1.0, C, C++,
+ownership, and CMake rows passed on the reviewed source.
+
+Final repair source `9bfc0c0` completed the controlled negative row without
+changing an operating-system file: isolated child processes suppressed one lazy
+WinRT-D3D export before resolver caching. Rust, C, and C++ engines loaded and
+returned typed `Unsupported` from discovery; normal discovery and fixture flows
+passed after restoration. The detailed, privacy-reviewed record is
 [`windows-minimum-system.md`](windows-minimum-system.md).
 
 The user-focused `System` input and ordinary `WindowMessage` rows remain part of
-the later interactive matrix. The positive host did not force missing modules,
-exports, activation factories, or `IsSupported == false`; that controlled native
-negative branch is an explicit observation gap, not a claimed pass.
+their separate interactive matrix.
 
 ## Privacy
 

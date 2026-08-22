@@ -9,9 +9,24 @@
 
 ADR 0026 accepted the existing Windows controlled native and diagnostic profiles but deliberately left the production-capture matrix open. Those profiles did not expose callback-copy time, copied bytes, detached/staging/total GPU-resource peaks, native process resident memory, natural timer-driven publication, retained-pressure recovery, or the complete startup/resize/target-loss/close lifecycle at exactly 1280x720.
 
-The successor entry points add those observations without relabeling historical profiles. The production fixture repaints only a deterministic 16x16 patch on its 16 ms timer, avoiding whole-window flashing while continuing to drive natural compositor publication. Workload and fixture lifecycle records go to stderr outside the measured region and identify setup, warm-up, sampling, completion, child readiness, and bounded child termination. The dual-4K arrival and callback-copy views share one system interaction, but that separately scheduled profile remains unaccepted until its own interactive run completes.
+The successor entry points add those observations without relabeling historical
+profiles. The production fixture repaints only a deterministic 16x16 patch on
+its 16 ms timer, avoiding whole-window flashing while continuing to drive
+natural compositor publication. Workload and fixture lifecycle records go to
+stderr outside the measured region and identify setup, warm-up, sampling,
+completion, child readiness, and bounded child termination.
 
-Final source `0208798d9542aaae3a956d3e774c9ce57468bc9d`, tree `cac0020edbf5b3d28a4dcd5df41e020dc0c6257d`, reran both profiles with every accepted budget enforced. Two reviewed same-lineage precursor runs supplied independent repeatability measurements. Each capture run retained 600 samples across four workloads after 120 aggregate warm-ups; each transition run covered five lifecycle workloads. Every retained sample satisfied its oracle, every workload remained within the 4,096-byte growth gate, and every fixture process was observed through readiness and termination.
+The original capture and transition profiles remain bound to source `0208798`.
+Pre-landing review then found that the capture harness implemented the
+detached/staging/total resource ceilings as equality requirements even though
+this ADR declares upper bounds. Repaired source
+`9bfc0c023db4d39e7caa59aa38b196477b971e3a`, tree
+`be1c57127d495f1345a6619f1851acde627430f0`, reran all four capture workloads
+against unchanged numeric ceilings. The transition profile remains applicable
+at its original revision: the complete intervening diff changes
+benchmark-only callback correlation, dual-display movement, the capture
+resource predicate, and an opt-in availability apparatus, but no transition
+workload, oracle, fixture mode, or accepted limit.
 
 ## Decision
 
@@ -34,7 +49,14 @@ Latency ceilings use three times the largest applicable p50, p95, and maximum fr
 | `target_loss_recovery` | 1,250 ms | 1,250 ms | 1,250 ms |
 | `close_drain` | 10 ms | 10 ms | 10 ms |
 
-Both profiles require zero correctness failures, at most 4,096 bytes of post-warm-up allocation growth, at most 32 MiB of live Rust heap, and at most 256 MiB native process resident high-water memory. Mapped-byte ceilings are exact for each workload. The capture profile additionally caps one retained callback-copy sample at 3,686,400 copied bytes, two detached textures, one staging texture, five total producer/detached/staging textures, and a 0.02 stale-work ratio. Retained-pressure stale ratio is intentional evidence of filling finite storage and is not a steady-capture ceiling.
+Both profiles require zero correctness failures, at most 4,096 bytes of
+post-warm-up allocation growth, at most 32 MiB of live Rust heap, and at most
+256 MiB native process resident high-water memory. Mapped-byte ceilings are
+exact for each workload. The capture profile additionally requires exactly
+3,686,400 callback-copy bytes and nonzero observations no greater than two
+detached textures, one staging texture, and five total
+producer/detached/staging textures, plus a 0.02 stale-work ratio. A valid
+resource optimization below those three count ceilings passes.
 
 ADR 0032 separately accepts the dual-4K profile from its own mixed-DPI signed-origin evidence. No dual-4K ceiling is inferred from this 1280x720 result, and no ADR 0031 ceiling is changed by that later decision.
 
@@ -48,9 +70,16 @@ ADR 0032 separately accepts the dual-4K profile from its own mixed-DPI signed-or
 
 ## Consequences
 
-Changes to Windows 1280x720 natural publication, callback detachment, mapping, retained progress, session startup, resize recreation, target-loss recovery, close, or native resource lifetime must run the matching profile and satisfy these budgets. The release benchmark enforces latency, live-heap, resident-memory, stale-work, copied-byte, and texture-resource ceilings in addition to unconditional correctness and allocation-growth gates.
+Changes to Windows 1280x720 natural publication, callback detachment, mapping,
+retained progress, session startup, resize recreation, target-loss recovery,
+close, or native resource lifetime must run the matching profile and satisfy
+these budgets. The release benchmark enforces coherent per-frame callback
+records, latency, live-heap, resident-memory, stale-work, exact copied bytes, and
+nonzero upper-bounded texture-resource counts in addition to unconditional
+correctness and allocation-growth gates.
 
-The existing ADR 0026 profiles and their historical source bindings remain unchanged. No Rust, C ABI, or C++ public name or layout changes.
+The existing ADR 0026 profiles and every historical source binding remain
+unchanged. No Rust, C ABI, or C++ public name or layout changes.
 
 ## Verification
 

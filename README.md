@@ -43,11 +43,14 @@ crates/bindings/capi/examples/cpp/native-input.cpp
 
 Native release acceptance now covers all fourteen controlled macOS
 owning-process pairs, the accepted macOS production capture and transition
-profiles, the qualified Windows 11 25H2 floor, and the Windows 1280×720 and
-mixed-DPI dual-4K production profiles. Each lineage remains bound to its own
-source, topology, stimulus, oracle, and target-specific budgets. Final-source
-Phase 1 regression reruns and the complete release verification sequence remain
-open; no historical profile or hosted-CI result substitutes for them.
+profiles, the qualified Windows 11 25H2 floor including its controlled native
+unsupported path, and the repaired Windows 1280×720 and mixed-DPI dual-4K
+production profiles. The dual profile includes 600 stationary samples per
+display and 300 moving-seam frame pairs with per-frame callback correlation.
+Each lineage remains bound to its own source, topology, stimulus, oracle, and
+target-specific budgets. Final-source Phase 1 regression reruns and the complete
+release verification sequence remain open; no historical profile or hosted-CI
+result substitutes for them.
 
 macOS capture needs Screen Recording and input needs event-post access;
 MadoPilot probes both without prompting. Windows has no permission probe and

@@ -7,35 +7,60 @@
 
 ## Context
 
-ADR 0031 accepted the Windows 1280x720 production profiles while explicitly withholding the mixed-DPI dual-4K profile until the approved physical topology became available. The holiday availability recorded by the local launch procedure waived the normal shared-display workday exclusion without changing any benchmark acceptance condition.
+ADR 0031 accepted the Windows 1280x720 production profiles while explicitly
+withholding the mixed-DPI dual-4K profile until the approved physical topology
+became available. The approved host exposes exactly two online non-mirrored
+3840x2160 displays: a 144 DPI / 1.5-scale primary at `[0,0,3840,2160)` and a
+120 DPI / 1.25-scale secondary at `[-3840,0,0,2160)`.
 
-The approved host exposed exactly two online non-mirrored 3840x2160 displays: a 144 DPI / 1.5-scale primary at `[0,0,3840,2160)` and a 120 DPI / 1.25-scale secondary at `[-3840,0,0,2160)`. The production fixture straddled their signed-origin seam. Each iteration acquired and mapped one strictly newer frame from both display sessions and derived arrival and callback-copy timing from that one system interaction. Separate timing passes were not used.
+The original `121d41a` profile proved stationary timing and resource shape but
+pre-landing review found two evidence-integrity defects and one missing row:
+callback fields could mix generations, one process-wide callback could be
+credited to both sessions, and the required 300-frame moving-seam phase had not
+run. That profile remains historical evidence and is not final acceptance.
 
-Two reviewed precursor runs on source `0208798d9542aaae3a956d3e774c9ce57468bc9d` established repeatability before ceilings were added. Final source `121d41a9eea341b7345a8b0dda4918b1f61ec74e`, tree `7e694a070d1e300642033b56aef499b8238c08ca`, then retained 600 samples per display with every proposed gate enforced in-process. All three runs reported zero correctness failures and no positive allocation growth. Every supervised benchmark and fixture process reached a terminal state.
+Repaired source `90a8babb7258bd4d8381fc172033a793a2c2ad14`, tree
+`84a167718320f33a814f26f93277d488b1b6e980`, completed two unchanged-source
+precursor runs with coherent frame-stamp-bound callback records. Both retained
+600 stationary samples per display plus 300 moving-seam samples with zero
+correctness failures and bounded allocation growth. The larger moving
+observations were 19.5257 ms p50, 21.4397 ms p95, and 24.9960 ms maximum.
+
+Final source `9bfc0c023db4d39e7caa59aa38b196477b971e3a`, tree
+`be1c57127d495f1345a6619f1851acde627430f0`, added the derived moving-seam
+latency gates and reran the complete stationary and moving profile with every
+gate enforced in-process. Every supervised benchmark and fixture process
+reached a terminal state.
 
 ## Decision
 
-Accept the dual-4K profile as target-specific regression evidence for the approved Windows host, exact two-display mixed-DPI topology, signed-origin seam, repository fixture, and named workload oracles. It is not an application/game compatibility or real-time guarantee.
+Accept the repaired dual-4K profile as target-specific regression evidence for
+the approved Windows host, exact two-display mixed-DPI topology, signed-origin
+seam, repository fixture, and named workload oracles. It is not an
+application/game compatibility or real-time guarantee.
 
-Latency ceilings use three times the largest applicable final-source or reviewed precursor p50, p95, and maximum, rounded upward with additional clock/scheduling margin:
+Latency ceilings use three times the largest applicable retained observation,
+rounded upward with scheduling margin:
 
 | Workload | p50 ceiling | p95 ceiling | maximum |
 |---|---:|---:|---:|
 | `dual_display_frame_arrival` | 20 ms | 100 ms | 150 ms |
 | `dual_display_callback_copy` | 0.2 ms | 0.5 ms | 1.5 ms |
+| `dual_display_moving_seam` | 60 ms | 75 ms | 75 ms |
 
-The profile also requires:
+Every workload also requires zero correctness failures, at most 4,096 bytes of
+post-warm-up allocation growth, at most 384 MiB live Rust heap, at most 1 GiB
+native process resident high-water memory, exactly 66,355,200 mapped bytes, at
+most 199,065,600 callback-copy bytes, at most ten detached textures, one staging
+texture, fifteen total producer/detached/staging textures, and a 0.75 stale-work
+ratio.
 
-- zero correctness failures;
-- at most 4,096 bytes of post-warm-up allocation growth;
-- at most 384 MiB live Rust heap;
-- at most 1 GiB native process resident high-water memory;
-- exactly 66,355,200 mapped bytes per retained sample, representing two 3840x2160 BGRA8 frames;
-- at most 199,065,600 callback-copy bytes per retained sample, representing six 4K producer surfaces;
-- at most ten detached textures, one staging texture, and fifteen total producer/detached/staging textures;
-- at most 0.75 stale-work ratio while both latest-wins sessions continue finite progress.
-
-The copy and texture ceilings are shape/resource bounds rather than three-times timing derivatives. The three runs copied four or five producer surfaces per retained sample, observed seven or eight detached textures, one staging texture, and twelve or thirteen total textures. The accepted ceilings admit bounded callback scheduling variation while rejecting accumulation beyond the declared dual-session shape.
+The moving workload retains exactly 300 samples with no warm-up samples. Its
+deterministic triangular schedule advances the 1280x720 fixture in 16-pixel
+steps between physical X `-960` and `-320`, keeping it across the negative-X
+seam. Each move is confirmed through DPI-aware `GetWindowRect`; one declared
+content point remains inside each display half. Both acquired frames must match
+their own post-baseline callback record by stream, epoch, and frame sequence.
 
 ## Alternatives
 

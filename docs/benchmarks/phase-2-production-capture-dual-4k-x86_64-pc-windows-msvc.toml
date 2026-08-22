@@ -1,10 +1,7 @@
-# Phase 2 Windows dual-4K production capture, measured on final source
-# 121d41a9eea341b7345a8b0dda4918b1f61ec74e and tree
-# 7e694a070d1e300642033b56aef499b8238c08ca.
-#
-# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0032 sets
-# target-specific regression budgets. This profile is independent of the
-# accepted 1280x720 profiles and every historical controlled profile.
+# Phase 2 Windows dual-4K production capture, requalified on repaired source
+# 9bfc0c023db4d39e7caa59aa38b196477b971e3a and tree
+# be1c57127d495f1345a6619f1851acde627430f0. Two same-source precursor runs
+# established repaired stationary and 300-frame moving-seam repeatability.
 
 format_version = 1
 
@@ -20,7 +17,7 @@ measurements_recorded = true
 [profile]
 fixture = "crates/platform/windows fixture Rust and protocol sources"
 fixture_sha256 = "e2daf522336997f841bd8813c62371e001c7ef96dfe3e3ae44fafaa35a6d67eb"
-benchmark_executable_sha256 = "9726a0dbf4da45e42543f7a8190cb0f9db73817a1995e08a5783c19548a838eb"
+benchmark_executable_sha256 = "0a82933f17fe9e37418604636829eb751a43a558d715b1234c85db9e93aea40c"
 release_target = "x86_64-pc-windows-msvc"
 hardware = "Intel Core i7-12700KF, 32 GiB RAM, NVIDIA GeForce RTX 4080"
 os_version = "Windows 11 Pro 25H2 build 26200.9168"
@@ -30,7 +27,7 @@ warmup_iterations = 20
 sample_count = 600
 correctness_oracle = "every retained sample checks strictly newer topology-qualified production frames, exact BGRA8 mapping and declared fixture content, callback-copy accounting, finite retained progress, or observable latest-wins pressure"
 queue_policy = "two WGC producer pools depth 2; two session latest-wins queues depth 1; shared Adapter retained-byte budget; fixture 16 ms repaint timer"
-notes = "source commit 121d41a9eea341b7345a8b0dda4918b1f61ec74e, tree 7e694a070d1e300642033b56aef499b8238c08ca; toolchain rustc 1.97.1; cargo 1.97.1; MSVC 19.44.35228; Windows SDK 10.0.26100.0; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080, driver 32.0.15.9186; display topology exactly two online non-mirrored 3840x2160 displays; primary 144 DPI scale 1.5 at [0,0,3840,2160); secondary 120 DPI scale 1.25 at [-3840,0,0,2160); shared signed-origin seam at x=0; permissions/signing unelevated interactive desktop; unsigned repository fixture; Windows exposes no separate capture permission; fixture executable sha256 484136b949d5ecaf6d325c4a9a71f8780ed876d37bff953ac0e0a3ae683f53fe; executable paths deliberately omitted"
+notes = "source commit 9bfc0c023db4d39e7caa59aa38b196477b971e3a, tree be1c57127d495f1345a6619f1851acde627430f0; toolchain rustc 1.97.1; cargo 1.97.1; MSVC 19.44.35228; Windows SDK 10.0.26100.0; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080, driver 32.0.15.9186; display topology exactly two online non-mirrored 3840x2160 displays; primary 144 DPI scale 1.5 at [0,0,3840,2160); secondary 120 DPI scale 1.25 at [-3840,0,0,2160); signed-origin seam; permissions/signing unelevated interactive desktop; unsigned repository fixture; Windows exposes no separate capture permission; fixture executable sha256 7a0eacf152ea77f30f791d82e58e90424f8fe75457225bbe246df13a6554c7ed; executable paths deliberately omitted"
 [[budget]]
 measure = "result_correctness"
 kind = "hard"
@@ -63,20 +60,20 @@ rationale = "ADR 0032 rounds above three times the largest measured native bench
 workload = "dual_display_frame_arrival"
 correctness_oracle = "one strictly newer frame arrives from each topology-qualified 4K display while the deterministic fixture straddles their signed-origin seam; both exact mappings carry declared fixture content"
 result_correctness = 0
-latency_p50_ms = 2.033100
-latency_p95_ms = 27.048400
-latency_max_ms = 49.107400
-iteration_span_ms = 31.111575
+latency_p50_ms = 19.964000
+latency_p95_ms = 40.672000
+latency_max_ms = 44.126300
+iteration_span_ms = 43.090600
 mapped_bytes_per_result = 66355200
-copied_bytes_per_result = 132710400
-detached_textures_peak = 8
+copied_bytes_per_result = 66355200
+detached_textures_peak = 7
 staging_textures_peak = 1
-gpu_resources_peak = 13
-stale_work_ratio = 0.206349206
-peak_allocated_bytes = 99581711
-steady_allocated_bytes = 66403175
-allocated_growth_bytes = -392
-peak_resident_bytes = 285569024
+gpu_resources_peak = 12
+stale_work_ratio = 0.488491049
+peak_allocated_bytes = 99583137
+steady_allocated_bytes = 66404985
+allocated_growth_bytes = 392
+peak_resident_bytes = 219181056
 
 [[measurement.budget]]
 measure = "latency_p50"
@@ -149,25 +146,24 @@ unit = "ratio"
 direction = "at_most"
 limit = 0.75
 rationale = "three-times policy rounded above the largest observed dual-display coalescing ratio"
-
 [[measurement]]
 workload = "dual_display_callback_copy"
 correctness_oracle = "callback-side detach copies account for both 4K display sessions before two exact mapped results carry declared fixture content across the signed-origin seam"
 result_correctness = 0
-latency_p50_ms = 0.060700
-latency_p95_ms = 0.118200
-latency_max_ms = 0.226200
-iteration_span_ms = 31.111575
+latency_p50_ms = 0.056600
+latency_p95_ms = 0.117650
+latency_max_ms = 0.259900
+iteration_span_ms = 43.090600
 mapped_bytes_per_result = 66355200
-copied_bytes_per_result = 132710400
-detached_textures_peak = 8
+copied_bytes_per_result = 66355200
+detached_textures_peak = 7
 staging_textures_peak = 1
-gpu_resources_peak = 13
-stale_work_ratio = 0.206349206
-peak_allocated_bytes = 99581711
-steady_allocated_bytes = 66403175
-allocated_growth_bytes = -392
-peak_resident_bytes = 285569024
+gpu_resources_peak = 12
+stale_work_ratio = 0.488491049
+peak_allocated_bytes = 99583137
+steady_allocated_bytes = 66404985
+allocated_growth_bytes = 392
+peak_resident_bytes = 219181056
 
 [[measurement.budget]]
 measure = "latency_p50"
@@ -240,3 +236,95 @@ unit = "ratio"
 direction = "at_most"
 limit = 0.75
 rationale = "three-times policy rounded above the largest observed dual-display coalescing ratio"
+[[measurement]]
+workload = "dual_display_moving_seam"
+correctness_oracle = "300 strictly newer correlated frame pairs follow the controlled fixture across the signed mixed-DPI seam with exact placement, mapping, callback-copy, and cleanup evidence"
+warmup_iterations = 0
+sample_count = 300
+result_correctness = 0
+latency_p50_ms = 19.525700
+latency_p95_ms = 21.439700
+latency_max_ms = 24.996000
+iteration_span_ms = 41.054269
+mapped_bytes_per_result = 66355200
+copied_bytes_per_result = 66355200
+detached_textures_peak = 6
+staging_textures_peak = 1
+gpu_resources_peak = 11
+stale_work_ratio = 0.485420240
+peak_allocated_bytes = 99577144
+steady_allocated_bytes = 66398992
+allocated_growth_bytes = 552
+peak_resident_bytes = 255475712
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 60.0
+rationale = "ADR 0032 rounds above three times the largest repaired exact-source movement measurement"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 75.0
+rationale = "ADR 0032 rounds above three times the largest repaired exact-source movement measurement"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 75.0
+rationale = "ADR 0032 rounds above three times the largest repaired exact-source movement measurement"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 66355200
+rationale = "two exact 3840x2160 BGRA8 mappings per retained moving-seam sample"
+
+[[measurement.budget]]
+measure = "copied_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 199065600
+rationale = "at most six 3840x2160 producer-surface copies during one retained moving-seam sample"
+
+[[measurement.budget]]
+measure = "detached_textures_peak"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 10
+rationale = "the accepted dual-session detached-texture ceiling applies while the fixture moves"
+
+[[measurement.budget]]
+measure = "staging_textures_peak"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 1
+rationale = "one CPU-readable staging texture is live at a time"
+
+[[measurement.budget]]
+measure = "gpu_resources_peak"
+kind = "absolute"
+unit = "count"
+direction = "at_most"
+limit = 15
+rationale = "four producer textures plus bounded detached and staging resources"
+
+[[measurement.budget]]
+measure = "stale_work_ratio"
+kind = "absolute"
+unit = "ratio"
+direction = "at_most"
+limit = 0.75
+rationale = "the accepted dual-session coalescing ceiling applies while the fixture moves"

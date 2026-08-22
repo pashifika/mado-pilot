@@ -85,12 +85,12 @@ unchanged. ScreenCaptureKit remained quiescent rather than reporting explicit
 loss, so the Adapter correctly did not infer `TargetLost`. This closes the macOS
 replacement acceptance item.
 
-The 2026-08-22 Windows run used Pro build `26200.9168`, SDK `10.0.26100.0`,
-and clean source commit `834a58f6c28ab94f3f7a6d5901e3370b07e93155`. The full
-repository sequence, lazy-import check, native Rust capture and fixture input,
-product-DLL load, current C and C++, frozen ABI 1.0, ownership, and CMake rows
-passed. The positive host did not force the controlled unsupported native branch,
-which remains recorded as an observation gap rather than a pass.
+The 2026-08-22 Windows positive run used Pro build `26200.9168`, SDK
+`10.0.26100.0`, and clean source `834a58f`; build, lazy-import, native Rust,
+product-DLL, C/C++, frozen ABI 1.0, ownership, fixture, and CMake rows passed.
+Final repair source `9bfc0c0` then used the isolated missing-WinRT-D3D-export
+apparatus: Rust, C, and C++ loaded successfully, discovery returned typed
+`Unsupported`, and the ordinary supported paths passed after restoration.
 
 **Due.** Before Phase 2 exit.
 
@@ -519,26 +519,24 @@ after resize. The ADR retains the rejected enforcement-repair attempt and change
 no historical profile or source attribution.
 
 [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
-accepts the separate Windows 1280×720 production-capture and transition profiles
-at final source `0208798d9542aaae3a956d3e774c9ce57468bc9d`, tree
-`cac0020edbf5b3d28a4dcd5df41e020dc0c6257d`. The final run retained 600
-capture samples plus the complete transition matrix while enforcing every
-accepted budget. Two reviewed same-lineage precursor runs corroborate zero
-correctness failures, at most 48 bytes allocation growth, exact mapped/copy
-accounting, and bounded detached, staging, total GPU-resource, live-heap, and
-resident observations.
+accepts the separate Windows 1280×720 profiles. The capture profile was
+requalified on repaired source `9bfc0c0`, tree `be1c571`; all four workloads
+passed unchanged numeric ceilings with zero correctness/allocation failures,
+exact mapping/copy bytes, and nonzero resource counts at or below their limits.
+The unchanged transition profile remains revision-bound to `0208798` under a
+reviewed complete-diff applicability decision.
 
 [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the remaining Windows mixed-DPI dual-4K production profile at final
-source `121d41a9eea341b7345a8b0dda4918b1f61ec74e`, tree
-`7e694a070d1e300642033b56aef499b8238c08ca`. The shared 600-iteration pass
-retained 600 samples per display with zero correctness failures, negative
-allocation growth, exact two-frame mapping, bounded callback-copy/resource
-counts, and all accepted gates enforced in-process.
+accepts the repaired mixed-DPI dual-4K profile at final source `9bfc0c0`, tree
+`be1c571`. It retains 600 stationary samples per display plus 300 controlled
+moving-seam samples, binds each frame to its own post-baseline callback record,
+and passes every latency, mapping/copy, resource, stale-work, heap, resident,
+correctness, and growth gate.
 
 The Windows controlled `native-phase2`, ADR 0031 1280×720, and ADR 0032 dual-4K
-profiles remain distinct. Final-source Phase 1 regression reruns are the
-remaining Phase 2 `G-013` workload evidence.
+profiles remain distinct. Historical measurements keep their original source
+identities. Final-source Phase 1 regression reruns remain the cross-platform
+Phase 2 `G-013` workload evidence for the eventual release candidate.
 
 OCR, watcher scheduling, and acceleration remain open for the phases that
 introduce them.

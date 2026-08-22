@@ -681,20 +681,18 @@ or representation only while the ADR's detachment and lifetime tests still pass.
 ## Phase 2 Windows 1280x720 production-capture acceptance
 
 [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
-accepts the separate 1280×720 production-capture and transition profiles at
-final source `0208798d9542aaae3a956d3e774c9ce57468bc9d`, tree
-`cac0020edbf5b3d28a4dcd5df41e020dc0c6257d`. The final profile retained 600
-capture samples plus a complete five-workload transition matrix while enforcing
-every accepted budget. Two reviewed same-lineage precursor runs supplied
-independent repeatability measurements; all three runs reported zero correctness
-failures, at most 48 bytes allocation growth, and exact copy/mapping accounting.
+accepts separate 1280×720 capture and transition profiles. Repaired capture
+source `9bfc0c0`, tree `be1c571`, retained 600 samples across four workloads
+with zero correctness failures, zero allocation growth, and every unchanged
+budget enforced. The historical transition profile remains at `0208798` under
+a reviewed applicability decision.
 
-The capture profile records arrival, callback-copy, latest acquisition, and
-BGRA8 mapping separately. Both runs report one 3,686,400-byte callback copy,
-two detached textures, one staging texture, five total producer/detached/staging
-textures, and zero steady stale work. The transition profile records startup,
-finite-pressure recovery, 1440×810 resize recreation, target-loss replacement,
-and close drain.
+The capture profile records arrival, one frame-stamp-correlated callback copy,
+latest acquisition, and BGRA8 mapping separately. The repaired run reports one
+exact 3,686,400-byte callback copy, two detached textures, one staging texture,
+five total producer/detached/staging textures, zero steady stale work, a
+7,417,895-byte live Rust heap peak, and a 66,306,048-byte resident peak.
+Resource counts are nonzero upper bounds; valid lower counts pass.
 
 ADR 0031 follows the three-times-measurement policy for target-specific p50,
 p95, and maximum ceilings. Both profiles use a 32 MiB live Rust heap ceiling,
@@ -705,23 +703,25 @@ topology, and operation shape, not game or real-time guarantees.
 ## Phase 2 Windows dual-4K production-capture acceptance
 
 [ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
-accepts the separate mixed-DPI dual-4K profile at final source
-`121d41a9eea341b7345a8b0dda4918b1f61ec74e`, tree
-`7e694a070d1e300642033b56aef499b8238c08ca`. One shared 600-iteration pass
-retains arrival and callback-copy timing for 600 strictly newer frames per
-display without duplicating capture or mapping work.
+accepts the repaired mixed-DPI dual-4K profile at final source `9bfc0c0`, tree
+`be1c571`. The stationary pair retains 600 strictly newer samples per display
+while sharing each capture/mapping interaction. A distinct no-warm-up workload
+retains 300 frame pairs while moving the controlled fixture across the signed
+seam.
 
-The final run reports zero correctness failures, `-392` bytes allocation growth,
-exact 66,355,200-byte two-frame mappings, 132,710,400 callback-copy bytes, eight
-detached textures, one staging texture, thirteen total producer/detached/staging
-textures, a `0.206349206` stale-work ratio, 99,581,711 bytes live Rust heap, and
-285,569,024 bytes resident high-water memory. Two reviewed precursors retained
-the same correctness, progress, mapping, bounded resource, and growth results.
+The final stationary rows report zero correctness failures, 392 bytes growth,
+exact 66,355,200-byte mappings/copies, seven detached textures, one staging
+texture, twelve total resources, a `0.488491049` stale ratio, 99,583,137 bytes
+live Rust heap, and 219,181,056 bytes resident. The moving row reports zero
+correctness failures, 552 bytes growth, six/one/eleven resources, a
+`0.485420240` stale ratio, 99,577,144 bytes heap, and 255,475,712 bytes
+resident.
 
-ADR 0032 applies the target-specific three-times timing policy with 384 MiB
-live-heap and 1 GiB resident ceilings plus explicit copy, texture, and stale-work
-bounds. The profile is a regression gate for the named host, exact topology,
-fixture, and operation shape, not a game or real-time guarantee. Windows
-production-capture `G-013` is complete; final-source Phase 1 reruns remain open.
+The moving p50/p95/maximum ceilings are 60/75/75 ms, derived above two repaired
+same-source precursor runs. Every acquired frame must match its own coherent
+post-baseline callback record by stream, epoch, and sequence. ADR 0032 retains
+384 MiB heap, 1 GiB resident, copy, texture, and stale-work ceilings for all
+three workloads. Windows production-capture `G-013` is complete; final-source
+Phase 1 reruns remain cross-platform candidate work.
 The complete workload and correctness obligations are in
 [windows-capture-contract-tests.md](windows-capture-contract-tests.md).

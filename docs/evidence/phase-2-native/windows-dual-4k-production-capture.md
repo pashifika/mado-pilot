@@ -2,73 +2,107 @@
 
 ## Scope and source
 
-This record qualifies the Windows mixed-DPI dual-4K production profile on final benchmark source `121d41a9eea341b7345a8b0dda4918b1f61ec74e`, tree `7e694a070d1e300642033b56aef499b8238c08ca`.
+This record qualifies the repaired Windows mixed-DPI dual-4K profile on clean
+source `9bfc0c023db4d39e7caa59aa38b196477b971e3a`, tree
+`be1c57127d495f1345a6619f1851acde627430f0`.
 
-The approved host ran Windows 11 Pro 25H2 build `26200.9168` on an Intel Core i7-12700KF with 32 GiB RAM and an NVIDIA GeForce RTX 4080, driver `32.0.15.9186`. Toolchains were Rust/Cargo 1.97.1, MSVC 19.44.35228, Windows SDK 10.0.26100.0, and OpenCV 4.14.0. The process was unelevated on an interactive desktop with an unsigned repository fixture and no separate Windows capture permission.
+The approved host ran Windows 11 Pro 25H2 build `26200.9168` on an Intel Core
+i7-12700KF with 32 GiB RAM and an NVIDIA GeForce RTX 4080, driver
+`32.0.15.9186`. Toolchains were Rust/Cargo 1.97.1, MSVC 19.44.35228, Windows SDK
+10.0.26100.0, and OpenCV 4.14.0. The process was unelevated with an unsigned
+repository fixture and no separate Windows capture permission.
 
-The exact topology was:
+Exactly two online non-mirrored 3840x2160 displays were present: primary 144 DPI
+/ scale 1.5 at `[0,0,3840,2160)`, secondary 120 DPI / scale 1.25 at
+`[-3840,0,0,2160)`. No topology substitution was used.
 
-- primary: online, non-mirrored, 3840x2160, 144 DPI, effective scale 1.5, physical rectangle `[0,0,3840,2160)`;
-- secondary: online, non-mirrored, 3840x2160, 120 DPI, effective scale 1.25, physical rectangle `[-3840,0,0,2160)`;
-- one shared signed-origin seam at `x=0`.
-
-Holiday availability explicitly waived the normal shared-display workday exclusion for this run; it did not waive a benchmark, topology, correctness, source, or privacy condition.
-
-The final benchmark executable SHA-256 was `9726a0dbf4da45e42543f7a8190cb0f9db73817a1995e08a5783c19548a838eb`. The final fixture executable SHA-256 was `484136b949d5ecaf6d325c4a9a71f8780ed876d37bff953ac0e0a3ae683f53fe`; the tracked fixture source digest was `e2daf522336997f841bd8813c62371e001c7ef96dfe3e3ae44fafaa35a6d67eb`.
-
-## Procedure and process observation
-
-The clean detached worktree built the release benchmark and fixture, then invoked the benchmark with a direct argument vector:
+## Command and artifact identity
 
 ```text
-cargo build --locked --release --package mado-pilot --bench native-phase2
-cargo build --locked --release --package mado-pilot-platform-windows \
-  --bin mado-pilot-windows-input-fixture
-
 native-phase2 --bench --workload-set production-capture-dual-4k \
-  --fixture-executable <release fixture> \
-  --hardware <approved host> --os-version <approved build> \
+  --target x86_64-pc-windows-msvc \
+  --fixture-executable <absolute built fixture> \
+  --hardware <approved host> --os-version <approved OS> \
   --deployment-target "Windows 11 25H2 build family 26200" \
-  --source-revision 121d41a9eea341b7345a8b0dda4918b1f61ec74e \
-  --source-tree 7e694a070d1e300642033b56aef499b8238c08ca \
+  --source-revision 9bfc0c023db4d39e7caa59aa38b196477b971e3a \
+  --source-tree be1c57127d495f1345a6619f1851acde627430f0 \
   --toolchain <recorded versions> --gpu-driver <recorded driver> \
   --display-topology <qualified dual-4K topology> \
-  --permissions-signing <unelevated and unsigned fixture>
+  --permissions-signing <approved classification>
 ```
 
-A supervisor wrote stdout to a profile candidate and streamed stderr live. It observed setup, warm-up, sampling, completion, fixture readiness, and fixture termination. The final benchmark exited `0` after enforcing every ADR 0032 gate. No fixture process remained after the run. Transient PIDs were used only for supervision and were not retained.
+- benchmark executable SHA-256: `0a82933f17fe9e37418604636829eb751a43a558d715b1234c85db9e93aea40c`;
+- fixture executable SHA-256: `7a0eacf152ea77f30f791d82e58e90424f8fe75457225bbe246df13a6554c7ed`.
 
-The final workload performed 20 warm-ups followed by one shared 600-iteration pass. Every retained iteration acquired and mapped one strictly newer frame from each display. Arrival and callback-copy series therefore each contain 600 samples per display without duplicating capture or mapping work.
+## Review defects and rejected attempts
 
-## Final-source results
+The original `121d41a` profile remains historical evidence but cannot close
+release acceptance: it used independently published aggregate callback fields,
+could credit one session's callback to both acquired frames, and omitted the
+required 300-frame moving-seam row.
 
-| Workload | p50 | p95 | maximum | iteration span |
-|---|---:|---:|---:|---:|
-| `dual_display_frame_arrival` | 2.0331 ms | 27.0484 ms | 49.1074 ms | 31.111575 ms |
-| `dual_display_callback_copy` | 0.0607 ms | 0.1182 ms | 0.2262 ms | 31.111575 ms |
+Repair attempts were retained as rejected setup/evidence rather than hidden:
 
-Both timing views reported the same exact result and resource facts:
+1. a DPI-virtualized `GetWindowRect` result rejected the first exact-placement
+   attempt;
+2. callback reservations begun before a sample baseline exposed missing
+   post-baseline correlation;
+3. the first no-warm-up moving row exposed one 66,355,200-byte steady mapping
+   allocation and failed the growth gate; and
+4. a reservation-ordered ring intermittently excluded callbacks that completed
+   after the baseline and was rejected.
 
-- correctness failures: `0`;
-- mapped bytes per retained sample: `66,355,200`;
-- callback-copy bytes per retained sample: `132,710,400`;
-- detached/staging/total GPU-resource peaks: `8 / 1 / 13`;
-- stale-work ratio: `0.206349206`;
-- live Rust heap peak: `99,581,711 bytes`;
-- steady live Rust heap: `66,403,175 bytes`;
-- post-warm-up allocation growth: `-392 bytes`;
-- native process resident high-water mark: `285,569,024 bytes`.
+The repairs select a queue floor before each baseline, publish the complete
+callback record in frame-publication order, bind it to stream/epoch/sequence
+before the frame becomes observable, and prime the steady mapped-frame
+allocation outside retained sampling.
 
-Two reviewed precursor runs on source `0208798d9542aaae3a956d3e774c9ce57468bc9d` also retained 600 samples per display with zero correctness failures and zero allocation growth. Their largest observations were 28.1022 ms arrival p95, 48.2191 ms arrival maximum, 0.100875 ms callback-copy p95, 0.2856 ms callback-copy maximum, five producer-surface copies, eight detached textures, thirteen total textures, 0.191919192 stale ratio, 99,581,689 bytes live Rust heap, and 285,605,888 bytes resident high-water memory. These values and the final run remain below ADR 0032.
+Two unchanged-source precursor runs at `90a8bab` then passed the complete
+stationary and moving matrix. They supplied the moving latency derivation. Final
+source `9bfc0c0` added those executable gates and passed again with every budget
+enforced.
 
-## Mixed-DPI movement and input applicability
+## Accepted final results
 
-The final affected product source before budget-only changes, `0208798`, reran the ordinary `WindowMessage` native matrix on the same physical topology. It reported `monitors=2`, DPI `[144x144,120x120]`, executed `mixed-dpi-multi-display`, moved repository fixtures to `(48,48 480x320)` and `(-3792,48 512x344)`, established capture-backed correlated pointer/wheel stimuli on both displays, and passed drag, the 86-event vocabulary, queue-full, partial-prefix, hung-target, deadline cleanup, cancellation cleanup, foreground, cursor, geometry, close, and cleanup checks.
+The stationary pair retained 600 samples per display after 20 shared warm-ups.
+The movement workload retained exactly 300 samples and no warm-up samples.
+Every row reported zero correctness failures.
 
-The complete intervening diff from `0208798` to final profile source `121d41a` adds the accepted 1280x720 profiles and documentation, profile-drift tests, and dual-4K benchmark budget constants/enforcement. It changes no Windows discovery, placement, capture, input, fixture, or public-language behavior, so the mixed-DPI input result remains applicable to final source without relabeling its executed revision.
+| Workload | p50 | p95 | maximum | mapped/copy bytes | detached/staging/total | stale ratio | growth | resident peak |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `dual_display_frame_arrival` | 19.9640 ms | 40.6720 ms | 44.1263 ms | 66,355,200 / 66,355,200 | 7 / 1 / 12 | 0.488491049 | 392 B | 219,181,056 B |
+| `dual_display_callback_copy` | 0.0566 ms | 0.11765 ms | 0.2599 ms | 66,355,200 / 66,355,200 | 7 / 1 / 12 | 0.488491049 | 392 B | 219,181,056 B |
+| `dual_display_moving_seam` | 19.5257 ms | 21.4397 ms | 24.9960 ms | 66,355,200 / 66,355,200 | 6 / 1 / 11 | 0.485420240 | 552 B | 255,475,712 B |
 
-Injected device loss remains state-machine evidence. Physical device removal, TDR, and driver upgrade were not performed and are not claimed.
+Live Rust heap peaks were 99,583,137 bytes for the stationary pair and
+99,577,144 bytes for movement. All values satisfy ADR 0032.
 
-## Privacy
+## Moving-seam and callback oracle
 
-No retained record contains captured pixels or hashes, recognized or input text, credentials, user paths, transient PIDs, raw HWND/display identifiers, unrelated window titles, process inventories, or unrelated desktop metadata. Executable paths and raw console output remain untracked ephemera.
+The movement schedule advances the 1280x720 fixture in deterministic 16-pixel
+steps between physical X `-960` and `-320`, reversing at each bound while always
+straddling X `0`. A per-monitor-v2 DPI context makes `SetWindowPos` and
+`GetWindowRect` physical and exact. For every retained sample, one declared
+content point is inside the negative-X display half and one is inside the
+positive-X half.
+
+Each display establishes its own callback baseline after observing its current
+queue floor. The acquired frame must be strictly newer and must find one
+coherently published callback record with the same stream, epoch, and frame
+sequence. Elapsed duration and copied bytes come from those two records; no
+process-wide callback can satisfy the other session. Both frames are mapped once
+in the same retained system interaction.
+
+## Applicability, cleanup, and privacy
+
+The previously accepted ordinary `WindowMessage` mixed-DPI input matrix remains
+revision-bound to its executed source. The complete intervening diff changes
+benchmark-only instrumentation, movement, resource enforcement, and an opt-in
+availability qualification feature; it changes no production input route or
+public-language contract.
+
+All benchmark and fixture processes reached terminal states. No retained record
+contains captured pixels or hashes, recognized or input text, credentials, user
+paths, PIDs, raw HWND/display identifiers, unrelated window titles, process
+inventories, or unrelated desktop metadata. Physical device removal, TDR, and
+driver upgrade were not performed and are not claimed.
