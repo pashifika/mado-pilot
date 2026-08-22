@@ -663,16 +663,24 @@ fn windows_1280_profiles_state_the_resource_budgets_the_harness_enforces() {
                 .find(|budget| budget.workload.is_none() && budget.measure == Some(measure))
                 .unwrap_or_else(|| panic!("{path} profile is missing {measure}"))
         };
-        assert_eq!(
-            global("peak_allocated_bytes").limit,
-            Some(f64::from(
-                u32::try_from(heap_limit).expect("the accepted Windows heap limit fits u32")
-            ))
-        );
-        assert_eq!(
-            global("peak_resident_bytes").limit,
-            Some(as_f64(PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES))
-        );
+        for (measure, limit) in [
+            (
+                "peak_allocated_bytes",
+                f64::from(
+                    u32::try_from(heap_limit).expect("the accepted Windows heap limit fits u32"),
+                ),
+            ),
+            (
+                "peak_resident_bytes",
+                as_f64(PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES),
+            ),
+        ] {
+            let recorded = global(measure);
+            assert_eq!(recorded.kind, Some("absolute"));
+            assert_eq!(recorded.unit, Some("bytes"));
+            assert_eq!(recorded.direction, Some("at_most"));
+            assert_eq!(recorded.limit, Some(limit));
+        }
     }
 
     let capture_blocks = budget_blocks(capture);
@@ -704,19 +712,69 @@ fn windows_1280_profiles_state_the_resource_budgets_the_harness_enforces() {
                 budget.workload == Some("callback_copy") && budget.measure == Some(measure)
             })
             .unwrap_or_else(|| panic!("capture profile is missing callback_copy {measure}"));
+        assert_eq!(recorded.kind, Some("absolute"));
         assert_eq!(recorded.unit, Some(unit));
+        assert_eq!(recorded.direction, Some("at_most"));
         assert_eq!(recorded.limit, Some(limit));
     }
+    let stale = capture_blocks
+        .iter()
+        .find(|budget| {
+            budget.workload == Some("callback_copy") && budget.measure == Some("stale_work_ratio")
+        })
+        .expect("capture profile is missing callback_copy stale_work_ratio");
+    assert_eq!(stale.kind, Some("absolute"));
+    assert_eq!(stale.unit, Some("ratio"));
+    assert_eq!(stale.direction, Some("at_most"));
     assert_eq!(
-        capture_blocks
-            .iter()
-            .find(|budget| {
-                budget.workload == Some("callback_copy")
-                    && budget.measure == Some("stale_work_ratio")
-            })
-            .and_then(|budget| budget.limit),
+        stale.limit,
         Some(PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT)
     );
+
+    for (name, profile, expected) in [
+        (
+            "capture",
+            capture,
+            &[
+                ("steady_frame_acquisition", 3_686_400.0),
+                ("callback_copy", 3_686_400.0),
+                ("latest_acquisition", 3_686_400.0),
+                ("cpu_map_bgra8", 3_686_400.0),
+            ][..],
+        ),
+        (
+            "transitions",
+            transitions,
+            &[
+                ("open_first_frame", 3_686_400.0),
+                ("retained_pressure_resume", 0.0),
+                ("resize_recreation", 4_665_600.0),
+                ("target_loss_recovery", 7_372_800.0),
+                ("close_drain", 0.0),
+            ][..],
+        ),
+    ] {
+        let blocks = budget_blocks(profile);
+        let mapped = blocks
+            .iter()
+            .filter(|budget| budget.measure == Some("mapped_bytes_per_result"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mapped.len(),
+            expected.len(),
+            "{name} mapped workload set drifted"
+        );
+        for (workload, limit) in expected {
+            let recorded = mapped
+                .iter()
+                .find(|budget| budget.workload == Some(*workload))
+                .unwrap_or_else(|| panic!("{name} is missing {workload}'s mapped ceiling"));
+            assert_eq!(recorded.kind, Some("absolute"));
+            assert_eq!(recorded.unit, Some("bytes"));
+            assert_eq!(recorded.direction, Some("at_most"));
+            assert_eq!(recorded.limit, Some(*limit));
+        }
+    }
 }
 
 #[test]
@@ -734,19 +792,25 @@ fn windows_dual_4k_profile_states_the_resource_budgets_the_harness_enforces() {
             .find(|budget| budget.workload.is_none() && budget.measure == Some(measure))
             .unwrap_or_else(|| panic!("dual-4K profile is missing {measure}"))
     };
-    assert_eq!(
-        global("peak_allocated_bytes").limit,
-        Some(f64::from(
-            u32::try_from(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES)
-                .expect("the accepted dual-4K heap limit fits u32")
-        ))
-    );
-    assert_eq!(
-        global("peak_resident_bytes").limit,
-        Some(as_f64(
-            PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES
-        ))
-    );
+    for (measure, limit) in [
+        (
+            "peak_allocated_bytes",
+            f64::from(
+                u32::try_from(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_HEAP_LIMIT_BYTES)
+                    .expect("the accepted dual-4K heap limit fits u32"),
+            ),
+        ),
+        (
+            "peak_resident_bytes",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_RESIDENT_LIMIT_BYTES),
+        ),
+    ] {
+        let recorded = global(measure);
+        assert_eq!(recorded.kind, Some("absolute"));
+        assert_eq!(recorded.unit, Some("bytes"));
+        assert_eq!(recorded.direction, Some("at_most"));
+        assert_eq!(recorded.limit, Some(limit));
+    }
 
     for workload in [
         "dual_display_frame_arrival",
@@ -754,6 +818,7 @@ fn windows_dual_4k_profile_states_the_resource_budgets_the_harness_enforces() {
         "dual_display_moving_seam",
     ] {
         for (measure, unit, limit) in [
+            ("mapped_bytes_per_result", "bytes", 66_355_200.0),
             (
                 "copied_bytes_per_result",
                 "bytes",
@@ -779,16 +844,22 @@ fn windows_dual_4k_profile_states_the_resource_budgets_the_harness_enforces() {
                 .iter()
                 .find(|budget| budget.workload == Some(workload) && budget.measure == Some(measure))
                 .unwrap_or_else(|| panic!("{workload} is missing {measure}"));
+            assert_eq!(recorded.kind, Some("absolute"));
             assert_eq!(recorded.unit, Some(unit));
+            assert_eq!(recorded.direction, Some("at_most"));
             assert_eq!(recorded.limit, Some(limit));
         }
+        let stale = blocks
+            .iter()
+            .find(|budget| {
+                budget.workload == Some(workload) && budget.measure == Some("stale_work_ratio")
+            })
+            .unwrap_or_else(|| panic!("{workload} is missing stale_work_ratio"));
+        assert_eq!(stale.kind, Some("absolute"));
+        assert_eq!(stale.unit, Some("ratio"));
+        assert_eq!(stale.direction, Some("at_most"));
         assert_eq!(
-            blocks
-                .iter()
-                .find(|budget| {
-                    budget.workload == Some(workload) && budget.measure == Some("stale_work_ratio")
-                })
-                .and_then(|budget| budget.limit),
+            stale.limit,
             Some(PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT)
         );
     }

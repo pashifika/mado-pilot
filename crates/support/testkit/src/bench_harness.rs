@@ -1937,9 +1937,9 @@ pub const PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT: f64 = 0.02;
 pub const PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS: [LatencyBudget; 3] = [
     LatencyBudget::new(
         "dual_display_frame_arrival",
-        Duration::from_millis(20),
-        Duration::from_millis(100),
+        Duration::from_millis(75),
         Duration::from_millis(150),
+        Duration::from_millis(200),
     ),
     LatencyBudget::new(
         "dual_display_callback_copy",

@@ -21,7 +21,7 @@ use mado_pilot_testkit::bench_harness::{GROWTH_LIMIT_BYTES, HARD_BUDGET_PREDICAT
 ///
 /// `example-synthetic.toml` is deliberately absent because it records no
 /// measurements and therefore gates no run.
-const PROFILES: [(&str, &str); 19] = [
+const PROFILES: [(&str, &str); 22] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -128,6 +128,24 @@ const PROFILES: [(&str, &str); 19] = [
         "docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml",
         include_str!(
             "../../../../docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml"
         ),
     ),
 ];

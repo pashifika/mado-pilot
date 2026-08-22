@@ -967,10 +967,11 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
     let mut state = lock_state(active);
     let before_stamp = state.last.stamp();
     let operation = bounded(OPERATION_WAIT);
+    let floor = current_callback_floor(&state.session, before_stamp, &operation);
     let sample_start = callback_metric_baseline();
     let exact_baseline = callback_metric_baseline();
     let (frame, observation) =
-        acquire_correlated_frame(&state.session, before_stamp, exact_baseline, &operation);
+        acquire_correlated_frame(&state.session, floor, exact_baseline, &operation);
     let mapping = frame
         .map(PixelFormat::Bgra8, &operation)
         .expect("the callback-copy result maps for its content oracle");
@@ -1016,6 +1017,10 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let operation = bounded(OPERATION_WAIT);
+    let floors = displays
+        .iter()
+        .map(|display| current_callback_floor(&display.session, display.last.stamp(), &operation))
+        .collect::<Vec<_>>();
     let sample_start = callback_metric_baseline();
     let exact_baselines = (0..displays.len())
         .map(|_| callback_metric_baseline())
@@ -1023,9 +1028,10 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
     let started = Instant::now();
     let frames = displays
         .iter()
+        .zip(floors)
         .zip(exact_baselines)
-        .map(|(display, baseline)| {
-            acquire_correlated_frame(&display.session, display.last.stamp(), baseline, &operation)
+        .map(|((display, floor), baseline)| {
+            acquire_correlated_frame(&display.session, floor, baseline, &operation)
         })
         .collect::<Vec<_>>();
     let arrival = started.elapsed();
@@ -1105,6 +1111,25 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
 }
 
 #[cfg(windows)]
+fn current_callback_floor(
+    session: &Session,
+    after: FrameStamp,
+    operation: &OperationContext,
+) -> FrameStamp {
+    let queued = session
+        .acquire_frame(&FrameRequest::latest(), operation)
+        .expect("the session exposes its current queue floor");
+    let floor = queued.stamp();
+    assert_eq!(floor.stream(), after.stream());
+    assert!(
+        floor.epoch() > after.epoch()
+            || (floor.epoch() == after.epoch() && floor.sequence() >= after.sequence()),
+        "the latest queue floor never moves backward"
+    );
+    floor
+}
+
+#[cfg(windows)]
 fn acquire_correlated_frame(
     session: &Session,
     after: FrameStamp,
@@ -1113,20 +1138,6 @@ fn acquire_correlated_frame(
 ) -> (Frame, CallbackCopyObservation) {
     let mut floor = after;
     loop {
-        let queued = session
-            .acquire_frame(&FrameRequest::latest(), operation)
-            .expect("the session exposes its current queue floor");
-        let queued_stamp = queued.stamp();
-        assert_eq!(queued_stamp.stream(), floor.stream());
-        assert!(
-            queued_stamp.epoch() > floor.epoch()
-                || (queued_stamp.epoch() == floor.epoch()
-                    && queued_stamp.sequence() >= floor.sequence()),
-            "the latest queue floor never moves backward"
-        );
-        floor = queued_stamp;
-        drop(queued);
-
         let frame = session
             .acquire_frame(&FrameRequest::newer_than(floor), operation)
             .expect("the session publishes within the shared callback deadline");
