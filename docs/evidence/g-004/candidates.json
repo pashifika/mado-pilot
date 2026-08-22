@@ -19,8 +19,16 @@
       "limit_side_len": 736,
       "limit_type": "min",
       "dimension_multiple": 32,
-      "mean": [0.5, 0.5, 0.5],
-      "standard_deviation": [0.5, 0.5, 0.5],
+      "mean": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "standard_deviation": [
+        0.5,
+        0.5,
+        0.5
+      ],
       "threshold": 0.3,
       "box_threshold": 0.5,
       "maximum_candidates": 1000,
@@ -30,7 +38,11 @@
     },
     "recognizer": {
       "input_pixel_format": "BGR planar float32 (OpenCV order; no channel swap)",
-      "configured_shape": [3, 48, 320],
+      "configured_shape": [
+        3,
+        48,
+        320
+      ],
       "dynamic_width": true,
       "aspect_preserving_resize": true,
       "right_padding": true,
@@ -94,6 +106,18 @@
         "ppocrv6-det-tiny-rec-small",
         "ppocrv6-multilingual-small"
       ]
+    },
+    "v4": {
+      "frozen_at": "2026-08-22T14:55:37Z",
+      "fixture_profile_id": "g-004-japanese-ui-v3",
+      "fixture_manifest": "fixtures/ocr/g-004/fixture-manifest.json",
+      "candidates": [
+        "ppocrv4-det-v6-rec-small",
+        "ppocrv5-det-v6-rec-small",
+        "ppocrv6-det-tiny-rec-small",
+        "ppocrv6-multilingual-small"
+      ],
+      "purpose": "Enforce the pinned tool environment and exact ONNX session/vocabulary identity before inference."
     }
   },
   "candidates": [
@@ -108,8 +132,30 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx",
         "bytes": 4745517,
         "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "sigmoid_0.tmp_0", "shape": ["dynamic-batch", 1, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}]
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "p2o.DynamicDimension.0",
+              3,
+              "p2o.DynamicDimension.1",
+              "p2o.DynamicDimension.2"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "sigmoid_0.tmp_0",
+            "shape": [
+              "p2o.DynamicDimension.3",
+              1,
+              "p2o.DynamicDimension.4",
+              "p2o.DynamicDimension.5"
+            ],
+            "type": "tensor(float)"
+          }
+        ]
       },
       "recognizer": {
         "id": "japan_PP-OCRv4_rec_mobile",
@@ -117,8 +163,29 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
         "bytes": 9753335,
         "sha256": "e1075a67dba758ecfc7ebc78a10ae61c95ac8fb66a9c86fab5541e33f085cb7a",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "softmax_2.tmp_0", "shape": ["dynamic-batch", "dynamic-timesteps", 4401], "type": "tensor(float)"}],
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              "?",
+              "DynamicDimension.1"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "softmax_2.tmp_0",
+            "shape": [
+              "DynamicDimension.2",
+              "DynamicDimension.3",
+              4401
+            ],
+            "type": "tensor(float)"
+          }
+        ],
         "vocabulary_count": 4399,
         "vocabulary_sha256": "1dcfcb41eec90576a945b3084f22ade11ced506e24f14879245b071698f308e8",
         "missing_fixture_characters": []
@@ -135,8 +202,30 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
         "bytes": 4819576,
         "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "fetch_name_0", "shape": ["dynamic-batch", 1, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}]
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              "DynamicDimension.1",
+              "DynamicDimension.2"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "fetch_name_0",
+            "shape": [
+              "ConvTranspose_497_o0__d0",
+              1,
+              "ConvTranspose_497_o0__d2",
+              "ConvTranspose_497_o0__d3"
+            ],
+            "type": "tensor(float)"
+          }
+        ]
       },
       "recognizer": {
         "id": "ch_PP-OCRv5_rec_mobile",
@@ -144,8 +233,29 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx",
         "bytes": 16631306,
         "sha256": "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, 48, "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "fetch_name_0", "shape": ["dynamic-batch", "dynamic-timesteps", 18385], "type": "tensor(float)"}],
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              48,
+              "DynamicDimension.1"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "fetch_name_0",
+            "shape": [
+              "DynamicDimension.0",
+              "Reshape_524_o0__d2",
+              18385
+            ],
+            "type": "tensor(float)"
+          }
+        ],
         "vocabulary_count": 18383,
         "vocabulary_sha256": "17665d27ed39f0deb82007859992d626d3105d0ee4578c120b7c72138dc04d05",
         "missing_fixture_characters": []
@@ -162,8 +272,30 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
         "bytes": 9929594,
         "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "fetch_name_0", "shape": ["dynamic-batch", 1, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}]
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              "DynamicDimension.1",
+              "DynamicDimension.2"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "fetch_name_0",
+            "shape": [
+              "ConvTranspose_459_o0__d0",
+              1,
+              "ConvTranspose_459_o0__d2",
+              "ConvTranspose_459_o0__d3"
+            ],
+            "type": "tensor(float)"
+          }
+        ]
       },
       "recognizer": {
         "id": "multi_PP-OCRv6_rec_small",
@@ -171,8 +303,29 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
         "bytes": 21234383,
         "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, 48, "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "fetch_name_0", "shape": ["dynamic-batch", "dynamic-timesteps", 18710], "type": "tensor(float)"}],
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              48,
+              "DynamicDimension.1"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "fetch_name_0",
+            "shape": [
+              "DynamicDimension.0",
+              "Reshape_470_o0__d2",
+              18710
+            ],
+            "type": "tensor(float)"
+          }
+        ],
         "vocabulary_count": 18708,
         "vocabulary_sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
         "missing_fixture_characters": []
@@ -189,8 +342,30 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx",
         "bytes": 4745517,
         "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "sigmoid_0.tmp_0", "shape": ["dynamic-batch", 1, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}]
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "p2o.DynamicDimension.0",
+              3,
+              "p2o.DynamicDimension.1",
+              "p2o.DynamicDimension.2"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "sigmoid_0.tmp_0",
+            "shape": [
+              "p2o.DynamicDimension.3",
+              1,
+              "p2o.DynamicDimension.4",
+              "p2o.DynamicDimension.5"
+            ],
+            "type": "tensor(float)"
+          }
+        ]
       },
       "recognizer": {
         "id": "multi_PP-OCRv6_rec_small",
@@ -198,8 +373,29 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
         "bytes": 21234383,
         "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, 48, "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "fetch_name_0", "shape": ["dynamic-batch", "dynamic-timesteps", 18710], "type": "tensor(float)"}],
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              48,
+              "DynamicDimension.1"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "fetch_name_0",
+            "shape": [
+              "DynamicDimension.0",
+              "Reshape_470_o0__d2",
+              18710
+            ],
+            "type": "tensor(float)"
+          }
+        ],
         "vocabulary_count": 18708,
         "vocabulary_sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
         "missing_fixture_characters": []
@@ -216,8 +412,30 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx",
         "bytes": 4819576,
         "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "fetch_name_0", "shape": ["dynamic-batch", 1, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}]
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              "DynamicDimension.1",
+              "DynamicDimension.2"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "fetch_name_0",
+            "shape": [
+              "ConvTranspose_497_o0__d0",
+              1,
+              "ConvTranspose_497_o0__d2",
+              "ConvTranspose_497_o0__d3"
+            ],
+            "type": "tensor(float)"
+          }
+        ]
       },
       "recognizer": {
         "id": "multi_PP-OCRv6_rec_small",
@@ -225,8 +443,29 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
         "bytes": 21234383,
         "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, 48, "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "fetch_name_0", "shape": ["dynamic-batch", "dynamic-timesteps", 18710], "type": "tensor(float)"}],
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              48,
+              "DynamicDimension.1"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "fetch_name_0",
+            "shape": [
+              "DynamicDimension.0",
+              "Reshape_470_o0__d2",
+              18710
+            ],
+            "type": "tensor(float)"
+          }
+        ],
         "vocabulary_count": 18708,
         "vocabulary_sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
         "missing_fixture_characters": []
@@ -243,8 +482,30 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/det/PP-OCRv6_det_tiny.onnx",
         "bytes": 1829618,
         "sha256": "f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "fetch_name_0", "shape": ["dynamic-batch", 1, "dynamic-height", "dynamic-width"], "type": "tensor(float)"}]
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              "DynamicDimension.1",
+              "DynamicDimension.2"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "fetch_name_0",
+            "shape": [
+              "ConvTranspose_459_o0__d0",
+              1,
+              "ConvTranspose_459_o0__d2",
+              "ConvTranspose_459_o0__d3"
+            ],
+            "type": "tensor(float)"
+          }
+        ]
       },
       "recognizer": {
         "id": "multi_PP-OCRv6_rec_small",
@@ -252,8 +513,29 @@
         "url": "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
         "bytes": 21234383,
         "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
-        "inputs": [{"name": "x", "shape": ["dynamic-batch", 3, 48, "dynamic-width"], "type": "tensor(float)"}],
-        "outputs": [{"name": "fetch_name_0", "shape": ["dynamic-batch", "dynamic-timesteps", 18710], "type": "tensor(float)"}],
+        "inputs": [
+          {
+            "name": "x",
+            "shape": [
+              "DynamicDimension.0",
+              3,
+              48,
+              "DynamicDimension.1"
+            ],
+            "type": "tensor(float)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "fetch_name_0",
+            "shape": [
+              "DynamicDimension.0",
+              "Reshape_470_o0__d2",
+              18710
+            ],
+            "type": "tensor(float)"
+          }
+        ],
         "vocabulary_count": 18708,
         "vocabulary_sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
         "missing_fixture_characters": []

@@ -799,8 +799,9 @@ weak framework linking the record described; see
 `G-004` remains open. [Proposed ADR 0033](adr/0033-default-ocr-model-profile.md)
 conditionally selects RapidOCR v3.9.2's PP-OCRv4 mobile detector plus PP-OCRv6
 small recognizer under a controlled host-provided, digest-verified profile. The
-candidate is the only one that passes the 42-region Apple Silicon v3 fixture;
-Windows qualification is absent. This narrows the decision without adding model
+candidate is the only one that passes hardened v4 evaluation of the 42-region v3
+fixture, including pinned tool, CPU session, and vocabulary identity; Windows
+qualification is absent. This narrows the decision without adding model
 bytes, ONNX Runtime, an OCR contract/backend, default wiring, or a support claim.
 
 ## Implementation status

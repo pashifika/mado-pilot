@@ -274,28 +274,39 @@ def validate_candidates() -> None:
         "ppocrv6-multilingual-small",
     }
     expected_v3 = expected_v2
+    expected_v4 = expected_v3
     if not isinstance(stages, dict):
         fail("candidate evaluation_stages are missing")
     v1 = stages.get("v1")
     v2 = stages.get("v2")
     v3 = stages.get("v3")
+    v4 = stages.get("v4")
     if not isinstance(v1, dict) or set(v1.get("candidates", [])) != expected_v1:
         fail("candidate v1 screening set drifted")
     if not isinstance(v2, dict) or set(v2.get("candidates", [])) != expected_v2:
         fail("candidate v2 qualification set drifted")
     if not isinstance(v3, dict) or set(v3.get("candidates", [])) != expected_v3:
         fail("candidate v3 qualification set drifted")
+    if not isinstance(v4, dict) or set(v4.get("candidates", [])) != expected_v4:
+        fail("candidate v4 qualification set drifted")
     if v1.get("fixture_profile_id") != "g-004-japanese-ui-v1":
         fail("candidate v1 fixture profile drifted")
     if v2.get("fixture_profile_id") != "g-004-japanese-ui-v2":
         fail("candidate v2 fixture profile drifted")
     if v3.get("fixture_profile_id") != "g-004-japanese-ui-v3":
         fail("candidate v3 fixture profile drifted")
+    if v4.get("fixture_profile_id") != "g-004-japanese-ui-v3":
+        fail("candidate v4 fixture profile drifted")
+    if v4.get("purpose") != (
+        "Enforce the pinned tool environment and exact ONNX "
+        "session/vocabulary identity before inference."
+    ):
+        fail("candidate v4 hardening purpose drifted")
 
     candidates = record.get("candidates")
-    expected_candidates = expected_v1 | expected_v3
+    expected_candidates = expected_v1 | expected_v4
     if not isinstance(candidates, list) or len(candidates) != len(expected_candidates):
-        fail("candidate allowlist does not match the three frozen stages")
+        fail("candidate allowlist does not match the four frozen stages")
     seen_ids: set[str] = set()
     seen_models: dict[PurePosixPath, tuple[object, object, object, object]] = {}
     for candidate_index, candidate in enumerate(candidates):
@@ -354,16 +365,57 @@ def validate_candidates() -> None:
 
 def validate_apple_report() -> None:
     report = load_json(EVIDENCE / "report-aarch64-apple-darwin.json")
-    if report.get("schema_version") != 1:
-        fail("Apple report schema_version must be 1")
+    if report.get("schema_version") != 2:
+        fail("Apple report schema_version must be 2")
+    if report.get("qualification_stage") != "v4":
+        fail("Apple report must use the hardened v4 evaluator")
     if report.get("target") != "aarch64-apple-darwin":
         fail("Apple report target must be aarch64-apple-darwin")
     if report.get("product_base_revision") != "f3608424dde88f835f35653be8113f7a2009431b":
         fail("Apple report product baseline drifted")
 
     stages = report.get("stages")
-    if not isinstance(stages, list) or [stage.get("id") for stage in stages if isinstance(stage, dict)] != ["v1", "v2", "v3"]:
-        fail("Apple report must retain v1, v2, and v3 in order")
+    if (
+        not isinstance(stages, list)
+        or [stage.get("id") for stage in stages if isinstance(stage, dict)]
+        != ["v1", "v2", "v3", "v4"]
+    ):
+        fail("Apple report must retain v1 through v4 in order")
+
+    def frozen_candidates_sha256(candidates: object) -> str:
+        payload = json.dumps(
+            candidates,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    expected_stage_hashes = {
+        "v1": "271826b8da10c295a1e5e04717fa82f08d5979d98c84fb9895aaaaa51fb1643e",
+        "v2": "50e8bd23b9f411c1fc6ba3d1910c6dfd1b5e59fadadbcf1879945169db2c0a85",
+        "v3": "ad11cbf9fe332f7fc2472b3a00c7b172c902a02faef21b95bbe00255ce3d43d6",
+        "v4": "63ae5f33d0a3f76c659f68f4cfe4e393dbf269eded9ce3005b2cb07ac50e428f",
+    }
+    expected_stage_statuses = {
+        "v1": "rejected-historical",
+        "v2": "rejected-historical",
+        "v3": "superseded-evaluator-unenforced-identity",
+        "v4": "apple-complete-windows-pending",
+    }
+    for stage in stages:
+        stage_id = stage["id"]
+        candidates = stage.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            fail(f"Apple stage {stage_id} has no candidates")
+        observed_hash = frozen_candidates_sha256(candidates)
+        if (
+            stage.get("frozen_candidates_sha256") != observed_hash
+            or observed_hash != expected_stage_hashes[stage_id]
+        ):
+            fail(f"Apple frozen {stage_id} candidate outcomes changed")
+        if stage.get("status") != expected_stage_statuses[stage_id]:
+            fail(f"Apple stage {stage_id} status changed")
 
     historical_identities = {
         "v1": {
@@ -378,38 +430,23 @@ def validate_apple_report() -> None:
             "candidates_sha256": "213323b7d70cea8448c4799742283072ad32c7330304065df835d1b7886c5f66",
             "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
         },
+        "v3": {
+            "evaluator_sha256": "77f808eac65f5b09157569b1c89b48c74501986f13133e6201559be512628165",
+            "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+            "candidates_sha256": "c77239560b4f93930b19b30cb708c6736151fef3eb9a6fd0bc846e0ab28aa85b",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
+        },
     }
-    for stage in stages[:2]:
-        stage_id = stage["id"]
-        candidates = stage.get("candidates")
-        if not isinstance(candidates, list) or not candidates:
-            fail(f"Apple historical stage {stage_id} has no candidates")
-        for candidate in candidates:
-            if candidate.get("source_identity") != historical_identities[stage_id]:
-                fail(f"Apple historical {stage_id} source identity changed")
-            if candidate.get("pass") is not False:
-                fail(f"Apple historical {stage_id} must remain rejected")
-
-    corrected_candidates_sha256 = sha256(EVIDENCE / "candidates.json")
-    clarification = report.get("metadata_clarification")
-    if clarification != {
-        "fields": [
-            "common_profile.detector.input_pixel_format",
-            "common_profile.recognizer.input_pixel_format",
-        ],
-        "candidate_manifest_sha256_at_run": "c77239560b4f93930b19b30cb708c6736151fef3eb9a6fd0bc846e0ab28aa85b",
-        "corrected_candidate_manifest_sha256": corrected_candidates_sha256,
-        "at_run_label": "RGB planar float32",
-        "executed_and_corrected_value": "BGR planar float32 (OpenCV order; no channel swap)",
-        "execution_changed": False,
-        "measurements_changed": False,
-    }:
-        fail("Apple report pixel-format clarification drifted")
+    for stage in stages[:3]:
+        expected_identity = historical_identities[stage["id"]]
+        for candidate in stage["candidates"]:
+            if candidate.get("source_identity") != expected_identity:
+                fail(f"Apple historical {stage['id']} source identity changed")
 
     current_identity = {
         "evaluator_sha256": sha256(EVIDENCE / "evaluate.py"),
         "fixture_manifest_sha256": sha256(FIXTURES / "fixture-manifest.json"),
-        "candidates_sha256": "c77239560b4f93930b19b30cb708c6736151fef3eb9a6fd0bc846e0ab28aa85b",
+        "candidates_sha256": sha256(EVIDENCE / "candidates.json"),
         "tool_requirements_sha256": sha256(EVIDENCE / "tool-requirements.txt"),
     }
     candidate_record = load_json(EVIDENCE / "candidates.json")
@@ -418,52 +455,103 @@ def validate_apple_report() -> None:
     }
     fixture = load_json(FIXTURES / "fixture-manifest.json")
     fixture_lookup = {image["file"]: image for image in fixture["images"]}
-    expected_v3 = {
+    expected_v4 = {
         "ppocrv4-det-v6-rec-small",
         "ppocrv5-det-v6-rec-small",
         "ppocrv6-det-tiny-rec-small",
         "ppocrv6-multilingual-small",
     }
     selected = "ppocrv4-det-v6-rec-small"
-    v3_candidates = stages[2].get("candidates")
-    if not isinstance(v3_candidates, list) or {candidate.get("candidate_id") for candidate in v3_candidates} != expected_v3:
-        fail("Apple v3 candidate matrix drifted")
-    for candidate in v3_candidates:
+    v4_candidates = stages[3]["candidates"]
+    if {candidate.get("candidate_id") for candidate in v4_candidates} != expected_v4:
+        fail("Apple v4 candidate matrix drifted")
+
+    requirements = {}
+    expected_python = None
+    for line in (EVIDENCE / "tool-requirements.txt").read_text(encoding="utf-8").splitlines():
+        if line.startswith("# Python "):
+            expected_python = line.removeprefix("# Python ").split(";", 1)[0]
+        elif line and not line.startswith("#"):
+            name, version = line.split("==", 1)
+            requirements[name] = version
+    expected_tools = {
+        "python": expected_python,
+        "packages": requirements,
+        "modules": {
+            "onnxruntime": "1.29.0",
+            "opencv": "5.0.0",
+            "pillow": "12.3.0",
+        },
+        "onnxruntime_available_providers": [
+            "CoreMLExecutionProvider",
+            "AzureExecutionProvider",
+            "CPUExecutionProvider",
+        ],
+    }
+    if report.get("tools") != expected_tools:
+        fail("Apple v4 tool environment drifted")
+    if report.get("profile") != {
+        "provider": "CPUExecutionProvider",
+        "intra_op_threads": 1,
+        "inter_op_threads": 1,
+        "cpu_memory_arena": False,
+        "orientation_classifier": False,
+        "warmup_passes": 2,
+        "measured_passes": 10,
+    }:
+        fail("Apple v4 execution profile drifted")
+
+    expected_vocabulary = {
+        "metadata_key": "character",
+        "encoding": "UTF-8 lines",
+        "count": 18708,
+        "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+        "missing_fixture_characters": [],
+    }
+    for candidate in v4_candidates:
         candidate_id = candidate["candidate_id"]
         if candidate.get("fixture_profile_id") != "g-004-japanese-ui-v3":
-            fail(f"Apple v3 candidate {candidate_id} uses the wrong fixture")
+            fail(f"Apple v4 candidate {candidate_id} uses the wrong fixture")
         if candidate.get("source_identity") != current_identity:
-            fail(f"Apple v3 candidate {candidate_id} source identity is stale")
+            fail(f"Apple v4 candidate {candidate_id} source identity is stale")
         if candidate.get("stable_gate_outcomes") is not True:
-            fail(f"Apple v3 candidate {candidate_id} is unstable")
+            fail(f"Apple v4 candidate {candidate_id} is unstable")
 
         expected_candidate = candidate_lookup[candidate_id]
-        expected_models = [
-            {
+        expected_models = []
+        for role in ("detector", "recognizer"):
+            model = expected_candidate[role]
+            expected_model = {
                 "role": role,
-                "id": expected_candidate[role]["id"],
-                "relative_controlled_path": expected_candidate[role]["relative_controlled_path"],
-                "bytes": expected_candidate[role]["bytes"],
-                "sha256": expected_candidate[role]["sha256"],
+                "id": model["id"],
+                "relative_controlled_path": model["relative_controlled_path"],
+                "bytes": model["bytes"],
+                "sha256": model["sha256"],
+                "session": {
+                    "providers": ["CPUExecutionProvider"],
+                    "inputs": model["inputs"],
+                    "outputs": model["outputs"],
+                },
             }
-            for role in ("detector", "recognizer")
-        ]
+            if role == "recognizer":
+                expected_model["vocabulary"] = expected_vocabulary
+            expected_models.append(expected_model)
         if candidate.get("models") != expected_models:
-            fail(f"Apple v3 candidate {candidate_id} model identity drifted")
+            fail(f"Apple v4 candidate {candidate_id} loaded model identity drifted")
 
         images = candidate.get("images")
         if not isinstance(images, list) or [image.get("file") for image in images] != list(fixture_lookup):
-            fail(f"Apple v3 candidate {candidate_id} image matrix drifted")
+            fail(f"Apple v4 candidate {candidate_id} image matrix drifted")
         for image in images:
             expected_image = fixture_lookup[image["file"]]
             if image.get("fixture_sha256") != expected_image["sha256"]:
-                fail(f"Apple v3 candidate {candidate_id} fixture digest drifted")
+                fail(f"Apple v4 candidate {candidate_id} fixture digest drifted")
             if image.get("expected_region_count") != len(expected_image["regions"]):
-                fail(f"Apple v3 candidate {candidate_id} expected count drifted")
+                fail(f"Apple v4 candidate {candidate_id} expected count drifted")
 
         if candidate_id == selected:
             if candidate.get("pass") is not True or candidate.get("failure_categories") != []:
-                fail("Apple selected candidate no longer passes")
+                fail("Apple selected v4 candidate no longer passes")
             for image in images:
                 expected_count = image["expected_region_count"]
                 if (
@@ -475,15 +563,41 @@ def validate_apple_report() -> None:
                     or image.get("order_pass") is not True
                     or image.get("pass") is not True
                 ):
-                    fail(f"Apple selected candidate fails {image['file']}")
-        elif candidate.get("pass") is not False or not candidate.get("failure_categories"):
-            fail(f"Apple rejected candidate {candidate_id} has no retained failure")
+                    fail(f"Apple selected v4 candidate fails {image['file']}")
+        elif (
+            candidate.get("pass") is not False
+            or candidate.get("failure_categories")
+            != ["ordering_mismatch", "text_mismatch", "unexpected_region"]
+        ):
+            fail(f"Apple rejected v4 candidate {candidate_id} outcome drifted")
+
+    clarification = report.get("metadata_clarification")
+    if clarification != {
+        "fields": [
+            "common_profile.detector.input_pixel_format",
+            "common_profile.recognizer.input_pixel_format",
+        ],
+        "candidate_manifest_sha256_at_v3_run": "c77239560b4f93930b19b30cb708c6736151fef3eb9a6fd0bc846e0ab28aa85b",
+        "first_corrected_candidate_manifest_sha256": "22ed31eae6f7bd873790b12f815f25465af60ff104c6bd6ddf6396015c1ff2a0",
+        "current_candidate_manifest_sha256": current_identity["candidates_sha256"],
+        "at_run_label": "RGB planar float32",
+        "executed_and_current_value": "BGR planar float32 (OpenCV order; no channel swap)",
+        "execution_changed": False,
+        "measurements_replaced_by_hardened_v4": True,
+    }:
+        fail("Apple report pixel-format clarification drifted")
 
     decision = report.get("apple_decision")
     if not isinstance(decision, dict):
         fail("Apple decision record is missing")
     if decision.get("selected_candidate_for_windows") != selected:
         fail("Apple selected candidate drifted")
+    if decision.get("other_v4_candidates_rejected") != [
+        "ppocrv5-det-v6-rec-small",
+        "ppocrv6-det-tiny-rec-small",
+        "ppocrv6-multilingual-small",
+    ]:
+        fail("Apple rejected v4 candidate list drifted")
     if decision.get("g004_status") != "open-pending-windows":
         fail("Apple evidence must keep G-004 open pending Windows")
 

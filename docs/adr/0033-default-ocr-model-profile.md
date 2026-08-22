@@ -2,7 +2,9 @@
 
 - **Status:** Proposed; `G-004` remains open pending Windows qualification
 - **Date:** 2026-08-22
-- **Resolves gate:** [`G-004`](../validation-gates.md#g-004) only after the selected v3 profile passes `x86_64-pc-windows-msvc` and this record is accepted
+- **Resolves gate:** [`G-004`](../validation-gates.md#g-004) only after the
+  selected v3 fixture passes the hardened v4 evaluator on
+  `x86_64-pc-windows-msvc` and this record is accepted
 - **Supersedes:** none
 
 ## Context
@@ -24,14 +26,20 @@ Its first run exposed a manifest authoring-order defect. V3 preserved every
 historical digest and bound order to RapidOCR v3.9.2's stable Y, adjacent-10-pixel
 row, then X sort.
 
+Independent review found that the v3 evaluator recorded but did not enforce every
+pinned package version or compare loaded ONNX/session/vocabulary metadata to the
+candidate record. V4 reran the unchanged v3 fixture after enforcing the complete
+tool environment, CPU-only provider, input/output names, types, and shapes, and
+embedded vocabulary before inference.
+
 On Apple Silicon, only the PP-OCRv4 mobile detector paired with the PP-OCRv6 small
-recognizer passed all 42 v3 regions. The PP-OCRv5 detector missed one mission row;
-the smaller/faster PP-OCRv6 tiny detector and PP-OCRv6 small detector each missed
-one dense-tooltip row. All failures were stable over ten passes. The selected
-Apple process used 25,979,900 model bytes, a 2,651.749 ms median five-image suite,
-and 1,000,587,264 peak resident bytes in the evaluation-only Python/RapidOCR/
-OpenCV/ONNX Runtime process. Those observations select among candidates; they are
-not a Rust backend budget or support claim.
+recognizer passes all 42 regions under hardened v4. The PP-OCRv5 detector misses
+one mission row; the smaller/faster PP-OCRv6 tiny detector and PP-OCRv6 small
+detector each miss one dense-tooltip row. All failures are stable over ten
+passes. The selected Apple process used 25,979,900 model bytes, a 2,650.097 ms
+median five-image suite, and 1,012,318,208 peak resident bytes in the
+evaluation-only Python/RapidOCR/OpenCV/ONNX Runtime process. Those observations
+select among candidates; they are not a Rust backend budget or support claim.
 
 The required Windows row has not run. Therefore this ADR is proposed and `G-004`
 remains open.
@@ -107,8 +115,9 @@ runtime bundling remains open under `G-007`.
 
 ## Consequences
 
-The Windows operator must run all four v3 candidates with the same fixture and
-tool versions; only an unchanged pass for the conditionally selected profile can
+The Windows operator must run all four candidates with the hardened v4 evaluator
+and unchanged v3 fixture/tool versions; only an unchanged pass for the
+conditionally selected profile can
 advance this ADR. A target-specific failure, missing row, digest difference, or
 source drift keeps `G-004` open.
 
@@ -118,7 +127,7 @@ decoder, normalization, order, confidence semantics, deployment, or digests. A
 change requires new cross-target evidence and an ADR that supersedes this one.
 
 The implementation must prioritize bounded native memory and session lifetime.
-The approximately 954 MiB Apple evaluation-process peak is not accepted as a
+The approximately 965 MiB Apple evaluation-process peak is not accepted as a
 product ceiling. The backend Change must establish repeatable native load/
 inference profiles, finite image/model/session bounds, allocation and resident
 budgets, and failure before unsafe allocation. No OCR API or support claim is
@@ -136,7 +145,7 @@ records licenses and deployment obligations.
 
 `python3 docs/evidence/g-004/validate.py` runs in repository-policy CI and fails on
 current or historical digest drift, profile/path/size/vocabulary inconsistency,
-stale v3 source identity, changed Apple pass/fail rows, privacy payloads, or a
-prematurely promoted gate status. Acceptance additionally requires independent
-review of both target reports and exact merge-revision checks through the
-protected pull request to `dev/0.3.0`.
+changed frozen v1–v4 outcomes, stale v4 tool/session/source identity, privacy
+payloads, or a premature gate promotion. Acceptance additionally requires
+independent review of both target reports and exact merge-revision checks through
+the protected pull request to `dev/0.3.0`.

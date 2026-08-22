@@ -45,6 +45,46 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def verify_environment() -> dict[str, Any]:
+    requirements_path = EVIDENCE / "tool-requirements.txt"
+    expected_python = None
+    expected_packages: dict[str, str] = {}
+    for line in requirements_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("# Python "):
+            expected_python = line.removeprefix("# Python ").split(";", 1)[0]
+        elif line and not line.startswith("#"):
+            name, version = line.split("==", 1)
+            expected_packages[name] = version
+
+    actual_python = platform.python_version()
+    if expected_python is None or actual_python != expected_python:
+        raise ValueError(
+            f"Python version mismatch: expected {expected_python}, got {actual_python}"
+        )
+
+    actual_packages = {
+        name: importlib.metadata.version(name) for name in expected_packages
+    }
+    mismatches = {
+        name: {"expected": expected_packages[name], "actual": actual_packages[name]}
+        for name in expected_packages
+        if actual_packages[name] != expected_packages[name]
+    }
+    if mismatches:
+        raise ValueError(f"evaluation package version mismatch: {mismatches}")
+
+    return {
+        "python": actual_python,
+        "packages": actual_packages,
+        "modules": {
+            "onnxruntime": ort.__version__,
+            "opencv": cv2.__version__,
+            "pillow": pillow_version,
+        },
+        "onnxruntime_available_providers": ort.get_available_providers(),
+    }
+
+
 def normalize_text(value: str) -> str:
     return unicodedata.normalize("NFC", value).strip()
 
@@ -203,6 +243,74 @@ def verify_models(candidate: dict[str, Any], model_root: Path) -> list[dict[str,
     if total != candidate["total_model_bytes"] or total > PAIR_LIMIT:
         raise ValueError("candidate model pair byte limit or total mismatch")
     return verified
+
+
+def session_values(values: Any) -> list[dict[str, Any]]:
+    return [
+        {"name": value.name, "shape": value.shape, "type": value.type}
+        for value in values
+    ]
+
+
+def verify_session_metadata(
+    candidate: dict[str, Any],
+    detector: TextDetector,
+    recognizer: TextRecognizer,
+    fixture: dict[str, Any],
+    verified_models: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    components = {"detector": detector, "recognizer": recognizer}
+    verified_by_role = {model["role"]: model for model in verified_models}
+    for role, component in components.items():
+        model = candidate[role]
+        session = component.session.session
+        providers = session.get_providers()
+        inputs = session_values(session.get_inputs())
+        outputs = session_values(session.get_outputs())
+        if providers != ["CPUExecutionProvider"]:
+            raise ValueError(f"{role} did not bind CPUExecutionProvider alone")
+        if inputs != model["inputs"]:
+            raise ValueError(f"{role} ONNX input metadata mismatch")
+        if outputs != model["outputs"]:
+            raise ValueError(f"{role} ONNX output metadata mismatch")
+        verified_by_role[role]["session"] = {
+            "providers": providers,
+            "inputs": inputs,
+            "outputs": outputs,
+        }
+
+    recognizer_session = recognizer.session.session
+    metadata = recognizer_session.get_modelmeta().custom_metadata_map
+    characters = metadata.get("character")
+    if characters is None:
+        raise ValueError("recognizer has no embedded character vocabulary")
+    vocabulary = characters.splitlines()
+    required_characters = {
+        character
+        for image in fixture["images"]
+        for region in image["regions"]
+        for character in region["text_nfc"]
+    }
+    missing_characters = sorted(
+        character for character in required_characters if character not in vocabulary
+    )
+    observed_vocabulary = {
+        "metadata_key": "character",
+        "encoding": "UTF-8 lines",
+        "count": len(vocabulary),
+        "sha256": hashlib.sha256(characters.encode("utf-8")).hexdigest(),
+        "missing_fixture_characters": missing_characters,
+    }
+    expected_recognizer = candidate["recognizer"]
+    if (
+        observed_vocabulary["count"] != expected_recognizer["vocabulary_count"]
+        or observed_vocabulary["sha256"]
+        != expected_recognizer["vocabulary_sha256"]
+        or missing_characters != expected_recognizer["missing_fixture_characters"]
+    ):
+        raise ValueError("recognizer embedded vocabulary mismatch")
+    verified_by_role["recognizer"]["vocabulary"] = observed_vocabulary
+    return [verified_by_role[role] for role in ("detector", "recognizer")]
 
 
 def observed_polygon(box: Any, width: int, height: int) -> Polygon:
@@ -379,6 +487,14 @@ def main() -> None:
     parser.add_argument("--raw-report", required=True, type=Path)
     args = parser.parse_args()
 
+    tools = verify_environment()
+    host = host_record()
+    if host["target"] not in {
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+    }:
+        raise ValueError(f"unsupported qualification target: {host['target']}")
+
     fixture_path = FIXTURES / "fixture-manifest.json"
     candidates_path = EVIDENCE / "candidates.json"
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -390,9 +506,11 @@ def main() -> None:
     if candidate is None:
         raise SystemExit(f"unknown candidate: {args.candidate}")
 
-    verified_models = verify_models(candidate, args.model_root.resolve())
-    detector, recognizer, initialization_ms = configure_engine(
-        candidate, args.model_root.resolve()
+    model_root = args.model_root.resolve()
+    verified_models = verify_models(candidate, model_root)
+    detector, recognizer, initialization_ms = configure_engine(candidate, model_root)
+    verified_models = verify_session_metadata(
+        candidate, detector, recognizer, fixture, verified_models
     )
 
     for _ in range(WARMUP_PASSES):
@@ -430,15 +548,8 @@ def main() -> None:
             "candidates_sha256": sha256(candidates_path),
             "tool_requirements_sha256": sha256(EVIDENCE / "tool-requirements.txt"),
         },
-        "host": host_record(),
-        "tools": {
-            "python": platform.python_version(),
-            "rapidocr": importlib.metadata.version("rapidocr"),
-            "onnxruntime": ort.__version__,
-            "onnxruntime_providers": ort.get_available_providers(),
-            "opencv": cv2.__version__,
-            "pillow": pillow_version,
-        },
+        "host": host,
+        "tools": tools,
         "models": verified_models,
         "profile": {
             "provider": "CPUExecutionProvider",

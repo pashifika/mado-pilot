@@ -80,6 +80,23 @@ execution and the report binds that clarification to the current candidate-file
 digest. No model, evaluator, fixture, preprocessing value, output, timing, or
 memory measurement changed, so no run is relabeled or rerun.
 
+## Evaluator hardening frozen before v4
+
+Independent review found that the v3 evaluator recorded but did not enforce every
+version in `tool-requirements.txt`, and verified model bytes/digests without
+comparing the loaded ONNX names, types, shapes, provider, or embedded vocabulary
+to `candidates.json`. V3 results remain historical observations, but those omitted
+hard-gate checks prevent them from being final qualification evidence.
+
+V4 was frozen at `2026-08-22T14:55:37Z`, before any hardened run. The fixture,
+candidate model bytes, BGR preprocessing, decoder, oracle, and sample policy are
+unchanged. Before session creation it requires Python and every pinned package
+version to match. After digest verification and session creation but before
+warm-up, it requires CPU-only provider binding, exact ONNX input/output
+name/type/shape records, and the exact embedded vocabulary count/digest and
+fixture coverage. All four candidates rerun in fresh Apple processes. Windows
+qualification must use the same v4 evaluator and source identities.
+
 ## Revision and ownership
 
 | Field | Frozen value |

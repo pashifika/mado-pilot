@@ -192,25 +192,27 @@ small recognizer, with exact bytes, digests, vocabulary, language,
 preprocessing/decoder, normalization, ordering, confidence, license, and
 controlled-host deployment metadata.
 
-**Required evidence.** The immutable v3 quality fixture must reproduce exact text,
-region count, source-relative geometry, ordering, confidence validity, and stable
-outcomes on both release targets. Model/fixture provenance and licenses and the
-controlled host-provided obligations must remain compatible.
+**Required evidence.** The immutable v3 quality fixture under the hardened v4
+evaluator must reproduce exact text, region count, source-relative geometry,
+ordering, confidence validity, and stable outcomes on both release targets. The
+complete pinned tool environment, CPU session input/output/provider metadata,
+embedded vocabulary, model/fixture provenance and licenses, and controlled
+host-provided obligations must match.
 
 **Due.** Before Phase 3 implementation.
 
 **Blocks.** The default OCR profile.
 
-**Status.** Open. The Apple Silicon matrix is complete: the conditional candidate
-is the only one that passes all 42 regions. The required
-`x86_64-pc-windows-msvc` report is absent, so neither ADR 0033 nor a default OCR
-profile is accepted.
+**Status.** Open. The hardened Apple Silicon v4 matrix is complete: the
+conditional candidate is the only one that passes all 42 regions plus every
+tool/session/vocabulary identity row. The required `x86_64-pc-windows-msvc`
+report is absent, so neither ADR 0033 nor a default OCR profile is accepted.
 
-**Resolution.** Run every v3 Windows row from the fixed source, reconcile the
-selected candidate against the Apple report, independently review quality,
-provenance, license, privacy, and deployment, then accept ADR 0033 and update
-[third-party-dependencies.md](third-party-dependencies.md) only if no mandatory
-row is missing or divergent.
+**Resolution.** Run every v4 Windows row from the fixed source and v3 fixture,
+reconcile the selected candidate against the Apple report, and independently
+review quality, provenance, license, privacy, and deployment, then accept ADR 0033
+and update [third-party-dependencies.md](third-party-dependencies.md) only if no
+mandatory row is missing or divergent.
 
 ## G-005
 
