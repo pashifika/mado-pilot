@@ -23,9 +23,11 @@ owning-process-scoped `ProcessDirected` input.
 The qualified Windows floor, both platform native/public-language matrices,
 macOS production capture/transitions, Windows 1280×720 production
 capture/transitions, and corrected Windows mixed-DPI dual-4K production capture
-have accepted revision-bound evidence and target-specific budgets. Exact
-final-source Phase 1, repository, and release-target checks are bound to each
-exit candidate without relabeling the interactive evidence. OCR, watchers,
+have accepted revision-bound evidence and target-specific budgets. Windows
+final-source Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs
+remain attributed to `d8336be` and apply by reviewed complete diff. Repository
+and release-target checks pass on the exact candidate without relabeling
+interactive evidence. OCR, watchers,
 scheduling, and release packaging remain future work.
 See [Implementation status](#implementation-status).
 
@@ -68,7 +70,7 @@ owns and where they genuinely differ.
 | Permission handling | Capture presents no permission UI; no permission probe exists; input compares target integrity and reports proven UIPI at route preflight | Screen Recording and event-post access reported separately without permission UI; `PermissionKind::InputControl` maps to the public `CGPreflightPostEventAccess` decision re-read before every irreversible event, regardless of the Privacy & Security pane label, while legacy Accessibility trust is only a separate focus input and paired qualification fact (implemented) |
 | Native verification host | Core i7-12700KF / RTX 4080 Windows 11 Pro 25H2 build 26200.9168, SDK 10.0.26100.0; `windows-2025` CI remains supporting server evidence | Apple Silicon macOS 26.5.2 (25F84), SDK 26.5 |
 | Deployment floor | Windows 11 25H2 build family 26200 on a currently serviced x64 desktop installation; earlier versions unsupported | macOS 26.5.2; older versions unsupported |
-| Candidate verification | Exact final-source Phase 1/repository checks and release-target CI are candidate-bound exit evidence; ADRs 0026, 0028, 0031, and 0032 retain their separate Windows workload sources | Exact final-source Phase 1/repository checks and release-target CI are candidate-bound exit evidence; ADRs 0024, 0025, 0029, and 0030 retain their separate macOS workload sources |
+| Candidate verification | Windows Phase 1 reruns plus repository and release-target checks pass on the exact exit candidate; ADRs 0026, 0028, 0031, and 0032 retain their separate Windows workload sources | Apple Silicon Phase 1 runs remain attributed to `d8336be` and apply by reviewed complete diff; repository and release-target checks pass on the exact exit candidate; ADRs 0024, 0025, 0029, and 0030 retain their separate macOS workload sources |
 
 Detailed capabilities, permission outcomes, coordinate transforms, native
 resource ownership, and unsupported-system behavior are added by the changes

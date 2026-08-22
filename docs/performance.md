@@ -459,8 +459,10 @@ records, and still return four complete receipts on both targets.
 ## Phase 2 native performance status
 
 Phase 2's affected [`G-013`](validation-gates.md#g-013) production and
-target-specific native profiles are accepted. Final-source Phase 1 reruns use
-the unchanged ceilings and are bound to the exact exit candidate.
+target-specific native profiles are accepted. Windows final-source Phase 1
+reruns pass on the exact exit candidate; Apple Silicon runs remain attributed
+to `d8336be` and apply by reviewed complete diff. Both keep their unchanged
+ceilings.
 [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
 invalidated the three macOS profiles originally accepted by
 [ADR 0020](adr/0020-phase-2-native-performance-budgets.md). ADR 0025 replaced
