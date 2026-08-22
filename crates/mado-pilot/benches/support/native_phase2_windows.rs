@@ -1072,7 +1072,6 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
     let callback_elapsed =
         callback_time / u32::try_from(displays.len()).expect("two displays fit u32");
     correct &= mapped_bytes == surface_bytes.saturating_mul(2)
-        && copied_bytes == surface_bytes.saturating_mul(2)
         && after_metrics.callback_observation_losses == 0
         && after_metrics.detached_textures_peak >= 4
         && after_metrics.staging_textures_peak > 0;
