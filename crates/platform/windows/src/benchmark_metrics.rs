@@ -588,6 +588,25 @@ pub fn dual_display_fixture_marker_points(window_x: i32, window_y: i32) -> [(f64
     ]
 }
 
+/// Returns whether one captured BGRA pixel carries the benchmark marker color.
+#[cfg(feature = "benchmark-instrumentation")]
+#[must_use]
+pub fn benchmark_marker_pixel_matches(observed_bgr: &[u8]) -> bool {
+    use crate::fixture_protocol::{BENCHMARK_MARKER_RGB, FILL_TOLERANCE};
+
+    let expected = [
+        (BENCHMARK_MARKER_RGB & 0xff) as u8,
+        ((BENCHMARK_MARKER_RGB >> 8) & 0xff) as u8,
+        ((BENCHMARK_MARKER_RGB >> 16) & 0xff) as u8,
+    ];
+    observed_bgr.get(..3).is_some_and(|observed| {
+        observed
+            .iter()
+            .zip(expected)
+            .all(|(actual, wanted)| actual.abs_diff(wanted) <= FILL_TOLERANCE)
+    })
+}
+
 /// Resets process metrics before a benchmark profile starts.
 ///
 /// The caller must first prove that no capture session or mapped frame is live.
@@ -958,8 +977,15 @@ mod tests {
 
     #[test]
     fn strictly_newer_frame_with_prior_fixture_placement_is_rejected() {
+        use crate::fixture_protocol::{BENCHMARK_MARKER_RGB, FILL_RGB};
+
         const WINDOW_Y: i32 = 600;
         const MARKER_CLIENT_X: [i32; 2] = [64, 1_200];
+
+        struct SyntheticFrame {
+            sequence: u64,
+            sampled_bgr: [u8; 3],
+        }
         const MARKER_CLIENT_Y: i32 = 352;
         const MARKER_SIZE: i32 = 16;
 
@@ -972,14 +998,38 @@ mod tests {
                 && point.1 < top + f64::from(MARKER_SIZE)
         }
 
+        fn captured_bgr(rendered_x: i32, marker_x: i32, requested_point: (f64, f64)) -> [u8; 3] {
+            let rgb = if contains_marker(rendered_x, WINDOW_Y, marker_x, requested_point) {
+                BENCHMARK_MARKER_RGB
+            } else {
+                FILL_RGB
+            };
+            [
+                (rgb & 0xff) as u8,
+                ((rgb >> 8) & 0xff) as u8,
+                ((rgb >> 16) & 0xff) as u8,
+            ]
+        }
+
         let positions = (0..300).map(dual_display_seam_x).collect::<Vec<_>>();
-        for pair in positions.windows(2) {
+        for (sequence, pair) in positions.windows(2).enumerate() {
             let prior_x = pair[0];
             let requested_x = pair[1];
             let points = dual_display_fixture_marker_points(requested_x, WINDOW_Y);
             for (marker_x, point) in MARKER_CLIENT_X.into_iter().zip(points) {
-                assert!(contains_marker(requested_x, WINDOW_Y, marker_x, point));
-                assert!(!contains_marker(prior_x, WINDOW_Y, marker_x, point));
+                let requested_frame = SyntheticFrame {
+                    sequence: u64::try_from(sequence).expect("bounded schedule index fits u64"),
+                    sampled_bgr: captured_bgr(requested_x, marker_x, point),
+                };
+                let newer_prior_placement = SyntheticFrame {
+                    sequence: requested_frame.sequence + 1,
+                    sampled_bgr: captured_bgr(prior_x, marker_x, point),
+                };
+                assert!(benchmark_marker_pixel_matches(&requested_frame.sampled_bgr));
+                assert!(newer_prior_placement.sequence > requested_frame.sequence);
+                assert!(!benchmark_marker_pixel_matches(
+                    &newer_prior_placement.sampled_bgr
+                ));
             }
         }
     }

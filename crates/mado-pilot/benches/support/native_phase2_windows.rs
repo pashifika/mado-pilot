@@ -43,9 +43,9 @@ use mado_pilot::{
 #[cfg(windows)]
 use mado_pilot_platform_windows::benchmark::{
     CallbackCopyObservation, CallbackMetricBaseline, CaptureMetricsSnapshot,
-    callback_copied_bytes_between, callback_metric_baseline, callback_observation_after,
-    capture_metrics, dual_display_fixture_marker_points, dual_display_seam_x,
-    reset_capture_metrics,
+    benchmark_marker_pixel_matches, callback_copied_bytes_between, callback_metric_baseline,
+    callback_observation_after, capture_metrics, dual_display_fixture_marker_points,
+    dual_display_seam_x, reset_capture_metrics,
 };
 #[cfg(windows)]
 use mado_pilot_platform_windows::fixture_protocol as protocol;

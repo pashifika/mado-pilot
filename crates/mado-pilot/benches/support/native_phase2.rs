@@ -1728,7 +1728,27 @@ fn mapping_pixel_is_benchmark_content(mapping: &mado_pilot::CpuMapping, point: P
 
 #[cfg(windows)]
 fn mapping_pixel_is_benchmark_marker(mapping: &mado_pilot::CpuMapping, point: Point) -> bool {
-    mapping_pixel_matches_any(mapping, point, [protocol::BENCHMARK_MARKER_RGB])
+    mapped_pixel(mapping, point).is_some_and(benchmark_marker_pixel_matches)
+}
+
+#[cfg(windows)]
+fn mapping_pixel_matches_any<const N: usize>(
+    mapping: &mado_pilot::CpuMapping,
+    point: Point,
+    fills: [u32; N],
+) -> bool {
+    mapped_pixel(mapping, point).is_some_and(|seen| {
+        fills.into_iter().any(|fill| {
+            let wanted = [
+                (fill & 0xff) as u8,
+                ((fill >> 8) & 0xff) as u8,
+                ((fill >> 16) & 0xff) as u8,
+            ];
+            seen.iter()
+                .zip(wanted)
+                .all(|(observed, expected)| observed.abs_diff(expected) <= protocol::FILL_TOLERANCE)
+        })
+    })
 }
 
 #[cfg(windows)]
@@ -1737,43 +1757,24 @@ fn mapping_pixel_is_benchmark_marker(mapping: &mado_pilot::CpuMapping, point: Po
     clippy::cast_sign_loss,
     reason = "a validated in-frame capture point is integral and bounded by the 4K descriptor"
 )]
-fn mapping_pixel_matches_any<const N: usize>(
-    mapping: &mado_pilot::CpuMapping,
-    point: Point,
-    fills: [u32; N],
-) -> bool {
+fn mapped_pixel(mapping: &mado_pilot::CpuMapping, point: Point) -> Option<&[u8]> {
     let descriptor = mapping.descriptor();
     let x = point.x();
     let y = point.y();
     if x < 0.0 || y < 0.0 || x.fract() != 0.0 || y.fract() != 0.0 {
-        return false;
+        return None;
     }
     let x = x as usize;
     let y = y as usize;
     let width = descriptor.extent().width() as usize;
     let height = descriptor.extent().height() as usize;
     if x >= width || y >= height {
-        return false;
+        return None;
     }
-    let Some(offset) = y
+    let offset = y
         .checked_mul(descriptor.stride())
-        .and_then(|row| x.checked_mul(4).and_then(|column| row.checked_add(column)))
-    else {
-        return false;
-    };
-    let Some(seen) = mapping.bytes().get(offset..offset.saturating_add(3)) else {
-        return false;
-    };
-    fills.into_iter().any(|fill| {
-        let wanted = [
-            (fill & 0xff) as u8,
-            ((fill >> 8) & 0xff) as u8,
-            ((fill >> 16) & 0xff) as u8,
-        ];
-        seen.iter()
-            .zip(wanted)
-            .all(|(observed, expected)| observed.abs_diff(expected) <= protocol::FILL_TOLERANCE)
-    })
+        .and_then(|row| x.checked_mul(4).and_then(|column| row.checked_add(column)))?;
+    mapping.bytes().get(offset..offset.saturating_add(3))
 }
 
 fn benchmark_mapping_fill(mapping: &mado_pilot::CpuMapping) -> Option<u32> {
