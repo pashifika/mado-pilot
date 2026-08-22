@@ -20,7 +20,7 @@ claims an OCR backend from this evidence-only Change.
 | [`validate.py`](validate.py) | Network-free CI check for current and historical fixture digests, candidate metadata, source identities, result invariants, and privacy fields |
 | [`report-aarch64-apple-darwin.json`](report-aarch64-apple-darwin.json) | Distilled v1–v4 Apple results; no unexpected recognized text or host path |
 | [`report-x86_64-pc-windows-msvc.json`](report-x86_64-pc-windows-msvc.json) | Distilled final Windows v4 outcomes and open cross-target decision; no unexpected recognized text or host path |
-| `report-aarch64-apple-darwin-v5.json` | Reserved new Apple v5 report; absent until Apple rerun and consolidation |
+| [`report-aarch64-apple-darwin-v5.json`](report-aarch64-apple-darwin-v5.json) | Current Apple v5 outcomes after independent patch review; Windows replacement remains pending |
 | `report-x86_64-pc-windows-msvc-v5.json` | Reserved new Windows v5 report; absent until Windows rerun and consolidation |
 
 The current fixture is
@@ -36,6 +36,30 @@ evaluator already used OpenCV BGR arrays and RapidOCR performs no channel swap, 
 execution was unchanged. The Apple report preserves the v3 at-run
 candidate-manifest digest; hardened v4 reruns use the corrected exact-shape
 manifest and enforce its complete environment, session, and vocabulary identity.
+
+## Current v5 qualification status
+
+Independent patch review passed before any v5 run. Four fresh Apple processes then
+used evaluator SHA-256
+`780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249`,
+candidate metadata SHA-256
+`4b5aa66d3a7c390211219c794e35ee685701a9cd23c0f24f0d62047280199ff7`,
+and RapidOCR code SHA-256
+`753f75e387f6b6d128cc644b209fb76dde04cb735de06e411d643826f0a4a5aa`.
+Every consumed fixture byte count/digest matched its manifest row, every outcome
+was stable across ten measured passes, and raw output remained in private
+ephemera.
+
+| Candidate | Model bytes | Median / p95 suite | Peak resident | Result |
+|---|---:|---:|---:|---|
+| `ppocrv4-det-v6-rec-small` | 25,979,900 | 2,622.916 / 2,632.851 ms | 986,087,424 B | Pass: all 42 regions |
+| `ppocrv5-det-v6-rec-small` | 26,053,959 | 2,527.167 / 2,538.604 ms | 993,312,768 B | Reject: one `mission.png` exact-text row and one admitted unexpected region |
+| `ppocrv6-det-tiny-rec-small` | 23,064,001 | 2,195.475 / 2,211.013 ms | 733,937,664 B | Reject: one dense-tooltip exact-text row and one admitted unexpected region |
+| `ppocrv6-multilingual-small` | 31,163,977 | 3,445.286 / 3,589.109 ms | 999,129,088 B | Reject: one dense-tooltip exact-text row and one admitted unexpected region |
+
+The same conditional candidate advances, but `G-004` remains open. Windows must
+rerun all four candidates with the identical v5 evaluator, candidate metadata,
+RapidOCR code identity, and fixture bytes before cross-target reconciliation.
 
 ## Historical v4 cross-target outcome
 
@@ -123,7 +147,8 @@ It fails on current fixture/hash/schema drift, historical v1/v2 mutation, any
 changed frozen v1–v4 Apple or final Windows outcome, candidate/path/size/digest/
 vocabulary inconsistency, stale v4 evidence identity, cross-target gate
 divergence, privacy-schema drift, a falsely resolved decision, v5 evaluator-source
-drift, or a tracked v5 report appearing before qualification consolidation.
+or frozen Apple-outcome drift, or a Windows v5 report appearing before the
+authorized Windows rerun.
 
 ## Reproduce one target
 

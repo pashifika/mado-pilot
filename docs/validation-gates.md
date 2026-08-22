@@ -213,8 +213,9 @@ found missing consumed-fixture and RapidOCR-code identity, expected-region
 matching after thresholding, unconstrained raw output, and an untyped Windows
 resident failure. Those gaps prevent acceptance despite matching output.
 Evaluator v5 addresses them under a new source identity and reserved report
-filenames. Independent patch review passed before any v5 run; Apple reruns are
-authorized while the gate remains open pending both replacement target reports.
+filenames. Independent patch review passed before any v5 run. The Apple v5 matrix
+is complete with the same conditional candidate passing all required rows;
+Windows v5 replacement evidence remains pending, so the gate stays open.
 
 **Resolution.** Harden the evaluator without weakening the frozen oracle, bind
 the executed fixture and RapidOCR code bytes, constrain private raw output to

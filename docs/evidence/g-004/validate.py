@@ -22,6 +22,13 @@ V4_SOURCE_IDENTITY = {
     "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
     "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
 }
+V5_RUN_SOURCE_IDENTITY = {
+    "evaluator_sha256": "780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249",
+    "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+    "candidates_sha256": "4b5aa66d3a7c390211219c794e35ee685701a9cd23c0f24f0d62047280199ff7",
+    "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
+    "rapidocr_code_sha256": "753f75e387f6b6d128cc644b209fb76dde04cb735de06e411d643826f0a4a5aa",
+}
 
 
 def fail(message: str) -> None:
@@ -355,9 +362,12 @@ def validate_candidates() -> None:
         fail("candidate v5 evaluator identity or pre-run state drifted")
     if v5["evaluator_sha256"] != sha256(EVIDENCE / "evaluate.py"):
         fail("candidate v5 evaluator source hash drifted")
-    for report_path in v5["reports"].values():
-        if (ROOT / report_path).exists():
-            fail("candidate v5 tracked report exists before qualification consolidation")
+    apple_v5_path = ROOT / v5["reports"]["apple"]
+    windows_v5_path = ROOT / v5["reports"]["windows"]
+    if not apple_v5_path.is_file():
+        fail("candidate v5 Apple report is missing after authorized rerun")
+    if windows_v5_path.exists():
+        fail("candidate v5 Windows report exists before authorized Windows rerun")
     if v1.get("fixture_profile_id") != "g-004-japanese-ui-v1":
         fail("candidate v1 fixture profile drifted")
     if v2.get("fixture_profile_id") != "g-004-japanese-ui-v2":
@@ -1006,6 +1016,306 @@ def validate_windows_report() -> None:
 
 
 
+def validate_apple_v5_report() -> None:
+    path = EVIDENCE / "report-aarch64-apple-darwin-v5.json"
+    report = load_json(path)
+    require_exact_keys(
+        report,
+        {
+            "schema_version",
+            "report_kind",
+            "qualification_stage",
+            "target",
+            "product_base_revision",
+            "source_identity",
+            "host",
+            "tools",
+            "profile",
+            "patch_review",
+            "historical_v4_report",
+            "candidates",
+            "candidate_outcomes_sha256",
+            "apple_decision",
+            "privacy",
+        },
+        "Apple v5 report",
+    )
+    if report.get("schema_version") != 1:
+        fail("Apple v5 report schema_version must be 1")
+    if report.get("report_kind") != "g-004-evaluator-v5-target-qualification":
+        fail("Apple v5 report kind drifted")
+    if report.get("qualification_stage") != "v5":
+        fail("Apple v5 qualification stage drifted")
+    if report.get("target") != "aarch64-apple-darwin":
+        fail("Apple v5 target drifted")
+    if report.get("product_base_revision") != "f3608424dde88f835f35653be8113f7a2009431b":
+        fail("Apple v5 product baseline drifted")
+    if report.get("source_identity") != V5_RUN_SOURCE_IDENTITY:
+        fail("Apple v5 source identity drifted")
+    if sha256(EVIDENCE / "evaluate.py") != V5_RUN_SOURCE_IDENTITY["evaluator_sha256"]:
+        fail("Apple v5 evaluator no longer matches its run identity")
+
+    requirements = {}
+    expected_python = None
+    for line in (EVIDENCE / "tool-requirements.txt").read_text(encoding="utf-8").splitlines():
+        if line.startswith("# Python "):
+            expected_python = line.removeprefix("# Python ").split(";", 1)[0]
+        elif line and not line.startswith("#"):
+            name, version = line.split("==", 1)
+            requirements[name] = version
+    expected_rapidocr_code = {
+        "algorithm": (
+            "sha256(path_length_u64be || path_utf8 || "
+            "content_length_u64be || content)"
+        ),
+        "included_suffixes": [".py", ".yaml", ".yml"],
+        "file_count": 86,
+        "total_bytes": 625123,
+        "sha256": V5_RUN_SOURCE_IDENTITY["rapidocr_code_sha256"],
+    }
+    if report.get("tools") != {
+        "python": expected_python,
+        "packages": requirements,
+        "modules": {
+            "onnxruntime": "1.29.0",
+            "opencv": "5.0.0",
+            "pillow": "12.3.0",
+        },
+        "onnxruntime_available_providers": [
+            "CoreMLExecutionProvider",
+            "AzureExecutionProvider",
+            "CPUExecutionProvider",
+        ],
+        "rapidocr_code": expected_rapidocr_code,
+    }:
+        fail("Apple v5 tool or RapidOCR code identity drifted")
+    if report.get("profile") != {
+        "provider": "CPUExecutionProvider",
+        "intra_op_threads": 1,
+        "inter_op_threads": 1,
+        "cpu_memory_arena": False,
+        "orientation_classifier": False,
+        "warmup_passes": 2,
+        "measured_passes": 10,
+        "unexpected_region_evaluation": (
+            "match_expected_then_threshold_unmatched"
+        ),
+    }:
+        fail("Apple v5 execution profile drifted")
+    if report.get("patch_review") != {
+        "status": "passed-before-runs",
+        "reviewed_at": "2026-08-22T17:09:59Z",
+        "scope": (
+            "five evaluator-integrity contracts, frozen v4 preservation, "
+            "and normative G-004 v5 evidence"
+        ),
+    }:
+        fail("Apple v5 patch-review record drifted")
+
+    v4_path = EVIDENCE / "report-aarch64-apple-darwin.json"
+    if report.get("historical_v4_report") != {
+        "path": "docs/evidence/g-004/report-aarch64-apple-darwin.json",
+        "sha256": sha256(v4_path),
+        "status": "immutable-audit-record-not-qualification",
+    }:
+        fail("Apple v5 historical v4 binding drifted")
+
+    candidates = report.get("candidates")
+    expected_candidate_ids = [
+        "ppocrv4-det-v6-rec-small",
+        "ppocrv5-det-v6-rec-small",
+        "ppocrv6-det-tiny-rec-small",
+        "ppocrv6-multilingual-small",
+    ]
+    if (
+        not isinstance(candidates, list)
+        or [candidate.get("candidate_id") for candidate in candidates]
+        != expected_candidate_ids
+    ):
+        fail("Apple v5 candidate matrix drifted")
+    candidates_payload = json.dumps(
+        candidates,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    observed_outcomes_sha256 = hashlib.sha256(candidates_payload).hexdigest()
+    if (
+        report.get("candidate_outcomes_sha256") != observed_outcomes_sha256
+        or observed_outcomes_sha256
+        != "5c5eb4849c65b0047ab11f0cd8ab33033594e29d520e05aef7fb0c0cd14d1730"
+    ):
+        fail("Apple v5 frozen candidate outcomes changed")
+
+    candidate_record = load_json(EVIDENCE / "candidates.json")
+    candidate_lookup = {
+        candidate["id"]: candidate for candidate in candidate_record["candidates"]
+    }
+    fixture = load_json(FIXTURES / "fixture-manifest.json")
+    fixture_lookup = {image["file"]: image for image in fixture["images"]}
+    expected_vocabulary = {
+        "metadata_key": "character",
+        "encoding": "UTF-8 lines",
+        "count": 18708,
+        "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+        "missing_fixture_characters": [],
+    }
+    selected = expected_candidate_ids[0]
+    for candidate in candidates:
+        candidate_id = candidate["candidate_id"]
+        require_exact_keys(
+            candidate,
+            {
+                "candidate_id",
+                "source_identity",
+                "models",
+                "aggregate",
+                "images",
+                "stable_gate_outcomes",
+                "failure_categories",
+                "pass",
+            },
+            f"Apple v5 candidate {candidate_id}",
+        )
+        if candidate["source_identity"] != V5_RUN_SOURCE_IDENTITY:
+            fail(f"Apple v5 candidate {candidate_id} source identity drifted")
+        if candidate["stable_gate_outcomes"] is not True:
+            fail(f"Apple v5 candidate {candidate_id} is unstable")
+
+        expected_candidate = candidate_lookup[candidate_id]
+        expected_models = []
+        for role in ("detector", "recognizer"):
+            model = expected_candidate[role]
+            expected_model = {
+                "role": role,
+                "id": model["id"],
+                "relative_controlled_path": model["relative_controlled_path"],
+                "bytes": model["bytes"],
+                "sha256": model["sha256"],
+                "session": {
+                    "providers": ["CPUExecutionProvider"],
+                    "inputs": model["inputs"],
+                    "outputs": model["outputs"],
+                },
+            }
+            if role == "recognizer":
+                expected_model["vocabulary"] = expected_vocabulary
+            expected_models.append(expected_model)
+        if candidate["models"] != expected_models:
+            fail(f"Apple v5 candidate {candidate_id} model identity drifted")
+
+        aggregate = require_exact_keys(
+            candidate["aggregate"],
+            {
+                "initialization_ms",
+                "suite_median_ms",
+                "suite_p95_ms",
+                "suite_maximum_ms",
+                "process_peak_resident",
+            },
+            f"Apple v5 candidate {candidate_id} aggregate",
+        )
+        resident = aggregate["process_peak_resident"]
+        if (
+            not isinstance(resident, dict)
+            or resident.get("status") != "measured"
+            or not isinstance(resident.get("bytes"), int)
+            or resident["bytes"] <= 0
+            or resident.get("source") != "getrusage.ru_maxrss"
+        ):
+            fail(f"Apple v5 candidate {candidate_id} resident outcome drifted")
+
+        images = candidate["images"]
+        if [image.get("file") for image in images] != list(fixture_lookup):
+            fail(f"Apple v5 candidate {candidate_id} image matrix drifted")
+        for image in images:
+            require_exact_keys(
+                image,
+                {
+                    "file",
+                    "fixture_sha256",
+                    "consumed_fixture_sha256",
+                    "consumed_fixture_bytes",
+                    "expected_region_count",
+                    "detected_region_count",
+                    "admitted_region_count",
+                    "exact_text_count",
+                    "geometry_pass_count",
+                    "confidence_pass_count",
+                    "unmatched_region_count",
+                    "unexpected_region_count",
+                    "below_unexpected_threshold_count",
+                    "order_pass",
+                    "minimum_matched_iou",
+                    "minimum_matched_confidence",
+                    "pass",
+                },
+                f"Apple v5 candidate {candidate_id} image",
+            )
+            expected_image = fixture_lookup[image["file"]]
+            fixture_path = FIXTURES / image["file"]
+            if (
+                image["fixture_sha256"] != expected_image["sha256"]
+                or image["consumed_fixture_sha256"] != expected_image["sha256"]
+                or image["consumed_fixture_bytes"] != fixture_path.stat().st_size
+            ):
+                fail(f"Apple v5 candidate {candidate_id} consumed fixture drifted")
+
+        if candidate_id == selected:
+            if candidate["pass"] is not True or candidate["failure_categories"] != []:
+                fail("Apple v5 selected candidate no longer passes")
+            for image in images:
+                expected_count = image["expected_region_count"]
+                if (
+                    image["detected_region_count"] != expected_count
+                    or image["admitted_region_count"] != expected_count
+                    or image["exact_text_count"] != expected_count
+                    or image["geometry_pass_count"] != expected_count
+                    or image["confidence_pass_count"] != expected_count
+                    or image["unmatched_region_count"] != 0
+                    or image["unexpected_region_count"] != 0
+                    or image["below_unexpected_threshold_count"] != 0
+                    or image["order_pass"] is not True
+                    or image["pass"] is not True
+                ):
+                    fail(f"Apple v5 selected candidate fails {image['file']}")
+        elif (
+            candidate["pass"] is not False
+            or candidate["failure_categories"]
+            != ["ordering_mismatch", "text_mismatch", "unexpected_region"]
+        ):
+            fail(f"Apple v5 rejected candidate {candidate_id} outcome drifted")
+
+    if report.get("apple_decision") != {
+        "selected_candidate_for_windows_v5": selected,
+        "other_candidates_rejected": expected_candidate_ids[1:],
+        "g004_status": "open-pending-windows-v5",
+    }:
+        fail("Apple v5 decision drifted")
+    if report.get("privacy") != {
+        "approved_expected_fixture_text_only": True,
+        "unexpected_recognized_text_retained": False,
+        "game_screenshot_pixels_or_text_retained": False,
+        "host_paths_retained": False,
+        "raw_report_private_root_enforced": True,
+    }:
+        fail("Apple v5 privacy declaration drifted")
+
+    def reject_unapproved_payload(value: object) -> None:
+        if isinstance(value, dict):
+            if any(key in {"text", "observed", "raw"} for key in value):
+                fail("Apple v5 report contains unapproved recognized payload fields")
+            for nested in value.values():
+                reject_unapproved_payload(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                reject_unapproved_payload(nested)
+        elif isinstance(value, str) and ("/Users/" in value or "\\Users\\" in value):
+            fail("Apple v5 report contains a host-local path")
+
+    reject_unapproved_payload(report)
+
+
 def validate_requirements() -> None:
     path = EVIDENCE / "tool-requirements.txt"
     required = {"rapidocr": "3.9.2", "onnxruntime": "1.29.0"}
@@ -1026,6 +1336,7 @@ def main() -> None:
     validate_fixture()
     validate_candidates()
     validate_apple_report()
+    validate_apple_v5_report()
     validate_requirements()
     validate_windows_report()
     print("G-004 fixture and candidate evidence: OK")

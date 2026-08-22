@@ -120,9 +120,11 @@ quality gates, warm-ups, and measured-pass count are unchanged. V5 additionally:
   its collection source or failure reason.
 
 Independent patch review passed at `2026-08-22T17:09:59Z`; no v5 candidate ran
-before that review. Apple v5 reruns are now authorized. Every candidate still
-must rerun in a fresh process on both release targets. New v5 reports use new
-filenames; v4 reports and hashes are never overwritten.
+before that review. Four fresh Apple v5 runs are complete under evaluator,
+candidate-metadata, and RapidOCR-code SHA-256 values recorded in the new Apple
+report. Every candidate still must rerun in a fresh Windows process before
+cross-target acceptance. New v5 reports use new filenames; v4 reports and hashes
+are never overwritten.
 
 ## Revision and ownership
 

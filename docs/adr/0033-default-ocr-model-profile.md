@@ -57,8 +57,9 @@ Evaluator v5 is frozen under source SHA-256
 `780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249`.
 It addresses all five findings without changing the fixture, candidate set, or
 quality oracle and reserves new report filenames rather than overwriting v4.
-Independent patch review passed before any v5 run; Apple reruns are authorized,
-but no v5 evidence is accepted until both replacement target reports pass review.
+Independent patch review passed before any v5 run. Fresh Apple v5 evidence
+reproduces the conditional selection with exact consumed-fixture and RapidOCR-code
+identity; Windows v5 and final two-target evidence review remain pending.
 
 ## Decision
 

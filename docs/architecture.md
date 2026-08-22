@@ -804,8 +804,9 @@ the fixture bytes at use or the installed RapidOCR code bytes and applies the
 unexpected-region threshold before expected-region matching. Correcting those
 gaps changes the evaluator identity and requires fresh evidence on both targets.
 Evaluator v5 is frozen with those corrections and new report filenames.
-Independent patch review passed before any v5 run; fresh Apple evidence is now
-authorized and Windows must rerun after the evaluator identity change.
+Independent patch review passed before any v5 run, and fresh Apple evidence now
+reproduces the conditional selection under the new identity. Windows v5 evidence
+remains pending after the evaluator identity change.
 No default profile, model bytes, ONNX Runtime, OCR contract/backend, default
 wiring, or support claim is accepted.
 

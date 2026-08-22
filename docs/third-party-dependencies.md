@@ -199,8 +199,9 @@ and fixed safe relative paths. Independent review found that executed fixture an
 RapidOCR code bytes are not fully bound and that the unexpected-region threshold
 is applied before expected-region matching, so no default profile is accepted.
 Evaluator v5 addresses those findings under a new source identity and reserved
-report names. Independent patch review passed before any v5 run; replacement
-target evidence remains pending. The exact
+report names. Independent patch review passed before any v5 run, and Apple v5
+evidence reproduces the conditional selection; Windows replacement evidence
+remains pending. The exact
 SHA-256 values, model/vocabulary shapes, preprocessing/decoder, fixture terms,
 public provenance, cross-target outcomes, and open gaps are recorded in
 [evidence/g-004/](evidence/g-004/README.md).
