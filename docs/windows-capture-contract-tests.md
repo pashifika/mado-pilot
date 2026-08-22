@@ -44,10 +44,11 @@ case, which skips with a reason only when WGC is unavailable. On a supported
 host, failure to discover the test-owned target is a test failure. The tests do
 not capture an unrelated desktop or application.
 
-The remaining release-acceptance evidence is the revision-bound 600-frame and
-dual-4K host matrix below, including resource-zeroing counters and Phase 2
-`G-013` profiles and budgets. A skip is not support evidence, and the current
-Change does not claim that matrix has run.
+[ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
+accepts the revision-bound 120-warm-up/600-frame 1280×720 production matrix,
+resource-zeroing observations, and affected `G-013` budgets. The remaining
+release-acceptance evidence is the scheduled dual-4K host matrix below. A skip
+is not support evidence.
 
 ## Privacy review
 
@@ -142,17 +143,19 @@ identifiers, with no captured payload.
 
 ## Performance obligations
 
-G-002 chooses correctness and ownership, not numeric product budgets. The
-production Change must add Phase 2 `G-013` profiles that measure at least:
+G-002 chooses correctness and ownership, not numeric product budgets. ADR 0031
+accepts the 1280×720 `G-013` profiles for:
 
 - capture arrival and callback-copy p50/p95 latency;
 - full-frame copied bytes and lazy mapped bytes;
-- detached-texture, staging, process-resident, and relevant GPU-memory peaks;
-- producer progress, queue drops, stale/coalesced work, and recovery after
-  pressure;
+- detached-texture, staging, process-resident, and total GPU-resource peaks;
+- producer progress, stale/coalesced work, and recovery after pressure;
 - session startup, resize recreation, callback drain, complete close, and
-  admission-stop-to-device-terminal teardown;
-- 1280×720 and two-display 4K workloads on the named Windows host.
+  target-loss replacement recovery.
+
+The scheduled two-display 4K run must measure the same applicable capture,
+mapping, resource, progress, and cleanup facts on the named host before its
+profile is accepted or its ceilings are explicitly withheld.
 
 Every timed sample keeps its correctness oracle. A throughput improvement that
 changes retained pixels, pins producer slots, exceeds a bound, or hides a drop
@@ -165,9 +168,10 @@ require an interactive Windows session and therefore may not be available on a
 headless pull-request runner. A skipped native case must report why it did not
 run; a skip is not support evidence.
 
-Before Windows native capture receives release support acceptance, the project
-must retain a revision-bound, redacted report from the named host, link every
-remaining case above to its test, set the affected `G-013` budgets, and pass the
-full shared and native matrix. [docs/architecture.md](architecture.md) therefore
-records the Adapter implementation separately from that still-open release
-evidence.
+Before Windows native capture receives final release support acceptance, the
+project must retain the scheduled dual-4K revision-bound redacted report, link
+every remaining case above to its test, set or explicitly withhold the remaining
+`G-013` budgets, and pass the full shared and native matrix. The accepted 1280×720
+report is [`windows-production-capture.md`](evidence/phase-2-native/windows-production-capture.md).
+[docs/architecture.md](architecture.md) therefore records partial production
+acceptance separately from the still-open dual-4K release evidence.

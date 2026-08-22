@@ -102,7 +102,7 @@ A budget names one measure. The version-one vocabulary is:
 | `capture_to_result_latency_p50` | milliseconds | End-to-end latency percentile from frame capture to committed result. |
 | `capture_to_result_latency_p95` | milliseconds | As above, at the 95th percentile. |
 | `peak_memory` | bytes | Peak resident memory during the run. |
-| `peak_resident_bytes` | bytes | High-water resident set of a measured child process, reported by the native operating system after that owned child exits. Optional because in-process workloads do not create one. |
+| `peak_resident_bytes` | bytes | High-water resident set of the measured native benchmark process or a separately measured child process, reported by the native operating system. Optional because workloads without a native process observation do not emit it. |
 | `steady_memory` | bytes | Resident memory in steady state. |
 | `mapped_bytes_per_result` | bytes | Frame bytes mapped into CPU memory per produced result, full-frame or region of interest. |
 | `stale_work_ratio` | ratio | Share of scheduled work that was dropped, coalesced, superseded, rejected, queue-expired, or discarded as stale. |
@@ -117,6 +117,10 @@ A budget names one measure. The version-one vocabulary is:
 | `peak_allocated_bytes` | bytes | High-water mark of live heap bytes during the sampled run, above what was live before the workload's fixture existed. |
 | `steady_allocated_bytes` | bytes | Live heap bytes when the sampled run finished, above the same baseline, with the fixture still alive. |
 | `allocated_growth_bytes` | bytes | Signed change in live heap bytes across the sampled run alone. A hard gate, on the same terms as `memory_growth`. |
+| `copied_bytes_per_result` | bytes | Producer-surface bytes copied while producing one retained sample. The report keeps the largest sample, so unexpected duplicate copies remain visible. |
+| `detached_textures_peak` | count | Maximum simultaneously live Adapter-owned detached textures during one workload. |
+| `staging_textures_peak` | count | Maximum simultaneously live CPU-readable staging textures during one workload. |
+| `gpu_resources_peak` | count | Maximum simultaneously live producer, detached, and staging textures during one workload. |
 
 A phase that needs a measure outside this list adds it here in the same change,
 with its unit and its meaning.
@@ -669,11 +673,33 @@ Each 600-frame 3840×2160 display row copied 23,887,872,000 bytes and mapped
 publishing a WGC surface or by reusing leased content; it may optimize scheduling
 or representation only while the ADR's detachment and lifetime tests still pass.
 
-The production Windows capture portion of
-[`G-013`](validation-gates.md#g-013) remains open independently of the
-`native-phase2` profile accepted by ADR 0026. Its acceptance profile must budget
-capture arrival, callback-copy p95, mapped and copied bytes, detached/staging
-and resident memory, drops and stale work under pressure, session startup,
-resize recreation, close drain, and reset recovery at 1280×720 and on the named
-dual-4K topology. The complete workload and correctness obligations are in
-[windows-capture-contract-tests.md](windows-capture-contract-tests.md).
+## Phase 2 Windows 1280x720 production-capture acceptance
+
+[ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
+accepts the separate 1280×720 production-capture and transition profiles at
+final source `0208798d9542aaae3a956d3e774c9ce57468bc9d`, tree
+`cac0020edbf5b3d28a4dcd5df41e020dc0c6257d`. The final profile retained 600
+capture samples plus a complete five-workload transition matrix while enforcing
+every accepted budget. Two reviewed same-lineage precursor runs supplied
+independent repeatability measurements; all three runs reported zero correctness
+failures, at most 48 bytes allocation growth, and exact copy/mapping accounting.
+
+The capture profile records arrival, callback-copy, latest acquisition, and
+BGRA8 mapping separately. Both runs report one 3,686,400-byte callback copy,
+two detached textures, one staging texture, five total producer/detached/staging
+textures, and zero steady stale work. The transition profile records startup,
+finite-pressure recovery, 1440×810 resize recreation, target-loss replacement,
+and close drain.
+
+ADR 0031 follows the three-times-measurement policy for target-specific p50,
+p95, and maximum ceilings. Both profiles use a 32 MiB live Rust heap ceiling,
+a 256 MiB native process resident ceiling, zero correctness failures, and at
+most 4,096 bytes growth. They are regression gates for the named host, fixture,
+topology, and operation shape, not game or real-time guarantees.
+
+The dual-4K production-capture portion of
+[`G-013`](validation-gates.md#g-013) remains open independently. Its scheduled
+profile must cover 600 frames per display in one shared arrival/callback-copy
+pass on the named mixed-DPI signed-origin topology before ceilings are accepted
+or explicitly withheld. The complete workload and correctness obligations are
+in [windows-capture-contract-tests.md](windows-capture-contract-tests.md).

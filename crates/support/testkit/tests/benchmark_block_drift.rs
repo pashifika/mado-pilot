@@ -21,14 +21,24 @@ use mado_pilot_testkit::bench_harness::{
     PHASE2_2_PROCESS_APPKIT_LATENCY_BUDGETS, PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS,
     PHASE2_2_PROCESS_GAME_LIKE_LATENCY_BUDGETS, PHASE2_2_PROCESS_HEAP_LIMIT_BYTES,
     PHASE2_2_TRANSITION_LATENCY_BUDGETS, PHASE2_PRODUCTION_CAPTURE_LATENCY_BUDGETS,
-    PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS, benchmark_block,
+    PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS,
+    PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS,
+    PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT,
+    PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
+    PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS, benchmark_block,
 };
 
 /// Every committed benchmark profile, by repository path and content.
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 19] = [
+const PROFILES: [(&str, &str); 21] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -137,10 +147,22 @@ const PROFILES: [(&str, &str); 19] = [
             "../../../../docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
 ];
 
-/// The macOS native profiles and the latency ceilings enforced by their benchmark.
-const MACOS_NATIVE_PROFILES: [(&str, &str, &[LatencyBudget]); 7] = [
+/// Native profiles and the latency ceilings enforced by their benchmark.
+const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 9] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -189,6 +211,20 @@ const MACOS_NATIVE_PROFILES: [(&str, &str, &[LatencyBudget]); 7] = [
             "../../../../docs/benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml"
         ),
         &PHASE2_PRODUCTION_TRANSITION_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE2_WINDOWS_PRODUCTION_1280_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS,
     ),
 ];
 
@@ -412,13 +448,17 @@ fn expected_latency_blocks(budgets: &[LatencyBudget]) -> Vec<BudgetBlock<'static
                 ("latency_p95", budget.p95()),
                 ("latency_max", budget.hard_max()),
             ]
-            .map(|(measure, limit)| BudgetBlock {
-                workload: Some(budget.workload()),
-                measure: Some(measure),
-                kind: Some("absolute"),
-                unit: Some("milliseconds"),
-                direction: Some("at_most"),
-                limit: Some(limit.as_secs_f64() * 1_000.0),
+            .map(|(measure, limit)| {
+                let micros = u32::try_from(limit.as_micros())
+                    .expect("every frozen latency ceiling fits u32 microseconds");
+                BudgetBlock {
+                    workload: Some(budget.workload()),
+                    measure: Some(measure),
+                    kind: Some("absolute"),
+                    unit: Some("milliseconds"),
+                    direction: Some("at_most"),
+                    limit: Some(f64::from(micros) / 1_000.0),
+                }
             })
         })
         .collect()
@@ -451,8 +491,8 @@ fn the_harness_emits_exactly_the_benchmark_keys_a_committed_profile_carries() {
 }
 
 #[test]
-fn macos_native_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
-    for (path, profile, enforced) in MACOS_NATIVE_PROFILES {
+fn native_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
+    for (path, profile, enforced) in NATIVE_LATENCY_PROFILES {
         let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
             .into_iter()
             .filter(|budget| {
@@ -497,6 +537,93 @@ fn process_profiles_state_the_same_live_heap_ceiling_the_harness_enforces() {
              enforced by `native-phase2`"
         );
     }
+}
+
+#[test]
+fn windows_1280_profiles_state_the_resource_budgets_the_harness_enforces() {
+    let capture = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-capture-1280x720-x86_64-pc-windows-msvc.toml"
+    );
+    let transitions = include_str!(
+        "../../../../docs/benchmarks/phase-2-production-transitions-1280x720-x86_64-pc-windows-msvc.toml"
+    );
+    let as_f64 = |value: u64| {
+        f64::from(u32::try_from(value).expect("each accepted Windows resource limit fits u32"))
+    };
+
+    for (path, profile, heap_limit) in [
+        (
+            "capture",
+            capture,
+            PHASE2_WINDOWS_PRODUCTION_1280_HEAP_LIMIT_BYTES,
+        ),
+        (
+            "transitions",
+            transitions,
+            PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
+        ),
+    ] {
+        let blocks = budget_blocks(profile);
+        let global = |measure| {
+            blocks
+                .iter()
+                .find(|budget| budget.workload.is_none() && budget.measure == Some(measure))
+                .unwrap_or_else(|| panic!("{path} profile is missing {measure}"))
+        };
+        assert_eq!(
+            global("peak_allocated_bytes").limit,
+            Some(f64::from(
+                u32::try_from(heap_limit).expect("the accepted Windows heap limit fits u32")
+            ))
+        );
+        assert_eq!(
+            global("peak_resident_bytes").limit,
+            Some(as_f64(PHASE2_WINDOWS_PRODUCTION_1280_RESIDENT_LIMIT_BYTES))
+        );
+    }
+
+    let capture_blocks = budget_blocks(capture);
+    for (measure, unit, limit) in [
+        (
+            "copied_bytes_per_result",
+            "bytes",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_1280_COPIED_BYTES_LIMIT),
+        ),
+        (
+            "detached_textures_peak",
+            "count",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_1280_DETACHED_TEXTURES_LIMIT),
+        ),
+        (
+            "staging_textures_peak",
+            "count",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_1280_STAGING_TEXTURES_LIMIT),
+        ),
+        (
+            "gpu_resources_peak",
+            "count",
+            as_f64(PHASE2_WINDOWS_PRODUCTION_1280_GPU_RESOURCES_LIMIT),
+        ),
+    ] {
+        let recorded = capture_blocks
+            .iter()
+            .find(|budget| {
+                budget.workload == Some("callback_copy") && budget.measure == Some(measure)
+            })
+            .unwrap_or_else(|| panic!("capture profile is missing callback_copy {measure}"));
+        assert_eq!(recorded.unit, Some(unit));
+        assert_eq!(recorded.limit, Some(limit));
+    }
+    assert_eq!(
+        capture_blocks
+            .iter()
+            .find(|budget| {
+                budget.workload == Some("callback_copy")
+                    && budget.measure == Some("stale_work_ratio")
+            })
+            .and_then(|budget| budget.limit),
+        Some(PHASE2_WINDOWS_PRODUCTION_1280_STALE_WORK_LIMIT)
+    );
 }
 
 #[test]
