@@ -1,0 +1,18 @@
+# Editor-side language standards for the C and C++ consumption surface.
+#
+# The include directories live in `compile_flags.txt` instead, because clangd
+# resolves a relative `-I` against the directory holding that file, while a
+# relative path added here would be resolved against each source file's own
+# directory. The standards below match what `examples/c-abi-check.rs` compiles
+# with, so the editor and the verified build agree.
+
+If:
+  PathMatch: .*\.(c|h)
+CompileFlags:
+  Add: [-std=c11]
+
+---
+If:
+  PathMatch: .*\.(cpp|hpp)
+CompileFlags:
+  Add: [-std=c++17]

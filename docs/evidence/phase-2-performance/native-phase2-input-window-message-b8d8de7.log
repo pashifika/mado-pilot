@@ -1,0 +1,135 @@
+format_version = 1
+
+[benchmark]
+id = "phase-2-native-input-x86_64-pc-windows-msvc"
+workload = "native input and the public Rust common flow"
+phase = "2"
+status = "harness-output"
+normative = false
+measurements_recorded = true
+# A committed profile under docs/benchmarks/ carries the budgets.
+
+[profile]
+fixture = "crates/platform/windows dedicated and ordinary fixture Rust sources plus shared protocol"
+fixture_sha256 = "8b0525f1cd0313723a1aee1c9e11db35d3a71605a6cadd1cb70a321390d764dc"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF, 12 cores/20 threads, 32 GiB, NVIDIA GeForce RTX 4080"
+os_version = "Windows 11 Pro 10.0.26200 (build 26200)"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release"
+warmup_iterations = 5
+sample_count = 50
+correctness_oracle = "every retained sample checks frame identity/content, transition state, receipt/event sequence, or complete common-flow outcome as its measurement states"
+queue_policy = "session latest-wins queue depth 1; bounded input sequence executes serially"
+notes = "source commit b8d8de7a0b5728114d8be55cf3010a363c18d07b, tree cee83e00f0f73a7cdd543ea69c07a89b493c5ffd; toolchain rustc 1.97.1; MSVC 19.44.35228; CMake 3.29.5; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080 driver 32.0.15.9186 (2026-01-20); display topology two 2560x1440 logical displays side by side; primary at (0,0), secondary at (-2560,0); GPU reports 3840x2160 at 120 Hz; permissions/signing Windows exposes no separate capture/input permission; unelevated interactive local process; unsigned candidate fixtures and MSVC C/C++ executables; fixture path deliberately omitted; C/C++ peak_allocated_bytes counts only harness-side Rust allocations, while peak_resident_bytes is the child process peak reported by the native OS after owned-handle cleanup"
+
+[[measurement]]
+workload = "input_request_receipt"
+correctness_oracle = "the complete two-event receipt corresponds to exactly one fixture key-down and key-up summary"
+result_correctness = 0
+latency_p50_ms = 0.204400
+latency_p95_ms = 0.314200
+iteration_span_ms = 0.213596
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 2341428
+steady_allocated_bytes = 2341241
+allocated_growth_bytes = 0
+
+[[measurement]]
+workload = "ordinary_window_queue_submission"
+correctness_oracle = "one ordinary exact-window pointer event crosses current-target pre/post fences, reports queue admission, and reaches only the selected fixture"
+result_correctness = 0
+latency_p50_ms = 0.196000
+latency_p95_ms = 0.348800
+iteration_span_ms = 0.216506
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 45163
+steady_allocated_bytes = 44998
+allocated_growth_bytes = 1020
+
+[[measurement]]
+workload = "ordinary_window_button_submission"
+correctness_oracle = "one pointer move followed by a two-unit primary-button event crosses the production route and reaches only the selected ordinary fixture"
+result_correctness = 0
+latency_p50_ms = 0.555000
+latency_p95_ms = 0.947900
+iteration_span_ms = 0.630536
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 45767
+steady_allocated_bytes = 45158
+allocated_growth_bytes = 1180
+
+[[measurement]]
+workload = "ordinary_window_max_sequence"
+correctness_oracle = "the maximum accepted 256-event sequence crosses the ordinary production route, reports every submission, and reaches only the selected fixture"
+result_correctness = 0
+latency_p50_ms = 47.759700
+latency_p95_ms = 52.565700
+iteration_span_ms = 48.907894
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 66743
+steady_allocated_bytes = 45158
+allocated_growth_bytes = 0
+
+[[measurement]]
+workload = "rust_common_flow"
+correctness_oracle = "fresh open, frame, mapping, exact fixture input, receipt, and close all complete"
+result_correctness = 0
+latency_p50_ms = 108.038100
+latency_p95_ms = 113.859700
+iteration_span_ms = 117.939134
+mapped_bytes_per_result = 2322488
+peak_allocated_bytes = 2336254
+steady_allocated_bytes = 11062
+allocated_growth_bytes = 0
+
+[[measurement]]
+workload = "c_process_load"
+correctness_oracle = "a fresh C process loads and negotiates the released ABI without opening native capabilities"
+result_correctness = 0
+latency_p50_ms = 13.868300
+latency_p95_ms = 14.842200
+iteration_span_ms = 13.945452
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 42504
+steady_allocated_bytes = 155
+allocated_growth_bytes = 0
+peak_resident_bytes = 12988416
+
+[[measurement]]
+workload = "c_common_flow"
+correctness_oracle = "the released C ABI performs the same bounded fixture flow in a fresh process"
+result_correctness = 0
+latency_p50_ms = 227.870800
+latency_p95_ms = 235.473800
+iteration_span_ms = 242.573252
+mapped_bytes_per_result = 2322488
+peak_allocated_bytes = 68171
+steady_allocated_bytes = 155
+allocated_growth_bytes = 0
+peak_resident_bytes = 54595584
+
+[[measurement]]
+workload = "cpp_process_load"
+correctness_oracle = "a fresh C++ process loads its wrapper and negotiates the released ABI without opening native capabilities"
+result_correctness = 0
+latency_p50_ms = 14.072500
+latency_p95_ms = 15.017700
+iteration_span_ms = 14.118118
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 42528
+steady_allocated_bytes = 159
+allocated_growth_bytes = 0
+peak_resident_bytes = 13139968
+
+[[measurement]]
+workload = "cpp_common_flow"
+correctness_oracle = "the released C++ wrapper performs the same bounded fixture flow in a fresh process"
+result_correctness = 0
+latency_p50_ms = 227.166400
+latency_p95_ms = 231.629300
+iteration_span_ms = 241.213018
+mapped_bytes_per_result = 2322488
+peak_allocated_bytes = 68203
+steady_allocated_bytes = 159
+allocated_growth_bytes = 0
+peak_resident_bytes = 54788096

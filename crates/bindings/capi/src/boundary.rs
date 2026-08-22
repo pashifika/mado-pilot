@@ -43,8 +43,8 @@ use crate::layout::{LAYOUT, TypeLayout};
 use crate::madopilot_error_t;
 use crate::status::{MADOPILOT_STATUS_INTERNAL_PANIC, madopilot_status_t};
 use crate::types::{
-    madopilot_find_request_t, madopilot_map_request_t, madopilot_match_options_t,
-    madopilot_open_request_t, madopilot_operation_t,
+    madopilot_find_request_t, madopilot_input_request_t, madopilot_map_request_t,
+    madopilot_match_options_t, madopilot_open_request_t, madopilot_operation_t,
 };
 
 /// Runs one table entry with a panic containment fence around it.
@@ -66,7 +66,22 @@ pub(crate) fn boundary(body: impl FnOnce() -> madopilot_status_t) -> madopilot_s
     // argued from the paragraph above instead of proven by the bound.
     match panic::catch_unwind(AssertUnwindSafe(body)) {
         Ok(status) => status,
-        Err(_) => MADOPILOT_STATUS_INTERNAL_PANIC,
+        Err(payload) => {
+            drop_panic_payload_without_unwinding(payload);
+            MADOPILOT_STATUS_INTERNAL_PANIC
+        }
+    }
+}
+
+/// Releases a caught panic payload without allowing its destructor to unwind
+/// across the C ABI.
+///
+/// A hostile Rust panic payload may itself panic from `Drop`. Its replacement
+/// payload cannot be dropped safely, so that last payload is deliberately
+/// leaked on the already-failing path.
+fn drop_panic_payload_without_unwinding(payload: Box<dyn std::any::Any + Send>) {
+    if let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| drop(payload))) {
+        let _payload = std::mem::ManuallyDrop::new(payload);
     }
 }
 
@@ -84,6 +99,12 @@ pub(crate) trait Versioned: Copy {
     /// ends inside a field, and a field that is half populated is neither
     /// written nor omitted.
     const PREFIXES: &'static [usize];
+    /// Byte ranges occupied by implicit Rust/C layout padding.
+    ///
+    /// Each pair is `[start, end)`. [`Out`] writes these bytes as zero after
+    /// copying either the failure or success value so stack contents never
+    /// escape through padding that has no field representation.
+    const ZEROED_PADDING: &'static [(usize, usize)];
 
     /// The documented failure state, written before anything is validated.
     fn failure(struct_size: u32) -> Self;
@@ -364,6 +385,17 @@ impl<S: Versioned> Out<S> {
                 self.size,
             );
         }
+        for &(start, end) in S::ZEROED_PADDING {
+            let end = end.min(self.size);
+            if start < end {
+                // SAFETY: the table is compile-time checked to stay within
+                // `S`, and this intersection stays within the caller's
+                // validated output prefix.
+                unsafe {
+                    self.ptr.cast::<u8>().add(start).write_bytes(0, end - start);
+                }
+            }
+        }
     }
 }
 
@@ -578,6 +610,34 @@ pub(crate) unsafe fn begin_outputs<T>(
     }
 }
 
+/// Initializes a required direct-record output and an optional error output.
+///
+/// As [`begin_outputs`], both initializers run before either result is returned,
+/// so every valid output reaches its independent failure state even when the
+/// other output is invalid.
+///
+/// # Safety
+///
+/// `out_record` must satisfy [`Out::begin`]'s contract and `out_error` must
+/// independently satisfy [`begin_error_out`]'s contract.
+pub(crate) unsafe fn begin_record_outputs<S: Versioned>(
+    out_record: *mut S,
+    out_error: *mut *mut madopilot_error_t,
+) -> Result<Out<S>, madopilot_status_t> {
+    // SAFETY: forwarded unchanged from this function's own contract.
+    let record = unsafe { Out::begin(out_record) };
+    // SAFETY: as above.
+    let error = unsafe { begin_error_out(out_error) };
+
+    match (record, error) {
+        (Ok(out), Ok(())) => Ok(out),
+        // SAFETY: `begin_error_out` accepted and initialized `out_error`.
+        (Err(fault), Ok(())) => Err(unsafe { crate::error::emit(out_error, fault) }),
+        // The error output cannot carry a diagnostic in either remaining case.
+        (Err(fault), Err(_)) | (Ok(_), Err(fault)) => Err(fault.status()),
+    }
+}
+
 /// Validates a scalar output and sets it to `failure`.
 ///
 /// # Errors
@@ -702,6 +762,7 @@ const FAMILY_OWNERS: &[&str] = &[
     <madopilot_map_request_t as Input>::NAME,
     <madopilot_find_request_t as Input>::NAME,
     <madopilot_match_options_t as Input>::NAME,
+    <madopilot_input_request_t as Input>::NAME,
 ];
 
 /// Whether `list` holds `value`.
@@ -804,6 +865,23 @@ const fn check_prefix_table(name: &str, prefixes: &[usize], mandatory: usize) {
 /// through has no size to get wrong.
 pub(crate) const fn check_output_tables<S: Versioned>() {
     check_prefix_table(S::NAME, S::PREFIXES, S::MANDATORY);
+
+    let mut index = 0;
+    let mut previous_end = 0;
+    while index < S::ZEROED_PADDING.len() {
+        let (start, end) = S::ZEROED_PADDING[index];
+        assert!(start < end, "an output padding range is empty or reversed");
+        assert!(
+            previous_end <= start,
+            "output padding ranges overlap or are out of order"
+        );
+        assert!(
+            end <= size_of::<S>(),
+            "an output padding range exceeds the structure"
+        );
+        previous_end = end;
+        index += 1;
+    }
 }
 
 /// Runs every check one input structure's tables have to pass, while that
@@ -871,9 +949,120 @@ const fn owns_a_family(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FAMILY_OWNERS, Input, madopilot_find_request_t, madopilot_map_request_t,
-        madopilot_match_options_t, madopilot_open_request_t, madopilot_operation_t,
+        FAMILY_OWNERS, Input, Out, Versioned, boundary, madopilot_find_request_t,
+        madopilot_input_request_t, madopilot_map_request_t, madopilot_match_options_t,
+        madopilot_open_request_t, madopilot_operation_t,
     };
+    use crate::status::MADOPILOT_STATUS_INTERNAL_PANIC;
+    use crate::types::{
+        madopilot_diagnostic_record_t, madopilot_frame_info_t, madopilot_image_t,
+        madopilot_input_attempt_t, madopilot_input_capability_t, madopilot_input_receipt_info_t,
+        madopilot_match_t, madopilot_pixel_rect_t, madopilot_result_info_t,
+    };
+
+    #[test]
+    fn a_panicking_payload_destructor_cannot_escape_the_c_boundary() {
+        struct PanickingPayload;
+
+        impl Drop for PanickingPayload {
+            fn drop(&mut self) {
+                panic!("panic payload destructor");
+            }
+        }
+
+        let status = boundary(|| std::panic::panic_any(PanickingPayload));
+
+        assert_eq!(status, MADOPILOT_STATUS_INTERNAL_PANIC);
+    }
+    fn assert_full_output_zeroes_padding<S: Versioned>(expected_padding: &[(usize, usize)]) {
+        assert!(
+            !expected_padding.is_empty(),
+            "the independent oracle must name only structures with implicit padding"
+        );
+        assert_eq!(
+            S::ZEROED_PADDING,
+            expected_padding,
+            "{} production padding table differs from compiler-derived field gaps",
+            S::NAME
+        );
+        let mut output = std::mem::MaybeUninit::<S>::uninit();
+        let size = size_of::<S>();
+        // SAFETY: every byte is initialized before `Out::begin` reads the
+        // common first field.
+        unsafe {
+            output.as_mut_ptr().cast::<u8>().write_bytes(0xa5, size);
+            output
+                .as_mut_ptr()
+                .cast::<u32>()
+                .write(u32::try_from(size).expect("ABI output size fits uint32_t"));
+        }
+
+        // SAFETY: the backing allocation is initialized, aligned, and writable
+        // for the full declared structure.
+        unsafe { Out::<S>::begin(output.as_mut_ptr()) }.expect("full output accepted");
+        // SAFETY: the poisoned allocation was initialized byte-for-byte above
+        // and remains live for this read.
+        let bytes = unsafe { std::slice::from_raw_parts(output.as_ptr().cast::<u8>(), size) };
+        for &(start, end) in expected_padding {
+            assert!(start < end && end <= size, "invalid compiler-derived gap");
+            assert!(
+                bytes[start..end].iter().all(|byte| *byte == 0),
+                "{} exposed nonzero implicit padding at {start}..{end}",
+                S::NAME
+            );
+        }
+    }
+
+    #[test]
+    fn every_padded_public_output_zeroes_compiler_derived_gaps() {
+        assert_full_output_zeroes_padding::<madopilot_input_capability_t>(&[(
+            std::mem::offset_of!(madopilot_input_capability_t, reserved) + size_of::<u32>(),
+            size_of::<madopilot_input_capability_t>(),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_input_receipt_info_t>(&[
+            (
+                std::mem::offset_of!(madopilot_input_receipt_info_t, address_scope)
+                    + size_of::<u32>(),
+                std::mem::offset_of!(madopilot_input_receipt_info_t, attempt_count),
+            ),
+            (
+                std::mem::offset_of!(madopilot_input_receipt_info_t, cleanup) + size_of::<u32>(),
+                std::mem::offset_of!(madopilot_input_receipt_info_t, cleanup_released),
+            ),
+        ]);
+        assert_full_output_zeroes_padding::<madopilot_input_attempt_t>(&[
+            (
+                std::mem::offset_of!(madopilot_input_attempt_t, outcome) + size_of::<u32>(),
+                std::mem::offset_of!(madopilot_input_attempt_t, submitted),
+            ),
+            (
+                std::mem::offset_of!(madopilot_input_attempt_t, reserved) + size_of::<u32>(),
+                size_of::<madopilot_input_attempt_t>(),
+            ),
+        ]);
+        assert_full_output_zeroes_padding::<madopilot_diagnostic_record_t>(&[(
+            std::mem::offset_of!(madopilot_diagnostic_record_t, reserved) + size_of::<u32>(),
+            std::mem::offset_of!(madopilot_diagnostic_record_t, requested),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_frame_info_t>(&[(
+            std::mem::offset_of!(madopilot_frame_info_t, bounds)
+                + size_of::<madopilot_pixel_rect_t>(),
+            size_of::<madopilot_frame_info_t>(),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_image_t>(&[(
+            std::mem::offset_of!(madopilot_image_t, region) + size_of::<madopilot_pixel_rect_t>(),
+            size_of::<madopilot_image_t>(),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_match_t>(&[(
+            std::mem::offset_of!(madopilot_match_t, bounds) + size_of::<madopilot_pixel_rect_t>(),
+            size_of::<madopilot_match_t>(),
+        )]);
+        assert_full_output_zeroes_padding::<madopilot_result_info_t>(&[(
+            std::mem::offset_of!(madopilot_result_info_t, searched)
+                + size_of::<madopilot_pixel_rect_t>(),
+            size_of::<madopilot_result_info_t>(),
+        )]);
+    }
 
     /// The header, read as text rather than compiled.
     ///
@@ -929,6 +1118,11 @@ mod tests {
             owner: <madopilot_match_options_t as Input>::NAME,
             table: <madopilot_match_options_t as Input>::PRESENCE,
         },
+        PresenceFamily {
+            prefix: "MADOPILOT_INPUT_REQUEST_HAS_",
+            owner: <madopilot_input_request_t as Input>::NAME,
+            table: <madopilot_input_request_t as Input>::PRESENCE,
+        },
     ];
 
     /// Flags on structures the library writes.
@@ -941,6 +1135,37 @@ mod tests {
         "MADOPILOT_TARGET_SUPPORTS_PLACEMENT",
         "MADOPILOT_ERROR_HAS_ASSET_DETAIL",
         "MADOPILOT_ERROR_HAS_BACKEND",
+        "MADOPILOT_ENGINE_DELIVERS_INPUT",
+        "MADOPILOT_ENGINE_READS_PERMISSIONS",
+        "MADOPILOT_TARGET_HAS_KIND",
+        "MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION",
+        "MADOPILOT_PERMISSION_HAS_DIAGNOSTIC",
+        "MADOPILOT_PERMISSION_HAS_PLATFORM_CODE",
+        "MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION",
+        "MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE",
+        "MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE",
+        "MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED",
+        "MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE",
+        "MADOPILOT_INPUT_RECEIPT_HAS_FAULT",
+        "MADOPILOT_INPUT_RECEIPT_PARTIAL_NATIVE_EFFECT",
+        "MADOPILOT_INPUT_RECEIPT_USED_FALLBACK",
+        "MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED",
+        "MADOPILOT_INPUT_ATTEMPT_HAS_EVIDENCE",
+        "MADOPILOT_INPUT_ATTEMPT_HAS_FAULT",
+        "MADOPILOT_INPUT_ATTEMPT_PARTIAL_NATIVE_EFFECT",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_ACTIVITY",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_TEMPLATE",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_SOURCE_SPACE",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_DESTINATION_SPACE",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_ROUTE",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_ADDRESS_SCOPE",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_EVIDENCE",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_STATUS",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE",
     ];
 
     /// The families this module compares are exactly the families the

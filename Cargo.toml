@@ -20,7 +20,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.97.1"
 license = "Apache-2.0"
@@ -29,6 +29,13 @@ repository = "https://github.com/pashifika/mado-pilot"
 # Product dependencies are added only by the change that implements and tests the
 # behavior requiring them. Entries here are maintenance-tool dependencies.
 [workspace.dependencies]
+# Compiles the macOS Objective-C shim. `cc` was already an indirect build
+# dependency of the workspace through the OpenCV binding generator, so the macOS
+# adapter adds an edge rather than a crate. Its package declares that edge under
+# unconditional `[build-dependencies]`; `build.rs` gates shim compilation and
+# Apple framework link directives on a macOS target.
+# See docs/adr/0012-macos-shim-language-and-containment.md.
+cc = "1.4.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 # `zip`'s `deflate-flate2` feature declares the flate2 dependency but selects no
@@ -57,6 +64,39 @@ opencv = { version = "0.99.1", default-features = false, features = [
     "clang-runtime",
     "imgcodecs",
     "imgproc",
+] }
+# The production Windows adapter binds only the WGC, D3D11, DXGI, display,
+# window-enumeration, DPI, input, token-integrity, message, and WinRT interop
+# surfaces it owns. The consuming package places this dependency behind
+# cfg(windows), so none of these bindings enter the macOS graph. See
+# docs/third-party-dependencies.md.
+windows = { version = "0.62.2", default-features = false, features = [
+    "std",
+    "Foundation",
+    "Graphics",
+    "Graphics_Capture",
+    "Graphics_DirectX",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # Rust lints. Warnings are promoted to failures by the documented verification

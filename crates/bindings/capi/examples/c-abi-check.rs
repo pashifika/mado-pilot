@@ -12,20 +12,24 @@
 //!    the Rust definitions;
 //! 3. compiles, links, and runs `examples/c/deterministic-slice.c` against the
 //!    built library and checks its outcome;
-//! 4. compiles, links, and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
+//! 4. compiles, links, and runs the current platform's native C example in its
+//!    unattended, non-prompting mode;
+//! 5. compiles, links, and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
 //!    static assertions prove the wrapper's ownership shape at compile time and
 //!    whose checks prove its behaviour at run time;
-//! 5. compiles, links, and runs `examples/cpp/deterministic-slice.cpp` and
+//! 6. compiles, links, and runs `examples/cpp/deterministic-slice.cpp` and
 //!    checks that it answers exactly what the C example answered;
-//! 6. compiles and runs the same layout probe a second time against each frozen
+//! 7. compiles, links, and runs `examples/cpp/native-input.cpp` in the same safe
+//!    native mode through the C++ wrapper;
+//! 8. compiles and runs the same layout probe a second time against each frozen
 //!    header under `tests/abi-compat/`, and checks that every structure, field,
 //!    and table entry that header declares is still where it said it was;
-//! 7. compiles every frozen header fixture under `tests/abi-compat/` against
+//! 9. compiles every frozen header fixture under `tests/abi-compat/` against
 //!    its own header rather than the working one, links it to this library, and
 //!    checks that it still negotiates and still gets the same answers;
-//! 8. configures, builds, and runs the CMake consumer project in
-//!    `tests/cmake/`, which reaches the library only through `MadoPilot::C` and
-//!    `MadoPilot::Cpp`.
+//! 10. configures, builds, and runs the CMake consumer project in
+//!     `tests/cmake/`, which reaches the library only through `MadoPilot::C` and
+//!     `MadoPilot::Cpp`.
 //!
 //! Two compilers, one comparison. A divergence names the structure and the
 //! field. See `docs/adr/0004-c-header-authorship-and-abi-verification.md` and
@@ -34,6 +38,12 @@
 //! ```text
 //! cargo build --locked --package mado-pilot-capi
 //! cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+//! # Windows fixture-backed mode additionally requires:
+//! cargo build --locked --package mado-pilot-platform-windows \
+//!   --bin mado-pilot-windows-input-fixture \
+//!   --bin mado-pilot-windows-window-message-fixture
+//! cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
+//!   --label "<host>" --windows-native-fixture
 //! ```
 //!
 //! The build step is separate on purpose: this program needs the `cdylib` that
@@ -41,13 +51,41 @@
 //! from inside a cargo-launched process is a worse failure mode than a missing
 //! artifact with an actionable message.
 
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+use mado_pilot::{NativeEngineRequest, OperationContext, Status};
+
 use std::collections::HashSet;
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+const QUALIFY_MISSING_DIRECT3D_DEVICE: &str =
+    "MADO_PILOT_WINDOWS_QUALIFY_MISSING_CREATE_DIRECT3D11_DEVICE";
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+const UNSUPPORTED_RUST_CHILD: &str = "--windows-unsupported-rust-child";
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+const SUPPORTED_RUST_CHILD: &str = "--windows-supported-rust-child";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(all(windows, feature = "qualification-unsupported-api"))]
+    if let Some(mode) = env::args()
+        .find(|argument| argument == UNSUPPORTED_RUST_CHILD || argument == SUPPORTED_RUST_CHILD)
+    {
+        return run_windows_rust_qualification_child(mode == UNSUPPORTED_RUST_CHILD);
+    }
+    let unsupported_qualification = windows_unsupported_qualification_requested();
+    #[cfg(not(all(windows, feature = "qualification-unsupported-api")))]
+    if unsupported_qualification {
+        return Err(
+            "`--windows-unsupported-qualification` requires a Windows qualification build".into(),
+        );
+    }
+    #[cfg(all(windows, feature = "qualification-unsupported-api"))]
+    if unsupported_qualification {
+        check_windows_rust_qualification_children()?;
+    }
     let label = label();
     let paths = Paths::discover()?;
 
@@ -60,8 +98,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     check_layout(&paths)?;
     run_c_example(&paths, &label)?;
+    let run_windows_native_fixture = windows_native_fixture_requested();
+    let native_fixtures = if run_windows_native_fixture {
+        Some([
+            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Ordinary)?,
+            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Acknowledged)?,
+        ])
+    } else {
+        None
+    };
+    match &native_fixtures {
+        Some([ordinary, acknowledged]) => run_native_c_example(
+            &paths,
+            &[
+                (
+                    WindowsFixtureKind::Ordinary.contract_argument(),
+                    ordinary.title(),
+                ),
+                (
+                    WindowsFixtureKind::Acknowledged.contract_argument(),
+                    acknowledged.title(),
+                ),
+            ],
+        )?,
+        None => run_native_c_example(&paths, &[])?,
+    }
+    drop(native_fixtures);
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
+    let native_fixtures = if run_windows_native_fixture {
+        Some([
+            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Ordinary)?,
+            WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Acknowledged)?,
+        ])
+    } else {
+        None
+    };
+    match &native_fixtures {
+        Some([ordinary, acknowledged]) => run_native_cpp_example(
+            &paths,
+            &[
+                (
+                    WindowsFixtureKind::Ordinary.contract_argument(),
+                    ordinary.title(),
+                ),
+                (
+                    WindowsFixtureKind::Acknowledged.contract_argument(),
+                    acknowledged.title(),
+                ),
+            ],
+        )?,
+        None => run_native_cpp_example(&paths, &[])?,
+    }
     check_frozen_layout(&paths)?;
     check_frozen_headers(&paths)?;
     check_cmake_consumer(&paths)?;
@@ -83,6 +171,69 @@ fn label() -> String {
     }
 
     "unlabelled host".to_owned()
+}
+
+/// Whether this run must launch and exercise the dedicated Windows fixture.
+fn windows_native_fixture_requested() -> bool {
+    env::args().any(|argument| argument == "--windows-native-fixture")
+}
+
+fn windows_unsupported_qualification_requested() -> bool {
+    env::args().any(|argument| argument == "--windows-unsupported-qualification")
+}
+
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+fn run_windows_rust_qualification_child(
+    expect_unsupported: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let engine = mado_pilot::windows_engine(NativeEngineRequest::new())?;
+    let result = engine.discover(&OperationContext::new());
+    if expect_unsupported {
+        let error = result.expect_err("the controlled missing export refuses discovery");
+        if error.status() != Status::Unsupported {
+            return Err(format!(
+                "the controlled missing export returned {:?}, not Unsupported",
+                error.status()
+            )
+            .into());
+        }
+        println!("rust native unsupported discovery complete");
+    } else {
+        let _targets = result?;
+        println!("rust native supported discovery complete");
+    }
+    Ok(())
+}
+
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+fn check_windows_rust_qualification_children() -> Result<(), Box<dyn std::error::Error>> {
+    let current = env::current_exe()?;
+    for (argument, unsupported, expected) in [
+        (
+            UNSUPPORTED_RUST_CHILD,
+            true,
+            "rust native unsupported discovery complete",
+        ),
+        (
+            SUPPORTED_RUST_CHILD,
+            false,
+            "rust native supported discovery complete",
+        ),
+    ] {
+        let mut command = Command::new(&current);
+        command.arg(argument);
+        if unsupported {
+            command.env(QUALIFY_MISSING_DIRECT3D_DEVICE, "1");
+        }
+        let output = command.output()?;
+        report_output("Windows Rust availability child", &output);
+        let stdout = String::from_utf8(output.stdout)?;
+        print!("{stdout}");
+        if !output.status.success() || !stdout.contains(expected) {
+            return Err(format!("Windows Rust availability child `{argument}` failed").into());
+        }
+    }
+    Ok(())
 }
 
 /// Which compiler and which dialect a source is built with.
@@ -195,6 +346,141 @@ impl Paths {
         } else {
             name.to_owned()
         })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowsFixtureKind {
+    Ordinary,
+    Acknowledged,
+}
+
+impl WindowsFixtureKind {
+    #[cfg(windows)]
+    const fn program(self) -> &'static str {
+        match self {
+            Self::Ordinary => "mado-pilot-windows-window-message-fixture",
+            Self::Acknowledged => "mado-pilot-windows-input-fixture",
+        }
+    }
+
+    const fn contract_argument(self) -> &'static str {
+        match self {
+            Self::Ordinary => "--ordinary",
+            Self::Acknowledged => "--acknowledged",
+        }
+    }
+}
+
+/// One repository-owned Windows fixture kept alive for a native language example.
+struct WindowsNativeFixture {
+    #[cfg(windows)]
+    child: std::process::Child,
+    title: String,
+}
+
+impl WindowsNativeFixture {
+    fn spawn(paths: &Paths, kind: WindowsFixtureKind) -> Result<Self, Box<dyn std::error::Error>> {
+        #[cfg(not(windows))]
+        {
+            let _ = (paths, kind);
+            Err("`--windows-native-fixture` requires a Windows host".into())
+        }
+
+        #[cfg(windows)]
+        {
+            use std::process::Stdio;
+
+            let program =
+                paths
+                    .artifacts
+                    .join(format!("{}{}", kind.program(), env::consts::EXE_SUFFIX));
+            if !program.is_file() {
+                return Err(format!(
+                    "{} does not exist.\nBuild it first:\n    cargo build --locked \
+                     --package mado-pilot-platform-windows --bin {}",
+                    program.display(),
+                    kind.program()
+                )
+                .into());
+            }
+
+            let mut command = Command::new(&program);
+            if kind == WindowsFixtureKind::Acknowledged {
+                command.arg("--animate-on-input");
+            }
+            let child = command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()?;
+            let mut fixture = Self {
+                child,
+                title: String::new(),
+            };
+            let process_id = fixture.child.id();
+            let output = fixture
+                .child
+                .stdout
+                .take()
+                .ok_or("the Windows fixture did not expose its readiness output")?;
+            let ready = read_windows_fixture_ready(output)?;
+            let title = ready
+                .strip_prefix("fixture-ready ")
+                .and_then(|line| line.split_once(" title="))
+                .and_then(|(_, rest)| rest.split_once(" capacity="))
+                .map(|(title, _)| title)
+                .ok_or("the Windows fixture returned malformed readiness output")?;
+            if !title.ends_with(&format!("[{process_id}]")) {
+                return Err("the Windows fixture title did not identify its process".into());
+            }
+            fixture.title = title.to_owned();
+            println!(
+                "windows {:?} fixture: ready for exact-title native checks",
+                kind
+            );
+            Ok(fixture)
+        }
+    }
+
+    fn title(&self) -> &str {
+        &self.title
+    }
+}
+
+#[cfg(windows)]
+fn read_windows_fixture_ready(
+    output: std::process::ChildStdout,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    const READY_BUDGET: Duration = Duration::from_secs(5);
+
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let mut ready = String::new();
+        let result = BufReader::new(output).read_line(&mut ready).map(|_| ready);
+        let _sent = sender.send(result);
+    });
+    match receiver.recv_timeout(READY_BUDGET) {
+        Ok(result) => Ok(result?),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err("the Windows fixture timed out before readiness".into())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("the Windows fixture readiness reader stopped".into())
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsNativeFixture {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -628,6 +914,101 @@ fn run_c_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::E
     check_example("C", &output)
 }
 
+/// Compiles, links, and runs the current release target's native C probe.
+///
+/// With no targets, `--check` stops before discovery and sends no input. Each
+/// target is one exact repository fixture title and its required contract.
+fn run_native_c_example(
+    paths: &Paths,
+    targets: &[(&str, &str)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = if cfg!(target_os = "windows") {
+        "windows-native-input"
+    } else if cfg!(target_os = "macos") {
+        "macos-native-input"
+    } else {
+        return Err("native C examples require a release-target host".into());
+    };
+    let source = paths
+        .root
+        .join("crates/bindings/capi/examples/c")
+        .join(format!("{name}.c"));
+    let program = compile(paths, Language::C, name, &source, true)?;
+    #[cfg(all(windows, feature = "qualification-unsupported-api"))]
+    if windows_unsupported_qualification_requested() {
+        check_unsupported_native_program(paths, &program, name, "C")?;
+    }
+    if targets.is_empty() {
+        check_native_program(paths, &program, name, "C", None)?;
+    } else {
+        for &target in targets {
+            check_native_program(paths, &program, name, "C", Some(target))?;
+        }
+    }
+    Ok(())
+}
+
+fn check_native_program(
+    paths: &Paths,
+    program: &Path,
+    name: &str,
+    language: &str,
+    target: Option<(&str, &str)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let output = match target {
+        Some((contract, title)) => run(paths, program, &[contract, title])?,
+        None => run(paths, program, &["--check"])?,
+    };
+    let stdout = String::from_utf8(output.stdout.clone())?;
+    print!("{stdout}");
+    report_output(&format!("native {language} example"), &output);
+
+    let mode = target.map_or("non-prompting check", |_| "fixture-backed flow");
+    if !output.status.success() {
+        return Err(format!("the {name} {mode} reported a failure").into());
+    }
+    let expected = if target.is_some() {
+        format!("{name} complete")
+    } else {
+        format!("{name} complete (non-prompting check)")
+    };
+    if !stdout.contains(&expected) {
+        return Err(format!("the {name} {mode} never reached the end").into());
+    }
+    if let Some((contract, _)) = target {
+        let contract = contract.trim_start_matches("--");
+        if !stdout.contains(&format!("contract: {contract}")) {
+            return Err(format!(
+                "the {name} {mode} did not verify the requested {contract} contract"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(windows, feature = "qualification-unsupported-api"))]
+fn check_unsupported_native_program(
+    paths: &Paths,
+    program: &Path,
+    name: &str,
+    language: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut command = Command::new(program);
+    command.arg("--unsupported-check");
+    command.env(QUALIFY_MISSING_DIRECT3D_DEVICE, "1");
+    reachable(paths, &mut command)?;
+    let output = command.output()?;
+    report_output(&format!("unsupported native {language} example"), &output);
+    let stdout = String::from_utf8(output.stdout)?;
+    print!("{stdout}");
+    if !output.status.success() || !stdout.contains(&format!("{name} complete (unsupported check)"))
+    {
+        return Err(format!("the {name} unsupported native {language} check failed").into());
+    }
+    Ok(())
+}
+
 /// Compiles, links, and runs the C++ example, which answers the same questions.
 fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::Error>> {
     let source = paths
@@ -645,6 +1026,36 @@ fn run_cpp_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error:
     let output = run(paths, &program, &["--package", &package, "--label", label])?;
 
     check_example("C++", &output)
+}
+
+/// Compiles, links, and runs the native flow through the C++ RAII wrapper.
+fn run_native_cpp_example(
+    paths: &Paths,
+    targets: &[(&str, &str)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = if cfg!(target_os = "windows") {
+        "windows-native-input-cpp"
+    } else if cfg!(target_os = "macos") {
+        "macos-native-input-cpp"
+    } else {
+        return Err("the native C++ example requires a release-target host".into());
+    };
+    let source = paths
+        .root
+        .join("crates/bindings/capi/examples/cpp/native-input.cpp");
+    let program = compile(paths, Language::Cpp, name, &source, true)?;
+    #[cfg(all(windows, feature = "qualification-unsupported-api"))]
+    if windows_unsupported_qualification_requested() {
+        check_unsupported_native_program(paths, &program, name, "C++")?;
+    }
+    if targets.is_empty() {
+        check_native_program(paths, &program, name, "C++", None)?;
+    } else {
+        for &target in targets {
+            check_native_program(paths, &program, name, "C++", Some(target))?;
+        }
+    }
+    Ok(())
 }
 
 /// Checks an example's outcome, and that it reached the end.
@@ -710,11 +1121,10 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Every released header this library still promises to serve.
+/// Released header profiles whose frozen declarations remain ABI obligations.
 ///
-/// One entry per frozen ABI-major header. A later phase that adds entries adds
-/// a fixture beside the existing ones rather than editing them, so the list
-/// only ever grows and each entry keeps saying what one released header saw.
+/// ABI 1.0 is the only released profile older than the working ABI 1.2 header.
+/// The unreleased ABI 1.1 draft has no compatibility fixture.
 const FROZEN_HEADERS: &[&str] = &["v1"];
 
 /// Runs the layout probe against each frozen header, and checks that what that
@@ -732,11 +1142,18 @@ const FROZEN_HEADERS: &[&str] = &["v1"];
 /// include directory.
 ///
 /// The comparison is containment rather than the positional diff
-/// [`check_layout`] uses, because a later minor appends. The library may report
-/// lines the frozen header never declared; every line the frozen header does
-/// declare must still be reported, with the same name and the same offset. A
-/// field that moved, was renamed, or was removed drops a line and fails here,
-/// and so does a table entry that changed position.
+/// [`check_layout`] uses, because a later minor appends. Fields and unversioned
+/// type extents remain exact. A type whose released prefix begins with
+/// `struct_size` may grow, but its alignment may not change and its current size
+/// may not be smaller than the released one. A field that moved, was renamed, or
+/// was removed still fails here, and so does a table entry that changed position.
+fn reported_type_layout(line: &str) -> Option<(&str, usize, usize)> {
+    let rest = line.strip_prefix("type ")?;
+    let (name, rest) = rest.split_once(" size=")?;
+    let (size, align) = rest.split_once(" align=")?;
+    Some((name, size.parse().ok()?, align.parse().ok()?))
+}
+
 fn check_frozen_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
     let source = layout_probe(paths);
     let report = madopilot::layout::report();
@@ -760,22 +1177,60 @@ fn check_frozen_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
             .map(str::trim_end)
             .filter(|line| !line.is_empty())
             .collect();
-        let missing: Vec<&str> = lines
+        let versioned: HashSet<&str> = lines
             .iter()
-            .copied()
-            .filter(|line| !declared.contains(line))
+            .filter_map(|line| {
+                line.strip_prefix("field ")?
+                    .strip_suffix(".struct_size offset=0")
+            })
+            .collect();
+        let mismatches: Vec<String> = lines
+            .iter()
+            .filter_map(|line| {
+                if declared.contains(line) {
+                    return None;
+                }
+                let Some((name, released_size, released_align)) = reported_type_layout(line)
+                else {
+                    return Some(format!(
+                        "the {version} header declares `{line}`, which this library no longer reports"
+                    ));
+                };
+                if !versioned.contains(name) {
+                    return Some(format!(
+                        "the {version} header declares unversioned `{line}`, which this library no longer reports"
+                    ));
+                }
+
+                let current = report
+                    .lines()
+                    .filter_map(reported_type_layout)
+                    .find(|(current_name, _, _)| *current_name == name);
+                match current {
+                    Some((_, current_size, current_align))
+                        if current_size >= released_size && current_align == released_align =>
+                    {
+                        None
+                    }
+                    Some((_, current_size, current_align)) => Some(format!(
+                        "the {version} header declares `{name}` size={released_size} \
+                         align={released_align}, but this library reports size={current_size} \
+                         align={current_align}"
+                    )),
+                    None => Some(format!(
+                        "the {version} header declares type `{name}`, which this library no longer reports"
+                    )),
+                }
+            })
             .collect();
 
-        if !missing.is_empty() {
-            for line in &missing {
-                println!(
-                    "FROZEN LAYOUT MISMATCH: the {version} header declares `{line}`, \
-                     which this library no longer reports"
-                );
+        if !mismatches.is_empty() {
+            for mismatch in &mismatches {
+                println!("FROZEN LAYOUT MISMATCH: {mismatch}");
             }
             return Err(format!(
                 "the frozen {version} header and this library disagree in {} place(s)",
-                missing.len()
+                mismatches.len()
             )
             .into());
         }
@@ -790,14 +1245,12 @@ fn check_frozen_layout(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-/// Compiles, links, negotiates, and runs each frozen header's fixture against
+/// Compiles, links, and runs every released historical header fixture against
 /// the library built now.
 ///
 /// The fixture is compiled with its own include directory *instead of* the
-/// working one, so it cannot reach the current header. That is the whole
-/// mechanism: the day the working header gains an entry, this program still
-/// compiles against the frozen declarations, and negotiation is what tells it
-/// how much of the table it may use.
+/// working one, so it cannot reach the current header. Every released fixture
+/// must still negotiate and run.
 fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
     for version in FROZEN_HEADERS {
         let include = paths.frozen_include(version);
@@ -813,15 +1266,15 @@ fn check_frozen_headers(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
         report_output(&name, &output);
 
         if !output.status.success() {
-            return Err(format!("the frozen {version} header no longer works").into());
+            return Err(format!("the released {version} header fixture failed").into());
         }
         if !stdout.contains(&format!("{name} complete")) {
-            return Err(format!("the frozen {version} fixture never reached the end").into());
+            return Err(format!("the released {version} fixture never reached the end").into());
         }
     }
 
     println!(
-        "abi compatibility: {} frozen header(s) still compile, link, negotiate, and run",
+        "abi history: {} frozen header fixture(s) passed their expected negotiation behavior",
         FROZEN_HEADERS.len()
     );
 
@@ -837,6 +1290,12 @@ fn check_cmake_consumer(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
     let source = paths.root.join("crates/bindings/capi/tests/cmake");
     let build = paths.scratch.join("cmake");
     let package = paths.root.join("crates/bindings/capi");
+    // CMake paths use forward slashes on every host. Passing `Path::display()`
+    // directly leaves Windows separators in an untyped `-D` value; older
+    // supported CMake releases then parse sequences such as `\W` as invalid
+    // escapes when the value is expanded into a source path.
+    let package = package.to_string_lossy().replace('\\', "/");
+    let artifacts = paths.artifacts.to_string_lossy().replace('\\', "/");
 
     // One configuration on both single-config and multi-config generators: the
     // former reads CMAKE_BUILD_TYPE, the latter ignores it and takes `--config`.
@@ -850,11 +1309,8 @@ fn check_cmake_consumer(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
             source.clone().into_os_string(),
             OsString::from("-B"),
             build.clone().into_os_string(),
-            OsString::from(format!("-DMADOPILOT_SOURCE_DIR={}", package.display())),
-            OsString::from(format!(
-                "-DMADOPILOT_ARTIFACT_DIR={}",
-                paths.artifacts.display()
-            )),
+            OsString::from(format!("-DMADOPILOT_SOURCE_DIR={package}")),
+            OsString::from(format!("-DMADOPILOT_ARTIFACT_DIR={artifacts}")),
             OsString::from("-DCMAKE_BUILD_TYPE=Release"),
         ],
         "cmake configure",
@@ -896,7 +1352,7 @@ fn check_cmake_consumer(paths: &Paths) -> Result<(), Box<dyn std::error::Error>>
         return Err("the CMake consumer tests failed".into());
     }
 
-    println!("cmake: the consumer project built and both consumers ran");
+    println!("cmake: the consumer project built and all consumers ran");
 
     Ok(())
 }

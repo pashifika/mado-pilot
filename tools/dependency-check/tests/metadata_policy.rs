@@ -165,14 +165,14 @@ fn every_required_member_must_inherit_workspace_lints() {
 
 #[test]
 fn a_diverging_version_is_rejected_against_the_root_workspace() {
-    let members = members_with(TESTKIT, |member| member.version = "0.2.0".to_owned());
+    let members = members_with(TESTKIT, |member| member.version = "0.3.0".to_owned());
 
     assert_eq!(
         violations_of(&members),
         vec![Violation::InconsistentMetadata {
             name: TESTKIT.to_owned(),
             field: "version",
-            value: Some("0.2.0".to_owned()),
+            value: Some("0.3.0".to_owned()),
             expected: Some(REQUIRED_VERSION.to_owned()),
         }]
     );
@@ -223,8 +223,8 @@ fn the_facade_is_not_exempt_from_the_shared_contract() {
 #[test]
 fn a_version_and_rust_version_bump_across_the_whole_workspace_is_rejected() {
     // Agreement between members is not enough: the root declaration and the
-    // toolchain pin are anchored to the Phase 0 contract, so a release bump has to
-    // be an intentional, reviewed edit rather than a silent drift.
+    // toolchain pin are anchored to the repository contract, so a release bump
+    // has to be an intentional, reviewed edit rather than a silent drift.
     let workspace = ObservedWorkspaceMetadata {
         version: Some("0.4.2".to_owned()),
         rust_version: Some("1.99.0".to_owned()),

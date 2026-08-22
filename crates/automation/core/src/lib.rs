@@ -5,8 +5,14 @@
 //! This package owns the vocabulary every other MadoPilot package shares: target
 //! and stream identities, frame identity and ordering, coordinate spaces and
 //! validated geometry, frame-time coordinate transforms, the monotonic clock
-//! domain, operation deadlines and cancellation, and the shared status and error
-//! types.
+//! domain, operation deadlines and cancellation, target and input capabilities,
+//! non-prompting permission outcomes, redacted diagnostics, and the shared status
+//! and error types.
+//!
+//! Capability and permission vocabulary lives here rather than in the capture or
+//! input package because both packages need it and neither may depend on the
+//! other: a discovered target reports what input it accepts, and an input
+//! request is admitted against the same description.
 //!
 //! The rules that make those values trustworthy live here once rather than in
 //! every adapter. A capture adapter does not decide how a frame sequence
@@ -22,9 +28,11 @@
 //! # Implementation status
 //!
 //! Phase 1, complete. The identity, geometry, transform, time, operation-context,
-//! and status contracts below are implemented and tested. Capture, mapping,
-//! assets, matching, input, and OCR are not: this package describes what they
-//! will agree on, not behavior that exists yet.
+//! and status contracts below are implemented and tested. Phase 2 adds the
+//! platform-neutral capability, permission, and redacted-diagnostic vocabulary
+//! the native Adapters are described in; the Adapters that report those values do
+//! not exist yet. Assets, matching, and OCR are unchanged: this package describes
+//! what they will agree on, not behavior that exists yet.
 //!
 //! **The public names here are reviewed, not yet stable.**
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
@@ -68,13 +76,22 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+pub mod capability;
+pub mod diagnostic;
 pub mod geometry;
 pub mod identity;
+pub mod lifecycle;
 pub mod operation;
+pub mod permission;
 pub mod status;
 pub mod time;
 pub mod transform;
 
+pub use capability::{
+    CapabilitySupport, InputAddressScope, InputCapability, InputDelivery, InputOperationKind,
+    InputRouteCapability, SubmissionEvidence, TargetCapability, TargetKind,
+};
+pub use diagnostic::{DiagnosticCategory, PlatformCode, RedactedDiagnostic};
 pub use geometry::{
     ClipPolicy, CoordinateSpace, GeometryFault, PixelExtent, PixelRect, Point, Rect,
 };
@@ -82,7 +99,11 @@ pub use identity::{
     EngineId, FrameOrder, FrameSequence, FrameStamp, GeometryRevision, IdentityFault,
     IdentityIssuer, ProviderId, StreamCursor, StreamEpoch, StreamId, TargetId,
 };
-pub use operation::{CancellationToken, Interruption, Operation, OperationContext};
+pub use lifecycle::Lifecycle;
+pub use operation::{ActivityTag, CancellationToken, Interruption, Operation, OperationContext};
+pub use permission::{
+    PermissionKind, PermissionOutcome, PermissionProbe, PermissionReport, PermissionState,
+};
 pub use status::{Error, Result, Status};
 pub use time::{Clock, MonotonicInstant, SystemClock};
 pub use transform::{Scale, TargetPlacement, TransformSnapshot};

@@ -1,6 +1,7 @@
 //! CPU mappings: the point where a frame's pixels become readable bytes.
 
 use std::fmt;
+use std::sync::Arc;
 
 use mado_pilot_core::{
     FrameStamp, Operation, OperationContext, PixelExtent, PixelRect, TransformSnapshot,
@@ -9,6 +10,7 @@ use mado_pilot_core::{
 use crate::descriptor::{FrameDescriptor, PixelFormat};
 use crate::fault::CaptureFault;
 use crate::frame::{Frame, FrameView};
+use crate::storage::CpuPixels;
 
 /// A CPU-readable image owned by the caller.
 ///
@@ -31,10 +33,17 @@ pub struct CpuMapping {
 }
 
 enum MappingStorage {
-    /// The whole frame, already in the requested layout: share it.
-    Retained(Frame),
-    /// A cropped or channel-swapped image this mapping allocated.
-    Owned(Box<[u8]>),
+    /// The frame's own CPU pixels, already in the requested layout: share them.
+    ///
+    /// The pixels are retained directly rather than through the frame, so a
+    /// mapping holds exactly what its bytes need and nothing else. That matters
+    /// for a native frame: a mapping that retained the frame would keep its
+    /// Adapter-owned storage — and whatever lease that storage holds — alive for
+    /// as long as the caller kept the mapped bytes.
+    Shared(Arc<CpuPixels>),
+    /// Pixels this mapping obtained or built for itself, by conversion from
+    /// native storage, by cropping, or by a channel swap.
+    Owned(Arc<CpuPixels>),
 }
 
 impl CpuMapping {
@@ -71,18 +80,19 @@ impl CpuMapping {
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         match &self.storage {
-            MappingStorage::Retained(frame) => frame.pixels(),
-            MappingStorage::Owned(bytes) => bytes,
+            MappingStorage::Shared(pixels) | MappingStorage::Owned(pixels) => pixels.bytes(),
         }
     }
 
-    /// Reports whether the mapping shares the source frame's storage.
+    /// Reports whether the mapping shares the source frame's own CPU pixels.
     ///
     /// Exposed for tests and diagnostics that assert the zero-copy path is
-    /// actually taken. Behavior does not depend on it.
+    /// actually taken. Behavior does not depend on it. A mapping of native storage
+    /// is never shared, because obtaining CPU bytes from it is a copy however
+    /// little else the mapping had to do.
     #[must_use]
     pub const fn is_shared(&self) -> bool {
-        matches!(self.storage, MappingStorage::Retained(_))
+        matches!(self.storage, MappingStorage::Shared(_))
     }
 }
 
@@ -154,41 +164,59 @@ fn map_region(
         return Err(CaptureFault::RegionOutsideFrame.into());
     }
 
-    let whole_frame = region == bounds;
-    let mapping = if whole_frame && source.format() == format {
-        // Nothing to crop and nothing to swap: share the frame's own bytes.
+    // Nothing to crop and nothing to swap means the storage's own CPU bytes are
+    // already the mapping's bytes, whether they were there to begin with or a
+    // conversion produced them.
+    let unconverted = region == bounds && source.format() == format;
+    let (pixels, shared) = match frame.storage().cpu_pixels() {
+        Some(pixels) => (pixels, true),
+        None => {
+            let converted = frame.storage().read_cpu(operation)?;
+            // The conversion is the expensive part of mapping native storage, and
+            // an interruption that arrived during it must discard the result
+            // rather than let it commit.
+            attempt.checkpoint()?;
+            (converted, false)
+        }
+    };
+
+    let mapping = if unconverted {
         CpuMapping {
             stamp: frame.stamp(),
             transform: *frame.transform(),
             region,
             descriptor: source,
-            storage: MappingStorage::Retained(frame.clone()),
+            storage: if shared {
+                MappingStorage::Shared(pixels)
+            } else {
+                MappingStorage::Owned(pixels)
+            },
         }
     } else {
-        let converted = copy_region(frame, region, format)?;
+        let (descriptor, bytes) = copy_region(source, pixels.bytes(), region, format)?;
         attempt.checkpoint()?;
         CpuMapping {
             stamp: frame.stamp(),
             transform: *frame.transform(),
             region,
-            descriptor: converted.0,
-            storage: MappingStorage::Owned(converted.1),
+            descriptor,
+            storage: MappingStorage::Owned(Arc::new(CpuPixels::new(bytes))),
         }
     };
 
     Ok(attempt.commit(mapping)?)
 }
 
-/// Copies `region` out of `frame`, swapping channels when the format differs.
+/// Copies `region` out of `pixels`, swapping channels when the format differs.
 ///
 /// The result is packed: a mapping the caller owns has no reason to carry the
 /// source's row padding, and a packed stride is the one a consumer can predict.
 fn copy_region(
-    frame: &Frame,
+    source: FrameDescriptor,
+    pixels: &[u8],
     region: PixelRect,
     format: PixelFormat,
 ) -> Result<(FrameDescriptor, Box<[u8]>), CaptureFault> {
-    let source = frame.descriptor();
     let bytes_per_pixel = usize::try_from(format.bytes_per_pixel())
         .map_err(|_| CaptureFault::InconsistentDescriptor)?;
     if source.format().bytes_per_pixel() != format.bytes_per_pixel() {
@@ -201,7 +229,6 @@ fn copy_region(
     let top = usize::try_from(region.top()).map_err(|_| CaptureFault::RegionOutsideFrame)?;
     let row_bytes = descriptor.row_bytes();
 
-    let pixels = frame.pixels();
     let mut output = vec![0u8; descriptor.byte_len()];
     // Every offset below is checked, including the ones a 64-bit target cannot
     // overflow. The bounds that make them safe today — `left` and `top` below

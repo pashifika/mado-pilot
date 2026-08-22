@@ -2,29 +2,25 @@
 //!
 //! An engine is the C caller's root handle: it owns the wired capture adapter
 //! and the required matching backend, and every other handle is reached through
-//! it. Phase 1 builds one over a deterministic replay source, because that is
-//! the only capture adapter the facade wires today.
+//! it. ABI 1.2 adds native release-target wiring without changing replay.
 //!
-//! # The stream identity this module mints
+//! # Boundary identities
 //!
-//! A frame stamp has to carry a fixed-width stream identity, and the facade's
-//! own `StreamId` has no numeric projection to carry. So the boundary mints one
-//! per opened session from a process-wide counter that never reuses a value
-//! while the library is loaded. It correlates frames, results, and sessions with
-//! each other exactly as the Rust identity does; it is not the Rust identity,
-//! and a host that mixes both surfaces cannot compare them. Reviewed and kept
-//! that way by `docs/adr/0006-public-rust-names-and-compatibility-policy.md`:
-//! `StreamId` stays opaque, because the incomparability is unobservable while a
-//! C caller creates its own engine, and the right projection depends on whether
-//! engine identity has to travel with the ordinal.
+//! Facade target and stream identities expose checked nonzero ordinals scoped
+//! to their issuing engine. The C boundary projects those ordinals directly,
+//! so rediscovery and lazy diagnostic projection preserve correlation without
+//! retaining a second identity registry.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ops::Deref;
 use std::time::Duration;
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
-use mado_pilot::{Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription};
+use mado_pilot::{
+    DiagnosticOptions, Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription,
+    TargetId,
+};
 
-use crate::boundary::{self, Input, Out, Versioned, inputs, prefixes};
+use crate::boundary::{self, Input, Out, Versioned, covers, inputs, prefixes};
 use crate::error::{self, Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
@@ -33,16 +29,39 @@ use crate::status::{
     madopilot_status_t,
 };
 use crate::types::{
-    MADOPILOT_PIXEL_FORMAT_RGBA8, MADOPILOT_SOURCE_REPLAY_DIRECTORY,
-    MADOPILOT_SOURCE_REPLAY_MEMORY, MADOPILOT_TARGET_SUPPORTS_PLACEMENT, madopilot_replay_frame_t,
-    madopilot_source_t, madopilot_target_t, pixel_format, pixel_format_code, space_code,
+    MADOPILOT_PIXEL_FORMAT_RGBA8, MADOPILOT_SOURCE_NATIVE_MACOS, MADOPILOT_SOURCE_NATIVE_WINDOWS,
+    MADOPILOT_SOURCE_REPLAY_DIRECTORY, MADOPILOT_SOURCE_REPLAY_MEMORY,
+    MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION, MADOPILOT_TARGET_HAS_KIND,
+    MADOPILOT_TARGET_SUPPORTS_PLACEMENT, madopilot_permission_kind_t, madopilot_replay_frame_t,
+    madopilot_source_t, madopilot_target_kind_t, madopilot_target_t, pixel_format,
+    pixel_format_code, space_code,
 };
 use crate::view::{self, madopilot_bytes_t, madopilot_str_t};
 use crate::{handle, hooks};
 
 opaque! {
     /// A configured engine: one capture adapter and one matching backend.
-    madopilot_engine_t => Engine
+    madopilot_engine_t => EngineHandle
+}
+
+/// The facade engine behind the C handle.
+#[derive(Debug)]
+pub(crate) struct EngineHandle {
+    engine: Engine,
+}
+
+impl EngineHandle {
+    fn new(engine: Engine) -> Self {
+        Self { engine }
+    }
+}
+
+impl Deref for EngineHandle {
+    type Target = Engine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.engine
+    }
 }
 
 opaque! {
@@ -54,21 +73,38 @@ opaque! {
     madopilot_target_list_t => TargetList
 }
 
-/// The payload behind a target-list handle.
+/// One target in an immutable discovery snapshot.
 #[derive(Debug)]
-pub(crate) struct TargetList(Vec<TargetDescription>);
+pub(crate) struct TargetRecord {
+    description: TargetDescription,
+}
 
-impl TargetList {
-    pub(crate) fn targets(&self) -> &[TargetDescription] {
-        &self.0
+impl TargetRecord {
+    fn new(description: TargetDescription) -> Self {
+        Self { description }
+    }
+
+    pub(crate) const fn description(&self) -> &TargetDescription {
+        &self.description
+    }
+
+    pub(crate) const fn facade_id(&self) -> TargetId {
+        self.description.id()
+    }
+
+    pub(crate) const fn ordinal(&self) -> u64 {
+        self.facade_id().get()
     }
 }
 
-/// Mints the next boundary stream identity.
-pub(crate) fn next_stream() -> u64 {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
+/// The payload behind a target-list handle.
+#[derive(Debug)]
+pub(crate) struct TargetList(Vec<TargetRecord>);
 
-    NEXT.fetch_add(1, Ordering::Relaxed)
+impl TargetList {
+    pub(crate) fn targets(&self) -> &[TargetRecord] {
+        &self.0
+    }
 }
 
 inputs! {
@@ -161,7 +197,13 @@ impl Versioned for madopilot_target_t {
         coordinate_spaces,
         name,
         provider,
+        target,
+        kind,
+        capture,
+        capture_permission,
+        reserved,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -173,6 +215,11 @@ impl Versioned for madopilot_target_t {
             coordinate_spaces: 0,
             name: madopilot_str_t::empty(),
             provider: madopilot_str_t::empty(),
+            target: 0,
+            kind: crate::types::MADOPILOT_TARGET_KIND_UNKNOWN,
+            capture: crate::types::MADOPILOT_CAPABILITY_UNKNOWN,
+            capture_permission: crate::types::MADOPILOT_PERMISSION_KIND_UNSPECIFIED,
+            reserved: 0,
         }
     }
 }
@@ -205,6 +252,40 @@ unsafe fn replay_source(source: &madopilot_source_t) -> Result<ReplaySource, Fau
         }
         other => Err(Fault::abi(format!("unrecognized source kind {other}"))),
     }
+}
+
+#[cfg(windows)]
+fn native_windows_engine(diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+    mado_pilot::windows_engine(mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics))
+        .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
+}
+
+#[cfg(not(windows))]
+fn native_windows_engine(_diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+    Err(Fault::from_error(
+        &mado_pilot::Error::new(
+            mado_pilot::Status::Unsupported,
+            "native Windows construction is unavailable in this build",
+        ),
+        MADOPILOT_ERROR_CATEGORY_ENGINE,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn native_macos_engine(diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+    mado_pilot::macos_engine(mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics))
+        .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_macos_engine(_diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+    Err(Fault::from_error(
+        &mado_pilot::Error::new(
+            mado_pilot::Status::Unsupported,
+            "native macOS construction is unavailable in this build",
+        ),
+        MADOPILOT_ERROR_CATEGORY_ENGINE,
+    ))
 }
 
 /// Reads the caller's frame array, one validated element at a time.
@@ -307,6 +388,26 @@ pub(crate) fn create(
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
+    create_inner(source, std::ptr::null(), operation, out_engine, out_error)
+}
+
+pub(crate) fn create_with_options(
+    source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
+    create_inner(source, options, operation, out_engine, out_error)
+}
+
+fn create_inner(
+    source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
     if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
         unsafe { boundary::begin_outputs(out_engine, "out_engine", out_error) }
@@ -316,11 +417,17 @@ pub(crate) fn create(
     hooks::reach(hooks::Site::Entry);
 
     // SAFETY: `out_error` was validated above.
-    unsafe { report(out_error, build_engine(source, operation, out_engine)) }
+    unsafe {
+        report(
+            out_error,
+            build_engine(source, options, operation, out_engine),
+        )
+    }
 }
 
 fn build_engine(
     source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
 ) -> Result<(), Fault> {
@@ -331,11 +438,25 @@ fn build_engine(
 
     // SAFETY: as above.
     let request = unsafe { boundary::read_input::<madopilot_source_t>(source) }?;
-    // SAFETY: as above.
-    let configured = unsafe { replay_source(&request) }?;
+    // SAFETY: null selects defaults; otherwise the caller keeps the options readable.
+    let diagnostics = unsafe { crate::diagnostic::options(options) }?;
 
-    let engine = mado_pilot::replay_engine(configured)
-        .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?;
+    // SAFETY: as above. Fields not selected by the source tag remain unread.
+    let engine = match request.kind {
+        MADOPILOT_SOURCE_REPLAY_MEMORY | MADOPILOT_SOURCE_REPLAY_DIRECTORY => {
+            // SAFETY: the replay fields selected by the tag remain readable for
+            // the call under this function's boundary contract.
+            let configured = unsafe { replay_source(&request) }?;
+            mado_pilot::replay_engine(
+                mado_pilot::ReplayEngineRequest::new(configured).with_diagnostics(diagnostics),
+            )
+            .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
+        }
+        MADOPILOT_SOURCE_NATIVE_WINDOWS => native_windows_engine(diagnostics)?,
+        MADOPILOT_SOURCE_NATIVE_MACOS => native_macos_engine(diagnostics)?,
+        other => return Err(Fault::abi(format!("unrecognized source kind {other}"))),
+    };
+    let engine = EngineHandle::new(engine);
     hooks::reach(hooks::Site::AfterTemporary);
 
     // The engine exists but is not the caller's yet. An operation that ran out
@@ -352,14 +473,14 @@ fn build_engine(
 pub(crate) fn retain(engine: *const madopilot_engine_t) -> madopilot_status_t {
     // SAFETY: the handle is null or one this module produced, and the caller
     // holds a live reference for the call.
-    unsafe { handle::retain::<Engine>(engine) }
+    unsafe { handle::retain::<EngineHandle>(engine) }
 
     MADOPILOT_STATUS_OK
 }
 
 pub(crate) fn release(engine: *mut madopilot_engine_t) -> madopilot_status_t {
     // SAFETY: as `retain`, and the caller is giving up the reference it owns.
-    unsafe { handle::release::<Engine>(engine) }
+    unsafe { handle::release::<EngineHandle>(engine) }
 
     MADOPILOT_STATUS_OK
 }
@@ -388,7 +509,7 @@ fn run_discover(
     out_targets: *mut *mut madopilot_target_list_t,
 ) -> Result<(), Fault> {
     // SAFETY: the caller keeps the engine retained for the call.
-    let Some(engine) = (unsafe { handle::borrow::<Engine>(engine) }) else {
+    let Some(engine) = (unsafe { handle::borrow::<EngineHandle>(engine) }) else {
         return Err(Fault::abi("`engine` is null"));
     };
     // SAFETY: the caller keeps the operation structure readable for the call.
@@ -398,6 +519,10 @@ fn run_discover(
     let targets = engine
         .discover(context.inner())
         .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_CAPTURE))?;
+    let targets = targets
+        .into_iter()
+        .map(TargetRecord::new)
+        .collect::<Vec<_>>();
     hooks::reach(hooks::Site::AfterTemporary);
     context.commit()?;
 
@@ -466,7 +591,7 @@ pub(crate) fn target_list_get(
     match described {
         Ok(value) => {
             // SAFETY: `out` was validated above, and every view in `value`
-            // borrows from the list the caller keeps retained.
+            // borrows from `list`, whose handle stays retained for the call.
             unsafe { out.commit(value) };
             MADOPILOT_STATUS_OK
         }
@@ -474,10 +599,8 @@ pub(crate) fn target_list_get(
     }
 }
 
-fn describe_target(
-    target: &TargetDescription,
-    struct_size: u32,
-) -> Result<madopilot_target_t, Fault> {
+fn describe_target(target: &TargetRecord, struct_size: u32) -> Result<madopilot_target_t, Fault> {
+    let description = target.description();
     let mut coordinate_spaces = 0;
     for space in [
         mado_pilot::CoordinateSpace::CapturePixels,
@@ -486,12 +609,12 @@ fn describe_target(
         mado_pilot::CoordinateSpace::TargetLogical,
         mado_pilot::CoordinateSpace::DesktopLogical,
     ] {
-        if target.coordinates().supports(space) {
+        if description.coordinates().supports(space) {
             coordinate_spaces |= 1 << space_code(space);
         }
     }
 
-    let placement_bit = if target
+    let placement_bit = if description
         .coordinates()
         .supports(mado_pilot::CoordinateSpace::TargetLogical)
     {
@@ -500,15 +623,49 @@ fn describe_target(
         0
     };
 
+    let capability = description.capability();
+    let (kind_flag, kind) = match capability.kind() {
+        Some(kind)
+            if struct_size as usize
+                >= covers!(madopilot_target_t, kind: madopilot_target_kind_t) =>
+        {
+            (
+                MADOPILOT_TARGET_HAS_KIND,
+                crate::input::target_kind_code(kind),
+            )
+        }
+        _ => (0, crate::types::MADOPILOT_TARGET_KIND_UNKNOWN),
+    };
+    let (permission_flag, capture_permission) = match capability.capture_permission() {
+        Some(permission)
+            if struct_size as usize
+                >= covers!(
+                    madopilot_target_t,
+                    capture_permission: madopilot_permission_kind_t
+                ) =>
+        {
+            (
+                MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION,
+                crate::input::permission_kind_code(permission),
+            )
+        }
+        _ => (0, crate::types::MADOPILOT_PERMISSION_KIND_UNSPECIFIED),
+    };
+
     Ok(madopilot_target_t {
         struct_size,
-        flags: placement_bit,
-        width: target.extent().width(),
-        height: target.extent().height(),
-        format: pixel_format_code(target.format())?,
+        flags: placement_bit | kind_flag | permission_flag,
+        width: description.extent().width(),
+        height: description.extent().height(),
+        format: pixel_format_code(description.format())?,
         coordinate_spaces,
-        name: madopilot_str_t::borrowed(target.name()),
-        provider: madopilot_str_t::borrowed(target.provider().name()),
+        name: madopilot_str_t::borrowed(description.name()),
+        provider: madopilot_str_t::borrowed(description.provider().name()),
+        target: target.ordinal(),
+        kind,
+        capture: crate::input::capability_support_code(capability.capture()),
+        capture_permission,
+        reserved: 0,
     })
 }
 

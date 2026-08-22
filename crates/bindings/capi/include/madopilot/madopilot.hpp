@@ -1,22 +1,23 @@
 /*
- * MadoPilot C++ wrapper — Phase 1 prefix.
+ * MadoPilot C++ wrapper - ABI 1.2.
  *
  * A header-only RAII adapter over the released C ABI. It owns handles, turns
  * statuses into an exception-free `Result`, and copies the text a caller needs
  * after a C handle is gone. It performs no capture, mapping, matching,
- * coordinate, or status logic of its own: every answer here came from a C table
- * entry.
+ * coordinate, input, diagnostic, status, or error logic of its own: every
+ * answer here came from a C table entry.
  *
  * ============================================================================
  * This header declares no ABI of its own.
  *
- * The only ABI is the C one, frozen at 1.0 by
- * docs/adr/0007-phase-1-c-abi-freeze.md. Nothing below restates a numeric value
- * from that contract: the enumerated types are aliases of the C types, so a
- * caller writes `MADOPILOT_STATUS_OK` and gets whatever the header it compiled
- * against says that is. That stays true now the values are frozen, because a
- * hand-written mirror fails silently when the C set grows — it compiles, one
- * value short — and freezing the values does not remove that risk.
+ * The only ABI is the C one: its complete 1.0 prefix was frozen by
+ * docs/adr/0007-phase-1-c-abi-freeze.md, and ABI 1.2 replaces the unreleased
+ * 1.1 draft with the suffix reviewed for Phase 2. Nothing below restates a
+ * numeric value from that contract: the enumerated types are aliases of the C
+ * types, so a caller writes `MADOPILOT_STATUS_OK` and gets whatever the header
+ * it compiled against says that is. A hand-written mirror fails silently when
+ * the C set grows - it compiles, one value short - and freezing the values does
+ * not remove that risk.
  * ============================================================================
  *
  * Requires C++17. See docs/cpp-wrapper.md for the ownership rules and
@@ -68,6 +69,31 @@ using SourceKind = ::madopilot_source_kind_t;
 using PackageSourceKind = ::madopilot_package_source_kind_t;
 using AssetFault = ::madopilot_asset_fault_t;
 using AssetStage = ::madopilot_asset_stage_t;
+using PermissionKind = ::madopilot_permission_kind_t;
+using PermissionState = ::madopilot_permission_state_t;
+using DiagnosticCategory = ::madopilot_diagnostic_category_t;
+using TargetKind = ::madopilot_target_kind_t;
+using CapabilitySupport = ::madopilot_capability_support_t;
+using InputOperationKind = ::madopilot_input_operation_kind_t;
+using InputDelivery = ::madopilot_input_delivery_t;
+using InputAddressScope = ::madopilot_input_address_scope_t;
+using SubmissionEvidence = ::madopilot_submission_evidence_t;
+using InputRequirement = ::madopilot_input_requirement_t;
+using FocusPolicy = ::madopilot_focus_policy_t;
+using GeometryPolicy = ::madopilot_geometry_policy_t;
+using PointerButton = ::madopilot_pointer_button_t;
+using Key = ::madopilot_key_t;
+using Modifier = ::madopilot_modifier_t;
+using InputEventKind = ::madopilot_input_event_kind_t;
+using SequenceOutcome = ::madopilot_sequence_outcome_t;
+using CleanupState = ::madopilot_cleanup_state_t;
+using InputFault = ::madopilot_input_fault_t;
+using DiagnosticLevel = ::madopilot_diagnostic_level_t;
+using DiagnosticDrainState = ::madopilot_diagnostic_drain_state_t;
+using DiagnosticKind = ::madopilot_diagnostic_kind_t;
+using DiagnosticOperationKind = ::madopilot_diagnostic_operation_kind_t;
+using SearchDiagnosticOutcome = ::madopilot_search_diagnostic_outcome_t;
+using Lifecycle = ::madopilot_lifecycle_t;
 
 /* Structures with no borrowed view are passed through as themselves, for the
  * same reason: their fields are the contract's, and a projection would be a
@@ -185,6 +211,18 @@ inline ::madopilot_bytes_t as_bytes(const std::uint8_t* data, std::size_t len) n
     return view;
 }
 
+/// True only when both sides of negotiation cover `required`.
+///
+/// The library reports its own extent in the mandatory table prefix. The
+/// wrapper also retains the caller extent passed to negotiation: checking only
+/// the larger library table would let a caller that deliberately negotiated a
+/// 1.0 prefix invoke a 1.2 member it did not claim to understand.
+inline bool has_entry(const ::madopilot_api_t* api, std::size_t negotiated_extent,
+                      std::size_t required) noexcept {
+    return api != nullptr && negotiated_extent >= required &&
+           static_cast<std::size_t>(api->struct_size) >= required;
+}
+
 /// Releases one owned C error handle when the scope ends, however it ends.
 ///
 /// Copying an error's text out of the C handle allocates, and an allocation can
@@ -230,10 +268,10 @@ inline Error take_error(const ::madopilot_api_t* api, Status status,
 
 /// Which asset rule was broken, and how far loading had got.
 ///
-/// Package loading is the one Phase 1 operation whose failures a caller may
-/// reasonably tell apart by more than a status: a bad content hash and an unsafe
-/// entry path are both `MADOPILOT_STATUS_ASSET_INVALID`. Collapsing the pair
-/// into the status would throw away detail the C ABI keeps on purpose.
+/// Package loading can distinguish failures which share one status: a bad
+/// content hash and an unsafe entry path are both
+/// `MADOPILOT_STATUS_ASSET_INVALID`. Collapsing the pair into the status would
+/// throw away detail the C ABI keeps on purpose.
 struct AssetDetail {
     AssetFault fault = MADOPILOT_ASSET_FAULT_UNKNOWN;
     AssetStage stage = MADOPILOT_ASSET_STAGE_UNKNOWN;
@@ -436,6 +474,11 @@ inline Result<T> no_table() {
     return Result<T>::failure(Error::from_status(MADOPILOT_STATUS_INVALID_ARGUMENT));
 }
 
+template <class T>
+inline Result<T> unsupported() {
+    return Result<T>::failure(Error::from_status(MADOPILOT_STATUS_UNSUPPORTED));
+}
+
 /// A move-only owner of one reference-counted C handle.
 ///
 /// `Derived` supplies `retain_handle` and `release_handle`. Copy operations are
@@ -449,7 +492,8 @@ public:
     Owner(const Owner&) = delete;
     Owner& operator=(const Owner&) = delete;
 
-    Owner(Owner&& other) noexcept : api_(other.api_), handle_(other.handle_) {
+    Owner(Owner&& other) noexcept
+        : api_(other.api_), extent_(other.extent_), handle_(other.handle_) {
         other.handle_ = nullptr;
     }
 
@@ -457,6 +501,7 @@ public:
         if (this != &other) {
             reset();
             api_ = other.api_;
+            extent_ = other.extent_;
             handle_ = other.handle_;
             other.handle_ = nullptr;
         }
@@ -480,6 +525,9 @@ public:
     /// An emptied owner keeps it, so an operation on an emptied owner is refused
     /// by the C boundary with its own status rather than by the wrapper.
     const ::madopilot_api_t* api() const noexcept { return api_; }
+
+    /// The table prefix this owner was created under.
+    std::size_t extent() const noexcept { return extent_; }
 
     /// Drops the owned reference and leaves this owner empty.
     void reset() noexcept {
@@ -505,11 +553,12 @@ public:
         if (handle_ == nullptr) {
             Derived copy;
             copy.api_ = api_;
+            copy.extent_ = extent_;
             return copy;
         }
 
         const Status status = Derived::retain_handle(api_, handle_);
-        // No Phase 1 retain reports anything but OK for a non-null handle, so
+        // No released retain reports anything but OK for a non-null handle, so
         // this cannot fire against the current ABI. It is here because the one
         // thing that must not happen if a later one can fail is the second
         // owner being built anyway: it would hold a reference nobody took, and
@@ -518,36 +567,39 @@ public:
         if (!is_ok(status)) {
             Derived copy;
             copy.api_ = api_;
+            copy.extent_ = extent_;
             return copy;
         }
 
-        return Derived(api_, handle_);
+        return Derived(api_, extent_, handle_);
     }
 
 protected:
-    Owner(const ::madopilot_api_t* api, Handle* handle) noexcept
-        : api_(api), handle_(handle) {}
+    Owner(const ::madopilot_api_t* api, std::size_t extent, Handle* handle) noexcept
+        : api_(api), extent_(extent), handle_(handle) {}
 
     const ::madopilot_api_t* api_ = nullptr;
+    std::size_t extent_ = 0;
     Handle* handle_ = nullptr;
 };
 
 } // namespace detail
 
 /* ---------------------------------------------------------------------------
- * Typed Phase 1 requests
+ * Typed requests
  *
- * Each of these owns whatever its C structure points at, so a `to_c()` value is
- * usable for as long as the request object is alive and no longer.
+ * These own their array and string storage and identify every borrowed handle,
+ * so a `to_c()` value is usable for the documented call lifetime.
  * ------------------------------------------------------------------------ */
 
 class Cancellation;
 
-/// A deadline and a cancellation token, carried into every blocking call.
+/// A deadline, cancellation token, and optional diagnostic correlation tag
+/// carried into every blocking call.
 ///
 /// The deadline is an ABSOLUTE instant in the library's own monotonic domain,
 /// read from `Api::clock_now()` and added to. It is not a duration and not a
-/// wall clock. A default `Operation` has neither deadline nor cancellation.
+/// wall clock. A default `Operation` has no deadline, cancellation, or tag.
 ///
 /// An operation borrows its cancellation token: the `Cancellation` owner must
 /// outlive every call this operation is passed to.
@@ -575,12 +627,28 @@ public:
         cancellation_ = nullptr;
         return *this;
     }
+    /// Sets an opaque nonzero diagnostic correlation value.
+    Operation& activity_tag(std::uint64_t tag) noexcept {
+        has_activity_tag_ = true;
+        activity_tag_ = tag;
+        return *this;
+    }
+
+    Operation& no_activity_tag() noexcept {
+        has_activity_tag_ = false;
+        activity_tag_ = 0;
+        return *this;
+    }
+
 
     ::madopilot_operation_t to_c() const noexcept {
         auto value = detail::sized<::madopilot_operation_t>();
-        value.flags = has_deadline_ ? MADOPILOT_OPERATION_HAS_DEADLINE : 0u;
+        value.flags = (has_deadline_ ? MADOPILOT_OPERATION_HAS_DEADLINE : 0u) |
+                      (has_activity_tag_ ? MADOPILOT_OPERATION_HAS_ACTIVITY_TAG
+                                         : 0u);
         value.deadline_nanos = deadline_;
         value.cancellation = cancellation_;
+        value.activity_tag = activity_tag_;
         return value;
     }
 
@@ -588,6 +656,38 @@ private:
     bool has_deadline_ = false;
     std::uint64_t deadline_ = 0;
     const ::madopilot_cancellation_t* cancellation_ = nullptr;
+    bool has_activity_tag_ = false;
+    std::uint64_t activity_tag_ = 0;
+};
+
+/// Engine-wide diagnostic configuration. The default allocates no queue.
+class EngineOptions {
+public:
+    EngineOptions() noexcept = default;
+
+    EngineOptions& diagnostics(DiagnosticLevel level,
+                               std::uint32_t capacity) noexcept {
+        diagnostic_level_ = level;
+        diagnostic_capacity_ = capacity;
+        return *this;
+    }
+
+    EngineOptions& diagnostics_off() noexcept {
+        diagnostic_level_ = MADOPILOT_DIAGNOSTIC_LEVEL_OFF;
+        diagnostic_capacity_ = 0;
+        return *this;
+    }
+
+    ::madopilot_engine_options_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_engine_options_t>();
+        value.diagnostic_level = diagnostic_level_;
+        value.diagnostic_capacity = diagnostic_capacity_;
+        return value;
+    }
+
+private:
+    DiagnosticLevel diagnostic_level_ = MADOPILOT_DIAGNOSTIC_LEVEL_OFF;
+    std::uint32_t diagnostic_capacity_ = 0;
 };
 
 /// One replay frame supplied as raw pixels.
@@ -659,6 +759,20 @@ private:
 /// Where an engine's frames come from.
 class Source {
 public:
+    /// The installed Windows desktop capture and input adapter.
+    static Source native_windows() noexcept {
+        Source source;
+        source.kind_ = MADOPILOT_SOURCE_NATIVE_WINDOWS;
+        return source;
+    }
+
+    /// The installed macOS desktop capture and input adapter.
+    static Source native_macos() noexcept {
+        Source source;
+        source.kind_ = MADOPILOT_SOURCE_NATIVE_MACOS;
+        return source;
+    }
+
     /// Frames supplied from memory, under a target name.
     static Source replay_memory(std::string_view target_name) {
         Source source;
@@ -745,6 +859,158 @@ private:
     std::size_t archive_len_ = 0;
 };
 
+/// Input capability requested while opening a capture session.
+class InputOpenRequest {
+public:
+    InputOpenRequest() noexcept = default;
+
+    InputOpenRequest& requirement(InputRequirement requirement) noexcept {
+        requirement_ = requirement;
+        return *this;
+    }
+
+    /// Replaces the mask of operation/delivery pairs that must be accepted.
+    InputOpenRequest& require_pairs(std::uint64_t pairs) noexcept {
+        required_pairs_ = pairs;
+        return *this;
+    }
+
+    /// Replaces the additional pair mask the caller would prefer.
+    InputOpenRequest& prefer_pairs(std::uint64_t pairs) noexcept {
+        preferred_pairs_ = pairs;
+        return *this;
+    }
+
+    ::madopilot_input_open_request_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_input_open_request_t>();
+        value.requirement = requirement_;
+        value.required_pairs = required_pairs_;
+        value.preferred_pairs = preferred_pairs_;
+        return value;
+    }
+
+private:
+    InputRequirement requirement_ = MADOPILOT_INPUT_OPTIONAL;
+    std::uint64_t required_pairs_ = 0;
+    std::uint64_t preferred_pairs_ = 0;
+};
+
+/// One typed event in a bounded input sequence.
+///
+/// Factories expose only one active event variant. Text is copied into the
+/// value, so the view produced by `to_c()` remains valid while this event does.
+class InputEvent {
+public:
+    static constexpr std::uint32_t max_text_chars =
+        MADOPILOT_INPUT_MAX_TEXT_CHARS;
+    static constexpr std::size_t max_text_utf8_bytes =
+        MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES;
+    static constexpr std::uint64_t max_delay_nanos =
+        MADOPILOT_INPUT_MAX_DELAY_NANOS;
+    static constexpr std::int32_t max_scroll_notches =
+        MADOPILOT_INPUT_MAX_SCROLL_NOTCHES;
+    static constexpr std::uint32_t min_function_key =
+        MADOPILOT_INPUT_MIN_FUNCTION_KEY;
+    static constexpr std::uint32_t max_function_key =
+        MADOPILOT_INPUT_MAX_FUNCTION_KEY;
+
+    static InputEvent pointer_move(Space space, double x, double y) noexcept {
+        InputEvent event;
+        event.kind_ = MADOPILOT_INPUT_EVENT_POINTER_MOVE;
+        event.space_ = space;
+        event.x_ = x;
+        event.y_ = y;
+        return event;
+    }
+
+    static InputEvent pointer_press(PointerButton button) noexcept {
+        return pointer_button(MADOPILOT_INPUT_EVENT_POINTER_PRESS, button);
+    }
+
+    static InputEvent pointer_release(PointerButton button) noexcept {
+        return pointer_button(MADOPILOT_INPUT_EVENT_POINTER_RELEASE, button);
+    }
+
+    static InputEvent pointer_scroll(std::int32_t horizontal,
+                                     std::int32_t vertical) noexcept {
+        InputEvent event;
+        event.kind_ = MADOPILOT_INPUT_EVENT_POINTER_SCROLL;
+        event.horizontal_ = horizontal;
+        event.vertical_ = vertical;
+        return event;
+    }
+
+    static InputEvent key_press(Key key, std::uint32_t value = 0) noexcept {
+        return key_event(MADOPILOT_INPUT_EVENT_KEY_PRESS, key, value);
+    }
+
+    static InputEvent key_release(Key key, std::uint32_t value = 0) noexcept {
+        return key_event(MADOPILOT_INPUT_EVENT_KEY_RELEASE, key, value);
+    }
+
+    static InputEvent text(std::string_view text) {
+        InputEvent event;
+        event.kind_ = MADOPILOT_INPUT_EVENT_TEXT;
+        event.text_ = std::string(text);
+        return event;
+    }
+
+    static InputEvent delay(std::uint64_t nanos) noexcept {
+        InputEvent event;
+        event.kind_ = MADOPILOT_INPUT_EVENT_DELAY;
+        event.delay_nanos_ = nanos;
+        return event;
+    }
+
+    ::madopilot_input_event_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_input_event_t>();
+        value.kind = kind_;
+        value.space = space_;
+        value.button = button_;
+        value.key = key_;
+        value.key_value = key_value_;
+        value.x = x_;
+        value.y = y_;
+        value.horizontal = horizontal_;
+        value.vertical = vertical_;
+        value.text = detail::as_str(text_);
+        value.delay_nanos = delay_nanos_;
+        return value;
+    }
+
+private:
+    InputEvent() noexcept = default;
+
+    static InputEvent pointer_button(InputEventKind kind,
+                                     PointerButton button) noexcept {
+        InputEvent event;
+        event.kind_ = kind;
+        event.button_ = button;
+        return event;
+    }
+
+    static InputEvent key_event(InputEventKind kind, Key key,
+                                std::uint32_t value) noexcept {
+        InputEvent event;
+        event.kind_ = kind;
+        event.key_ = key;
+        event.key_value_ = value;
+        return event;
+    }
+
+    InputEventKind kind_ = MADOPILOT_INPUT_EVENT_UNKNOWN;
+    Space space_ = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    PointerButton button_ = MADOPILOT_POINTER_BUTTON_UNKNOWN;
+    Key key_ = MADOPILOT_KEY_UNKNOWN;
+    std::uint32_t key_value_ = 0;
+    double x_ = 0.0;
+    double y_ = 0.0;
+    std::int32_t horizontal_ = 0;
+    std::int32_t vertical_ = 0;
+    std::string text_;
+    std::uint64_t delay_nanos_ = 0;
+};
+
 /// How to open a session. Without either format the adapter's own layout is taken.
 class OpenRequest {
 public:
@@ -762,6 +1028,17 @@ public:
         return *this;
     }
 
+    /// Requests input together with capture. The policy is copied.
+    OpenRequest& input(const InputOpenRequest& request) noexcept {
+        input_ = request.to_c();
+        return *this;
+    }
+
+    OpenRequest& no_input() noexcept {
+        input_.reset();
+        return *this;
+    }
+
     ::madopilot_open_request_t to_c() const noexcept {
         auto value = detail::sized<::madopilot_open_request_t>();
         value.flags = flags_;
@@ -771,9 +1048,11 @@ public:
     }
 
 private:
+    friend class Engine;
     std::uint32_t flags_ = 0;
     PixelFormat required_ = MADOPILOT_PIXEL_FORMAT_RGBA8;
     PixelFormat preferred_ = MADOPILOT_PIXEL_FORMAT_RGBA8;
+    std::optional<::madopilot_input_open_request_t> input_;
 };
 
 /// How to map a frame. Without a region the whole frame is mapped.
@@ -857,6 +1136,240 @@ private:
  * Projections of the C output structures that carry borrowed views
  * ------------------------------------------------------------------------ */
 
+/// Capabilities that apply to the whole configured engine.
+struct EngineCapabilities {
+    std::uint32_t flags = 0;
+
+    bool delivers_input() const noexcept {
+        return (flags & MADOPILOT_ENGINE_DELIVERS_INPUT) != 0u;
+    }
+
+    bool reads_permissions() const noexcept {
+        return (flags & MADOPILOT_ENGINE_READS_PERMISSIONS) != 0u;
+    }
+};
+
+/// Redacted permission diagnostic. Both views borrow from the `Engine`.
+struct PermissionDiagnostic {
+    DiagnosticCategory category = MADOPILOT_DIAGNOSTIC_UNSPECIFIED;
+    std::optional<std::int64_t> platform_code;
+    BorrowedStr platform_namespace;
+    BorrowedStr context;
+};
+
+/// The result of one non-prompting authorization probe.
+struct Permission {
+    PermissionKind kind = MADOPILOT_PERMISSION_KIND_UNSPECIFIED;
+    PermissionState state = MADOPILOT_PERMISSION_STATE_UNKNOWN;
+    std::optional<PermissionDiagnostic> diagnostic;
+};
+
+/// Capability data for one explicit operation and delivery route.
+struct InputCapability {
+    std::uint64_t target = 0;
+    InputOperationKind operation = MADOPILOT_INPUT_OPERATION_UNKNOWN;
+    InputDelivery delivery = MADOPILOT_INPUT_DELIVERY_NONE;
+    CapabilitySupport support = MADOPILOT_CAPABILITY_UNKNOWN;
+    InputAddressScope address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
+    std::optional<PermissionKind> permission;
+    std::optional<SubmissionEvidence> evidence;
+    bool focus_required = false;
+    std::uint32_t pointer_spaces = 0;
+};
+
+/// What input an engine or an open session knows and accepts.
+struct InputDescriptor {
+    std::uint64_t target = 0;
+    std::uint64_t known_pairs = 0;
+    std::uint64_t supported_pairs = 0;
+    std::uint64_t unknown_pairs = 0;
+    std::uint32_t pointer_spaces = 0;
+    std::uint32_t max_events = 0;
+};
+
+namespace detail {
+
+inline InputCapability project_input_capability(
+    const ::madopilot_input_capability_t& value) noexcept {
+    InputCapability out;
+    out.target = value.target;
+    out.operation = value.operation;
+    out.delivery = value.delivery;
+    out.support = value.support;
+    out.address_scope = value.address_scope;
+    if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION) != 0u) {
+        out.permission = value.permission;
+    }
+    if ((value.flags & MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE) != 0u) {
+        out.evidence = value.evidence;
+    }
+    out.focus_required = value.focus_required != 0;
+    out.pointer_spaces = value.pointer_spaces;
+    return out;
+}
+
+inline InputDescriptor project_input_descriptor(
+    const ::madopilot_input_descriptor_t& value) noexcept {
+    return InputDescriptor{
+        value.target,
+        value.known_pairs,
+        value.supported_pairs,
+        value.unknown_pairs,
+        value.pointer_spaces,
+        value.max_events,
+    };
+}
+
+} // namespace detail
+
+/// Fixed terminal facts retained by an owned input receipt.
+struct InputReceiptInfo {
+    std::uint64_t target = 0;
+    SequenceOutcome outcome = MADOPILOT_SEQUENCE_UNEXECUTED;
+    std::optional<InputDelivery> selected_route;
+    InputAddressScope address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
+    std::uint64_t attempt_count = 0;
+    std::uint64_t submitted = 0;
+    std::optional<std::uint64_t> last_submitted;
+    std::optional<SubmissionEvidence> evidence;
+    std::optional<InputFault> fault;
+    CleanupState cleanup = MADOPILOT_CLEANUP_NOT_NEEDED;
+    std::uint64_t cleanup_released = 0;
+    std::uint64_t cleanup_owed = 0;
+    bool partial_native_effect = false;
+    bool used_fallback = false;
+
+    /// Only the two known safe values prove that no owned state remains held.
+    constexpr bool may_leave_state_held() const noexcept {
+        return cleanup != MADOPILOT_CLEANUP_NOT_NEEDED &&
+               cleanup != MADOPILOT_CLEANUP_COMPLETE;
+    }
+};
+
+/// One immutable route attempt projected from an input receipt.
+struct InputAttempt {
+    InputDelivery route = MADOPILOT_INPUT_DELIVERY_NONE;
+    InputAddressScope address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
+    SequenceOutcome outcome = MADOPILOT_SEQUENCE_UNEXECUTED;
+    std::uint64_t submitted = 0;
+    std::optional<std::uint64_t> last_submitted;
+    std::optional<SubmissionEvidence> evidence;
+    std::optional<InputFault> fault;
+    bool partial_native_effect = false;
+};
+
+namespace detail {
+
+inline InputReceiptInfo project_input_receipt_info(
+    const ::madopilot_input_receipt_info_t& value) noexcept {
+    InputReceiptInfo out;
+    out.target = value.target;
+    out.outcome = value.outcome;
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE) != 0u) {
+        out.selected_route = value.selected_route;
+    }
+    out.address_scope = value.address_scope;
+    out.attempt_count = value.attempt_count;
+    out.submitted = value.submitted;
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED) != 0u) {
+        out.last_submitted = value.last_submitted;
+    }
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE) != 0u) {
+        out.evidence = value.evidence;
+    }
+    if ((value.flags & MADOPILOT_INPUT_RECEIPT_HAS_FAULT) != 0u) {
+        out.fault = value.fault;
+    }
+    out.cleanup = value.cleanup;
+    out.cleanup_released = value.cleanup_released;
+    out.cleanup_owed = value.cleanup_owed;
+    out.partial_native_effect =
+        (value.flags & MADOPILOT_INPUT_RECEIPT_PARTIAL_NATIVE_EFFECT) != 0u;
+    out.used_fallback =
+        (value.flags & MADOPILOT_INPUT_RECEIPT_USED_FALLBACK) != 0u;
+    return out;
+}
+
+inline InputAttempt project_input_attempt(
+    const ::madopilot_input_attempt_t& value) noexcept {
+    InputAttempt out;
+    out.route = value.route;
+    out.address_scope = value.address_scope;
+    out.outcome = value.outcome;
+    out.submitted = value.submitted;
+    if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED) != 0u) {
+        out.last_submitted = value.last_submitted;
+    }
+    if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_EVIDENCE) != 0u) {
+        out.evidence = value.evidence;
+    }
+    if ((value.flags & MADOPILOT_INPUT_ATTEMPT_HAS_FAULT) != 0u) {
+        out.fault = value.fault;
+    }
+    out.partial_native_effect =
+        (value.flags & MADOPILOT_INPUT_ATTEMPT_PARTIAL_NATIVE_EFFECT) != 0u;
+    return out;
+}
+
+} // namespace detail
+
+/// Counts retained by one immutable diagnostic batch.
+struct DiagnosticBatchInfo {
+    std::uint64_t record_count = 0;
+    std::uint64_t discarded_normal = 0;
+    std::uint64_t discarded_debug = 0;
+
+    bool loss_only() const noexcept {
+        return record_count == 0 &&
+               (discarded_normal != 0 || discarded_debug != 0);
+    }
+};
+
+/// One fixed-width, privacy-reviewed diagnostic record.
+///
+/// Presence-sensitive values retain the C record's `flags`; no payload strings
+/// or captured bytes exist in this surface.
+struct DiagnosticRecord {
+    std::uint32_t flags = 0;
+    std::uint64_t sequence = 0;
+    std::uint64_t timestamp_nanos = 0;
+    std::uint64_t operation_id = 0;
+    std::uint64_t activity_tag = 0;
+    DiagnosticLevel level = MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL;
+    DiagnosticKind kind = MADOPILOT_DIAGNOSTIC_KIND_OPERATION_STARTED;
+    DiagnosticOperationKind operation = MADOPILOT_DIAGNOSTIC_OPERATION_DISCOVERY;
+    Status status = MADOPILOT_STATUS_OK;
+    std::uint64_t target = 0;
+    FrameStamp frame{};
+    std::uint64_t template_identity = 0;
+    Space source_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    Space destination_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    Rect region{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+    InputDelivery route = MADOPILOT_INPUT_DELIVERY_NONE;
+    InputAddressScope address_scope = MADOPILOT_INPUT_ADDRESS_NONE;
+    SubmissionEvidence evidence = MADOPILOT_SUBMISSION_EVIDENCE_NONE;
+    InputFault input_fault = MADOPILOT_INPUT_FAULT_NONE;
+    SequenceOutcome input_outcome = MADOPILOT_SEQUENCE_UNEXECUTED;
+    CleanupState cleanup = MADOPILOT_CLEANUP_NOT_NEEDED;
+    PermissionKind permission_kind = MADOPILOT_PERMISSION_KIND_UNSPECIFIED;
+    PermissionState permission_state = MADOPILOT_PERMISSION_STATE_UNKNOWN;
+    Lifecycle lifecycle = MADOPILOT_LIFECYCLE_OPEN;
+    SearchDiagnosticOutcome search_outcome =
+        MADOPILOT_SEARCH_DIAGNOSTIC_NO_MATCH;
+    std::uint32_t input_operations = 0;
+    bool partial_native_effect = false;
+    bool used_fallback = false;
+    std::uint64_t requested = 0;
+    std::uint64_t submitted = 0;
+    std::uint64_t result_count = 0;
+    std::uint64_t cleanup_released = 0;
+    std::uint64_t cleanup_owed = 0;
+
+    bool has(std::uint32_t presence_flag) const noexcept {
+        return (flags & presence_flag) != 0u;
+    }
+};
+
 /// What the loaded library is. Both views are static and valid while it is loaded.
 struct BuildInfo {
     std::uint32_t abi_major = 0;
@@ -877,11 +1390,24 @@ struct TargetDescriptor {
     std::int32_t coordinate_spaces = 0;
     BorrowedStr name;
     BorrowedStr provider;
+    /// Engine-local target identity.
+    std::uint64_t target = 0;
+    TargetKind kind = MADOPILOT_TARGET_KIND_UNKNOWN;
+    CapabilitySupport capture = MADOPILOT_CAPABILITY_UNKNOWN;
+    PermissionKind capture_permission = MADOPILOT_PERMISSION_KIND_UNSPECIFIED;
 
     bool supports_placement() const noexcept {
         return (flags & MADOPILOT_TARGET_SUPPORTS_PLACEMENT) != 0u;
     }
 
+
+    bool has_kind() const noexcept {
+        return (flags & MADOPILOT_TARGET_HAS_KIND) != 0u;
+    }
+
+    bool has_capture_permission() const noexcept {
+        return (flags & MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION) != 0u;
+    }
     /// Whether `space` converts for this target.
     ///
     /// `coordinate_spaces` is a bit set in a signed 32-bit field, so the shift
@@ -889,8 +1415,8 @@ struct TargetDescriptor {
     /// 31 reaches the sign bit and is undefined behaviour, and a negative shift
     /// count is too. A space outside that range is not a space this bit set can
     /// describe, so it does not convert. The C ABI allocates space codes from
-    /// zero upward and Phase 1 uses four of them, so the bound is far from
-    /// anything the library can report; it is here because the value arrives
+    /// zero upward and ABI 1.2 currently uses five of them, so the bound is far
+    /// from anything the library can report; it is here because the value arrives
     /// from a caller.
     bool supports_space(Space space) const noexcept {
         if (space < 0 || space >= 31) {
@@ -984,8 +1510,9 @@ private:
     friend class Api;
     friend class detail::Owner<Cancellation, ::madopilot_cancellation_t>;
 
-    Cancellation(const ::madopilot_api_t* api, ::madopilot_cancellation_t* handle) noexcept
-        : Owner(api, handle) {}
+    Cancellation(const ::madopilot_api_t* api, std::size_t extent,
+                 ::madopilot_cancellation_t* handle) noexcept
+        : Owner(api, extent, handle) {}
 
     static Status retain_handle(const ::madopilot_api_t* api,
                                 ::madopilot_cancellation_t* handle) noexcept {
@@ -1049,18 +1576,47 @@ public:
         out.coordinate_spaces = target.coordinate_spaces;
         out.name = BorrowedStr(target.name);
         out.provider = BorrowedStr(target.provider);
+        out.target = target.target;
+        out.kind = target.kind;
+        out.capture = target.capture;
+        out.capture_permission = target.capture_permission;
 
         return Result<TargetDescriptor>::success(out);
     }
 
     Result<TargetDescriptor> at(std::size_t index) const&& = delete;
 
+    /// Capability data for one explicit operation/route pair.
+    Result<InputCapability> input_capability(
+        std::size_t index, InputOperationKind operation,
+        InputDelivery delivery) const {
+        if (api_ == nullptr) {
+            return detail::no_table<InputCapability>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_TARGET_LIST_INPUT_CAPABILITY)) {
+            return detail::unsupported<InputCapability>();
+        }
+
+        auto value = detail::sized<::madopilot_input_capability_t>();
+        const Status status = api_->target_list_input_capability(
+            handle_, index, operation, delivery, &value);
+        if (!is_ok(status)) {
+            return Result<InputCapability>::failure(Error::from_status(status));
+        }
+
+        return Result<InputCapability>::success(
+            detail::project_input_capability(value));
+    }
+
 private:
     friend class Engine;
     friend class detail::Owner<TargetList, ::madopilot_target_list_t>;
 
-    TargetList(const ::madopilot_api_t* api, ::madopilot_target_list_t* handle) noexcept
-        : Owner(api, handle) {}
+    TargetList(const ::madopilot_api_t* api, std::size_t extent,
+               ::madopilot_target_list_t* handle) noexcept
+        : Owner(api, extent, handle) {}
 
     static Status retain_handle(const ::madopilot_api_t* api,
                                 ::madopilot_target_list_t* handle) noexcept {
@@ -1118,8 +1674,9 @@ private:
     friend class Engine;
     friend class detail::Owner<Package, ::madopilot_package_t>;
 
-    Package(const ::madopilot_api_t* api, ::madopilot_package_t* handle) noexcept
-        : Owner(api, handle) {}
+    Package(const ::madopilot_api_t* api, std::size_t extent,
+            ::madopilot_package_t* handle) noexcept
+        : Owner(api, extent, handle) {}
 
     static Status retain_handle(const ::madopilot_api_t* api,
                                 ::madopilot_package_t* handle) noexcept {
@@ -1166,8 +1723,9 @@ private:
     friend class Engine;
     friend class detail::Owner<Template, ::madopilot_template_t>;
 
-    Template(const ::madopilot_api_t* api, ::madopilot_template_t* handle) noexcept
-        : Owner(api, handle) {}
+    Template(const ::madopilot_api_t* api, std::size_t extent,
+             ::madopilot_template_t* handle) noexcept
+        : Owner(api, extent, handle) {}
 
     static Status retain_handle(const ::madopilot_api_t* api,
                                 ::madopilot_template_t* handle) noexcept {
@@ -1229,8 +1787,9 @@ private:
     friend class Frame;
     friend class detail::Owner<Mapping, ::madopilot_mapping_t>;
 
-    Mapping(const ::madopilot_api_t* api, ::madopilot_mapping_t* handle) noexcept
-        : Owner(api, handle) {}
+    Mapping(const ::madopilot_api_t* api, std::size_t extent,
+            ::madopilot_mapping_t* handle) noexcept
+        : Owner(api, extent, handle) {}
 
     static Status retain_handle(const ::madopilot_api_t* api,
                                 ::madopilot_mapping_t* handle) noexcept {
@@ -1284,15 +1843,16 @@ public:
             return Result<Mapping>::failure(detail::take_error(api_, status, error));
         }
 
-        return Result<Mapping>::success(Mapping(api_, mapping));
+        return Result<Mapping>::success(Mapping(api_, extent_, mapping));
     }
 
 private:
     friend class Session;
     friend class detail::Owner<Frame, ::madopilot_frame_t>;
 
-    Frame(const ::madopilot_api_t* api, ::madopilot_frame_t* handle) noexcept
-        : Owner(api, handle) {}
+    Frame(const ::madopilot_api_t* api, std::size_t extent,
+          ::madopilot_frame_t* handle) noexcept
+        : Owner(api, extent, handle) {}
 
     static Status retain_handle(const ::madopilot_api_t* api,
                                 ::madopilot_frame_t* handle) noexcept {
@@ -1304,6 +1864,149 @@ private:
         api->frame_release(handle);
     }
 };
+
+/// One bounded input sequence and the policies that govern its delivery.
+///
+/// Events and delivery order are copied into this value. A source frame is
+/// borrowed and must stay retained until `Session::send_input` returns.
+class InputRequest {
+public:
+    class CView;
+
+    /// The ABI ceiling; an input descriptor may advertise a lower value.
+    static constexpr std::size_t abi_max_events =
+        MADOPILOT_INPUT_MAX_EVENTS;
+    static constexpr std::uint32_t max_cleanup_events =
+        MADOPILOT_INPUT_MAX_CLEANUP_EVENTS;
+    static constexpr std::uint64_t max_cleanup_timeout_nanos =
+        MADOPILOT_INPUT_MAX_CLEANUP_NANOS;
+
+    InputRequest() noexcept = default;
+
+    InputRequest& event(InputEvent event) {
+        events_.push_back(std::move(event));
+        return *this;
+    }
+
+    InputRequest& delivery(InputDelivery delivery) {
+        deliveries_.push_back(delivery);
+        return *this;
+    }
+
+    InputRequest& focus_policy(FocusPolicy policy) noexcept {
+        focus_ = policy;
+        return *this;
+    }
+
+    InputRequest& geometry_policy(GeometryPolicy policy) noexcept {
+        geometry_ = policy;
+        return *this;
+    }
+
+    InputRequest& source_frame(const Frame& frame) noexcept {
+        source_frame_ = frame.get();
+        return *this;
+    }
+
+    InputRequest& no_source_frame() noexcept {
+        source_frame_ = nullptr;
+        return *this;
+    }
+
+    InputRequest& cleanup_budget(std::uint32_t max_events,
+                                 std::uint64_t timeout_nanos) noexcept {
+        has_cleanup_budget_ = true;
+        cleanup_max_events_ = max_events;
+        cleanup_timeout_nanos_ = timeout_nanos;
+        return *this;
+    }
+
+    InputRequest& no_cleanup_budget() noexcept {
+        has_cleanup_budget_ = false;
+        cleanup_max_events_ = 0;
+        cleanup_timeout_nanos_ = 0;
+        return *this;
+    }
+
+    [[nodiscard]] CView to_c() const;
+
+private:
+    std::vector<InputEvent> events_;
+    std::vector<InputDelivery> deliveries_;
+    FocusPolicy focus_ = MADOPILOT_FOCUS_PRESERVE;
+    GeometryPolicy geometry_ = MADOPILOT_GEOMETRY_REPROJECT_CURRENT;
+    const ::madopilot_frame_t* source_frame_ = nullptr;
+    bool has_cleanup_budget_ = false;
+    std::uint32_t cleanup_max_events_ = 0;
+    std::uint64_t cleanup_timeout_nanos_ = 0;
+};
+
+/// A call-local C projection of an input request.
+///
+/// Every `to_c()` call owns a fresh event-record array, and moving a projection
+/// rebinds its C pointer to the transferred array. Event text and delivery order
+/// still borrow the `InputRequest`, which must outlive the complete C call.
+class InputRequest::CView {
+public:
+    explicit CView(const InputRequest& request) {
+        event_records_.reserve(request.events_.size());
+        for (const InputEvent& event : request.events_) {
+            event_records_.push_back(event.to_c());
+        }
+
+        value_ = detail::sized<::madopilot_input_request_t>();
+        value_.flags = request.has_cleanup_budget_
+                           ? MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET
+                           : 0u;
+        value_.events = event_records_.empty() ? nullptr : event_records_.data();
+        value_.event_count = event_records_.size();
+        value_.event_stride = sizeof(::madopilot_input_event_t);
+        value_.deliveries =
+            request.deliveries_.empty() ? nullptr : request.deliveries_.data();
+        value_.delivery_count = request.deliveries_.size();
+        value_.focus_policy = request.focus_;
+        value_.geometry_policy = request.geometry_;
+        value_.source_frame = request.source_frame_;
+        value_.cleanup_max_events = request.cleanup_max_events_;
+        value_.cleanup_timeout_nanos = request.cleanup_timeout_nanos_;
+    }
+
+    CView(const CView&) = delete;
+    CView& operator=(const CView&) = delete;
+
+    CView(CView&& other) noexcept
+        : event_records_(std::move(other.event_records_)), value_(other.value_) {
+        rebind_events();
+        other.rebind_events();
+    }
+
+    CView& operator=(CView&& other) noexcept {
+        if (this != &other) {
+            event_records_ = std::move(other.event_records_);
+            value_ = other.value_;
+            rebind_events();
+            other.rebind_events();
+        }
+        return *this;
+    }
+
+    const ::madopilot_input_request_t& value() const& noexcept { return value_; }
+    const ::madopilot_input_request_t& value() const&& = delete;
+
+    const ::madopilot_input_request_t* get() const& noexcept { return &value_; }
+    const ::madopilot_input_request_t* get() const&& = delete;
+
+private:
+    void rebind_events() noexcept {
+        value_.events = event_records_.empty() ? nullptr : event_records_.data();
+        value_.event_count = event_records_.size();
+    }
+
+    std::vector<::madopilot_input_event_t> event_records_;
+    ::madopilot_input_request_t value_{};
+};
+
+inline InputRequest::CView InputRequest::to_c() const { return CView(*this); }
 
 /// One template search.
 ///
@@ -1502,8 +2205,9 @@ private:
     friend class Session;
     friend class detail::Owner<MatchResult, ::madopilot_result_t>;
 
-    MatchResult(const ::madopilot_api_t* api, ::madopilot_result_t* handle) noexcept
-        : Owner(api, handle) {}
+    MatchResult(const ::madopilot_api_t* api, std::size_t extent,
+                ::madopilot_result_t* handle) noexcept
+        : Owner(api, extent, handle) {}
 
     static Status retain_handle(const ::madopilot_api_t* api,
                                 ::madopilot_result_t* handle) noexcept {
@@ -1513,6 +2217,248 @@ private:
     static void release_handle(const ::madopilot_api_t* api,
                                ::madopilot_result_t* handle) noexcept {
         api->result_release(handle);
+    }
+};
+
+/// An immutable terminal account of one admitted input sequence.
+class InputReceipt
+    : public detail::Owner<InputReceipt, ::madopilot_input_receipt_t> {
+public:
+    InputReceipt() noexcept = default;
+
+    Result<InputReceiptInfo> describe() const {
+        if (api_ == nullptr) {
+            return detail::no_table<InputReceiptInfo>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_INPUT_RECEIPT_INFO)) {
+            return detail::unsupported<InputReceiptInfo>();
+        }
+        auto value = detail::sized<::madopilot_input_receipt_info_t>();
+        const Status status = api_->input_receipt_info(handle_, &value);
+        if (!is_ok(status)) {
+            return Result<InputReceiptInfo>::failure(Error::from_status(status));
+        }
+
+        return Result<InputReceiptInfo>::success(
+            detail::project_input_receipt_info(value));
+    }
+
+    Result<std::size_t> attempt_count() const {
+        if (api_ == nullptr) {
+            return detail::no_table<std::size_t>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_COUNT)) {
+            return detail::unsupported<std::size_t>();
+        }
+        std::size_t count = 0;
+        const Status status =
+            api_->input_receipt_attempt_count(handle_, &count);
+        return is_ok(status)
+                   ? Result<std::size_t>::success(count)
+                   : Result<std::size_t>::failure(Error::from_status(status));
+    }
+
+    Result<InputAttempt> attempt_at(std::size_t index) const {
+        if (api_ == nullptr) {
+            return detail::no_table<InputAttempt>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_AT)) {
+            return detail::unsupported<InputAttempt>();
+        }
+        auto value = detail::sized<::madopilot_input_attempt_t>();
+        const Status status =
+            api_->input_receipt_attempt_at(handle_, index, &value);
+        if (!is_ok(status)) {
+            return Result<InputAttempt>::failure(Error::from_status(status));
+        }
+
+        return Result<InputAttempt>::success(
+            detail::project_input_attempt(value));
+    }
+
+private:
+    friend class Session;
+    friend class detail::Owner<InputReceipt, ::madopilot_input_receipt_t>;
+
+    InputReceipt(const ::madopilot_api_t* api, std::size_t extent,
+                 ::madopilot_input_receipt_t* handle) noexcept
+        : Owner(api, extent, handle) {}
+
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_input_receipt_t* handle) noexcept {
+        return api->input_receipt_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_input_receipt_t* handle) noexcept {
+        api->input_receipt_release(handle);
+    }
+};
+
+/// One immutable batch of diagnostic records and exact pending-loss counts.
+class DiagnosticBatch
+    : public detail::Owner<DiagnosticBatch, ::madopilot_diagnostic_batch_t> {
+public:
+    DiagnosticBatch() noexcept = default;
+
+    Result<DiagnosticBatchInfo> describe() const {
+        if (api_ == nullptr) {
+            return detail::no_table<DiagnosticBatchInfo>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_INFO)) {
+            return detail::unsupported<DiagnosticBatchInfo>();
+        }
+        auto value = detail::sized<::madopilot_diagnostic_batch_info_t>();
+        const Status status = api_->diagnostic_batch_info(handle_, &value);
+        if (!is_ok(status)) {
+            return Result<DiagnosticBatchInfo>::failure(Error::from_status(status));
+        }
+        return Result<DiagnosticBatchInfo>::success(DiagnosticBatchInfo{
+            value.record_count,
+            value.discarded_normal,
+            value.discarded_debug,
+        });
+    }
+
+    Result<DiagnosticRecord> record_at(std::size_t index) const {
+        if (api_ == nullptr) {
+            return detail::no_table<DiagnosticRecord>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT)) {
+            return detail::unsupported<DiagnosticRecord>();
+        }
+        auto value = detail::sized<::madopilot_diagnostic_record_t>();
+        const Status status =
+            api_->diagnostic_batch_record_at(handle_, index, &value);
+        if (!is_ok(status)) {
+            return Result<DiagnosticRecord>::failure(Error::from_status(status));
+        }
+
+        DiagnosticRecord out;
+        out.flags = value.flags;
+        out.sequence = value.sequence;
+        out.timestamp_nanos = value.timestamp_nanos;
+        out.operation_id = value.operation_id;
+        out.activity_tag = value.activity_tag;
+        out.level = value.level;
+        out.kind = value.kind;
+        out.operation = value.operation;
+        out.status = value.status;
+        out.target = value.target;
+        out.frame = value.frame;
+        out.template_identity = value.template_identity;
+        out.source_space = value.source_space;
+        out.destination_space = value.destination_space;
+        out.region = value.region;
+        out.route = value.route;
+        out.address_scope = value.address_scope;
+        out.evidence = value.evidence;
+        out.input_fault = value.input_fault;
+        out.input_outcome = value.input_outcome;
+        out.cleanup = value.cleanup;
+        out.permission_kind = value.permission_kind;
+        out.permission_state = value.permission_state;
+        out.lifecycle = value.lifecycle;
+        out.search_outcome = value.search_outcome;
+        out.input_operations = value.input_operations;
+        out.partial_native_effect = value.partial_native_effect != 0;
+        out.used_fallback = value.used_fallback != 0;
+        out.requested = value.requested;
+        out.submitted = value.submitted;
+        out.result_count = value.result_count;
+        out.cleanup_released = value.cleanup_released;
+        out.cleanup_owed = value.cleanup_owed;
+        return Result<DiagnosticRecord>::success(out);
+    }
+
+private:
+    friend class DiagnosticReader;
+    friend class detail::Owner<DiagnosticBatch, ::madopilot_diagnostic_batch_t>;
+
+    DiagnosticBatch(const ::madopilot_api_t* api, std::size_t extent,
+                    ::madopilot_diagnostic_batch_t* handle) noexcept
+        : Owner(api, extent, handle) {}
+
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_diagnostic_batch_t* handle) noexcept {
+        return api->diagnostic_batch_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_diagnostic_batch_t* handle) noexcept {
+        api->diagnostic_batch_release(handle);
+    }
+};
+
+/// One non-blocking diagnostic drain result.
+struct DiagnosticDrain {
+    DiagnosticDrainState state = MADOPILOT_DIAGNOSTIC_DRAIN_OPEN_EMPTY;
+    std::optional<DiagnosticBatch> batch;
+};
+
+/// The engine's single pull-based diagnostic consumer.
+class DiagnosticReader
+    : public detail::Owner<DiagnosticReader, ::madopilot_diagnostic_reader_t> {
+public:
+    DiagnosticReader() noexcept = default;
+
+    Result<DiagnosticDrain> drain() const {
+        if (api_ == nullptr) {
+            return detail::no_table<DiagnosticDrain>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT)) {
+            return detail::unsupported<DiagnosticDrain>();
+        }
+        DiagnosticDrainState state = MADOPILOT_DIAGNOSTIC_DRAIN_OPEN_EMPTY;
+        ::madopilot_diagnostic_batch_t* batch = nullptr;
+        const Status status =
+            api_->diagnostic_reader_drain(handle_, &state, &batch);
+        if (!is_ok(status)) {
+            return Result<DiagnosticDrain>::failure(Error::from_status(status));
+        }
+        if ((state == MADOPILOT_DIAGNOSTIC_DRAIN_BATCH) != (batch != nullptr)) {
+            if (batch != nullptr) {
+                api_->diagnostic_batch_release(batch);
+            }
+            return Result<DiagnosticDrain>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+
+        DiagnosticDrain out;
+        out.state = state;
+        if (batch != nullptr) {
+            out.batch = DiagnosticBatch(api_, extent_, batch);
+        }
+        return Result<DiagnosticDrain>::success(std::move(out));
+    }
+
+private:
+    friend class Engine;
+    friend class detail::Owner<DiagnosticReader, ::madopilot_diagnostic_reader_t>;
+
+    DiagnosticReader(const ::madopilot_api_t* api, std::size_t extent,
+                     ::madopilot_diagnostic_reader_t* handle) noexcept
+        : Owner(api, extent, handle) {}
+
+    static Status retain_handle(
+        const ::madopilot_api_t* api,
+        ::madopilot_diagnostic_reader_t* handle) noexcept {
+        return api->diagnostic_reader_retain(handle);
+    }
+
+    static void release_handle(
+        const ::madopilot_api_t* api,
+        ::madopilot_diagnostic_reader_t* handle) noexcept {
+        api->diagnostic_reader_release(handle);
     }
 };
 
@@ -1579,7 +2525,7 @@ public:
             return Result<Frame>::failure(detail::take_error(api_, status, error));
         }
 
-        return Result<Frame>::success(Frame(api_, frame));
+        return Result<Frame>::success(Frame(api_, extent_, frame));
     }
 
     /// Searches a frame for one prepared template.
@@ -1600,15 +2546,69 @@ public:
             return Result<MatchResult>::failure(detail::take_error(api_, status, error));
         }
 
-        return Result<MatchResult>::success(MatchResult(api_, result));
+        return Result<MatchResult>::success(MatchResult(api_, extent_, result));
+    }
+
+    /// The immutable input capability accepted when this session opened.
+    Result<InputDescriptor> input_descriptor() const {
+        if (api_ == nullptr) {
+            return detail::no_table<InputDescriptor>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_SESSION_INPUT_DESCRIPTOR)) {
+            return detail::unsupported<InputDescriptor>();
+        }
+
+        auto value = detail::sized<::madopilot_input_descriptor_t>();
+        const Status status = api_->session_input_descriptor(handle_, &value);
+        if (!is_ok(status)) {
+            return Result<InputDescriptor>::failure(Error::from_status(status));
+        }
+
+        return Result<InputDescriptor>::success(
+            detail::project_input_descriptor(value));
+    }
+
+    /// Sends one sequence. Partial and unexecuted outcomes are successful
+    /// receipts. Validation, an unavailable ABI entry, a pre-admission refusal,
+    /// or a contained boundary failure produces a failed `Result`. The C++
+    /// owner requires the complete receipt lifecycle/accessor suffix.
+    Result<InputReceipt> send_input(const InputRequest& request,
+                                    const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<InputReceipt>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_INPUT_RECEIPT_ATTEMPT_AT)) {
+            return detail::unsupported<InputReceipt>();
+        }
+
+        const auto request_c = request.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_input_receipt_t* receipt = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->session_send_input(
+            handle_, request_c.get(), &operation_c, &receipt, &error);
+        if (!is_ok(status)) {
+            return Result<InputReceipt>::failure(
+                detail::take_error(api_, status, error));
+        }
+        if (receipt == nullptr) {
+            return Result<InputReceipt>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+        return Result<InputReceipt>::success(
+            InputReceipt(api_, extent_, receipt));
     }
 
 private:
     friend class Engine;
     friend class detail::Owner<Session, ::madopilot_session_t>;
 
-    Session(const ::madopilot_api_t* api, ::madopilot_session_t* handle) noexcept
-        : Owner(api, handle) {}
+    Session(const ::madopilot_api_t* api, std::size_t extent,
+            ::madopilot_session_t* handle) noexcept
+        : Owner(api, extent, handle) {}
 
     static Status retain_handle(const ::madopilot_api_t* api,
                                 ::madopilot_session_t* handle) noexcept {
@@ -1626,6 +2626,121 @@ class Engine : public detail::Owner<Engine, ::madopilot_engine_t> {
 public:
     Engine() noexcept = default;
 
+    Result<EngineCapabilities> capabilities() const {
+        if (api_ == nullptr) {
+            return detail::no_table<EngineCapabilities>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_ENGINE_CAPABILITIES)) {
+            return detail::unsupported<EngineCapabilities>();
+        }
+
+        auto value = detail::sized<::madopilot_engine_capabilities_t>();
+        const Status status = api_->engine_capabilities(handle_, &value);
+        return is_ok(status)
+                   ? Result<EngineCapabilities>::success(
+                         EngineCapabilities{value.flags})
+                   : Result<EngineCapabilities>::failure(
+                         Error::from_status(status));
+    }
+
+    /// Takes the engine's single diagnostic reader.
+    ///
+    /// Diagnostics-off engines and repeated takes return an empty optional. The
+    /// C++ owner requires the complete reader/batch lifecycle and accessor suffix.
+    Result<std::optional<DiagnosticReader>> take_diagnostic_reader() const {
+        if (api_ == nullptr) {
+            return detail::no_table<std::optional<DiagnosticReader>>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT)) {
+            return detail::unsupported<std::optional<DiagnosticReader>>();
+        }
+
+        ::madopilot_diagnostic_reader_t* reader = nullptr;
+        const Status status =
+            api_->engine_take_diagnostic_reader(handle_, &reader);
+        if (!is_ok(status)) {
+            return Result<std::optional<DiagnosticReader>>::failure(
+                Error::from_status(status));
+        }
+
+        std::optional<DiagnosticReader> out;
+        if (reader != nullptr) {
+            out = DiagnosticReader(api_, extent_, reader);
+        }
+        return Result<std::optional<DiagnosticReader>>::success(std::move(out));
+    }
+
+    /// Runs a non-prompting permission probe. Diagnostic views borrow from this
+    /// engine, so the accessor is lvalue-only.
+    Result<Permission> permission(PermissionKind kind,
+                                  const Operation& operation) const& {
+        if (api_ == nullptr) {
+            return detail::no_table<Permission>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_ENGINE_PERMISSION)) {
+            return detail::unsupported<Permission>();
+        }
+
+        const auto operation_c = operation.to_c();
+        auto value = detail::sized<::madopilot_permission_t>();
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->engine_permission(
+            handle_, kind, &operation_c, &value, &error);
+        if (!is_ok(status)) {
+            return Result<Permission>::failure(
+                detail::take_error(api_, status, error));
+        }
+
+        Permission out;
+        out.kind = value.kind;
+        out.state = value.state;
+        if ((value.flags & (MADOPILOT_PERMISSION_HAS_DIAGNOSTIC |
+                            MADOPILOT_PERMISSION_HAS_PLATFORM_CODE)) != 0u) {
+            PermissionDiagnostic diagnostic;
+            diagnostic.category = value.diagnostic_category;
+            if ((value.flags & MADOPILOT_PERMISSION_HAS_PLATFORM_CODE) != 0u) {
+                diagnostic.platform_code = value.platform_code;
+            }
+            diagnostic.platform_namespace =
+                BorrowedStr(value.platform_namespace);
+            diagnostic.context = BorrowedStr(value.context);
+            out.diagnostic = diagnostic;
+        }
+        return Result<Permission>::success(out);
+    }
+
+    Result<Permission> permission(PermissionKind kind,
+                                  const Operation& operation) const&& = delete;
+
+    /// Queries a target's input descriptor without opening it.
+    Result<InputDescriptor> input_descriptor(const TargetList& targets,
+                                             std::size_t index,
+                                             const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<InputDescriptor>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_ENGINE_INPUT_DESCRIPTOR)) {
+            return detail::unsupported<InputDescriptor>();
+        }
+
+        const auto operation_c = operation.to_c();
+        auto value = detail::sized<::madopilot_input_descriptor_t>();
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->engine_input_descriptor(
+            handle_, targets.get(), index, &operation_c, &value, &error);
+        if (!is_ok(status)) {
+            return Result<InputDescriptor>::failure(
+                detail::take_error(api_, status, error));
+        }
+        return Result<InputDescriptor>::success(
+            detail::project_input_descriptor(value));
+    }
+
     Result<TargetList> discover(const Operation& operation) const {
         if (api_ == nullptr) {
             return detail::no_table<TargetList>();
@@ -1639,12 +2754,14 @@ public:
             return Result<TargetList>::failure(detail::take_error(api_, status, error));
         }
 
-        return Result<TargetList>::success(TargetList(api_, targets));
+        return Result<TargetList>::success(TargetList(api_, extent_, targets));
     }
 
     /// Opens a session on one discovered target.
     ///
-    /// The target identity is copied, so the list may be released immediately.
+    /// The target identity and input policy are copied, so the list and request
+    /// may be released immediately. Capture-only opens remain available through
+    /// an ABI 1.0 table; input requires the ABI 1.2 entry.
     Result<Session> open_session(const TargetList& targets, std::size_t index,
                                  const OpenRequest& request,
                                  const Operation& operation) const {
@@ -1655,13 +2772,24 @@ public:
         const auto operation_c = operation.to_c();
         ::madopilot_session_t* session = nullptr;
         ::madopilot_error_t* error = nullptr;
-        const Status status = api_->session_open(handle_, targets.get(), index, &request_c,
-                                                 &operation_c, &session, &error);
+        Status status = MADOPILOT_STATUS_UNSUPPORTED;
+        if (request.input_.has_value()) {
+            if (!detail::has_entry(api_, extent_,
+                                   MADOPILOT_API_SIZE_SESSION_OPEN_WITH_INPUT)) {
+                return detail::unsupported<Session>();
+            }
+            status = api_->session_open_with_input(
+                handle_, targets.get(), index, &request_c, &*request.input_,
+                &operation_c, &session, &error);
+        } else {
+            status = api_->session_open(handle_, targets.get(), index, &request_c,
+                                        &operation_c, &session, &error);
+        }
         if (!is_ok(status)) {
             return Result<Session>::failure(detail::take_error(api_, status, error));
         }
 
-        return Result<Session>::success(Session(api_, session));
+        return Result<Session>::success(Session(api_, extent_, session));
     }
 
     /// Loads and validates one asset package.
@@ -1683,7 +2811,7 @@ public:
             return Result<Package>::failure(detail::take_error(api_, status, error));
         }
 
-        return Result<Package>::success(Package(api_, package));
+        return Result<Package>::success(Package(api_, extent_, package));
     }
 
     /// Prepares one template from a loaded package. The result outlives the
@@ -1703,15 +2831,16 @@ public:
             return Result<Template>::failure(detail::take_error(api_, status, error));
         }
 
-        return Result<Template>::success(Template(api_, prepared));
+        return Result<Template>::success(Template(api_, extent_, prepared));
     }
 
 private:
     friend class Api;
     friend class detail::Owner<Engine, ::madopilot_engine_t>;
 
-    Engine(const ::madopilot_api_t* api, ::madopilot_engine_t* handle) noexcept
-        : Owner(api, handle) {}
+    Engine(const ::madopilot_api_t* api, std::size_t extent,
+           ::madopilot_engine_t* handle) noexcept
+        : Owner(api, extent, handle) {}
 
     static Status retain_handle(const ::madopilot_api_t* api,
                                 ::madopilot_engine_t* handle) noexcept {
@@ -1754,7 +2883,10 @@ public:
                 is_ok(status) ? MADOPILOT_STATUS_INTERNAL : status));
         }
 
-        return Result<Api>::success(Api(table));
+        const std::size_t library_extent = static_cast<std::size_t>(table->struct_size);
+        const std::size_t negotiated_extent =
+            caller_struct_size < library_extent ? caller_struct_size : library_extent;
+        return Result<Api>::success(Api(table, negotiated_extent));
     }
 
     bool empty() const noexcept { return table_ == nullptr; }
@@ -1763,6 +2895,9 @@ public:
     /// The negotiated table, for a caller that needs an entry this wrapper does
     /// not expose.
     const ::madopilot_api_t* table() const noexcept { return table_; }
+
+    /// The table prefix both sides agreed may be used.
+    std::size_t extent() const noexcept { return extent_; }
 
     /// What the loaded library is. Both views are valid while it is loaded.
     Result<BuildInfo> describe_build() const {
@@ -1817,12 +2952,14 @@ public:
             return Result<Cancellation>::failure(Error::from_status(status));
         }
 
-        return Result<Cancellation>::success(Cancellation(table_, cancellation));
+        return Result<Cancellation>::success(
+            Cancellation(table_, extent_, cancellation));
     }
 
-    /// Builds an engine over a deterministic source. Replay pixels supplied from
-    /// memory are copied during this call.
-    Result<Engine> create_engine(const Source& source, const Operation& operation) const {
+    /// Builds an engine with diagnostics off. This remains available through
+    /// the frozen ABI 1.0 prefix.
+    Result<Engine> create_engine(const Source& source,
+                                 const Operation& operation) const {
         if (table_ == nullptr) {
             return detail::no_table<Engine>();
         }
@@ -1833,16 +2970,45 @@ public:
         const Status status =
             table_->engine_create(&source_c, &operation_c, &engine, &error);
         if (!is_ok(status)) {
-            return Result<Engine>::failure(detail::take_error(table_, status, error));
+            return Result<Engine>::failure(
+                detail::take_error(table_, status, error));
+        }
+        return Result<Engine>::success(Engine(table_, extent_, engine));
+    }
+
+    /// Builds an engine with explicit bounded diagnostic options.
+    Result<Engine> create_engine(const Source& source,
+                                 const EngineOptions& options,
+                                 const Operation& operation) const {
+        if (table_ == nullptr) {
+            return detail::no_table<Engine>();
+        }
+        if (!detail::has_entry(
+                table_, extent_,
+                MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OPTIONS)) {
+            return detail::unsupported<Engine>();
+        }
+        const auto source_c = source.to_c();
+        const auto options_c = options.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_engine_t* engine = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = table_->engine_create_with_options(
+            &source_c, &options_c, &operation_c, &engine, &error);
+        if (!is_ok(status)) {
+            return Result<Engine>::failure(
+                detail::take_error(table_, status, error));
         }
 
-        return Result<Engine>::success(Engine(table_, engine));
+        return Result<Engine>::success(Engine(table_, extent_, engine));
     }
 
 private:
-    explicit Api(const ::madopilot_api_t* table) noexcept : table_(table) {}
+    Api(const ::madopilot_api_t* table, std::size_t extent) noexcept
+        : table_(table), extent_(extent) {}
 
     const ::madopilot_api_t* table_ = nullptr;
+    std::size_t extent_ = 0;
 };
 
 } // namespace madopilot

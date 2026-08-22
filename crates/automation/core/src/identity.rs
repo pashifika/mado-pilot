@@ -18,6 +18,8 @@ use crate::status::{Error, Status};
 pub enum IdentityFault {
     /// The identity was issued by a different engine.
     ForeignEngine,
+    /// The identity was issued by a different provider of the same engine.
+    ForeignProvider,
     /// The identity space is exhausted; issuing another would alias one already
     /// handed out.
     Exhausted,
@@ -34,7 +36,9 @@ impl IdentityFault {
     #[must_use]
     pub const fn status(self) -> Status {
         match self {
-            IdentityFault::ForeignEngine | IdentityFault::StreamMismatch => Status::InvalidArgument,
+            IdentityFault::ForeignEngine
+            | IdentityFault::ForeignProvider
+            | IdentityFault::StreamMismatch => Status::InvalidArgument,
             IdentityFault::Exhausted
             | IdentityFault::SequenceExhausted
             | IdentityFault::EpochExhausted => Status::LimitExceeded,
@@ -44,6 +48,7 @@ impl IdentityFault {
     const fn detail(self) -> &'static str {
         match self {
             IdentityFault::ForeignEngine => "identity was issued by another engine",
+            IdentityFault::ForeignProvider => "identity was issued by another provider",
             IdentityFault::Exhausted => "identity space is exhausted",
             IdentityFault::SequenceExhausted => "stream frame sequence is exhausted",
             IdentityFault::EpochExhausted => "stream epoch counter is exhausted",
@@ -133,6 +138,12 @@ impl TargetId {
         self.provider
     }
 
+    /// Returns the checked nonzero ordinal within the issuing engine's target space.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.ordinal.get()
+    }
+
     /// Confirms that `engine` issued this identity.
     ///
     /// # Errors
@@ -145,6 +156,41 @@ impl TargetId {
         } else {
             Err(IdentityFault::ForeignEngine)
         }
+    }
+
+    /// Confirms that `provider` discovered this target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFault::ForeignProvider`] when it did not. One engine can
+    /// hand out identities from more than one provider, and two providers may
+    /// reach the same ordinal, so the engine check alone does not establish that
+    /// a provider issued the identity it is being asked to act on.
+    pub fn check_provider(self, provider: ProviderId) -> Result<(), IdentityFault> {
+        if self.provider == provider {
+            Ok(())
+        } else {
+            Err(IdentityFault::ForeignProvider)
+        }
+    }
+
+    /// Confirms that `engine` and `provider` together issued this identity.
+    ///
+    /// This is the check an Adapter performs before acting on a caller's target:
+    /// both halves qualify the ordinal, and passing one of them is not enough.
+    ///
+    /// # Errors
+    ///
+    /// As [`TargetId::check_engine`] and [`TargetId::check_provider`]. The engine
+    /// is checked first, because an identity from another engine says nothing
+    /// about what its provider name means.
+    pub fn check_issued_by(
+        self,
+        engine: EngineId,
+        provider: ProviderId,
+    ) -> Result<(), IdentityFault> {
+        self.check_engine(engine)?;
+        self.check_provider(provider)
     }
 }
 
@@ -174,6 +220,12 @@ impl StreamId {
     #[must_use]
     pub const fn engine(self) -> EngineId {
         self.engine
+    }
+
+    /// Returns the checked nonzero ordinal within the issuing engine's stream space.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.ordinal.get()
     }
 
     /// Confirms that `engine` issued this identity.
@@ -312,10 +364,10 @@ impl FrameStamp {
     ///
     /// Nothing outside this crate can call it. A stamp needs a [`StreamId`], and
     /// a `StreamId` is issued by an [`IdentityIssuer`] and carries no public
-    /// constructor and no ordinal accessor, so an adapter cannot rebuild one
-    /// from a boundary that dropped the type — the C ABI converts a stamp
-    /// outward and never back. That is deliberate: an identity a caller could
-    /// assemble is an identity that proves nothing about which engine issued it.
+    /// constructor, so its ordinal alone cannot rebuild one after a boundary
+    /// drops the engine-qualified type — the C ABI converts a stamp outward and
+    /// never back. That is deliberate: an identity a caller could assemble is
+    /// an identity that proves nothing about which engine issued it.
     /// A boundary that has to rebuild one needs a way to reconstruct the stream
     /// identity first, and that is the decision to take then rather than a use
     /// this constructor already serves.
@@ -543,6 +595,29 @@ impl StreamCursor {
         ))
     }
 
+    /// Advances past `count` unpublished observations.
+    ///
+    /// Native adapters use this to make bounded producer drops observable as a
+    /// gap in the next published sequence without inventing frame stamps or
+    /// iterating once per drop.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IdentityFault::SequenceExhausted`] when the skipped range would
+    /// exhaust or wrap the current epoch.
+    pub fn skip(&mut self, count: u64) -> Result<(), IdentityFault> {
+        if count == 0 {
+            return Ok(());
+        }
+        let sequence = self.next_sequence.ok_or(IdentityFault::SequenceExhausted)?;
+        self.next_sequence = Some(
+            sequence
+                .checked_add(count)
+                .ok_or(IdentityFault::SequenceExhausted)?,
+        );
+        Ok(())
+    }
+
     /// Begins a later epoch after a discontinuity, resetting the sequence.
     ///
     /// # Errors
@@ -584,6 +659,16 @@ mod tests {
     }
 
     #[test]
+    fn target_ordinals_are_nonzero_and_engine_local() {
+        let first_engine = IdentityIssuer::new();
+        let second_engine = IdentityIssuer::new();
+
+        assert_eq!(first_engine.issue_target(REPLAY).expect("issued").get(), 1);
+        assert_eq!(first_engine.issue_target(REPLAY).expect("issued").get(), 2);
+        assert_eq!(second_engine.issue_target(REPLAY).expect("issued").get(), 1);
+    }
+
+    #[test]
     fn a_target_identity_is_rejected_by_another_engine() {
         let issuing = IdentityIssuer::new();
         let other = IdentityIssuer::new();
@@ -593,6 +678,37 @@ mod tests {
         assert_eq!(
             target.check_engine(other.engine()),
             Err(IdentityFault::ForeignEngine)
+        );
+    }
+
+    #[test]
+    fn a_target_identity_is_rejected_by_another_provider_of_the_same_engine() {
+        let issuer = IdentityIssuer::new();
+        let replay = issuer.issue_target(REPLAY).expect("issued");
+
+        assert_eq!(replay.check_provider(REPLAY), Ok(()));
+        assert_eq!(
+            replay.check_provider(WINDOWS),
+            Err(IdentityFault::ForeignProvider),
+            "the engine check alone does not qualify the ordinal"
+        );
+        assert_eq!(replay.check_issued_by(issuer.engine(), REPLAY), Ok(()));
+        assert_eq!(
+            replay.check_issued_by(issuer.engine(), WINDOWS),
+            Err(IdentityFault::ForeignProvider)
+        );
+    }
+
+    #[test]
+    fn a_foreign_engine_is_reported_before_the_provider() {
+        let issuing = IdentityIssuer::new();
+        let other = IdentityIssuer::new();
+        let target = issuing.issue_target(REPLAY).expect("issued");
+
+        assert_eq!(
+            target.check_issued_by(other.engine(), WINDOWS),
+            Err(IdentityFault::ForeignEngine),
+            "a provider name from another engine says nothing"
         );
     }
 
@@ -607,6 +723,16 @@ mod tests {
             stream.check_engine(other.engine()),
             Err(IdentityFault::ForeignEngine)
         );
+    }
+
+    #[test]
+    fn stream_ordinals_are_nonzero_and_engine_local() {
+        let first_engine = IdentityIssuer::new();
+        let second_engine = IdentityIssuer::new();
+
+        assert_eq!(first_engine.issue_stream().expect("issued").get(), 1);
+        assert_eq!(first_engine.issue_stream().expect("issued").get(), 2);
+        assert_eq!(second_engine.issue_stream().expect("issued").get(), 1);
     }
 
     #[test]
@@ -655,6 +781,19 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(second.sequence().value(), first.sequence().value() + 1);
         assert_eq!(first.order(&second), Ok(FrameOrder::Before));
+    }
+
+    #[test]
+    fn skipped_observations_become_a_sequence_gap_without_iteration() {
+        let issuer = IdentityIssuer::new();
+        let mut cursor = StreamCursor::new(issuer.issue_stream().expect("issued"));
+
+        let first = cursor.publish(GeometryRevision::FIRST).expect("published");
+        cursor.skip(3).expect("three bounded drops");
+        let after_gap = cursor.publish(GeometryRevision::FIRST).expect("published");
+
+        assert_eq!(first.sequence().value(), 0);
+        assert_eq!(after_gap.sequence().value(), 4);
     }
 
     #[test]
@@ -776,6 +915,10 @@ mod tests {
     fn faults_map_to_public_statuses() {
         assert_eq!(
             IdentityFault::ForeignEngine.status(),
+            Status::InvalidArgument
+        );
+        assert_eq!(
+            IdentityFault::ForeignProvider.status(),
             Status::InvalidArgument
         );
         assert_eq!(

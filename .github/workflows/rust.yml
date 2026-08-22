@@ -226,6 +226,13 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      # Hosted CI enforces only host-independent correctness and bounded-growth
+      # predicates. It never substitutes runner timing for a named hardware
+      # profile.
+      - name: Run the diagnostic benchmark smoke gate
+        shell: bash
+        run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
+
       # `--all-targets` deliberately excludes doctests, so they need their own run.
       - name: Test the documentation examples
         shell: bash
@@ -262,7 +269,8 @@ jobs:
           call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cl 2>&1 | findstr /i "Microsoft" || exit /b 1
           cargo build --locked --package mado-pilot-capi || exit /b 1
-          cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" || exit /b 1
+          cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture || exit /b 1
+          cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift
@@ -280,7 +288,7 @@ jobs:
 
   macos:
     name: macOS aarch64-apple-darwin
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -362,6 +370,13 @@ jobs:
       - name: Test the workspace
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      # Hosted CI enforces only host-independent correctness and bounded-growth
+      # predicates. It never substitutes runner timing for a named hardware
+      # profile.
+      - name: Run the diagnostic benchmark smoke gate
+        shell: bash
+        run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
 
       # `--all-targets` deliberately excludes doctests, so they need their own run.
       - name: Test the documentation examples

@@ -45,6 +45,7 @@ use mado_pilot::{
     AssetFaultKind, ClipPolicy, Continuity, CoordinateSpace, LoadStage, PixelFormat, Suppression,
 };
 
+use crate::capture::madopilot_frame_t;
 use crate::error::Fault;
 use crate::operation::madopilot_cancellation_t;
 use crate::view::{madopilot_bytes_t, madopilot_str_t};
@@ -103,6 +104,10 @@ pub type madopilot_source_kind_t = i32;
 pub const MADOPILOT_SOURCE_REPLAY_MEMORY: madopilot_source_kind_t = 0;
 /// A replay directory containing a manifest and its raw frame files.
 pub const MADOPILOT_SOURCE_REPLAY_DIRECTORY: madopilot_source_kind_t = 1;
+/// Native Windows discovery, capture, and input through the facade.
+pub const MADOPILOT_SOURCE_NATIVE_WINDOWS: madopilot_source_kind_t = 2;
+/// Native macOS discovery, capture, permission, and input through the facade.
+pub const MADOPILOT_SOURCE_NATIVE_MACOS: madopilot_source_kind_t = 3;
 
 /// Where an asset package is read from.
 pub type madopilot_package_source_kind_t = i32;
@@ -116,10 +121,9 @@ pub const MADOPILOT_PACKAGE_SOURCE_ARCHIVE_BYTES: madopilot_package_source_kind_
 
 /// Which rule an asset package broke.
 ///
-/// This is the detail that a single status cannot carry. Package loading is the
-/// one Phase 1 operation whose failures a caller may reasonably want to tell
-/// apart by more than their category — a bad content hash and an unsafe entry
-/// path are both `MADOPILOT_STATUS_ASSET_INVALID` and are not the same problem.
+/// This is detail that a single status cannot carry — a bad content hash and an
+/// unsafe entry path are both `MADOPILOT_STATUS_ASSET_INVALID` and are not the
+/// same problem.
 pub type madopilot_asset_fault_t = i32;
 
 /// This build has no name for the rule that was broken.
@@ -202,12 +206,428 @@ pub const MADOPILOT_ASSET_STAGE_MANIFEST: madopilot_asset_stage_t = 6;
 pub const MADOPILOT_ASSET_STAGE_EXPANSION: madopilot_asset_stage_t = 7;
 /// Every check had passed and the package was being committed.
 pub const MADOPILOT_ASSET_STAGE_COMMIT: madopilot_asset_stage_t = 8;
+/// A redacted-diagnostic category.
+pub type madopilot_diagnostic_category_t = i32;
+
+/// No diagnostic category was reported.
+pub const MADOPILOT_DIAGNOSTIC_UNSPECIFIED: madopilot_diagnostic_category_t = 0;
+/// Authorization was denied.
+pub const MADOPILOT_DIAGNOSTIC_PERMISSION_DENIED: madopilot_diagnostic_category_t = 1;
+/// Authorization could not be established without prompting.
+pub const MADOPILOT_DIAGNOSTIC_PERMISSION_UNDETERMINED: madopilot_diagnostic_category_t = 2;
+/// The capability is unavailable.
+pub const MADOPILOT_DIAGNOSTIC_CAPABILITY_UNAVAILABLE: madopilot_diagnostic_category_t = 3;
+/// The target no longer exists.
+pub const MADOPILOT_DIAGNOSTIC_TARGET_LOST: madopilot_diagnostic_category_t = 4;
+/// The platform reported another failure.
+pub const MADOPILOT_DIAGNOSTIC_PLATFORM_FAILURE: madopilot_diagnostic_category_t = 5;
+/// The request or Adapter configuration was inconsistent.
+pub const MADOPILOT_DIAGNOSTIC_CONFIGURATION: madopilot_diagnostic_category_t = 6;
+
+/// A sensitive capability whose authorization can be probed.
+pub type madopilot_permission_kind_t = i32;
+
+/// No permission kind was reported.
+pub const MADOPILOT_PERMISSION_KIND_UNSPECIFIED: madopilot_permission_kind_t = 0;
+/// Permission to read window and display contents.
+pub const MADOPILOT_PERMISSION_KIND_SCREEN_CAPTURE: madopilot_permission_kind_t = 1;
+/// Permission to deliver pointer, keyboard, and text input.
+pub const MADOPILOT_PERMISSION_KIND_INPUT_CONTROL: madopilot_permission_kind_t = 2;
+
+/// The result of a non-prompting permission probe.
+pub type madopilot_permission_state_t = i32;
+
+/// The probe could not establish a state without prompting.
+pub const MADOPILOT_PERMISSION_STATE_UNKNOWN: madopilot_permission_state_t = 0;
+/// The operating system authorizes the capability.
+pub const MADOPILOT_PERMISSION_STATE_GRANTED: madopilot_permission_state_t = 1;
+/// The operating system withholds the capability.
+pub const MADOPILOT_PERMISSION_STATE_NOT_GRANTED: madopilot_permission_state_t = 2;
+/// The platform or build has no corresponding global authorization.
+pub const MADOPILOT_PERMISSION_STATE_UNAVAILABLE: madopilot_permission_state_t = 3;
+
+/// The kind of desktop object a discovered target represents.
+pub type madopilot_target_kind_t = i32;
+
+/// The provider did not classify the target.
+pub const MADOPILOT_TARGET_KIND_UNKNOWN: madopilot_target_kind_t = 0;
+/// One application window.
+pub const MADOPILOT_TARGET_KIND_WINDOW: madopilot_target_kind_t = 1;
+/// One display.
+pub const MADOPILOT_TARGET_KIND_DISPLAY: madopilot_target_kind_t = 2;
+
+/// Whether a provider can attempt one operation.
+pub type madopilot_capability_support_t = i32;
+
+/// Support cannot be established without attempting the operation.
+pub const MADOPILOT_CAPABILITY_UNKNOWN: madopilot_capability_support_t = 0;
+/// The provider can attempt the operation.
+pub const MADOPILOT_CAPABILITY_SUPPORTED: madopilot_capability_support_t = 1;
+/// The provider cannot perform the operation.
+pub const MADOPILOT_CAPABILITY_UNSUPPORTED: madopilot_capability_support_t = 2;
+
+/// What an input event does, independently of delivery.
+pub type madopilot_input_operation_kind_t = i32;
+
+/// No input operation kind.
+pub const MADOPILOT_INPUT_OPERATION_UNKNOWN: madopilot_input_operation_kind_t = 0;
+/// Pointer movement, button, or scroll input.
+pub const MADOPILOT_INPUT_OPERATION_POINTER: madopilot_input_operation_kind_t = 1;
+/// Key press or release input.
+pub const MADOPILOT_INPUT_OPERATION_KEYBOARD: madopilot_input_operation_kind_t = 2;
+/// Text input.
+pub const MADOPILOT_INPUT_OPERATION_TEXT: madopilot_input_operation_kind_t = 3;
+
+/// How an input event is submitted.
+pub type madopilot_input_delivery_t = i32;
+
+/// No route was selected.
+pub const MADOPILOT_INPUT_DELIVERY_NONE: madopilot_input_delivery_t = 0;
+/// The operating system's focused system-input path.
+pub const MADOPILOT_INPUT_DELIVERY_SYSTEM: madopilot_input_delivery_t = 1;
+/// A message addressed to one exact selected window.
+pub const MADOPILOT_INPUT_DELIVERY_WINDOW_MESSAGE: madopilot_input_delivery_t = 2;
+/// An event addressed to the process that owns the selected target.
+pub const MADOPILOT_INPUT_DELIVERY_PROCESS_DIRECTED: madopilot_input_delivery_t = 3;
+/// Whether session open can proceed without requested input.
+pub type madopilot_input_requirement_t = i32;
+
+/// Open capture-only when requested input cannot be established.
+pub const MADOPILOT_INPUT_OPTIONAL: madopilot_input_requirement_t = 0;
+/// Fail open when requested input cannot be established.
+pub const MADOPILOT_INPUT_REQUIRED: madopilot_input_requirement_t = 1;
+
+/// What input delivery may do about focus.
+pub type madopilot_focus_policy_t = i32;
+
+/// Never change focus.
+pub const MADOPILOT_FOCUS_PRESERVE: madopilot_focus_policy_t = 0;
+/// Require the target already to be focused.
+pub const MADOPILOT_FOCUS_REQUIRE_FOCUSED: madopilot_focus_policy_t = 1;
+/// Activate the target only when the selected mechanism requires it.
+pub const MADOPILOT_FOCUS_ACTIVATE_IF_REQUIRED: madopilot_focus_policy_t = 2;
+
+/// How pointer coordinates resolve at delivery time.
+pub type madopilot_geometry_policy_t = i32;
+
+/// Resolve against authoritative current geometry.
+pub const MADOPILOT_GEOMETRY_REPROJECT_CURRENT: madopilot_geometry_policy_t = 0;
+/// Refuse when geometry changed since the source frame.
+pub const MADOPILOT_GEOMETRY_REQUIRE_UNCHANGED: madopilot_geometry_policy_t = 1;
+/// Resolve against the source frame's retained transform.
+pub const MADOPILOT_GEOMETRY_USE_FRAME_SNAPSHOT: madopilot_geometry_policy_t = 2;
+
+/// A pointer button.
+pub type madopilot_pointer_button_t = i32;
+
+/// No pointer button.
+pub const MADOPILOT_POINTER_BUTTON_UNKNOWN: madopilot_pointer_button_t = 0;
+/// The user's primary button.
+pub const MADOPILOT_POINTER_BUTTON_PRIMARY: madopilot_pointer_button_t = 1;
+/// The user's secondary button.
+pub const MADOPILOT_POINTER_BUTTON_SECONDARY: madopilot_pointer_button_t = 2;
+/// The middle button or wheel click.
+pub const MADOPILOT_POINTER_BUTTON_MIDDLE: madopilot_pointer_button_t = 3;
+
+/// A keyboard modifier.
+pub type madopilot_modifier_t = i32;
+
+/// No modifier.
+pub const MADOPILOT_MODIFIER_UNKNOWN: madopilot_modifier_t = 0;
+/// Shift.
+pub const MADOPILOT_MODIFIER_SHIFT: madopilot_modifier_t = 1;
+/// Control.
+pub const MADOPILOT_MODIFIER_CONTROL: madopilot_modifier_t = 2;
+/// Alt or Option.
+pub const MADOPILOT_MODIFIER_ALT: madopilot_modifier_t = 3;
+/// Command or Windows.
+pub const MADOPILOT_MODIFIER_META: madopilot_modifier_t = 4;
+
+/// A logical key kind. Character, function, and modifier keys use
+/// `madopilot_input_event_t.key_value`.
+pub type madopilot_key_t = i32;
+
+/// No key.
+pub const MADOPILOT_KEY_UNKNOWN: madopilot_key_t = 0;
+/// One Unicode scalar in `key_value`.
+pub const MADOPILOT_KEY_CHARACTER: madopilot_key_t = 1;
+/// Function key 1 through 24 in `key_value`.
+pub const MADOPILOT_KEY_FUNCTION: madopilot_key_t = 2;
+/// A [`madopilot_modifier_t`] in `key_value`.
+pub const MADOPILOT_KEY_MODIFIER: madopilot_key_t = 3;
+/// Return or Enter.
+pub const MADOPILOT_KEY_ENTER: madopilot_key_t = 4;
+/// Tab.
+pub const MADOPILOT_KEY_TAB: madopilot_key_t = 5;
+/// Backspace.
+pub const MADOPILOT_KEY_BACKSPACE: madopilot_key_t = 6;
+/// Forward delete.
+pub const MADOPILOT_KEY_DELETE: madopilot_key_t = 7;
+/// Escape.
+pub const MADOPILOT_KEY_ESCAPE: madopilot_key_t = 8;
+/// Space.
+pub const MADOPILOT_KEY_SPACE: madopilot_key_t = 9;
+/// Arrow up.
+pub const MADOPILOT_KEY_ARROW_UP: madopilot_key_t = 10;
+/// Arrow down.
+pub const MADOPILOT_KEY_ARROW_DOWN: madopilot_key_t = 11;
+/// Arrow left.
+pub const MADOPILOT_KEY_ARROW_LEFT: madopilot_key_t = 12;
+/// Arrow right.
+pub const MADOPILOT_KEY_ARROW_RIGHT: madopilot_key_t = 13;
+/// Home.
+pub const MADOPILOT_KEY_HOME: madopilot_key_t = 14;
+/// End.
+pub const MADOPILOT_KEY_END: madopilot_key_t = 15;
+/// Page up.
+pub const MADOPILOT_KEY_PAGE_UP: madopilot_key_t = 16;
+/// Page down.
+pub const MADOPILOT_KEY_PAGE_DOWN: madopilot_key_t = 17;
+
+/// One input event variant.
+pub type madopilot_input_event_kind_t = i32;
+
+/// No event.
+pub const MADOPILOT_INPUT_EVENT_UNKNOWN: madopilot_input_event_kind_t = 0;
+/// Move the pointer.
+pub const MADOPILOT_INPUT_EVENT_POINTER_MOVE: madopilot_input_event_kind_t = 1;
+/// Press a pointer button.
+pub const MADOPILOT_INPUT_EVENT_POINTER_PRESS: madopilot_input_event_kind_t = 2;
+/// Release a pointer button.
+pub const MADOPILOT_INPUT_EVENT_POINTER_RELEASE: madopilot_input_event_kind_t = 3;
+/// Scroll the pointer wheel.
+pub const MADOPILOT_INPUT_EVENT_POINTER_SCROLL: madopilot_input_event_kind_t = 4;
+/// Press a key.
+pub const MADOPILOT_INPUT_EVENT_KEY_PRESS: madopilot_input_event_kind_t = 5;
+/// Release a key.
+pub const MADOPILOT_INPUT_EVENT_KEY_RELEASE: madopilot_input_event_kind_t = 6;
+/// Enter text.
+pub const MADOPILOT_INPUT_EVENT_TEXT: madopilot_input_event_kind_t = 7;
+/// Wait before the next event.
+pub const MADOPILOT_INPUT_EVENT_DELAY: madopilot_input_event_kind_t = 8;
+
+/// The ABI 1.2 ceiling on events in one sequence.
+///
+/// A returned input descriptor may advertise a lower target-specific ceiling.
+pub const MADOPILOT_INPUT_MAX_EVENTS: u32 = 256;
+/// The most Unicode scalar values one text event may contain.
+pub const MADOPILOT_INPUT_MAX_TEXT_CHARS: u32 = 4_096;
+/// The most UTF-8 bytes a text event within the character ceiling can occupy.
+pub const MADOPILOT_INPUT_MAX_TEXT_UTF8_BYTES: u32 = 16_384;
+/// The longest delay event, in nanoseconds.
+pub const MADOPILOT_INPUT_MAX_DELAY_NANOS: u64 = 5_000_000_000;
+/// The maximum absolute value of either scroll component.
+pub const MADOPILOT_INPUT_MAX_SCROLL_NOTCHES: i32 = 120;
+/// The first accepted function-key number.
+pub const MADOPILOT_INPUT_MIN_FUNCTION_KEY: u32 = 1;
+/// The last accepted function-key number.
+pub const MADOPILOT_INPUT_MAX_FUNCTION_KEY: u32 = 24;
+/// The most release events an explicit cleanup budget may request.
+pub const MADOPILOT_INPUT_MAX_CLEANUP_EVENTS: u32 = 256;
+/// The longest explicit cleanup budget, in nanoseconds.
+pub const MADOPILOT_INPUT_MAX_CLEANUP_NANOS: u64 = 250_000_000;
+
+/// How far an admitted sequence got.
+pub type madopilot_sequence_outcome_t = i32;
+
+/// No event or partial native representation may have had an effect.
+pub const MADOPILOT_SEQUENCE_UNEXECUTED: madopilot_sequence_outcome_t = 0;
+/// Every logical event reached the selected route's submission threshold.
+pub const MADOPILOT_SEQUENCE_COMPLETE: madopilot_sequence_outcome_t = 1;
+/// Some input may have native effect and then the sequence stopped.
+pub const MADOPILOT_SEQUENCE_PARTIAL: madopilot_sequence_outcome_t = 2;
+
+/// What became of state a stopped sequence had pressed.
+pub type madopilot_cleanup_state_t = i32;
+
+/// The sequence held nothing when it stopped.
+pub const MADOPILOT_CLEANUP_NOT_NEEDED: madopilot_cleanup_state_t = 0;
+/// Every owned pressed state was released.
+pub const MADOPILOT_CLEANUP_COMPLETE: madopilot_cleanup_state_t = 1;
+/// A cleanup release was attempted and failed.
+pub const MADOPILOT_CLEANUP_INCOMPLETE: madopilot_cleanup_state_t = 2;
+/// Cleanup reached its own bound with releases still owed.
+pub const MADOPILOT_CLEANUP_EXHAUSTED: madopilot_cleanup_state_t = 3;
+
+/// What native object or subsystem a route addresses.
+pub type madopilot_input_address_scope_t = i32;
+
+/// No address scope is present.
+pub const MADOPILOT_INPUT_ADDRESS_NONE: madopilot_input_address_scope_t = 0;
+/// The system input stream and whichever target is focused.
+pub const MADOPILOT_INPUT_ADDRESS_FOCUSED_SYSTEM: madopilot_input_address_scope_t = 1;
+/// One exact selected window.
+pub const MADOPILOT_INPUT_ADDRESS_EXACT_WINDOW: madopilot_input_address_scope_t = 2;
+/// The process that owns the selected target.
+pub const MADOPILOT_INPUT_ADDRESS_OWNING_PROCESS: madopilot_input_address_scope_t = 3;
+
+/// The strongest native submission fact a route can report.
+pub type madopilot_submission_evidence_t = i32;
+
+/// No submission evidence is present.
+pub const MADOPILOT_SUBMISSION_EVIDENCE_NONE: madopilot_submission_evidence_t = 0;
+/// A posting API was invoked and returned without a submission result.
+pub const MADOPILOT_SUBMISSION_EVIDENCE_INVOCATION_ONLY: madopilot_submission_evidence_t = 1;
+/// The system input mechanism reported complete insertion.
+pub const MADOPILOT_SUBMISSION_EVIDENCE_SYSTEM_INPUT_ADMISSION: madopilot_submission_evidence_t = 2;
+/// The selected target queue accepted the native representation.
+pub const MADOPILOT_SUBMISSION_EVIDENCE_TARGET_QUEUE_ADMISSION: madopilot_submission_evidence_t = 3;
+/// A documented target-specific protocol acknowledged the logical event.
+pub const MADOPILOT_SUBMISSION_EVIDENCE_TARGET_PROTOCOL_ACKNOWLEDGEMENT:
+    madopilot_submission_evidence_t = 4;
+
+/// Why an admitted sequence stopped, or why input was refused.
+pub type madopilot_input_fault_t = i32;
+
+/// No input fault.
+pub const MADOPILOT_INPUT_FAULT_NONE: madopilot_input_fault_t = 0;
+/// The target belongs to another engine or provider.
+pub const MADOPILOT_INPUT_FAULT_FOREIGN_TARGET: madopilot_input_fault_t = 1;
+/// The provider knows no such target.
+pub const MADOPILOT_INPUT_FAULT_UNKNOWN_TARGET: madopilot_input_fault_t = 2;
+/// The target no longer exists.
+pub const MADOPILOT_INPUT_FAULT_TARGET_LOST: madopilot_input_fault_t = 3;
+/// Capture and input providers do not match.
+pub const MADOPILOT_INPUT_FAULT_PROVIDER_MISMATCH: madopilot_input_fault_t = 4;
+/// The requested operation and route pair is unsupported.
+pub const MADOPILOT_INPUT_FAULT_UNSUPPORTED_COMBINATION: madopilot_input_fault_t = 5;
+/// The route plan is empty or repeats a route.
+pub const MADOPILOT_INPUT_FAULT_INVALID_ROUTE_PLAN: madopilot_input_fault_t = 6;
+/// Every caller-allowed route refused before native effect.
+pub const MADOPILOT_INPUT_FAULT_ROUTE_UNAVAILABLE: madopilot_input_fault_t = 7;
+/// The sequence or one of its events exceeds a bound.
+pub const MADOPILOT_INPUT_FAULT_SEQUENCE_OUT_OF_BOUNDS: madopilot_input_fault_t = 8;
+/// The target does not accept the pointer coordinate space.
+pub const MADOPILOT_INPUT_FAULT_UNSUPPORTED_COORDINATE: madopilot_input_fault_t = 9;
+/// The geometry policy requires a source frame.
+pub const MADOPILOT_INPUT_FAULT_MISSING_COORDINATE_SOURCE: madopilot_input_fault_t = 10;
+/// Target geometry changed since the source frame.
+pub const MADOPILOT_INPUT_FAULT_GEOMETRY_CHANGED: madopilot_input_fault_t = 11;
+/// Submission needs focus that policy withholds.
+pub const MADOPILOT_INPUT_FAULT_FOCUS_REQUIRED: madopilot_input_fault_t = 12;
+/// The operating system refused focus.
+pub const MADOPILOT_INPUT_FAULT_FOCUS_REFUSED: madopilot_input_fault_t = 13;
+/// Input control is not authorized.
+pub const MADOPILOT_INPUT_FAULT_NOT_AUTHORIZED: madopilot_input_fault_t = 14;
+/// Operating-system policy refused submission.
+pub const MADOPILOT_INPUT_FAULT_POLICY_REFUSED: madopilot_input_fault_t = 15;
+/// The input controller is closed.
+pub const MADOPILOT_INPUT_FAULT_CONTROLLER_CLOSED: madopilot_input_fault_t = 16;
+/// The operation was cancelled.
+pub const MADOPILOT_INPUT_FAULT_CANCELLED: madopilot_input_fault_t = 17;
+/// The operation deadline passed.
+pub const MADOPILOT_INPUT_FAULT_DEADLINE_EXCEEDED: madopilot_input_fault_t = 18;
+/// The platform reported another native submission failure.
+pub const MADOPILOT_INPUT_FAULT_SUBMISSION_FAILED: madopilot_input_fault_t = 19;
+
+/// Pointer/system capability pair.
+pub const MADOPILOT_INPUT_PAIR_POINTER_SYSTEM: u64 = 1 << 0;
+/// Pointer/window-message capability pair.
+pub const MADOPILOT_INPUT_PAIR_POINTER_WINDOW_MESSAGE: u64 = 1 << 1;
+/// Pointer/process-directed capability pair.
+pub const MADOPILOT_INPUT_PAIR_POINTER_PROCESS_DIRECTED: u64 = 1 << 2;
+/// Keyboard/system capability pair.
+pub const MADOPILOT_INPUT_PAIR_KEYBOARD_SYSTEM: u64 = 1 << 3;
+/// Keyboard/window-message capability pair.
+pub const MADOPILOT_INPUT_PAIR_KEYBOARD_WINDOW_MESSAGE: u64 = 1 << 4;
+/// Keyboard/process-directed capability pair.
+pub const MADOPILOT_INPUT_PAIR_KEYBOARD_PROCESS_DIRECTED: u64 = 1 << 5;
+/// Text/system capability pair.
+pub const MADOPILOT_INPUT_PAIR_TEXT_SYSTEM: u64 = 1 << 6;
+/// Text/window-message capability pair.
+pub const MADOPILOT_INPUT_PAIR_TEXT_WINDOW_MESSAGE: u64 = 1 << 7;
+/// Text/process-directed capability pair.
+pub const MADOPILOT_INPUT_PAIR_TEXT_PROCESS_DIRECTED: u64 = 1 << 8;
+/// Every input capability pair ABI 1.2 knows.
+pub const MADOPILOT_INPUT_PAIRS_ALL: u64 = (1 << 9) - 1;
+/// Diagnostic detail retained by an engine.
+pub type madopilot_diagnostic_level_t = i32;
+/// Diagnostics are allocation-free and disabled.
+pub const MADOPILOT_DIAGNOSTIC_LEVEL_OFF: madopilot_diagnostic_level_t = 0;
+/// Terminal public-operation summaries are retained.
+pub const MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL: madopilot_diagnostic_level_t = 1;
+/// Normal summaries and bounded decision detail are retained.
+pub const MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG: madopilot_diagnostic_level_t = 2;
+
+/// The observable result of one diagnostic drain.
+pub type madopilot_diagnostic_drain_state_t = i32;
+/// An owned batch was returned.
+pub const MADOPILOT_DIAGNOSTIC_DRAIN_BATCH: madopilot_diagnostic_drain_state_t = 1;
+/// No records or losses exist and production remains open.
+pub const MADOPILOT_DIAGNOSTIC_DRAIN_OPEN_EMPTY: madopilot_diagnostic_drain_state_t = 2;
+/// No records or losses exist and production is sealed.
+pub const MADOPILOT_DIAGNOSTIC_DRAIN_END_OF_STREAM: madopilot_diagnostic_drain_state_t = 3;
+
+/// A stable diagnostic payload category.
+pub type madopilot_diagnostic_kind_t = i32;
+/// An operation was admitted for observation.
+pub const MADOPILOT_DIAGNOSTIC_KIND_OPERATION_STARTED: madopilot_diagnostic_kind_t = 1;
+/// A published frame was observed.
+pub const MADOPILOT_DIAGNOSTIC_KIND_FRAME: madopilot_diagnostic_kind_t = 2;
+/// A frame mapping reached a terminal result.
+pub const MADOPILOT_DIAGNOSTIC_KIND_MAPPING: madopilot_diagnostic_kind_t = 3;
+/// A template search reached a terminal result.
+pub const MADOPILOT_DIAGNOSTIC_KIND_SEARCH: madopilot_diagnostic_kind_t = 4;
+/// An input submission reached a terminal receipt.
+pub const MADOPILOT_DIAGNOSTIC_KIND_INPUT: madopilot_diagnostic_kind_t = 5;
+/// One input delivery route was attempted.
+pub const MADOPILOT_DIAGNOSTIC_KIND_ROUTE_ATTEMPT: madopilot_diagnostic_kind_t = 6;
+/// A session lifecycle transition was observed.
+pub const MADOPILOT_DIAGNOSTIC_KIND_LIFECYCLE: madopilot_diagnostic_kind_t = 7;
+/// A non-prompting permission probe reached a terminal result.
+pub const MADOPILOT_DIAGNOSTIC_KIND_PERMISSION: madopilot_diagnostic_kind_t = 8;
+
+/// A public operation observed by diagnostics.
+pub type madopilot_diagnostic_operation_kind_t = i32;
+/// Target discovery.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_DISCOVERY: madopilot_diagnostic_operation_kind_t = 1;
+/// Input capability description.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_DESCRIPTION: madopilot_diagnostic_operation_kind_t =
+    2;
+/// Non-prompting permission probing.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_PERMISSION: madopilot_diagnostic_operation_kind_t = 3;
+/// Capture-session opening.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_OPEN: madopilot_diagnostic_operation_kind_t = 4;
+/// Frame acquisition.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_FRAME_ACQUIRE: madopilot_diagnostic_operation_kind_t = 5;
+/// Frame mapping.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_MAPPING: madopilot_diagnostic_operation_kind_t = 6;
+/// Template preparation.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_TEMPLATE_PREPARATION:
+    madopilot_diagnostic_operation_kind_t = 7;
+/// Template search.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_SEARCH: madopilot_diagnostic_operation_kind_t = 8;
+/// Input submission.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_SUBMISSION: madopilot_diagnostic_operation_kind_t =
+    9;
+/// Capture-session closing.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_CLOSE: madopilot_diagnostic_operation_kind_t = 10;
+
+/// A terminal template-search result in diagnostics.
+pub type madopilot_search_diagnostic_outcome_t = i32;
+/// The search produced at least one match.
+pub const MADOPILOT_SEARCH_DIAGNOSTIC_MATCHED: madopilot_search_diagnostic_outcome_t = 1;
+/// The search completed with no match.
+pub const MADOPILOT_SEARCH_DIAGNOSTIC_NO_MATCH: madopilot_search_diagnostic_outcome_t = 2;
+/// The search failed before producing a result.
+pub const MADOPILOT_SEARCH_DIAGNOSTIC_FAILED: madopilot_search_diagnostic_outcome_t = 3;
+
+/// A lifecycle state in diagnostics.
+pub type madopilot_lifecycle_t = i32;
+/// The session is open.
+pub const MADOPILOT_LIFECYCLE_OPEN: madopilot_lifecycle_t = 1;
+/// Session close has begun.
+pub const MADOPILOT_LIFECYCLE_CLOSING: madopilot_lifecycle_t = 2;
+/// The session is closed.
+pub const MADOPILOT_LIFECYCLE_CLOSED: madopilot_lifecycle_t = 3;
 
 /// `madopilot_operation_t.deadline_nanos` carries an absolute deadline.
 ///
 /// Without it the operation has no deadline, which is not the same as a very
 /// large one: zero nanoseconds is the domain origin and a valid instant.
 pub const MADOPILOT_OPERATION_HAS_DEADLINE: u32 = 1 << 0;
+/// `madopilot_operation_t.activity_tag` carries an opaque diagnostic correlation value.
+pub const MADOPILOT_OPERATION_HAS_ACTIVITY_TAG: u32 = 1 << 1;
 
 /// `madopilot_open_request_t.required_format` is set.
 pub const MADOPILOT_OPEN_HAS_REQUIRED_FORMAT: u32 = 1 << 0;
@@ -232,6 +652,77 @@ pub const MADOPILOT_IMAGE_SHARED: u32 = 1 << 0;
 
 /// The target reports a placement, so target and desktop spaces are convertible.
 pub const MADOPILOT_TARGET_SUPPORTS_PLACEMENT: u32 = 1 << 0;
+/// `madopilot_target_t.kind` is populated.
+pub const MADOPILOT_TARGET_HAS_KIND: u32 = 1 << 1;
+/// `madopilot_target_t.capture_permission` is populated.
+pub const MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION: u32 = 1 << 2;
+
+/// The engine can deliver input to at least some targets.
+pub const MADOPILOT_ENGINE_DELIVERS_INPUT: u32 = 1 << 0;
+/// The engine can run non-prompting permission probes.
+pub const MADOPILOT_ENGINE_READS_PERMISSIONS: u32 = 1 << 1;
+
+/// `madopilot_permission_t` carries a redacted diagnostic.
+pub const MADOPILOT_PERMISSION_HAS_DIAGNOSTIC: u32 = 1 << 0;
+/// `madopilot_permission_t` carries a platform code and namespace.
+pub const MADOPILOT_PERMISSION_HAS_PLATFORM_CODE: u32 = 1 << 1;
+
+/// `madopilot_input_capability_t.permission` is populated.
+pub const MADOPILOT_INPUT_CAPABILITY_HAS_PERMISSION: u32 = 1 << 0;
+/// `madopilot_input_capability_t.evidence` is populated.
+pub const MADOPILOT_INPUT_CAPABILITY_HAS_EVIDENCE: u32 = 1 << 1;
+
+/// `madopilot_input_request_t` supplies explicit cleanup bounds.
+pub const MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET: u32 = 1 << 0;
+
+/// `madopilot_input_receipt_info_t.selected_route` and `address_scope` are populated.
+pub const MADOPILOT_INPUT_RECEIPT_HAS_SELECTED_ROUTE: u32 = 1 << 0;
+/// `madopilot_input_receipt_info_t.last_submitted` is populated.
+pub const MADOPILOT_INPUT_RECEIPT_HAS_LAST_SUBMITTED: u32 = 1 << 1;
+/// `madopilot_input_receipt_info_t.evidence` is populated.
+pub const MADOPILOT_INPUT_RECEIPT_HAS_EVIDENCE: u32 = 1 << 2;
+/// `madopilot_input_receipt_info_t.fault` is populated.
+pub const MADOPILOT_INPUT_RECEIPT_HAS_FAULT: u32 = 1 << 3;
+/// The current incomplete logical event may have native effect.
+pub const MADOPILOT_INPUT_RECEIPT_PARTIAL_NATIVE_EFFECT: u32 = 1 << 4;
+/// The selected route followed at least one refused route.
+pub const MADOPILOT_INPUT_RECEIPT_USED_FALLBACK: u32 = 1 << 5;
+
+/// `madopilot_input_attempt_t.last_submitted` is populated.
+pub const MADOPILOT_INPUT_ATTEMPT_HAS_LAST_SUBMITTED: u32 = 1 << 0;
+/// `madopilot_input_attempt_t.evidence` is populated.
+pub const MADOPILOT_INPUT_ATTEMPT_HAS_EVIDENCE: u32 = 1 << 1;
+/// `madopilot_input_attempt_t.fault` is populated.
+pub const MADOPILOT_INPUT_ATTEMPT_HAS_FAULT: u32 = 1 << 2;
+/// The current incomplete logical event may have native effect.
+pub const MADOPILOT_INPUT_ATTEMPT_PARTIAL_NATIVE_EFFECT: u32 = 1 << 3;
+
+/// `madopilot_diagnostic_record_t.activity_tag` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_ACTIVITY: u32 = 1 << 0;
+/// `madopilot_diagnostic_record_t.target` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET: u32 = 1 << 1;
+/// `madopilot_diagnostic_record_t.frame` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME: u32 = 1 << 2;
+/// `madopilot_diagnostic_record_t.template_identity` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_TEMPLATE: u32 = 1 << 3;
+/// `madopilot_diagnostic_record_t.source_space` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_SOURCE_SPACE: u32 = 1 << 4;
+/// `madopilot_diagnostic_record_t.destination_space` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_DESTINATION_SPACE: u32 = 1 << 5;
+/// `madopilot_diagnostic_record_t.region` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION: u32 = 1 << 6;
+/// `madopilot_diagnostic_record_t.route` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_ROUTE: u32 = 1 << 7;
+/// `madopilot_diagnostic_record_t.address_scope` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_ADDRESS_SCOPE: u32 = 1 << 8;
+/// `madopilot_diagnostic_record_t.evidence` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_EVIDENCE: u32 = 1 << 9;
+/// `madopilot_diagnostic_record_t.input_fault` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT: u32 = 1 << 10;
+/// `madopilot_diagnostic_record_t.status` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_STATUS: u32 = 1 << 11;
+/// `madopilot_diagnostic_record_t.permission_state` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE: u32 = 1 << 12;
 
 /// `madopilot_error_detail_t` carries `asset_fault` and `asset_stage`.
 pub const MADOPILOT_ERROR_HAS_ASSET_DETAIL: u32 = 1 << 0;
@@ -269,6 +760,254 @@ impl madopilot_pixel_rect_t {
             bottom: 0,
         }
     }
+}
+/// Capability flags that apply to the whole engine.
+///
+/// Mandatory prefix: the whole structure.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_engine_capabilities_t {
+    /// `sizeof(madopilot_engine_capabilities_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// [`MADOPILOT_ENGINE_DELIVERS_INPUT`] and
+    /// [`MADOPILOT_ENGINE_READS_PERMISSIONS`].
+    pub flags: u32,
+}
+
+/// One non-prompting permission-probe result.
+///
+/// Mandatory prefix: through `state`. Diagnostic fields are present only when
+/// their corresponding flag is set. Borrowed strings remain valid while the
+/// engine is retained.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_permission_t {
+    /// `sizeof(madopilot_permission_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// [`MADOPILOT_PERMISSION_HAS_DIAGNOSTIC`] and
+    /// [`MADOPILOT_PERMISSION_HAS_PLATFORM_CODE`].
+    pub flags: u32,
+    /// The sensitive capability that was probed.
+    pub kind: madopilot_permission_kind_t,
+    /// The result of the probe.
+    pub state: madopilot_permission_state_t,
+    /// Redacted diagnostic category, when present.
+    pub diagnostic_category: madopilot_diagnostic_category_t,
+    /// Reserved; written as zero.
+    pub reserved: u32,
+    /// Platform-specific numeric code, when present.
+    pub platform_code: i64,
+    /// Namespace for `platform_code`, when present.
+    pub platform_namespace: madopilot_str_t,
+    /// Redacted diagnostic context, when present.
+    pub context: madopilot_str_t,
+}
+
+/// Capability data for one operation/route pair on one target.
+///
+/// Mandatory prefix: through `support`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_input_capability_t {
+    /// `sizeof(madopilot_input_capability_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// `MADOPILOT_INPUT_CAPABILITY_HAS_*` presence bits.
+    pub flags: u32,
+    /// Engine-local target identity.
+    pub target: u64,
+    /// Input operation kind.
+    pub operation: madopilot_input_operation_kind_t,
+    /// Explicit delivery route.
+    pub delivery: madopilot_input_delivery_t,
+    /// Whether this pair can be attempted.
+    pub support: madopilot_capability_support_t,
+    /// The subsystem addressed by this route.
+    pub address_scope: madopilot_input_address_scope_t,
+    /// Permission required for this pair, when present.
+    pub permission: madopilot_permission_kind_t,
+    /// Strongest submission evidence the route can report, when present.
+    pub evidence: madopilot_submission_evidence_t,
+    /// Nonzero when focus is required.
+    pub focus_required: i32,
+    /// Bit `1 << space` is set for every accepted pointer coordinate space.
+    pub pointer_spaces: u32,
+    /// Reserved; written as zero.
+    pub reserved: u32,
+}
+
+/// Input requested while opening a capture session.
+///
+/// Mandatory prefix: through `requirement`. Pair masks contain only
+/// `MADOPILOT_INPUT_PAIR_*` bits.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_input_open_request_t {
+    /// `sizeof(madopilot_input_open_request_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; the caller sets zero.
+    pub flags: u32,
+    /// Whether capture-only open is acceptable.
+    pub requirement: madopilot_input_requirement_t,
+    /// Reserved; the caller sets zero.
+    pub reserved: u32,
+    /// Operation/route pairs that must be accepted.
+    pub required_pairs: u64,
+    /// Additional operation/route pairs to request.
+    pub preferred_pairs: u64,
+}
+
+/// What input an engine or an open session accepts.
+///
+/// Mandatory prefix: the whole structure.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_input_descriptor_t {
+    /// `sizeof(madopilot_input_descriptor_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; written as zero.
+    pub flags: u32,
+    /// Engine-local target identity, or zero for an engine-wide descriptor.
+    pub target: u64,
+    /// Every pair for which support is known.
+    pub known_pairs: u64,
+    /// Known pairs whose support is `Supported`.
+    pub supported_pairs: u64,
+    /// Pairs whose support is `Unknown`.
+    pub unknown_pairs: u64,
+    /// Bit `1 << space` is set for every accepted pointer coordinate space.
+    pub pointer_spaces: u32,
+    /// Maximum events in one admitted sequence.
+    pub max_events: u32,
+}
+
+/// One event in an input sequence.
+///
+/// Mandatory prefix varies by `kind`; fields not selected by `kind` are ignored.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_input_event_t {
+    /// `sizeof(madopilot_input_event_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// Which event variant this record carries.
+    pub kind: madopilot_input_event_kind_t,
+    /// Pointer coordinate space.
+    pub space: madopilot_space_t,
+    /// Pointer button.
+    pub button: madopilot_pointer_button_t,
+    /// Key kind.
+    pub key: madopilot_key_t,
+    /// Unicode scalar, function-key number, or modifier value selected by `key`.
+    pub key_value: u32,
+    /// Pointer horizontal coordinate.
+    pub x: f64,
+    /// Pointer vertical coordinate.
+    pub y: f64,
+    /// Horizontal scroll amount.
+    pub horizontal: i32,
+    /// Vertical scroll amount.
+    pub vertical: i32,
+    /// Borrowed UTF-8 text for `MADOPILOT_INPUT_EVENT_TEXT`.
+    pub text: madopilot_str_t,
+    /// Delay before the next event.
+    pub delay_nanos: u64,
+}
+
+/// One bounded input sequence and its delivery policy.
+///
+/// Mandatory prefix: through `source_frame`. Event text and both arrays are
+/// borrowed for the call. The caller keeps `source_frame` retained for the call.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_input_request_t {
+    /// `sizeof(madopilot_input_request_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// [`MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET`].
+    pub flags: u32,
+    /// First event in a strided caller-owned array.
+    pub events: *const madopilot_input_event_t,
+    /// Number of events.
+    pub event_count: usize,
+    /// Distance in bytes between event starts.
+    pub event_stride: usize,
+    /// Ordered caller-owned array of requested delivery routes.
+    pub deliveries: *const madopilot_input_delivery_t,
+    /// Number of delivery routes.
+    pub delivery_count: usize,
+    /// Focus policy for this sequence.
+    pub focus_policy: madopilot_focus_policy_t,
+    /// Geometry policy for pointer coordinates.
+    pub geometry_policy: madopilot_geometry_policy_t,
+    /// Source frame for geometry policies that require one, or null.
+    pub source_frame: *const madopilot_frame_t,
+    /// Maximum cleanup releases, when the cleanup-budget flag is set.
+    pub cleanup_max_events: u32,
+    /// Reserved; the caller sets zero.
+    pub reserved: u32,
+    /// Cleanup timeout, when the cleanup-budget flag is set.
+    pub cleanup_timeout_nanos: u64,
+}
+
+/// Fixed fields of one immutable owned input receipt.
+///
+/// Mandatory prefix: the whole structure. Presence flags distinguish optional
+/// scalar values from valid zero values. Route attempts are accessed separately.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_input_receipt_info_t {
+    /// `sizeof(madopilot_input_receipt_info_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// `MADOPILOT_INPUT_RECEIPT_*` bits.
+    pub flags: u32,
+    /// Engine-local target identity.
+    pub target: u64,
+    /// Complete, partial, or unexecuted.
+    pub outcome: madopilot_sequence_outcome_t,
+    /// Selected route, when present.
+    pub selected_route: madopilot_input_delivery_t,
+    /// Address scope of `selected_route`, when present.
+    pub address_scope: madopilot_input_address_scope_t,
+    /// Number of immutable route attempts.
+    pub attempt_count: u64,
+    /// Number of complete logical events submitted.
+    pub submitted: u64,
+    /// Last complete event index submitted, when present.
+    pub last_submitted: u64,
+    /// Strongest submission evidence for the selected route, when present.
+    pub evidence: madopilot_submission_evidence_t,
+    /// Typed terminal input fault, when present.
+    pub fault: madopilot_input_fault_t,
+    /// Cleanup outcome.
+    pub cleanup: madopilot_cleanup_state_t,
+    /// Number of cleanup releases completed.
+    pub cleanup_released: u64,
+    /// Number of cleanup releases still owed.
+    pub cleanup_owed: u64,
+}
+
+/// One immutable route attempt borrowed from an input receipt.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_input_attempt_t {
+    /// `sizeof(madopilot_input_attempt_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// `MADOPILOT_INPUT_ATTEMPT_*` bits.
+    pub flags: u32,
+    /// Attempted route.
+    pub route: madopilot_input_delivery_t,
+    /// Address scope of `route`.
+    pub address_scope: madopilot_input_address_scope_t,
+    /// Complete, partial, or unexecuted.
+    pub outcome: madopilot_sequence_outcome_t,
+    /// Number of complete logical events submitted.
+    pub submitted: u64,
+    /// Last complete event index submitted, when present.
+    pub last_submitted: u64,
+    /// Strongest native submission evidence, when present.
+    pub evidence: madopilot_submission_evidence_t,
+    /// Typed route fault, when present.
+    pub fault: madopilot_input_fault_t,
+    /// Reserved; written as zero.
+    pub reserved: u32,
 }
 
 /// What the loaded library is, and what it negotiated.
@@ -310,6 +1049,8 @@ pub struct madopilot_operation_t {
     pub deadline_nanos: u64,
     /// A borrowed cancellation handle, or null. The caller keeps it retained.
     pub cancellation: *const madopilot_cancellation_t,
+    /// Opaque nonzero diagnostic correlation tag, when its presence flag is set.
+    pub activity_tag: u64,
 }
 
 /// The complete public identity of one published frame.
@@ -348,6 +1089,117 @@ impl madopilot_frame_stamp_t {
             geometry: 0,
         }
     }
+}
+/// Engine-wide diagnostic configuration.
+///
+/// Mandatory prefix: the whole structure. `Off` requires zero capacity; enabled
+/// levels require a capacity from 1 through 65,536.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_engine_options_t {
+    /// `sizeof(madopilot_engine_options_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; the caller sets zero.
+    pub flags: u32,
+    /// Diagnostic detail level.
+    pub diagnostic_level: madopilot_diagnostic_level_t,
+    /// Maximum retained records.
+    pub diagnostic_capacity: u32,
+}
+
+/// Summary of one immutable owned diagnostic batch.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_diagnostic_batch_info_t {
+    /// `sizeof(madopilot_diagnostic_batch_info_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; written as zero.
+    pub flags: u32,
+    /// Semantic record count.
+    pub record_count: u64,
+    /// Normal records discarded since the preceding committed batch.
+    pub discarded_normal: u64,
+    /// Debug records discarded since the preceding committed batch.
+    pub discarded_debug: u64,
+}
+
+/// One privacy-reviewed immutable diagnostic record.
+///
+/// Mandatory prefix: the whole structure. `kind` selects the payload fields and
+/// presence flags distinguish optional scalar values from valid zero values.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_diagnostic_record_t {
+    /// `sizeof(Self)` as declared by the caller.
+    pub struct_size: u32,
+    /// `MADOPILOT_DIAGNOSTIC_RECORD_HAS_*` bits.
+    pub flags: u32,
+    /// Strict engine-local commit order.
+    pub sequence: u64,
+    /// Timestamp in the library monotonic-clock domain.
+    pub timestamp_nanos: u64,
+    /// Checked nonzero engine-local operation identity.
+    pub operation_id: u64,
+    /// Opaque caller correlation tag, when present.
+    pub activity_tag: u64,
+    /// Normal or debug.
+    pub level: madopilot_diagnostic_level_t,
+    /// Stable payload category.
+    pub kind: madopilot_diagnostic_kind_t,
+    /// Public operation kind for operation-started records.
+    pub operation: madopilot_diagnostic_operation_kind_t,
+    /// Public terminal status, when present.
+    pub status: crate::status::madopilot_status_t,
+    /// Nonzero engine-local target ordinal, when present.
+    pub target: u64,
+    /// Complete frame identity, when present.
+    pub frame: madopilot_frame_stamp_t,
+    /// Engine-issued template identity, when present.
+    pub template_identity: u64,
+    /// Mapping source coordinate space, when present.
+    pub source_space: madopilot_space_t,
+    /// Mapping destination coordinate space, when present.
+    pub destination_space: madopilot_space_t,
+    /// Exact searched region in capture pixels, when present.
+    pub region: madopilot_pixel_rect_t,
+    /// Route, when present.
+    pub route: madopilot_input_delivery_t,
+    /// Route address scope, when present.
+    pub address_scope: madopilot_input_address_scope_t,
+    /// Strongest submission evidence, when present.
+    pub evidence: madopilot_submission_evidence_t,
+    /// Typed input fault, when present.
+    pub input_fault: madopilot_input_fault_t,
+    /// Complete, partial, or unexecuted for input records.
+    pub input_outcome: madopilot_sequence_outcome_t,
+    /// Cleanup terminal state for input records.
+    pub cleanup: madopilot_cleanup_state_t,
+    /// Permission kind for permission records.
+    pub permission_kind: madopilot_permission_kind_t,
+    /// Permission state, when present.
+    pub permission_state: madopilot_permission_state_t,
+    /// Lifecycle state for lifecycle records.
+    pub lifecycle: madopilot_lifecycle_t,
+    /// Terminal search result for search records.
+    pub search_outcome: madopilot_search_diagnostic_outcome_t,
+    /// `MADOPILOT_INPUT_OPERATION_*` bits represented as `1 << (kind - 1)`.
+    pub input_operations: u32,
+    /// Nonzero when the current native unit may have partial effect.
+    pub partial_native_effect: i32,
+    /// Nonzero when an earlier route was refused.
+    pub used_fallback: i32,
+    /// Reserved; written as zero.
+    pub reserved: u32,
+    /// Requested logical event count.
+    pub requested: u64,
+    /// Complete logical events submitted.
+    pub submitted: u64,
+    /// Semantic search result count.
+    pub result_count: u64,
+    /// Cleanup releases completed.
+    pub cleanup_released: u64,
+    /// Cleanup releases owed when cleanup began.
+    pub cleanup_owed: u64,
 }
 
 /// A frame's pixel geometry.
@@ -411,7 +1263,9 @@ pub struct madopilot_image_t {
 pub struct madopilot_target_t {
     /// `sizeof(madopilot_target_t)` as the caller's header declares it.
     pub struct_size: u32,
-    /// [`MADOPILOT_TARGET_SUPPORTS_PLACEMENT`].
+    /// [`MADOPILOT_TARGET_SUPPORTS_PLACEMENT`],
+    /// [`MADOPILOT_TARGET_HAS_KIND`], and
+    /// [`MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION`].
     pub flags: u32,
     /// The target width in pixels.
     pub width: u32,
@@ -425,6 +1279,16 @@ pub struct madopilot_target_t {
     pub name: madopilot_str_t,
     /// The provider that discovered it.
     pub provider: madopilot_str_t,
+    /// Engine-local target identity.
+    pub target: u64,
+    /// Target kind, when `MADOPILOT_TARGET_HAS_KIND` is set.
+    pub kind: madopilot_target_kind_t,
+    /// Whether capture can be attempted.
+    pub capture: madopilot_capability_support_t,
+    /// Required capture permission, when its presence flag is set.
+    pub capture_permission: madopilot_permission_kind_t,
+    /// Reserved; written as zero.
+    pub reserved: u32,
 }
 
 /// What an open session accepted.
@@ -448,6 +1312,12 @@ pub struct madopilot_session_info_t {
     pub format: madopilot_pixel_format_t,
     /// A bit set: bit `1 << space` is set when that coordinate space converts.
     pub coordinate_spaces: i32,
+    /// Nonzero engine-local target ordinal.
+    pub target: u64,
+    /// One when the session accepted input, zero for capture-only.
+    pub accepts_input: i32,
+    /// Reserved; written as zero.
+    pub reserved: u32,
 }
 
 /// How a session should be opened.
@@ -459,7 +1329,8 @@ pub struct madopilot_session_info_t {
 pub struct madopilot_open_request_t {
     /// `sizeof(madopilot_open_request_t)` as the caller's header declares it.
     pub struct_size: u32,
-    /// [`MADOPILOT_OPEN_HAS_REQUIRED_FORMAT`], [`MADOPILOT_OPEN_HAS_PREFERRED_FORMAT`].
+    /// [`MADOPILOT_OPEN_HAS_REQUIRED_FORMAT`] and
+    /// [`MADOPILOT_OPEN_HAS_PREFERRED_FORMAT`].
     pub flags: u32,
     /// A layout the session must publish, or the open fails.
     pub required_format: madopilot_pixel_format_t,
@@ -532,7 +1403,7 @@ pub struct madopilot_find_request_t {
     /// [`MADOPILOT_FIND_HAS_REGION`].
     pub flags: u32,
     /// The exact frame to search, or null for the session's latest frame.
-    pub frame: *const crate::capture::madopilot_frame_t,
+    pub frame: *const madopilot_frame_t,
     /// The prepared template to search for. Required.
     pub tmpl: *const crate::assets::madopilot_template_t,
     /// The options to search under, or null for the template's own defaults.

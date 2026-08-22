@@ -111,6 +111,8 @@ dependency surface over a framework that pulls in unrelated features.
 | `flate2` 1.1 | `mado-pilot-assets` | Selects the DEFLATE backend `zip` decompresses with. Not called directly | MIT OR Apache-2.0 |
 | `sha2` 0.11 | `mado-pilot-assets` | Verifies the content hash a manifest declares for each entry | MIT OR Apache-2.0 |
 | `opencv` 0.99 | `mado-pilot-backend-opencv` | Binds the OpenCV C++ API the CPU matching profile uses. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
+| `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, DPI, system input, window messaging, and token-integrity APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
+| `cc` 1.4 | `mado-pilot-platform-macos` (build) | Compiles the Objective-C shim that owns the macOS native boundary. The package declares the build dependency unconditionally, so Cargo resolves the edge on every host; `build.rs` gates Objective-C compilation and Apple framework link directives on a macOS target. It was already an indirect build dependency through the OpenCV binding generator, so the graph gains an edge rather than a crate | MIT OR Apache-2.0 |
 
 A replay manifest is caller-supplied data. It is parsed into a typed schema that
 rejects unknown fields, and the pixel paths it declares are validated the same
@@ -182,10 +184,143 @@ can see the license position was checked when the choice was made.
 
 | Decision | Crates the implementation will need | License position | Recorded in |
 |---|---|---|---|
-| _none_ | — | — | — |
+| The macOS shim boundary, `G-003` | Implemented with `cc` alone; the `objc2` family was reviewed and not needed | `cc` is `MIT OR Apache-2.0` and is now recorded above. The reviewed `objc2`, `objc2-foundation`, `objc2-core-*`, and `objc2-screen-capture-kit` positions stand unused and are kept below for the next Change that might need them | [adr/0012-macos-shim-language-and-containment.md](adr/0012-macos-shim-language-and-containment.md) |
 
 The exact versions are pinned by the change that adds them, against the
 lockfile and the advisory database as they stand at that time.
+
+### G-003 macOS shim boundary
+
+Two findings from that review are worth carrying forward, because they change what
+the implementing change may assume. `cc` is already an indirect build dependency of
+the workspace, so the shim's build script adds an edge rather than a crate. And
+`objc2-screen-capture-kit` 0.3.2 declares
+`#[link(name = "ScreenCaptureKit", kind = "framework")]`, a hard framework link:
+by the linker's documented handling of a non-weak framework, adopting it as
+published makes a binary fail to load below the framework's minimum macOS version
+instead of reporting an actionable status — the eager-link failure the checklist
+below rejects. That consequence follows from the linkage, not from a measurement:
+the prototype verified the weak form produces a weak load command, and did not run
+on a host without the framework. The shim owns weak framework
+linking and availability gating instead, so that crate is adopted only if a
+weak-linking arrangement is demonstrated for it.
+
+**What the implementation actually needed.** `mado-pilot-platform-macos` adds `cc`
+and nothing else. None of the `objc2` family is used, because the shim covers every
+Apple object, callback, and exception interaction and the Rust side sees only the
+shim's own C surface — so a Rust-side Objective-C binding had no work left to do. The
+smallest dependency that satisfies the boundary is therefore one build-time crate,
+and the reviewed `objc2` positions remain recorded above for a later Change that
+finds a use for them. The shim also does not link the capture framework at all: it
+loads it at runtime from an absolute system path, which is the same eager-link
+failure being avoided, reached without a link-time dependency of either kind. See
+the amendment in
+[adr/0012-macos-shim-language-and-containment.md](adr/0012-macos-shim-language-and-containment.md)
+for why the weak load command the review anticipated is not available to a Cargo
+dependency's build script.
+
+macOS input keeps the same arrangement and adds no crate. `CGEvent`,
+`CGWindowList`, and the legacy Accessibility observation all come from
+frameworks the build script already declares, and the process-directed entry
+points `CGEventPostToPid` and `CGPreflightPostEventAccess` are resolved by
+symbol from the absolute CoreGraphics framework path on first use, so a host
+that cannot supply them reports a typed `Unsupported` result for exactly the
+operation that needed them. The two frameworks input additionally needs are
+loaded rather than linked, for the same reason ScreenCaptureKit is: **AppKit**
+supplies the application activation `FocusPolicy::ActivateIfRequired` performs,
+and **HIToolbox** — inside `Carbon.framework` — supplies the keyboard-layout
+lookup that resolves a printable character to a key code. A headless automation
+library must not carry a load command for the desktop UI framework or for Carbon,
+so each is opened from its absolute system path on first use and the operation
+that needed it reports `Unsupported` where it is unavailable. `tests/linkage.rs`
+asserts the eager framework list is unchanged, and the interactive fixture's
+window, private control protocol, and event recorder are compiled into a
+separate archive that no released artifact links. The fixture alone opens
+**OpenGL** from its absolute system framework path, and only in its opt-in
+game-like renderer mode; no production artifact gains that load.
+
+The same review recorded what the shim needs of the host, because a native
+boundary's prerequisite belongs beside the one OpenCV declares. On the measured
+Apple Silicon host the **Xcode Command Line Tools alone** were sufficient for every
+step the prototype took: compiling Objective-C and Objective-C++, archiving both
+into static libraries, linking those into a Rust binary, and separately linking each
+as a dynamic library for dependency inspection. Full Xcode is not installed there
+and was therefore not evaluated, so the smaller installation is the one with
+evidence behind it and no parity between the two is claimed; and since the prototype
+built no production shim and pulled in no Cargo dependency, this is the prerequisite
+of the steps that were exercised rather than a measurement of the finished adapter.
+
+The measurements ran against SDK 26.5 with a deployment target of macOS 11.0 —
+deliberately below ScreenCaptureKit's 12.3 — so the weak-linking and `@available`
+arrangement the shim owns was compiled and linked rather than assumed: `otool -L`
+records the framework as a weak load command, the availability check evaluates, and
+the class lookup resolves. All of that was observed on a host where the framework is
+present. The unsupported-host path — framework absent, capability reporting a clear
+status — was not exercised and cannot be from this host. The exact minimum supported
+macOS version remains gate `G-001`. The measurements are in
+[evidence/g-003/](evidence/g-003/README.md), and
+[../CONTRIBUTING.md](../CONTRIBUTING.md) carries the same prerequisite as build
+guidance.
+
+The review covered maintenance, minimum-SDK compatibility, license, advisories, and
+build requirements for a wider candidate set than the list above: `objc2` 0.6.4,
+`objc2-foundation`, `objc2-core-graphics`, `objc2-core-video`, `objc2-core-media`,
+`objc2-screen-capture-kit` and `block2` at 0.3.2/0.6.2, `dispatch2` 0.3.1,
+`core-foundation` 0.10.1, `core-graphics` 0.25.0, `screencapturekit` 8.0.1, `cidre`
+0.16.1, and `cc` 1.4.0. Versions, licences, release dates, and minimum supported Rust
+versions come from the crates.io API, maintenance signals from the GitHub repository
+API, and advisory status from the absence of a `crates/<name>` directory in the
+RustSec advisory database — all queried on 2026-07-30. On that date no candidate had
+an advisory and every minimum supported Rust version was below the pinned toolchain.
+Those are review findings against a moving database, not retained evidence: the
+change that adds a crate re-runs `cargo deny` against the lockfile and the advisory
+database as they stand then. `screencapturekit` and `cidre` were rejected for version one — the first
+because a single-vendor high-level wrapper would own the capture contract this
+project owns, the second because its breadth and its 1.88 minimum both exceed what
+the boundary needs. `core-foundation` and `core-graphics` are used only where the
+`objc2` family lacks a binding, so that one framework does not end up with two.
+
+### G-002 Windows ownership prototype
+
+Resolving `G-002` adds no product dependency and therefore adds nothing to the
+table above or to `Cargo.lock`. The disposable C++ probe used platform
+components already present on the named host: Visual Studio 2022 17.14.37,
+MSVC 19.44.35228, Windows SDK 10.0.26100.0, CMake 3.29.5, C++/WinRT, WGC,
+D3D11, DXGI, and Win32 import libraries. It vendors no sample, header, runtime,
+framework, JSON library, DLL, or redistributable.
+
+The accepted ownership decision is
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md). The exact
+prototype-only component, license, compatibility, and advisory review is in
+[evidence/g-002/dependency-review.md](evidence/g-002/dependency-review.md).
+Microsoft's SDK and Visual Studio terms apply to the development tools; the
+evidence redistributes none of them. CMake is BSD-3-Clause and build-time only.
+The linked Windows libraries are operating-system components.
+
+The production `mado-pilot-platform-windows` Change independently reviewed and
+pins `windows` 0.62.2 from crates.io. The crate is maintained by Microsoft,
+declares `MIT OR Apache-2.0`, requires Rust 1.82, and is compatible with the
+workspace's Rust 1.97.1 toolchain. Default features are disabled; the selected
+features cover only WGC, D3D11/DXGI, WinRT interop, window/display enumeration,
+DWM metadata, high-resolution timing, dynamic system-library lookup, DPI, system
+pointer/keyboard input, bounded fixture messaging, process handles, and token
+integrity inspection.
+
+Cargo resolves its Rust-only `windows-*` support crates; MadoPilot adds no
+Windows App SDK, WIL, DirectXTK, native redistributable, or runtime DLL.
+
+The binding is target-gated in `crates/platform/windows/Cargo.toml`, so the
+macOS product graph remains unchanged. WGC and its factories are still checked
+at operation time. Version-sensitive DPI, WinRT activation/apartment, and
+WinRT-D3D interop exports are resolved dynamically from host system DLLs after
+that boundary, and a PE import-table test prevents them from becoming eager
+imports. Selecting a binding does not claim a minimum Windows version,
+preapprove a permission prompt, or resolve
+[`G-001`](validation-gates.md#g-001). The host-provided D3D11, DXGI, DWM, User32,
+GDI, and WinRT components remain serviced by Windows and are not bundled.
+The lockfile, license, source, and advisory checks are rerun by this Change.
+[../CONTRIBUTING.md](../CONTRIBUTING.md) carries the development-prerequisite
+reading of the same review, beside the macOS one.
 
 ## Before adding a native dependency
 
@@ -241,11 +376,11 @@ it.
 ### Bundled or host-provided
 
 **Host-provided for development-tree consumers, not a released deployment
-profile.** OpenCV is a *development prerequisite*: v0.1.0 documents how to build
-and test its source but bundles no OpenCV library and ships no installer.
-`G-007` (bundling, deployment profiles, notices) and `G-008` (static-link
-feasibility, controlled loading) are both open, and no statement here should be
-read as settling either.
+profile.** OpenCV is a *development prerequisite*: the source releases document
+how to build and test the tree but bundle no OpenCV library and ship no
+installer. `G-007` (bundling, deployment profiles, notices) and `G-008`
+(static-link feasibility, controlled loading) are both open, and no statement
+here should be read as settling either.
 
 ### Development installation
 

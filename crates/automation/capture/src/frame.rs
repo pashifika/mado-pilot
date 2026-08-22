@@ -9,18 +9,21 @@ use mado_pilot_core::{
 
 use crate::descriptor::FrameDescriptor;
 use crate::fault::CaptureFault;
+use crate::storage::{CpuFrameStorage, FrameStorage};
 
 /// One published frame, immutable and independently retainable.
 ///
 /// A frame outlives the session that published it. Retaining one is cheap — the
-/// pixels are shared, not copied — and nothing that happens to the session
+/// storage is shared, not copied — and nothing that happens to the session
 /// afterwards can change what a retained frame says: not a later publication,
-/// not a geometry change, not close.
+/// not a geometry change, not close. Retaining a frame also cannot hold up
+/// capture: its storage is independent of whatever produced it, which is the
+/// property [`FrameStorage`] exists to require.
 ///
 /// The pixel storage is deliberately private and has no public storage enum. A
-/// Phase 1 frame is always CPU bytes, but Windows frames will later be GPU
-/// textures, and a caller that had learned to match on storage would break. What
-/// a caller gets instead is [`Frame::map`], which is the same call either way.
+/// replay frame is CPU bytes and a Windows frame is a GPU texture, and a caller
+/// that had learned to match on storage would break. What a caller gets instead
+/// is [`Frame::map`], which is the same call either way.
 #[derive(Clone)]
 pub struct Frame(Arc<FrameData>);
 
@@ -29,7 +32,7 @@ struct FrameData {
     captured_at: MonotonicInstant,
     descriptor: FrameDescriptor,
     transform: TransformSnapshot,
-    pixels: Box<[u8]>,
+    storage: Arc<dyn FrameStorage>,
 }
 
 impl Frame {
@@ -53,26 +56,54 @@ impl Frame {
         transform: TransformSnapshot,
         pixels: Box<[u8]>,
     ) -> Result<Self, CaptureFault> {
-        Self::validate(stamp, descriptor, &transform, pixels.len())?;
+        Self::validate(stamp, descriptor, &transform)?;
+        let storage = CpuFrameStorage::new(descriptor, pixels)?;
         Ok(Self::from_validated(
             stamp,
             captured_at,
             descriptor,
             transform,
-            pixels,
+            Arc::new(storage),
+        ))
+    }
+
+    /// Publishes Adapter-owned immutable storage as a frame.
+    ///
+    /// This is the entry a native Adapter uses. The descriptor is the storage's
+    /// own, because two answers to what shape the pixels are could disagree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CaptureFault::InconsistentDescriptor`] when the storage's extent
+    /// disagrees with the transform snapshot, or when the snapshot's revision
+    /// disagrees with the stamp's.
+    pub fn from_storage(
+        stamp: FrameStamp,
+        captured_at: MonotonicInstant,
+        transform: TransformSnapshot,
+        storage: Arc<dyn FrameStorage>,
+    ) -> Result<Self, CaptureFault> {
+        let descriptor = storage.descriptor();
+        Self::validate(stamp, descriptor, &transform)?;
+        Ok(Self::from_validated(
+            stamp,
+            captured_at,
+            descriptor,
+            transform,
+            storage,
         ))
     }
 
     /// Checks the invariants shared by direct and stream-owned construction.
+    ///
+    /// Byte length is not among them: storage that exists has already agreed with
+    /// its own descriptor, and a caller publishing loose bytes has that checked
+    /// where the bytes are still owned by the caller.
     pub(crate) fn validate(
         stamp: FrameStamp,
         descriptor: FrameDescriptor,
         transform: &TransformSnapshot,
-        pixel_len: usize,
     ) -> Result<(), CaptureFault> {
-        if pixel_len != descriptor.byte_len() {
-            return Err(CaptureFault::ByteLengthMismatch);
-        }
         if transform.frame_extent() != descriptor.extent() {
             return Err(CaptureFault::InconsistentDescriptor);
         }
@@ -88,14 +119,14 @@ impl Frame {
         captured_at: MonotonicInstant,
         descriptor: FrameDescriptor,
         transform: TransformSnapshot,
-        pixels: Box<[u8]>,
+        storage: Arc<dyn FrameStorage>,
     ) -> Self {
         Self(Arc::new(FrameData {
             stamp,
             captured_at,
             descriptor,
             transform,
-            pixels,
+            storage,
         }))
     }
 
@@ -170,13 +201,13 @@ impl Frame {
         FrameView::new(self.clone(), self.bounds()?)
     }
 
-    /// Returns the frame's raw bytes.
+    /// Returns the frame's immutable storage.
     ///
     /// This is the seam mapping reads through, and is not how a caller obtains
-    /// pixels: a caller maps, which is the call that will still work when the
-    /// storage is a GPU texture.
-    pub(crate) fn pixels(&self) -> &[u8] {
-        &self.0.pixels
+    /// pixels: a caller maps, which is the call that works whether the storage is
+    /// replay bytes or a GPU texture.
+    pub(crate) fn storage(&self) -> &Arc<dyn FrameStorage> {
+        &self.0.storage
     }
 }
 
@@ -191,7 +222,7 @@ impl fmt::Debug for Frame {
             .field("stamp", &self.0.stamp)
             .field("captured_at", &self.0.captured_at)
             .field("descriptor", &self.0.descriptor)
-            .field("bytes", &self.0.pixels.len())
+            .field("bytes", &self.0.descriptor.byte_len())
             .finish()
     }
 }
@@ -287,6 +318,19 @@ pub(crate) mod testing {
         .expect("valid")
     }
 
+    /// Returns a frame's stored bytes, for tests that assert immutability.
+    ///
+    /// Only CPU-backed storage answers this: a test that wants the pixels of
+    /// native storage maps it, which is what a caller does.
+    pub(crate) fn stored_bytes(frame: &Frame) -> Vec<u8> {
+        frame
+            .storage()
+            .cpu_pixels()
+            .expect("test frames are cpu-backed")
+            .bytes()
+            .to_vec()
+    }
+
     /// Builds one frame from a fresh engine, for tests that need only pixels.
     pub(crate) fn any_frame(width: u32, height: u32, seed: u8) -> Frame {
         let issuer = IdentityIssuer::new();
@@ -375,11 +419,11 @@ mod tests {
     fn a_retained_frame_is_unchanged_by_anything_that_happens_later() {
         let frame = testing::any_frame(8, 6, 0x5A);
         let retained = frame.clone();
-        let before: Vec<u8> = frame.pixels().to_vec();
+        let before: Vec<u8> = testing::stored_bytes(&frame);
 
         drop(frame);
 
-        assert_eq!(retained.pixels(), before.as_slice());
+        assert_eq!(testing::stored_bytes(&retained), before);
         assert_eq!(retained.descriptor().extent(), PixelExtent::new(8, 6));
     }
 

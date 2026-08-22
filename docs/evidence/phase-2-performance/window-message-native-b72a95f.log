@@ -1,0 +1,22 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests\window_message_native.rs (target\debug\deps\window_message_native-0e41c587c64290cc.exe)
+
+running 1 test
+test ordinary_window_message_native_matrix ... control reuse-stress=ready iterations=4096 observed=false
+native-operation-row drag=passed accepted-units=6
+native-operation-row bounded-key-vocabulary=passed logical-events=86
+performance row=deadline-cleanup elapsed_us=23621 ceiling_us=250000
+performance row=cancellation-cleanup elapsed_us=2888 ceiling_us=250000
+performance row=queue-full-refusal elapsed_us=3880 ceiling_us=10000
+performance row=queue-partial-refusal elapsed_us=3772 ceiling_us=10000
+performance row=hung-target-queue-admission elapsed_us=4771 ceiling_us=10000
+topology monitors=2 dpi=[144x144,144x144] executed=same-dpi-multi-display unavailable=single-display,mixed-dpi-multi-display
+topology-monitor index=0 requested=(48,48 480x320) actual=(48,48 480x320)
+topology-monitor index=0 capture=ready
+topology-monitor index=0 frame-scale=1x1 source=correlated stimulus=pointer+wheel
+topology-monitor index=1 requested=(-3792,48 512x344) actual=(-3792,48 512x344)
+topology-monitor index=1 capture=ready
+topology-monitor index=1 frame-scale=1x1 source=correlated stimulus=pointer+wheel
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.06s

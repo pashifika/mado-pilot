@@ -28,20 +28,18 @@ use support::{
 // --- Negotiation -----------------------------------------------------------
 
 #[test]
-fn a_caller_negotiates_the_complete_phase_1_prefix() {
+fn a_caller_negotiates_the_complete_current_table() {
     let api = table();
 
     assert_eq!(api.abi_major, MADOPILOT_ABI_MAJOR);
     assert_eq!(api.abi_minor, MADOPILOT_ABI_MINOR);
     // These two say only that the table advertises the constant the header
     // declares, which catches a wrong constant at the one place the table is
-    // built and nothing more: `MADOPILOT_API_SIZE_PHASE1` is defined as
-    // `size_of::<madopilot_api_t>()`, so neither can fail if a member's width
-    // changes. The frozen size and layout are pinned in `layout.rs`, against
-    // the committed `docs/evidence/c-abi/layout-*.txt`. Read this as a
-    // self-consistency check, not as that guard.
+    // built and nothing more: `MADOPILOT_API_SIZE_CURRENT` is defined from
+    // `size_of::<madopilot_api_t>()`. The frozen prefix and accepted suffix
+    // offsets are pinned independently in `layout.rs`.
     assert_eq!(
-        api.struct_size, MADOPILOT_API_SIZE_PHASE1,
+        api.struct_size, MADOPILOT_API_SIZE_CURRENT,
         "the table reports its own size, so a newer caller can clamp to it"
     );
     assert_eq!(api.struct_size as usize, size_of::<madopilot_api_t>());
@@ -95,6 +93,29 @@ fn a_minimum_minor_newer_than_the_library_is_refused() {
 }
 
 #[test]
+fn the_unreleased_abi_1_1_profile_is_refused_at_every_extent() {
+    for extent in [
+        MADOPILOT_API_SIZE_INFORMATION as usize,
+        size_of::<madopilot_api_t>(),
+    ] {
+        let status = negotiate(MADOPILOT_ABI_MAJOR, 1, extent)
+            .expect_err("minimum minor 1 never names a supported profile");
+        assert_eq!(status, MADOPILOT_STATUS_UNSUPPORTED);
+    }
+}
+
+#[test]
+fn an_abi_1_0_caller_cannot_claim_the_abi_1_2_suffix() {
+    let status = negotiate(
+        MADOPILOT_ABI_MAJOR,
+        0,
+        MADOPILOT_API_SIZE_PHASE1 as usize + 1,
+    )
+    .expect_err("minor zero is bounded by the complete frozen ABI 1.0 table");
+    assert_eq!(status, MADOPILOT_STATUS_UNSUPPORTED);
+}
+
+#[test]
 fn a_table_size_below_the_mandatory_prefix_is_refused() {
     let status = negotiate(
         MADOPILOT_ABI_MAJOR,
@@ -114,7 +135,7 @@ fn a_caller_larger_than_the_library_gets_the_library_it_has() {
     )
     .expect("a newer header against an older library is not an error");
     assert_eq!(
-        api.struct_size, MADOPILOT_API_SIZE_PHASE1,
+        api.struct_size, MADOPILOT_API_SIZE_CURRENT,
         "and it learns how much of what it knows is really there"
     );
 }
@@ -162,7 +183,7 @@ fn an_output_using_an_older_valid_prefix_gets_that_prefix() {
     let status = unsafe { (api.describe_build)(&raw mut info) };
     assert_eq!(status, MADOPILOT_STATUS_OK);
     assert_eq!(info.abi_major, MADOPILOT_ABI_MAJOR);
-    assert_eq!(info.table_size, MADOPILOT_API_SIZE_PHASE1);
+    assert_eq!(info.table_size, MADOPILOT_API_SIZE_CURRENT);
     assert_eq!(info.struct_size, 20, "the library reports what it filled");
     assert!(
         info.library_version.data.is_null() && info.library_version.len == 0,
@@ -393,6 +414,72 @@ fn every_versioned_output_holds_a_declared_size_to_its_own_field_boundaries() {
         (api.result_match)(result, 0, out)
     });
 
+    assert_output_prefixes(
+        "engine_capabilities",
+        "madopilot_engine_capabilities_t",
+        8,
+        |out| unsafe { (api.engine_capabilities)(flow.engine, out) },
+    );
+    let operation = operation();
+    assert_output_prefixes(
+        "engine_permission",
+        "madopilot_permission_t",
+        16,
+        |out| unsafe {
+            let mut error = ptr::null_mut();
+            let status = (api.engine_permission)(
+                flow.engine,
+                MADOPILOT_PERMISSION_KIND_INPUT_CONTROL,
+                &raw const operation,
+                out,
+                &raw mut error,
+            );
+            if status == MADOPILOT_STATUS_UNSUPPORTED {
+                assert!(!error.is_null(), "the unsupported probe owns its error");
+                assert_eq!((api.error_release)(error), MADOPILOT_STATUS_OK);
+                MADOPILOT_STATUS_OK
+            } else {
+                (api.error_release)(error);
+                status
+            }
+        },
+    );
+    assert_output_prefixes(
+        "target_list_input_capability",
+        "madopilot_input_capability_t",
+        28,
+        |out| unsafe {
+            (api.target_list_input_capability)(
+                flow.targets,
+                0,
+                MADOPILOT_INPUT_OPERATION_POINTER,
+                MADOPILOT_INPUT_DELIVERY_SYSTEM,
+                out,
+            )
+        },
+    );
+    assert_output_prefixes(
+        "engine_input_descriptor",
+        "madopilot_input_descriptor_t",
+        48,
+        |out| unsafe {
+            (api.engine_input_descriptor)(
+                flow.engine,
+                flow.targets,
+                0,
+                &raw const operation,
+                out,
+                ptr::null_mut(),
+            )
+        },
+    );
+    assert_output_prefixes(
+        "session_input_descriptor",
+        "madopilot_input_descriptor_t",
+        48,
+        |out| unsafe { (api.session_input_descriptor)(flow.session, out) },
+    );
+
     // SAFETY: each handle is owned by this frame.
     unsafe {
         (api.mapping_release)(mapping);
@@ -477,6 +564,37 @@ fn every_versioned_input_refuses_a_size_below_its_mandatory_prefix() {
                 flow.targets,
                 0,
                 request,
+                &raw const operation,
+                &raw mut session,
+                ptr::null_mut(),
+            );
+            (api.session_close)(session, &raw const operation, ptr::null_mut());
+            (api.session_release)(session);
+            status
+        },
+    );
+
+    assert_input_prefix(
+        "madopilot_input_open_request_t",
+        32,
+        madopilot_input_open_request_t {
+            struct_size: struct_size::<madopilot_input_open_request_t>(),
+            flags: 0,
+            requirement: MADOPILOT_INPUT_OPTIONAL,
+            reserved: 0,
+            required_pairs: 0,
+            preferred_pairs: 0,
+        },
+        |input_request| unsafe {
+            let operation = operation();
+            let open = open_request();
+            let mut session = ptr::null_mut();
+            let status = (api.session_open_with_input)(
+                flow.engine,
+                flow.targets,
+                0,
+                &raw const open,
+                input_request,
                 &raw const operation,
                 &raw mut session,
                 ptr::null_mut(),
@@ -1068,6 +1186,7 @@ fn a_cancelled_token_stops_an_entry_before_it_starts() {
         flags: 0,
         deadline_nanos: 0,
         cancellation,
+        activity_tag: 0,
     };
     let mut engine = ptr::null_mut();
     // SAFETY: as above.
@@ -1106,7 +1225,7 @@ fn the_clock_reports_a_domain_a_deadline_can_be_built_in() {
 fn every_status_has_a_slug_and_an_unallocated_one_does_not_claim_a_name() {
     let api = table();
 
-    for status in MADOPILOT_STATUS_OK..=MADOPILOT_STATUS_INTERNAL_PANIC {
+    for status in MADOPILOT_STATUS_OK..=MADOPILOT_STATUS_INPUT_FAILED {
         let mut text = madopilot_str_t::empty();
         // SAFETY: `text` is a live local.
         assert_eq!(
@@ -1118,7 +1237,7 @@ fn every_status_has_a_slug_and_an_unallocated_one_does_not_claim_a_name() {
 
     let mut text = madopilot_str_t::empty();
     // SAFETY: as above.
-    let status = unsafe { (api.status_text)(MADOPILOT_STATUS_INTERNAL_PANIC + 1, &raw mut text) };
+    let status = unsafe { (api.status_text)(MADOPILOT_STATUS_INPUT_FAILED + 1, &raw mut text) };
     // The status was discarded here, and the view was then dereferenced without
     // being checked. That is the wrong way round for this test in particular:
     // the regression it exists to catch is the library leaving the view in its
@@ -1454,8 +1573,8 @@ const UNACCEPTED_SPACES: [madopilot_space_t; 4] = [
 
 /// The status is asserted, not merely the failure.
 ///
-/// The Phase 1 prefix has no coordinate-conversion entry, so a region in a space
-/// it does not read is invalid argument from the boundary rather than
+/// The ABI has no general coordinate-conversion entry, so a region in a space it
+/// does not read is invalid argument from the boundary rather than
 /// `MADOPILOT_STATUS_UNSUPPORTED`, which stays reserved for a request the table
 /// does read and cannot satisfy. `docs/c-abi.md` documents that split, and the
 /// Rust facade — which does convert — answers the equivalent question with its

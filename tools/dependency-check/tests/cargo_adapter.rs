@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde_json::{Value, json};
 
-use mado_pilot_dependency_check::graph::{CAPTURE, CORE, DependencyKind, ObservedEdge, Violation};
+use mado_pilot_dependency_check::graph::{
+    CAPTURE, CORE, DependencyKind, ObservedEdge, REQUIRED_VERSION, Violation,
+};
 use mado_pilot_dependency_check::metadata::{
     MetadataError, WorkspaceObservation, deferred_directory_violations, read_metadata_output,
 };
@@ -65,7 +67,7 @@ impl Drop for TempWorkspace {
 fn root_manifest() -> String {
     format!(
         "[workspace]\nresolver = \"3\"\nmembers = [\"{CORE_DIRECTORY}\", \"{CAPTURE_DIRECTORY}\"]\n\n\
-         [workspace.package]\nversion = \"0.1.0\"\nedition = \"2024\"\nrust-version = \"1.97.1\"\n\
+         [workspace.package]\nversion = \"{REQUIRED_VERSION}\"\nedition = \"2024\"\nrust-version = \"1.97.1\"\n\
          license = \"Apache-2.0\"\nrepository = \"https://github.com/pashifika/mado-pilot\"\n"
     )
 }
@@ -93,7 +95,7 @@ fn package(root: &Path, name: &str, directory: &str, dependencies: Vec<Value>) -
     json!({
         "name": name,
         "manifest_path": root.join(directory).join("Cargo.toml"),
-        "version": "0.1.0",
+        "version": REQUIRED_VERSION,
         "edition": "2024",
         "rust_version": "1.97.1",
         "license": "Apache-2.0",

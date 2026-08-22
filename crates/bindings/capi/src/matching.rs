@@ -53,7 +53,6 @@ opaque! {
 #[derive(Debug)]
 pub(crate) struct ResultHandle {
     outcome: FindOutcome,
-    stream: u64,
 }
 
 inputs! {
@@ -141,6 +140,7 @@ impl Versioned for madopilot_match_options_t {
     // The same boundaries the input side declares: one structure has one layout,
     // whichever direction it travels in. Only the mandatory prefix differs.
     const PREFIXES: &'static [usize] = <Self as Input>::PREFIXES;
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self::cleared(struct_size)
@@ -160,6 +160,10 @@ impl Versioned for madopilot_match_t {
         template_id,
         bounds,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[(
+        covers!(madopilot_match_t, bounds: madopilot_pixel_rect_t),
+        size_of::<madopilot_match_t>(),
+    )];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -185,6 +189,10 @@ impl Versioned for madopilot_result_info_t {
         backend_version,
         searched,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[(
+        covers!(madopilot_result_info_t, searched: madopilot_pixel_rect_t),
+        size_of::<madopilot_result_info_t>(),
+    )];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -277,10 +285,7 @@ fn run_session_find(
     // dropped rather than published.
     context.commit()?;
 
-    let payload = ResultHandle {
-        outcome,
-        stream: frame.map_or_else(|| session.stream(), FrameHandle::stream),
-    };
+    let payload = ResultHandle { outcome };
     // SAFETY: `out_result` was validated by the entry before any work began.
     unsafe { out_result.write(handle::into_raw(payload)) };
 
@@ -355,7 +360,7 @@ fn region_selection(request: &madopilot_find_request_t) -> Result<RegionSelectio
     let space = crate::types::space(request.region.space)?;
     if space != mado_pilot::CoordinateSpace::CapturePixels {
         return Err(Fault::abi(
-            "Phase 1 accepts a search region in capture pixels only",
+            "the C ABI accepts a search region in capture pixels only",
         ));
     }
 
@@ -445,11 +450,7 @@ pub(crate) fn result_stamp(
     };
     // SAFETY: `out` was validated above.
     unsafe {
-        out.commit(stamp(
-            result.outcome.result().stamp(),
-            result.stream,
-            out.declared_size(),
-        ));
+        out.commit(stamp(result.outcome.result().stamp(), out.declared_size()));
     }
 
     MADOPILOT_STATUS_OK

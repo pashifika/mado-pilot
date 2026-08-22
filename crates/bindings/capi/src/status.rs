@@ -4,21 +4,21 @@
 //! outcome that has no Rust counterpart because it is the boundary's own: a
 //! contained panic. A caller never has to parse a message to decide what to do.
 //!
-//! **Every number here is frozen for ABI major 1** by
-//! `docs/adr/0007-phase-1-c-abi-freeze.md`, which also freezes the mapping
-//! below one arm at a time. `MADOPILOT_STATUS_INTERNAL_PANIC` is the only value
-//! with no Rust counterpart; `Status` is `#[non_exhaustive]`, so a status added
-//! to Rust later reports as `MADOPILOT_STATUS_INTERNAL` here until an ABI minor
-//! gives it a value of its own. Reusing the nearest existing status instead
-//! would tell a C caller something specific and wrong.
+//! Status values 0 through 12 are frozen by
+//! `docs/adr/0007-phase-1-c-abi-freeze.md`. ABI 1.2 appends input status 13
+//! under `docs/adr/0023-input-submission-observation-and-abi-1-2.md`. `Status`
+//! is `#[non_exhaustive]`, so any later status reports as
+//! `MADOPILOT_STATUS_INTERNAL` until an ABI minor gives it a value of its own.
+//! Reusing the nearest existing status instead would tell a C caller something
+//! specific and wrong.
 
 use mado_pilot::Status;
 
 /// A C status code.
 ///
-/// Signed so that a future negative range stays available for a category of
-/// failure the Phase 1 vocabulary has no room for, and fixed-width so the value
-/// does not depend on the enum representation a C compiler chose.
+/// Signed so that a future negative range stays available for a distinct
+/// failure category, and fixed-width so the value does not depend on the enum
+/// representation a C compiler chose.
 pub type madopilot_status_t = i32;
 
 /// The operation completed and every required output is populated.
@@ -51,6 +51,8 @@ pub const MADOPILOT_STATUS_INTERNAL: madopilot_status_t = 11;
 /// every valid output is in its documented failure state, and handles unrelated
 /// to the failed call remain usable.
 pub const MADOPILOT_STATUS_INTERNAL_PANIC: madopilot_status_t = 12;
+/// Input was refused before admission and no terminal receipt exists.
+pub const MADOPILOT_STATUS_INPUT_FAILED: madopilot_status_t = 13;
 
 /// The subsystem a failure came from.
 ///
@@ -75,6 +77,10 @@ pub const MADOPILOT_ERROR_CATEGORY_ASSET: madopilot_error_category_t = 5;
 pub const MADOPILOT_ERROR_CATEGORY_VISION: madopilot_error_category_t = 6;
 /// Coordinate spaces, rectangles, and extents.
 pub const MADOPILOT_ERROR_CATEGORY_GEOMETRY: madopilot_error_category_t = 7;
+/// Non-prompting permission probes.
+pub const MADOPILOT_ERROR_CATEGORY_PERMISSION: madopilot_error_category_t = 8;
+/// Input admission, submission, or cleanup.
+pub const MADOPILOT_ERROR_CATEGORY_INPUT: madopilot_error_category_t = 9;
 
 /// Projects a facade status onto its C code.
 ///
@@ -82,6 +88,9 @@ pub const MADOPILOT_ERROR_CATEGORY_GEOMETRY: madopilot_error_category_t = 7;
 /// reports as [`MADOPILOT_STATUS_INTERNAL`] rather than as a number a caller
 /// cannot look up. That is the honest answer: the library returned something
 /// this ABI major has no vocabulary for.
+///
+/// `Status::InputFailed` gained its own value in ABI 1.2. Later unknown values
+/// continue to use the fallback.
 #[must_use]
 pub(crate) fn code(status: Status) -> madopilot_status_t {
     match status {
@@ -95,6 +104,7 @@ pub(crate) fn code(status: Status) -> madopilot_status_t {
         Status::CaptureFailed => MADOPILOT_STATUS_CAPTURE_FAILED,
         Status::AssetInvalid => MADOPILOT_STATUS_ASSET_INVALID,
         Status::VisionFailed => MADOPILOT_STATUS_VISION_FAILED,
+        Status::InputFailed => MADOPILOT_STATUS_INPUT_FAILED,
         Status::Internal => MADOPILOT_STATUS_INTERNAL,
         _ => MADOPILOT_STATUS_INTERNAL,
     }
@@ -119,6 +129,7 @@ pub(crate) const fn text(status: madopilot_status_t) -> &'static str {
         MADOPILOT_STATUS_VISION_FAILED => "vision_failed",
         MADOPILOT_STATUS_INTERNAL => "internal",
         MADOPILOT_STATUS_INTERNAL_PANIC => "internal_panic",
+        MADOPILOT_STATUS_INPUT_FAILED => "input_failed",
         _ => "unrecognized",
     }
 }
@@ -129,14 +140,14 @@ mod tests {
 
     #[test]
     fn every_status_code_has_a_slug() {
-        for status in MADOPILOT_STATUS_OK..=MADOPILOT_STATUS_INTERNAL_PANIC {
+        for status in MADOPILOT_STATUS_OK..=MADOPILOT_STATUS_INPUT_FAILED {
             assert_ne!(text(status), "unrecognized", "status {status} has no slug");
         }
     }
 
     #[test]
     fn an_unallocated_code_is_not_claimed() {
-        assert_eq!(text(MADOPILOT_STATUS_INTERNAL_PANIC + 1), "unrecognized");
+        assert_eq!(text(MADOPILOT_STATUS_INPUT_FAILED + 1), "unrecognized");
         assert_eq!(text(-1), "unrecognized");
     }
 
@@ -153,11 +164,17 @@ mod tests {
             (Status::CaptureFailed, MADOPILOT_STATUS_CAPTURE_FAILED),
             (Status::AssetInvalid, MADOPILOT_STATUS_ASSET_INVALID),
             (Status::VisionFailed, MADOPILOT_STATUS_VISION_FAILED),
+            (Status::InputFailed, MADOPILOT_STATUS_INPUT_FAILED),
             (Status::Internal, MADOPILOT_STATUS_INTERNAL),
         ];
 
         for (status, expected) in mapped {
             assert_eq!(code(status), expected, "{status} maps to {expected}");
         }
+    }
+
+    #[test]
+    fn input_failed_has_the_appended_abi_1_1_code() {
+        assert_eq!(code(Status::InputFailed), MADOPILOT_STATUS_INPUT_FAILED);
     }
 }

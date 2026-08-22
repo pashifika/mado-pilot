@@ -1,25 +1,79 @@
-//! Planned MadoPilot Windows platform adapter.
+//! Native Windows target discovery, capture, and input.
 //!
-//! # Planned responsibility
+//! This package is the only workspace package that names Win32, Windows
+//! Graphics Capture (WGC), WinRT, D3D11, or DXGI. The platform-neutral capture
+//! contracts depend on none of them.
 //!
-//! This package will own Windows target and display discovery, Windows Graphics
-//! Capture streams with their Direct3D 11 resource lifetime, coordinate mapping
-//! across mixed-DPI displays, and the explicit system and background input
-//! implementations together with their reported capabilities and permissions.
+//! The implementation is target-gated: on non-Windows targets this crate keeps
+//! an empty, documented seam and resolves no Windows dependency. Windows builds
+//! expose `WindowsCaptureProvider`, which performs picker-free discovery and
+//! creates free-threaded WGC sessions and explicitly requested input
+//! controllers.
 //!
-//! # Allowed seam
+//! # Ownership
 //!
-//! This package may depend on the MadoPilot core, capture, and input contract
-//! packages. It implements those contracts and is wired in by the public facade;
-//! no contract package depends on it.
+//! The capture path implements
+//! [ADR 0013](../../../docs/adr/0013-windows-capture-frame-detachment.md):
+//! the WGC producer pool contains exactly two frames, and a callback copies a
+//! publishable surface into finite, Adapter-owned D3D11 storage before releasing
+//! the WGC frame. CPU mapping, consumer work, and host callbacks never run in the
+//! WGC callback.
 //!
-//! # Implementation status
+//! Discovery stages a complete snapshot before final operation arbitration,
+//! mints fresh identities, and keeps only the current and previous retained-item
+//! generations openable. Capture surfaces are checked against D3D11's axis limit
+//! and a 128 MiB byte ceiling; producer, detached, staging, and mapped ownership
+//! also shares 2 GiB per-session and 4 GiB process retained-byte ceilings. The
+//! reported retained count is an extent-derived session-local maximum that
+//! leaves headroom for the two producer surfaces plus one staging-and-output
+//! mapping. Its public policy reports that the backing 4 GiB budget is shared
+//! across Windows sessions, so process contention may produce pressure before
+//! the local count is reached.
 //!
-//! Not implemented. This package currently establishes the repository seam only
-//! and exposes no operation, and it declares no Windows dependency. The
-//! `x86_64-pc-windows-msvc` release target is verified natively in continuous
-//! integration at the build level only.
-//!
-//! The minimum supported Windows version and the capture frame-pool ownership
-//! strategy remain unresolved; see gates `G-001` and `G-002` in
-//! `docs/validation-gates.md`.
+//! Close stops admission, removes both native handlers, drains admitted
+//! callbacks, and moves the WGC objects to an apartment-initialized teardown
+//! worker. Explicit close polls that worker under the caller's operation
+//! deadline; implicit destruction leaves the worker to finish its
+//! uninterruptible callback drain and ordered native release.
+
+#![cfg_attr(not(windows), allow(dead_code))]
+
+#[cfg(windows)]
+mod availability;
+#[cfg(windows)]
+mod benchmark_metrics;
+#[cfg(windows)]
+mod discovery;
+#[cfg(windows)]
+#[doc(hidden)]
+#[allow(missing_docs)]
+pub mod fixture_protocol;
+#[cfg(all(windows, feature = "benchmark-instrumentation"))]
+#[doc(hidden)]
+pub mod benchmark {
+    pub use crate::benchmark_metrics::{
+        CallbackCopyObservation, CallbackMetricBaseline, CallbackObservationError,
+        CaptureMetricsSnapshot, benchmark_marker_pixel_matches, callback_copied_bytes_between,
+        callback_metric_baseline, callback_observation_after, capture_metrics,
+        dual_display_fixture_marker_points, dual_display_seam_x, reset_capture_metrics,
+    };
+}
+#[cfg(windows)]
+mod input;
+#[cfg(windows)]
+mod native;
+#[cfg(windows)]
+mod native_input;
+#[cfg(windows)]
+mod optional_api;
+#[cfg(windows)]
+mod provider;
+#[cfg(windows)]
+mod storage;
+#[cfg(windows)]
+mod window_authority;
+#[cfg(windows)]
+mod window_message;
+
+#[cfg(windows)]
+pub use provider::{PROVIDER, WindowsCaptureProvider};

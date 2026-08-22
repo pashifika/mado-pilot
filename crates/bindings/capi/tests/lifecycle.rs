@@ -681,6 +681,16 @@ fn a_mapping_reports_the_identity_of_the_frame_it_came_from() {
         MADOPILOT_STATUS_OK
     );
     assert_ne!(expected.stream, 0, "a frame carries a real stream identity");
+    let mut session = session_info();
+    // SAFETY: the flow retains the session and the output is writable.
+    assert_eq!(
+        unsafe { (api.session_describe)(flow.session, &raw mut session) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(
+        expected.stream, session.stream,
+        "frame streams are the session's engine-local stream ordinal"
+    );
 
     let mapping = flow.map();
     let mut measured = stamp();
@@ -901,13 +911,71 @@ fn close_racing_an_in_flight_search_has_exactly_one_terminal_outcome() {
     assert!(result.is_null(), "a refused search produces no result");
 }
 
+#[test]
+fn rediscovering_the_replay_target_preserves_retained_session_correlation() {
+    let flow = Flow::open();
+    let api = flow.api;
+    let operation = operation();
+
+    let mut discovered_before = target_descriptor();
+    let mut session_before = session_info();
+    // SAFETY: the first target list and session are retained by the flow, and
+    // both outputs are live locals with complete declared sizes.
+    unsafe {
+        assert_eq!(
+            (api.target_list_get)(flow.targets, 0, &raw mut discovered_before),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(
+            (api.session_describe)(flow.session, &raw mut session_before),
+            MADOPILOT_STATUS_OK
+        );
+    }
+    assert_eq!(session_before.target, discovered_before.target);
+
+    let mut rediscovered = ptr::null_mut();
+    // SAFETY: the engine and operation remain live for the call.
+    assert_eq!(
+        unsafe {
+            (api.engine_discover)(
+                flow.engine,
+                &raw const operation,
+                &raw mut rediscovered,
+                ptr::null_mut(),
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(!rediscovered.is_null());
+
+    let mut discovered_after = target_descriptor();
+    let mut session_after = session_info();
+    // SAFETY: rediscovery returned the target list, the original session is
+    // still retained, and both outputs are writable.
+    unsafe {
+        assert_eq!(
+            (api.target_list_get)(rediscovered, 0, &raw mut discovered_after),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(
+            (api.session_describe)(flow.session, &raw mut session_after),
+            MADOPILOT_STATUS_OK
+        );
+    }
+    assert_eq!(discovered_after.target, discovered_before.target);
+    assert_eq!(session_after.target, discovered_before.target);
+
+    // SAFETY: rediscovery produced this owned list.
+    assert_eq!(
+        unsafe { (api.target_list_release)(rediscovered) },
+        MADOPILOT_STATUS_OK
+    );
+}
+
 /// A second session on the same engine gets its own stream identity.
 ///
-/// Named for what it opens. It was called `a_second_engine_...`, which is a
-/// stronger claim about a different thing — two engines never sharing a stream
-/// number — and this test opens one engine. The assertion below is about a
-/// stream identity never being reused while the library is loaded, and two
-/// sessions on one engine is the case that exercises it.
+/// Two sessions on one engine exercise the engine-local guarantee directly:
+/// each issued stream ordinal is nonzero and never reused by that engine.
 #[test]
 fn a_second_session_mints_a_distinct_stream_identity() {
     let flow = Flow::open();
@@ -941,7 +1009,7 @@ fn a_second_session_mints_a_distinct_stream_identity() {
     }
     assert_ne!(
         first.stream, second.stream,
-        "a stream identity is never reused while the library is loaded"
+        "a stream ordinal is never reused within its engine"
     );
 
     // SAFETY: owned here.
@@ -1089,6 +1157,24 @@ fn image() -> madopilot_image_t {
     }
 }
 
+fn target_descriptor() -> madopilot_target_t {
+    madopilot_target_t {
+        struct_size: struct_size::<madopilot_target_t>(),
+        flags: 0,
+        width: 0,
+        height: 0,
+        format: MADOPILOT_PIXEL_FORMAT_RGBA8,
+        coordinate_spaces: 0,
+        name: madopilot_str_t::empty(),
+        provider: madopilot_str_t::empty(),
+        target: 0,
+        kind: MADOPILOT_TARGET_KIND_UNKNOWN,
+        capture: MADOPILOT_CAPABILITY_UNKNOWN,
+        capture_permission: MADOPILOT_PERMISSION_KIND_UNSPECIFIED,
+        reserved: 0,
+    }
+}
+
 fn session_info() -> madopilot_session_info_t {
     madopilot_session_info_t {
         struct_size: struct_size::<madopilot_session_info_t>(),
@@ -1098,6 +1184,9 @@ fn session_info() -> madopilot_session_info_t {
         height: 0,
         format: MADOPILOT_PIXEL_FORMAT_RGBA8,
         coordinate_spaces: 0,
+        target: 0,
+        accepts_input: 0,
+        reserved: 0,
     }
 }
 

@@ -1,0 +1,4 @@
+[env]
+# The qualified Phase 2 host is macOS 26.5.2 and uses SDK 26.5. Keep Rust links,
+# native compilation, tests, and examples on that exact deployment floor.
+MACOSX_DEPLOYMENT_TARGET = { value = "26.5.2", force = true }

@@ -38,10 +38,11 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1, complete. Discovery, session lifecycle, publication, frames, views,
-//! and CPU mapping are implemented. Watchers, queue policy, change detection,
-//! native frame storage, and one-shot capture are not, and none of them is
-//! reserved here as an empty seam.
+//! Phase 1 is complete: discovery, session lifecycle, publication, frames,
+//! views, and CPU mapping are implemented. Phase 2 adds adapter-neutral queue
+//! policy, retained-storage policy, and native frame-storage contracts; concrete
+//! native producers remain in their platform packages. Discovery watchers and
+//! one-shot capture are not implemented or reserved here as empty seams.
 //!
 //! **The public names here are reviewed, not yet stable.**
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
@@ -50,20 +51,25 @@
 //! adding is free. The stability promise itself begins at 1.0.
 
 pub mod descriptor;
+pub mod discovery;
 pub mod fault;
 pub mod frame;
 pub mod mapping;
 pub mod session;
+pub mod storage;
 pub mod stream;
 
 pub use descriptor::{
-    CoordinateSupport, FrameDescriptor, PixelFormat, SessionDescription, TargetDescription,
+    CoordinateSupport, FrameDescriptor, OverflowPolicy, PixelFormat, QueuePolicy,
+    RetainedStoragePolicy, SessionDescription, TargetDescription,
 };
+pub use discovery::DiscoveryRequest;
 pub use fault::CaptureFault;
 pub use frame::{Frame, FrameView};
 pub use mapping::CpuMapping;
 pub use session::{CaptureProvider, CaptureSession, OpenRequest};
+pub use storage::{CpuFrameStorage, CpuPixels, FrameStorage};
 pub use stream::{
     Continuity, FrameRequest, FrameSelection, Lifecycle, Publication, RefusedPublication,
-    StreamState,
+    RefusedStorage, StoragePublication, StreamState,
 };

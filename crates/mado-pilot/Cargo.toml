@@ -8,16 +8,41 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsupported-api"]
+
 [dependencies]
 mado-pilot-adapter-replay = { path = "../adapter/replay" }
 mado-pilot-backend-opencv = { path = "../backend/opencv" }
 mado-pilot-runtime = { path = "../automation/runtime" }
+
+# The native adapters are wired per target rather than unconditionally, so a
+# macOS build resolves no Windows package and a Windows build resolves no macOS
+# package. Each platform package already keeps an empty seam off its own target;
+# adding the edge here as well means the facade's dependency graph says which
+# adapter a build actually contains.
+[target.'cfg(windows)'.dependencies]
+mado-pilot-platform-windows = { path = "../platform/windows" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mado-pilot-platform-macos = { path = "../platform/macos" }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows.workspace = true
+mado-pilot-platform-windows = { path = "../platform/windows", features = ["benchmark-instrumentation"] }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+mado-pilot-platform-macos = { path = "../platform/macos", features = ["private-fixture"] }
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../support/testkit" }
 
 [[bench]]
 name = "deterministic-slice"
+harness = false
+
+[[bench]]
+name = "native-phase2"
 harness = false
 
 [lints]

@@ -40,9 +40,9 @@ registry is itself a Phase 0 deliverable.
 
 | ID | Unresolved decision | Due | Blocks | Status |
 |---|---|---|---|---|
-| [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Native support claim and release | Open |
-| [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Open |
-| [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Open |
+| [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Windows and macOS support claims | Resolved by [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md) and [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md) |
+| [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
+| [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open |
 | [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 implementation | Default watcher policy | Open |
 | [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open |
@@ -52,32 +52,61 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by [ADR 0008](adr/0008-phase-1-performance-budgets.md) — all thirteen under both hard gates, eleven with per-measurement ceilings, two C-boundary controls deliberately without |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by ADR 0008, and the affected Phase 2 diagnostic, native input, controlled ownership, production capture/transition, and corrected dual-4K workloads resolved by ADRs 0024–0032. Windows Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete diff, preserving the existing ceilings rather than making another budget decision |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
 
-**Unresolved decision.** The exact minimum supported Windows and macOS versions
-that published artifacts declare.
+**Decision.** [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md)
+fixes the Windows floor at Windows 11 25H2 build family 26200 on a currently
+serviced x64 desktop installation. [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md)
+fixes the macOS floor at Apple Silicon macOS 26.5.2 (25F84), SDK 26.5.
 
-**Required evidence.** Build and load probes on the candidate oldest systems for
-both release targets, including the behavior of every capability that uses an API
-newer than the declared minimum.
+**Required evidence.** Windows build, process-load, SDK, API-availability,
+unsupported-capability, native Rust, C, and C++ evidence is retained in
+[`windows-minimum-system.md`](evidence/g-001/windows-minimum-system.md). macOS
+deployment metadata and controlled linkage are pinned. Its
+2026-08-01 permissioned ASan run passed all 95 library tests with live display and
+window capture, signed and mixed-scale placement checks, retained-filter discovery,
+and no sanitizer finding. Two later manual runs moved the window fully onto a 2x
+display while thousands of frames kept arriving, but the open stream stayed at its
+old 1x extent and effective scale; only fresh discovery after close saw 2x. That
+exposed the missing same-sample producer-capacity signal. The repaired, hardened
+permissioned probe then passed 2/2 over 4,097 frames: 3,371 same-scale moves preserved
+their epoch and 30 cross-scale moves advanced exactly from epoch 0 through epoch 30,
+publishing both the 1x and 2x extents without a stall. Cross-scale acceptance is
+closed. A fresh post-repair ASan build then passed all 101 library tests with live
+capture scenarios running and no sanitizer finding. On 2026-08-09 the
+[owned-window replacement probe](evidence/g-001/macos-owned-window-replacement.md)
+destroyed the selected fixture window, created a same-process successor with
+distinct content, and proved the retained filter published none of that content
+while a fresh session captured it and the retained original mapping stayed
+unchanged. ScreenCaptureKit remained quiescent rather than reporting explicit
+loss, so the Adapter correctly did not infer `TargetLost`. This closes the macOS
+replacement acceptance item.
+
+The 2026-08-22 Windows positive run used Pro build `26200.9168`, SDK
+`10.0.26100.0`, and clean source `834a58f`; build, lazy-import, native Rust,
+product-DLL, C/C++, frozen ABI 1.0, ownership, fixture, and CMake rows passed.
+Final repair source `c6ff39a` then used the isolated missing-WinRT-D3D-export
+apparatus: Rust, C, and C++ loaded successfully, discovery returned typed
+`Unsupported`, and the ordinary supported paths passed after restoration.
 
 **Due.** Before Phase 2 exit.
 
-**Blocks.** Any native support claim, and release.
+**Blocks.** The Windows support claim and release.
 
-**Status.** Open.
+**Status.** Resolved. ADR 0019 accepts the Windows minimum; ADR 0014 accepts the
+macOS minimum, cross-scale movement, and owned-window replacement boundary.
 
-**Resolution.** An ADR that records the chosen minimums, the probe results, and
-the availability-check or weak-linking strategy for newer APIs, followed by
-synchronized platform support documentation.
+**Resolution.** ADR 0019 records the Windows minimum and its build, process-load,
+SDK, API-availability, unsupported-capability boundary, native Rust, C, and C++
+evidence. ADR 0014 records the complete macOS resolution.
 
 ## G-002
 
-**Unresolved decision.** The Windows Graphics Capture producer-pool sizing,
-public-frame detachment, and texture-reuse strategy.
+**Decision.** The Windows Graphics Capture producer-pool sizing, public-frame
+detachment, and texture-reuse strategy.
 
 **Required evidence.** A retained-frame stress prototype showing that published
 frames do not pin producer buffer-pool slots that capture progress requires, and
@@ -85,18 +114,36 @@ that native resources outlive in-flight mapping and backend work.
 
 **Due.** Before Phase 2 implementation.
 
-**Blocks.** Windows capture ownership design.
+**Blocks.** Windows capture ownership design until resolved. It does not by
+itself make native Windows capture an implemented capability.
 
-**Status.** Open.
+**Status.** Resolved by
+[ADR 0013](adr/0013-windows-capture-frame-detachment.md). The producer pool holds
+two frames; the callback copies each publishable frame into an Adapter-owned
+D3D11 texture and releases the WGC frame before publication; a compatible private
+texture is reused only after every public-frame, mapping, and backend lease
+releases it.
 
-**Resolution.** An ADR recording the prototype measurements and the chosen
-ownership rule, followed by the retained-frame and producer-progress contract
-tests that enforce it.
+**Resolution.** The revision-bound
+[G-002 record](evidence/g-002/README.md) compares four ownership candidates at
+pool sizes two, three, and four; exercises retained mapping, backend lifetime,
+resize, 100 close races, target close, injected reset, and two 4K displays; and
+records the final supported MSVC/SDK confirmation without captured pixels. A
+deterministic queued-delegate case proves owner admission is fenced, while
+complete close/reset and sequence freshness are measured explicitly. Direct WGC
+retention stalled every producer pool and blind texture reuse changed retained
+content. Lease-aware detachment at pool size two passed every hard gate.
+
+**Implementation obligation.** The later Windows capture Change must implement
+the [retained-frame contract-test plan](windows-capture-contract-tests.md), keep
+the detached pool finite with observable pressure drops, and establish affected
+Phase 2 `G-013` budgets. It may not treat the ADR or prototype as a support
+claim.
 
 ## G-003
 
-**Unresolved decision.** Whether the macOS capture and input shim is written in
-Objective-C or Objective-C++.
+**Decision.** The language of the macOS capture and input shim, and the
+containment rules of that boundary.
 
 **Required evidence.** A prototype covering exception behavior across the language
 boundary, object ownership, and build integration on Apple Silicon.
@@ -105,10 +152,37 @@ boundary, object ownership, and build integration on Apple Silicon.
 
 **Blocks.** macOS shim implementation.
 
-**Status.** Open.
+**Status.** Resolved by
+[ADR 0012](adr/0012-macos-shim-language-and-containment.md). The shim is
+Objective-C with ARC, compiled with `-fobjc-arc-exceptions`.
 
-**Resolution.** An ADR recording the prototype outcome and the containment rule
-for exceptions crossing the shim boundary.
+**Resolution.** The prototype built one implementation file as Objective-C, as
+Objective-C with `-fobjc-arc-exceptions`, and as Objective-C++, and ran eighteen
+cases on each on the approved Apple Silicon host; the measurements are in
+[evidence/g-003/](evidence/g-003/README.md). All three variants contain every
+injected native exception, so the gate was not decided by exception handling. It
+was decided by what containment costs in ownership: without
+`-fobjc-arc-exceptions`, ARC emits no release on the unwind edge, and an exception
+raised at the position where a stream start or a frame callback would fail leaves the
+object the session retained, or the frame object, alive — the counter observes the
+retained object, and the session's own lifetime is an inference from it. The control
+variant reproduces the Objective-C++ result with that one flag, so Objective-C++'s
+ownership advantage is a default rather than a language property, and it requires
+libc++ in every consuming process for a boundary that contains no C++ — a
+requirement re-measured during review with every C++ construct removed, so that it
+rests on the language mode rather than on the prototype's C++ test.
+
+The ADR also records the containment rules the evidence forces — a catch-all
+boundary handler, the mandatory exception flag, borrowed frames, a per-work-item
+autorelease pool, a disable-and-drain callback fence, teardown that reports
+failure without skipping cleanup, Rust-side panic containment, and shim-owned
+linkage with availability gating — together with the tests the implementing Change
+must carry. `mado-pilot-platform-macos` now implements the boundary and carries
+those tests, so the rules are enforced by the package rather than by review. The
+linkage rule is met by controlled dynamic loading rather than by weak framework
+linking, because Cargo does not propagate a dependency's `rustc-link-arg` to the
+binary that consumes the dependency; the ADR records that amendment and the
+property it preserves.
 
 ## G-004
 
@@ -400,9 +474,75 @@ crossings. It is not material at this size of work, and the ADR records why that
 conclusion does not automatically transfer to a later phase's per-frame entry
 point.
 
-Everything after Phase 1 stays open. Capture, OCR, watcher scheduling, and
-acceleration each introduce workloads that need their own measurements and their
-own record.
+**Phase 2 is resolved for `v0.2.1`.**
+[ADR 0024](adr/0024-input-diagnostic-performance-budgets.md) accepts the
+`aarch64-apple-darwin` diagnostic profile. ADR 0026 accepts the matching Windows
+profile. Both targets retain 200 samples after 20 warmups for each of ten
+capture/mapping, input, overflow, and close/drain workloads, with zero oracle
+failures and allocation growth, exact mapped-byte accounting, and per-workload
+regression ceilings.
+
+The `native-phase2` workloads are resolved on Windows and partially resolved on
+macOS. ADR 0020 historically accepted three macOS profiles at source
+`a1faf04505c8471deb4de8c136fddcc7f76105e7`; [ADR 0021](adr/0021-invalidate-phase-2-native-performance-evidence.md)
+invalidated all three after source drift and false-positive stimulus and
+latest-frame oracles. The macOS capture and transition profiles remain
+`normative = false`.
+
+[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) replaces the
+macOS input and public-language profile and records its post-review refresh at
+source `c4bc8135ae36cf9b110fc435e4fa1b8dfc3ba848`. Its six workloads retained
+300 correct samples with zero allocation growth, exact mapped-byte accounting,
+and measured Rust-heap and child-process resident bounds.
+
+[ADR 0026](adr/0026-windows-native-and-diagnostic-performance-budgets.md)
+accepts the post-review Windows diagnostic, capture, transition, and
+input/public-language requalification at source commit
+`6873d4b05a13fd15cb3ffd961892b1153f606d78`, implementation tree
+`2483269ee071d14adfe14f829d318a4c59337f85`. Its 2,980 retained samples all
+satisfy their exact oracles, report zero allocation growth, and pass the
+unchanged ceilings. The rejected precursor runs proved four apparatus defects
+rather than product failures: insufficient post-resize fixture publication,
+reuse of a 1,024-event fixture for 2,050 redacted summaries, a missing child-only
+Cargo profile DLL path, and a C++ oracle that expected macOS submission evidence
+on Windows. The ADR records the bounded repairs and target-specific oracle.
+
+[ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
+separate macOS production-capture and production-transition profiles at measured
+source `d182300cd8710891ded6cba17184c44d6d58a114`, tree
+`c570343d334a5c77415e6a885ef8821c731b0ad5`. Their eight workloads retain 1,150
+correct samples with zero allocation growth and exact mapped-byte accounting on
+the approved exactly-two-display mixed-scale host. The executable harness now
+enforces every accepted latency, live-heap, mapped-byte, correctness, and growth
+budget and requires the fixture's exact next frame-authoritative target geometry
+after resize. The ADR retains the rejected enforcement-repair attempt and changes
+no historical profile or source attribution.
+
+[ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
+accepts the separate Windows 1280×720 profiles. Shared-marker source `f50285a`,
+tree `4c2f23f`, reran all four capture workloads with zero
+correctness/allocation failures, exact mapping/copy bytes, and nonzero resource
+counts at or below their limits. Transition source `7c31752`, tree `4e99487`,
+reran all five lifecycle workloads after callback completion/binding
+instrumentation changed their publication path; every unchanged gate passed.
+
+[ADR 0032](adr/0032-windows-dual-4k-production-capture-performance-budgets.md)
+accepts the corrected mixed-DPI dual-4K profile at shared-predicate source
+`f50285a`, tree `4c2f23f`. It retains 600 stationary samples per display plus
+300 controlled moving-seam samples, requires requested-position markers on both
+frames, binds each frame to its own post-baseline callback record, and passes
+every latency, mapping/copy, resource, stale-work, heap, resident, correctness,
+growth, and cleanup gate.
+
+The Windows controlled `native-phase2`, ADR 0031 1280×720, and ADR 0032 dual-4K
+profiles remain distinct. Historical measurements keep their original source
+identities. Windows final-source Phase 1 reruns pass on the exact exit candidate;
+Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete
+diff. Both preserve their existing ceilings rather than creating another profile
+lineage.
+
+OCR, watcher scheduling, and acceleration remain open for the phases that
+introduce them.
 
 **Resolution.** Committed benchmark profiles and budgets plus an ADR for each
 budget that is set or relaxed, recording the evidence behind the number.

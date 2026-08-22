@@ -28,6 +28,14 @@ pub enum CaptureFault {
     ForeignTarget,
     /// No target with that identity is known to this provider.
     UnknownTarget,
+    /// The target this provider issued the identity for no longer exists.
+    ///
+    /// Distinct from [`CaptureFault::UnknownTarget`], which is an identity this
+    /// provider never issued. A target whose window has closed is reported here
+    /// even when another target now carries the same title, process identifier,
+    /// or reused native handle: matching mutable metadata would silently retarget
+    /// the caller onto whatever took the original's place.
+    TargetLost,
     /// The session is closed or closing, so it accepts no new frame work.
     SessionClosed,
     /// A required capture option cannot be honored by this provider.
@@ -38,6 +46,34 @@ pub enum CaptureFault {
     ForeignStream,
     /// The stream produced no further frames and never will.
     StreamEnded,
+    /// The operating system refused programmatic capture access.
+    AccessDenied,
+    /// The native capture item closed.
+    CaptureItemClosed,
+    /// A captured display disconnected.
+    DisplayDisconnected,
+    /// The native graphics device was removed and continuity was not proved.
+    DeviceRemoved,
+    /// The native graphics device was reset and continuity was not proved.
+    DeviceReset,
+    /// Capture was explicitly stopped by its owner.
+    ExplicitlyStopped,
+    /// Every unit of the session's finite storage budget is leased by frames,
+    /// mappings, or backends a caller still holds.
+    ///
+    /// This is the observable form of the bound that keeps a retaining caller from
+    /// stalling capture: an Adapter refuses the frame rather than blocking its
+    /// producer, overwriting storage a caller is reading, or allocating without a
+    /// limit. Releasing retained frames and mappings makes capacity available
+    /// again.
+    StorageBudgetExhausted,
+    /// A native surface or retained allocation exceeds an Adapter's reviewed
+    /// per-resource, per-session, or process-wide byte ceiling.
+    ///
+    /// Distinct from [`CaptureFault::StorageBudgetExhausted`], which is ordinary
+    /// transient pressure caused by retained frame leases. This fault rejects a
+    /// shape or allocation request before the native or Rust allocation begins.
+    ResourceLimitExceeded,
 }
 
 impl CaptureFault {
@@ -54,8 +90,19 @@ impl CaptureFault {
             CaptureFault::UnsupportedFormat
             | CaptureFault::UnsupportedCoordinate
             | CaptureFault::UnsupportedOption => Status::Unsupported,
-            CaptureFault::SessionClosed | CaptureFault::StreamEnded => Status::Closed,
-            CaptureFault::SourceInvalid => Status::CaptureFailed,
+            CaptureFault::SessionClosed
+            | CaptureFault::StreamEnded
+            | CaptureFault::ExplicitlyStopped => Status::Closed,
+            CaptureFault::TargetLost
+            | CaptureFault::CaptureItemClosed
+            | CaptureFault::DisplayDisconnected => Status::TargetLost,
+            CaptureFault::StorageBudgetExhausted | CaptureFault::ResourceLimitExceeded => {
+                Status::LimitExceeded
+            }
+            CaptureFault::SourceInvalid
+            | CaptureFault::AccessDenied
+            | CaptureFault::DeviceRemoved
+            | CaptureFault::DeviceReset => Status::CaptureFailed,
         }
     }
 
@@ -70,11 +117,24 @@ impl CaptureFault {
             CaptureFault::RegionOutsideFrame => "region falls outside its source frame",
             CaptureFault::ForeignTarget => "target identity was not issued by this provider",
             CaptureFault::UnknownTarget => "no such target",
+            CaptureFault::TargetLost => "target no longer exists",
             CaptureFault::SessionClosed => "session is closed",
             CaptureFault::UnsupportedOption => "required capture option is not supported",
             CaptureFault::SourceInvalid => "configured capture source is invalid",
             CaptureFault::ForeignStream => "frame stamp belongs to another stream",
             CaptureFault::StreamEnded => "stream published its final frame",
+            CaptureFault::AccessDenied => "operating system refused capture access",
+            CaptureFault::CaptureItemClosed => "native capture item closed",
+            CaptureFault::DisplayDisconnected => "captured display disconnected",
+            CaptureFault::DeviceRemoved => "native graphics device was removed",
+            CaptureFault::DeviceReset => "native graphics device was reset",
+            CaptureFault::ExplicitlyStopped => "capture was explicitly stopped",
+            CaptureFault::StorageBudgetExhausted => {
+                "every unit of the session's storage budget is retained by a caller"
+            }
+            CaptureFault::ResourceLimitExceeded => {
+                "native capture resource exceeds its reviewed allocation limit"
+            }
         }
     }
 }
@@ -114,6 +174,15 @@ mod tests {
         );
         assert_eq!(CaptureFault::SessionClosed.status(), Status::Closed);
         assert_eq!(CaptureFault::SourceInvalid.status(), Status::CaptureFailed);
+        assert_eq!(CaptureFault::DeviceRemoved.status(), Status::CaptureFailed);
+        assert_eq!(
+            CaptureFault::ResourceLimitExceeded.status(),
+            Status::LimitExceeded
+        );
+        assert_eq!(
+            CaptureFault::DisplayDisconnected.status(),
+            Status::TargetLost
+        );
     }
 
     #[test]

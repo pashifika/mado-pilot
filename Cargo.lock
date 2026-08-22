@@ -219,17 +219,20 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "mado-pilot-adapter-replay",
  "mado-pilot-backend-opencv",
+ "mado-pilot-platform-macos",
+ "mado-pilot-platform-windows",
  "mado-pilot-runtime",
  "mado-pilot-testkit",
+ "windows",
 ]
 
 [[package]]
 name = "mado-pilot-adapter-replay"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
@@ -240,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-assets"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "mado-pilot-core",
@@ -253,11 +256,11 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-backend-onnx"
-version = "0.1.0"
+version = "0.2.1"
 
 [[package]]
 name = "mado-pilot-backend-opencv"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
@@ -268,26 +271,27 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-capi"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "mado-pilot",
+ "mado-pilot-runtime",
  "mado-pilot-testkit",
 ]
 
 [[package]]
 name = "mado-pilot-capture"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "mado-pilot-core",
 ]
 
 [[package]]
 name = "mado-pilot-core"
-version = "0.1.0"
+version = "0.2.1"
 
 [[package]]
 name = "mado-pilot-dependency-check"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -295,44 +299,62 @@ dependencies = [
 
 [[package]]
 name = "mado-pilot-input"
-version = "0.1.0"
+version = "0.2.1"
+dependencies = [
+ "mado-pilot-core",
+]
 
 [[package]]
 name = "mado-pilot-ocr"
-version = "0.1.0"
+version = "0.2.1"
 
 [[package]]
 name = "mado-pilot-platform-macos"
-version = "0.1.0"
+version = "0.2.1"
+dependencies = [
+ "cc",
+ "mado-pilot-capture",
+ "mado-pilot-core",
+ "mado-pilot-input",
+ "serde_json",
+]
 
 [[package]]
 name = "mado-pilot-platform-windows"
-version = "0.1.0"
+version = "0.2.1"
+dependencies = [
+ "mado-pilot-capture",
+ "mado-pilot-core",
+ "mado-pilot-input",
+ "windows",
+]
 
 [[package]]
 name = "mado-pilot-runtime"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "mado-pilot-assets",
  "mado-pilot-capture",
  "mado-pilot-core",
+ "mado-pilot-input",
  "mado-pilot-testkit",
  "mado-pilot-vision",
 ]
 
 [[package]]
 name = "mado-pilot-testkit"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
+ "mado-pilot-input",
  "mado-pilot-vision",
  "sha2",
 ]
 
 [[package]]
 name = "mado-pilot-vision"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",

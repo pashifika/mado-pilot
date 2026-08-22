@@ -16,12 +16,11 @@
 //! valid; the mistake is the caller's.
 
 use mado_pilot::{
-    AssetFault, AssetFaultKind, AssetLimits, AssetPackage, Engine, LoadStage, PreparedTemplate,
-    Status,
+    AssetFault, AssetFaultKind, AssetLimits, AssetPackage, LoadStage, PreparedTemplate, Status,
 };
 
 use crate::boundary::{self, Out, Versioned, inputs, prefixes};
-use crate::engine::{madopilot_engine_t, report};
+use crate::engine::{EngineHandle, madopilot_engine_t, report};
 use crate::error::{Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
@@ -92,6 +91,7 @@ impl Versioned for madopilot_package_info_t {
         package_version,
         license,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -120,6 +120,7 @@ impl Versioned for madopilot_template_info_t {
         max_results,
         space,
     );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
     fn failure(struct_size: u32) -> Self {
         Self {
@@ -167,7 +168,7 @@ fn run_package_load(
     out_package: *mut *mut madopilot_package_t,
 ) -> Result<(), Fault> {
     // SAFETY: the caller keeps the engine retained for the call.
-    let Some(engine) = (unsafe { handle::borrow::<Engine>(engine) }) else {
+    let Some(engine) = (unsafe { handle::borrow::<EngineHandle>(engine) }) else {
         return Err(Fault::abi("`engine` is null"));
     };
     // SAFETY: the caller keeps the operation structure readable for the call.
@@ -402,7 +403,7 @@ fn run_template_prepare(
     out_template: *mut *mut madopilot_template_t,
 ) -> Result<(), Fault> {
     // SAFETY: the caller keeps both handles retained for the call.
-    let Some(engine) = (unsafe { handle::borrow::<Engine>(engine) }) else {
+    let Some(engine) = (unsafe { handle::borrow::<EngineHandle>(engine) }) else {
         return Err(Fault::abi("`engine` is null"));
     };
     // SAFETY: as above.

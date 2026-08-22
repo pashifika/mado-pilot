@@ -108,8 +108,7 @@ closed session does is exactly the kind of thing a freeze must not preserve.
 ## The compatibility policy that now applies
 
 The reviewed names above are the `0.x` baseline. They are **reviewed, not
-stable**: this project is at `0.1.0`, and the Rust API stability promise begins
-at `1.0`.
+stable**: the Rust API stability promise begins at `1.0`.
 
 Until then:
 

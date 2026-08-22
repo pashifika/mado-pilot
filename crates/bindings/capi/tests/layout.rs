@@ -10,6 +10,8 @@
 //! `docs/adr/0007-phase-1-c-abi-freeze.md`. What this file protects is that a
 //! change to any of them fails a test rather than a caller.
 
+use std::collections::HashSet;
+
 use madopilot::layout::{HANDLE_POINTERS, LAYOUT, TypeLayout, report};
 use madopilot::*;
 
@@ -44,6 +46,25 @@ const FROZEN_LAYOUT: [(&str, &str); 2] = [
 /// Both have to be real boundaries, and ADR 0007 is the only other place the
 /// asymmetry is recorded.
 const MANDATORY: &[(&str, usize)] = &[
+    ("madopilot_engine_options_t", 16),
+    ("madopilot_engine_capabilities_t", 8),
+    ("madopilot_permission_t", 16),
+    ("madopilot_input_capability_t", 28),
+    ("madopilot_input_open_request_t", 32),
+    ("madopilot_input_descriptor_t", 48),
+    ("madopilot_input_event_t", 8),
+    ("madopilot_input_event_t", 16),
+    ("madopilot_input_event_t", 24),
+    ("madopilot_input_event_t", 40),
+    ("madopilot_input_event_t", 48),
+    ("madopilot_input_event_t", 64),
+    ("madopilot_input_event_t", 72),
+    ("madopilot_input_request_t", 64),
+    ("madopilot_input_request_t", 80),
+    ("madopilot_input_receipt_info_t", 88),
+    ("madopilot_input_attempt_t", 56),
+    ("madopilot_diagnostic_batch_info_t", 32),
+    ("madopilot_diagnostic_record_t", 240),
     ("madopilot_build_info_t", 20),
     ("madopilot_operation_t", 8),
     ("madopilot_frame_stamp_t", 40),
@@ -66,7 +87,7 @@ const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_package_source_t", 24),
 ];
 
-/// The Phase 1 function-table order.
+/// The ABI-major-one function-table order.
 ///
 /// Written out rather than derived, because the point is to notice a change.
 /// Appending to the end is how the table grows; anything else here is a
@@ -127,6 +148,27 @@ const TABLE_ORDER: &[&str] = &[
     "result_stamp",
     "result_options",
     "result_match",
+    "engine_create_with_options",
+    "engine_capabilities",
+    "engine_permission",
+    "target_list_input_capability",
+    "engine_input_descriptor",
+    "session_open_with_input",
+    "session_input_descriptor",
+    "session_send_input",
+    "input_receipt_retain",
+    "input_receipt_release",
+    "input_receipt_info",
+    "input_receipt_attempt_count",
+    "input_receipt_attempt_at",
+    "engine_take_diagnostic_reader",
+    "diagnostic_reader_retain",
+    "diagnostic_reader_release",
+    "diagnostic_reader_drain",
+    "diagnostic_batch_retain",
+    "diagnostic_batch_release",
+    "diagnostic_batch_info",
+    "diagnostic_batch_record_at",
 ];
 
 fn find(name: &str) -> &'static TypeLayout {
@@ -136,50 +178,71 @@ fn find(name: &str) -> &'static TypeLayout {
         .unwrap_or_else(|| panic!("`{name}` is measured by the layout report"))
 }
 
-/// Compares one target's tracked evidence against what this build measured.
+/// Reads one `type NAME size=N align=N` report line.
+fn reported_type_layout(line: &str) -> Option<(&str, usize, usize)> {
+    let rest = line.strip_prefix("type ")?;
+    let (name, rest) = rest.split_once(" size=")?;
+    let (size, align) = rest.split_once(" align=")?;
+    Some((name, size.parse().ok()?, align.parse().ok()?))
+}
+
+/// Proves that every declaration frozen at ABI 1.0 still holds.
 ///
-/// Reports the first line that differs rather than the whole report, because a
-/// single field moving shifts nothing else and a whole-report dump would bury
-/// it.
+/// A size-versioned record may grow without changing alignment. Every field,
+/// unversioned type extent, handle, and table-entry offset remains exact.
 fn assert_frozen(target: &str, frozen: &str, measured: &str) {
-    if measured == frozen {
-        return;
-    }
-
-    let difference = frozen
+    let declared: HashSet<&str> = measured.lines().map(str::trim_end).collect();
+    let frozen_lines: Vec<&str> = frozen
         .lines()
-        .zip(measured.lines())
-        .enumerate()
-        .find(|(_, (frozen, measured))| frozen != measured)
-        .map_or_else(
-            || {
-                format!(
-                    "the reports agree line for line and then one of them ends: the frozen \
-                     record has {} lines, this build measured {}",
-                    frozen.lines().count(),
-                    measured.lines().count(),
-                )
-            },
-            |(index, (frozen, measured))| {
-                format!(
-                    "line {}: the frozen record says `{frozen}`, this build measured `{measured}`",
-                    index + 1
-                )
-            },
-        );
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let versioned: HashSet<&str> = frozen_lines
+        .iter()
+        .filter_map(|line| {
+            line.strip_prefix("field ")?
+                .strip_suffix(".struct_size offset=0")
+        })
+        .collect();
 
-    panic!(
-        "the measured layout is not the one frozen for {target} in \
-         `docs/evidence/c-abi/layout-{target}.txt`.\n  {difference}\nWithin ABI major 1 that \
-         report only gains structures and fields appended after every existing one; anything \
-         else is a compatibility break. A deliberate additive minor regenerates the evidence on \
-         both release targets with `cargo run --package mado-pilot-capi --example c-abi-check` \
-         and records the new numbers in `docs/adr/0007-phase-1-c-abi-freeze.md`."
+    let mismatches: Vec<String> = frozen_lines
+        .iter()
+        .filter_map(|line| {
+            if declared.contains(line) {
+                return None;
+            }
+            let Some((name, frozen_size, frozen_align)) = reported_type_layout(line) else {
+                return Some(format!("the frozen report declares `{line}`, which moved or vanished"));
+            };
+            if !versioned.contains(name) {
+                return Some(format!(
+                    "the frozen report declares unversioned `{line}`, which changed"
+                ));
+            }
+
+            match measured
+                .lines()
+                .filter_map(reported_type_layout)
+                .find(|(current, _, _)| *current == name)
+            {
+                Some((_, size, align)) if size >= frozen_size && align == frozen_align => None,
+                Some((_, size, align)) => Some(format!(
+                    "`{name}` was size={frozen_size} align={frozen_align}, now size={size} align={align}"
+                )),
+                None => Some(format!("the frozen type `{name}` vanished")),
+            }
+        })
+        .collect();
+
+    assert!(
+        mismatches.is_empty(),
+        "the measured layout no longer preserves the ABI 1.0 record for {target}:\n{}",
+        mismatches.join("\n")
     );
 }
 
 #[test]
-fn the_measured_layout_is_the_one_that_was_frozen() {
+fn the_measured_layout_preserves_the_frozen_abi_1_0_prefix() {
     let measured = report();
 
     for (target, frozen) in FROZEN_LAYOUT {
@@ -262,21 +325,40 @@ fn every_structure_has_ascending_field_offsets() {
 }
 
 #[test]
-fn the_function_table_keeps_its_phase_1_order() {
+fn the_function_table_keeps_its_abi_major_one_order() {
     let table = find("madopilot_api_t");
     let measured: Vec<&str> = table.fields.iter().map(|field| field.name).collect();
 
     assert_eq!(
         measured, TABLE_ORDER,
-        "the Phase 1 table order changed; within an ABI major, members are only appended"
+        "the ABI-major-one table order changed; members are only appended"
     );
     assert_eq!(
-        table.size, MADOPILOT_API_SIZE_PHASE1 as usize,
-        "the advertised table size is the measured one"
+        table.size, MADOPILOT_API_SIZE_CURRENT as usize,
+        "the current advertised table size is the measured one"
     );
     assert!(
-        MADOPILOT_API_SIZE_INFORMATION as usize <= table.size,
-        "the mandatory prefix fits inside the table"
+        MADOPILOT_API_SIZE_INFORMATION as usize <= MADOPILOT_API_SIZE_PHASE1 as usize,
+        "the mandatory prefix fits inside the frozen ABI 1.0 table"
+    );
+
+    let suffix = &table.fields[TABLE_ORDER.len() - 21..];
+    assert_eq!(
+        suffix[0].offset, MADOPILOT_API_SIZE_PHASE1 as usize,
+        "ABI 1.2 starts immediately after the complete frozen ABI 1.0 table"
+    );
+    let offsets: Vec<usize> = suffix.iter().map(|field| field.offset).collect();
+    assert_eq!(
+        offsets,
+        [
+            424, 432, 440, 448, 456, 464, 472, 480, 488, 496, 504, 512, 520, 528, 536, 544, 552,
+            560, 568, 576, 584,
+        ],
+        "the accepted ABI 1.2 entry offsets are frozen"
+    );
+    assert_eq!(
+        table.size, 592,
+        "the accepted ABI 1.2 table extent is frozen"
     );
 }
 

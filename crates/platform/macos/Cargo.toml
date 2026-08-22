@@ -1,12 +1,41 @@
 [package]
 name = "mado-pilot-platform-macos"
-description = "Planned MadoPilot macOS target, capture, input, permission, and capability adapter."
+description = "MadoPilot non-prompting macOS target discovery and ScreenCaptureKit capture adapter."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+autobins = false
+
+[features]
+# The interactive qualification fixture is not a production package target.
+# Enabling this feature builds and links its separately isolated executable.
+private-fixture = []
+
+[[bin]]
+name = "mado-pilot-macos-input-fixture"
+path = "src/bin/mado-pilot-macos-input-fixture.rs"
+required-features = ["private-fixture"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mado-pilot-core = { path = "../../automation/core" }
+mado-pilot-capture = { path = "../../automation/capture" }
+mado-pilot-input = { path = "../../automation/input" }
+
+# Deliberately not behind `[target.'cfg(target_os = "macos")'.build-dependencies]`.
+# Cargo's handling of a `cfg` on build dependencies is inconsistent about whether
+# it means the host or the target, and a build script that cannot compile because
+# its own dependency was filtered out is a portability failure on a host this
+# repository verifies. `build.rs` returns early for a non-macOS target instead, so
+# nothing is compiled there. `cc` is already in the resolved graph through the
+# OpenCV binding generator on every host.
+[build-dependencies]
+cc.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

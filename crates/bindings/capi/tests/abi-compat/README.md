@@ -1,4 +1,4 @@
-# Frozen header compatibility fixtures
+# Frozen released-header compatibility fixtures
 
 Each subdirectory is one released C header's declarations — every structure,
 field, enumerator and function-table entry as that release declared them —
@@ -32,7 +32,7 @@ deterministic scene, which declares nothing about the ABI.
 
 ## What a fixture checks
 
-Task 9.9 names four verbs, and each is a step of the run:
+Each fixture checks four verbs, and each is a step of the run:
 
 - **compiles** — against the frozen declarations alone;
 - **links** — against the current `cdylib`, through the one exported symbol;
@@ -42,14 +42,14 @@ Task 9.9 names four verbs, and each is a step of the run:
   caller declaring forty bytes against a four-hundred-byte table, told the
   library's size rather than its own. It is also why the fixture is not a
   tautology while the frozen declarations and the working ones still agree.
-- **executes** — the whole Phase 1 flow, checking the same match rectangles and
-  scores both examples print.
+- **executes** — every entry that header declares, retaining the deterministic
+  match rectangles and scores and adding that header's contract assertions.
 
 ## Adding a fixture
 
 Freeze a header when an ADR freezes it, not when it changes. Copy the header
-into a new `v<major>/` directory, write a program against it, and add the
-version to `FROZEN_HEADERS` in
+into a new version directory, write a program against every entry it declares,
+and add the version to `FROZEN_HEADERS` in
 [`examples/c-abi-check.rs`](../../examples/c-abi-check.rs).
 
 **Do not edit a fixture that already exists.** Its value is that it is a

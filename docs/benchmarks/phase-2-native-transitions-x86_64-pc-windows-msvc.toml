@@ -1,0 +1,150 @@
+# Phase 2 native lifecycle transitions, remeasured on
+# x86_64-pc-windows-msvc at implementation tree
+# 2483269ee071d14adfe14f829d318a4c59337f85, source commit
+# 6873d4b05a13fd15cb3ffd961892b1153f606d78.
+#
+# Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0026 fixes this
+# target's regression ceilings from the accepted baseline. These measurement
+# values are the post-review rerun; individual latency rationales preserve the
+# baseline derivation. Memory, stale-work, and mapped-byte ceilings remain
+# unchanged. They are regression ceilings, not user-facing latency promises.
+
+format_version = 1
+
+[benchmark]
+id = "phase-2-native-transitions-x86_64-pc-windows-msvc"
+workload = "native open, retained-pressure recovery, resize, and close transitions"
+phase = "2"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "crates/platform/windows fixture Rust and protocol sources"
+fixture_sha256 = "f5acaea836b6eb5257fc7252fdaa2b4d8d6f2d5c0418b6109d956d2b3cd0a279"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF, 12 cores/20 threads, 32 GiB, NVIDIA GeForce RTX 4080"
+os_version = "Windows 11 Pro 10.0.26200 (build 26200)"
+build_profile = "cargo bench, default features, debug_assertions=false; fixture cargo build --release"
+warmup_iterations = 5
+sample_count = 20
+correctness_oracle = "every retained sample checks frame identity/content, transition state, receipt/event sequence, or complete common-flow outcome as its measurement states"
+queue_policy = "session latest-wins queue depth 1; retained-pressure case fills the reported finite storage limit"
+notes = "source commit 6873d4b05a13fd15cb3ffd961892b1153f606d78, tree 2483269ee071d14adfe14f829d318a4c59337f85; toolchain rustc 1.97.1; MSVC 19.44.35228; CMake 3.29.5; OpenCV 4.14.0; GPU/driver NVIDIA GeForce RTX 4080 driver 32.0.15.9186 (2026-01-20); display topology two 2560x1440 logical displays side by side; primary at (0,0), secondary at (-2560,0); GPU reports 3840x2160 at 120 Hz; permissions/signing Windows exposes no separate capture/input permission; unelevated interactive local process; unsigned candidate fixture and MSVC C/C++ executables; fixture path deliberately omitted; ADR 0026 ceilings are compared without recalibration"
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its workload's oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "a repeated operation gives back what it took"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 16777216
+rationale = "16 MiB is more than three times the current 3869438-byte measured peak and rejects repeated full-frame accumulation"
+
+[[measurement]]
+workload = "resize_recreation"
+correctness_oracle = "one deterministic fixture resize advances epoch and geometry and returns the resized extent"
+result_correctness = 0
+latency_p50_ms = 62.828900
+latency_p95_ms = 83.693100
+iteration_span_ms = 68.449925
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 13969
+steady_allocated_bytes = 13561
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 300.0
+  rationale = "three times the measured 98.583200 ms p95, rounded up"
+
+[[measurement]]
+workload = "open_first_frame"
+correctness_oracle = "each fresh session returns a correctly identified deterministic first frame and closes"
+result_correctness = 0
+latency_p50_ms = 105.683900
+latency_p95_ms = 112.344000
+iteration_span_ms = 119.570285
+mapped_bytes_per_result = 3860768
+peak_allocated_bytes = 3869438
+steady_allocated_bytes = 5966
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 340.0
+  rationale = "three times the measured 110.547200 ms p95, rounded up"
+
+  [[measurement.budget]]
+  measure = "mapped_bytes_per_result"
+  kind = "absolute"
+  unit = "bytes"
+  direction = "at_most"
+  limit = 3860768
+  rationale = "the resized 1208x799 fixture content at four bytes per pixel, exactly once"
+
+[[measurement]]
+workload = "retained_pressure_resume"
+correctness_oracle = "filling the reported retained limit rejects publication, releasing one slot resumes with an observable sequence gap"
+result_correctness = 0
+latency_p50_ms = 14.131000
+latency_p95_ms = 33.181100
+iteration_span_ms = 1293.393520
+mapped_bytes_per_result = 0
+stale_work_ratio = 0.500000000
+peak_allocated_bytes = 2356884
+steady_allocated_bytes = 0
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 100.0
+  rationale = "three times the measured 32.328600 ms p95, rounded up"
+
+  [[measurement.budget]]
+  measure = "stale_work_ratio"
+  kind = "absolute"
+  unit = "ratio"
+  direction = "at_most"
+  limit = 0.75
+  rationale = "the deliberate full-buffer pressure measured 0.500000000; the ceiling allows one additional discarded publication while preserving bounded recovery"
+
+[[measurement]]
+workload = "close_drain"
+correctness_oracle = "explicit close reaches the closed state and remains idempotent"
+result_correctness = 0
+latency_p50_ms = 2.242800
+latency_p95_ms = 2.530000
+iteration_span_ms = 116.124095
+mapped_bytes_per_result = 0
+peak_allocated_bytes = 8526
+steady_allocated_bytes = 5918
+allocated_growth_bytes = 0
+
+  [[measurement.budget]]
+  measure = "latency_p95"
+  kind = "absolute"
+  unit = "milliseconds"
+  direction = "at_most"
+  limit = 8.0
+  rationale = "three times the measured 2.436000 ms p95, rounded up"
