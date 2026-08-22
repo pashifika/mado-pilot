@@ -118,6 +118,30 @@
         "ppocrv6-multilingual-small"
       ],
       "purpose": "Enforce the pinned tool environment and exact ONNX session/vocabulary identity before inference."
+    },
+    "v5": {
+      "frozen_at": "2026-08-22T16:53:12Z",
+      "fixture_profile_id": "g-004-japanese-ui-v3",
+      "fixture_manifest": "fixtures/ocr/g-004/fixture-manifest.json",
+      "candidates": [
+        "ppocrv4-det-v6-rec-small",
+        "ppocrv5-det-v6-rec-small",
+        "ppocrv6-det-tiny-rec-small",
+        "ppocrv6-multilingual-small"
+      ],
+      "evaluator_sha256": "780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249",
+      "rapidocr_code_identity": "sha256(path_length_u64be || path_utf8 || content_length_u64be || content) over .py/.yaml/.yml",
+      "unexpected_region_evaluation": "match_expected_then_threshold_unmatched",
+      "reports": {
+        "apple": "docs/evidence/g-004/report-aarch64-apple-darwin-v5.json",
+        "windows": "docs/evidence/g-004/report-x86_64-pc-windows-msvc-v5.json"
+      },
+      "status": "patch-review-passed-apple-runs-authorized",
+      "patch_review": {
+        "status": "passed",
+        "reviewed_at": "2026-08-22T17:09:59Z",
+        "scope": "five evaluator-integrity contracts, frozen v4 preservation, and normative G-004 v5 evidence"
+      }
     }
   },
   "candidates": [

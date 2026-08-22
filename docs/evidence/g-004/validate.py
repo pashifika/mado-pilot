@@ -16,6 +16,12 @@ EVIDENCE = ROOT / "docs" / "evidence" / "g-004"
 FIXTURES = ROOT / "fixtures" / "ocr" / "g-004"
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_REVISION_PATTERN = re.compile(r"[0-9a-f]{40}")
+V4_SOURCE_IDENTITY = {
+    "evaluator_sha256": "02c78cff9bbffd7e576ab918d5d743d4a06d5b6f692a9dc0e33e0831faaeb9d4",
+    "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+    "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+    "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
+}
 
 
 def fail(message: str) -> None:
@@ -291,12 +297,14 @@ def validate_candidates() -> None:
     }
     expected_v3 = expected_v2
     expected_v4 = expected_v3
+    expected_v5 = expected_v4
     if not isinstance(stages, dict):
         fail("candidate evaluation_stages are missing")
     v1 = stages.get("v1")
     v2 = stages.get("v2")
     v3 = stages.get("v3")
     v4 = stages.get("v4")
+    v5 = stages.get("v5")
     if not isinstance(v1, dict) or set(v1.get("candidates", [])) != expected_v1:
         fail("candidate v1 screening set drifted")
     if not isinstance(v2, dict) or set(v2.get("candidates", [])) != expected_v2:
@@ -305,6 +313,51 @@ def validate_candidates() -> None:
         fail("candidate v3 qualification set drifted")
     if not isinstance(v4, dict) or set(v4.get("candidates", [])) != expected_v4:
         fail("candidate v4 qualification set drifted")
+    expected_v5_record = {
+        "frozen_at": "2026-08-22T16:53:12Z",
+        "fixture_profile_id": "g-004-japanese-ui-v3",
+        "fixture_manifest": "fixtures/ocr/g-004/fixture-manifest.json",
+        "candidates": [
+            "ppocrv4-det-v6-rec-small",
+            "ppocrv5-det-v6-rec-small",
+            "ppocrv6-det-tiny-rec-small",
+            "ppocrv6-multilingual-small",
+        ],
+        "evaluator_sha256": "780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249",
+        "rapidocr_code_identity": (
+            "sha256(path_length_u64be || path_utf8 || "
+            "content_length_u64be || content) over .py/.yaml/.yml"
+        ),
+        "unexpected_region_evaluation": (
+            "match_expected_then_threshold_unmatched"
+        ),
+        "reports": {
+            "apple": (
+                "docs/evidence/g-004/"
+                "report-aarch64-apple-darwin-v5.json"
+            ),
+            "windows": (
+                "docs/evidence/g-004/"
+                "report-x86_64-pc-windows-msvc-v5.json"
+            ),
+        },
+        "status": "patch-review-passed-apple-runs-authorized",
+        "patch_review": {
+            "status": "passed",
+            "reviewed_at": "2026-08-22T17:09:59Z",
+            "scope": (
+                "five evaluator-integrity contracts, frozen v4 "
+                "preservation, and normative G-004 v5 evidence"
+            ),
+        },
+    }
+    if v5 != expected_v5_record:
+        fail("candidate v5 evaluator identity or pre-run state drifted")
+    if v5["evaluator_sha256"] != sha256(EVIDENCE / "evaluate.py"):
+        fail("candidate v5 evaluator source hash drifted")
+    for report_path in v5["reports"].values():
+        if (ROOT / report_path).exists():
+            fail("candidate v5 tracked report exists before qualification consolidation")
     if v1.get("fixture_profile_id") != "g-004-japanese-ui-v1":
         fail("candidate v1 fixture profile drifted")
     if v2.get("fixture_profile_id") != "g-004-japanese-ui-v2":
@@ -320,9 +373,9 @@ def validate_candidates() -> None:
         fail("candidate v4 hardening purpose drifted")
 
     candidates = record.get("candidates")
-    expected_candidates = expected_v1 | expected_v4
+    expected_candidates = expected_v1 | expected_v5
     if not isinstance(candidates, list) or len(candidates) != len(expected_candidates):
-        fail("candidate allowlist does not match the four frozen stages")
+        fail("candidate allowlist does not match the five frozen stages")
     seen_ids: set[str] = set()
     seen_models: dict[PurePosixPath, tuple[object, object, object, object]] = {}
     for candidate_index, candidate in enumerate(candidates):
@@ -503,12 +556,7 @@ def validate_apple_report() -> None:
             if candidate.get("source_identity") != expected_identity:
                 fail(f"Apple historical {stage['id']} source identity changed")
 
-    current_identity = {
-        "evaluator_sha256": sha256(EVIDENCE / "evaluate.py"),
-        "fixture_manifest_sha256": sha256(FIXTURES / "fixture-manifest.json"),
-        "candidates_sha256": sha256(EVIDENCE / "candidates.json"),
-        "tool_requirements_sha256": sha256(EVIDENCE / "tool-requirements.txt"),
-    }
+    current_identity = V4_SOURCE_IDENTITY
     candidate_record = load_json(EVIDENCE / "candidates.json")
     candidate_lookup = {
         candidate["id"]: candidate for candidate in candidate_record["candidates"]
@@ -764,12 +812,7 @@ def validate_windows_report() -> None:
     }
     fixture = load_json(FIXTURES / "fixture-manifest.json")
     fixture_lookup = {image["file"]: image for image in fixture["images"]}
-    current_identity = {
-        "evaluator_sha256": sha256(EVIDENCE / "evaluate.py"),
-        "fixture_manifest_sha256": sha256(FIXTURES / "fixture-manifest.json"),
-        "candidates_sha256": sha256(EVIDENCE / "candidates.json"),
-        "tool_requirements_sha256": sha256(EVIDENCE / "tool-requirements.txt"),
-    }
+    current_identity = V4_SOURCE_IDENTITY
     expected_candidate_ids = [
         "ppocrv4-det-v6-rec-small",
         "ppocrv5-det-v6-rec-small",

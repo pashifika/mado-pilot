@@ -20,6 +20,8 @@ claims an OCR backend from this evidence-only Change.
 | [`validate.py`](validate.py) | Network-free CI check for current and historical fixture digests, candidate metadata, source identities, result invariants, and privacy fields |
 | [`report-aarch64-apple-darwin.json`](report-aarch64-apple-darwin.json) | Distilled v1–v4 Apple results; no unexpected recognized text or host path |
 | [`report-x86_64-pc-windows-msvc.json`](report-x86_64-pc-windows-msvc.json) | Distilled final Windows v4 outcomes and open cross-target decision; no unexpected recognized text or host path |
+| `report-aarch64-apple-darwin-v5.json` | Reserved new Apple v5 report; absent until Apple rerun and consolidation |
+| `report-x86_64-pc-windows-msvc-v5.json` | Reserved new Windows v5 report; absent until Windows rerun and consolidation |
 
 The current fixture is
 [`fixtures/ocr/g-004/fixture-manifest.json`](../../../fixtures/ocr/g-004/fixture-manifest.json),
@@ -35,7 +37,7 @@ execution was unchanged. The Apple report preserves the v3 at-run
 candidate-manifest digest; hardened v4 reruns use the corrected exact-shape
 manifest and enforce its complete environment, session, and vocabulary identity.
 
-## Cross-target outcome
+## Historical v4 cross-target outcome
 
 ### Apple Silicon
 
@@ -93,6 +95,12 @@ Correcting these findings changes the evaluator digest. `G-004` therefore remain
 open until every candidate is rerun on both release targets and the replacement
 evidence passes independent review.
 
+Evaluator v5 addresses all five findings without changing the frozen quality
+oracle or candidate set. Its source hash and reserved new report filenames are
+recorded in `candidates.json`. Independent patch review passed before any v5 run;
+Apple reruns are now authorized, while `G-004` remains open pending both new
+target reports and their independent evidence review.
+
 ## Why the real screenshots are not evidence payloads
 
 Four screenshots in ignored `local_docs/game-screenshots/` exposed workload
@@ -113,9 +121,9 @@ python3 docs/evidence/g-004/validate.py
 
 It fails on current fixture/hash/schema drift, historical v1/v2 mutation, any
 changed frozen v1–v4 Apple or final Windows outcome, candidate/path/size/digest/
-vocabulary inconsistency, stale v4 declared source or tool/session identity,
-cross-target gate divergence, privacy-schema drift, or a falsely resolved
-decision.
+vocabulary inconsistency, stale v4 evidence identity, cross-target gate
+divergence, privacy-schema drift, a falsely resolved decision, v5 evaluator-source
+drift, or a tracked v5 report appearing before qualification consolidation.
 
 ## Reproduce one target
 
@@ -135,7 +143,7 @@ py -3.14 -m venv .rasen/changes/phase-3-g004-default-ocr-profile/ephemera/venv
   -m pip install -r docs/evidence/g-004/tool-requirements.txt
 ```
 
-Provision the five v4 candidate component files beneath an explicit model root
+Provision the five v5 candidate component files beneath an explicit model root
 using only the URLs in `candidates.json`:
 
 ```text
@@ -146,9 +154,9 @@ rapidocr-v3.9.2/PP-OCRv6_det_small.onnx
 rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx
 ```
 
-Use the same venv interpreter for validation and evaluation. Run
-`validate.py` before creating any model session, then run each v4 candidate in a
-fresh process with a ten-minute external deadline. On POSIX:
+Use the same venv interpreter for validation and evaluation. Independent v5 patch
+review has passed. Run `validate.py` before creating any model session, then run
+each candidate in a fresh process with a ten-minute external deadline. On POSIX:
 
 ```sh
 .rasen/changes/phase-3-g004-default-ocr-profile/ephemera/venv/bin/python \
@@ -159,7 +167,7 @@ fresh process with a ten-minute external deadline. On POSIX:
   --model-root <explicit-model-root> \
   --product-revision f3608424dde88f835f35653be8113f7a2009431b \
   --report <sanitized-report.json> \
-  --raw-report <ignored-raw-report.json>
+  --raw-report .rasen/changes/phase-3-g004-default-ocr-profile/ephemera/raw-v5/<candidate-id>.json
 ```
 
 On Windows:
@@ -173,13 +181,15 @@ On Windows:
   --model-root <explicit-model-root> `
   --product-revision f3608424dde88f835f35653be8113f7a2009431b `
   --report <sanitized-report.json> `
-  --raw-report <ignored-raw-report.json>
+  --raw-report .rasen/changes/phase-3-g004-default-ocr-profile/ephemera/raw-v5/<candidate-id>.json
 ```
 
-Both report paths must remain under
-`.rasen/changes/phase-3-g004-default-ocr-profile/ephemera/`. V4 records that
-operator rule but does not enforce it; the corrected evaluator must reject a raw
-path outside ignored ephemera before writing or inference.
+The evaluator resolves both paths before inference. The raw path must be distinct
+from the sanitized report and remain under
+`.rasen/changes/phase-3-g004-default-ocr-profile/ephemera/`; other raw
+destinations are rejected. The sanitized report may be returned through
+`local_docs/` and is distilled into the reserved tracked v5 report only after
+review.
 
 Candidate IDs are:
 
@@ -190,9 +200,10 @@ ppocrv6-det-tiny-rec-small
 ppocrv6-multilingual-small
 ```
 
-The recorded Windows run used Python 3.14.6 and the exact versions in
+The historical Windows v4 run used Python 3.14.6 and the exact versions in
 `tool-requirements.txt`, wrote all four sanitized reports outside tracked paths,
-and returned them together. Raw reports remain local because they can contain
-unexpected recognized text. The tracked final report distills only approved
-identity, aggregate, gate, and privacy fields, binds the unchanged Apple report
-by SHA-256, and records the unresolved evidence gaps.
+and returned them together. Its tracked report remains an immutable audit record
+bound to the unchanged Apple v4 report. New v5 raw reports remain private because
+they can contain unexpected recognized text; only approved identity, aggregate,
+gate, privacy, consumed-fixture, code-digest, and typed resident fields may enter
+the reserved tracked v5 reports.

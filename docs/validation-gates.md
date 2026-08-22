@@ -192,12 +192,14 @@ PP-OCRv6 small recognizer, with exact bytes, digests, vocabulary, language,
 preprocessing/decoder, normalization, ordering, confidence, license, and
 controlled-host deployment metadata.
 
-**Required evidence.** The immutable v3 quality fixture under the hardened v4
-evaluator must reproduce exact text, region count, source-relative geometry,
-ordering, confidence validity, and stable outcomes on both release targets. The
-complete pinned tool environment, CPU session input/output/provider metadata,
-embedded vocabulary, model/fixture provenance and licenses, and controlled
-host-provided obligations must match.
+**Required evidence.** The immutable v3 quality fixture under the independently
+reviewed v5 evaluator must reproduce exact text, region count, source-relative
+geometry, ordering, confidence validity, and stable outcomes on both release
+targets. The exact fixture bytes consumed, complete pinned tool environment,
+canonical installed RapidOCR code identity, CPU session input/output/provider
+metadata, embedded vocabulary, expected-first unexpected-region classification,
+private raw-path containment, typed resident outcome, model/fixture provenance and
+licenses, and controlled host-provided obligations must match.
 
 **Due.** Before Phase 3 implementation.
 
@@ -206,10 +208,13 @@ host-provided obligations must match.
 **Status.** Open. The hardened v4 matrix is complete on Apple Silicon and
 `x86_64-pc-windows-msvc`: the conditional candidate is the only one that passes
 all 42 regions plus every declared tool/session/vocabulary identity row, and the
-other three candidates reproduce the same rejected gate rows. Independent
-review found that the evaluator does not bind fixture bytes at use or installed
-RapidOCR code bytes and applies the unexpected-region threshold before
-expected-region matching. Those gaps prevent acceptance despite matching output.
+other three candidates reproduce the same rejected gate rows. Independent review
+found missing consumed-fixture and RapidOCR-code identity, expected-region
+matching after thresholding, unconstrained raw output, and an untyped Windows
+resident failure. Those gaps prevent acceptance despite matching output.
+Evaluator v5 addresses them under a new source identity and reserved report
+filenames. Independent patch review passed before any v5 run; Apple reruns are
+authorized while the gate remains open pending both replacement target reports.
 
 **Resolution.** Harden the evaluator without weakening the frozen oracle, bind
 the executed fixture and RapidOCR code bytes, constrain private raw output to

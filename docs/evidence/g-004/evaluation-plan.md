@@ -97,6 +97,33 @@ name/type/shape records, and the exact embedded vocabulary count/digest and
 fixture coverage. All four candidates rerun in fresh Apple processes. Windows
 qualification must use the same v4 evaluator and source identities.
 
+## Evaluator integrity correction frozen before v5
+
+Windows v4 reproduced every deterministic Apple outcome, but independent review
+found five remaining evaluator-integrity defects. V4 reports remain immutable
+audit records and cannot qualify a corrected evaluator.
+
+V5 was frozen at `2026-08-22T16:53:12Z`, before any v5 run, with evaluator
+SHA-256 `780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249`.
+The fixture bytes, expected regions, candidates, BGR preprocessing, decoder,
+quality gates, warm-ups, and measured-pass count are unchanged. V5 additionally:
+
+- reads each fixture once, verifies those exact bytes against the manifest, and
+  decodes the same byte buffer consumed by inference;
+- binds the installed RapidOCR `.py`, `.yaml`, and `.yml` bytes through a
+  canonical relative-path/length/content SHA-256;
+- matches all normalized detections to expected regions before applying the
+  `0.5` unexpected-region threshold only to unmatched detections;
+- rejects a raw-report destination outside ignored G-004 Change ephemera or equal
+  to the sanitized report path; and
+- reports peak resident memory as a typed measured or unavailable outcome with
+  its collection source or failure reason.
+
+Independent patch review passed at `2026-08-22T17:09:59Z`; no v5 candidate ran
+before that review. Apple v5 reruns are now authorized. Every candidate still
+must rerun in a fresh process on both release targets. New v5 reports use new
+filenames; v4 reports and hashes are never overwritten.
+
 ## Revision and ownership
 
 | Field | Frozen value |
@@ -192,14 +219,16 @@ fresh process with:
   arena disabled, one intra-op thread, one inter-op thread, no classifier, no
   CoreML, DirectML, CUDA, CANN, OpenVINO, Paddle, or Torch provider;
 - input bounds: the five committed fixture PNGs only, each below 2,000 pixels on
-  either side; no network after model provisioning.
+  either side; each file is read once, SHA-256-verified, and decoded from the same
+  verified bytes; no network after model provisioning.
 
 Each fresh candidate process has a ten-minute external deadline. It loads and
 validates no file above 64 MiB, performs two unreported warm-up passes, then ten
 measured passes over the five images. Initialization time, per-pass end-to-end
-median/p95/maximum, total model bytes, and process peak resident bytes are retained
-as tie-breakers. They are not Phase 3 product budgets: a correctness failure can
-never be traded for lower latency or memory.
+median/p95/maximum, total model bytes, and a typed process peak-resident outcome
+are retained as tie-breakers. An unavailable resident metric names its collector
+and typed failure reason. These are not Phase 3 product budgets: a correctness
+failure can never be traded for lower latency or memory.
 
 ## Hard quality gates
 
@@ -207,15 +236,17 @@ Every candidate must satisfy every row independently on each release target:
 
 | Gate | Required result |
 |---|---|
-| Model identity | Both file digests, ONNX input/output shapes, and embedded vocabulary digest match the candidate record before inference |
+| Tool and code identity | Python and every pinned package version match; canonical installed RapidOCR source/config bytes match the recorded digest |
+| Model identity | Both file digests, CPU-only provider, ONNX input/output names/types/shapes, and embedded vocabulary identity match before inference |
+| Fixture identity | The exact bytes consumed by `imdecode` match each manifest SHA-256 and dimension row |
 | Text | Every expected region appears exactly once with exact NFC text after trimming leading and trailing Unicode whitespace |
-| Region count | Exactly the manifest region count; no unexpected region at confidence `>= 0.5` |
+| Region count | Expected regions match before thresholding; no unmatched detection at confidence `>= 0.5`; detected, admitted, unmatched, and below-threshold counts remain observable |
 | Geometry | Matched source-relative quadrilateral has IoU `>= 0.50`, absolute center delta X `<= 0.025`, and absolute center delta Y `<= 0.025` |
-| Ordering | Matched region identifiers occur in exact manifest order, which binds RapidOCR v3.9.2's stable Y / adjacent-10-pixel row / X sort |
+| Ordering | Matched plus admitted-unexpected region identifiers occur in exact manifest order, which binds RapidOCR v3.9.2's stable Y / adjacent-10-pixel row / X sort |
 | Confidence | Every matched region reports a finite decoder value in `[0.0, 1.0]`; confidence is recorded but has no universal hard floor |
-| Stability | All ten measured passes return identical normalized text, count, order, geometry gate, and exact confidence values |
-| Cross-target | Windows and Apple Silicon have identical normalized text, count, order, and gate outcomes; confidence values, timing, and resident memory may differ |
-| Privacy | Tracked evidence contains only approved expected fixture text, aggregate metrics, model/profile identities, geometry, digests, licenses, and typed outcomes |
+| Stability | All ten measured passes return identical normalized text, detected/admitted counts, order, geometry gate, and exact confidence values |
+| Cross-target | Windows and Apple Silicon have identical tool/code/model/fixture identities and deterministic gate outcomes; confidence values, timing, and typed resident outcomes may differ |
+| Privacy | Tracked evidence contains only approved expected fixture text, aggregate metrics, model/profile identities, geometry, digests, licenses, and typed outcomes; raw output is confined to ignored G-004 ephemera |
 
 A missing row, exception, timeout, digest drift, vocabulary omission, target-only
 success, incompatible license, or unsupported controlled deployment rejects the
@@ -226,13 +257,15 @@ weaken or rewrite any observed-output oracle.
 
 Tracked reports may contain product/upstream revisions, release target, operating
 system version/build, CPU architecture and logical-core count, physical memory,
-Python/RapidOCR/ONNX Runtime/OpenCV/Pillow versions, model identifiers/digests/
-byte counts/shapes/vocabulary digest and count, fixture identifiers/digests,
-aggregate latency and resident memory, expected fixture text and geometry, gate
-counts, and typed failure categories.
+Python/RapidOCR/ONNX Runtime/OpenCV/Pillow versions, canonical RapidOCR code
+identity, model identifiers/digests/byte counts/shapes/vocabulary identity,
+consumed fixture byte counts/digests, aggregate latency, typed resident outcome,
+expected fixture text and geometry, gate counts, and typed failure categories.
 
 Reports exclude user and machine names, home or model paths, environment variables,
 credentials, network addresses, hardware serials, unrelated application metadata,
 desktop pixels, non-fixture images, raw tensors, and unexpected recognized text.
-Raw output stays in ignored Rasen ephemera and is deleted under the local retention
-policy after the accepted decision is preserved.
+The evaluator resolves the raw-report destination before inference and rejects any
+path outside ignored G-004 Change ephemera or equal to the sanitized report path.
+Raw output is deleted under the local retention policy after the accepted decision
+is preserved.

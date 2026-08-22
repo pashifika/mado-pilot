@@ -53,6 +53,13 @@ before expected-region matching. It also permits a raw-report path outside
 ignored ephemera. Correcting these findings changes the evaluator digest and
 requires a complete rerun on both release targets.
 
+Evaluator v5 is frozen under source SHA-256
+`780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249`.
+It addresses all five findings without changing the fixture, candidate set, or
+quality oracle and reserves new report filenames rather than overwriting v4.
+Independent patch review passed before any v5 run; Apple reruns are authorized,
+but no v5 evidence is accepted until both replacement target reports pass review.
+
 ## Decision
 
 Withhold a Phase 3 default OCR profile. Candidate
