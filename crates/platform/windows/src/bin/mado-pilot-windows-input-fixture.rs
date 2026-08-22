@@ -40,7 +40,7 @@ mod fixture {
         EVENT_POINTER_MOVE, EventSummary, FILL_RGB, MAX_PACKET_BYTES, MAX_RECORDED_EVENTS,
         fixture_title, format_event_line, is_query, summarize,
     };
-    use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
         BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, HGDIOBJ, PAINTSTRUCT,
     };
@@ -311,15 +311,34 @@ mod fixture {
         // SAFETY: hwnd is live and client is writable for the current rectangle.
         let has_client = unsafe { GetClientRect(hwnd, &raw mut client) }.is_ok();
         if has_client {
-            // COLORREF is 0x00bbggrr. The selected deterministic fill contains
-            // no desktop or input payload.
-            // SAFETY: creating and deleting this process-owned brush is paired.
-            let brush =
-                unsafe { CreateSolidBrush(colorref(CURRENT_FILL_RGB.load(Ordering::Acquire))) };
+            let production = CONTINUOUS_ANIMATION.load(Ordering::Acquire);
+            let animated = CURRENT_FILL_RGB.load(Ordering::Acquire);
+            let background = if production { FILL_RGB } else { animated };
+            // COLORREF is 0x00bbggrr. Both deterministic colors contain no
+            // desktop or input payload.
+            // SAFETY: creating and deleting each process-owned brush is paired.
+            let brush = unsafe { CreateSolidBrush(colorref(background)) };
             // SAFETY: device, rectangle, and brush are live for this paint call.
             let _filled = unsafe { FillRect(device, &raw const client, brush) };
             // SAFETY: the brush is no longer selected or needed after FillRect.
             let _deleted = unsafe { DeleteObject(HGDIOBJ(brush.0)) };
+            if production {
+                // A small changing patch drives natural compositor publication
+                // without flashing the complete operator-visible fixture.
+                let patch = RECT {
+                    left: 16,
+                    top: 16,
+                    right: 32,
+                    bottom: 32,
+                };
+                // SAFETY: patch and its process-owned brush remain live for the
+                // bounded fill, then the brush is deleted.
+                let patch_brush = unsafe { CreateSolidBrush(colorref(animated)) };
+                // SAFETY: device, patch, and patch_brush are live for this paint call.
+                let _filled = unsafe { FillRect(device, &raw const patch, patch_brush) };
+                // SAFETY: patch_brush is process-owned and no longer needed after FillRect.
+                let _deleted = unsafe { DeleteObject(HGDIOBJ(patch_brush.0)) };
+            }
         }
         // SAFETY: balances BeginPaint for this WM_PAINT dispatch.
         let _ended = unsafe { EndPaint(hwnd, &raw const paint) };
@@ -348,7 +367,17 @@ mod fixture {
 
     fn apply_benchmark_resize(hwnd: HWND) {
         let was_large = LARGE_WINDOW.fetch_xor(true, Ordering::AcqRel);
-        let (width, height) = if was_large { (640, 420) } else { (820, 540) };
+        let (width, height) = if CONTINUOUS_ANIMATION.load(Ordering::Acquire) {
+            if was_large {
+                (1_280, 720)
+            } else {
+                (1_440, 810)
+            }
+        } else if was_large {
+            (640, 420)
+        } else {
+            (820, 540)
+        };
         // SAFETY: hwnd is the live fixture window. This changes only its
         // size and deliberately preserves focus, position, and z-order.
         let resized = unsafe {
