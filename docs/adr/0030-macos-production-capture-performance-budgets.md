@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-21
-- **Resolves gate:** the `aarch64-apple-darwin` production-capture and production-transition workloads of [`G-013`](../validation-gates.md#g-013); the gate remains open for the Windows production-capture matrix and final-source Phase 1 reruns
+- **Resolves gate:** the `aarch64-apple-darwin` production-capture and production-transition workloads of [`G-013`](../validation-gates.md#g-013); the cross-platform gate state remains tracked in the registry
 - **Supersedes:** none; ADR 0021 remains historical and ADR 0029 continues to govern its separate controlled-stimulus lineage
 
 ## Context
@@ -13,7 +13,9 @@ Initial runs exposed two independent findings. Repeated fixture launches caused 
 
 A post-budget final-source rerun exposed one further apparatus lifetime: the retained-pressure fixture was started before four unrelated long workloads and could sit idle for about three minutes before use. Moving its one-time creation into that workload's untimed setup preserves one fixture across all pressure samples without overlapping unrelated fixture lifetimes or changing the measured product operation.
 
-Final source `7ba689c6496030af38ded5d3af9b9fd1d6234d29`, tree `42b80aa2318f428728b733cd68ab42e6b8863251`, retained 1,150 production samples with zero correctness failures and zero allocation growth while enforcing every accepted budget. The tracked profiles are [`phase-2-production-capture-aarch64-apple-darwin.toml`](../benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml) and [`phase-2-production-transitions-aarch64-apple-darwin.toml`](../benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml).
+Final measured source `d182300cd8710891ded6cba17184c44d6d58a114`, tree `c570343d334a5c77415e6a885ef8821c731b0ad5`, retained 1,150 production samples with zero correctness failures and zero allocation growth while enforcing every accepted latency, live-heap, mapped-byte, correctness, and growth budget. The tracked profiles are [`phase-2-production-capture-aarch64-apple-darwin.toml`](../benchmarks/phase-2-production-capture-aarch64-apple-darwin.toml) and [`phase-2-production-transitions-aarch64-apple-darwin.toml`](../benchmarks/phase-2-production-transitions-aarch64-apple-darwin.toml).
+
+A pre-landing review found that the accepted live-heap and mapped-byte limits were recorded but not executable, and that resize accepted any changed capture extent. The corrected harness binds the resource constants to both profiles and requires the independently captured frame to carry the fixture's exact next frame-authoritative target geometry. The first exact-source capture rerun was rejected when one `cpu_map_bgra8` sample exceeded the unchanged 10 ms hard maximum (`13.930042 ms`); two subsequent unchanged-source runs passed every ceiling, with maxima `0.462750 ms` and `0.456000 ms`. The rejected run remains part of the review record rather than being relabeled as acceptance evidence.
 
 ## Decision
 
@@ -32,7 +34,7 @@ Latency ceilings use three times the largest applicable measured p50, p95, and m
 | `resize_recreation` | 175 ms | 250 ms | 300 ms |
 | `close_drain` | 250 ms | 300 ms | 300 ms |
 
-Every workload also requires zero correctness failures and at most 4,096 bytes of allocation growth. Production capture peak live Rust heap is capped at 32 MiB; production transitions at 16 MiB. Any row that maps the 1280x904 fixture is capped at exactly 4,628,480 bytes per result. The retained-pressure stale ratio remains evidence of deliberately filling finite storage and is not a steady-capture ceiling.
+Every workload also requires zero correctness failures and at most 4,096 bytes of allocation growth. Production capture peak live Rust heap is capped at 32 MiB; production transitions at 16 MiB. Any row that maps the 1280x904 fixture is capped at 4,628,480 bytes per result. The retained-pressure stale ratio remains evidence of deliberately filling finite storage and is not a steady-capture ceiling.
 
 ## Alternatives
 
@@ -49,7 +51,7 @@ The macOS production capture and transition workload sets become normative regre
 
 Fixed-geometry sessions do not reserve the complete geometry history. A stream pays the bounded allocation once when its first distinct geometry revision is observed, after which repeated transitions reuse capacity and the oldest of 64 revisions retires before insertion.
 
-No Rust, C ABI, or C++ public name or layout changes. Windows behavior and budgets are not inferred. Phase 2 `G-013` and release acceptance remain open for the Windows production-capture matrix and final-source Phase 1 reruns.
+No Rust, C ABI, or C++ public name or layout changes. Windows behavior and budgets are not inferred; cross-platform Phase 2 and release status remain governed by the current `G-013` registry and exit review.
 
 ## Verification
 
@@ -61,4 +63,4 @@ The exact commands, approved metadata, aggregate results, and privacy review are
 - `cargo test --locked -p mado-pilot-platform-macos`: 297 passed, 14 ignored;
 - benchmark profile drift, hard-budget drift, and latency-budget parity tests include both new profiles.
 
-The release benchmark enforces the latency arrays before accepting output and applies hard correctness/allocation gates unconditionally. Historical profile files and their revision-bound sections are unchanged.
+The release benchmark enforces latency, live-heap, and applicable mapped-byte ceilings before accepting output and applies hard correctness/allocation gates unconditionally. Profile-parity tests bind every executable ADR 0030 constant to the recorded budgets. Historical profile files and their revision-bound sections are unchanged.

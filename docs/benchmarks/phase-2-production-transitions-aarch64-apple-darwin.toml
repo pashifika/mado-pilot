@@ -1,6 +1,6 @@
 # Phase 2 production capture transitions, measured on aarch64-apple-darwin at source
-# 7ba689c6496030af38ded5d3af9b9fd1d6234d29 and tree
-# 42b80aa2318f428728b733cd68ab42e6b8863251.
+# d182300cd8710891ded6cba17184c44d6d58a114 and tree
+# c570343d334a5c77415e6a885ef8821c731b0ad5.
 #
 # Produced by `crates/mado-pilot/benches/native-phase2.rs`. ADR 0030 sets
 # the target-specific regression budgets. This profile is independent of the
@@ -19,7 +19,7 @@ measurements_recorded = true
 [profile]
 fixture = "separately linked private macOS fixture Rust, protocol-v11, header, Objective-C, and renderer sources"
 fixture_sha256 = "c5576c5290003c723f1d3797ab1c6032e935a9e04ab42d50ce5dc9108bc029ea"
-benchmark_executable_sha256 = "b3655f657d20157335cffdea18c32c2a4a6c74b549802afc5dea17097221c2c3"
+benchmark_executable_sha256 = "754c8234085ab1855630923326402d7a071e23c0174e8148f1d8ce0ed8e24af7"
 release_target = "aarch64-apple-darwin"
 hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
@@ -29,7 +29,7 @@ warmup_iterations = 5
 sample_count = 50
 correctness_oracle = "every retained sample checks production frame identity, frame-authoritative geometry, declared fixture content, finite retained progress, exact mapping, or bounded lifecycle outcome; the resize command is stimulus only and never substitutes for a captured result"
 queue_policy = "session latest-wins queue depth 1; one bounded private resize stimulus; adapter finite retained-storage limit"
-notes = "source commit 7ba689c6496030af38ded5d3af9b9fd1d6234d29, tree 42b80aa2318f428728b733cd68ab42e6b8863251; toolchain rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology exactly two online non-mirrored displays; signed-origin 3840x2160 1x; main 2560x1440 logical / 5120x2880 backing 2x; mixed-scale connection method unrestricted; permissions/signing Screen Recording granted; event-post access granted; target bundle structurally ad-hoc signed; fixture executable sha256 40a33a5ceefff9ff01afef52b694799d2a1af91cc355a9d1020dda2a68891374; executable paths deliberately omitted; benchmark and fixture SHA-256 bytes are bound to validity-checked static and audit-token-selected live Security code identities; lineage=production-capture-transitions; mode=default renderer=appkit-background resize-stimulus=private-control"
+notes = "source commit d182300cd8710891ded6cba17184c44d6d58a114, tree c570343d334a5c77415e6a885ef8821c731b0ad5; toolchain rustc 1.97.1; cargo 1.97.1; Apple clang 21.0.0; macOS SDK 26.5; GPU/driver Apple integrated GPU; system driver stack; display topology exactly two online non-mirrored displays; signed-origin 3840x2160 1x; main 2560x1440 logical / 5120x2880 backing 2x; mixed-scale connection method unrestricted; permissions/signing Screen Recording granted; event-post access granted; target bundle structurally ad-hoc signed; fixture executable sha256 40a33a5ceefff9ff01afef52b694799d2a1af91cc355a9d1020dda2a68891374; executable paths deliberately omitted; benchmark and fixture SHA-256 bytes are bound to validity-checked static and audit-token-selected live Security code identities; lineage=production-capture-transitions; mode=default renderer=appkit-background resize-stimulus=private-control"
 
 [[budget]]
 measure = "result_correctness"
@@ -55,13 +55,13 @@ rationale = "ADR 0030 permits more than three times the measured production-tran
 workload = "open_first_frame"
 correctness_oracle = "each fresh production capture session returns one correctly identified and mapped first frame, then closes"
 result_correctness = 0
-latency_p50_ms = 97.821750
-latency_p95_ms = 104.117541
-latency_max_ms = 105.085916
-iteration_span_ms = 165.955760
+latency_p50_ms = 89.774583
+latency_p95_ms = 97.587625
+latency_max_ms = 109.289916
+iteration_span_ms = 152.894145
 mapped_bytes_per_result = 4628480
-peak_allocated_bytes = 4636342
-steady_allocated_bytes = 4281
+peak_allocated_bytes = 4635745
+steady_allocated_bytes = 3684
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -100,13 +100,13 @@ rationale = "one exact 1280x904 BGRA8 fixture mapping"
 workload = "resize_recreation"
 correctness_oracle = "one bounded private resize stimulus drives the production capture session; only the independently observed new epoch, geometry, extent, and frame-authoritative transform satisfy the oracle"
 result_correctness = 0
-latency_p50_ms = 52.336333
-latency_p95_ms = 70.281000
-latency_max_ms = 93.493458
-iteration_span_ms = 53.420157
+latency_p50_ms = 52.034250
+latency_p95_ms = 73.230708
+latency_max_ms = 99.592917
+iteration_span_ms = 53.055412
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 19172
-steady_allocated_bytes = 18038
+peak_allocated_bytes = 18879
+steady_allocated_bytes = 17441
 allocated_growth_bytes = 0
 
 [[measurement.budget]]
@@ -137,13 +137,13 @@ rationale = "ADR 0030 rounds above three times the largest applicable measured m
 workload = "close_drain"
 correctness_oracle = "explicit production capture close drains within its bound, reaches the closed state, and remains idempotent"
 result_correctness = 0
-latency_p50_ms = 72.071958
-latency_p95_ms = 85.032791
-latency_max_ms = 98.274000
-iteration_span_ms = 174.122979
+latency_p50_ms = 63.066125
+latency_p95_ms = 67.622291
+latency_max_ms = 84.241667
+iteration_span_ms = 154.776187
 mapped_bytes_per_result = 0
-peak_allocated_bytes = 7638
-steady_allocated_bytes = 4217
+peak_allocated_bytes = 7041
+steady_allocated_bytes = 3620
 allocated_growth_bytes = 0
 
 [[measurement.budget]]

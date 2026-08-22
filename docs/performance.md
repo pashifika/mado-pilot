@@ -620,11 +620,12 @@ All fourteen controlled pair decisions are release-qualified.
 ## Phase 2 macOS production-capture acceptance
 
 [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
-production-capture and production-transition profiles at source
-`7ba689c6496030af38ded5d3af9b9fd1d6234d29`, tree
-`42b80aa2318f428728b733cd68ab42e6b8863251`, on the approved exactly-two-display
+production-capture and production-transition profiles at measured source
+`d182300cd8710891ded6cba17184c44d6d58a114`, tree
+`c570343d334a5c77415e6a885ef8821c731b0ad5`, on the approved exactly-two-display
 mixed-scale Apple Silicon host. The two profiles retain 1,150 samples across
-eight workloads with zero correctness failures and zero allocation growth.
+eight workloads with zero correctness failures and zero allocation growth while
+enforcing latency, live-heap, mapped-byte, correctness, and growth budgets.
 
 Natural `publication_age`, strictly-newer acquisition, latest acquisition,
 BGRA8 mapping, and retained-pressure recovery are recorded separately from

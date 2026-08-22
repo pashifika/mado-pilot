@@ -508,14 +508,15 @@ Cargo profile DLL path, and a C++ oracle that expected macOS submission evidence
 on Windows. The ADR records the bounded repairs and target-specific oracle.
 
 [ADR 0030](adr/0030-macos-production-capture-performance-budgets.md) accepts the
-separate macOS production-capture and production-transition profiles at source
-`7ba689c6496030af38ded5d3af9b9fd1d6234d29`, tree
-`42b80aa2318f428728b733cd68ab42e6b8863251`. Their eight workloads retain 1,150
+separate macOS production-capture and production-transition profiles at measured
+source `d182300cd8710891ded6cba17184c44d6d58a114`, tree
+`c570343d334a5c77415e6a885ef8821c731b0ad5`. Their eight workloads retain 1,150
 correct samples with zero allocation growth and exact mapped-byte accounting on
-the approved exactly-two-display mixed-scale host. The ADR records the bounded
-geometry-history allocation repair and target-specific publication, acquisition,
-mapping, pressure-recovery, startup, resize, and close ceilings. It changes no
-historical profile or source attribution.
+the approved exactly-two-display mixed-scale host. The executable harness now
+enforces every accepted latency, live-heap, mapped-byte, correctness, and growth
+budget and requires the fixture's exact next frame-authoritative target geometry
+after resize. The ADR retains the rejected enforcement-repair attempt and changes
+no historical profile or source attribution.
 
 [ADR 0031](adr/0031-windows-1280-production-capture-performance-budgets.md)
 accepts the separate Windows 1280×720 production-capture and transition profiles
