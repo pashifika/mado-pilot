@@ -992,7 +992,7 @@ fn windows_callback_copy(active: &ActiveFlow) -> Sample {
     Sample::new(observation.callback_copy_time, correct, mapped)
         .with_stale_work(delta.saturating_sub(1), delta)
         .with_capture_resources(capture_resources(
-            observation.copied_bytes,
+            observation.interval_copied_bytes,
             after_metrics,
             2,
         ))
@@ -1062,7 +1062,7 @@ fn dual_display_samples(flow: &DualDisplayFlow) -> (Sample, Sample) {
             identity_ok && placement_ok && pixel_ok && observation.copied_bytes == surface_bytes;
         mapped_bytes = mapped_bytes
             .saturating_add(u64::try_from(mapping.bytes().len()).expect("mapped bytes fit u64"));
-        copied_bytes = copied_bytes.saturating_add(observation.copied_bytes);
+        copied_bytes = copied_bytes.saturating_add(observation.interval_copied_bytes);
         callback_time = callback_time.saturating_add(observation.callback_copy_time);
         stale = stale.saturating_add(delta.saturating_sub(1));
         scheduled = scheduled.saturating_add(delta);
