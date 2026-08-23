@@ -8,5 +8,11 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+mado-pilot-core = { path = "../core" }
+mado-pilot-capture = { path = "../capture" }
+sha2.workspace = true
+unicode-normalization.workspace = true
+
 [lints]
 workspace = true

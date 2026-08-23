@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use mado_pilot_ocr::{ModelId, OcrModelSource};
 use mado_pilot_vision::{TemplateId, TemplateSource};
 
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
@@ -23,16 +24,19 @@ use crate::manifest::Manifest;
 pub struct AssetPackage {
     manifest: Manifest,
     templates: BTreeMap<TemplateId, TemplateSource>,
+    ocr_models: BTreeMap<ModelId, OcrModelSource>,
 }
 
 impl AssetPackage {
     pub(crate) const fn new(
         manifest: Manifest,
         templates: BTreeMap<TemplateId, TemplateSource>,
+        ocr_models: BTreeMap<ModelId, OcrModelSource>,
     ) -> Self {
         Self {
             manifest,
             templates,
+            ocr_models,
         }
     }
 
@@ -71,6 +75,32 @@ impl AssetPackage {
     pub fn resolve_template(&self, id: &str) -> Result<TemplateSource, AssetFault> {
         self.templates.get(id).cloned().ok_or(AssetFault::new(
             AssetFaultKind::UnknownTemplate,
+            LoadStage::Commit,
+        ))
+    }
+
+    /// Returns every OCR model identity, in sorted order.
+    pub fn ocr_model_ids(&self) -> impl ExactSizeIterator<Item = &ModelId> {
+        self.ocr_models.keys()
+    }
+
+    /// Returns the number of OCR models the package contains.
+    #[must_use]
+    pub fn ocr_model_count(&self) -> usize {
+        self.ocr_models.len()
+    }
+
+    /// Resolves a validated immutable OCR model source.
+    ///
+    /// Resolution shares both component allocations and stays valid after this
+    /// package is dropped. It never re-reads or re-hashes the package source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AssetFaultKind::UnknownOcrModel`] when no model has that identity.
+    pub fn resolve_ocr_model(&self, id: &str) -> Result<OcrModelSource, AssetFault> {
+        self.ocr_models.get(id).cloned().ok_or(AssetFault::new(
+            AssetFaultKind::UnknownOcrModel,
             LoadStage::Commit,
         ))
     }

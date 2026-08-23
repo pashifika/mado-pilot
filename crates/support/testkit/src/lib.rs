@@ -24,13 +24,12 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 complete, and the Phase 2 input support with it. Capture, storage,
-//! vision, permission, and input doubles, a manual clock, a template-image
-//! writer, the matching fixture scene, the capture, vision, and input contract
-//! suites, and the benchmark harness exist. The input double records the policies
-//! each admitted sequence carried, so a layer that substituted one is visible
-//! rather than merely improbable. OCR doubles and target lifecycle scripts do
-//! not exist.
+//! Phase 1 and Phase 2 support remains complete. Capture, storage, vision, OCR,
+//! permission, and input doubles, manual and controlled clocks, shared contract
+//! suites, fixture writers, and the benchmark harness exist. `ControlledOcr`
+//! scripts candidates, failures, latency, cancellation, close, and completion
+//! gates so deadline and out-of-order behavior are deterministic. Target
+//! lifecycle scripts do not exist.
 
 pub mod bench_harness;
 pub mod capture_contract;
@@ -38,10 +37,12 @@ pub mod clock;
 pub mod controlled_capture;
 pub mod controlled_input;
 pub mod controlled_matcher;
+pub mod controlled_ocr;
 pub mod controlled_storage;
 pub mod fixture_checksums;
 pub mod input_contract;
 pub mod match_fixtures;
+pub mod ocr_contract;
 pub mod png;
 pub mod scripted_permission;
 pub mod vision_contract;
@@ -50,5 +51,9 @@ pub use clock::ManualClock;
 pub use controlled_capture::ControlledCapture;
 pub use controlled_input::ControlledInput;
 pub use controlled_matcher::{Behavior, ControlledMatcher};
+pub use controlled_ocr::{
+    CONTROLLED_OCR_BACKEND, CONTROLLED_OCR_MODEL, CONTROLLED_OCR_PROFILE, CompletionGate,
+    ControlledOcr, OcrBehavior, ScriptedOcrCall, ScriptedOcrCandidate,
+};
 pub use controlled_storage::{ControlledProducer, Conversion};
 pub use scripted_permission::{Answer, ScriptedPermissionProbe};

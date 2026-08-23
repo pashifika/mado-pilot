@@ -44,10 +44,10 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1, complete. Directory, memory, and archive loading, the version-one
-//! manifest, the `G-014` ceilings, and resolution into vision template sources
-//! are implemented and tested. OCR model resolution is not: no OCR contract
-//! exists to resolve into yet.
+//! Phase 1 template loading remains complete. Schema version 1 stays readable;
+//! schema version 2 adds complete bounded OCR model/profile declarations.
+//! Directory, memory, and archive sources resolve identical immutable template
+//! and OCR model sources through the same `G-014`-bounded pipeline.
 //!
 //! **The public names here are reviewed, not yet stable.**
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
@@ -97,8 +97,8 @@ pub use fault::{AssetFault, AssetFaultKind, LoadStage};
 pub use limits::AssetLimits;
 pub use load::PackageLoader;
 pub use manifest::{
-    ContentDigest, HASH_ALGORITHM, MANIFEST_PATH, Manifest, Provenance, SCHEMA_VERSION,
-    TemplateDeclaration,
+    ContentDigest, HASH_ALGORITHM, MANIFEST_PATH, Manifest, OcrComponentDeclaration,
+    OcrModelDeclaration, Provenance, SCHEMA_VERSION, TemplateDeclaration,
 };
 pub use package::AssetPackage;
 pub use path::PackagePath;

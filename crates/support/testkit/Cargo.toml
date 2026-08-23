@@ -12,6 +12,7 @@ publish = false
 mado-pilot-core = { path = "../../automation/core" }
 mado-pilot-capture = { path = "../../automation/capture" }
 mado-pilot-input = { path = "../../automation/input" }
+mado-pilot-ocr = { path = "../../automation/ocr" }
 mado-pilot-vision = { path = "../../automation/vision" }
 
 # Verifying that a tracked fixture directory still matches its SHA256SUMS.

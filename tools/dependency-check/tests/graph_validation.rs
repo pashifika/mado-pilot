@@ -56,7 +56,6 @@ fn documented_cross_contract_edges_are_accepted() {
     let edges = vec![
         ObservedEdge::production(VISION, CAPTURE),
         ObservedEdge::production(OCR, CAPTURE),
-        ObservedEdge::production(OCR, VISION),
         ObservedEdge::production(ASSETS, VISION),
         ObservedEdge::production(ASSETS, OCR),
     ];
@@ -71,6 +70,7 @@ fn reverse_cross_contract_edges_are_rejected() {
         ObservedEdge::production(CAPTURE, OCR),
         ObservedEdge::production(VISION, OCR),
         ObservedEdge::production(OCR, ASSETS),
+        ObservedEdge::production(OCR, VISION),
     ];
 
     let violations = validate(&graph_with(edges));
@@ -81,6 +81,7 @@ fn reverse_cross_contract_edges_are_rejected() {
             (CAPTURE, OCR),
             (CAPTURE, VISION),
             (OCR, ASSETS),
+            (OCR, VISION),
             (VISION, OCR),
         ]
     );
