@@ -1,9 +1,9 @@
 # G-004 default OCR profile evidence
 
 This directory holds the fixed candidate/profile inputs and privacy-reviewed
-qualification evidence for [`G-004`](../../validation-gates.md#g-004). The v4
-matrix has matching target outcomes, but independent review keeps the gate open
-until the evaluator is hardened and rerun on both release targets.
+qualification evidence for [`G-004`](../../validation-gates.md#g-004). The v5
+matrix has matching release-target outcomes under the corrected evaluator
+identity, and final independent review accepts the immutable profile decision.
 
 No model or font bytes are committed. No MadoPilot release downloads a model or
 claims an OCR backend from this evidence-only Change.
@@ -20,8 +20,8 @@ claims an OCR backend from this evidence-only Change.
 | [`validate.py`](validate.py) | Network-free CI check for current and historical fixture digests, candidate metadata, source identities, result invariants, and privacy fields |
 | [`report-aarch64-apple-darwin.json`](report-aarch64-apple-darwin.json) | Distilled v1–v4 Apple results; no unexpected recognized text or host path |
 | [`report-x86_64-pc-windows-msvc.json`](report-x86_64-pc-windows-msvc.json) | Distilled final Windows v4 outcomes and open cross-target decision; no unexpected recognized text or host path |
-| [`report-aarch64-apple-darwin-v5.json`](report-aarch64-apple-darwin-v5.json) | Current Apple v5 outcomes after independent patch review; Windows replacement remains pending |
-| `report-x86_64-pc-windows-msvc-v5.json` | Reserved new Windows v5 report; absent until Windows rerun and consolidation |
+| [`report-aarch64-apple-darwin-v5.json`](report-aarch64-apple-darwin-v5.json) | Current Apple v5 outcomes after independent patch review; bound by the Windows cross-target report |
+| [`report-x86_64-pc-windows-msvc-v5.json`](report-x86_64-pc-windows-msvc-v5.json) | Accepted Windows v5 outcomes, Apple binding, cross-target reconciliation, and final evidence-review record |
 
 The current fixture is
 [`fixtures/ocr/g-004/fixture-manifest.json`](../../../fixtures/ocr/g-004/fixture-manifest.json),
@@ -39,8 +39,8 @@ manifest and enforce its complete environment, session, and vocabulary identity.
 
 ## Current v5 qualification status
 
-Independent patch review passed before any v5 run. Four fresh Apple processes then
-used evaluator SHA-256
+Independent patch review passed before any v5 run. Four fresh processes on each
+release target then used evaluator SHA-256
 `780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249`,
 candidate metadata SHA-256
 `4b5aa66d3a7c390211219c794e35ee685701a9cd23c0f24f0d62047280199ff7`,
@@ -50,6 +50,8 @@ Every consumed fixture byte count/digest matched its manifest row, every outcome
 was stable across ten measured passes, and raw output remained in private
 ephemera.
 
+### Apple Silicon v5
+
 | Candidate | Model bytes | Median / p95 suite | Peak resident | Result |
 |---|---:|---:|---:|---|
 | `ppocrv4-det-v6-rec-small` | 25,979,900 | 2,622.916 / 2,632.851 ms | 986,087,424 B | Pass: all 42 regions |
@@ -57,9 +59,22 @@ ephemera.
 | `ppocrv6-det-tiny-rec-small` | 23,064,001 | 2,195.475 / 2,211.013 ms | 733,937,664 B | Reject: one dense-tooltip exact-text row and one admitted unexpected region |
 | `ppocrv6-multilingual-small` | 31,163,977 | 3,445.286 / 3,589.109 ms | 999,129,088 B | Reject: one dense-tooltip exact-text row and one admitted unexpected region |
 
-The same conditional candidate advances, but `G-004` remains open. Windows must
-rerun all four candidates with the identical v5 evaluator, candidate metadata,
-RapidOCR code identity, and fixture bytes before cross-target reconciliation.
+### Windows v5
+
+| Candidate | Model bytes | Median / p95 suite | Peak resident | Result |
+|---|---:|---:|---:|---|
+| `ppocrv4-det-v6-rec-small` | 25,979,900 | 2,207.743 / 2,250.868 ms | 553,406,464 B | Pass: all 42 regions |
+| `ppocrv5-det-v6-rec-small` | 26,053,959 | 3,000.408 / 3,021.903 ms | 547,180,544 B | Reject: one `mission.png` exact-text row and one admitted unexpected region |
+| `ppocrv6-det-tiny-rec-small` | 23,064,001 | 1,609.076 / 1,616.285 ms | 492,269,568 B | Reject: one dense-tooltip exact-text row and one admitted unexpected region |
+| `ppocrv6-multilingual-small` | 31,163,977 | 6,404.375 / 6,426.121 ms | 558,338,048 B | Reject: one dense-tooltip exact-text row and one admitted unexpected region |
+
+The candidate-level outcomes and every deterministic image gate field match
+across targets. Tool/code/model/fixture identities also match; timing, confidence
+values, and typed resident measurements differ only in the fields the frozen plan
+permits to vary. Final independent review verified those bindings, required the
+validator to recompute every tracked v5 source hash, and accepted
+`ppocrv4-det-v6-rec-small` as the only passing immutable profile. `G-004` is
+resolved; implementation and support remain separate later Changes.
 
 ## Historical v4 cross-target outcome
 
@@ -104,7 +119,7 @@ collector returned no value and did not retain its native failure reason, so the
 Windows report records `null` rather than inventing a measurement. The Apple
 values are comparison evidence, not a Rust backend budget or support claim.
 
-### Independent review outcome
+### Historical v4 independent review outcome
 
 The matching output does not accept a default. Independent review found that v4:
 
@@ -115,15 +130,15 @@ The matching output does not accept a default. Independent review found that v4:
 - accepts a private raw-report path outside ignored Change ephemera; and
 - does not retain the Windows peak-resident collection failure reason.
 
-Correcting these findings changes the evaluator digest. `G-004` therefore remains
-open until every candidate is rerun on both release targets and the replacement
-evidence passes independent review.
+Correcting these findings changed the evaluator digest and kept `G-004` open
+until every candidate was rerun on both release targets and the replacement
+evidence passed independent review.
 
 Evaluator v5 addresses all five findings without changing the frozen quality
-oracle or candidate set. Its source hash and reserved new report filenames are
-recorded in `candidates.json`. Independent patch review passed before any v5 run;
-Apple reruns are now authorized, while `G-004` remains open pending both new
-target reports and their independent evidence review.
+oracle or candidate set. Its source hash and new report filenames are recorded in
+`candidates.json`. Independent patch review passed before any v5 run; both target
+reruns are complete. Final evidence review verified the consolidated reports and
+validator, closed two review findings, and accepted the profile.
 
 ## Why the real screenshots are not evidence payloads
 
@@ -146,9 +161,9 @@ python3 docs/evidence/g-004/validate.py
 It fails on current fixture/hash/schema drift, historical v1/v2 mutation, any
 changed frozen v1–v4 Apple or final Windows outcome, candidate/path/size/digest/
 vocabulary inconsistency, stale v4 evidence identity, cross-target gate
-divergence, privacy-schema drift, a falsely resolved decision, v5 evaluator-source
-or frozen Apple-outcome drift, or a Windows v5 report appearing before the
-authorized Windows rerun.
+divergence, privacy-schema drift, final-review or accepted-decision drift, v5
+evaluator-source or frozen Apple/Windows outcome drift, or incomplete binding
+between the two v5 target reports.
 
 ## Reproduce one target
 

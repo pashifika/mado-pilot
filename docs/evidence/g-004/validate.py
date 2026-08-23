@@ -366,8 +366,8 @@ def validate_candidates() -> None:
     windows_v5_path = ROOT / v5["reports"]["windows"]
     if not apple_v5_path.is_file():
         fail("candidate v5 Apple report is missing after authorized rerun")
-    if windows_v5_path.exists():
-        fail("candidate v5 Windows report exists before authorized Windows rerun")
+    if not windows_v5_path.is_file():
+        fail("candidate v5 Windows report is missing after authorized rerun")
     if v1.get("fixture_profile_id") != "g-004-japanese-ui-v1":
         fail("candidate v1 fixture profile drifted")
     if v2.get("fixture_profile_id") != "g-004-japanese-ui-v2":
@@ -1016,6 +1016,18 @@ def validate_windows_report() -> None:
 
 
 
+def validate_v5_tracked_source_identity() -> None:
+    tracked_inputs = {
+        "evaluator_sha256": EVIDENCE / "evaluate.py",
+        "fixture_manifest_sha256": FIXTURES / "fixture-manifest.json",
+        "candidates_sha256": EVIDENCE / "candidates.json",
+        "tool_requirements_sha256": EVIDENCE / "tool-requirements.txt",
+    }
+    for field, path in tracked_inputs.items():
+        if sha256(path) != V5_RUN_SOURCE_IDENTITY[field]:
+            fail(f"v5 {field} no longer matches the tracked input bytes")
+
+
 def validate_apple_v5_report() -> None:
     path = EVIDENCE / "report-aarch64-apple-darwin-v5.json"
     report = load_json(path)
@@ -1316,6 +1328,323 @@ def validate_apple_v5_report() -> None:
     reject_unapproved_payload(report)
 
 
+def validate_windows_v5_report() -> None:
+    path = EVIDENCE / "report-x86_64-pc-windows-msvc-v5.json"
+    report = load_json(path)
+    require_exact_keys(
+        report,
+        {
+            "schema_version",
+            "report_kind",
+            "qualification_stage",
+            "target",
+            "product_base_revision",
+            "source_identity",
+            "host",
+            "tools",
+            "profile",
+            "patch_review",
+            "final_evidence_review",
+            "historical_v4_report",
+            "apple_v5_report",
+            "candidates",
+            "candidate_outcomes_sha256",
+            "cross_target_decision",
+            "privacy",
+        },
+        "Windows v5 report",
+    )
+    if report.get("schema_version") != 1:
+        fail("Windows v5 report schema_version must be 1")
+    if report.get("report_kind") != "g-004-evaluator-v5-cross-target-qualification":
+        fail("Windows v5 report kind drifted")
+    if report.get("qualification_stage") != "v5":
+        fail("Windows v5 qualification stage drifted")
+    if report.get("target") != "x86_64-pc-windows-msvc":
+        fail("Windows v5 target drifted")
+    if report.get("product_base_revision") != "f3608424dde88f835f35653be8113f7a2009431b":
+        fail("Windows v5 product baseline drifted")
+    if report.get("source_identity") != V5_RUN_SOURCE_IDENTITY:
+        fail("Windows v5 source identity drifted")
+    if report.get("host") != {
+        "target": "x86_64-pc-windows-msvc",
+        "os": "Windows",
+        "os_release": "11",
+        "os_version": "10.0.26200",
+        "architecture": "AMD64",
+        "logical_cpu_count": 20,
+        "physical_memory_bytes": 34197635072,
+    }:
+        fail("Windows v5 host identity drifted")
+
+    apple_path = EVIDENCE / "report-aarch64-apple-darwin-v5.json"
+    apple_report = load_json(apple_path)
+    expected_tools = dict(apple_report["tools"])
+    expected_tools["onnxruntime_available_providers"] = [
+        "AzureExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+    if report.get("tools") != expected_tools:
+        fail("Windows v5 tool or RapidOCR code identity drifted")
+    if report.get("profile") != apple_report.get("profile"):
+        fail("Windows v5 execution profile diverged from Apple v5")
+    if report.get("patch_review") != apple_report.get("patch_review"):
+        fail("Windows v5 patch-review record drifted")
+    if report.get("final_evidence_review") != {
+        "status": "passed",
+        "reviewed_at": "2026-08-22T23:56:35Z",
+        "scope": (
+            "cross-target v5 identity, quality, provenance, privacy, validator "
+            "drift rejection, and absence of implementation scope creep"
+        ),
+        "findings_closed": [
+            "tracked_v5_source_hashes_not_recomputed",
+            "README_v5_status_contradiction",
+        ],
+    }:
+        fail("Windows v5 final evidence-review record drifted")
+
+    v4_path = EVIDENCE / "report-x86_64-pc-windows-msvc.json"
+    if report.get("historical_v4_report") != {
+        "path": "docs/evidence/g-004/report-x86_64-pc-windows-msvc.json",
+        "sha256": sha256(v4_path),
+        "status": "immutable-audit-record-not-qualification",
+    }:
+        fail("Windows v5 historical v4 binding drifted")
+    if report.get("apple_v5_report") != {
+        "path": "docs/evidence/g-004/report-aarch64-apple-darwin-v5.json",
+        "sha256": sha256(apple_path),
+        "candidate_outcomes_sha256": apple_report.get("candidate_outcomes_sha256"),
+    }:
+        fail("Windows v5 Apple report binding drifted")
+
+    candidates = report.get("candidates")
+    expected_candidate_ids = [
+        "ppocrv4-det-v6-rec-small",
+        "ppocrv5-det-v6-rec-small",
+        "ppocrv6-det-tiny-rec-small",
+        "ppocrv6-multilingual-small",
+    ]
+    if (
+        not isinstance(candidates, list)
+        or [candidate.get("candidate_id") for candidate in candidates]
+        != expected_candidate_ids
+    ):
+        fail("Windows v5 candidate matrix drifted")
+    candidates_payload = json.dumps(
+        candidates,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    observed_outcomes_sha256 = hashlib.sha256(candidates_payload).hexdigest()
+    if (
+        report.get("candidate_outcomes_sha256") != observed_outcomes_sha256
+        or observed_outcomes_sha256
+        != "f68e7da7b2dc784c72567d048fba22b0f09a4a7697cebff9270b209174dca8d9"
+    ):
+        fail("Windows v5 frozen candidate outcomes changed")
+
+    fixture = load_json(FIXTURES / "fixture-manifest.json")
+    fixture_lookup = {image["file"]: image for image in fixture["images"]}
+    apple_lookup = {
+        candidate["candidate_id"]: candidate for candidate in apple_report["candidates"]
+    }
+    candidate_gate_fields = (
+        "stable_gate_outcomes",
+        "failure_categories",
+        "pass",
+    )
+    image_gate_fields = (
+        "file",
+        "fixture_sha256",
+        "consumed_fixture_sha256",
+        "consumed_fixture_bytes",
+        "expected_region_count",
+        "detected_region_count",
+        "admitted_region_count",
+        "exact_text_count",
+        "geometry_pass_count",
+        "confidence_pass_count",
+        "unmatched_region_count",
+        "unexpected_region_count",
+        "below_unexpected_threshold_count",
+        "order_pass",
+        "pass",
+    )
+    selected = expected_candidate_ids[0]
+    for candidate in candidates:
+        candidate_id = candidate["candidate_id"]
+        require_exact_keys(
+            candidate,
+            {
+                "candidate_id",
+                "source_identity",
+                "models",
+                "aggregate",
+                "images",
+                "stable_gate_outcomes",
+                "failure_categories",
+                "pass",
+            },
+            f"Windows v5 candidate {candidate_id}",
+        )
+        apple_candidate = apple_lookup.get(candidate_id)
+        if apple_candidate is None:
+            fail(f"Apple v5 candidate {candidate_id} is missing")
+        if candidate["source_identity"] != V5_RUN_SOURCE_IDENTITY:
+            fail(f"Windows v5 candidate {candidate_id} source identity drifted")
+        if candidate["models"] != apple_candidate["models"]:
+            fail(f"Windows v5 candidate {candidate_id} model identity diverged")
+        if candidate["stable_gate_outcomes"] is not True:
+            fail(f"Windows v5 candidate {candidate_id} is unstable")
+        if any(
+            candidate[field] != apple_candidate[field]
+            for field in candidate_gate_fields
+        ):
+            fail(f"Windows v5 candidate gate outcome diverged for {candidate_id}")
+
+        aggregate = require_exact_keys(
+            candidate["aggregate"],
+            {
+                "initialization_ms",
+                "suite_median_ms",
+                "suite_p95_ms",
+                "suite_maximum_ms",
+                "process_peak_resident",
+            },
+            f"Windows v5 candidate {candidate_id} aggregate",
+        )
+        initialization = aggregate["initialization_ms"]
+        median = aggregate["suite_median_ms"]
+        p95 = aggregate["suite_p95_ms"]
+        maximum = aggregate["suite_maximum_ms"]
+        if (
+            not all(
+                isinstance(value, (int, float)) and value > 0
+                for value in (initialization, median, p95, maximum)
+            )
+            or not median <= p95 <= maximum
+        ):
+            fail(f"Windows v5 candidate {candidate_id} timing is invalid")
+        resident = require_exact_keys(
+            aggregate["process_peak_resident"],
+            {"status", "bytes", "source"},
+            f"Windows v5 candidate {candidate_id} resident outcome",
+        )
+        if (
+            resident["status"] != "measured"
+            or not isinstance(resident["bytes"], int)
+            or resident["bytes"] <= 0
+            or resident["source"] != "GetProcessMemoryInfo.PeakWorkingSetSize"
+        ):
+            fail(f"Windows v5 candidate {candidate_id} resident outcome drifted")
+
+        images = candidate["images"]
+        apple_images = apple_candidate["images"]
+        if (
+            not isinstance(images, list)
+            or [image.get("file") for image in images] != list(fixture_lookup)
+            or len(images) != len(apple_images)
+        ):
+            fail(f"Windows v5 candidate {candidate_id} image matrix drifted")
+        for windows_image, apple_image in zip(images, apple_images, strict=True):
+            require_exact_keys(
+                windows_image,
+                {
+                    "file",
+                    "fixture_sha256",
+                    "consumed_fixture_sha256",
+                    "consumed_fixture_bytes",
+                    "expected_region_count",
+                    "detected_region_count",
+                    "admitted_region_count",
+                    "exact_text_count",
+                    "geometry_pass_count",
+                    "confidence_pass_count",
+                    "unmatched_region_count",
+                    "unexpected_region_count",
+                    "below_unexpected_threshold_count",
+                    "order_pass",
+                    "minimum_matched_iou",
+                    "minimum_matched_confidence",
+                    "pass",
+                },
+                f"Windows v5 candidate {candidate_id} image",
+            )
+            expected_image = fixture_lookup[windows_image["file"]]
+            fixture_path = FIXTURES / windows_image["file"]
+            if (
+                windows_image["fixture_sha256"] != expected_image["sha256"]
+                or windows_image["consumed_fixture_sha256"] != expected_image["sha256"]
+                or windows_image["consumed_fixture_bytes"] != fixture_path.stat().st_size
+            ):
+                fail(
+                    f"Windows v5 candidate {candidate_id} consumed fixture drifted"
+                )
+            if any(
+                windows_image[field] != apple_image[field]
+                for field in image_gate_fields
+            ):
+                fail(
+                    f"Windows v5 image gate outcome diverged for "
+                    f"{candidate_id}/{windows_image['file']}"
+                )
+            for field in ("minimum_matched_iou", "minimum_matched_confidence"):
+                value = windows_image[field]
+                if not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0:
+                    fail(
+                        f"Windows v5 candidate {candidate_id} "
+                        f"{field} is invalid for {windows_image['file']}"
+                    )
+
+        if candidate_id == selected:
+            if candidate["pass"] is not True or candidate["failure_categories"] != []:
+                fail("Windows v5 selected candidate no longer passes")
+        elif (
+            candidate["pass"] is not False
+            or candidate["failure_categories"]
+            != ["ordering_mismatch", "text_mismatch", "unexpected_region"]
+        ):
+            fail(f"Windows v5 rejected candidate {candidate_id} outcome drifted")
+
+    expected_decision = {
+        "profile_id": "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1",
+        "selected_candidate": selected,
+        "source_identity_matches_apple": True,
+        "model_session_vocabulary_identities_match_apple": True,
+        "candidate_gate_outcomes_match_apple": True,
+        "image_gate_outcomes_match_apple": True,
+        "other_candidates_rejected": expected_candidate_ids[1:],
+        "unresolved_evidence_gaps": [],
+        "g004_status": "accepted",
+    }
+    if report.get("cross_target_decision") != expected_decision:
+        fail("Windows v5 cross-target decision drifted")
+    if report.get("privacy") != {
+        "approved_expected_fixture_text_only": True,
+        "unexpected_recognized_text_retained": False,
+        "game_screenshot_pixels_or_text_retained": False,
+        "host_paths_retained": False,
+        "raw_report_private_root_enforced": True,
+    }:
+        fail("Windows v5 privacy declaration drifted")
+
+    def reject_unapproved_payload(value: object) -> None:
+        if isinstance(value, dict):
+            if any(key in {"text", "observed", "raw"} for key in value):
+                fail("Windows v5 report contains unapproved recognized payload fields")
+            for nested in value.values():
+                reject_unapproved_payload(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                reject_unapproved_payload(nested)
+        elif isinstance(value, str) and ("/Users/" in value or "\\Users\\" in value):
+            fail("Windows v5 report contains a host-local path")
+
+    reject_unapproved_payload(report)
+
+
 def validate_requirements() -> None:
     path = EVIDENCE / "tool-requirements.txt"
     required = {"rapidocr": "3.9.2", "onnxruntime": "1.29.0"}
@@ -1335,10 +1664,12 @@ def validate_requirements() -> None:
 def main() -> None:
     validate_fixture()
     validate_candidates()
+    validate_v5_tracked_source_identity()
     validate_apple_report()
     validate_apple_v5_report()
     validate_requirements()
     validate_windows_report()
+    validate_windows_v5_report()
     print("G-004 fixture and candidate evidence: OK")
 
 

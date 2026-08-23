@@ -796,19 +796,17 @@ weak framework linking the record described; see
 [The macOS native boundary](#the-macos-native-boundary) and
 [macOS native capture ownership](#macos-native-capture-ownership).
 
-`G-004` remains open. [Proposed ADR 0033](adr/0033-default-ocr-model-profile.md)
-identifies RapidOCR v3.9.2's PP-OCRv4 mobile detector plus PP-OCRv6 small
-recognizer as the only candidate with matching passing outcomes on both release
-targets. Independent review found that the hardened v4 evaluator does not bind
-the fixture bytes at use or the installed RapidOCR code bytes and applies the
-unexpected-region threshold before expected-region matching. Correcting those
-gaps changes the evaluator identity and requires fresh evidence on both targets.
-Evaluator v5 is frozen with those corrections and new report filenames.
-Independent patch review passed before any v5 run, and fresh Apple evidence now
-reproduces the conditional selection under the new identity. Windows v5 evidence
-remains pending after the evaluator identity change.
-No default profile, model bytes, ONNX Runtime, OCR contract/backend, default
-wiring, or support claim is accepted.
+`G-004` is resolved by
+[ADR 0033](adr/0033-default-ocr-model-profile.md), which selects RapidOCR
+v3.9.2's PP-OCRv4 mobile detector plus PP-OCRv6 small recognizer as the exact
+controlled-host Phase 3 default profile identity. Four fresh v5 candidate
+processes on each release target bound the consumed fixture bytes, canonical
+installed RapidOCR code, complete tool/model/session/vocabulary identities, and
+typed resident outcomes. The selected profile is the only candidate that passes
+all 42 regions; every deterministic candidate and image gate matches across
+targets. Independent patch and final evidence review passed without weakening the
+oracle. No model bytes, ONNX Runtime, OCR contract/backend, default wiring, or
+support claim is added by this evidence decision.
 
 ## Implementation status
 
@@ -845,7 +843,7 @@ responsibilities a later phase takes on.
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
-| OCR and model loading | Not implemented; `G-004` has one cross-target-matching conditional candidate under proposed ADR 0033 but remains open pending evaluator hardening and fresh evidence on both release targets |
+| OCR and model loading | Not implemented; `G-004` is resolved by accepted ADR 0033 with one exact controlled-host default profile identity, while contracts, backend loading, performance budgets, packaging, default wiring, and support remain later work |
 | OCR, watchers, and scheduling | Not implemented |
 | Bounded engine-scoped diagnostic observation | Implemented in `mado-pilot-runtime` and the facade with allocation-free `Off`, finite `Normal`/`Debug` streams, strict record order, exact loss counts, immutable owned batches, independent reader lifetime, and privacy-reviewed payloads; exposed through C ABI 1.2 and the C++ wrapper |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |

@@ -185,26 +185,27 @@ can see the license position was checked when the choice was made.
 | Decision | Crates the implementation will need | License position | Recorded in |
 |---|---|---|---|
 | The macOS shim boundary, `G-003` | Implemented with `cc` alone; the `objc2` family was reviewed and not needed | `cc` is `MIT OR Apache-2.0` and is now recorded above. The reviewed `objc2`, `objc2-foundation`, `objc2-core-*`, and `objc2-screen-capture-kit` positions stand unused and are kept below for the next Change that might need them | [adr/0012-macos-shim-language-and-containment.md](adr/0012-macos-shim-language-and-containment.md) |
-| Proposed controlled-host default OCR profile, `G-004` | No Cargo dependency in this Change. The implementing Change independently selects and pins the smallest maintained ONNX Runtime integration surface it needs | RapidOCR/PaddleOCR model provenance is Apache-2.0; ONNX Runtime 1.29.0 used for qualification is MIT; repository-authored fixture PNGs are Apache-2.0 and the unbundled Noto Sans JP render input is OFL-1.1. No model/runtime/font bytes are redistributed | [proposed ADR 0033](adr/0033-default-ocr-model-profile.md) and [G-004 dependency review](evidence/g-004/dependency-review.md) |
+| Accepted controlled-host default OCR profile, `G-004` | No Cargo dependency in this Change. The implementing Change independently selects and pins the smallest maintained ONNX Runtime integration surface it needs | RapidOCR/PaddleOCR model provenance is Apache-2.0; ONNX Runtime 1.29.0 used for qualification is MIT; repository-authored fixture PNGs are Apache-2.0 and the unbundled Noto Sans JP render input is OFL-1.1. No model/runtime/font bytes are redistributed | [ADR 0033](adr/0033-default-ocr-model-profile.md) and [G-004 dependency review](evidence/g-004/dependency-review.md) |
 
 The exact versions are pinned by the change that adds them, against the
 lockfile and the advisory database as they stand at that time.
 
-### G-004 conditional OCR profile
+### G-004 accepted OCR profile
 
-`G-004` remains open. RapidOCR v3.9.2's `ch_PP-OCRv4_det_mobile.onnx` plus
-`PP-OCRv6_rec_small.onnx`, 25,979,900 bytes total, produce matching passing v4
-outcomes on both release targets through an explicit caller-selected model root
-and fixed safe relative paths. Independent review found that executed fixture and
-RapidOCR code bytes are not fully bound and that the unexpected-region threshold
-is applied before expected-region matching, so no default profile is accepted.
-Evaluator v5 addresses those findings under a new source identity and reserved
-report names. Independent patch review passed before any v5 run, and Apple v5
-evidence reproduces the conditional selection; Windows replacement evidence
-remains pending. The exact
-SHA-256 values, model/vocabulary shapes, preprocessing/decoder, fixture terms,
-public provenance, cross-target outcomes, and open gaps are recorded in
-[evidence/g-004/](evidence/g-004/README.md).
+`G-004` selects RapidOCR v3.9.2's `ch_PP-OCRv4_det_mobile.onnx` plus
+`PP-OCRv6_rec_small.onnx`, 25,979,900 bytes total, through an explicit
+caller-selected model root and fixed safe relative paths. Under independently
+reviewed evaluator v5, this is the only candidate that passes every identity and
+quality row on Apple Silicon and `x86_64-pc-windows-msvc`; every deterministic
+candidate and image gate matches across targets. The exact SHA-256 values,
+model/vocabulary shapes, preprocessing/decoder, fixture terms, public provenance,
+cross-target outcomes, review record, and privacy constraints are recorded in
+[evidence/g-004/](evidence/g-004/).
+
+This decision adds no Cargo dependency, model/runtime/font bytes, backend, or
+support claim. The implementation Change must independently select and review its
+native and Rust dependency closure while consuming the accepted immutable
+profile.
 
 The profile is controlled host-provided: MadoPilot bundles and downloads nothing,
 performs no ambient search, verifies byte count and SHA-256 before session
