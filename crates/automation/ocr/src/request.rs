@@ -3,7 +3,8 @@
 use mado_pilot_capture::Frame;
 use mado_pilot_core::{ClipPolicy, CoordinateSpace, OperationContext, Rect};
 
-use crate::model::{BackendId, ModelId, ProfileId};
+use crate::backend::OcrBackendIdentity;
+use crate::model::{ModelId, OcrModelIdentity, ProfileId};
 
 /// Which part of one exact source frame to recognize.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,9 +28,8 @@ pub enum OcrRegion {
 #[derive(Debug)]
 pub struct OcrRequest<'a> {
     frame: &'a Frame,
-    backend: &'a BackendId,
-    model: &'a ModelId,
-    profile: &'a ProfileId,
+    backend: &'a OcrBackendIdentity,
+    model: &'a OcrModelIdentity,
     source_region: OcrRegion,
     output_space: CoordinateSpace,
     operation: &'a OperationContext,
@@ -40,9 +40,8 @@ impl<'a> OcrRequest<'a> {
     #[must_use]
     pub const fn new(
         frame: &'a Frame,
-        backend: &'a BackendId,
-        model: &'a ModelId,
-        profile: &'a ProfileId,
+        backend: &'a OcrBackendIdentity,
+        model: &'a OcrModelIdentity,
         source_region: OcrRegion,
         output_space: CoordinateSpace,
         operation: &'a OperationContext,
@@ -51,7 +50,6 @@ impl<'a> OcrRequest<'a> {
             frame,
             backend,
             model,
-            profile,
             source_region,
             output_space,
             operation,
@@ -64,22 +62,28 @@ impl<'a> OcrRequest<'a> {
         self.frame
     }
 
-    /// Returns the explicitly selected backend.
+    /// Returns the explicitly selected backend implementation.
     #[must_use]
-    pub const fn backend(&self) -> &BackendId {
+    pub const fn backend(&self) -> &OcrBackendIdentity {
         self.backend
     }
 
-    /// Returns the explicitly selected model.
+    /// Returns complete explicitly selected model/profile identity.
     #[must_use]
-    pub const fn model(&self) -> &ModelId {
+    pub const fn model_identity(&self) -> &OcrModelIdentity {
         self.model
     }
 
-    /// Returns the explicitly selected profile.
+    /// Returns the explicitly selected model identifier.
+    #[must_use]
+    pub const fn model(&self) -> &ModelId {
+        self.model.model()
+    }
+
+    /// Returns the explicitly selected profile identifier.
     #[must_use]
     pub const fn profile(&self) -> &ProfileId {
-        self.profile
+        self.model.profile()
     }
 
     /// Returns the requested source region and clipping policy.

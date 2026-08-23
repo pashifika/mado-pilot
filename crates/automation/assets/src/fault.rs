@@ -131,6 +131,8 @@ pub enum AssetFaultKind {
     InvalidTemplateMetadata,
     /// An OCR model/profile declaration is incomplete, unbounded, or inconsistent.
     InvalidOcrModelMetadata,
+    /// The package names OCR result-normalization semantics this build does not support.
+    UnsupportedOcrProfile,
     /// A template declares its geometry in an unsupported coordinate space.
     UnsupportedTemplateSpace,
     /// The manifest declares a hash algorithm this build does not implement.
@@ -165,7 +167,8 @@ impl AssetFaultKind {
             | AssetFaultKind::UnsupportedSource
             | AssetFaultKind::UnsupportedTemplateSpace
             | AssetFaultKind::UnsupportedHashAlgorithm
-            | AssetFaultKind::UnsupportedContentEncoding => Status::Unsupported,
+            | AssetFaultKind::UnsupportedContentEncoding
+            | AssetFaultKind::UnsupportedOcrProfile => Status::Unsupported,
             AssetFaultKind::Cancelled => Status::Cancelled,
             AssetFaultKind::DeadlineExceeded => Status::DeadlineExceeded,
             AssetFaultKind::ArithmeticOverflow => Status::Internal,
@@ -218,6 +221,7 @@ impl AssetFaultKind {
             AssetFaultKind::UnsupportedSource => "unsupported_source",
             AssetFaultKind::InvalidTemplateMetadata => "invalid_template_metadata",
             AssetFaultKind::InvalidOcrModelMetadata => "invalid_ocr_model_metadata",
+            AssetFaultKind::UnsupportedOcrProfile => "unsupported_ocr_profile",
             AssetFaultKind::UnsupportedTemplateSpace => "unsupported_template_space",
             AssetFaultKind::UnsupportedHashAlgorithm => "unsupported_hash_algorithm",
             AssetFaultKind::MalformedHash => "malformed_hash",
@@ -265,6 +269,7 @@ impl AssetFaultKind {
             AssetFaultKind::InvalidOcrModelMetadata => {
                 "OCR model metadata is incomplete, unbounded, or inconsistent"
             }
+            AssetFaultKind::UnsupportedOcrProfile => "OCR profile normalization is not supported",
             AssetFaultKind::UnsupportedTemplateSpace => {
                 "template geometry uses an unsupported coordinate space"
             }
@@ -411,6 +416,7 @@ mod tests {
             AssetFaultKind::UnsupportedSource,
             AssetFaultKind::InvalidTemplateMetadata,
             AssetFaultKind::InvalidOcrModelMetadata,
+            AssetFaultKind::UnsupportedOcrProfile,
             AssetFaultKind::UnsupportedTemplateSpace,
             AssetFaultKind::UnsupportedHashAlgorithm,
             AssetFaultKind::MalformedHash,

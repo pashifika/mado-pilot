@@ -1,15 +1,18 @@
 //! A deterministic OCR backend for contract and race tests.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use mado_pilot_capture::PixelFormat;
-use mado_pilot_core::{CancellationToken, OperationContext, Result};
+use mado_pilot_core::{CancellationToken, OperationContext, PixelRect, Result};
 use mado_pilot_ocr::{
-    BackendCandidate, BackendId, BackendRequest, BackendVersion, ModelId, OcrBackend,
-    OcrBackendDescriptor, OcrFault, ProfileId,
+    ACCEPTED_G004_NORMALIZATION_ID, BackendCandidate, BackendId, BackendRequest, BackendVersion,
+    DecoderId, LanguageProfileId, ModelComponentIdentity, ModelId, ModelVersion, NormalizationId,
+    OcrBackend, OcrBackendDescriptor, OcrBackendIdentity, OcrCandidateSink, OcrFault,
+    OcrModelIdentity, OcrProfileMetadata, PreprocessingId, ProfileId,
 };
 
 use crate::clock::ManualClock;
@@ -105,12 +108,124 @@ impl CompletionGate {
     }
 }
 
-#[derive(Debug, Default)]
-struct Script {
-    candidates: Vec<BackendCandidate>,
+/// One owned candidate a controlled call can later lend to the OCR sink.
+#[derive(Clone, PartialEq)]
+pub struct ScriptedOcrCandidate {
+    text: Arc<[u8]>,
+    quadrilateral: [(f64, f64); 4],
+    confidence: f64,
+    detector_order: u32,
+}
+
+impl ScriptedOcrCandidate {
+    /// Builds a scripted candidate, including deliberately malformed values.
+    #[must_use]
+    pub fn new(
+        text: impl Into<Arc<[u8]>>,
+        quadrilateral: [(f64, f64); 4],
+        confidence: f64,
+        detector_order: u32,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            quadrilateral,
+            confidence,
+            detector_order,
+        }
+    }
+
+    fn borrowed(&self) -> BackendCandidate<'_> {
+        BackendCandidate::new(
+            &self.text,
+            self.quadrilateral,
+            self.confidence,
+            self.detector_order,
+        )
+    }
+}
+
+impl fmt::Debug for ScriptedOcrCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScriptedOcrCandidate")
+            .field("text_bytes", &self.text.len())
+            .field("quadrilateral", &self.quadrilateral)
+            .field("confidence", &self.confidence)
+            .field("detector_order", &self.detector_order)
+            .finish()
+    }
+}
+
+/// One FIFO-scripted OCR call.
+#[derive(Clone)]
+pub struct ScriptedOcrCall {
+    candidates: Vec<ScriptedOcrCandidate>,
     latency: Duration,
-    recognize: OcrBehavior,
+    behavior: OcrBehavior,
+    gate: Option<Arc<CompletionGate>>,
+}
+
+impl ScriptedOcrCall {
+    /// Builds a successful call returning `candidates`.
+    #[must_use]
+    pub fn new(candidates: Vec<ScriptedOcrCandidate>) -> Self {
+        Self {
+            candidates,
+            latency: Duration::ZERO,
+            behavior: OcrBehavior::Succeed,
+            gate: None,
+        }
+    }
+
+    /// Advances a controlled clock by `latency`.
+    #[must_use]
+    pub const fn with_latency(mut self, latency: Duration) -> Self {
+        self.latency = latency;
+        self
+    }
+
+    /// Sets the call outcome.
+    #[must_use]
+    pub const fn with_behavior(mut self, behavior: OcrBehavior) -> Self {
+        self.behavior = behavior;
+        self
+    }
+
+    /// Blocks the call at `gate`.
+    #[must_use]
+    pub fn with_completion_gate(mut self, gate: Arc<CompletionGate>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+}
+
+impl fmt::Debug for ScriptedOcrCall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ScriptedOcrCall")
+            .field("candidates", &self.candidates.len())
+            .field("latency", &self.latency)
+            .field("behavior", &self.behavior)
+            .field("gated", &self.gate.is_some())
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+struct Script {
+    default_call: ScriptedOcrCall,
+    calls: VecDeque<ScriptedOcrCall>,
     close: OcrBehavior,
+}
+
+impl Default for Script {
+    fn default() -> Self {
+        Self {
+            default_call: ScriptedOcrCall::new(Vec::new()),
+            calls: VecDeque::new(),
+            close: OcrBehavior::Succeed,
+        }
+    }
 }
 
 /// A backend whose candidates, latency, interruption, failures, and completion are scripted.
@@ -118,30 +233,55 @@ pub struct ControlledOcr {
     descriptor: OcrBackendDescriptor,
     clock: Option<Arc<ManualClock>>,
     cancel_during_recognize: Option<CancellationToken>,
-    gate: Option<Arc<CompletionGate>>,
+    cancel_during_close: Option<CancellationToken>,
     script: Mutex<Script>,
     recognitions: AtomicUsize,
     closes: AtomicUsize,
+    last_max_candidates: AtomicUsize,
+    last_max_text_bytes: AtomicUsize,
+    last_region: Mutex<Option<PixelRect>>,
 }
 
 impl ControlledOcr {
     /// Returns a controlled backend that recognizes nothing successfully.
     #[must_use]
     pub fn new(format: PixelFormat) -> Self {
+        let model = OcrModelIdentity::new(
+            ModelId::new(CONTROLLED_OCR_MODEL).expect("constant model identity"),
+            ModelVersion::new("1").expect("constant model version"),
+            ProfileId::new(CONTROLLED_OCR_PROFILE).expect("constant profile identity"),
+            ModelComponentIdentity::new(1, [1; 32]).expect("constant detector identity"),
+            ModelComponentIdentity::new(1, [2; 32]).expect("constant recognizer identity"),
+            OcrProfileMetadata::new(
+                LanguageProfileId::new("controlled-language").expect("constant language"),
+                PreprocessingId::new("controlled-preprocessing").expect("constant preprocessing"),
+                DecoderId::new("controlled-decoder").expect("constant decoder"),
+                NormalizationId::new(ACCEPTED_G004_NORMALIZATION_ID)
+                    .expect("constant normalization"),
+                1,
+                [3; 32],
+            )
+            .expect("constant profile metadata"),
+        )
+        .expect("controlled model identity");
         Self {
             descriptor: OcrBackendDescriptor::new(
-                BackendId::new(CONTROLLED_OCR_BACKEND).expect("constant backend identity"),
-                BackendVersion::new("1").expect("constant backend version"),
-                ModelId::new(CONTROLLED_OCR_MODEL).expect("constant model identity"),
-                ProfileId::new(CONTROLLED_OCR_PROFILE).expect("constant profile identity"),
+                OcrBackendIdentity::new(
+                    BackendId::new(CONTROLLED_OCR_BACKEND).expect("constant backend identity"),
+                    BackendVersion::new("1").expect("constant backend version"),
+                ),
+                model,
                 format,
             ),
             clock: None,
+            cancel_during_close: None,
             cancel_during_recognize: None,
-            gate: None,
             script: Mutex::new(Script::default()),
             recognitions: AtomicUsize::new(0),
             closes: AtomicUsize::new(0),
+            last_max_candidates: AtomicUsize::new(0),
+            last_max_text_bytes: AtomicUsize::new(0),
+            last_region: Mutex::new(None),
         }
     }
 
@@ -152,25 +292,25 @@ impl ControlledOcr {
         self
     }
 
-    /// Scripts the candidates returned by every recognition call.
+    /// Scripts the candidates returned by every unscripted call.
     #[must_use]
-    pub fn with_candidates(self, candidates: Vec<BackendCandidate>) -> Self {
-        self.script().candidates = candidates;
+    pub fn with_candidates(self, candidates: Vec<ScriptedOcrCandidate>) -> Self {
+        self.script().default_call.candidates = candidates;
         self
     }
 
-    /// Advances `clock` by `latency` before every recognition returns.
+    /// Advances `clock` by `latency` before every unscripted call returns.
     #[must_use]
     pub fn with_latency(mut self, clock: Arc<ManualClock>, latency: Duration) -> Self {
-        self.script().latency = latency;
+        self.script().default_call.latency = latency;
         self.clock = Some(clock);
         self
     }
 
-    /// Sets recognition behavior.
+    /// Sets recognition behavior for every unscripted call.
     #[must_use]
     pub fn recognizing(self, behavior: OcrBehavior) -> Self {
-        self.script().recognize = behavior;
+        self.script().default_call.behavior = behavior;
         self
     }
 
@@ -181,17 +321,38 @@ impl ControlledOcr {
         self
     }
 
-    /// Cancels `token` after backend admission and before returning candidates.
+    /// Cancels `token` after backend admission and before output.
     #[must_use]
     pub fn cancelling(mut self, token: CancellationToken) -> Self {
         self.cancel_during_recognize = Some(token);
         self
     }
 
-    /// Blocks every recognition at `gate` until the test releases it.
+    /// Cancels `token` from inside close before returning its scripted outcome.
     #[must_use]
-    pub fn with_completion_gate(mut self, gate: Arc<CompletionGate>) -> Self {
-        self.gate = Some(gate);
+    pub fn cancelling_close(mut self, token: CancellationToken) -> Self {
+        self.cancel_during_close = Some(token);
+        self
+    }
+
+    /// Blocks every unscripted call at `gate`.
+    #[must_use]
+    pub fn with_completion_gate(self, gate: Arc<CompletionGate>) -> Self {
+        self.script().default_call.gate = Some(gate);
+        self
+    }
+
+    /// Scripts calls in FIFO admission order.
+    #[must_use]
+    pub fn with_calls(self, calls: Vec<ScriptedOcrCall>) -> Self {
+        self.script().calls = calls.into();
+        self
+    }
+
+    /// Uses `clock` for per-call scripted latency.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<ManualClock>) -> Self {
+        self.clock = Some(clock);
         self
     }
 
@@ -205,6 +366,27 @@ impl ControlledOcr {
     #[must_use]
     pub fn close_count(&self) -> usize {
         self.closes.load(Ordering::Acquire)
+    }
+
+    /// Returns the latest requested candidate ceiling.
+    #[must_use]
+    pub fn last_max_candidates(&self) -> usize {
+        self.last_max_candidates.load(Ordering::Acquire)
+    }
+
+    /// Returns the latest requested per-candidate text ceiling.
+    #[must_use]
+    pub fn last_max_text_bytes(&self) -> usize {
+        self.last_max_text_bytes.load(Ordering::Acquire)
+    }
+
+    /// Returns the latest effective source region seen by the backend.
+    #[must_use]
+    pub fn last_region(&self) -> Option<PixelRect> {
+        *self
+            .last_region
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn script(&self) -> std::sync::MutexGuard<'_, Script> {
@@ -232,34 +414,57 @@ impl OcrBackend for ControlledOcr {
 
     fn recognize(
         &self,
-        _request: &BackendRequest<'_>,
+        request: &BackendRequest<'_>,
+        output: &mut dyn OcrCandidateSink,
         operation: &OperationContext,
-    ) -> Result<Vec<BackendCandidate>> {
+    ) -> Result<()> {
         self.recognitions.fetch_add(1, Ordering::AcqRel);
+        self.last_max_candidates
+            .store(request.max_candidates(), Ordering::Release);
+        self.last_max_text_bytes
+            .store(request.max_text_bytes(), Ordering::Release);
+        *self
+            .last_region
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request.region());
         if let Some(interruption) = operation.interruption() {
             return Err(interruption.into());
         }
-        let (latency, behavior, candidates) = {
-            let script = self.script();
-            (script.latency, script.recognize, script.candidates.clone())
+        let call = {
+            let mut script = self.script();
+            script
+                .calls
+                .pop_front()
+                .unwrap_or_else(|| script.default_call.clone())
         };
-        if let Some(gate) = &self.gate {
+        if let Some(gate) = &call.gate {
             gate.enter_and_wait();
         }
         if let Some(clock) = &self.clock {
-            clock.advance(latency);
+            clock.advance(call.latency);
         }
         if let Some(token) = &self.cancel_during_recognize {
             token.cancel();
         }
-        behavior.apply()?;
-        Ok(candidates)
+        if call.behavior == OcrBehavior::Unavailable {
+            call.behavior.apply()?;
+        }
+        for candidate in &call.candidates {
+            output.push(candidate.borrowed())?;
+        }
+        if call.behavior == OcrBehavior::Fail {
+            call.behavior.apply()?;
+        }
+        Ok(())
     }
 
     fn close(&self, operation: &OperationContext) -> Result<()> {
         self.closes.fetch_add(1, Ordering::AcqRel);
         if let Some(interruption) = operation.interruption() {
             return Err(interruption.into());
+        }
+        if let Some(token) = &self.cancel_during_close {
+            token.cancel();
         }
         self.script().close.apply()
     }

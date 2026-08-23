@@ -9,7 +9,9 @@ use mado_pilot_core::{
 };
 use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
 
-use crate::backend::{BackendCandidate, BackendRequest, OcrBackend, OcrBackendDescriptor};
+use crate::backend::{
+    BackendCandidate, BackendRequest, OcrBackend, OcrBackendDescriptor, OcrCandidateSink,
+};
 use crate::fault::OcrFault;
 use crate::request::{OcrRegion, OcrRequest};
 use crate::result::{Confidence, OcrQuadrilateral, OcrResult, RecognizedRegion};
@@ -18,7 +20,8 @@ use crate::result::{Confidence, OcrQuadrilateral, OcrResult, RecognizedRegion};
 pub const MAX_CANDIDATES: usize = 1_000;
 /// Maximum UTF-8 bytes retained for one normalized region.
 pub const MAX_TEXT_BYTES: usize = 4 * 1024;
-const MAX_BACKEND_TEXT_BYTES: usize = 16 * 1024;
+/// Maximum raw text bytes a backend may submit for one candidate.
+pub const MAX_BACKEND_TEXT_BYTES: usize = 16 * 1024;
 
 /// Applies one platform-neutral OCR contract over a selected backend.
 ///
@@ -67,21 +70,23 @@ impl OcrRecognizer {
         let pixels = view.map(descriptor.format(), operation)?;
         attempt.checkpoint()?;
 
-        let candidates = self.backend.recognize(
-            &BackendRequest {
-                pixels: &pixels,
-                region: effective_region,
-            },
+        let mut normalized = Normalizer::new(
             operation,
-        )?;
-        attempt.checkpoint()?;
-
-        let regions = normalize(
-            candidates,
             effective_region,
             &transform,
             request.output_space(),
-        )?;
+        );
+        let backend_outcome = self.backend.recognize(
+            &BackendRequest::new(&pixels, MAX_CANDIDATES, MAX_BACKEND_TEXT_BYTES),
+            &mut normalized,
+            operation,
+        );
+        attempt.checkpoint()?;
+        backend_outcome?;
+        let regions_outcome = normalized.finish();
+        attempt.checkpoint()?;
+        let regions = regions_outcome?;
+
         let result = OcrResult::new(
             frame.stamp(),
             transform,
@@ -97,24 +102,39 @@ impl OcrRecognizer {
     ///
     /// # Errors
     ///
-    /// Returns the backend close failure or operation interruption.
+    /// Returns the authoritative interruption ahead of a simultaneous backend
+    /// close failure.
     pub fn close(&self, operation: &OperationContext) -> Result<()> {
         let mut attempt = Operation::admit(operation)?;
-        self.backend.close(operation)?;
+        let backend_outcome = self.backend.close(operation);
         attempt.checkpoint()?;
+        backend_outcome?;
         attempt.commit(()).map_err(Error::from)
     }
 }
 
 fn validate_selection(descriptor: &OcrBackendDescriptor, request: &OcrRequest<'_>) -> Result<()> {
-    if request.backend() != descriptor.id() {
+    if request.backend() != descriptor.backend_identity() {
         return Err(OcrFault::BackendMismatch.into());
     }
-    if request.model() != descriptor.model() {
+    let requested = request.model_identity();
+    let selected = descriptor.model_identity();
+    if requested.model() != selected.model()
+        || requested.version() != selected.version()
+        || requested.detector() != selected.detector()
+        || requested.recognizer() != selected.recognizer()
+    {
         return Err(OcrFault::ModelMismatch.into());
     }
-    if request.profile() != descriptor.profile() {
+    if requested.profile() != selected.profile()
+        || requested.profile_metadata() != selected.profile_metadata()
+    {
         return Err(OcrFault::ProfileMismatch.into());
+    }
+    if selected.profile_metadata().normalization().as_str()
+        != crate::model::ACCEPTED_G004_NORMALIZATION_ID
+    {
+        return Err(OcrFault::UnsupportedProfile.into());
     }
     Ok(())
 }
@@ -148,36 +168,104 @@ fn preflight_output(
     Ok(())
 }
 
-fn normalize(
-    mut candidates: Vec<BackendCandidate>,
+#[derive(Debug)]
+struct NormalizedCandidate {
+    detector_order: u32,
+    region: Option<RecognizedRegion>,
+}
+
+#[derive(Debug)]
+struct Normalizer<'a> {
+    operation: &'a OperationContext,
     region: PixelRect,
-    transform: &TransformSnapshot,
+    transform: &'a TransformSnapshot,
     output_space: CoordinateSpace,
-) -> Result<Vec<RecognizedRegion>> {
-    if candidates.len() > MAX_CANDIDATES {
-        return Err(OcrFault::BackendCandidateCountAboveCeiling.into());
-    }
+    submitted: usize,
+    candidates: Vec<NormalizedCandidate>,
+    fault: Option<Error>,
+}
 
-    candidates.sort_by_key(BackendCandidate::detector_order);
-    if candidates
-        .windows(2)
-        .any(|pair| pair[0].detector_order() == pair[1].detector_order())
-    {
-        return Err(OcrFault::BackendOrderDuplicate.into());
-    }
-
-    let mut regions = Vec::with_capacity(candidates.len());
-    for candidate in candidates {
-        let confidence = normalize_confidence(candidate.confidence())?;
-        let geometry =
-            normalize_geometry(candidate.quadrilateral(), region, transform, output_space)?;
-        let text = normalize_text(candidate.text())?;
-        if text.is_empty() {
-            continue;
+impl<'a> Normalizer<'a> {
+    const fn new(
+        operation: &'a OperationContext,
+        region: PixelRect,
+        transform: &'a TransformSnapshot,
+        output_space: CoordinateSpace,
+    ) -> Self {
+        Self {
+            operation,
+            region,
+            transform,
+            output_space,
+            submitted: 0,
+            candidates: Vec::new(),
+            fault: None,
         }
-        regions.push(RecognizedRegion::new(text, geometry, confidence));
     }
-    Ok(regions)
+
+    fn process(&mut self, candidate: BackendCandidate<'_>) -> Result<()> {
+        if let Some(interruption) = self.operation.interruption() {
+            return Err(interruption.into());
+        }
+        if self.submitted >= MAX_CANDIDATES {
+            return Err(OcrFault::BackendCandidateCountAboveCeiling.into());
+        }
+        self.submitted += 1;
+
+        let confidence = normalize_confidence(candidate.confidence())?;
+        let geometry = normalize_geometry(
+            candidate.quadrilateral(),
+            self.region,
+            self.transform,
+            self.output_space,
+        )?;
+        let text = normalize_text(candidate.text())?;
+        let region = if text.is_empty() {
+            None
+        } else {
+            Some(RecognizedRegion::new(text, geometry, confidence))
+        };
+        self.candidates.push(NormalizedCandidate {
+            detector_order: candidate.detector_order(),
+            region,
+        });
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Vec<RecognizedRegion>> {
+        if let Some(fault) = self.fault {
+            return Err(fault);
+        }
+        self.candidates
+            .sort_by_key(|candidate| candidate.detector_order);
+        if self
+            .candidates
+            .windows(2)
+            .any(|pair| pair[0].detector_order == pair[1].detector_order)
+        {
+            return Err(OcrFault::BackendOrderDuplicate.into());
+        }
+        Ok(self
+            .candidates
+            .into_iter()
+            .filter_map(|candidate| candidate.region)
+            .collect())
+    }
+}
+
+impl OcrCandidateSink for Normalizer<'_> {
+    fn push(&mut self, candidate: BackendCandidate<'_>) -> Result<()> {
+        if let Some(fault) = &self.fault {
+            return Err(fault.clone());
+        }
+        match self.process(candidate) {
+            Ok(()) => Ok(()),
+            Err(fault) => {
+                self.fault = Some(fault.clone());
+                Err(fault)
+            }
+        }
+    }
 }
 
 fn normalize_text(raw: &[u8]) -> Result<Arc<str>> {

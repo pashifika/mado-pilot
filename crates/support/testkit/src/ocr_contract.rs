@@ -43,9 +43,8 @@ pub fn an_already_cancelled_request_is_refused(backend: Arc<dyn OcrBackend>) {
     let context = OperationContext::new().with_cancellation(token);
     let request = OcrRequest::new(
         &frame,
-        descriptor.id(),
-        descriptor.model(),
-        descriptor.profile(),
+        descriptor.backend_identity(),
+        descriptor.model_identity(),
         OcrRegion::FullFrame,
         CoordinateSpace::CapturePixels,
         &context,
@@ -71,9 +70,8 @@ pub fn a_clipped_empty_region_is_refused(backend: Arc<dyn OcrBackend>) {
         .expect("valid outside rectangle");
     let request = OcrRequest::new(
         &frame,
-        descriptor.id(),
-        descriptor.model(),
-        descriptor.profile(),
+        descriptor.backend_identity(),
+        descriptor.model_identity(),
         OcrRegion::Region {
             rect: outside,
             policy: ClipPolicy::Clip,
@@ -100,9 +98,8 @@ pub fn an_empty_result_correlates_with_its_exact_source(backend: Arc<dyn OcrBack
     let context = OperationContext::new();
     let request = OcrRequest::new(
         &frame,
-        descriptor.id(),
-        descriptor.model(),
-        descriptor.profile(),
+        descriptor.backend_identity(),
+        descriptor.model_identity(),
         OcrRegion::FullFrame,
         CoordinateSpace::CapturePixels,
         &context,

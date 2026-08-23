@@ -1,5 +1,6 @@
 //! Immutable, source-correlated OCR result values.
 
+use std::fmt;
 use std::sync::Arc;
 
 use mado_pilot_core::{CoordinateSpace, FrameStamp, PixelRect, Point, TransformSnapshot};
@@ -39,7 +40,7 @@ impl OcrQuadrilateral {
 }
 
 /// One normalized recognized text region.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct RecognizedRegion {
     text: Arc<str>,
     geometry: OcrQuadrilateral,
@@ -75,6 +76,17 @@ impl RecognizedRegion {
     #[must_use]
     pub const fn confidence(&self) -> Confidence {
         self.confidence
+    }
+}
+
+impl fmt::Debug for RecognizedRegion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RecognizedRegion")
+            .field("text_bytes", &self.text.len())
+            .field("geometry", &self.geometry)
+            .field("confidence", &self.confidence)
+            .finish()
     }
 }
 

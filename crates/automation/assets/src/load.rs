@@ -18,9 +18,7 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use mado_pilot_core::{Operation, OperationContext};
-use mado_pilot_ocr::{
-    ModelComponentIdentity, ModelId, OcrFault, OcrModelSource, OcrModelSourceRequest,
-};
+use mado_pilot_ocr::{ModelId, OcrFault, OcrModelComponent, OcrModelSource, OcrModelSourceRequest};
 use mado_pilot_vision::{TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest};
 
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
@@ -402,18 +400,9 @@ fn expand(
         let recognizer =
             expand_model_component(reader, table, declaration.recognizer(), operation)?;
         let source = OcrModelSource::new(OcrModelSourceRequest {
-            model: declaration.id().clone(),
-            profile: declaration.profile().clone(),
+            identity: declaration.identity().clone(),
             detector,
-            detector_identity: ModelComponentIdentity::new(
-                declaration.detector().byte_len(),
-                *declaration.detector().digest().as_bytes(),
-            ),
             recognizer,
-            recognizer_identity: ModelComponentIdentity::new(
-                declaration.recognizer().byte_len(),
-                *declaration.recognizer().digest().as_bytes(),
-            ),
         })
         .map_err(from_ocr)?;
         if ocr_models
@@ -435,7 +424,7 @@ fn expand_model_component(
     table: &BTreeMap<PackagePath, CheckedEntry>,
     declaration: &OcrComponentDeclaration,
     operation: &mut Operation<'_>,
-) -> Result<Arc<[u8]>, AssetFault> {
+) -> Result<OcrModelComponent, AssetFault> {
     let entry = table
         .get(declaration.path())
         .ok_or_else(|| AssetFault::new(AssetFaultKind::MissingEntry, LoadStage::Expansion))?;
@@ -445,12 +434,13 @@ fn expand_model_component(
             LoadStage::Expansion,
         ));
     }
-    reader.read_entry(
+    let bytes = reader.read_entry(
         entry.index,
         entry.declared_size,
         LoadStage::Expansion,
         operation,
-    )
+    )?;
+    OcrModelComponent::new(bytes, declaration.identity()).map_err(from_ocr)
 }
 
 const fn from_ocr(fault: OcrFault) -> AssetFault {

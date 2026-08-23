@@ -10,6 +10,12 @@ use mado_pilot_core::{Error, Status};
 pub enum OcrFault {
     /// A model, profile, or backend identifier was not bounded and canonical.
     InvalidIdentifier,
+    /// Profile metadata is incomplete or carries an invalid bounded value.
+    InvalidProfileMetadata,
+    /// A declaration using the accepted G-004 model or profile ID does not match its authority.
+    AcceptedProfileMismatch,
+    /// The selected profile uses result-normalization semantics this build does not implement.
+    UnsupportedProfile,
     /// A model detector or recognizer component was empty.
     EmptyModelComponent,
     /// A model component exceeded the reviewed 64 MiB ceiling.
@@ -48,6 +54,8 @@ impl OcrFault {
     pub const fn status(self) -> Status {
         match self {
             Self::InvalidIdentifier
+            | Self::InvalidProfileMetadata
+            | Self::AcceptedProfileMismatch
             | Self::EmptyModelComponent
             | Self::ModelComponentAboveCeiling
             | Self::ModelLengthMismatch
@@ -55,6 +63,7 @@ impl OcrFault {
             | Self::BackendMismatch
             | Self::ModelMismatch
             | Self::ProfileMismatch => Status::InvalidArgument,
+            Self::UnsupportedProfile => Status::Unsupported,
             Self::BackendUnavailable
             | Self::BackendFailed
             | Self::BackendCandidateCountAboveCeiling
@@ -71,6 +80,11 @@ impl OcrFault {
             Self::InvalidIdentifier => {
                 "OCR identifier is empty, non-canonical, or above its byte ceiling"
             }
+            Self::InvalidProfileMetadata => "OCR profile metadata is incomplete or invalid",
+            Self::AcceptedProfileMismatch => {
+                "OCR metadata does not match the accepted G-004 profile identity"
+            }
+            Self::UnsupportedProfile => "OCR profile normalization is not supported",
             Self::EmptyModelComponent => "OCR model component carries no bytes",
             Self::ModelComponentAboveCeiling => "OCR model component exceeds the byte ceiling",
             Self::ModelLengthMismatch => "OCR model component length does not match its identity",

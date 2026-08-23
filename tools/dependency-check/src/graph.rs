@@ -235,7 +235,7 @@ pub const ALLOWED_DEPENDENCIES: &[(&str, &[&str])] = &[
     (CAPTURE, &[CORE]),
     (INPUT, &[CORE]),
     (VISION, &[CORE, CAPTURE]),
-    (OCR, &[CORE, CAPTURE, VISION]),
+    (OCR, &[CORE, CAPTURE]),
     (ASSETS, &[CORE, VISION, OCR]),
     (RUNTIME, &[CORE, CAPTURE, INPUT, VISION, OCR, ASSETS]),
     (ADAPTER_REPLAY, &[CORE, CAPTURE]),

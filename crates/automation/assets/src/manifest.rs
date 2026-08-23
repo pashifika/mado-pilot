@@ -17,7 +17,11 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use mado_pilot_core::{CoordinateSpace, PixelExtent};
-use mado_pilot_ocr::{ModelId, OcrModelSource, ProfileId};
+use mado_pilot_ocr::{
+    ACCEPTED_G004_MODEL_ID, ACCEPTED_G004_PROFILE_ID, DecoderId, LanguageProfileId,
+    ModelComponentIdentity, ModelId, ModelVersion, NormalizationId, OcrModelIdentity,
+    OcrProfileMetadata, PreprocessingId, ProfileId,
+};
 use mado_pilot_vision::{MatchDefaults, TemplateId, TemplateSource, VisionFault};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -178,8 +182,7 @@ impl TemplateDeclaration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OcrComponentDeclaration {
     path: PackagePath,
-    byte_len: u64,
-    digest: ContentDigest,
+    identity: ModelComponentIdentity,
 }
 
 impl OcrComponentDeclaration {
@@ -189,81 +192,92 @@ impl OcrComponentDeclaration {
         &self.path
     }
 
+    /// Returns the exact component identity.
+    #[must_use]
+    pub const fn identity(&self) -> ModelComponentIdentity {
+        self.identity
+    }
+
     /// Returns the exact declared byte length.
     #[must_use]
     pub const fn byte_len(&self) -> u64 {
-        self.byte_len
+        self.identity.byte_len()
     }
 
     /// Returns the exact declared SHA-256 digest.
     #[must_use]
-    pub const fn digest(&self) -> ContentDigest {
-        self.digest
+    pub fn digest(&self) -> ContentDigest {
+        self.identity.sha256().into()
     }
 }
 
 /// One complete, versioned OCR model/profile declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OcrModelDeclaration {
-    id: ModelId,
-    version: String,
-    profile: ProfileId,
-    language_profile: String,
-    preprocessing: String,
-    decoder: String,
-    vocabulary_entries: u32,
-    vocabulary_digest: ContentDigest,
+    identity: OcrModelIdentity,
     detector: OcrComponentDeclaration,
     recognizer: OcrComponentDeclaration,
 }
 
 impl OcrModelDeclaration {
+    /// Returns the complete model/profile identity.
+    #[must_use]
+    pub const fn identity(&self) -> &OcrModelIdentity {
+        &self.identity
+    }
+
     /// Returns the stable model identity.
     #[must_use]
     pub const fn id(&self) -> &ModelId {
-        &self.id
+        self.identity.model()
     }
 
     /// Returns the exact model version.
     #[must_use]
     pub fn version(&self) -> &str {
-        &self.version
+        self.identity.version().as_str()
     }
 
     /// Returns the accepted OCR profile identity.
     #[must_use]
     pub const fn profile(&self) -> &ProfileId {
-        &self.profile
+        self.identity.profile()
     }
 
     /// Returns the exact language profile identity.
     #[must_use]
     pub fn language_profile(&self) -> &str {
-        &self.language_profile
+        self.identity.profile_metadata().language_profile().as_str()
     }
 
     /// Returns the exact preprocessing identity.
     #[must_use]
     pub fn preprocessing(&self) -> &str {
-        &self.preprocessing
+        self.identity.profile_metadata().preprocessing().as_str()
     }
 
     /// Returns the exact decoder identity.
     #[must_use]
     pub fn decoder(&self) -> &str {
-        &self.decoder
+        self.identity.profile_metadata().decoder().as_str()
+    }
+
+    /// Returns the exact result-normalization identity.
+    #[must_use]
+    pub fn normalization(&self) -> &str {
+        self.identity.profile_metadata().normalization().as_str()
     }
 
     /// Returns the exact embedded vocabulary entry count.
     #[must_use]
     pub const fn vocabulary_entries(&self) -> u32 {
-        self.vocabulary_entries
+        self.identity.profile_metadata().vocabulary_entries()
     }
 
     /// Returns the exact embedded vocabulary digest.
     #[must_use]
-    pub const fn vocabulary_digest(&self) -> ContentDigest {
-        self.vocabulary_digest
+    pub fn vocabulary_digest(&self) -> ContentDigest {
+        self.identity.profile_metadata().vocabulary_sha256().into()
     }
 
     /// Returns the detector declaration.
@@ -363,7 +377,7 @@ impl Manifest {
         let mut ocr_models = Vec::with_capacity(raw_models.len());
         for declaration in raw_models {
             let declared = declaration.validate()?;
-            if !identities.insert(declared.id.as_str().to_owned()) {
+            if !identities.insert(declared.id().as_str().to_owned()) {
                 return Err(fault(AssetFaultKind::DuplicateIdentity));
             }
             if !paths.insert(declared.detector.path.clone())
@@ -513,6 +527,7 @@ struct RawOcrModel {
     language_profile: Option<String>,
     preprocessing: Option<String>,
     decoder: Option<String>,
+    normalization: Option<String>,
     vocabulary: Option<RawVocabulary>,
     detector: Option<RawOcrComponent>,
     recognizer: Option<RawOcrComponent>,
@@ -590,36 +605,49 @@ impl RawTemplate {
 
 impl RawOcrModel {
     fn validate(self) -> Result<OcrModelDeclaration, AssetFault> {
-        let id = ModelId::new(required_ocr(self.id)?)
-            .map_err(|_| fault(AssetFaultKind::InvalidOcrModelMetadata))?;
-        let profile = ProfileId::new(required_ocr(self.profile)?)
-            .map_err(|_| fault(AssetFaultKind::InvalidOcrModelMetadata))?;
-        let version = required_ocr(self.version)?;
-        let language_profile = required_ocr(self.language_profile)?;
-        let preprocessing = required_ocr(self.preprocessing)?;
-        let decoder = required_ocr(self.decoder)?;
+        let id = ModelId::new(required_ocr(self.id)?).map_err(from_ocr_metadata)?;
+        let version = ModelVersion::new(required_ocr(self.version)?).map_err(from_ocr_metadata)?;
+        let profile = ProfileId::new(required_ocr(self.profile)?).map_err(from_ocr_metadata)?;
+        let claims_accepted =
+            id.as_str() == ACCEPTED_G004_MODEL_ID || profile.as_str() == ACCEPTED_G004_PROFILE_ID;
+        let language_profile = LanguageProfileId::new(required_ocr(self.language_profile)?)
+            .map_err(from_ocr_metadata)?;
+        let preprocessing =
+            PreprocessingId::new(required_ocr(self.preprocessing)?).map_err(from_ocr_metadata)?;
+        let decoder = DecoderId::new(required_ocr(self.decoder)?).map_err(from_ocr_metadata)?;
+        let normalization =
+            NormalizationId::new(required_ocr(self.normalization)?).map_err(from_ocr_metadata)?;
         let vocabulary = required_ocr(self.vocabulary)?;
         let vocabulary_entries = required_ocr(vocabulary.entries)?;
-        if !bounded_metadata(&version)
-            || !bounded_metadata(&language_profile)
-            || !bounded_metadata(&preprocessing)
-            || !bounded_metadata(&decoder)
-            || vocabulary_entries == 0
-        {
-            return Err(fault(AssetFaultKind::InvalidOcrModelMetadata));
-        }
         let vocabulary_digest = validate_content(required_ocr(vocabulary.content)?)?;
         let detector = required_ocr(self.detector)?.validate()?;
         let recognizer = required_ocr(self.recognizer)?.validate()?;
-        Ok(OcrModelDeclaration {
-            id,
-            version,
-            profile,
+        let profile_metadata = OcrProfileMetadata::new(
             language_profile,
             preprocessing,
             decoder,
+            normalization,
             vocabulary_entries,
-            vocabulary_digest,
+            *vocabulary_digest.as_bytes(),
+        )
+        .map_err(|ocr_fault| {
+            if claims_accepted && ocr_fault == mado_pilot_ocr::OcrFault::UnsupportedProfile {
+                fault(AssetFaultKind::InvalidOcrModelMetadata)
+            } else {
+                from_ocr_metadata(ocr_fault)
+            }
+        })?;
+        let identity = OcrModelIdentity::new(
+            id,
+            version,
+            profile,
+            detector.identity(),
+            recognizer.identity(),
+            profile_metadata,
+        )
+        .map_err(from_ocr_metadata)?;
+        Ok(OcrModelDeclaration {
+            identity,
             detector,
             recognizer,
         })
@@ -629,16 +657,11 @@ impl RawOcrModel {
 impl RawOcrComponent {
     fn validate(self) -> Result<OcrComponentDeclaration, AssetFault> {
         let byte_len = required_ocr(self.byte_len)?;
-        if byte_len == 0 || byte_len > OcrModelSource::MAX_COMPONENT_BYTES {
-            return Err(fault(AssetFaultKind::InvalidOcrModelMetadata));
-        }
         let path = validate_package_path(required_ocr(self.path)?)?;
         let digest = validate_content(required_ocr(self.content)?)?;
-        Ok(OcrComponentDeclaration {
-            path,
-            byte_len,
-            digest,
-        })
+        let identity =
+            ModelComponentIdentity::new(byte_len, *digest.as_bytes()).map_err(from_ocr_metadata)?;
+        Ok(OcrComponentDeclaration { path, identity })
     }
 }
 
@@ -646,11 +669,12 @@ fn required_ocr<T>(value: Option<T>) -> Result<T, AssetFault> {
     value.ok_or_else(|| fault(AssetFaultKind::InvalidOcrModelMetadata))
 }
 
-fn bounded_metadata(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 256
-        && value.trim() == value
-        && !value.chars().any(char::is_control)
+fn from_ocr_metadata(fault_from_ocr: mado_pilot_ocr::OcrFault) -> AssetFault {
+    let kind = match fault_from_ocr {
+        mado_pilot_ocr::OcrFault::UnsupportedProfile => AssetFaultKind::UnsupportedOcrProfile,
+        _ => AssetFaultKind::InvalidOcrModelMetadata,
+    };
+    fault(kind)
 }
 
 fn validate_package_path(value: String) -> Result<PackagePath, AssetFault> {

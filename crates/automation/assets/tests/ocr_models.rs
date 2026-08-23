@@ -5,7 +5,7 @@ mod support;
 use std::fs;
 use std::sync::Arc;
 
-use mado_pilot_assets::{AssetFaultKind, MANIFEST_PATH, MemoryPackage, PackageSource};
+use mado_pilot_assets::{AssetFaultKind, MANIFEST_PATH, Manifest, MemoryPackage, PackageSource};
 use serde_json::{Value, json};
 
 use support::{ArchiveEntry, TempDir, hex_sha256, load, write_archive};
@@ -28,6 +28,7 @@ fn manifest_value(detector: &[u8], recognizer: &[u8]) -> Value {
             "language_profile": "japanese-basic-latin-v1",
             "preprocessing": "rapidocr-bgr-db736-v1",
             "decoder": "rapidocr-greedy-ctc-v1",
+            "normalization": "nfc-trim-stable-detector-order-five-decimal-v1",
             "vocabulary": {
                 "entries": 18_708,
                 "content": {
@@ -66,6 +67,67 @@ fn memory_source(
     )
 }
 
+fn accepted_manifest_value() -> Value {
+    let mut value = manifest_value(DETECTOR, RECOGNIZER);
+    let model = &mut value["ocr_models"][0];
+    model["id"] = json!("g-004-rapidocr-ppocrv4-det-v6-rec-small-v1");
+    model["version"] = json!("rapidocr-3.9.2+095232a4c94f7f0e6600ba5bba1177010ad696d4");
+    model["profile"] = json!("g-004-rapidocr-ppocrv4-det-v6-rec-small-v1");
+    model["language_profile"] = json!("horizontal-ja-basic-latin-ascii-digits-ui-symbols-v1");
+    model["preprocessing"] = json!("rapidocr-ppocrv4-det-bgr-db736-v1");
+    model["decoder"] = json!("rapidocr-ppocrv6-rec-small-greedy-ctc-v1");
+    model["normalization"] = json!("nfc-trim-stable-detector-order-five-decimal-v1");
+    model["detector"]["byte_len"] = json!(4_745_517);
+    model["detector"]["content"]["value"] =
+        json!("d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9");
+    model["recognizer"]["byte_len"] = json!(21_234_383);
+    model["recognizer"]["content"]["value"] =
+        json!("6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884");
+    value
+}
+
+#[test]
+fn every_accepted_profile_field_is_bound_to_adr_0033() {
+    let accepted = accepted_manifest_value();
+    Manifest::parse(&serde_json::to_vec(&accepted).unwrap()).expect("accepted metadata");
+
+    let mutations = [
+        ("/ocr_models/0/id", json!("drift")),
+        ("/ocr_models/0/profile", json!("drift")),
+        ("/ocr_models/0/version", json!("drift")),
+        ("/ocr_models/0/language_profile", json!("drift")),
+        ("/ocr_models/0/preprocessing", json!("drift")),
+        ("/ocr_models/0/decoder", json!("drift")),
+        ("/ocr_models/0/normalization", json!("drift")),
+        ("/ocr_models/0/vocabulary/entries", json!(1)),
+        (
+            "/ocr_models/0/vocabulary/content/value",
+            json!("0000000000000000000000000000000000000000000000000000000000000000"),
+        ),
+        ("/ocr_models/0/detector/byte_len", json!(1)),
+        (
+            "/ocr_models/0/detector/content/value",
+            json!("0000000000000000000000000000000000000000000000000000000000000000"),
+        ),
+        ("/ocr_models/0/recognizer/byte_len", json!(1)),
+        (
+            "/ocr_models/0/recognizer/content/value",
+            json!("0000000000000000000000000000000000000000000000000000000000000000"),
+        ),
+    ];
+    for (pointer, replacement) in mutations {
+        let mut drifted = accepted.clone();
+        *drifted.pointer_mut(pointer).expect("fixture pointer") = replacement;
+        assert_eq!(
+            Manifest::parse(&serde_json::to_vec(&drifted).unwrap())
+                .unwrap_err()
+                .kind(),
+            AssetFaultKind::InvalidOcrModelMetadata,
+            "{pointer}"
+        );
+    }
+}
+
 #[test]
 fn directory_memory_and_archive_resolve_identical_immutable_models() {
     let manifest = manifest(DETECTOR, RECOGNIZER);
@@ -90,6 +152,9 @@ fn directory_memory_and_archive_resolve_identical_immutable_models() {
         None,
     );
     let archive = load(&PackageSource::archive_bytes(archive)).unwrap();
+    let debug = format!("{memory:?}");
+    assert!(!debug.contains("detector-model-bytes"));
+    assert!(!debug.contains("recognizer-model-bytes"));
 
     let expected = memory.resolve_ocr_model("test-model").unwrap();
     assert_eq!(directory.resolve_ocr_model("test-model").unwrap(), expected);
@@ -121,6 +186,16 @@ fn missing_metadata_and_over_limit_components_fail_before_expansion() {
     assert_eq!(
         load(&source).unwrap_err().kind(),
         AssetFaultKind::InvalidOcrModelMetadata
+    );
+
+    let mut future = manifest_value(DETECTOR, RECOGNIZER);
+    future["ocr_models"][0]["normalization"] = json!("future-normalization");
+    let source = PackageSource::memory(
+        MemoryPackage::new().with_entry(MANIFEST_PATH, serde_json::to_vec(&future).unwrap()),
+    );
+    assert_eq!(
+        load(&source).unwrap_err().kind(),
+        AssetFaultKind::UnsupportedOcrProfile
     );
 }
 
