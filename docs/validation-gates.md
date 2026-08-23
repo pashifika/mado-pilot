@@ -43,7 +43,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-001`](#g-001) | Minimum Windows and macOS versions | Before Phase 2 exit | Windows and macOS support claims | Resolved by [ADR 0019](adr/0019-windows-qualified-system-and-controlled-availability.md) and [ADR 0014](adr/0014-macos-qualified-host-and-frame-placement.md) |
 | [`G-002`](#g-002) | Windows capture producer-pool and frame-detachment strategy | Before Phase 2 implementation | Windows capture ownership | Resolved by [ADR 0013](adr/0013-windows-capture-frame-detachment.md) |
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
-| [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile | Open |
+| [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile identity | Resolved by [ADR 0033](adr/0033-default-ocr-model-profile.md) |
 | [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 implementation | Default watcher policy | Open |
 | [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open |
 | [`G-007`](#g-007) | Native dependency bundling profiles | Before Phase 5 implementation | Release packaging | Open |
@@ -186,22 +186,42 @@ property it preserves.
 
 ## G-004
 
-**Unresolved decision.** The default OCR model, its language set, size,
-preprocessing metadata, expected hash, and license.
+**Decision.** [ADR 0033](adr/0033-default-ocr-model-profile.md) selects
+`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1`: RapidOCR v3.9.2's PP-OCRv4
+mobile detector plus PP-OCRv6 small recognizer, with exact bytes, digests,
+vocabulary, language, preprocessing/decoder, normalization, ordering,
+confidence, license, and controlled-host deployment metadata.
 
-**Required evidence.** A cross-target quality fixture showing reproducible
-recognition results on both release targets, plus a license review confirming
-redistribution is permitted.
+**Required evidence.** The immutable v3 quality fixture under the independently
+reviewed v5 evaluator reproduces exact text, region count, source-relative
+geometry, ordering, confidence validity, and stable outcomes on both release
+targets. The exact fixture bytes consumed, complete pinned tool environment,
+canonical installed RapidOCR code identity, CPU session input/output/provider
+metadata, embedded vocabulary, expected-first unexpected-region classification,
+private raw-path containment, typed resident outcome, model/fixture provenance
+and licenses, and controlled host-provided obligations all match.
 
-**Due.** Before Phase 3 implementation.
+**Due.** Resolved before Phase 3 implementation.
 
-**Blocks.** The default OCR profile.
+**Blocks.** No longer blocks the default OCR profile identity. Backend,
+packaging, performance-budget, public-surface, and support work remain separate
+Changes and gates.
 
-**Status.** Open.
+**Status.** Resolved. Four fresh v5 candidate processes on each release target
+used the same evaluator, candidate metadata, RapidOCR code identity, fixture
+bytes, CPU-only profile, two warm-ups, and ten measured passes. Only
+`ppocrv4-det-v6-rec-small` passes all 42 regions and every identity row. The
+other three candidates reproduce the same rejected text, ordering, and
+unexpected-region rows. Every deterministic candidate and image gate matches
+across targets; the frozen plan permits only timing, confidence values, host
+facts, provider availability, and typed resident measurements to differ.
 
-**Resolution.** An ADR recording the model choice, the fixture results, and the
-license and deployment obligations, followed by an update to
-[third-party-dependencies.md](third-party-dependencies.md).
+**Resolution.** Independent patch review passed before v5 execution. Final
+two-target evidence review verified source bindings, provenance, license,
+privacy, cross-target equality, and absence of implementation scope creep. It
+required the network-free validator to recompute every tracked v5 source hash;
+the corrected delta passed re-review. The accepted decision adds no model or
+runtime bytes, backend, public OCR API, default wiring, or support claim.
 
 ## G-005
 

@@ -760,7 +760,7 @@ records `G-001` through `G-014` with the decision, the required evidence, the du
 phase, the blocking scope, the status, and the resolution rule for each. No gate
 blocked Phase 0.
 
-Seven remain open, one is deferred, and six are resolved. The deferred one is
+Six remain open, one is deferred, and seven are resolved. The deferred one is
 [`G-011`](validation-gates.md#g-011), native-frame extension discovery, which
 sits on the future roadmap and does not block version one. `G-009` is resolved by
 [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) and `G-010` by
@@ -795,6 +795,18 @@ ADR named, with the linkage rule met by controlled dynamic loading rather than t
 weak framework linking the record described; see
 [The macOS native boundary](#the-macos-native-boundary) and
 [macOS native capture ownership](#macos-native-capture-ownership).
+
+`G-004` is resolved by
+[ADR 0033](adr/0033-default-ocr-model-profile.md), which selects RapidOCR
+v3.9.2's PP-OCRv4 mobile detector plus PP-OCRv6 small recognizer as the exact
+controlled-host Phase 3 default profile identity. Four fresh v5 candidate
+processes on each release target bound the consumed fixture bytes, canonical
+installed RapidOCR code, complete tool/model/session/vocabulary identities, and
+typed resident outcomes. The selected profile is the only candidate that passes
+all 42 regions; every deterministic candidate and image gate matches across
+targets. Independent patch and final evidence review passed without weakening the
+oracle. No model bytes, ONNX Runtime, OCR contract/backend, default wiring, or
+support claim is added by this evidence decision.
 
 ## Implementation status
 
@@ -831,7 +843,7 @@ responsibilities a later phase takes on.
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
-| OCR and model loading | Not implemented |
+| OCR and model loading | Not implemented; `G-004` is resolved by accepted ADR 0033 with one exact controlled-host default profile identity, while contracts, backend loading, performance budgets, packaging, default wiring, and support remain later work |
 | OCR, watchers, and scheduling | Not implemented |
 | Bounded engine-scoped diagnostic observation | Implemented in `mado-pilot-runtime` and the facade with allocation-free `Off`, finite `Normal`/`Debug` streams, strict record order, exact loss counts, immutable owned batches, independent reader lifetime, and privacy-reviewed payloads; exposed through C ABI 1.2 and the C++ wrapper |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |

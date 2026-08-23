@@ -1,0 +1,1632 @@
+{
+  "schema_version": 2,
+  "report_kind": "g-004-cross-candidate-qualification",
+  "qualification_stage": "v4",
+  "target": "aarch64-apple-darwin",
+  "product_base_revision": "f3608424dde88f835f35653be8113f7a2009431b",
+  "metadata_clarification": {
+    "fields": [
+      "common_profile.detector.input_pixel_format",
+      "common_profile.recognizer.input_pixel_format"
+    ],
+    "candidate_manifest_sha256_at_v3_run": "c77239560b4f93930b19b30cb708c6736151fef3eb9a6fd0bc846e0ab28aa85b",
+    "first_corrected_candidate_manifest_sha256": "22ed31eae6f7bd873790b12f815f25465af60ff104c6bd6ddf6396015c1ff2a0",
+    "current_candidate_manifest_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+    "at_run_label": "RGB planar float32",
+    "executed_and_current_value": "BGR planar float32 (OpenCV order; no channel swap)",
+    "execution_changed": false,
+    "measurements_replaced_by_hardened_v4": true
+  },
+  "host": {
+    "target": "aarch64-apple-darwin",
+    "os": "Darwin",
+    "os_release": "25.5.0",
+    "os_version": "Darwin Kernel Version 25.5.0: Tue Jun  9 22:18:58 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6000",
+    "architecture": "arm64",
+    "logical_cpu_count": 10,
+    "physical_memory_bytes": 34359738368
+  },
+  "tools": {
+    "python": "3.14.6",
+    "packages": {
+      "antlr4-python3-runtime": "4.9.3",
+      "certifi": "2026.7.22",
+      "charset-normalizer": "3.5.1",
+      "colorlog": "6.12.0",
+      "flatbuffers": "25.12.19",
+      "idna": "3.19",
+      "numpy": "2.5.2",
+      "omegaconf": "2.3.1",
+      "onnxruntime": "1.29.0",
+      "opencv-python": "5.0.0.93",
+      "packaging": "26.3",
+      "pillow": "12.3.0",
+      "protobuf": "7.36.0",
+      "pyclipper": "1.4.0",
+      "PyYAML": "6.0.3",
+      "rapidocr": "3.9.2",
+      "requests": "2.34.2",
+      "shapely": "2.1.2",
+      "six": "1.17.0",
+      "tqdm": "4.70.0",
+      "urllib3": "2.7.0"
+    },
+    "modules": {
+      "onnxruntime": "1.29.0",
+      "opencv": "5.0.0",
+      "pillow": "12.3.0"
+    },
+    "onnxruntime_available_providers": [
+      "CoreMLExecutionProvider",
+      "AzureExecutionProvider",
+      "CPUExecutionProvider"
+    ]
+  },
+  "profile": {
+    "provider": "CPUExecutionProvider",
+    "intra_op_threads": 1,
+    "inter_op_threads": 1,
+    "cpu_memory_arena": false,
+    "orientation_classifier": false,
+    "warmup_passes": 2,
+    "measured_passes": 10
+  },
+  "stages": [
+    {
+      "id": "v1",
+      "status": "rejected-historical",
+      "reason": "Two recognizers failed exact text; the universal confidence floor was disproved before v2.",
+      "candidates": [
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v1",
+          "candidate_id": "ppocrv4-japan-mobile",
+          "source_identity": {
+            "evaluator_sha256": "befa8fe0481e82b10d4dd36689ebf61af1b70c529fbdc1f631226dd74894a1bf",
+            "fixture_manifest_sha256": "2d5eeaa1c19e2a15d9d395e081194a6e280df31ff5321cc827e84698f3438524",
+            "candidates_sha256": "64eb2cfc255b00ef044a88a3cf37fe2558a6bf16036c22ede536f20a5f1d3d46",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "ch_PP-OCRv4_det_mobile",
+              "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx",
+              "bytes": 4745517,
+              "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+            },
+            {
+              "role": "recognizer",
+              "id": "japan_PP-OCRv4_rec_mobile",
+              "relative_controlled_path": "rapidocr-v3.9.2/japan_PP-OCRv4_rec_mobile.onnx",
+              "bytes": 9753335,
+              "sha256": "e1075a67dba758ecfc7ebc78a10ae61c95ac8fb66a9c86fab5541e33f085cb7a"
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 86.129542,
+            "suite_median_ms": 1262.990958,
+            "suite_p95_ms": 1274.681625,
+            "suite_maximum_ms": 1274.681625,
+            "process_peak_resident_bytes": 691159040
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 2,
+              "order_pass": false,
+              "minimum_matched_iou": 0.80200498,
+              "minimum_matched_confidence": 0.97693,
+              "pass": false
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 2,
+              "order_pass": false,
+              "minimum_matched_iou": 0.87123601,
+              "minimum_matched_confidence": 0.9985,
+              "pass": false
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 3,
+              "geometry_pass_count": 3,
+              "confidence_pass_count": 3,
+              "unexpected_region_count": 3,
+              "order_pass": false,
+              "minimum_matched_iou": 0.80760587,
+              "minimum_matched_confidence": 0.99215,
+              "pass": false
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "confidence_below_floor",
+            "geometry_mismatch",
+            "ordering_mismatch",
+            "text_mismatch",
+            "unexpected_region"
+          ],
+          "pass": false
+        },
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v1",
+          "candidate_id": "ppocrv5-multilingual-mobile",
+          "source_identity": {
+            "evaluator_sha256": "befa8fe0481e82b10d4dd36689ebf61af1b70c529fbdc1f631226dd74894a1bf",
+            "fixture_manifest_sha256": "2d5eeaa1c19e2a15d9d395e081194a6e280df31ff5321cc827e84698f3438524",
+            "candidates_sha256": "64eb2cfc255b00ef044a88a3cf37fe2558a6bf16036c22ede536f20a5f1d3d46",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "ch_PP-OCRv5_det_mobile",
+              "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv5_det_mobile.onnx",
+              "bytes": 4819576,
+              "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae"
+            },
+            {
+              "role": "recognizer",
+              "id": "ch_PP-OCRv5_rec_mobile",
+              "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv5_rec_mobile.onnx",
+              "bytes": 16631306,
+              "sha256": "5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5"
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 72.978958,
+            "suite_median_ms": 1293.030417,
+            "suite_p95_ms": 1302.055041,
+            "suite_maximum_ms": 1302.055041,
+            "process_peak_resident_bytes": 750288896
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 7,
+              "geometry_pass_count": 7,
+              "confidence_pass_count": 7,
+              "unexpected_region_count": 1,
+              "order_pass": false,
+              "minimum_matched_iou": 0.74465819,
+              "minimum_matched_confidence": 0.93001,
+              "pass": false
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 7,
+              "geometry_pass_count": 7,
+              "confidence_pass_count": 7,
+              "unexpected_region_count": 1,
+              "order_pass": false,
+              "minimum_matched_iou": 0.5896806,
+              "minimum_matched_confidence": 0.9913,
+              "pass": false
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.8182114,
+              "minimum_matched_confidence": 0.98939,
+              "pass": true
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "confidence_below_floor",
+            "geometry_mismatch",
+            "ordering_mismatch",
+            "text_mismatch",
+            "unexpected_region"
+          ],
+          "pass": false
+        },
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v1",
+          "candidate_id": "ppocrv6-multilingual-small",
+          "source_identity": {
+            "evaluator_sha256": "befa8fe0481e82b10d4dd36689ebf61af1b70c529fbdc1f631226dd74894a1bf",
+            "fixture_manifest_sha256": "2d5eeaa1c19e2a15d9d395e081194a6e280df31ff5321cc827e84698f3438524",
+            "candidates_sha256": "64eb2cfc255b00ef044a88a3cf37fe2558a6bf16036c22ede536f20a5f1d3d46",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "multi_PP-OCRv6_det_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_det_small.onnx",
+              "bytes": 9929594,
+              "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f"
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 62.117,
+            "suite_median_ms": 1793.346209,
+            "suite_p95_ms": 1803.975834,
+            "suite_maximum_ms": 1803.975834,
+            "process_peak_resident_bytes": 748240896
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.6152896,
+              "minimum_matched_confidence": 0.96282,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.65306123,
+              "minimum_matched_confidence": 0.99644,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 5,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.76036861,
+              "minimum_matched_confidence": 0.76011,
+              "pass": false
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "confidence_below_floor"
+          ],
+          "pass": false
+        }
+      ],
+      "frozen_candidates_sha256": "271826b8da10c295a1e5e04717fa82f08d5979d98c84fb9895aaaaa51fb1643e"
+    },
+    {
+      "id": "v2",
+      "status": "rejected-historical",
+      "reason": "The first amended candidate exposed a tooltip manifest-order authoring defect; all non-order rows passed.",
+      "candidates": [
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v2",
+          "candidate_id": "ppocrv4-det-v6-rec-small",
+          "source_identity": {
+            "evaluator_sha256": "c81aec256ebec02aa9fdd6a35bf287021bb627755b8f3b5a45bfcf0a4627d8dc",
+            "fixture_manifest_sha256": "4d9f75a8abfb781341691252b83455e224ce440e480a1bcb9f4019f901550c22",
+            "candidates_sha256": "213323b7d70cea8448c4799742283072ad32c7330304065df835d1b7886c5f66",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "ch_PP-OCRv4_det_mobile",
+              "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx",
+              "bytes": 4745517,
+              "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 75.463708,
+            "suite_median_ms": 2632.07225,
+            "suite_p95_ms": 2658.520083,
+            "suite_maximum_ms": 2658.520083,
+            "process_peak_resident_bytes": 1006043136
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.80200498,
+              "minimum_matched_confidence": 0.97809,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.85675426,
+              "minimum_matched_confidence": 0.99274,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.80760587,
+              "minimum_matched_confidence": 0.9523,
+              "pass": true
+            },
+            {
+              "file": "tooltip.png",
+              "fixture_sha256": "da80ffb170de4c1dba8df13623331047c962d9a97b1a1289c065c0b387f8e7ea",
+              "expected_region_count": 11,
+              "observed_region_count": 11,
+              "exact_text_count": 11,
+              "geometry_pass_count": 11,
+              "confidence_pass_count": 11,
+              "unexpected_region_count": 0,
+              "order_pass": false,
+              "minimum_matched_iou": 0.83840062,
+              "minimum_matched_confidence": 0.96335,
+              "pass": false
+            },
+            {
+              "file": "mission.png",
+              "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+              "expected_region_count": 9,
+              "observed_region_count": 9,
+              "exact_text_count": 9,
+              "geometry_pass_count": 9,
+              "confidence_pass_count": 9,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.77957,
+              "minimum_matched_confidence": 0.99004,
+              "pass": true
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "ordering_mismatch"
+          ],
+          "pass": false
+        }
+      ],
+      "frozen_candidates_sha256": "50e8bd23b9f411c1fc6ba3d1910c6dfd1b5e59fadadbcf1879945169db2c0a85"
+    },
+    {
+      "id": "v3",
+      "status": "superseded-evaluator-unenforced-identity",
+      "reason": "The fixture results are retained, but the evaluator did not enforce every pinned package version or loaded ONNX/vocabulary field.",
+      "candidates": [
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v3",
+          "candidate_id": "ppocrv4-det-v6-rec-small",
+          "source_identity": {
+            "evaluator_sha256": "77f808eac65f5b09157569b1c89b48c74501986f13133e6201559be512628165",
+            "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+            "candidates_sha256": "c77239560b4f93930b19b30cb708c6736151fef3eb9a6fd0bc846e0ab28aa85b",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "ch_PP-OCRv4_det_mobile",
+              "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx",
+              "bytes": 4745517,
+              "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 71.17025,
+            "suite_median_ms": 2651.748999,
+            "suite_p95_ms": 2682.488,
+            "suite_maximum_ms": 2682.488,
+            "process_peak_resident_bytes": 1000587264
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.80200498,
+              "minimum_matched_confidence": 0.97809,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.85675426,
+              "minimum_matched_confidence": 0.99274,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.80760587,
+              "minimum_matched_confidence": 0.9523,
+              "pass": true
+            },
+            {
+              "file": "tooltip-v3.png",
+              "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+              "expected_region_count": 11,
+              "observed_region_count": 11,
+              "exact_text_count": 11,
+              "geometry_pass_count": 11,
+              "confidence_pass_count": 11,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.83783767,
+              "minimum_matched_confidence": 0.96335,
+              "pass": true
+            },
+            {
+              "file": "mission.png",
+              "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+              "expected_region_count": 9,
+              "observed_region_count": 9,
+              "exact_text_count": 9,
+              "geometry_pass_count": 9,
+              "confidence_pass_count": 9,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.77957,
+              "minimum_matched_confidence": 0.99004,
+              "pass": true
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [],
+          "pass": true
+        },
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v3",
+          "candidate_id": "ppocrv5-det-v6-rec-small",
+          "source_identity": {
+            "evaluator_sha256": "77f808eac65f5b09157569b1c89b48c74501986f13133e6201559be512628165",
+            "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+            "candidates_sha256": "c77239560b4f93930b19b30cb708c6736151fef3eb9a6fd0bc846e0ab28aa85b",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "ch_PP-OCRv5_det_mobile",
+              "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv5_det_mobile.onnx",
+              "bytes": 4819576,
+              "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae"
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 63.2785,
+            "suite_median_ms": 2559.93002,
+            "suite_p95_ms": 2569.648333,
+            "suite_maximum_ms": 2569.648333,
+            "process_peak_resident_bytes": 1014743040
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.74465819,
+              "minimum_matched_confidence": 0.97045,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.5896806,
+              "minimum_matched_confidence": 0.97911,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.8182114,
+              "minimum_matched_confidence": 0.93057,
+              "pass": true
+            },
+            {
+              "file": "tooltip-v3.png",
+              "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+              "expected_region_count": 11,
+              "observed_region_count": 11,
+              "exact_text_count": 11,
+              "geometry_pass_count": 11,
+              "confidence_pass_count": 11,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.69686634,
+              "minimum_matched_confidence": 0.94691,
+              "pass": true
+            },
+            {
+              "file": "mission.png",
+              "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+              "expected_region_count": 9,
+              "observed_region_count": 9,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 1,
+              "order_pass": false,
+              "minimum_matched_iou": 0.659091,
+              "minimum_matched_confidence": 0.99605,
+              "pass": false
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "ordering_mismatch",
+            "text_mismatch",
+            "unexpected_region"
+          ],
+          "pass": false
+        },
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v3",
+          "candidate_id": "ppocrv6-det-tiny-rec-small",
+          "source_identity": {
+            "evaluator_sha256": "77f808eac65f5b09157569b1c89b48c74501986f13133e6201559be512628165",
+            "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+            "candidates_sha256": "c77239560b4f93930b19b30cb708c6736151fef3eb9a6fd0bc846e0ab28aa85b",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "multi_PP-OCRv6_det_tiny",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_det_tiny.onnx",
+              "bytes": 1829618,
+              "sha256": "f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5"
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 61.252,
+            "suite_median_ms": 2215.361917,
+            "suite_p95_ms": 2223.78625,
+            "suite_maximum_ms": 2223.78625,
+            "process_peak_resident_bytes": 759742464
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.70953438,
+              "minimum_matched_confidence": 0.96925,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.70588236,
+              "minimum_matched_confidence": 0.99398,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.76655047,
+              "minimum_matched_confidence": 0.8735,
+              "pass": true
+            },
+            {
+              "file": "tooltip-v3.png",
+              "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+              "expected_region_count": 11,
+              "observed_region_count": 11,
+              "exact_text_count": 10,
+              "geometry_pass_count": 10,
+              "confidence_pass_count": 10,
+              "unexpected_region_count": 1,
+              "order_pass": false,
+              "minimum_matched_iou": 0.706004,
+              "minimum_matched_confidence": 0.9387,
+              "pass": false
+            },
+            {
+              "file": "mission.png",
+              "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+              "expected_region_count": 9,
+              "observed_region_count": 9,
+              "exact_text_count": 9,
+              "geometry_pass_count": 9,
+              "confidence_pass_count": 9,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.74646085,
+              "minimum_matched_confidence": 0.98389,
+              "pass": true
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "ordering_mismatch",
+            "text_mismatch",
+            "unexpected_region"
+          ],
+          "pass": false
+        },
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v3",
+          "candidate_id": "ppocrv6-multilingual-small",
+          "source_identity": {
+            "evaluator_sha256": "77f808eac65f5b09157569b1c89b48c74501986f13133e6201559be512628165",
+            "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+            "candidates_sha256": "c77239560b4f93930b19b30cb708c6736151fef3eb9a6fd0bc846e0ab28aa85b",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "multi_PP-OCRv6_det_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_det_small.onnx",
+              "bytes": 9929594,
+              "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f"
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 60.830792,
+            "suite_median_ms": 3425.280896,
+            "suite_p95_ms": 3435.966584,
+            "suite_maximum_ms": 3435.966584,
+            "process_peak_resident_bytes": 997621760
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.6152896,
+              "minimum_matched_confidence": 0.96282,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.65306123,
+              "minimum_matched_confidence": 0.99644,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.76036861,
+              "minimum_matched_confidence": 0.76011,
+              "pass": true
+            },
+            {
+              "file": "tooltip-v3.png",
+              "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+              "expected_region_count": 11,
+              "observed_region_count": 11,
+              "exact_text_count": 10,
+              "geometry_pass_count": 10,
+              "confidence_pass_count": 10,
+              "unexpected_region_count": 1,
+              "order_pass": false,
+              "minimum_matched_iou": 0.63698617,
+              "minimum_matched_confidence": 0.96461,
+              "pass": false
+            },
+            {
+              "file": "mission.png",
+              "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+              "expected_region_count": 9,
+              "observed_region_count": 9,
+              "exact_text_count": 9,
+              "geometry_pass_count": 9,
+              "confidence_pass_count": 9,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.659091,
+              "minimum_matched_confidence": 0.94453,
+              "pass": true
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "ordering_mismatch",
+            "text_mismatch",
+            "unexpected_region"
+          ],
+          "pass": false
+        }
+      ],
+      "frozen_candidates_sha256": "ad11cbf9fe332f7fc2472b3a00c7b172c902a02faef21b95bbe00255ce3d43d6"
+    },
+    {
+      "id": "v4",
+      "status": "apple-complete-windows-pending",
+      "reason": "The evaluator enforced the complete pinned environment and exact CPU session/input/output/vocabulary identity before inference.",
+      "candidates": [
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v3",
+          "candidate_id": "ppocrv4-det-v6-rec-small",
+          "source_identity": {
+            "evaluator_sha256": "02c78cff9bbffd7e576ab918d5d743d4a06d5b6f692a9dc0e33e0831faaeb9d4",
+            "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+            "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "ch_PP-OCRv4_det_mobile",
+              "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx",
+              "bytes": 4745517,
+              "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9",
+              "session": {
+                "providers": [
+                  "CPUExecutionProvider"
+                ],
+                "inputs": [
+                  {
+                    "name": "x",
+                    "shape": [
+                      "p2o.DynamicDimension.0",
+                      3,
+                      "p2o.DynamicDimension.1",
+                      "p2o.DynamicDimension.2"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "sigmoid_0.tmp_0",
+                    "shape": [
+                      "p2o.DynamicDimension.3",
+                      1,
+                      "p2o.DynamicDimension.4",
+                      "p2o.DynamicDimension.5"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ]
+              }
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+              "session": {
+                "providers": [
+                  "CPUExecutionProvider"
+                ],
+                "inputs": [
+                  {
+                    "name": "x",
+                    "shape": [
+                      "DynamicDimension.0",
+                      3,
+                      48,
+                      "DynamicDimension.1"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "fetch_name_0",
+                    "shape": [
+                      "DynamicDimension.0",
+                      "Reshape_470_o0__d2",
+                      18710
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ]
+              },
+              "vocabulary": {
+                "metadata_key": "character",
+                "encoding": "UTF-8 lines",
+                "count": 18708,
+                "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+                "missing_fixture_characters": []
+              }
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 96.046625,
+            "suite_median_ms": 2650.09677,
+            "suite_p95_ms": 2661.245708,
+            "suite_maximum_ms": 2661.245708,
+            "process_peak_resident_bytes": 1012318208
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.80200498,
+              "minimum_matched_confidence": 0.97809,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.85675426,
+              "minimum_matched_confidence": 0.99274,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.80760587,
+              "minimum_matched_confidence": 0.9523,
+              "pass": true
+            },
+            {
+              "file": "tooltip-v3.png",
+              "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+              "expected_region_count": 11,
+              "observed_region_count": 11,
+              "exact_text_count": 11,
+              "geometry_pass_count": 11,
+              "confidence_pass_count": 11,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.83783767,
+              "minimum_matched_confidence": 0.96335,
+              "pass": true
+            },
+            {
+              "file": "mission.png",
+              "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+              "expected_region_count": 9,
+              "observed_region_count": 9,
+              "exact_text_count": 9,
+              "geometry_pass_count": 9,
+              "confidence_pass_count": 9,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.77957,
+              "minimum_matched_confidence": 0.99004,
+              "pass": true
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [],
+          "pass": true
+        },
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v3",
+          "candidate_id": "ppocrv5-det-v6-rec-small",
+          "source_identity": {
+            "evaluator_sha256": "02c78cff9bbffd7e576ab918d5d743d4a06d5b6f692a9dc0e33e0831faaeb9d4",
+            "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+            "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "ch_PP-OCRv5_det_mobile",
+              "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv5_det_mobile.onnx",
+              "bytes": 4819576,
+              "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+              "session": {
+                "providers": [
+                  "CPUExecutionProvider"
+                ],
+                "inputs": [
+                  {
+                    "name": "x",
+                    "shape": [
+                      "DynamicDimension.0",
+                      3,
+                      "DynamicDimension.1",
+                      "DynamicDimension.2"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "fetch_name_0",
+                    "shape": [
+                      "ConvTranspose_497_o0__d0",
+                      1,
+                      "ConvTranspose_497_o0__d2",
+                      "ConvTranspose_497_o0__d3"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ]
+              }
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+              "session": {
+                "providers": [
+                  "CPUExecutionProvider"
+                ],
+                "inputs": [
+                  {
+                    "name": "x",
+                    "shape": [
+                      "DynamicDimension.0",
+                      3,
+                      48,
+                      "DynamicDimension.1"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "fetch_name_0",
+                    "shape": [
+                      "DynamicDimension.0",
+                      "Reshape_470_o0__d2",
+                      18710
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ]
+              },
+              "vocabulary": {
+                "metadata_key": "character",
+                "encoding": "UTF-8 lines",
+                "count": 18708,
+                "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+                "missing_fixture_characters": []
+              }
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 65.91975,
+            "suite_median_ms": 2570.690792,
+            "suite_p95_ms": 2591.0975,
+            "suite_maximum_ms": 2591.0975,
+            "process_peak_resident_bytes": 1021952000
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.74465819,
+              "minimum_matched_confidence": 0.97045,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.5896806,
+              "minimum_matched_confidence": 0.97911,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.8182114,
+              "minimum_matched_confidence": 0.93057,
+              "pass": true
+            },
+            {
+              "file": "tooltip-v3.png",
+              "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+              "expected_region_count": 11,
+              "observed_region_count": 11,
+              "exact_text_count": 11,
+              "geometry_pass_count": 11,
+              "confidence_pass_count": 11,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.69686634,
+              "minimum_matched_confidence": 0.94691,
+              "pass": true
+            },
+            {
+              "file": "mission.png",
+              "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+              "expected_region_count": 9,
+              "observed_region_count": 9,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 1,
+              "order_pass": false,
+              "minimum_matched_iou": 0.659091,
+              "minimum_matched_confidence": 0.99605,
+              "pass": false
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "ordering_mismatch",
+            "text_mismatch",
+            "unexpected_region"
+          ],
+          "pass": false
+        },
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v3",
+          "candidate_id": "ppocrv6-det-tiny-rec-small",
+          "source_identity": {
+            "evaluator_sha256": "02c78cff9bbffd7e576ab918d5d743d4a06d5b6f692a9dc0e33e0831faaeb9d4",
+            "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+            "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "multi_PP-OCRv6_det_tiny",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_det_tiny.onnx",
+              "bytes": 1829618,
+              "sha256": "f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5",
+              "session": {
+                "providers": [
+                  "CPUExecutionProvider"
+                ],
+                "inputs": [
+                  {
+                    "name": "x",
+                    "shape": [
+                      "DynamicDimension.0",
+                      3,
+                      "DynamicDimension.1",
+                      "DynamicDimension.2"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "fetch_name_0",
+                    "shape": [
+                      "ConvTranspose_459_o0__d0",
+                      1,
+                      "ConvTranspose_459_o0__d2",
+                      "ConvTranspose_459_o0__d3"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ]
+              }
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+              "session": {
+                "providers": [
+                  "CPUExecutionProvider"
+                ],
+                "inputs": [
+                  {
+                    "name": "x",
+                    "shape": [
+                      "DynamicDimension.0",
+                      3,
+                      48,
+                      "DynamicDimension.1"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "fetch_name_0",
+                    "shape": [
+                      "DynamicDimension.0",
+                      "Reshape_470_o0__d2",
+                      18710
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ]
+              },
+              "vocabulary": {
+                "metadata_key": "character",
+                "encoding": "UTF-8 lines",
+                "count": 18708,
+                "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+                "missing_fixture_characters": []
+              }
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 57.958125,
+            "suite_median_ms": 2223.746688,
+            "suite_p95_ms": 2233.179958,
+            "suite_maximum_ms": 2233.179958,
+            "process_peak_resident_bytes": 766640128
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.70953438,
+              "minimum_matched_confidence": 0.96925,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.70588236,
+              "minimum_matched_confidence": 0.99398,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.76655047,
+              "minimum_matched_confidence": 0.8735,
+              "pass": true
+            },
+            {
+              "file": "tooltip-v3.png",
+              "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+              "expected_region_count": 11,
+              "observed_region_count": 11,
+              "exact_text_count": 10,
+              "geometry_pass_count": 10,
+              "confidence_pass_count": 10,
+              "unexpected_region_count": 1,
+              "order_pass": false,
+              "minimum_matched_iou": 0.706004,
+              "minimum_matched_confidence": 0.9387,
+              "pass": false
+            },
+            {
+              "file": "mission.png",
+              "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+              "expected_region_count": 9,
+              "observed_region_count": 9,
+              "exact_text_count": 9,
+              "geometry_pass_count": 9,
+              "confidence_pass_count": 9,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.74646085,
+              "minimum_matched_confidence": 0.98389,
+              "pass": true
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "ordering_mismatch",
+            "text_mismatch",
+            "unexpected_region"
+          ],
+          "pass": false
+        },
+        {
+          "fixture_profile_id": "g-004-japanese-ui-v3",
+          "candidate_id": "ppocrv6-multilingual-small",
+          "source_identity": {
+            "evaluator_sha256": "02c78cff9bbffd7e576ab918d5d743d4a06d5b6f692a9dc0e33e0831faaeb9d4",
+            "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+            "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+            "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+          },
+          "models": [
+            {
+              "role": "detector",
+              "id": "multi_PP-OCRv6_det_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_det_small.onnx",
+              "bytes": 9929594,
+              "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f",
+              "session": {
+                "providers": [
+                  "CPUExecutionProvider"
+                ],
+                "inputs": [
+                  {
+                    "name": "x",
+                    "shape": [
+                      "DynamicDimension.0",
+                      3,
+                      "DynamicDimension.1",
+                      "DynamicDimension.2"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "fetch_name_0",
+                    "shape": [
+                      "ConvTranspose_459_o0__d0",
+                      1,
+                      "ConvTranspose_459_o0__d2",
+                      "ConvTranspose_459_o0__d3"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ]
+              }
+            },
+            {
+              "role": "recognizer",
+              "id": "multi_PP-OCRv6_rec_small",
+              "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+              "bytes": 21234383,
+              "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+              "session": {
+                "providers": [
+                  "CPUExecutionProvider"
+                ],
+                "inputs": [
+                  {
+                    "name": "x",
+                    "shape": [
+                      "DynamicDimension.0",
+                      3,
+                      48,
+                      "DynamicDimension.1"
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "fetch_name_0",
+                    "shape": [
+                      "DynamicDimension.0",
+                      "Reshape_470_o0__d2",
+                      18710
+                    ],
+                    "type": "tensor(float)"
+                  }
+                ]
+              },
+              "vocabulary": {
+                "metadata_key": "character",
+                "encoding": "UTF-8 lines",
+                "count": 18708,
+                "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+                "missing_fixture_characters": []
+              }
+            }
+          ],
+          "aggregate": {
+            "initialization_ms": 61.023875,
+            "suite_median_ms": 3450.667355,
+            "suite_p95_ms": 3470.269834,
+            "suite_maximum_ms": 3470.269834,
+            "process_peak_resident_bytes": 997490688
+          },
+          "images": [
+            {
+              "file": "hud.png",
+              "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.6152896,
+              "minimum_matched_confidence": 0.96282,
+              "pass": true
+            },
+            {
+              "file": "menu.png",
+              "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+              "expected_region_count": 8,
+              "observed_region_count": 8,
+              "exact_text_count": 8,
+              "geometry_pass_count": 8,
+              "confidence_pass_count": 8,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.65306123,
+              "minimum_matched_confidence": 0.99644,
+              "pass": true
+            },
+            {
+              "file": "status.png",
+              "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+              "expected_region_count": 6,
+              "observed_region_count": 6,
+              "exact_text_count": 6,
+              "geometry_pass_count": 6,
+              "confidence_pass_count": 6,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.76036861,
+              "minimum_matched_confidence": 0.76011,
+              "pass": true
+            },
+            {
+              "file": "tooltip-v3.png",
+              "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+              "expected_region_count": 11,
+              "observed_region_count": 11,
+              "exact_text_count": 10,
+              "geometry_pass_count": 10,
+              "confidence_pass_count": 10,
+              "unexpected_region_count": 1,
+              "order_pass": false,
+              "minimum_matched_iou": 0.63698617,
+              "minimum_matched_confidence": 0.96461,
+              "pass": false
+            },
+            {
+              "file": "mission.png",
+              "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+              "expected_region_count": 9,
+              "observed_region_count": 9,
+              "exact_text_count": 9,
+              "geometry_pass_count": 9,
+              "confidence_pass_count": 9,
+              "unexpected_region_count": 0,
+              "order_pass": true,
+              "minimum_matched_iou": 0.659091,
+              "minimum_matched_confidence": 0.94453,
+              "pass": true
+            }
+          ],
+          "stable_gate_outcomes": true,
+          "failure_categories": [
+            "ordering_mismatch",
+            "text_mismatch",
+            "unexpected_region"
+          ],
+          "pass": false
+        }
+      ],
+      "frozen_candidates_sha256": "63ae5f33d0a3f76c659f68f4cfe4e393dbf269eded9ce3005b2cb07ac50e428f"
+    }
+  ],
+  "apple_decision": {
+    "selected_candidate_for_windows": "ppocrv4-det-v6-rec-small",
+    "reason": "Only this candidate passed every v4 environment, model/session/vocabulary, text, count, geometry, ordering, confidence-validity, stability, digest, license, and deployment row.",
+    "other_v4_candidates_rejected": [
+      "ppocrv5-det-v6-rec-small",
+      "ppocrv6-det-tiny-rec-small",
+      "ppocrv6-multilingual-small"
+    ],
+    "g004_status": "open-pending-windows"
+  },
+  "privacy": {
+    "approved_expected_fixture_text_only": true,
+    "unexpected_recognized_text_retained": false,
+    "game_screenshot_pixels_or_text_retained": false,
+    "host_paths_retained": false
+  }
+}

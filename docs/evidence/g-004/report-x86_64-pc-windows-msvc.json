@@ -1,0 +1,789 @@
+{
+  "schema_version": 1,
+  "report_kind": "g-004-cross-candidate-qualification",
+  "qualification_stage": "v4",
+  "target": "x86_64-pc-windows-msvc",
+  "product_base_revision": "f3608424dde88f835f35653be8113f7a2009431b",
+  "host": {
+    "target": "x86_64-pc-windows-msvc",
+    "os": "Windows",
+    "os_release": "11",
+    "os_version": "10.0.26200",
+    "architecture": "AMD64",
+    "logical_cpu_count": 20,
+    "physical_memory_bytes": 34197635072
+  },
+  "tools": {
+    "python": "3.14.6",
+    "packages": {
+      "antlr4-python3-runtime": "4.9.3",
+      "certifi": "2026.7.22",
+      "charset-normalizer": "3.5.1",
+      "colorlog": "6.12.0",
+      "flatbuffers": "25.12.19",
+      "idna": "3.19",
+      "numpy": "2.5.2",
+      "omegaconf": "2.3.1",
+      "onnxruntime": "1.29.0",
+      "opencv-python": "5.0.0.93",
+      "packaging": "26.3",
+      "pillow": "12.3.0",
+      "protobuf": "7.36.0",
+      "pyclipper": "1.4.0",
+      "PyYAML": "6.0.3",
+      "rapidocr": "3.9.2",
+      "requests": "2.34.2",
+      "shapely": "2.1.2",
+      "six": "1.17.0",
+      "tqdm": "4.70.0",
+      "urllib3": "2.7.0"
+    },
+    "modules": {
+      "onnxruntime": "1.29.0",
+      "opencv": "5.0.0",
+      "pillow": "12.3.0"
+    },
+    "onnxruntime_available_providers": [
+      "AzureExecutionProvider",
+      "CPUExecutionProvider"
+    ]
+  },
+  "profile": {
+    "provider": "CPUExecutionProvider",
+    "intra_op_threads": 1,
+    "inter_op_threads": 1,
+    "cpu_memory_arena": false,
+    "orientation_classifier": false,
+    "warmup_passes": 2,
+    "measured_passes": 10
+  },
+  "candidates": [
+    {
+      "fixture_profile_id": "g-004-japanese-ui-v3",
+      "candidate_id": "ppocrv4-det-v6-rec-small",
+      "source_identity": {
+        "evaluator_sha256": "02c78cff9bbffd7e576ab918d5d743d4a06d5b6f692a9dc0e33e0831faaeb9d4",
+        "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+        "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+        "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+      },
+      "models": [
+        {
+          "role": "detector",
+          "id": "ch_PP-OCRv4_det_mobile",
+          "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx",
+          "bytes": 4745517,
+          "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "p2o.DynamicDimension.0",
+                  3,
+                  "p2o.DynamicDimension.1",
+                  "p2o.DynamicDimension.2"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "sigmoid_0.tmp_0",
+                "shape": [
+                  "p2o.DynamicDimension.3",
+                  1,
+                  "p2o.DynamicDimension.4",
+                  "p2o.DynamicDimension.5"
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          }
+        },
+        {
+          "role": "recognizer",
+          "id": "multi_PP-OCRv6_rec_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+          "bytes": 21234383,
+          "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  48,
+                  "DynamicDimension.1"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "DynamicDimension.0",
+                  "Reshape_470_o0__d2",
+                  18710
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          },
+          "vocabulary": {
+            "metadata_key": "character",
+            "encoding": "UTF-8 lines",
+            "count": 18708,
+            "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+            "missing_fixture_characters": []
+          }
+        }
+      ],
+      "aggregate": {
+        "initialization_ms": 172.5704,
+        "suite_median_ms": 2311.9576,
+        "suite_p95_ms": 2504.9664,
+        "suite_maximum_ms": 2504.9664,
+        "process_peak_resident_bytes": null
+      },
+      "images": [
+        {
+          "file": "hud.png",
+          "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "expected_region_count": 8,
+          "observed_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.80200498,
+          "minimum_matched_confidence": 0.97809,
+          "pass": true
+        },
+        {
+          "file": "menu.png",
+          "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "expected_region_count": 8,
+          "observed_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.85675426,
+          "minimum_matched_confidence": 0.99274,
+          "pass": true
+        },
+        {
+          "file": "status.png",
+          "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "expected_region_count": 6,
+          "observed_region_count": 6,
+          "exact_text_count": 6,
+          "geometry_pass_count": 6,
+          "confidence_pass_count": 6,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.80760587,
+          "minimum_matched_confidence": 0.9523,
+          "pass": true
+        },
+        {
+          "file": "tooltip-v3.png",
+          "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "expected_region_count": 11,
+          "observed_region_count": 11,
+          "exact_text_count": 11,
+          "geometry_pass_count": 11,
+          "confidence_pass_count": 11,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.83783767,
+          "minimum_matched_confidence": 0.96335,
+          "pass": true
+        },
+        {
+          "file": "mission.png",
+          "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "expected_region_count": 9,
+          "observed_region_count": 9,
+          "exact_text_count": 9,
+          "geometry_pass_count": 9,
+          "confidence_pass_count": 9,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.77957,
+          "minimum_matched_confidence": 0.99004,
+          "pass": true
+        }
+      ],
+      "stable_gate_outcomes": true,
+      "failure_categories": [],
+      "pass": true
+    },
+    {
+      "fixture_profile_id": "g-004-japanese-ui-v3",
+      "candidate_id": "ppocrv5-det-v6-rec-small",
+      "source_identity": {
+        "evaluator_sha256": "02c78cff9bbffd7e576ab918d5d743d4a06d5b6f692a9dc0e33e0831faaeb9d4",
+        "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+        "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+        "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+      },
+      "models": [
+        {
+          "role": "detector",
+          "id": "ch_PP-OCRv5_det_mobile",
+          "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv5_det_mobile.onnx",
+          "bytes": 4819576,
+          "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  "DynamicDimension.1",
+                  "DynamicDimension.2"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "ConvTranspose_497_o0__d0",
+                  1,
+                  "ConvTranspose_497_o0__d2",
+                  "ConvTranspose_497_o0__d3"
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          }
+        },
+        {
+          "role": "recognizer",
+          "id": "multi_PP-OCRv6_rec_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+          "bytes": 21234383,
+          "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  48,
+                  "DynamicDimension.1"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "DynamicDimension.0",
+                  "Reshape_470_o0__d2",
+                  18710
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          },
+          "vocabulary": {
+            "metadata_key": "character",
+            "encoding": "UTF-8 lines",
+            "count": 18708,
+            "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+            "missing_fixture_characters": []
+          }
+        }
+      ],
+      "aggregate": {
+        "initialization_ms": 129.488,
+        "suite_median_ms": 3102.00915,
+        "suite_p95_ms": 3117.8146,
+        "suite_maximum_ms": 3117.8146,
+        "process_peak_resident_bytes": null
+      },
+      "images": [
+        {
+          "file": "hud.png",
+          "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "expected_region_count": 8,
+          "observed_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.74465819,
+          "minimum_matched_confidence": 0.97044,
+          "pass": true
+        },
+        {
+          "file": "menu.png",
+          "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "expected_region_count": 8,
+          "observed_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.5896806,
+          "minimum_matched_confidence": 0.97911,
+          "pass": true
+        },
+        {
+          "file": "status.png",
+          "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "expected_region_count": 6,
+          "observed_region_count": 6,
+          "exact_text_count": 6,
+          "geometry_pass_count": 6,
+          "confidence_pass_count": 6,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.8182114,
+          "minimum_matched_confidence": 0.93057,
+          "pass": true
+        },
+        {
+          "file": "tooltip-v3.png",
+          "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "expected_region_count": 11,
+          "observed_region_count": 11,
+          "exact_text_count": 11,
+          "geometry_pass_count": 11,
+          "confidence_pass_count": 11,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.69686634,
+          "minimum_matched_confidence": 0.94691,
+          "pass": true
+        },
+        {
+          "file": "mission.png",
+          "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "expected_region_count": 9,
+          "observed_region_count": 9,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unexpected_region_count": 1,
+          "order_pass": false,
+          "minimum_matched_iou": 0.659091,
+          "minimum_matched_confidence": 0.99605,
+          "pass": false
+        }
+      ],
+      "stable_gate_outcomes": true,
+      "failure_categories": [
+        "ordering_mismatch",
+        "text_mismatch",
+        "unexpected_region"
+      ],
+      "pass": false
+    },
+    {
+      "fixture_profile_id": "g-004-japanese-ui-v3",
+      "candidate_id": "ppocrv6-det-tiny-rec-small",
+      "source_identity": {
+        "evaluator_sha256": "02c78cff9bbffd7e576ab918d5d743d4a06d5b6f692a9dc0e33e0831faaeb9d4",
+        "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+        "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+        "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+      },
+      "models": [
+        {
+          "role": "detector",
+          "id": "multi_PP-OCRv6_det_tiny",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_det_tiny.onnx",
+          "bytes": 1829618,
+          "sha256": "f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  "DynamicDimension.1",
+                  "DynamicDimension.2"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "ConvTranspose_459_o0__d0",
+                  1,
+                  "ConvTranspose_459_o0__d2",
+                  "ConvTranspose_459_o0__d3"
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          }
+        },
+        {
+          "role": "recognizer",
+          "id": "multi_PP-OCRv6_rec_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+          "bytes": 21234383,
+          "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  48,
+                  "DynamicDimension.1"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "DynamicDimension.0",
+                  "Reshape_470_o0__d2",
+                  18710
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          },
+          "vocabulary": {
+            "metadata_key": "character",
+            "encoding": "UTF-8 lines",
+            "count": 18708,
+            "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+            "missing_fixture_characters": []
+          }
+        }
+      ],
+      "aggregate": {
+        "initialization_ms": 114.3435,
+        "suite_median_ms": 1669.27615,
+        "suite_p95_ms": 1690.7211,
+        "suite_maximum_ms": 1690.7211,
+        "process_peak_resident_bytes": null
+      },
+      "images": [
+        {
+          "file": "hud.png",
+          "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "expected_region_count": 8,
+          "observed_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.70953438,
+          "minimum_matched_confidence": 0.96917,
+          "pass": true
+        },
+        {
+          "file": "menu.png",
+          "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "expected_region_count": 8,
+          "observed_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.70588236,
+          "minimum_matched_confidence": 0.994,
+          "pass": true
+        },
+        {
+          "file": "status.png",
+          "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "expected_region_count": 6,
+          "observed_region_count": 6,
+          "exact_text_count": 6,
+          "geometry_pass_count": 6,
+          "confidence_pass_count": 6,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.76655047,
+          "minimum_matched_confidence": 0.8735,
+          "pass": true
+        },
+        {
+          "file": "tooltip-v3.png",
+          "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "expected_region_count": 11,
+          "observed_region_count": 11,
+          "exact_text_count": 10,
+          "geometry_pass_count": 10,
+          "confidence_pass_count": 10,
+          "unexpected_region_count": 1,
+          "order_pass": false,
+          "minimum_matched_iou": 0.706004,
+          "minimum_matched_confidence": 0.9387,
+          "pass": false
+        },
+        {
+          "file": "mission.png",
+          "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "expected_region_count": 9,
+          "observed_region_count": 9,
+          "exact_text_count": 9,
+          "geometry_pass_count": 9,
+          "confidence_pass_count": 9,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.74646085,
+          "minimum_matched_confidence": 0.98389,
+          "pass": true
+        }
+      ],
+      "stable_gate_outcomes": true,
+      "failure_categories": [
+        "ordering_mismatch",
+        "text_mismatch",
+        "unexpected_region"
+      ],
+      "pass": false
+    },
+    {
+      "fixture_profile_id": "g-004-japanese-ui-v3",
+      "candidate_id": "ppocrv6-multilingual-small",
+      "source_identity": {
+        "evaluator_sha256": "02c78cff9bbffd7e576ab918d5d743d4a06d5b6f692a9dc0e33e0831faaeb9d4",
+        "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+        "candidates_sha256": "033a05ed561a51994f972288a4c1594e4da52878d00e1246f0ebdbcd1d03998d",
+        "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0"
+      },
+      "models": [
+        {
+          "role": "detector",
+          "id": "multi_PP-OCRv6_det_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_det_small.onnx",
+          "bytes": 9929594,
+          "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  "DynamicDimension.1",
+                  "DynamicDimension.2"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "ConvTranspose_459_o0__d0",
+                  1,
+                  "ConvTranspose_459_o0__d2",
+                  "ConvTranspose_459_o0__d3"
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          }
+        },
+        {
+          "role": "recognizer",
+          "id": "multi_PP-OCRv6_rec_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+          "bytes": 21234383,
+          "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  48,
+                  "DynamicDimension.1"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "DynamicDimension.0",
+                  "Reshape_470_o0__d2",
+                  18710
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          },
+          "vocabulary": {
+            "metadata_key": "character",
+            "encoding": "UTF-8 lines",
+            "count": 18708,
+            "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+            "missing_fixture_characters": []
+          }
+        }
+      ],
+      "aggregate": {
+        "initialization_ms": 126.2065,
+        "suite_median_ms": 6567.2595,
+        "suite_p95_ms": 6585.2185,
+        "suite_maximum_ms": 6585.2185,
+        "process_peak_resident_bytes": null
+      },
+      "images": [
+        {
+          "file": "hud.png",
+          "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "expected_region_count": 8,
+          "observed_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.6152896,
+          "minimum_matched_confidence": 0.96217,
+          "pass": true
+        },
+        {
+          "file": "menu.png",
+          "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "expected_region_count": 8,
+          "observed_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.65306123,
+          "minimum_matched_confidence": 0.99644,
+          "pass": true
+        },
+        {
+          "file": "status.png",
+          "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "expected_region_count": 6,
+          "observed_region_count": 6,
+          "exact_text_count": 6,
+          "geometry_pass_count": 6,
+          "confidence_pass_count": 6,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.76036861,
+          "minimum_matched_confidence": 0.7601,
+          "pass": true
+        },
+        {
+          "file": "tooltip-v3.png",
+          "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "expected_region_count": 11,
+          "observed_region_count": 11,
+          "exact_text_count": 10,
+          "geometry_pass_count": 10,
+          "confidence_pass_count": 10,
+          "unexpected_region_count": 1,
+          "order_pass": false,
+          "minimum_matched_iou": 0.63698617,
+          "minimum_matched_confidence": 0.96461,
+          "pass": false
+        },
+        {
+          "file": "mission.png",
+          "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "expected_region_count": 9,
+          "observed_region_count": 9,
+          "exact_text_count": 9,
+          "geometry_pass_count": 9,
+          "confidence_pass_count": 9,
+          "unexpected_region_count": 0,
+          "order_pass": true,
+          "minimum_matched_iou": 0.659091,
+          "minimum_matched_confidence": 0.94507,
+          "pass": true
+        }
+      ],
+      "stable_gate_outcomes": true,
+      "failure_categories": [
+        "ordering_mismatch",
+        "text_mismatch",
+        "unexpected_region"
+      ],
+      "pass": false
+    }
+  ],
+  "frozen_candidates_sha256": "c6e6a5dab741ef7ad3bda5587cf4ce8138570da92dc2262d3823ca5b5bdf88da",
+  "cross_target_decision": {
+    "apple_report_sha256": "be5f6a9e0e39e982db8522cb3d6cffb60a7233bc991b2131459451e305398a17",
+    "conditional_profile_id": "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1",
+    "conditional_candidate": "ppocrv4-det-v6-rec-small",
+    "candidate_gate_outcomes_match_apple": true,
+    "image_gate_outcomes_match_apple": true,
+    "other_v4_candidates_rejected": [
+      "ppocrv5-det-v6-rec-small",
+      "ppocrv6-det-tiny-rec-small",
+      "ppocrv6-multilingual-small"
+    ],
+    "unresolved_evidence_gaps": [
+      "fixture_bytes_not_bound_at_evaluation_time",
+      "rapidocr_code_bytes_not_bound_to_declared_revision",
+      "unexpected_region_threshold_applied_before_expected_matching",
+      "raw_report_path_not_constrained_to_ignored_ephemera",
+      "windows_peak_resident_failure_reason_not_recorded"
+    ],
+    "g004_status": "open-independent-review-findings"
+  },
+  "privacy": {
+    "approved_expected_fixture_text_only": true,
+    "unexpected_recognized_text_retained": false,
+    "game_screenshot_pixels_or_text_retained": false,
+    "host_paths_retained": false
+  }
+}

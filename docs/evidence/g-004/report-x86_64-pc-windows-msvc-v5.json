@@ -1,0 +1,944 @@
+{
+  "schema_version": 1,
+  "report_kind": "g-004-evaluator-v5-cross-target-qualification",
+  "qualification_stage": "v5",
+  "target": "x86_64-pc-windows-msvc",
+  "product_base_revision": "f3608424dde88f835f35653be8113f7a2009431b",
+  "source_identity": {
+    "evaluator_sha256": "780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249",
+    "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+    "candidates_sha256": "4b5aa66d3a7c390211219c794e35ee685701a9cd23c0f24f0d62047280199ff7",
+    "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
+    "rapidocr_code_sha256": "753f75e387f6b6d128cc644b209fb76dde04cb735de06e411d643826f0a4a5aa"
+  },
+  "host": {
+    "target": "x86_64-pc-windows-msvc",
+    "os": "Windows",
+    "os_release": "11",
+    "os_version": "10.0.26200",
+    "architecture": "AMD64",
+    "logical_cpu_count": 20,
+    "physical_memory_bytes": 34197635072
+  },
+  "tools": {
+    "python": "3.14.6",
+    "packages": {
+      "antlr4-python3-runtime": "4.9.3",
+      "certifi": "2026.7.22",
+      "charset-normalizer": "3.5.1",
+      "colorlog": "6.12.0",
+      "flatbuffers": "25.12.19",
+      "idna": "3.19",
+      "numpy": "2.5.2",
+      "omegaconf": "2.3.1",
+      "onnxruntime": "1.29.0",
+      "opencv-python": "5.0.0.93",
+      "packaging": "26.3",
+      "pillow": "12.3.0",
+      "protobuf": "7.36.0",
+      "pyclipper": "1.4.0",
+      "PyYAML": "6.0.3",
+      "rapidocr": "3.9.2",
+      "requests": "2.34.2",
+      "shapely": "2.1.2",
+      "six": "1.17.0",
+      "tqdm": "4.70.0",
+      "urllib3": "2.7.0"
+    },
+    "modules": {
+      "onnxruntime": "1.29.0",
+      "opencv": "5.0.0",
+      "pillow": "12.3.0"
+    },
+    "onnxruntime_available_providers": [
+      "AzureExecutionProvider",
+      "CPUExecutionProvider"
+    ],
+    "rapidocr_code": {
+      "algorithm": "sha256(path_length_u64be || path_utf8 || content_length_u64be || content)",
+      "included_suffixes": [
+        ".py",
+        ".yaml",
+        ".yml"
+      ],
+      "file_count": 86,
+      "total_bytes": 625123,
+      "sha256": "753f75e387f6b6d128cc644b209fb76dde04cb735de06e411d643826f0a4a5aa"
+    }
+  },
+  "profile": {
+    "provider": "CPUExecutionProvider",
+    "intra_op_threads": 1,
+    "inter_op_threads": 1,
+    "cpu_memory_arena": false,
+    "orientation_classifier": false,
+    "warmup_passes": 2,
+    "measured_passes": 10,
+    "unexpected_region_evaluation": "match_expected_then_threshold_unmatched"
+  },
+  "patch_review": {
+    "status": "passed-before-runs",
+    "reviewed_at": "2026-08-22T17:09:59Z",
+    "scope": "five evaluator-integrity contracts, frozen v4 preservation, and normative G-004 v5 evidence"
+  },
+  "final_evidence_review": {
+    "status": "passed",
+    "reviewed_at": "2026-08-22T23:56:35Z",
+    "scope": "cross-target v5 identity, quality, provenance, privacy, validator drift rejection, and absence of implementation scope creep",
+    "findings_closed": [
+      "tracked_v5_source_hashes_not_recomputed",
+      "README_v5_status_contradiction"
+    ]
+  },
+  "historical_v4_report": {
+    "path": "docs/evidence/g-004/report-x86_64-pc-windows-msvc.json",
+    "sha256": "75f1e57bc160cdb23754c09bf4f346fa6618d3d18e706524c87e3473257eaa7c",
+    "status": "immutable-audit-record-not-qualification"
+  },
+  "apple_v5_report": {
+    "path": "docs/evidence/g-004/report-aarch64-apple-darwin-v5.json",
+    "sha256": "e9b7b50e2916150cfd1304180c4187b5697f03f164880d867fc2d5601f169e04",
+    "candidate_outcomes_sha256": "5c5eb4849c65b0047ab11f0cd8ab33033594e29d520e05aef7fb0c0cd14d1730"
+  },
+  "candidates": [
+    {
+      "candidate_id": "ppocrv4-det-v6-rec-small",
+      "source_identity": {
+        "evaluator_sha256": "780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249",
+        "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+        "candidates_sha256": "4b5aa66d3a7c390211219c794e35ee685701a9cd23c0f24f0d62047280199ff7",
+        "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
+        "rapidocr_code_sha256": "753f75e387f6b6d128cc644b209fb76dde04cb735de06e411d643826f0a4a5aa"
+      },
+      "models": [
+        {
+          "role": "detector",
+          "id": "ch_PP-OCRv4_det_mobile",
+          "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx",
+          "bytes": 4745517,
+          "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "p2o.DynamicDimension.0",
+                  3,
+                  "p2o.DynamicDimension.1",
+                  "p2o.DynamicDimension.2"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "sigmoid_0.tmp_0",
+                "shape": [
+                  "p2o.DynamicDimension.3",
+                  1,
+                  "p2o.DynamicDimension.4",
+                  "p2o.DynamicDimension.5"
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          }
+        },
+        {
+          "role": "recognizer",
+          "id": "multi_PP-OCRv6_rec_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+          "bytes": 21234383,
+          "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  48,
+                  "DynamicDimension.1"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "DynamicDimension.0",
+                  "Reshape_470_o0__d2",
+                  18710
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          },
+          "vocabulary": {
+            "metadata_key": "character",
+            "encoding": "UTF-8 lines",
+            "count": 18708,
+            "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+            "missing_fixture_characters": []
+          }
+        }
+      ],
+      "aggregate": {
+        "initialization_ms": 198.4015,
+        "suite_median_ms": 2207.7426,
+        "suite_p95_ms": 2250.8675,
+        "suite_maximum_ms": 2250.8675,
+        "process_peak_resident": {
+          "status": "measured",
+          "bytes": 553406464,
+          "source": "GetProcessMemoryInfo.PeakWorkingSetSize"
+        }
+      },
+      "images": [
+        {
+          "file": "hud.png",
+          "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "consumed_fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "consumed_fixture_bytes": 29075,
+          "expected_region_count": 8,
+          "detected_region_count": 8,
+          "admitted_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.80200498,
+          "minimum_matched_confidence": 0.97809
+        },
+        {
+          "file": "menu.png",
+          "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "consumed_fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "consumed_fixture_bytes": 16132,
+          "expected_region_count": 8,
+          "detected_region_count": 8,
+          "admitted_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.85675426,
+          "minimum_matched_confidence": 0.99274
+        },
+        {
+          "file": "status.png",
+          "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "consumed_fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "consumed_fixture_bytes": 15263,
+          "expected_region_count": 6,
+          "detected_region_count": 6,
+          "admitted_region_count": 6,
+          "exact_text_count": 6,
+          "geometry_pass_count": 6,
+          "confidence_pass_count": 6,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.80760587,
+          "minimum_matched_confidence": 0.9523
+        },
+        {
+          "file": "tooltip-v3.png",
+          "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "consumed_fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "consumed_fixture_bytes": 41216,
+          "expected_region_count": 11,
+          "detected_region_count": 11,
+          "admitted_region_count": 11,
+          "exact_text_count": 11,
+          "geometry_pass_count": 11,
+          "confidence_pass_count": 11,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.83783767,
+          "minimum_matched_confidence": 0.96335
+        },
+        {
+          "file": "mission.png",
+          "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "consumed_fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "consumed_fixture_bytes": 43680,
+          "expected_region_count": 9,
+          "detected_region_count": 9,
+          "admitted_region_count": 9,
+          "exact_text_count": 9,
+          "geometry_pass_count": 9,
+          "confidence_pass_count": 9,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.77957,
+          "minimum_matched_confidence": 0.99004
+        }
+      ],
+      "stable_gate_outcomes": true,
+      "failure_categories": [],
+      "pass": true
+    },
+    {
+      "candidate_id": "ppocrv5-det-v6-rec-small",
+      "source_identity": {
+        "evaluator_sha256": "780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249",
+        "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+        "candidates_sha256": "4b5aa66d3a7c390211219c794e35ee685701a9cd23c0f24f0d62047280199ff7",
+        "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
+        "rapidocr_code_sha256": "753f75e387f6b6d128cc644b209fb76dde04cb735de06e411d643826f0a4a5aa"
+      },
+      "models": [
+        {
+          "role": "detector",
+          "id": "ch_PP-OCRv5_det_mobile",
+          "relative_controlled_path": "rapidocr-v3.9.2/ch_PP-OCRv5_det_mobile.onnx",
+          "bytes": 4819576,
+          "sha256": "4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  "DynamicDimension.1",
+                  "DynamicDimension.2"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "ConvTranspose_497_o0__d0",
+                  1,
+                  "ConvTranspose_497_o0__d2",
+                  "ConvTranspose_497_o0__d3"
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          }
+        },
+        {
+          "role": "recognizer",
+          "id": "multi_PP-OCRv6_rec_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+          "bytes": 21234383,
+          "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  48,
+                  "DynamicDimension.1"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "DynamicDimension.0",
+                  "Reshape_470_o0__d2",
+                  18710
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          },
+          "vocabulary": {
+            "metadata_key": "character",
+            "encoding": "UTF-8 lines",
+            "count": 18708,
+            "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+            "missing_fixture_characters": []
+          }
+        }
+      ],
+      "aggregate": {
+        "initialization_ms": 126.6152,
+        "suite_median_ms": 3000.4083,
+        "suite_p95_ms": 3021.903,
+        "suite_maximum_ms": 3021.903,
+        "process_peak_resident": {
+          "status": "measured",
+          "bytes": 547180544,
+          "source": "GetProcessMemoryInfo.PeakWorkingSetSize"
+        }
+      },
+      "images": [
+        {
+          "file": "hud.png",
+          "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "consumed_fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "consumed_fixture_bytes": 29075,
+          "expected_region_count": 8,
+          "detected_region_count": 8,
+          "admitted_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.74465819,
+          "minimum_matched_confidence": 0.97044
+        },
+        {
+          "file": "menu.png",
+          "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "consumed_fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "consumed_fixture_bytes": 16132,
+          "expected_region_count": 8,
+          "detected_region_count": 8,
+          "admitted_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.5896806,
+          "minimum_matched_confidence": 0.97911
+        },
+        {
+          "file": "status.png",
+          "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "consumed_fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "consumed_fixture_bytes": 15263,
+          "expected_region_count": 6,
+          "detected_region_count": 6,
+          "admitted_region_count": 6,
+          "exact_text_count": 6,
+          "geometry_pass_count": 6,
+          "confidence_pass_count": 6,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.8182114,
+          "minimum_matched_confidence": 0.93057
+        },
+        {
+          "file": "tooltip-v3.png",
+          "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "consumed_fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "consumed_fixture_bytes": 41216,
+          "expected_region_count": 11,
+          "detected_region_count": 11,
+          "admitted_region_count": 11,
+          "exact_text_count": 11,
+          "geometry_pass_count": 11,
+          "confidence_pass_count": 11,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.69686634,
+          "minimum_matched_confidence": 0.94691
+        },
+        {
+          "file": "mission.png",
+          "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "consumed_fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "consumed_fixture_bytes": 43680,
+          "expected_region_count": 9,
+          "detected_region_count": 9,
+          "admitted_region_count": 9,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unmatched_region_count": 1,
+          "unexpected_region_count": 1,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": false,
+          "pass": false,
+          "minimum_matched_iou": 0.659091,
+          "minimum_matched_confidence": 0.99605
+        }
+      ],
+      "stable_gate_outcomes": true,
+      "failure_categories": [
+        "ordering_mismatch",
+        "text_mismatch",
+        "unexpected_region"
+      ],
+      "pass": false
+    },
+    {
+      "candidate_id": "ppocrv6-det-tiny-rec-small",
+      "source_identity": {
+        "evaluator_sha256": "780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249",
+        "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+        "candidates_sha256": "4b5aa66d3a7c390211219c794e35ee685701a9cd23c0f24f0d62047280199ff7",
+        "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
+        "rapidocr_code_sha256": "753f75e387f6b6d128cc644b209fb76dde04cb735de06e411d643826f0a4a5aa"
+      },
+      "models": [
+        {
+          "role": "detector",
+          "id": "multi_PP-OCRv6_det_tiny",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_det_tiny.onnx",
+          "bytes": 1829618,
+          "sha256": "f42c0fbd294d95eac1a550e131b277dac97462c8025fa4b6c3cec1b7894bd3d5",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  "DynamicDimension.1",
+                  "DynamicDimension.2"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "ConvTranspose_459_o0__d0",
+                  1,
+                  "ConvTranspose_459_o0__d2",
+                  "ConvTranspose_459_o0__d3"
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          }
+        },
+        {
+          "role": "recognizer",
+          "id": "multi_PP-OCRv6_rec_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+          "bytes": 21234383,
+          "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  48,
+                  "DynamicDimension.1"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "DynamicDimension.0",
+                  "Reshape_470_o0__d2",
+                  18710
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          },
+          "vocabulary": {
+            "metadata_key": "character",
+            "encoding": "UTF-8 lines",
+            "count": 18708,
+            "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+            "missing_fixture_characters": []
+          }
+        }
+      ],
+      "aggregate": {
+        "initialization_ms": 116.391,
+        "suite_median_ms": 1609.07635,
+        "suite_p95_ms": 1616.2849,
+        "suite_maximum_ms": 1616.2849,
+        "process_peak_resident": {
+          "status": "measured",
+          "bytes": 492269568,
+          "source": "GetProcessMemoryInfo.PeakWorkingSetSize"
+        }
+      },
+      "images": [
+        {
+          "file": "hud.png",
+          "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "consumed_fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "consumed_fixture_bytes": 29075,
+          "expected_region_count": 8,
+          "detected_region_count": 8,
+          "admitted_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.70953438,
+          "minimum_matched_confidence": 0.96917
+        },
+        {
+          "file": "menu.png",
+          "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "consumed_fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "consumed_fixture_bytes": 16132,
+          "expected_region_count": 8,
+          "detected_region_count": 8,
+          "admitted_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.70588236,
+          "minimum_matched_confidence": 0.994
+        },
+        {
+          "file": "status.png",
+          "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "consumed_fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "consumed_fixture_bytes": 15263,
+          "expected_region_count": 6,
+          "detected_region_count": 6,
+          "admitted_region_count": 6,
+          "exact_text_count": 6,
+          "geometry_pass_count": 6,
+          "confidence_pass_count": 6,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.76655047,
+          "minimum_matched_confidence": 0.8735
+        },
+        {
+          "file": "tooltip-v3.png",
+          "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "consumed_fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "consumed_fixture_bytes": 41216,
+          "expected_region_count": 11,
+          "detected_region_count": 11,
+          "admitted_region_count": 11,
+          "exact_text_count": 10,
+          "geometry_pass_count": 10,
+          "confidence_pass_count": 10,
+          "unmatched_region_count": 1,
+          "unexpected_region_count": 1,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": false,
+          "pass": false,
+          "minimum_matched_iou": 0.706004,
+          "minimum_matched_confidence": 0.9387
+        },
+        {
+          "file": "mission.png",
+          "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "consumed_fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "consumed_fixture_bytes": 43680,
+          "expected_region_count": 9,
+          "detected_region_count": 9,
+          "admitted_region_count": 9,
+          "exact_text_count": 9,
+          "geometry_pass_count": 9,
+          "confidence_pass_count": 9,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.74646085,
+          "minimum_matched_confidence": 0.98389
+        }
+      ],
+      "stable_gate_outcomes": true,
+      "failure_categories": [
+        "ordering_mismatch",
+        "text_mismatch",
+        "unexpected_region"
+      ],
+      "pass": false
+    },
+    {
+      "candidate_id": "ppocrv6-multilingual-small",
+      "source_identity": {
+        "evaluator_sha256": "780f6cccf9679bc63aeaf6829b90769032246cbcfa29746b8012865294530249",
+        "fixture_manifest_sha256": "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b",
+        "candidates_sha256": "4b5aa66d3a7c390211219c794e35ee685701a9cd23c0f24f0d62047280199ff7",
+        "tool_requirements_sha256": "7aaa23fdd2a16ed0e7607d89d070040940deb543f662ff6298a169d156a2bdc0",
+        "rapidocr_code_sha256": "753f75e387f6b6d128cc644b209fb76dde04cb735de06e411d643826f0a4a5aa"
+      },
+      "models": [
+        {
+          "role": "detector",
+          "id": "multi_PP-OCRv6_det_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_det_small.onnx",
+          "bytes": 9929594,
+          "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  "DynamicDimension.1",
+                  "DynamicDimension.2"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "ConvTranspose_459_o0__d0",
+                  1,
+                  "ConvTranspose_459_o0__d2",
+                  "ConvTranspose_459_o0__d3"
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          }
+        },
+        {
+          "role": "recognizer",
+          "id": "multi_PP-OCRv6_rec_small",
+          "relative_controlled_path": "rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx",
+          "bytes": 21234383,
+          "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+          "session": {
+            "providers": [
+              "CPUExecutionProvider"
+            ],
+            "inputs": [
+              {
+                "name": "x",
+                "shape": [
+                  "DynamicDimension.0",
+                  3,
+                  48,
+                  "DynamicDimension.1"
+                ],
+                "type": "tensor(float)"
+              }
+            ],
+            "outputs": [
+              {
+                "name": "fetch_name_0",
+                "shape": [
+                  "DynamicDimension.0",
+                  "Reshape_470_o0__d2",
+                  18710
+                ],
+                "type": "tensor(float)"
+              }
+            ]
+          },
+          "vocabulary": {
+            "metadata_key": "character",
+            "encoding": "UTF-8 lines",
+            "count": 18708,
+            "sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+            "missing_fixture_characters": []
+          }
+        }
+      ],
+      "aggregate": {
+        "initialization_ms": 125.1126,
+        "suite_median_ms": 6404.37465,
+        "suite_p95_ms": 6426.1214,
+        "suite_maximum_ms": 6426.1214,
+        "process_peak_resident": {
+          "status": "measured",
+          "bytes": 558338048,
+          "source": "GetProcessMemoryInfo.PeakWorkingSetSize"
+        }
+      },
+      "images": [
+        {
+          "file": "hud.png",
+          "fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "consumed_fixture_sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+          "consumed_fixture_bytes": 29075,
+          "expected_region_count": 8,
+          "detected_region_count": 8,
+          "admitted_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.6152896,
+          "minimum_matched_confidence": 0.96217
+        },
+        {
+          "file": "menu.png",
+          "fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "consumed_fixture_sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+          "consumed_fixture_bytes": 16132,
+          "expected_region_count": 8,
+          "detected_region_count": 8,
+          "admitted_region_count": 8,
+          "exact_text_count": 8,
+          "geometry_pass_count": 8,
+          "confidence_pass_count": 8,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.65306123,
+          "minimum_matched_confidence": 0.99644
+        },
+        {
+          "file": "status.png",
+          "fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "consumed_fixture_sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+          "consumed_fixture_bytes": 15263,
+          "expected_region_count": 6,
+          "detected_region_count": 6,
+          "admitted_region_count": 6,
+          "exact_text_count": 6,
+          "geometry_pass_count": 6,
+          "confidence_pass_count": 6,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.76036861,
+          "minimum_matched_confidence": 0.7601
+        },
+        {
+          "file": "tooltip-v3.png",
+          "fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "consumed_fixture_sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+          "consumed_fixture_bytes": 41216,
+          "expected_region_count": 11,
+          "detected_region_count": 11,
+          "admitted_region_count": 11,
+          "exact_text_count": 10,
+          "geometry_pass_count": 10,
+          "confidence_pass_count": 10,
+          "unmatched_region_count": 1,
+          "unexpected_region_count": 1,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": false,
+          "pass": false,
+          "minimum_matched_iou": 0.63698617,
+          "minimum_matched_confidence": 0.96461
+        },
+        {
+          "file": "mission.png",
+          "fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "consumed_fixture_sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+          "consumed_fixture_bytes": 43680,
+          "expected_region_count": 9,
+          "detected_region_count": 9,
+          "admitted_region_count": 9,
+          "exact_text_count": 9,
+          "geometry_pass_count": 9,
+          "confidence_pass_count": 9,
+          "unmatched_region_count": 0,
+          "unexpected_region_count": 0,
+          "below_unexpected_threshold_count": 0,
+          "order_pass": true,
+          "pass": true,
+          "minimum_matched_iou": 0.659091,
+          "minimum_matched_confidence": 0.94507
+        }
+      ],
+      "stable_gate_outcomes": true,
+      "failure_categories": [
+        "ordering_mismatch",
+        "text_mismatch",
+        "unexpected_region"
+      ],
+      "pass": false
+    }
+  ],
+  "candidate_outcomes_sha256": "f68e7da7b2dc784c72567d048fba22b0f09a4a7697cebff9270b209174dca8d9",
+  "cross_target_decision": {
+    "profile_id": "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1",
+    "selected_candidate": "ppocrv4-det-v6-rec-small",
+    "source_identity_matches_apple": true,
+    "model_session_vocabulary_identities_match_apple": true,
+    "candidate_gate_outcomes_match_apple": true,
+    "image_gate_outcomes_match_apple": true,
+    "other_candidates_rejected": [
+      "ppocrv5-det-v6-rec-small",
+      "ppocrv6-det-tiny-rec-small",
+      "ppocrv6-multilingual-small"
+    ],
+    "unresolved_evidence_gaps": [],
+    "g004_status": "accepted"
+  },
+  "privacy": {
+    "approved_expected_fixture_text_only": true,
+    "unexpected_recognized_text_retained": false,
+    "game_screenshot_pixels_or_text_retained": false,
+    "host_paths_retained": false,
+    "raw_report_private_root_enforced": true
+  }
+}
