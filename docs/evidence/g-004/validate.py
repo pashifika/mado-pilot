@@ -71,6 +71,17 @@ def sha256(path: Path) -> str:
         fail(f"cannot hash {path.relative_to(ROOT)}: {error}")
     return digest.hexdigest()
 
+def sha256_repository_text(path: Path) -> str:
+    """Hash text using the repository's canonical LF line endings."""
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            for line in source:
+                digest.update(line.replace(b"\r\n", b"\n"))
+    except OSError as error:
+        fail(f"cannot hash {path.relative_to(ROOT)}: {error}")
+    return digest.hexdigest()
+
 
 def require_sha256(value: object, field: str) -> str:
     if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
@@ -942,7 +953,7 @@ def validate_windows_report() -> None:
 
     apple_path = EVIDENCE / "report-aarch64-apple-darwin.json"
     expected_decision = {
-        "apple_report_sha256": sha256(apple_path),
+        "apple_report_sha256": sha256_repository_text(apple_path),
         "conditional_profile_id": "g-004-rapidocr-ppocrv4-det-v6-rec-small-v1",
         "conditional_candidate": selected,
         "candidate_gate_outcomes_match_apple": True,
@@ -1127,7 +1138,7 @@ def validate_apple_v5_report() -> None:
     v4_path = EVIDENCE / "report-aarch64-apple-darwin.json"
     if report.get("historical_v4_report") != {
         "path": "docs/evidence/g-004/report-aarch64-apple-darwin.json",
-        "sha256": sha256(v4_path),
+        "sha256": sha256_repository_text(v4_path),
         "status": "immutable-audit-record-not-qualification",
     }:
         fail("Apple v5 historical v4 binding drifted")
@@ -1407,13 +1418,13 @@ def validate_windows_v5_report() -> None:
     v4_path = EVIDENCE / "report-x86_64-pc-windows-msvc.json"
     if report.get("historical_v4_report") != {
         "path": "docs/evidence/g-004/report-x86_64-pc-windows-msvc.json",
-        "sha256": sha256(v4_path),
+        "sha256": sha256_repository_text(v4_path),
         "status": "immutable-audit-record-not-qualification",
     }:
         fail("Windows v5 historical v4 binding drifted")
     if report.get("apple_v5_report") != {
         "path": "docs/evidence/g-004/report-aarch64-apple-darwin-v5.json",
-        "sha256": sha256(apple_path),
+        "sha256": sha256_repository_text(apple_path),
         "candidate_outcomes_sha256": apple_report.get("candidate_outcomes_sha256"),
     }:
         fail("Windows v5 Apple report binding drifted")

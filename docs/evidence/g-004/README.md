@@ -165,6 +165,10 @@ divergence, privacy-schema drift, final-review or accepted-decision drift, v5
 evaluator-source or frozen Apple/Windows outcome drift, or incomplete binding
 between the two v5 target reports.
 
+Tracked JSON report bindings hash repository-canonical LF text bytes, matching
+`.gitattributes` even when a newly generated Windows worktree file still has
+CRLF before Git normalizes it.
+
 ## Reproduce one target
 
 Create an isolated environment outside product packages. On POSIX:

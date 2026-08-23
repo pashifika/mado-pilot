@@ -92,7 +92,7 @@
   },
   "historical_v4_report": {
     "path": "docs/evidence/g-004/report-x86_64-pc-windows-msvc.json",
-    "sha256": "34da2172744755ba74d9a806ea254a04c556824f8091129e338783bbc8e39005",
+    "sha256": "75f1e57bc160cdb23754c09bf4f346fa6618d3d18e706524c87e3473257eaa7c",
     "status": "immutable-audit-record-not-qualification"
   },
   "apple_v5_report": {
