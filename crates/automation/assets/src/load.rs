@@ -18,12 +18,17 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use mado_pilot_core::{Operation, OperationContext};
+use mado_pilot_ocr::{
+    ModelComponentIdentity, ModelId, OcrFault, OcrModelSource, OcrModelSourceRequest,
+};
 use mado_pilot_vision::{TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest};
 
 use crate::fault::{AssetFault, AssetFaultKind, LoadStage};
 use crate::filesystem::{self, NodeKind};
 use crate::limits::AssetLimits;
-use crate::manifest::{ContentDigest, MANIFEST_PATH, Manifest, from_vision};
+use crate::manifest::{
+    ContentDigest, MANIFEST_PATH, Manifest, OcrComponentDeclaration, from_vision,
+};
 use crate::package::AssetPackage;
 use crate::path::PackagePath;
 use crate::reader::{EntryKind, EntryReader, EntryStorage, RawEntry};
@@ -36,6 +41,11 @@ struct CheckedEntry {
     index: usize,
     declared_size: u64,
 }
+
+type ExpandedPackage = (
+    BTreeMap<TemplateId, TemplateSource>,
+    BTreeMap<ModelId, OcrModelSource>,
+);
 
 /// Loads validated asset packages under one set of limits.
 ///
@@ -176,11 +186,11 @@ fn commit_package(
     let manifest = read_manifest(reader, &table, &mut operation)?;
     checkpoint(&mut operation, LoadStage::Manifest)?;
 
-    let templates = expand(reader, &table, &manifest, &mut operation)?;
+    let (templates, ocr_models) = expand(reader, &table, &manifest, &mut operation)?;
 
     checkpoint(&mut operation, LoadStage::Commit)?;
     operation
-        .commit(AssetPackage::new(manifest, templates))
+        .commit(AssetPackage::new(manifest, templates, ocr_models))
         .map_err(|interruption| AssetFault::interrupted(interruption, LoadStage::Commit))
 }
 
@@ -336,7 +346,7 @@ fn expand(
     table: &BTreeMap<PackagePath, CheckedEntry>,
     manifest: &Manifest,
     operation: &mut Operation<'_>,
-) -> Result<BTreeMap<TemplateId, TemplateSource>, AssetFault> {
+) -> Result<ExpandedPackage, AssetFault> {
     let mut templates = BTreeMap::new();
 
     for declaration in manifest.templates() {
@@ -375,8 +385,6 @@ fn expand(
         })
         .map_err(from_vision)?;
 
-        // The manifest already refused duplicate identities, so this can only be
-        // a defect in that check rather than a package a caller can construct.
         if templates
             .insert(declaration.id().clone(), template)
             .is_some()
@@ -388,7 +396,69 @@ fn expand(
         }
     }
 
-    Ok(templates)
+    let mut ocr_models = BTreeMap::new();
+    for declaration in manifest.ocr_models() {
+        let detector = expand_model_component(reader, table, declaration.detector(), operation)?;
+        let recognizer =
+            expand_model_component(reader, table, declaration.recognizer(), operation)?;
+        let source = OcrModelSource::new(OcrModelSourceRequest {
+            model: declaration.id().clone(),
+            profile: declaration.profile().clone(),
+            detector,
+            detector_identity: ModelComponentIdentity::new(
+                declaration.detector().byte_len(),
+                *declaration.detector().digest().as_bytes(),
+            ),
+            recognizer,
+            recognizer_identity: ModelComponentIdentity::new(
+                declaration.recognizer().byte_len(),
+                *declaration.recognizer().digest().as_bytes(),
+            ),
+        })
+        .map_err(from_ocr)?;
+        if ocr_models
+            .insert(declaration.id().clone(), source)
+            .is_some()
+        {
+            return Err(AssetFault::new(
+                AssetFaultKind::DuplicateIdentity,
+                LoadStage::Expansion,
+            ));
+        }
+    }
+
+    Ok((templates, ocr_models))
+}
+
+fn expand_model_component(
+    reader: &mut dyn EntryReader,
+    table: &BTreeMap<PackagePath, CheckedEntry>,
+    declaration: &OcrComponentDeclaration,
+    operation: &mut Operation<'_>,
+) -> Result<Arc<[u8]>, AssetFault> {
+    let entry = table
+        .get(declaration.path())
+        .ok_or_else(|| AssetFault::new(AssetFaultKind::MissingEntry, LoadStage::Expansion))?;
+    if entry.declared_size != declaration.byte_len() {
+        return Err(AssetFault::new(
+            AssetFaultKind::InvalidOcrModelMetadata,
+            LoadStage::Expansion,
+        ));
+    }
+    reader.read_entry(
+        entry.index,
+        entry.declared_size,
+        LoadStage::Expansion,
+        operation,
+    )
+}
+
+const fn from_ocr(fault: OcrFault) -> AssetFault {
+    let kind = match fault {
+        OcrFault::ModelDigestMismatch => AssetFaultKind::HashMismatch,
+        _ => AssetFaultKind::InvalidOcrModelMetadata,
+    };
+    AssetFault::new(kind, LoadStage::Expansion)
 }
 
 fn checkpoint(operation: &mut Operation<'_>, stage: LoadStage) -> Result<(), AssetFault> {

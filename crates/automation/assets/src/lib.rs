@@ -97,8 +97,8 @@ pub use fault::{AssetFault, AssetFaultKind, LoadStage};
 pub use limits::AssetLimits;
 pub use load::PackageLoader;
 pub use manifest::{
-    ContentDigest, HASH_ALGORITHM, MANIFEST_PATH, Manifest, Provenance, SCHEMA_VERSION,
-    TemplateDeclaration,
+    ContentDigest, HASH_ALGORITHM, MANIFEST_PATH, Manifest, OcrComponentDeclaration,
+    OcrModelDeclaration, Provenance, SCHEMA_VERSION, TemplateDeclaration,
 };
 pub use package::AssetPackage;
 pub use path::PackagePath;

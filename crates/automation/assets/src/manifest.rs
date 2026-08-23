@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use mado_pilot_core::{CoordinateSpace, PixelExtent};
+use mado_pilot_ocr::{ModelId, OcrModelSource, ProfileId};
 use mado_pilot_vision::{MatchDefaults, TemplateId, TemplateSource, VisionFault};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -27,8 +28,10 @@ use crate::path::PackagePath;
 /// The package-relative path every manifest is read from.
 pub const MANIFEST_PATH: &str = "madopilot-package.json";
 
-/// The only manifest schema version this build implements.
-pub const SCHEMA_VERSION: u32 = 1;
+/// The latest manifest schema version this build emits.
+///
+/// Version one remains readable; version two adds bounded OCR model declarations.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The only content hash algorithm this build implements.
 pub const HASH_ALGORITHM: &str = "sha256";
@@ -171,14 +174,121 @@ impl TemplateDeclaration {
     }
 }
 
+/// One exact OCR model component declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcrComponentDeclaration {
+    path: PackagePath,
+    byte_len: u64,
+    digest: ContentDigest,
+}
+
+impl OcrComponentDeclaration {
+    /// Returns the package path containing the model component.
+    #[must_use]
+    pub const fn path(&self) -> &PackagePath {
+        &self.path
+    }
+
+    /// Returns the exact declared byte length.
+    #[must_use]
+    pub const fn byte_len(&self) -> u64 {
+        self.byte_len
+    }
+
+    /// Returns the exact declared SHA-256 digest.
+    #[must_use]
+    pub const fn digest(&self) -> ContentDigest {
+        self.digest
+    }
+}
+
+/// One complete, versioned OCR model/profile declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcrModelDeclaration {
+    id: ModelId,
+    version: String,
+    profile: ProfileId,
+    language_profile: String,
+    preprocessing: String,
+    decoder: String,
+    vocabulary_entries: u32,
+    vocabulary_digest: ContentDigest,
+    detector: OcrComponentDeclaration,
+    recognizer: OcrComponentDeclaration,
+}
+
+impl OcrModelDeclaration {
+    /// Returns the stable model identity.
+    #[must_use]
+    pub const fn id(&self) -> &ModelId {
+        &self.id
+    }
+
+    /// Returns the exact model version.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Returns the accepted OCR profile identity.
+    #[must_use]
+    pub const fn profile(&self) -> &ProfileId {
+        &self.profile
+    }
+
+    /// Returns the exact language profile identity.
+    #[must_use]
+    pub fn language_profile(&self) -> &str {
+        &self.language_profile
+    }
+
+    /// Returns the exact preprocessing identity.
+    #[must_use]
+    pub fn preprocessing(&self) -> &str {
+        &self.preprocessing
+    }
+
+    /// Returns the exact decoder identity.
+    #[must_use]
+    pub fn decoder(&self) -> &str {
+        &self.decoder
+    }
+
+    /// Returns the exact embedded vocabulary entry count.
+    #[must_use]
+    pub const fn vocabulary_entries(&self) -> u32 {
+        self.vocabulary_entries
+    }
+
+    /// Returns the exact embedded vocabulary digest.
+    #[must_use]
+    pub const fn vocabulary_digest(&self) -> ContentDigest {
+        self.vocabulary_digest
+    }
+
+    /// Returns the detector declaration.
+    #[must_use]
+    pub const fn detector(&self) -> &OcrComponentDeclaration {
+        &self.detector
+    }
+
+    /// Returns the recognizer declaration.
+    #[must_use]
+    pub const fn recognizer(&self) -> &OcrComponentDeclaration {
+        &self.recognizer
+    }
+}
+
 /// A parsed and validated package manifest.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Manifest {
+    schema_version: u32,
     package_id: String,
     package_version: String,
     license: String,
     provenance: Option<Provenance>,
     templates: Vec<TemplateDeclaration>,
+    ocr_models: Vec<OcrModelDeclaration>,
 }
 
 impl Manifest {
@@ -197,25 +307,51 @@ impl Manifest {
         let Some(declared) = probe.schema_version else {
             return Err(fault(AssetFaultKind::MissingSchemaVersion));
         };
-        if declared != SCHEMA_VERSION {
-            return Err(fault(AssetFaultKind::UnsupportedSchemaVersion));
+        match declared {
+            1 => {
+                let raw: RawManifestV1 = serde_json::from_slice(bytes).map_err(|_| malformed())?;
+                Self::validate_parts(
+                    1,
+                    raw.package,
+                    raw.license,
+                    raw.provenance,
+                    raw.templates,
+                    Vec::new(),
+                )
+            }
+            SCHEMA_VERSION => {
+                let raw: RawManifestV2 = serde_json::from_slice(bytes).map_err(|_| malformed())?;
+                Self::validate_parts(
+                    SCHEMA_VERSION,
+                    raw.package,
+                    raw.license,
+                    raw.provenance,
+                    raw.templates,
+                    raw.ocr_models,
+                )
+            }
+            _ => Err(fault(AssetFaultKind::UnsupportedSchemaVersion)),
         }
-
-        let raw: RawManifest = serde_json::from_slice(bytes).map_err(|_| malformed())?;
-        Self::validate(raw)
     }
 
-    fn validate(raw: RawManifest) -> Result<Self, AssetFault> {
-        if raw.package.id.is_empty() || raw.package.version.is_empty() || raw.license.is_empty() {
+    fn validate_parts(
+        schema_version: u32,
+        package: RawPackage,
+        license: String,
+        provenance: Option<RawProvenance>,
+        raw_templates: Vec<RawTemplate>,
+        raw_models: Vec<RawOcrModel>,
+    ) -> Result<Self, AssetFault> {
+        if package.id.is_empty() || package.version.is_empty() || license.is_empty() {
             return Err(malformed());
         }
 
         let mut identities = BTreeSet::new();
         let mut paths = BTreeSet::new();
-        let mut templates = Vec::with_capacity(raw.templates.len());
-        for declaration in raw.templates {
+        let mut templates = Vec::with_capacity(raw_templates.len());
+        for declaration in raw_templates {
             let declared = declaration.validate()?;
-            if !identities.insert(declared.id.clone()) {
+            if !identities.insert(declared.id.as_str().to_owned()) {
                 return Err(fault(AssetFaultKind::DuplicateIdentity));
             }
             if !paths.insert(declared.path.clone()) {
@@ -224,16 +360,38 @@ impl Manifest {
             templates.push(declared);
         }
 
+        let mut ocr_models = Vec::with_capacity(raw_models.len());
+        for declaration in raw_models {
+            let declared = declaration.validate()?;
+            if !identities.insert(declared.id.as_str().to_owned()) {
+                return Err(fault(AssetFaultKind::DuplicateIdentity));
+            }
+            if !paths.insert(declared.detector.path.clone())
+                || !paths.insert(declared.recognizer.path.clone())
+            {
+                return Err(fault(AssetFaultKind::DuplicatePath));
+            }
+            ocr_models.push(declared);
+        }
+
         Ok(Self {
-            package_id: raw.package.id,
-            package_version: raw.package.version,
-            license: raw.license,
-            provenance: raw.provenance.map(|value| Provenance {
+            schema_version,
+            package_id: package.id,
+            package_version: package.version,
+            license,
+            provenance: provenance.map(|value| Provenance {
                 created_by: value.created_by,
                 created_for: value.created_for,
             }),
             templates,
+            ocr_models,
         })
+    }
+
+    /// Returns the parsed manifest schema version.
+    #[must_use]
+    pub const fn schema_version(&self) -> u32 {
+        self.schema_version
     }
 
     /// Returns the package identity.
@@ -265,6 +423,12 @@ impl Manifest {
     pub fn templates(&self) -> &[TemplateDeclaration] {
         &self.templates
     }
+
+    /// Returns every validated OCR model declaration, in manifest order.
+    #[must_use]
+    pub fn ocr_models(&self) -> &[OcrModelDeclaration] {
+        &self.ocr_models
+    }
 }
 
 #[derive(Deserialize)]
@@ -275,7 +439,7 @@ struct SchemaProbe {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawManifest {
+struct RawManifestV1 {
     #[expect(
         dead_code,
         reason = "read by SchemaProbe; named here so deny_unknown_fields accepts it"
@@ -286,6 +450,24 @@ struct RawManifest {
     #[serde(default)]
     provenance: Option<RawProvenance>,
     templates: Vec<RawTemplate>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawManifestV2 {
+    #[expect(
+        dead_code,
+        reason = "read by SchemaProbe; named here so deny_unknown_fields accepts it"
+    )]
+    schema_version: u32,
+    package: RawPackage,
+    license: String,
+    #[serde(default)]
+    provenance: Option<RawProvenance>,
+    #[serde(default)]
+    templates: Vec<RawTemplate>,
+    #[serde(default)]
+    ocr_models: Vec<RawOcrModel>,
 }
 
 #[derive(Deserialize)]
@@ -320,6 +502,35 @@ struct RawTemplate {
 struct RawContent {
     algorithm: String,
     value: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOcrModel {
+    id: Option<String>,
+    version: Option<String>,
+    profile: Option<String>,
+    language_profile: Option<String>,
+    preprocessing: Option<String>,
+    decoder: Option<String>,
+    vocabulary: Option<RawVocabulary>,
+    detector: Option<RawOcrComponent>,
+    recognizer: Option<RawOcrComponent>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawVocabulary {
+    entries: Option<u32>,
+    content: Option<RawContent>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOcrComponent {
+    path: Option<String>,
+    byte_len: Option<u64>,
+    content: Option<RawContent>,
 }
 
 #[derive(Deserialize)]
@@ -375,6 +586,85 @@ impl RawTemplate {
             digest,
         })
     }
+}
+
+impl RawOcrModel {
+    fn validate(self) -> Result<OcrModelDeclaration, AssetFault> {
+        let id = ModelId::new(required_ocr(self.id)?)
+            .map_err(|_| fault(AssetFaultKind::InvalidOcrModelMetadata))?;
+        let profile = ProfileId::new(required_ocr(self.profile)?)
+            .map_err(|_| fault(AssetFaultKind::InvalidOcrModelMetadata))?;
+        let version = required_ocr(self.version)?;
+        let language_profile = required_ocr(self.language_profile)?;
+        let preprocessing = required_ocr(self.preprocessing)?;
+        let decoder = required_ocr(self.decoder)?;
+        let vocabulary = required_ocr(self.vocabulary)?;
+        let vocabulary_entries = required_ocr(vocabulary.entries)?;
+        if !bounded_metadata(&version)
+            || !bounded_metadata(&language_profile)
+            || !bounded_metadata(&preprocessing)
+            || !bounded_metadata(&decoder)
+            || vocabulary_entries == 0
+        {
+            return Err(fault(AssetFaultKind::InvalidOcrModelMetadata));
+        }
+        let vocabulary_digest = validate_content(required_ocr(vocabulary.content)?)?;
+        let detector = required_ocr(self.detector)?.validate()?;
+        let recognizer = required_ocr(self.recognizer)?.validate()?;
+        Ok(OcrModelDeclaration {
+            id,
+            version,
+            profile,
+            language_profile,
+            preprocessing,
+            decoder,
+            vocabulary_entries,
+            vocabulary_digest,
+            detector,
+            recognizer,
+        })
+    }
+}
+
+impl RawOcrComponent {
+    fn validate(self) -> Result<OcrComponentDeclaration, AssetFault> {
+        let byte_len = required_ocr(self.byte_len)?;
+        if byte_len == 0 || byte_len > OcrModelSource::MAX_COMPONENT_BYTES {
+            return Err(fault(AssetFaultKind::InvalidOcrModelMetadata));
+        }
+        let path = validate_package_path(required_ocr(self.path)?)?;
+        let digest = validate_content(required_ocr(self.content)?)?;
+        Ok(OcrComponentDeclaration {
+            path,
+            byte_len,
+            digest,
+        })
+    }
+}
+
+fn required_ocr<T>(value: Option<T>) -> Result<T, AssetFault> {
+    value.ok_or_else(|| fault(AssetFaultKind::InvalidOcrModelMetadata))
+}
+
+fn bounded_metadata(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value.trim() == value
+        && !value.chars().any(char::is_control)
+}
+
+fn validate_package_path(value: String) -> Result<PackagePath, AssetFault> {
+    if value.contains("://") {
+        return Err(fault(AssetFaultKind::UnsupportedSource));
+    }
+    PackagePath::normalize(value.as_bytes()).ok_or_else(unsafe_manifest_path)
+}
+
+fn validate_content(content: RawContent) -> Result<ContentDigest, AssetFault> {
+    if content.algorithm != HASH_ALGORITHM {
+        return Err(fault(AssetFaultKind::UnsupportedHashAlgorithm));
+    }
+    ContentDigest::parse(&content.value).ok_or_else(|| fault(AssetFaultKind::MalformedHash))
 }
 
 fn coordinate_space(slug: &str) -> Option<CoordinateSpace> {
@@ -505,7 +795,7 @@ mod tests {
 
     #[test]
     fn an_unsupported_schema_version_is_reported_before_the_body_is_interpreted() {
-        let json = r#"{ "schema_version": 2, "wildly": "wrong" }"#;
+        let json = r#"{ "schema_version": 3, "wildly": "wrong" }"#;
 
         assert_eq!(parse_kind(json), AssetFaultKind::UnsupportedSchemaVersion);
     }

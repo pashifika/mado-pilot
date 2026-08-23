@@ -38,10 +38,12 @@ pub mod clock;
 pub mod controlled_capture;
 pub mod controlled_input;
 pub mod controlled_matcher;
+pub mod controlled_ocr;
 pub mod controlled_storage;
 pub mod fixture_checksums;
 pub mod input_contract;
 pub mod match_fixtures;
+pub mod ocr_contract;
 pub mod png;
 pub mod scripted_permission;
 pub mod vision_contract;
@@ -50,5 +52,9 @@ pub use clock::ManualClock;
 pub use controlled_capture::ControlledCapture;
 pub use controlled_input::ControlledInput;
 pub use controlled_matcher::{Behavior, ControlledMatcher};
+pub use controlled_ocr::{
+    CONTROLLED_OCR_BACKEND, CONTROLLED_OCR_MODEL, CONTROLLED_OCR_PROFILE, CompletionGate,
+    ControlledOcr, OcrBehavior,
+};
 pub use controlled_storage::{ControlledProducer, Conversion};
 pub use scripted_permission::{Answer, ScriptedPermissionProbe};
