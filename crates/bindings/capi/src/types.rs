@@ -1213,8 +1213,9 @@ impl madopilot_ocr_requested_region_t {
 
 /// One privacy-reviewed immutable diagnostic record.
 ///
-/// Mandatory prefix: the whole structure. `kind` selects the payload fields and
-/// presence flags distinguish optional scalar values from valid zero values.
+/// The mandatory released ABI 1.2 prefix ends through `cleanup_owed`; ABI 1.3
+/// appends the OCR fields. `kind` selects the payload fields, and presence flags
+/// distinguish optional scalar values from valid zero values.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct madopilot_diagnostic_record_t {

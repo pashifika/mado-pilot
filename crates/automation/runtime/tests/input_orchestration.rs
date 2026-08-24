@@ -829,6 +829,43 @@ fn a_close_that_lost_its_race_leaves_both_sides_closing_and_a_later_close_contin
     assert!(session.is_closed());
 }
 
+#[test]
+fn interrupted_diagnostic_close_refuses_new_capture_and_input_work() {
+    let harness = Harness::with_input_and_diagnostics();
+    let operation = OperationContext::new();
+    let session = opened_with_input(&harness, &operation);
+
+    let close = session
+        .close(&expired())
+        .expect_err("diagnostic admission observes the expired close");
+    assert_eq!(close.status(), Status::DeadlineExceeded);
+    assert!(
+        !session.is_closed(),
+        "diagnostic admission returned before either adapter drained"
+    );
+
+    let frame = session.acquire_frame(&FrameRequest::latest(), &operation);
+    let input = session.send_input(&typing(session.target()), &operation);
+
+    assert_eq!(
+        input
+            .expect_err("a closing session delivers no new input")
+            .status(),
+        Status::Closed
+    );
+    assert_eq!(
+        frame
+            .expect_err("a closing session publishes no new frame")
+            .status(),
+        Status::Closed
+    );
+    assert!(harness.input().submitted_events().is_empty());
+
+    session
+        .close(&operation)
+        .expect("a later close continues both drains");
+}
+
 /// An input adapter that reports a provider the capture side does not.
 #[derive(Debug)]
 struct ForeignInput {
