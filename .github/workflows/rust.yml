@@ -280,6 +280,10 @@ jobs:
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware
       # profile.
+      - name: Run the OCR benchmark smoke gate
+        shell: bash
+        run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
+
       - name: Run the diagnostic benchmark smoke gate
         shell: bash
         run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
@@ -467,6 +471,10 @@ jobs:
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware
       # profile.
+      - name: Run the OCR benchmark smoke gate
+        shell: bash
+        run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
+
       - name: Run the diagnostic benchmark smoke gate
         shell: bash
         run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
