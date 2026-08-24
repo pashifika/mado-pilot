@@ -267,6 +267,14 @@ receives immutable bytes rather than model paths. Windows build/load evidence is
 owned by the release-target CI job and must not be inferred from the Apple
 observation. This Change makes no packaging or support-table claim.
 
+The two native CI jobs provision these inputs only inside an ephemeral runner in
+order to execute the explicit backend contract/oracle test. They download the
+official ONNX Runtime 1.29.0 target archive and the two tag-pinned ModelScope
+files, verify the reviewed archive/model SHA-256 values before extraction or
+session creation, and pass canonical paths through the test environment. This is
+verification-fixture provisioning, not a product download path, release bundle,
+cache shipped to users, or ambient discovery mechanism.
+
 ### G-003 macOS shim boundary
 
 Two findings from that review are worth carrying forward, because they change what
