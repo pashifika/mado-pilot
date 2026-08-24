@@ -17,6 +17,7 @@ mod native_tests;
 mod session;
 mod vocabulary;
 
+use std::mem::replace;
 use std::path::Path;
 use std::sync::{Mutex, TryLockError};
 
@@ -46,7 +47,129 @@ const BACKEND_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ort-1.29.0-ap
 pub struct OnnxOcrBackend {
     descriptor: OcrBackendDescriptor,
     facts: OnnxBackendFacts,
-    state: Mutex<Option<SessionPair>>,
+    state: SessionSlot<SessionPair>,
+}
+
+/// Moves the session value out under the mutex, then runs caller-owned clocks
+/// and native work with only the explicit `Running` state retained.
+#[derive(Debug)]
+struct SessionSlot<T> {
+    state: Mutex<BackendState<T>>,
+}
+
+#[derive(Debug)]
+enum BackendState<T> {
+    Open(T),
+    Running,
+    Closed,
+}
+
+struct RunningSession<'a, T> {
+    slot: &'a SessionSlot<T>,
+    value: Option<T>,
+}
+
+impl<T> SessionSlot<T> {
+    fn new(value: T) -> Self {
+        Self {
+            state: Mutex::new(BackendState::Open(value)),
+        }
+    }
+
+    fn try_with<R>(&self, use_value: impl FnOnce(&mut T) -> R) -> Result<R, OnnxBackendFault> {
+        let mut running = RunningSession::admit(self)?;
+        Ok(use_value(running.value()))
+    }
+
+    fn close(&self) -> Result<Option<T>, OnnxBackendFault> {
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return Err(OnnxBackendFault::Busy),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                let mut state = poisoned.into_inner();
+                let stale = replace(&mut *state, BackendState::Closed);
+                drop(state);
+                drop(stale);
+                return Err(OnnxBackendFault::NativeFailure);
+            }
+        };
+        match replace(&mut *state, BackendState::Closed) {
+            BackendState::Open(value) => Ok(Some(value)),
+            BackendState::Running => {
+                *state = BackendState::Running;
+                Err(OnnxBackendFault::Busy)
+            }
+            BackendState::Closed => Ok(None),
+        }
+    }
+
+    fn close_mut(&mut self) -> Option<T> {
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match replace(state, BackendState::Closed) {
+            BackendState::Open(value) => Some(value),
+            BackendState::Running | BackendState::Closed => None,
+        }
+    }
+}
+
+impl<'a, T> RunningSession<'a, T> {
+    fn admit(slot: &'a SessionSlot<T>) -> Result<Self, OnnxBackendFault> {
+        let mut state = match slot.state.try_lock() {
+            Ok(state) => state,
+            Err(TryLockError::WouldBlock) => return Err(OnnxBackendFault::Busy),
+            Err(TryLockError::Poisoned(poisoned)) => {
+                let mut state = poisoned.into_inner();
+                let stale = replace(&mut *state, BackendState::Closed);
+                drop(state);
+                drop(stale);
+                return Err(OnnxBackendFault::NativeFailure);
+            }
+        };
+        match replace(&mut *state, BackendState::Running) {
+            BackendState::Open(value) => Ok(Self {
+                slot,
+                value: Some(value),
+            }),
+            BackendState::Running => {
+                *state = BackendState::Running;
+                Err(OnnxBackendFault::Busy)
+            }
+            BackendState::Closed => {
+                *state = BackendState::Closed;
+                Err(OnnxBackendFault::Closed)
+            }
+        }
+    }
+
+    fn value(&mut self) -> &mut T {
+        self.value
+            .as_mut()
+            .expect("an admitted session owns its value")
+    }
+}
+
+impl<T> Drop for RunningSession<'_, T> {
+    fn drop(&mut self) {
+        let Some(value) = self.value.take() else {
+            return;
+        };
+        let mut state = self
+            .slot
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let replacement = if std::thread::panicking() {
+            BackendState::Closed
+        } else {
+            BackendState::Open(value)
+        };
+        let previous = replace(&mut *state, replacement);
+        drop(state);
+        debug_assert!(matches!(previous, BackendState::Running));
+    }
 }
 
 impl OnnxOcrBackend {
@@ -88,7 +211,7 @@ impl OnnxOcrBackend {
         Ok(Self {
             descriptor,
             facts,
-            state: Mutex::new(Some(sessions)),
+            state: SessionSlot::new(sessions),
         })
     }
 
@@ -98,7 +221,7 @@ impl OnnxOcrBackend {
         self.facts
     }
 
-    fn recognize_locked(
+    fn recognize_with_pair(
         pair: &mut SessionPair,
         request: &BackendRequest<'_>,
         operation: &OperationContext,
@@ -189,16 +312,11 @@ impl OcrBackend for OnnxOcrBackend {
         operation: &OperationContext,
     ) -> CoreResult<()> {
         checkpoint(operation).map_err(mado_pilot_core::Error::from)?;
-        let candidates = {
-            let mut state = match self.state.try_lock() {
-                Ok(state) => state,
-                Err(TryLockError::WouldBlock) => return Err(OnnxBackendFault::Busy.into()),
-                Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            };
-            let pair = state.as_mut().ok_or(OnnxBackendFault::Closed)?;
-            Self::recognize_locked(pair, request, operation)
-                .map_err(mado_pilot_core::Error::from)?
-        };
+        let candidates = self
+            .state
+            .try_with(|pair| Self::recognize_with_pair(pair, request, operation))
+            .map_err(mado_pilot_core::Error::from)?
+            .map_err(mado_pilot_core::Error::from)?;
 
         checkpoint(operation).map_err(mado_pilot_core::Error::from)?;
         for candidate in &candidates {
@@ -214,11 +332,7 @@ impl OcrBackend for OnnxOcrBackend {
 
     fn close(&self, operation: &OperationContext) -> CoreResult<()> {
         checkpoint(operation).map_err(mado_pilot_core::Error::from)?;
-        let pair = match self.state.try_lock() {
-            Ok(mut state) => state.take(),
-            Err(TryLockError::WouldBlock) => return Err(OnnxBackendFault::Busy.into()),
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().take(),
-        };
+        let pair = self.state.close().map_err(mado_pilot_core::Error::from)?;
         drop(pair);
         checkpoint(operation).map_err(mado_pilot_core::Error::from)
     }
@@ -226,10 +340,7 @@ impl OcrBackend for OnnxOcrBackend {
 
 impl Drop for OnnxOcrBackend {
     fn drop(&mut self) {
-        self.state
-            .get_mut()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take();
+        drop(self.state.close_mut());
     }
 }
 
@@ -262,9 +373,14 @@ fn checkpoint(operation: &OperationContext) -> Result<(), OnnxBackendFault> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use mado_pilot_core::{Clock, MonotonicInstant, OperationContext};
+
     use super::{
         MAX_OUTPUT_BYTES, OnnxBackendFacts, OnnxBackendFault, OnnxExecutionProvider,
-        OnnxRuntimeCompatibility, RECOGNITION_BATCH,
+        OnnxRuntimeCompatibility, RECOGNITION_BATCH, SessionSlot, checkpoint,
     };
 
     #[test]
@@ -290,5 +406,49 @@ mod tests {
             assert!(!fault.detail().contains('/'));
             assert!(!fault.detail().contains(".onnx"));
         }
+    }
+
+    #[derive(Debug)]
+    struct StateLockCheckingClock {
+        slot: Arc<SessionSlot<()>>,
+    }
+
+    impl Clock for StateLockCheckingClock {
+        fn now(&self) -> MonotonicInstant {
+            assert!(
+                self.slot.state.try_lock().is_ok(),
+                "caller-owned clock ran while the session state lock was held"
+            );
+            MonotonicInstant::ORIGIN
+        }
+    }
+
+    #[test]
+    fn caller_clock_runs_outside_the_session_state_lock() {
+        let slot = Arc::new(SessionSlot::new(()));
+        let operation = OperationContext::new()
+            .with_clock(Arc::new(StateLockCheckingClock {
+                slot: Arc::clone(&slot),
+            }))
+            .with_deadline(MonotonicInstant::from_origin(Duration::from_secs(1)));
+
+        let checkpoint_result = slot
+            .try_with(|()| checkpoint(&operation))
+            .expect("session admission succeeds");
+
+        assert_eq!(checkpoint_result, Ok(()));
+    }
+
+    #[test]
+    fn panic_during_session_work_closes_instead_of_reusing_the_value() {
+        let slot = SessionSlot::new(());
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = slot.try_with(|()| -> () {
+                panic!("simulated caller panic");
+            });
+        }));
+
+        assert!(panic.is_err());
+        assert_eq!(slot.try_with(|()| ()), Err(OnnxBackendFault::Closed));
     }
 }
