@@ -2134,11 +2134,12 @@ private:
     ClipPolicy clip_ = MADOPILOT_CLIP_POLICY_REJECT;
 };
 
-/// One exact-frame OCR request with explicit package model and backend identity.
+/// One exact-frame OCR request with explicit model and backend identity.
 ///
-/// Handles are borrowed for each call. Strings are owned by this value. `to_c`
-/// builds a fresh projection whose interior views point only into that
-/// projection, including after every copy or move.
+/// Handles are borrowed for each call. `package` is required for an explicitly
+/// injected backend and omitted for the integrated default. Strings are owned
+/// by this value. `to_c` builds a fresh projection whose interior views point
+/// only into that projection, including after every copy or move.
 class OcrRequest {
 public:
     class CView;

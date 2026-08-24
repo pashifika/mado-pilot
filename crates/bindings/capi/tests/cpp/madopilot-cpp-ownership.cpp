@@ -186,6 +186,8 @@ static_assert(!probes_permission<madopilot::Engine>::value,
 static_assert(std::is_copy_constructible_v<madopilot::Operation>, "Operation is a value");
 static_assert(std::is_copy_constructible_v<madopilot::EngineOptions>,
               "EngineOptions is a value");
+static_assert(std::is_copy_constructible_v<madopilot::DefaultOcrOptions>,
+              "DefaultOcrOptions owns both controlled paths");
 static_assert(std::is_copy_constructible_v<madopilot::FindRequest>,
               "FindRequest is a value");
 static_assert(std::is_copy_constructible_v<madopilot::OcrRequest>,

@@ -128,6 +128,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_cpp_example(&paths, &label)?;
     #[cfg(feature = "private-fixture")]
     run_ocr_fixture_examples(&paths)?;
+    run_default_ocr_examples(&paths)?;
     let native_fixtures = if run_windows_native_fixture {
         Some([
             WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Ordinary)?,
@@ -940,6 +941,58 @@ fn run_ocr_fixture_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Err
         return Err("C/C++ OCR fixture observations diverged".into());
     }
     println!("OCR fixture examples agree");
+    Ok(())
+}
+
+/// Compiles both production-language default OCR examples and runs them when
+/// the caller supplied the reviewed native prerequisites.
+fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    let c_source = paths
+        .root
+        .join("crates/bindings/capi/examples/c/ocr-default.c");
+    let c = compile(paths, Language::C, "ocr-default-c", &c_source, true)?;
+    let cpp_source = paths
+        .root
+        .join("crates/bindings/capi/examples/cpp/ocr-default.cpp");
+    let cpp = compile(paths, Language::Cpp, "ocr-default-cpp", &cpp_source, true)?;
+
+    let (Some(model_root), Some(runtime)) = (
+        env::var_os("MADO_PILOT_G004_MODEL_ROOT"),
+        env::var_os("MADO_PILOT_ONNX_RUNTIME"),
+    ) else {
+        println!("default OCR C/C++ examples compiled; native run skipped without explicit paths");
+        return Ok(());
+    };
+    let model_root = PathBuf::from(model_root).canonicalize()?;
+    let runtime = PathBuf::from(runtime).canonicalize()?;
+    let model_root = model_root.to_string_lossy().into_owned();
+    let runtime = runtime.to_string_lossy().into_owned();
+    let arguments = [
+        "--model-root",
+        model_root.as_str(),
+        "--runtime",
+        runtime.as_str(),
+    ];
+    let c_output = run(paths, &c, &arguments)?;
+    let cpp_output = run(paths, &cpp, &arguments)?;
+    report_output("default OCR C", &c_output);
+    report_output("default OCR C++", &cpp_output);
+    if !c_output.status.success() || !cpp_output.status.success() {
+        return Err("an integrated default OCR example failed".into());
+    }
+    let c_stdout = String::from_utf8(c_output.stdout)?;
+    let cpp_stdout = String::from_utf8(cpp_output.stdout)?;
+    print!("{c_stdout}");
+    print!("{cpp_stdout}");
+    let expected = format!(
+        "default-ocr: backend={} model={} full=0 region=0\n",
+        mado_pilot::DEFAULT_OCR_BACKEND_ID,
+        mado_pilot::ACCEPTED_G004_MODEL_ID,
+    );
+    if c_stdout != expected || cpp_stdout != expected {
+        return Err("C/C++ default OCR observations diverged".into());
+    }
+    println!("default OCR C/C++ examples agree");
     Ok(())
 }
 
