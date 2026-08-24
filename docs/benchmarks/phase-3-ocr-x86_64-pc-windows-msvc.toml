@@ -1,6 +1,6 @@
-# Phase 3 accepted CPU OCR profile measured on Core i7-12700KF at precursor source
-# 6b5f3c1435b983c560fd01da513f721d8d21ba8d and tree
-# 0a9fc22d5093d9ad61c9dfa0c93f01a619fe7177.
+# Phase 3 accepted CPU OCR profile measured on Core i7-12700KF at final source
+# f2d3f297c95b9c331f3d2f6f4232d2b97d1918bb and tree
+# b9c8fb5d3da4124885e7fd58e49cd6ac1cf20a73.
 
 format_version = 1
 
@@ -26,13 +26,13 @@ process_count = 5
 correctness_oracle = "every warmup and retained sample checks exact NFC text/count/order, fixture-derived geometry bounds, finite same-host-stable confidence, frame/effective-region/output/backend/model correlation, exact empty outcome, and no late publication"
 queue_policy = "one synchronous admitted inference, one session pair, two sessions, CPU provider only, intra/inter operation threads 1, CPU arena disabled, recognition batch ceiling 6"
 producer_surface_copy = "not applicable: the profile maps immutable CPU replay frames and owns no producer/native surface; no copied-byte ceiling is set"
-notes = "source commit 6b5f3c1435b983c560fd01da513f721d8d21ba8d; tree 0a9fc22d5093d9ad61c9dfa0c93f01a619fe7177; rustc/cargo 1.97.1; MSVC 14.44.35207; OpenCV 4.14.0; runtime profile onnxruntime-1.29.0-api17-cpu; runtime archive sha256 c9b4b7086b529ad814f428c1bad028e20a25d7dc0699836775faace4ab5b78b2; runtime library sha256 69d8e6d3879a3b4001cdc74c8ed9ccc7e7f799a5b847059738323404519ec471; detector sha256 d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9; recognizer sha256 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884; vocabulary 18708 entries sha256 f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e; mapped and inference/session counts observed in-process; peak RSS enforced through GetProcessMemoryInfo; no failed-sample exclusion or retry"
-benchmark_executable_sha256 = "f3c13157807c9617fb03039b9689cd53ccc138701d9c412180c03fc28800a316"
+notes = "final source commit f2d3f297c95b9c331f3d2f6f4232d2b97d1918bb; tree b9c8fb5d3da4124885e7fd58e49cd6ac1cf20a73; budgets derived from precursor source 6b5f3c1435b983c560fd01da513f721d8d21ba8d, tree 0a9fc22d5093d9ad61c9dfa0c93f01a619fe7177, executable sha256 f3c13157807c9617fb03039b9689cd53ccc138701d9c412180c03fc28800a316; rustc/cargo 1.97.1; MSVC 14.44.35207; OpenCV 4.14.0; runtime profile onnxruntime-1.29.0-api17-cpu; runtime archive sha256 c9b4b7086b529ad814f428c1bad028e20a25d7dc0699836775faace4ab5b78b2; runtime library sha256 69d8e6d3879a3b4001cdc74c8ed9ccc7e7f799a5b847059738323404519ec471; detector sha256 d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9; recognizer sha256 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884; vocabulary 18708 entries sha256 f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e; mapped and inference/session counts observed in-process; peak RSS enforced through GetProcessMemoryInfo; no failed-sample exclusion or retry"
+benchmark_executable_sha256 = "f0292ce5fafc106ddff2ffc4ef1066543e780dfa0ca8958eb6784e891d187310"
 deployment_target = "Windows 11 Pro 25H2, build family 26200"
-cold_load_p95_ms = 182.002
-first_close_max_ms = 5.652
-reopen_close_max_ms = 161.748
-peak_resident_bytes = 242667520
+cold_load_p95_ms = 177.195
+first_close_max_ms = 6.081
+reopen_close_max_ms = 160.820
+peak_resident_bytes = 242810880
 
 [[budget]]
 measure = "result_correctness"
@@ -106,9 +106,9 @@ rationale = "the accepted backend's fixed 256 MiB native output ceiling"
 workload = "onnx_cpu_hud_full"
 correctness_oracle = "exact eight strings/count/order; fixture-derived geometry; finite stable confidence; exact full-frame source correlation"
 result_correctness = 0
-latency_p50_ms = 721.258
-latency_p95_ms = 810.143
-latency_max_ms = 849.570
+latency_p50_ms = 707.187
+latency_p95_ms = 717.487
+latency_max_ms = 724.006
 mapped_bytes_per_result = 2073600
 peak_allocated_bytes = 12695272
 allocated_growth_bytes = 0
@@ -152,9 +152,9 @@ rationale = "one exact 960x540 BGRA frame"
 workload = "onnx_cpu_hud_region"
 correctness_oracle = "exact bounded text/count; fixture-derived geometry; finite stable confidence; exact bounded source correlation"
 result_correctness = 0
-latency_p50_ms = 567.940
-latency_p95_ms = 581.789
-latency_max_ms = 586.828
+latency_p50_ms = 573.969
+latency_p95_ms = 579.638
+latency_max_ms = 581.872
 mapped_bytes_per_result = 64800
 peak_allocated_bytes = 14149928
 allocated_growth_bytes = 0
@@ -198,9 +198,9 @@ rationale = "one exact 180x90 BGRA bounded region"
 workload = "onnx_cpu_blank"
 correctness_oracle = "zero regions with exact empty-frame source correlation"
 result_correctness = 0
-latency_p50_ms = 264.172
-latency_p95_ms = 320.843
-latency_max_ms = 359.929
+latency_p50_ms = 263.440
+latency_p95_ms = 275.385
+latency_max_ms = 290.567
 mapped_bytes_per_result = 16384
 peak_allocated_bytes = 7042656
 allocated_growth_bytes = 0

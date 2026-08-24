@@ -14,14 +14,14 @@ Phase 2 diagnostic, native input, controlled owning-process, production capture,
 transition, and corrected dual-4K profiles while preserving each historical
 source identity.
 
-[ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts the Apple M1 Pro
-default-OCR profile only. Its five-process precursor and separate post-budget
-run cover cold accepted-model startup, warm full-frame and bounded-region OCR,
-empty results, exact source correlation, allocation growth, observed mapped
-bytes/inference/session/result counts, cancellation/late publication, cleanup,
-close, and resident high-water. Windows OCR numeric ceilings are withheld because the
-approved Windows 11 host row is unavailable; hosted Windows Server smoke
-enforces hard correctness/growth but contributes no timing or resident budget.
+[ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts target-specific
+Apple M1 Pro and Core i7-12700KF default-OCR profiles. Each uses five precursor
+processes and a separate five-process post-budget run for cold accepted-model
+startup, warm full-frame and bounded-region OCR, empty results, exact source
+correlation, allocation growth, observed mapped bytes/inference/session/result
+counts, cancellation/late publication, cleanup, close, and target-native
+resident high-water. Hosted Windows Server smoke enforces hard correctness and
+growth only; its timing and resident observations define no release-host budget.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -792,9 +792,29 @@ processes retained 100 samples per workload. Worst full/bounded/empty p95 was
 worst attributable Rust heap 14,149,992 bytes. Every oracle/resource gate passed
 with zero growth.
 
-The first instrumented process failed the former 140 ms cold ceiling at
-141.686 ms; an unchanged repeat reported 90.075 ms. ADR 0037 retains the failure
-and sets 175 ms from both observations. A separate ten-sample run produced one
+[`phase-3-ocr-x86_64-pc-windows-msvc.toml`](benchmarks/phase-3-ocr-x86_64-pc-windows-msvc.toml)
+is the matching normative Windows profile. Precursor source `6b5f3c1`, tree
+`0a9fc22`, executable SHA-256
+`f3c13157807c9617fb03039b9689cd53ccc138701d9c412180c03fc28800a316`
+ran in five fresh processes on the approved Windows 11 Pro 25H2 build-family-26200
+Core i7-12700KF host. All 100 retained samples per workload passed with zero
+growth. Worst full/bounded/empty p95 was 810.143/581.789/320.843 ms and maximum
+849.570/586.828/359.929 ms; cold open was 182.002 ms, first close 5.652 ms,
+reopen-close 161.748 ms, and `GetProcessMemoryInfo` peak RSS 242,667,520 bytes.
+The full-frame process-5 and empty-result process-4 slow rows remain in the
+profile derivation rather than being excluded.
+
+Separate final source `f2d3f29`, tree `b9c8fb5`, executable SHA-256
+`f0292ce5fafc106ddff2ffc4ef1066543e780dfa0ca8958eb6784e891d187310`
+ran five more fresh processes. Every target budget and hard oracle passed without
+retry or exclusion. Worst full/bounded/empty p95 was
+717.487/579.638/275.385 ms and maximum 724.006/581.872/290.567 ms; cold open was
+177.195 ms, first close 6.081 ms, reopen-close 160.820 ms, and peak RSS
+242,810,880 bytes.
+
+The first Apple resource-instrumented process failed the former 140 ms cold
+ceiling at 141.686 ms; an unchanged repeat reported 90.075 ms. ADR 0037 retains
+the failure and sets 175 ms from both observations. A separate ten-sample run produced one
 785.460 ms full-frame outlier, making nearest-rank p95 equal the maximum and
 exceeding 750 ms even though the 900 ms maximum held. The final twenty-sample
 policy makes p95 the nineteenth sample while the independent maximum remains
@@ -802,16 +822,20 @@ enforced; it changes no latency ceiling.
 
 Accepted Apple ceilings are 600/750/900 ms p50/p95/maximum for full-frame,
 375/450/600 ms bounded, and 175/210/300 ms empty. Cold open is capped at 175 ms,
-first close 2 ms, reopen-close 100 ms, live Rust heap 20 MiB, resident high-water
-768 MiB, and input/output tensor bytes 256 MiB each. Mapped bytes and
-detector/recognizer/session/result counts are observed exact budgets. Producer
-surface copied bytes are not applicable to immutable CPU replay inputs and have
-no ceiling. These are regression
-ceilings for the named M1 Pro host and fixture, not arbitrary-resolution, 4K,
-multi-region, real-time, Windows, application, renderer, or game guarantees.
+first close 2 ms, reopen-close 100 ms, live Rust heap 20 MiB, and resident
+high-water 768 MiB.
 
-No `x86_64-pc-windows-msvc` profile exists. Until the identical digest-bound
-workload runs repeatedly on the approved Windows 11 Pro 25H2 build-family-26200
-host and then passes a separate enforced final profile, Phase 3 `G-013` and
-v0.3.0 release acceptance remain open. Hosted Windows Server observations are
-reported only as hard correctness/resource smoke.
+Accepted Windows ceilings are 900/1,000/1,200 ms p50/p95/maximum for full-frame,
+725/750/850 ms bounded, and 350/425/500 ms empty. Cold open is capped at 250 ms,
+first close 10 ms, reopen-close 225 ms, live Rust heap 20 MiB, and resident
+high-water 320 MiB. These are derived only from the approved Windows desktop,
+not Apple or hosted Windows Server.
+
+Both profiles cap input/output tensor bytes at 256 MiB and enforce exact mapped
+bytes plus detector/recognizer/session/result counts. Producer-surface copied
+bytes are not applicable to immutable CPU replay inputs and have no ceiling.
+These are regression ceilings for the named hosts and fixture, not
+arbitrary-resolution, 4K, multi-region, real-time, renderer, application, or
+game guarantees. Phase 3 default-OCR `G-013` is complete on both release
+targets; watcher scheduling and acceleration remain open until later phases
+introduce those workloads.

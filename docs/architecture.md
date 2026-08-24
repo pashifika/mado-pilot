@@ -864,7 +864,7 @@ responsibilities a later phase takes on.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.3 as a header-only adapter, including move-only OCR results, `DefaultOcrOptions`, production default construction, explicit clone, lvalue-only borrowed views, repaired request projections, typed native/input/diagnostic values, and negotiated-prefix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts the Apple M1 Pro default-OCR profile with hard correctness/growth gates plus executable inference/startup/heap/mapping/cleanup limits and external RSS; Windows OCR numeric ceilings remain withheld, so Phase 3 `G-013` is incomplete |
+| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles with hard correctness/growth gates plus executable inference/startup/heap/mapping/cleanup limits and target-native RSS; Phase 3 default-OCR `G-013` is complete on both release targets |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for frozen ABI 1.0 and 1.2 headers plus current ABI 1.3. Both historical callers compile against immutable headers, negotiate only their extents, and run against the current library; current C++ tests refuse complete 1.2 and partial 1.3 OCR access before missing entries are read |
@@ -2478,15 +2478,18 @@ dual-4K production matrix. Windows final-source Phase 1 reruns pass on the exact
 exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by
 reviewed complete diff under unchanged ceilings.
 
-ADR 0037 accepts the Apple M1 Pro default-OCR profile after independent review
-made mapped bytes, detector/recognizer runs, session topology, and peak RSS
-observable/executable. Five review-fixed processes retained 100 correct samples
-per full/bounded/empty workload with zero growth and passed worst p95
-472.623/301.455/184.057 ms, 20 MiB heap, exact mapping/inference/session,
-startup/cleanup, and 768 MiB RSS ceilings. Producer-surface copy is not
-applicable to CPU replay. Hosted CI applies only hard correctness/resource/growth
-smoke. The missing approved Windows 11 quality and numeric performance rows keep
-Phase 3 release acceptance open.
+ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR
+profiles after independent review made mapped bytes, detector/recognizer runs,
+session topology, and peak RSS observable and executable. Each target's five
+review-fixed final processes retained 100 correct samples per
+full/bounded/empty workload with zero growth and passed its own inference,
+20 MiB heap, exact mapping/inference/session, startup/cleanup, and resident
+ceilings. Worst p95 was 472.623/301.455/184.057 ms on Apple and
+717.487/579.638/275.385 ms on Windows. Peak target-native RSS was 516,833,280
+and 242,810,880 bytes respectively. Producer-surface copy is not applicable to
+CPU replay. Hosted CI applies only hard correctness/resource/growth smoke.
+Approved-host quality reruns on both targets reproduced the same 42-region
+accepted matrix and all rejected-candidate categories.
 
 ### Phase 0 completion contract
 
@@ -2518,10 +2521,10 @@ against.
 
 | Verification class | Status | Phase 0 |
 |---|---|---|
-| Numeric runtime performance budgets | Implemented for Phase 1 and accepted target-specific Phase 2 workloads by ADRs 0008 and 0024–0032. ADR 0037 additionally accepts only the Apple M1 Pro default-OCR profile with executable correctness, growth, inference, startup, heap, mapping/copy, tensor/session, and cleanup gates plus external resident accounting. Windows OCR numeric evidence is withheld, so Phase 3 `G-013` remains open |
+| Numeric runtime performance budgets | Implemented for Phase 1 and accepted target-specific Phase 2 workloads by ADRs 0008 and 0024–0032. ADR 0037 additionally accepts Apple M1 Pro and Core i7-12700KF default-OCR profiles with executable correctness, growth, inference, startup, heap, mapping/copy, tensor/session, cleanup, and target-native resident accounting. Phase 3 default-OCR `G-013` is complete on both release targets |
 | ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field; immutable ABI 1.0 and 1.2 callers negotiate only their 424-byte and 592-byte extents and run against ABI 1.3. The OCR owner/accessor suffix ends at 640 bytes; the default constructor completes ABI 1.3 at 648 bytes while frozen `madopilot_engine_options_t` remains 16-byte/alignment-4. Partial-prefix C++ tests refuse before reading missing entries. The unreleased 1.1 draft remains unsupported |
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
-| OCR, watcher, input, and diagnostic contract suites | OCR contract/backend/runtime/facade/C/C++ tests cover accepted default and explicit composition, identity, clipping, normalization, malformed output, deadline/cancellation, out-of-order completion, close, immutable ownership, initialized ABI outputs, frozen-prefix negotiation, request projection rebinding, repeated cleanup, and content-redacted diagnostics. Both hosted native jobs run default Rust/C/C++/CMake smoke and hard OCR benchmark gates. The approved Windows 11 integrated quality/performance rows remain missing. Watcher suites remain not applicable | Not applicable |
+| OCR, watcher, input, and diagnostic contract suites | OCR contract/backend/runtime/facade/C/C++ tests cover accepted default and explicit composition, identity, clipping, normalization, malformed output, deadline/cancellation, out-of-order completion, close, immutable ownership, initialized ABI outputs, frozen-prefix negotiation, request projection rebinding, repeated cleanup, and content-redacted diagnostics. Both hosted native jobs run default Rust/C/C++/CMake smoke and hard OCR benchmark gates. Approved Windows 11 and Apple Silicon quality/performance rows pass at their recorded revisions. Watcher suites remain not applicable | Not applicable |
 | Native permission behavior and permission probes | Implemented on macOS and enforceable: Screen Recording and event-post access are read separately through non-prompting checks, discovery and open preflight capture authorization, macOS input re-reads the public `CGPreflightPostEventAccess` decision before every irreversible event on both routes and treats an unavailable or unreadable state as unauthorized, the legacy Accessibility observation is retained only as a paired qualification fact, and no permission-request API is called. The facade, C ABI, and C++ wrapper expose the same non-prompting states. Windows advertises no permission-probe capability; its input path compares integrity non-promptingly, proves the same-integrity dedicated fixture path and higher-integrity ordinary refusal path natively, and retains controlled-driver coverage for receipt edge cases | Not applicable; no permission was requested or probed |
 | Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for staged current/previous discovery generations, two-frame WGC detachment, an extent-derived process-shared retained maximum capped at 40, checked 128 MiB surfaces and 2 GiB session / 4 GiB process retained-byte ceilings, deterministic multi-session contention/release behavior, producer leases bound to queued/quarantined native ownership, lock-free drop debt, lazy mapping, resize generations, callback admission fencing, apartment-safe asynchronous native teardown, typed terminal loss, runtime-resolved optional exports, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). ADR 0031 accepts the revision-bound 1280×720 production matrix and ADR 0032 accepts the exact two-display mixed-DPI dual-4K matrix, including callback-copy/staging/resident observations and lifecycle/resource budgets | Not applicable; no native capture existed |
 | Windows input submission and cleanup | Implemented and enforceable in `mado-pilot-platform-windows` for separate `System` and explicit exact-window `WindowMessage` routes, ordinary `Unknown` compatibility with target-queue evidence, fixture `Supported` compatibility with protocol acknowledgement, retained-authority pre/post fences, conservative message translation, focus and signed-coordinate policies, system native-record accounting, integrity/UIPI classification, non-fallback after native submission begins, bounded sequence-owned same-route cleanup, target loss, cancellation/deadline races, and close. [ADR 0027](adr/0027-windows-window-message-queue-submission.md) supersedes ADR 0022's ordinary system-only consequence without claiming application consumption or generation-atomic `HWND` safety. Native ordinary/fixture, negative-consumer, queue-pressure, lifecycle, single-display, same-DPI and mixed-DPI topology, unrelated-foreground, visual/no-visual, and higher-integrity/UIPI refusal rows are recorded; same-value recurrence remains an explicit unproved row |

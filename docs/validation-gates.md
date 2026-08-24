@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1 and affected Phase 2 workloads are resolved by ADRs 0008 and 0024–0032. ADR 0037 resolves Apple Silicon default OCR only; the Windows OCR performance row remains open |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1, affected Phase 2 workloads, and Phase 3 default OCR on both release targets are resolved by ADRs 0008, 0024–0032, and 0037 |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -225,11 +225,11 @@ runtime bytes, backend, public OCR API, default wiring, or support claim.
 
 **Follow-on integration status.** ADRs 0034–0036 implement the accepted CPU
 backend and separate Rust/C/C++ default constructors without changing ADR 0033's
-model choice. The integrated approved Apple host reran all 42 regions and
-reproduced every accepted/rejected category. The matching approved Windows 11
-integrated rerun is missing; hosted Windows Server product smoke does not
-substitute. The identity gate remains resolved, while v0.3.0 support/release
-acceptance remains blocked by that separate integration evidence.
+model choice. Approved Apple Silicon and Windows 11 Pro 25H2 hosts reran all 42
+regions on the same integrated revision and reproduced every accepted/rejected
+category with zero deterministic gate mismatch. Hosted Windows Server product
+smoke remains supporting contract evidence and does not substitute for the
+approved Windows desktop row.
 
 ## G-005
 
@@ -569,25 +569,29 @@ Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete
 diff. Both preserve their existing ceilings rather than creating another profile
 lineage.
 
-**Phase 3 is partially resolved.**
-[ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts the
-`aarch64-apple-darwin` default-OCR profile on the approved Apple M1 Pro host.
-Five fresh review-fixed processes retained 100 full-frame, 100 bounded-region,
-and 100 empty-result samples with zero correctness failures, no exclusions or
-retries, zero post-warmup allocation growth, exact observed mappings,
-detector/recognizer runs, opened session topology, and result counts. Worst p95
-was 472.623/301.455/184.057 ms, cold open 87.377 ms, first close 1.163 ms,
-reopen-close 64.929 ms, and target-native peak RSS 516,833,280 bytes under
-executable target-specific ceilings. Producer-surface copy is not applicable to
-the CPU replay profile and has no copied-byte ceiling.
+**Phase 3 default OCR is resolved on both release targets.**
+[ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts separate
+`aarch64-apple-darwin` and `x86_64-pc-windows-msvc` profiles on the approved
+Apple M1 Pro and Core i7-12700KF hosts. Each target ran five fresh
+review-fixed final processes after an independent precursor and retained 100
+full-frame, 100 bounded-region, and 100 empty-result samples with zero
+correctness failures, no exclusions or retries, zero post-warmup allocation
+growth, exact observed mappings, detector/recognizer runs, opened session
+topology, and result counts.
 
-The equivalent approved Windows 11 25H2 precursor and final numeric rows are
-unavailable and deliberately have no profile or inferred ceiling. Hosted Windows
-Server runs the same hard correctness, source-correlation, observed mapping/
-inference/session accounting, cancellation/late-result, cleanup, and 4 KiB
-growth gates, but runner timing/resident memory cannot close `G-013`. Watcher
-scheduling and acceleration remain open for the later phases that introduce
-them.
+Apple worst p95 was 472.623/301.455/184.057 ms, cold open 87.377 ms, first
+close 1.163 ms, reopen-close 64.929 ms, and target-native peak RSS
+516,833,280 bytes. Windows worst final p95 was 717.487/579.638/275.385 ms,
+cold open 177.195 ms, first close 6.081 ms, reopen-close 160.820 ms, and
+`GetProcessMemoryInfo` peak RSS 242,810,880 bytes. Each passed its own
+executable target ceilings. Producer-surface copy is not applicable to the CPU
+replay profiles and has no copied-byte ceiling.
+
+Hosted Windows Server continues to run the same hard correctness,
+source-correlation, observed mapping/inference/session accounting,
+cancellation/late-result, cleanup, and 4 KiB growth gates, but its
+timing/resident memory defines no release-host budget. Watcher scheduling and
+acceleration remain open for the later phases that introduce them.
 
 **Resolution.** Committed benchmark profiles and budgets plus an ADR for each
 budget that is set or relaxed, recording the evidence behind the number.
