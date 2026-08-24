@@ -19,9 +19,11 @@ Apple M1 Pro and Core i7-12700KF default-OCR profiles. Each uses five precursor
 processes and a separate five-process post-budget run for cold accepted-model
 startup, warm full-frame and bounded-region OCR, empty results, exact source
 correlation, allocation growth, observed mapped bytes/inference/session/result
-counts, cancellation/late publication, cleanup, close, and target-native
-resident high-water. Hosted Windows Server smoke enforces hard correctness and
-growth only; its timing and resident observations define no release-host budget.
+counts, cleanup, close, and target-native resident high-water. A separate native
+contract test covers cancellation, late-publication suppression, recovery, and
+close races without mixing that instrumentation into latency samples. Hosted
+Windows Server smoke enforces hard correctness and growth only; its timing and
+resident observations define no release-host budget.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured

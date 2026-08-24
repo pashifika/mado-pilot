@@ -77,10 +77,10 @@ remains attributed to `d8336be` and applies by reviewed complete diff;
 exact-candidate hosted checks bind both release targets. Historical profiles and
 hosted CI never substitute for interactive native rows.
 
-The v0.3.0 candidate is not release-qualified: the integrated approved Windows
-11 42-region quality rerun and Windows numeric OCR performance profile are
-missing. Hosted Windows Server tests enforce hard correctness and bounded
-growth, but never substitute for those target-specific rows.
+The v0.3.0 source candidate has approved Windows 11 and Apple Silicon integrated
+42-region quality plus separate target-native numeric OCR performance profiles.
+Hosted Windows Server tests enforce hard correctness and bounded growth, but
+never substitute for those release-host rows or the protected release flow.
 
 macOS capture needs Screen Recording and input needs event-post access;
 MadoPilot probes both without prompting. Windows has no permission probe and
@@ -105,12 +105,12 @@ not watch for text, schedule work, retry, fall back, or trigger input.
 | Native capture | Implemented in both adapters and exposed through Rust, C ABI, and C++; ADR 0030 accepts macOS production capture/transitions, ADR 0031 accepts Windows 1280×720 production capture/transitions, and ADR 0032 accepts Windows mixed-DPI dual-4K production capture |
 | Native input submission | Implemented in both adapters and exposed through Rust, C ABI, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
 | Bounded diagnostic observation | Implemented through Rust, C ABI, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and content-redacted OCR records |
-| One-shot OCR public contract | Implemented through Rust, C ABI 1.3, and C++ over explicit backends and the accepted default ONNX CPU profile; no watcher, scheduling, fallback, bundling, download, or release-support claim |
+| One-shot OCR public contract | Implemented through Rust, C ABI 1.3, and C++ over explicit backends and the accepted default ONNX CPU profile; support is limited to the documented model/runtime/target boundary, with no watcher, scheduling, fallback, bundling, or download |
 | Visual-condition watchers and OCR scheduling | Not implemented |
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.3 while preserving complete ABI 1.0 and 1.2 prefixes; the OCR owner suffix ends at 640 bytes and the complete default-constructor table at 648 bytes; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.3, including `DefaultOcrOptions` and production default composition |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts the Apple M1 Pro default-OCR profile with hard correctness/growth/resource gates and executable latency/heap/mapping/cleanup ceilings; Windows OCR timing and resident ceilings are deliberately withheld |
+| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts separate Apple M1 Pro and Core i7-12700KF default-OCR profiles with hard correctness/growth/resource gates and executable latency/heap/mapping/cleanup/target-native-resident ceilings |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled
@@ -136,9 +136,9 @@ the full status table, the package inventory, and the dependency rules.
 [`v0.1.0`](docs/releases/v0.1.0.md) is the published deterministic-workflow
 baseline. [`v0.2.1`](docs/releases/v0.2.1.md) is the published native
 capture/input/observation source release. [`v0.3.0`](docs/releases/v0.3.0.md) is
-the current OCR integration candidate; it remains unpublished while the
-approved Windows quality/performance rows and protected release flow are
-incomplete. None publishes crates to crates.io or provides prebuilt libraries,
+the current OCR integration candidate; its approved native evidence is complete,
+but it remains unpublished until the protected release flow finishes. None
+publishes crates to crates.io or provides prebuilt libraries,
 installers, CMake install/export metadata, pkg-config metadata, or bundled
 OpenCV, ONNX Runtime, or model files. A tracked release-note file is the
 canonical release body.

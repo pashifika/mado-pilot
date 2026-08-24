@@ -1,6 +1,6 @@
 # Phase 3 accepted CPU OCR profile measured on Apple M1 Pro at review-fixed source
 # e41fbbd5457d5f9c10da55982a799c608ccc195e and tree
-# 9fbc47ef0698047aaab5c51e3616712e87ae9b08. Windows ceilings remain withheld.
+# 9fbc47ef0698047aaab5c51e3616712e87ae9b08. Windows has a separate accepted profile.
 
 format_version = 1
 
@@ -23,7 +23,7 @@ build_profile = "cargo bench, default features, debug_assertions=false; five fre
 warmup_iterations = 3
 sample_count = 20
 process_count = 5
-correctness_oracle = "every warmup and retained sample checks exact NFC text/count/order, fixture-derived geometry bounds, finite same-host-stable confidence, frame/effective-region/output/backend/model correlation, exact empty outcome, and no late publication"
+correctness_oracle = "every warmup and retained sample checks exact NFC text/count/order, fixture-derived geometry bounds, finite same-host-stable confidence, frame/effective-region/output/backend/model correlation, and the exact empty outcome"
 queue_policy = "one synchronous admitted inference, one session pair, two sessions, CPU provider only, intra/inter operation threads 1, CPU arena disabled, recognition batch ceiling 6"
 producer_surface_copy = "not applicable: the profile maps immutable CPU replay frames and owns no producer/native surface; no copied-byte ceiling is set"
 notes = "source commit e41fbbd5457d5f9c10da55982a799c608ccc195e; tree 9fbc47ef0698047aaab5c51e3616712e87ae9b08; rustc/cargo 1.97.1; OpenCV 4.14.0; runtime profile onnxruntime-1.29.0-api17-cpu; runtime sha256 5039a93886b71ddfcf62912a2be5b357cf51fa9a6579ad9302c78323f5f7c302; detector sha256 d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9; recognizer sha256 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884; vocabulary 18708 entries sha256 f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e; mapped and inference/session counts observed in-process; peak RSS enforced through getrusage; no failed-sample exclusion or retry"

@@ -4,7 +4,10 @@
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-#[cfg(any(all(target_arch = "aarch64", target_os = "macos"), windows))]
+#[cfg(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+))]
 use std::time::Duration;
 use std::time::Instant;
 
@@ -21,12 +24,15 @@ use mado_pilot_testkit::bench_harness::{
     PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES, PHASE3_APPLE_OCR_LATENCY_BUDGETS,
     PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT, PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES,
 };
-#[cfg(any(all(target_arch = "aarch64", target_os = "macos"), windows))]
+#[cfg(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+))]
 use mado_pilot_testkit::bench_harness::{
     PHASE3_OCR_EMPTY_MAPPED_BYTES, PHASE3_OCR_FULL_MAPPED_BYTES, PHASE3_OCR_MAX_OUTPUT_BYTES,
     PHASE3_OCR_MAX_TENSOR_BYTES, PHASE3_OCR_REGION_MAPPED_BYTES,
 };
-#[cfg(windows)]
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 use mado_pilot_testkit::bench_harness::{
     PHASE3_WINDOWS_OCR_CLOSE_LIMIT, PHASE3_WINDOWS_OCR_COLD_LOAD_LIMIT,
     PHASE3_WINDOWS_OCR_HEAP_LIMIT_BYTES, PHASE3_WINDOWS_OCR_LATENCY_BUDGETS,
@@ -472,7 +478,10 @@ fn print_observation(
     }
 }
 
-#[cfg(any(all(target_arch = "aarch64", target_os = "macos"), windows))]
+#[cfg(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+))]
 struct TargetBudgets {
     target: &'static str,
     label: &'static str,
@@ -485,7 +494,10 @@ struct TargetBudgets {
     resident_bytes: u64,
 }
 
-#[cfg(any(all(target_arch = "aarch64", target_os = "macos"), windows))]
+#[cfg(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+))]
 fn enforce_target_budget_set(
     budgets: TargetBudgets,
     cold_load_ms: f64,
@@ -573,7 +585,7 @@ fn enforce_target_budgets(
     );
 }
 
-#[cfg(windows)]
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 fn enforce_target_budgets(
     cold_load_ms: f64,
     close_ms: f64,
@@ -603,7 +615,10 @@ fn enforce_target_budgets(
     );
 }
 
-#[cfg(not(any(all(target_arch = "aarch64", target_os = "macos"), windows)))]
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+)))]
 fn enforce_target_budgets(
     _cold_load_ms: f64,
     _close_ms: f64,

@@ -25,12 +25,13 @@ matrices, macOS production capture/transitions, Windows 1280×720 production
 capture/transitions, and corrected Windows mixed-DPI dual-4K production capture
 have accepted revision-bound evidence and target-specific budgets. Phase 3 adds
 the exact accepted G-004 default from caller-supplied canonical model/runtime
-paths and an Apple M1 Pro regression profile. It does not add bundling,
-download, ambient search, provider fallback, scheduling, or automatic input.
-The v0.3.0 candidate remains unreleased because its approved Windows 11
-integrated 42-region quality and numeric OCR performance rows are missing;
-hosted Windows Server hard-gate smoke is not a substitute. Watchers, scheduling,
-and release packaging remain future work.
+paths plus separate Apple M1 Pro and Core i7-12700KF regression profiles.
+Approved Apple Silicon and Windows 11 Pro hosts reproduce the same integrated
+42-region quality boundary. It does not add bundling, download, ambient search,
+provider fallback, scheduling, or automatic input. The v0.3.0 source candidate
+still requires protected release delivery; hosted Windows Server hard-gate
+smoke is supporting evidence rather than a release-host substitute. Watchers,
+scheduling, and release packaging remain future work.
 See [Implementation status](#implementation-status).
 
 ## Product definition

@@ -284,9 +284,9 @@ numeric-performance evidence.
 ADR 0036 makes the default an explicit composition choice: ordinary engine
 constructors remain unchanged, while `*_engine_with_default_ocr`,
 `engine_create_with_default_ocr`, and C++ `DefaultOcrOptions` require the caller
-to supply the two controlled paths. ADR 0037 accepts only Apple M1 Pro numeric
-budgets. The missing approved Windows 11 integrated quality/performance rows
-withhold the v0.3.0 support claim even when hosted Windows Server smoke passes.
+to supply the two controlled paths. ADR 0037 accepts separate Apple M1 Pro and
+Core i7-12700KF numeric profiles after approved-host precursor and final runs.
+Hosted Windows Server smoke remains supporting hard-contract evidence only.
 
 ### G-003 macOS shim boundary
 
