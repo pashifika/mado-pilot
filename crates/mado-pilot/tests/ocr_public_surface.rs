@@ -126,10 +126,16 @@ fn default_ocr_refuses_a_missing_controlled_runtime_without_ambient_fallback() {
 #[test]
 #[ignore = "requires explicit reviewed ONNX Runtime and G-004 model root"]
 fn default_ocr_profile_runs_full_and_bounded_replay_regions() {
-    let model_root =
-        std::env::var_os("MADO_PILOT_G004_MODEL_ROOT").expect("model root is explicitly set");
-    let runtime =
-        std::env::var_os("MADO_PILOT_ONNX_RUNTIME").expect("runtime path is explicitly set");
+    let model_root = std::path::PathBuf::from(
+        std::env::var_os("MADO_PILOT_G004_MODEL_ROOT").expect("model root is explicitly set"),
+    )
+    .canonicalize()
+    .expect("model root is canonicalizable");
+    let runtime = std::path::PathBuf::from(
+        std::env::var_os("MADO_PILOT_ONNX_RUNTIME").expect("runtime path is explicitly set"),
+    )
+    .canonicalize()
+    .expect("runtime path is canonicalizable");
     let config = DefaultOcrConfig::new(model_root, runtime);
     let extent = PixelExtent::new(64, 64);
     let descriptor =
