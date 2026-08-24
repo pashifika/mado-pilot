@@ -335,11 +335,13 @@ operation semantics. A platform route may expose it through documented native
 observational metadata; macOS `ProcessDirected` carries it in Core Graphics
 event-source user data visible to the addressed process.
 
-Three request values borrow handles rather than owning them, and say so:
+Four request values borrow handles rather than owning them, and say so:
 
 - an `Operation` borrows its `Cancellation`, which must outlive every call the
   operation is passed to;
 - a `FindRequest` borrows its `Frame` and its `Template`;
+- an `OcrRequest` borrows its `Frame` and `Package` through each
+  `Session::recognize` call;
 - an `InputRequest` borrows its source `Frame`, which must stay retained until
   `Session::send_input` returns.
 

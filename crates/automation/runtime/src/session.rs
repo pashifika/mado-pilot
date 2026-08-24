@@ -216,8 +216,12 @@ impl Session {
         }
     }
 
+    fn close_started(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
+    }
+
     fn accepts_work(&self) -> bool {
-        !self.closing.load(Ordering::Acquire) && self.capture.is_open()
+        !self.close_started() && self.capture.is_open()
     }
 
     fn commit_while_open<T>(&self, value: T) -> Result<T> {
@@ -265,6 +269,10 @@ impl Session {
         operation: &OperationContext,
     ) -> Result<Frame> {
         let observed = self.observe(operation, DiagnosticOperationKind::FrameAcquire)?;
+        if self.close_started() {
+            Operation::admit(operation)?;
+            return Err(CaptureFault::SessionClosed.into());
+        }
         let result = self.capture.frame(request, operation);
         match &result {
             Ok(frame) => {
@@ -597,7 +605,7 @@ impl Session {
             {
                 return Err(CaptureFault::ForeignStream.into());
             }
-            if !self.capture.is_open() {
+            if !self.accepts_work() {
                 return Err(CaptureFault::SessionClosed.into());
             }
             attempt.checkpoint()?;
@@ -790,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_that_has_begun_closing_starts_no_search() {
+    fn a_session_that_has_begun_closing_starts_no_new_work() {
         let fixture = Fixture::new();
         let operation = OperationContext::new();
         let template = fixture.template();
@@ -812,6 +820,12 @@ mod tests {
             !fixture.session.is_closed(),
             "the drain never finished, so the lifecycle is not over"
         );
+
+        let interrupted_frame = fixture
+            .session
+            .acquire_frame(&FrameRequest::latest(), &expired())
+            .expect_err("the acquisition interruption remains authoritative");
+        assert_eq!(interrupted_frame.status(), Status::DeadlineExceeded);
 
         let exact = fixture
             .session

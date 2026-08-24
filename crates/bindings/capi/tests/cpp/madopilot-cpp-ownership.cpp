@@ -1501,6 +1501,10 @@ void ocr_request_projections_rebind_after_every_copy_and_move(Fixture&)
     auto moved = std::move(copy_assigned);
     madopilot::OcrRequest::CView move_assigned(request);
     move_assigned = std::move(copied);
+    check(copy_assigned.value().model_id.data != moved.value().model_id.data,
+          "move construction rebinds the moved-from OCR projection");
+    check(copied.value().model_id.data != move_assigned.value().model_id.data,
+          "move assignment rebinds the moved-from OCR projection");
 
     const auto equals = [](madopilot_str_t view, const std::string& expected) {
         return std::string_view(view.data, view.len) == expected;
