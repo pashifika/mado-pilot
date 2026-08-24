@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1's thirteen resolved by ADR 0008, and the affected Phase 2 diagnostic, native input, controlled ownership, production capture/transition, and corrected dual-4K workloads resolved by ADRs 0024–0032. Windows Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete diff, preserving the existing ceilings rather than making another budget decision |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1 and affected Phase 2 workloads are resolved by ADRs 0008 and 0024–0032. ADR 0037 resolves Apple Silicon default OCR only; the Windows OCR performance row remains open |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -222,6 +222,14 @@ privacy, cross-target equality, and absence of implementation scope creep. It
 required the network-free validator to recompute every tracked v5 source hash;
 the corrected delta passed re-review. The accepted decision adds no model or
 runtime bytes, backend, public OCR API, default wiring, or support claim.
+
+**Follow-on integration status.** ADRs 0034–0036 implement the accepted CPU
+backend and separate Rust/C/C++ default constructors without changing ADR 0033's
+model choice. The integrated approved Apple host reran all 42 regions and
+reproduced every accepted/rejected category. The matching approved Windows 11
+integrated rerun is missing; hosted Windows Server product smoke does not
+substitute. The identity gate remains resolved, while v0.3.0 support/release
+acceptance remains blocked by that separate integration evidence.
 
 ## G-005
 
@@ -561,8 +569,23 @@ Apple Silicon runs remain attributed to `d8336be` and apply by reviewed complete
 diff. Both preserve their existing ceilings rather than creating another profile
 lineage.
 
-OCR, watcher scheduling, and acceleration remain open for the phases that
-introduce them.
+**Phase 3 is partially resolved.**
+[ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts the
+`aarch64-apple-darwin` default-OCR profile on the approved Apple M1 Pro host.
+Five fresh precursor processes retained 50 full-frame, 50 bounded-region, and
+50 empty-result samples with zero correctness failures, no exclusions/retries,
+zero post-warmup allocation growth, exact mapped/copied bytes, and explicit
+session/tensor/result counts. The final post-budget executable passed p95
+469.992/306.045/133.130 ms, cold open 84.629 ms, first close 1.007 ms,
+reopen-close 62.536 ms, and 544,391,168-byte RSS under its target-specific
+ceilings.
+
+The equivalent approved Windows 11 25H2 precursor and final numeric rows are
+unavailable and deliberately have no profile or inferred ceiling. Hosted Windows
+Server runs the same hard correctness, source-correlation, copied/mapped
+accounting, cancellation/late-result, cleanup, and 4 KiB growth gates, but runner
+timing/resident memory cannot close `G-013`. Watcher scheduling and acceleration
+remain open for the later phases that introduce them.
 
 **Resolution.** Committed benchmark profiles and budgets plus an ADR for each
 budget that is set or relaxed, recording the evidence behind the number.

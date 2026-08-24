@@ -9,20 +9,19 @@ This document defines the format that evidence takes. Setting a numeric budget
 for a workload is gate [`G-013`](validation-gates.md#g-013), which is resolved
 per workload and target rather than once. Phase 1 is resolved. ADR 0021
 invalidated the three historical macOS Phase 2 native profiles after source and
-correctness-oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
-now accepts the macOS diagnostic slice,
-[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
-revision-bound macOS native input and public-language profile. Accepted-design
-[ADR 0029](adr/0029-macos-process-directed-input.md) binds the Phase 2.2 macOS
-process-directed and controlled-stimulus lineage below. Final candidate
-`dec43d7` passes the exact-source controlled AppKit and game-like profiles
-under their frozen regression budgets. Independent `single`, exact two-display
-non-mirrored `same-scale`, and `mixed-scale` qualification matrices also pass,
-so all fourteen controlled release pair decisions are qualified. ADRs 0030,
-0031, and 0032 accept the target-specific production profiles. Windows
-final-source Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs
-remain attributed to `d8336be` and apply by reviewed complete diff. Both keep
-their unchanged ceilings and never re-derive a budget.
+correctness-oracle drift. ADRs 0024–0032 accept the current target-specific
+Phase 2 diagnostic, native input, controlled owning-process, production capture,
+transition, and corrected dual-4K profiles while preserving each historical
+source identity.
+
+[ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts the Apple M1 Pro
+default-OCR profile only. Its five-process precursor and separate post-budget
+run cover cold accepted-model startup, warm full-frame and bounded-region OCR,
+empty results, exact source correlation, allocation growth, mapped/copied bytes,
+session/tensor/result counts, cancellation/late publication, cleanup, close, and
+resident high-water. Windows OCR numeric ceilings are withheld because the
+approved Windows 11 host row is unavailable; hosted Windows Server smoke
+enforces hard correctness/growth but contributes no timing or resident budget.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -735,3 +734,63 @@ complete. Windows Phase 1 reruns pass on the exact exit candidate; Apple Silicon
 runs remain attributed to `d8336be` and apply by reviewed complete diff.
 The complete workload and correctness obligations are in
 [windows-capture-contract-tests.md](windows-capture-contract-tests.md).
+
+## Phase 3 accepted CPU OCR performance
+
+The Phase 3 benchmark is
+`crates/backend/onnx/benches/onnx-cpu.rs`. It exercises only the accepted
+`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1` model through controlled ONNX
+Runtime 1.29.0 API 17, CPU provider, one admitted inference, one session pair,
+two sessions, one thread per session axis, disabled CPU arena, and recognition
+batch ceiling six.
+
+Every process opens through the same default path a Rust/C/C++ caller uses.
+Three warmups precede ten retained samples for each workload:
+
+| Workload | Oracle and accounting |
+|---|---|
+| `onnx_cpu_hud_full` | exact eight NFC strings/count/order; fixture-derived geometry; finite same-host-stable confidence; exact source/backend/model/effective-region correlation; 2,073,600 mapped and zero copied bytes; one detector plus two recognizer tensor runs |
+| `onnx_cpu_hud_region` | exact bounded text/count; the same geometry/confidence/source rules; 64,800 mapped and zero copied bytes; one detector plus one recognizer tensor run |
+| `onnx_cpu_blank` | exact empty result/source correlation; 16,384 mapped and zero copied bytes; one detector and zero recognizer tensor runs |
+
+No operation is discarded after execution. A failed warmup aborts immediately;
+retained incorrect count must be zero, and every workload must remain within the
+shared 4,096-byte live-heap growth gate. The native ignored contract test
+separately proves cancellation after native-run admission, termination and
+`Cancelled` within 250 ms, no late publication, recovery, close-race safety, and
+idempotent repeated close; instrumentation from that proof is not mixed into
+latency percentiles.
+
+The first smoke attempt rejected a draft exact-geometry assumption for bounded
+recognition. Independent crop preprocessing legitimately produced a different
+quadrilateral while passing the pre-existing fixture thresholds, so the
+performance oracle was corrected before precursor measurement. The failed
+attempt remains recorded; no measured failure was excluded and no target result
+selected a threshold.
+
+[`phase-3-ocr-aarch64-apple-darwin.toml`](benchmarks/phase-3-ocr-aarch64-apple-darwin.toml)
+is normative under ADR 0037. Five fresh precursor processes at source `b83f23f`,
+tree `7dfe9c2`, retained 50 samples per workload. Every warmup/sample passed and
+every workload ended with zero heap growth. Worst precursor observations were
+476.576/299.674/135.640 ms p95 for full/bounded/empty, 86.988 ms cold open,
+1.116 ms first close, 63.569 ms reopen-close, and 548,487,168 bytes RSS.
+
+The final budget executable at source `192f3d2`, tree `45abefc`, passed all
+in-process gates with p95 469.992/306.045/133.130 ms, cold open 84.629 ms, close
+1.007 ms, reopen-close 62.536 ms, exact mapped/copied bytes, zero growth, and
+14,149,992-byte worst attributable Rust heap. Target-native `/usr/bin/time -l`
+reported 544,391,168 bytes RSS under the 768 MiB ceiling.
+
+Accepted Apple ceilings are 600/750/900 ms p50/p95/maximum for full-frame,
+375/450/600 ms bounded, and 175/210/300 ms empty. Cold open is capped at 140 ms,
+first close 2 ms, reopen-close 100 ms, live Rust heap 20 MiB, resident high-water
+768 MiB, and input/output tensor bytes 256 MiB each. Mapped/copy and
+session/tensor/result counts are exact structural budgets. These are regression
+ceilings for the named M1 Pro host and fixture, not arbitrary-resolution, 4K,
+multi-region, real-time, Windows, application, renderer, or game guarantees.
+
+No `x86_64-pc-windows-msvc` profile exists. Until the identical digest-bound
+workload runs repeatedly on the approved Windows 11 Pro 25H2 build-family-26200
+host and then passes a separate enforced final profile, Phase 3 `G-013` and
+v0.3.0 release acceptance remain open. Hosted Windows Server observations are
+reported only as hard correctness/resource smoke.

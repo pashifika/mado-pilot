@@ -262,18 +262,30 @@ fixes the loading boundary:
 The reviewed Apple runtime is 33,332,888 bytes, declares minimum macOS 14.0, and
 depends only on system libraries. It is MIT-licensed and is not redistributed.
 The accepted detector and recognizer remain caller-supplied Apache-2.0 model
-bytes validated by exact length and SHA-256 through `OcrModelSource`; the backend
-receives immutable bytes rather than model paths. Windows build/load evidence is
-owned by the release-target CI job and must not be inferred from the Apple
-observation. This Change makes no packaging or support-table claim.
+bytes. `OnnxOcrBackend::open_accepted` reads only
+`rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx` and
+`rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx` beneath the selected root, validates
+exact length/SHA-256 before graph/session admission, and commits directly into
+immutable shared storage. Explicit schema-v2 packages validate the same
+`OcrModelSource` contract; default composition does not create a duplicate
+25,979,900-byte package allocation.
 
-The two native CI jobs provision these inputs only inside an ephemeral runner in
-order to execute the explicit backend contract/oracle test. They download the
-official ONNX Runtime 1.29.0 target archive and the two tag-pinned ModelScope
-files, verify the reviewed archive/model SHA-256 values before extraction or
-session creation, and pass canonical paths through the test environment. This is
-verification-fixture provisioning, not a product download path, release bundle,
-cache shipped to users, or ambient discovery mechanism.
+The two native CI jobs provision these inputs only inside an ephemeral runner.
+They download the official ONNX Runtime 1.29.0 target archive and the two
+tag-pinned ModelScope files, verify reviewed archive/model SHA-256 values before
+extraction/session creation, and pass canonical paths to native tests. Both jobs
+run the backend contract, Rust default facade, production C/C++/CMake default
+flows, frozen C headers, and the target-independent OCR performance smoke gate.
+This is verification-fixture provisioning, not a product download path, release
+bundle, shipped cache, ambient discovery mechanism, or approved-host quality/
+numeric-performance evidence.
+
+ADR 0036 makes the default an explicit composition choice: ordinary engine
+constructors remain unchanged, while `*_engine_with_default_ocr`,
+`engine_create_with_default_ocr`, and C++ `DefaultOcrOptions` require the caller
+to supply the two controlled paths. ADR 0037 accepts only Apple M1 Pro numeric
+budgets. The missing approved Windows 11 integrated quality/performance rows
+withhold the v0.3.0 support claim even when hosted Windows Server smoke passes.
 
 ### G-003 macOS shim boundary
 

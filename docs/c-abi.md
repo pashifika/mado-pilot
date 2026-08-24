@@ -12,7 +12,8 @@ The replay workflow is
 [`examples/c/deterministic-slice.c`](../crates/bindings/capi/examples/c/deterministic-slice.c);
 the native Windows and macOS common flows are under
 [`examples/c/`](../crates/bindings/capi/examples/c/).
-The one-shot OCR fixture flow is
+The production and fixture one-shot OCR flows are
+[`examples/c/ocr-default.c`](../crates/bindings/capi/examples/c/ocr-default.c) and
 [`examples/c/ocr-fixture.c`](../crates/bindings/capi/examples/c/ocr-fixture.c).
 
 A C++ caller uses the header-only RAII wrapper over this contract rather than
@@ -23,9 +24,10 @@ below still applies to it, because it is the same contract.
 
 The current header declares ABI 1.3. ADR 0007 freezes ABI 1.0's 424-byte
 capture/matching table; ADR 0023 freezes ABI 1.2's 592-byte input/diagnostic
-table. ABI 1.3 appends one-shot OCR execution and immutable owned OCR results at
-640 bytes under
-[ADR 0035](adr/0035-ocr-public-surfaces-and-private-fixture-boundary.md).
+table. ABI 1.3 appends one-shot OCR execution and immutable owned OCR results
+through 640 bytes under ADR 0035, then the accepted default constructor for a
+complete 648-byte table under
+[ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md).
 The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
 - no released numeric value changes its number;
@@ -36,10 +38,12 @@ The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
 A different ABI major is a different library, and `madopilot_get_api` refuses it.
 Use the smaller of caller `sizeof(madopilot_api_t)` and the returned
-`struct_size`. ABI 1.0, 1.2, and 1.3 callers negotiate 424, 592, and 640 bytes
-respectively and check the matching `MADOPILOT_API_SIZE_*` macro before each
-appended entry. The C++ wrapper requires the complete lifecycle/accessor suffix
-before constructing an owner.
+`struct_size`. ABI 1.0 and 1.2 callers negotiate 424 and 592 bytes. An ABI 1.3
+caller checks the entry-specific macro: 640 bytes reaches the complete OCR
+owner/accessor suffix, while
+`MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR` requires the complete
+648-byte table. The C++ wrapper requires the complete lifecycle/accessor suffix
+before constructing an owner and all 648 bytes before default construction.
 
 The released promise is executable. `tests/abi-compat/v1/` and `v1_2/` keep exact
 headers and callers, compile them without the working header, link them to the
@@ -61,20 +65,30 @@ An existing 1.2 caller remains unchanged. To use OCR:
 
 1. compile the ABI 1.3 header and require
    `MADOPILOT_API_SIZE_OCR_RESULT_TEXT_AT` before creating an OCR owner;
-2. retain one exact source frame and one validated package for the synchronous
-   call, then fill `madopilot_ocr_request_t` with the package model ID, exact
-   configured backend ID/version, output space, and optional capture-pixel region;
-3. pass the same operation record across validation, mapping, backend work, and
+2. choose explicit package-backed composition or the accepted default:
+   - explicit composition retains one validated package and fills
+     `madopilot_ocr_request_t` with that package/model and the configured backend
+     identity;
+   - default composition requires
+     `MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR`, fills a standalone
+     `madopilot_default_ocr_options_t` with canonical model-root/runtime views,
+     and constructs through `engine_create_with_default_ocr`;
+3. retain one exact source frame for the synchronous call, keep backend/model
+   views exact, and name output space plus any capture-pixel region;
+4. pass the same operation record across validation, mapping, backend work, and
    final commit;
-4. own the returned `madopilot_ocr_result_t` independently, use fixed-width
+5. own the returned `madopilot_ocr_result_t` independently, use fixed-width
    `ocr_result_info`, indexed region geometry/confidence, and borrowed text views,
-   and release with the module entry;
-5. keep each borrowed text view only while its result owner remains retained.
+   and release with the module entry; and
+6. keep each borrowed text view only while its result owner remains retained.
 
-There is no production C backend constructor, default ONNX selection, watcher,
-retry, callback, scheduling, fallback, or automatic input. The feature-gated
-`private-fixture` symbol used by local examples is outside the public header and
-table and is absent from release builds.
+For the exact integrated default, `madopilot_ocr_request_t.package` may be null
+when backend/model views match the default identities returned by
+`describe_build`; any explicit package model still requires its package. There
+is no watcher, retry, callback, scheduling, fallback, automatic input, ambient
+runtime/model search, download, or bundling. The feature-gated
+`private-fixture` constructor remains outside the public header/table and absent
+from release builds.
 
 ## One exported symbol
 
@@ -386,12 +400,14 @@ then nowhere to put the message.
 ## One-shot OCR and immutable results
 
 `session_recognize` initializes both outputs before reading inputs. The session,
-exact frame, package, request views, and operation record are borrowed for the
-synchronous call. The package resolves a complete validated model/profile
-identity; backend ID and version must exactly match the backend configured on
-the session. A foreign stream, missing backend, unknown model, malformed view,
-invalid region, deadline, cancellation, close, or backend fault returns one
-typed status with no partial result.
+exact frame, request views, and operation record are borrowed for the
+synchronous call. An explicit request also borrows its package, which resolves a
+complete validated model/profile identity. The accepted default may pass a null
+package only with the exact backend/model identity retained by the engine.
+Backend ID/version and model must exactly match the session. A foreign stream,
+missing backend, unknown model, missing required package, malformed view, invalid
+region, deadline, cancellation, close, or backend fault returns one typed status
+with no partial result.
 
 Success returns one opaque immutable `madopilot_ocr_result_t`. `ocr_result_info`
 reports complete source identity, effective region, output space, fixed-width
@@ -405,6 +421,13 @@ Runtime performs final deadline/cancellation/close arbitration before the C
 boundary publishes the handle. A backend panic is contained as
 `MADOPILOT_STATUS_INTERNAL_PANIC`; result and error outputs remain initialized
 and no unwind crosses C.
+
+`madopilot_default_ocr_options_t` is a separate size-versioned record containing
+only model-root and runtime-path views. It was not appended to the frozen
+`madopilot_engine_options_t`: that structure remains size 16, alignment 4 on both
+release targets. `engine_create_with_default_ocr` validates the controlled
+runtime first, then the two fixed accepted model paths, and returns no engine on
+failure. It never changes the behavior of `engine_create`.
 
 ## Native capabilities and non-prompting permissions
 
@@ -736,19 +759,21 @@ cargo run --locked --package mado-pilot-capi --features private-fixture \
 The checker compares every C and Rust size/alignment/offset, compiles and runs
 the deterministic/native consumers, and then compiles frozen ABI 1.0 and 1.2
 callers only against their own headers. Those callers negotiate 424 and 592
-bytes and run unchanged against ABI 1.3. Current C++ checks negotiate a complete
-1.2 extent and an incomplete 1.3 owner extent, proving OCR refusal before a
-missing function pointer is read.
+bytes and run unchanged against ABI 1.3. Current C++ checks negotiate complete
+1.2 and partial 1.3 extents and refuse OCR/default construction before a missing
+function pointer is read.
 
-With `private-fixture`, the checker also compiles and runs local C/C++ one-shot
-OCR examples against a fixture-only constructor absent from release builds.
-Both produce identical source/text/confidence output and validate redacted OCR
-diagnostics. The ordinary C table remains unchanged except for the negotiated
-ABI 1.3 suffix.
+The ordinary checker also compiles and runs the production C and C++ default OCR
+examples with reviewed prerequisites, requires identical normalized
+backend/model/count output, and runs the independent CMake consumer. The
+`private-fixture` mode separately runs deterministic C/C++ OCR against the
+fixture-only constructor and validates content-redacted diagnostics. Both paths
+exercise ownership, repeated close, and immutable result independence without
+turning the fixture symbol into a release entry.
 
 The same command continues into the C++ surface: compile-time and runtime
-ownership tests, the replay example, the safe native example, and the
-independent CMake consumer project. See
+ownership tests, replay/native/default examples, and the independent CMake
+consumer project. See
 [cpp-wrapper.md](cpp-wrapper.md#how-the-wrapper-is-verified).
 
 The invariants that need no C compiler — versioned prefixes, per-event required
@@ -779,9 +804,11 @@ and attempt access, operation activity tags, bounded diagnostics, the complete
 592-byte table, and the deliberate rejection of minimum minor 1.
 
 [ADR 0035](adr/0035-ocr-public-surfaces-and-private-fixture-boundary.md) records
-ABI 1.3's six-entry OCR suffix, immutable result/view ownership, complete
-640-byte table, redacted diagnostic append, and isolation of the local fixture
-constructor from release headers and packaging.
+ABI 1.3's six-entry OCR suffix, immutable result/view ownership, the 640-byte
+owner/accessor extent, redacted diagnostic append, and isolation of the local
+fixture constructor. [ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md)
+records the standalone default options, preserved engine-options layout, and
+`engine_create_with_default_ocr` at offset 640 completing the table at 648 bytes.
 
 Each released header gets an immutable fixture. New coverage goes in the next
 fixture rather than editing an old caller; the rule is in
