@@ -2050,6 +2050,58 @@ pub const PHASE2_2_PROCESS_DIAGNOSTIC_LATENCY_BUDGETS: [LatencyBudget; 4] = [
 /// Frozen Phase 2.2 live-Rust-heap ceiling for every process-directed workload.
 pub const PHASE2_2_PROCESS_HEAP_LIMIT_BYTES: usize = 16 * 1024 * 1024;
 
+/// Phase 3 Apple Silicon accepted-profile OCR inference ceilings from ADR 0037.
+pub const PHASE3_APPLE_OCR_LATENCY_BUDGETS: [LatencyBudget; 3] = [
+    LatencyBudget::new(
+        "onnx_cpu_hud_full",
+        Duration::from_millis(600),
+        Duration::from_millis(750),
+        Duration::from_millis(900),
+    ),
+    LatencyBudget::new(
+        "onnx_cpu_hud_region",
+        Duration::from_millis(375),
+        Duration::from_millis(450),
+        Duration::from_millis(600),
+    ),
+    LatencyBudget::new(
+        "onnx_cpu_blank",
+        Duration::from_millis(175),
+        Duration::from_millis(210),
+        Duration::from_millis(300),
+    ),
+];
+
+/// Maximum live Rust heap attributable to any Apple Silicon OCR workload.
+pub const PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES: usize = 20 * 1024 * 1024;
+
+/// Maximum process resident high-water for the Apple Silicon OCR profile.
+pub const PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES: u64 = 768 * 1024 * 1024;
+
+/// Maximum accepted default model validation and session-pair startup.
+pub const PHASE3_APPLE_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(140);
+
+/// Maximum first close after the complete Apple Silicon OCR workload set.
+pub const PHASE3_APPLE_OCR_CLOSE_LIMIT: Duration = Duration::from_millis(2);
+
+/// Maximum accepted-model reopen and close cycle.
+pub const PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::from_millis(100);
+
+/// Accepted backend input-tensor byte ceiling recorded by the OCR profile.
+pub const PHASE3_OCR_MAX_TENSOR_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Accepted backend native-output byte ceiling recorded by the OCR profile.
+pub const PHASE3_OCR_MAX_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Exact mapped BGRA bytes for one complete 960 by 540 HUD frame.
+pub const PHASE3_OCR_FULL_MAPPED_BYTES: u64 = 960 * 540 * 4;
+
+/// Exact mapped BGRA bytes for the accepted 180 by 90 bounded HUD region.
+pub const PHASE3_OCR_REGION_MAPPED_BYTES: u64 = 180 * 90 * 4;
+
+/// Exact mapped BGRA bytes for the accepted 64 by 64 empty frame.
+pub const PHASE3_OCR_EMPTY_MAPPED_BYTES: u64 = 64 * 64 * 4;
+
 /// Enforces frozen p50, p95, and per-scenario latency ceilings.
 ///
 /// A missing or duplicated workload is a harness error rather than a skipped

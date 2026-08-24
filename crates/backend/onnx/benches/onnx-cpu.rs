@@ -10,7 +10,15 @@ use mado_pilot_core::{
     ClipPolicy, CoordinateSpace, OperationContext, PixelExtent, PixelRect, Rect,
 };
 use mado_pilot_ocr::{OcrBackend, OcrRecognizer, OcrRegion, OcrRequest, OcrResult};
-use mado_pilot_testkit::bench_harness::{self, Accounting, Plan, Sample};
+use mado_pilot_testkit::bench_harness::{self, Accounting, CaptureResources, Plan, Sample};
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+use mado_pilot_testkit::bench_harness::{
+    PHASE3_APPLE_OCR_CLOSE_LIMIT, PHASE3_APPLE_OCR_COLD_LOAD_LIMIT,
+    PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES, PHASE3_APPLE_OCR_LATENCY_BUDGETS,
+    PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT, PHASE3_OCR_EMPTY_MAPPED_BYTES,
+    PHASE3_OCR_FULL_MAPPED_BYTES, PHASE3_OCR_MAX_OUTPUT_BYTES, PHASE3_OCR_MAX_TENSOR_BYTES,
+    PHASE3_OCR_REGION_MAPPED_BYTES,
+};
 use mado_pilot_testkit::vision_contract;
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual};
 use opencv::imgcodecs::{IMREAD_COLOR, imread};
@@ -91,7 +99,8 @@ fn main() {
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
     let operation = OperationContext::new();
-    let plan = if std::env::args().any(|argument| argument == "--smoke") {
+    let smoke = std::env::args().any(|argument| argument == "--smoke");
+    let plan = if smoke {
         Plan::smoke()
     } else {
         Plan::new(3, 10)
@@ -189,6 +198,9 @@ fn main() {
         &workloads,
     );
     bench_harness::enforce_hard_budgets(&workloads);
+    if !smoke {
+        enforce_target_budgets(cold_load_ms, close_ms, &reopen_close_ms, facts, &workloads);
+    }
 }
 
 struct Fixture {
@@ -242,7 +254,12 @@ fn recognize(fixture: &Fixture) -> Sample {
         eprintln!("{} rejected result: {result:#?}", fixture.name);
     }
     assert!(correct, "{} correctness oracle failed", fixture.name);
-    Sample::new(elapsed, correct, fixture.mapped_bytes)
+    Sample::new(elapsed, correct, fixture.mapped_bytes).with_capture_resources(CaptureResources {
+        copied_bytes: 0,
+        detached_textures_peak: 0,
+        staging_textures_peak: 0,
+        gpu_resources_peak: 0,
+    })
 }
 
 fn oracle(fixture: &Fixture, result: &OcrResult) -> bool {
@@ -358,7 +375,7 @@ fn print_observation(
             concat!(
                 "onnx-cpu-workload name={name} warmups={warmups} samples={samples} ",
                 "p50_ms={p50_ms:.3} p95_ms={p95_ms:.3} max_ms={max_ms:.3} ",
-                "incorrect={incorrect} mapped_bytes={mapped_bytes} copied_bytes=0 ",
+                "incorrect={incorrect} mapped_bytes={mapped_bytes} copied_bytes={copied_bytes} ",
                 "rust_peak_allocated_bytes={peak_bytes} rust_growth_bytes={growth_bytes} ",
                 "detector_tensor_runs={detector_tensors} ",
                 "recognizer_tensor_runs={recognizer_tensors} result_regions={result_regions}"
@@ -371,6 +388,9 @@ fn print_observation(
             max_ms = workload.max_elapsed().as_secs_f64() * 1_000.0,
             incorrect = workload.incorrect(),
             mapped_bytes = workload.mapped_bytes_per_result(),
+            copied_bytes = workload
+                .copied_bytes()
+                .expect("every OCR workload reports copy accounting"),
             peak_bytes = workload.peak_allocated_bytes(),
             growth_bytes = workload.growth_bytes(),
             detector_tensors = detector_tensors,
@@ -378,6 +398,75 @@ fn print_observation(
             result_regions = result_regions,
         );
     }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+fn enforce_target_budgets(
+    cold_load_ms: f64,
+    close_ms: f64,
+    reopen_close_ms: &[f64],
+    facts: OnnxBackendFacts,
+    workloads: &[bench_harness::Workload],
+) {
+    bench_harness::enforce_latency_budgets(workloads, &PHASE3_APPLE_OCR_LATENCY_BUDGETS);
+    assert!(
+        cold_load_ms <= PHASE3_APPLE_OCR_COLD_LOAD_LIMIT.as_secs_f64() * 1_000.0,
+        "cold default OCR startup exceeded the Apple Silicon ceiling"
+    );
+    assert!(
+        close_ms <= PHASE3_APPLE_OCR_CLOSE_LIMIT.as_secs_f64() * 1_000.0,
+        "OCR close exceeded the Apple Silicon ceiling"
+    );
+    assert!(
+        percentile(reopen_close_ms, 1.0)
+            <= PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT.as_secs_f64() * 1_000.0,
+        "OCR reopen-close exceeded the Apple Silicon ceiling"
+    );
+    assert_eq!(facts.max_concurrent_inferences(), 1);
+    assert_eq!(facts.max_tensor_bytes(), PHASE3_OCR_MAX_TENSOR_BYTES);
+    assert_eq!(facts.max_output_bytes(), PHASE3_OCR_MAX_OUTPUT_BYTES);
+    assert_eq!(facts.recognition_batch(), 6);
+
+    for workload in workloads {
+        assert!(
+            workload.peak_allocated_bytes() <= PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES,
+            "{} exceeded the Apple Silicon live-Rust-heap ceiling",
+            workload.name()
+        );
+        let expected_mapped = match workload.name() {
+            FULL_NAME => PHASE3_OCR_FULL_MAPPED_BYTES,
+            REGION_NAME => PHASE3_OCR_REGION_MAPPED_BYTES,
+            EMPTY_NAME => PHASE3_OCR_EMPTY_MAPPED_BYTES,
+            name => panic!("unrecognized OCR workload {name}"),
+        };
+        assert_eq!(
+            workload.mapped_bytes_per_result(),
+            expected_mapped,
+            "{} changed its exact mapped-byte cost",
+            workload.name()
+        );
+        assert_eq!(
+            workload.copied_bytes(),
+            Some(0),
+            "{} unexpectedly copied producer-surface bytes",
+            workload.name()
+        );
+    }
+    println!("onnx-cpu-target-budgets target=aarch64-apple-darwin status=passed");
+}
+
+#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+fn enforce_target_budgets(
+    _cold_load_ms: f64,
+    _close_ms: f64,
+    _reopen_close_ms: &[f64],
+    _facts: OnnxBackendFacts,
+    _workloads: &[bench_harness::Workload],
+) {
+    println!(
+        "onnx-cpu-target-budgets target={} status=withheld",
+        bench_harness::RELEASE_TARGET
+    );
 }
 
 fn percentile(samples: &[f64], percentile: f64) -> f64 {
