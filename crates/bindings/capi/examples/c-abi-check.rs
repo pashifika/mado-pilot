@@ -980,8 +980,8 @@ fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Err
     if !c_output.status.success() || !cpp_output.status.success() {
         return Err("an integrated default OCR example failed".into());
     }
-    let c_stdout = String::from_utf8(c_output.stdout)?;
-    let cpp_stdout = String::from_utf8(cpp_output.stdout)?;
+    let c_stdout = String::from_utf8(c_output.stdout)?.replace("\r\n", "\n");
+    let cpp_stdout = String::from_utf8(cpp_output.stdout)?.replace("\r\n", "\n");
     print!("{c_stdout}");
     print!("{cpp_stdout}");
     let expected = format!(
