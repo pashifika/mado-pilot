@@ -1799,14 +1799,7 @@ fn native_engine_with_diagnostics(diagnostics: DiagnosticOptions) -> NativeEngin
     let engine_id = issuer.engine();
     let provider = Arc::new(MacosCaptureProvider::new(issuer));
     let engine = Engine::new_with_options(
-        EngineWiring {
-            engine: engine_id,
-            capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
-            matcher: Matcher::new(Arc::new(backend)),
-            loader: PackageLoader::new(),
-            input: Some(Arc::clone(&provider) as Arc<dyn InputProvider>),
-            permission: Some(Arc::new(MacosPermissionProbe::new()) as Arc<dyn PermissionProbe>),
-        },
+        EngineWiring { engine: engine_id, capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>, matcher: Matcher::new(Arc::new(backend)), loader: PackageLoader::new(), ocr: None, input: Some(Arc::clone(&provider) as Arc<dyn InputProvider>), permission: Some(Arc::new(MacosPermissionProbe::new()) as Arc<dyn PermissionProbe>), },
         EngineOptions::new().with_diagnostics(diagnostics),
     )
     .expect("the macOS benchmark engine builds");

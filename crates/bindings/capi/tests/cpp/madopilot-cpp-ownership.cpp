@@ -91,6 +91,7 @@ static_assert(is_move_only_owner<madopilot::Session>(), "Session is move-only");
 static_assert(is_move_only_owner<madopilot::Frame>(), "Frame is move-only");
 static_assert(is_move_only_owner<madopilot::Mapping>(), "Mapping is move-only");
 static_assert(is_move_only_owner<madopilot::MatchResult>(), "MatchResult is move-only");
+static_assert(is_move_only_owner<madopilot::OcrResult>(), "OcrResult is move-only");
 static_assert(is_move_only_owner<madopilot::InputReceipt>(),
               "InputReceipt is move-only");
 static_assert(is_move_only_owner<madopilot::DiagnosticReader>(),
@@ -133,6 +134,12 @@ struct describes : std::false_type {};
 
 template <class T>
 struct describes<T, std::void_t<decltype(std::declval<T>().describe())>> : std::true_type {};
+template <class T, class = void>
+struct reads_ocr_text : std::false_type {};
+
+template <class T>
+struct reads_ocr_text<T, std::void_t<decltype(std::declval<T>().text_at(0))>>
+    : std::true_type {};
 
 template <class T, class = void>
 struct indexes : std::false_type {};
@@ -160,6 +167,13 @@ static_assert(describes<madopilot::Mapping&>::value, "a named mapping describes 
 static_assert(!describes<madopilot::Mapping>::value, "a temporary mapping does not");
 static_assert(describes<madopilot::MatchResult&>::value, "a named result describes itself");
 static_assert(!describes<madopilot::MatchResult>::value, "a temporary result does not");
+static_assert(describes<madopilot::OcrResult&>::value, "a named OCR result describes itself");
+static_assert(!describes<madopilot::OcrResult>::value,
+              "a temporary OCR result does not expose borrowed description views");
+static_assert(reads_ocr_text<madopilot::OcrResult&>::value,
+              "a named OCR result exposes borrowed text");
+static_assert(!reads_ocr_text<madopilot::OcrResult>::value,
+              "a temporary OCR result cannot expose borrowed text");
 static_assert(indexes<madopilot::TargetList&>::value, "a named target list is indexable");
 static_assert(!indexes<madopilot::TargetList>::value, "a temporary target list is not");
 static_assert(probes_permission<madopilot::Engine&>::value,
@@ -174,6 +188,12 @@ static_assert(std::is_copy_constructible_v<madopilot::EngineOptions>,
               "EngineOptions is a value");
 static_assert(std::is_copy_constructible_v<madopilot::FindRequest>,
               "FindRequest is a value");
+static_assert(std::is_copy_constructible_v<madopilot::OcrRequest>,
+              "OcrRequest owns its string values");
+static_assert(std::is_copy_constructible_v<madopilot::OcrRequest::CView>,
+              "each OCR C projection repairs its own views after copy");
+static_assert(std::is_nothrow_move_constructible_v<madopilot::OcrRequest::CView>,
+              "OCR C projection move repairs views without throwing");
 static_assert(std::is_copy_constructible_v<madopilot::Source>, "Source is a value");
 static_assert(std::is_copy_constructible_v<madopilot::InputOpenRequest>,
               "InputOpenRequest is a value");
@@ -1462,6 +1482,123 @@ void concurrent_readers_use_explicit_clones(Fixture& fixture)
     check_ok(result.describe(), "the original outlives every clone");
 }
 
+void ocr_request_projections_rebind_after_every_copy_and_move(Fixture&)
+{
+    const std::string model(96, 'm');
+    const std::string backend(96, 'b');
+    const std::string version(96, 'v');
+    madopilot::OcrRequest request;
+    request.model(model).backend(backend, version);
+
+    auto original = request.to_c();
+    auto copied = original;
+    madopilot::OcrRequest::CView copy_assigned(request);
+    copy_assigned = original;
+    check(copied.value().model_id.data != original.value().model_id.data,
+          "copy construction rebinds OCR model storage");
+    check(copy_assigned.value().model_id.data != original.value().model_id.data,
+          "copy assignment rebinds OCR model storage");
+    auto moved = std::move(copy_assigned);
+    madopilot::OcrRequest::CView move_assigned(request);
+    move_assigned = std::move(copied);
+
+    const auto equals = [](madopilot_str_t view, const std::string& expected) {
+        return std::string_view(view.data, view.len) == expected;
+    };
+    check(equals(original.value().model_id, model) &&
+              equals(moved.value().model_id, model) &&
+              equals(move_assigned.value().model_id, model),
+          "copy and move preserve every OCR string value");
+    check(original.value().model_id.data != moved.value().model_id.data &&
+              original.value().model_id.data != move_assigned.value().model_id.data &&
+              moved.value().model_id.data != move_assigned.value().model_id.data,
+          "each OCR projection points into its own model storage");
+    check(original.value().backend_id.data != moved.value().backend_id.data &&
+              original.value().backend_version.data != moved.value().backend_version.data,
+          "backend ID and version views are independently rebound");
+
+    auto first = request.to_c();
+    auto second = request.to_c();
+    std::atomic<bool> both_valid{true};
+    std::thread one([&] {
+        both_valid.store(equals(first.value().model_id, model),
+                         std::memory_order_release);
+    });
+    std::thread two([&] {
+        if (!equals(second.value().model_id, model)) {
+            both_valid.store(false, std::memory_order_release);
+        }
+    });
+    one.join();
+    two.join();
+    check(both_valid.load(std::memory_order_acquire) &&
+              first.value().model_id.data != second.value().model_id.data,
+          "concurrent immutable projections have distinct stable C records");
+}
+
+madopilot::Result<madopilot::Session> prefix_session(
+    madopilot::Api& api, Fixture& fixture, std::string_view name)
+{
+    madopilot::ReplayFrame supplied;
+    supplied.extent(SCENE_WIDTH, SCENE_HEIGHT)
+        .format(MADOPILOT_PIXEL_FORMAT_RGBA8)
+        .continuity(MADOPILOT_CONTINUITY_CONTINUOUS)
+        .pixels(fixture.scene.data(), fixture.scene.size());
+    auto source = madopilot::Source::replay_memory(name);
+    source.frame(supplied);
+    auto built = api.create_engine(source, fixture.operation);
+    if (!built) {
+        return madopilot::Result<madopilot::Session>::failure(built.error());
+    }
+    madopilot::Engine engine = built.take();
+    auto discovered = engine.discover(fixture.operation);
+    if (!discovered) {
+        return madopilot::Result<madopilot::Session>::failure(discovered.error());
+    }
+    madopilot::TargetList targets = discovered.take();
+    madopilot::OpenRequest open;
+    open.require_format(MADOPILOT_PIXEL_FORMAT_RGBA8);
+    return engine.open_session(targets, 0, open, fixture.operation);
+}
+
+void abi_1_2_and_partial_1_3_extents_hide_ocr(Fixture& fixture)
+{
+    auto old_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, 2,
+        MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT);
+    if (!check_ok(old_loaded, "load the complete ABI 1.2 extent")) {
+        return;
+    }
+    madopilot::Api old_api = old_loaded.take();
+    auto old_session_result = prefix_session(old_api, fixture, "abi-1.2-ocr");
+    if (!check_ok(old_session_result, "open through the ABI 1.2 extent")) {
+        return;
+    }
+    madopilot::Session old_session = old_session_result.take();
+    madopilot::OcrRequest request;
+    const auto old_refusal = old_session.recognize(request, fixture.operation);
+    check(!old_refusal && old_refusal.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "ABI 1.2 refuses OCR before reading session_recognize");
+
+    auto partial_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_SESSION_RECOGNIZE);
+    if (!check_ok(partial_loaded, "load a partial ABI 1.3 OCR extent")) {
+        return;
+    }
+    madopilot::Api partial_api = partial_loaded.take();
+    auto partial_session_result =
+        prefix_session(partial_api, fixture, "partial-abi-1.3-ocr");
+    if (!check_ok(partial_session_result, "open through partial ABI 1.3")) {
+        return;
+    }
+    madopilot::Session partial_session = partial_session_result.take();
+    const auto partial_refusal =
+        partial_session.recognize(request, fixture.operation);
+    check(!partial_refusal &&
+              partial_refusal.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "partial ABI 1.3 refuses OCR before reading a missing owner entry");
+}
 void run(const char* name, void (*test)(Fixture&), Fixture& fixture)
 {
     current = name;
@@ -1473,6 +1610,7 @@ void run(const char* name, void (*test)(Fixture&), Fixture& fixture)
 } // namespace
 
 int main(int argc, char** argv)
+
 {
     const char* package_path = nullptr;
 
@@ -1530,6 +1668,10 @@ int main(int argc, char** argv)
     run("concurrent readers use explicit clones", concurrent_readers_use_explicit_clones,
         fixture);
 
+    run("OCR request projections rebind after copy and move",
+        ocr_request_projections_rebind_after_every_copy_and_move, fixture);
+    run("ABI 1.2 and partial ABI 1.3 extents hide OCR",
+        abi_1_2_and_partial_1_3_extents_hide_ocr, fixture);
     if (failures != 0) {
         std::printf("%d C++ ownership check(s) failed\n", failures);
         return 1;

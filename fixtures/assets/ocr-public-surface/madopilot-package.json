@@ -1,0 +1,47 @@
+{
+  "schema_version": 2,
+  "package": {
+    "id": "madopilot.fixture.ocr-public-surface",
+    "version": "1.0.0"
+  },
+  "license": "Apache-2.0",
+  "provenance": {
+    "created_by": "MadoPilot deterministic OCR fixture",
+    "created_for": "phase-3-ocr-public-surfaces"
+  },
+  "templates": [],
+  "ocr_models": [
+    {
+      "id": "fixture-ocr-model",
+      "version": "1",
+      "profile": "fixture-ocr-profile",
+      "language_profile": "fixture-language",
+      "preprocessing": "fixture-preprocessing",
+      "decoder": "fixture-decoder",
+      "normalization": "nfc-trim-stable-detector-order-five-decimal-v1",
+      "vocabulary": {
+        "entries": 1,
+        "content": {
+          "algorithm": "sha256",
+          "value": "0303030303030303030303030303030303030303030303030303030303030303"
+        }
+      },
+      "detector": {
+        "path": "models/detector.onnx",
+        "byte_len": 20,
+        "content": {
+          "algorithm": "sha256",
+          "value": "5e6b4da583125eded017bb90a3611fc3221fd55cd93d184ffddad5bfe0ab73dd"
+        }
+      },
+      "recognizer": {
+        "path": "models/recognizer.onnx",
+        "byte_len": 22,
+        "content": {
+          "algorithm": "sha256",
+          "value": "b49ef078b33b92cebb984c15b13334b73cb6068945ff6827f77491290f73753b"
+        }
+      }
+    }
+  ]
+}

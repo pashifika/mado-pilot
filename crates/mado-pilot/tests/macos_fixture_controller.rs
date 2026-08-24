@@ -48,6 +48,7 @@ fn focused_engine() -> (Engine, Arc<MacosCaptureProvider>) {
             capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
             matcher: Matcher::new(Arc::new(backend)),
             loader: PackageLoader::new(),
+            ocr: None,
             input: Some(Arc::clone(&provider) as Arc<dyn InputProvider>),
             permission: Some(Arc::new(MacosPermissionProbe::new()) as Arc<dyn PermissionProbe>),
         },

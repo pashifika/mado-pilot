@@ -304,11 +304,14 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 # 7. Dependency licenses, advisories, sources, and duplicate versions
 cargo deny --locked check
 
-# 8. The C and C++ surfaces: the header against the Rust definitions, both
-#    examples against the built library, the C++ ownership probe, and the CMake
-#    consumer project. Only run natively on a release target.
+# 8. C/C++ ABI, ownership, frozen 1.0/1.2 callers, and CMake consumers.
+#    The feature-gated run additionally compiles/runs local OCR fixtures; the
+#    fixture constructor is absent from release builds and the public table.
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+cargo run --locked --package mado-pilot --example ocr-fixture
+cargo run --locked --package mado-pilot-capi --features private-fixture \
+  --example c-abi-check -- --label "<host>"
 
 # 9. macOS host only: the macOS adapter as the *other* release target sees it.
 #    Step 3 above cannot reach that configuration here, because on this host the

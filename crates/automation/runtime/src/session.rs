@@ -8,6 +8,7 @@
 //! deadline by the time an answer exists.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use mado_pilot_capture::{
     CaptureFault, CaptureSession, CpuMapping, Frame, FrameRequest, FrameView, PixelFormat,
@@ -20,12 +21,14 @@ use mado_pilot_core::{
 use mado_pilot_input::{
     InputController, InputDescriptor, InputFault, InputReceipt, InputRequest, SequenceOutcome,
 };
+use mado_pilot_ocr::{OcrFault, OcrRecognizer, OcrRequest, OcrResult};
 use mado_pilot_vision::{MatchRequest, Matcher};
 
 use crate::diagnostic::{
     DetachedObservation, DiagnosticEmitter, DiagnosticOperationKind, DiagnosticPayload,
     DiagnosticSink, FrameDiagnostic, InputDiagnostic, LifecycleDiagnostic, MappingDiagnostic,
-    ObservedOperation, RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome,
+    ObservedOperation, OcrDiagnostic, OcrDiagnosticContext, OcrDiagnosticOutcome,
+    RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome, requested_ocr_region,
 };
 use crate::find::{FindOutcome, FindRequest, SearchFrame};
 
@@ -138,15 +141,20 @@ pub struct Session {
     description: SessionDescription,
     capture: Arc<dyn CaptureSession>,
     matcher: Matcher,
+    ocr: Option<OcrRecognizer>,
+    ocr_diagnostic: Option<OcrDiagnosticContext>,
     input: Option<Arc<dyn InputController>>,
     input_descriptor: InputDescriptor,
     diagnostics: Option<DiagnosticSink>,
+    closing: AtomicBool,
 }
 
 impl Session {
     pub(crate) fn new(
         capture: Arc<dyn CaptureSession>,
         matcher: Matcher,
+        ocr: Option<OcrRecognizer>,
+        ocr_diagnostic: Option<OcrDiagnosticContext>,
         input: Option<Arc<dyn InputController>>,
         diagnostics: Option<DiagnosticSink>,
     ) -> Self {
@@ -166,9 +174,12 @@ impl Session {
             description,
             capture,
             matcher,
+            ocr,
+            ocr_diagnostic,
             input,
             input_descriptor,
             diagnostics,
+            closing: AtomicBool::new(false),
         }
     }
 
@@ -203,6 +214,17 @@ impl Session {
         if let (Some(diagnostics), Some(observed)) = (&self.diagnostics, observed) {
             diagnostics.debug(observed, operation, payload);
         }
+    }
+
+    fn accepts_work(&self) -> bool {
+        !self.closing.load(Ordering::Acquire) && self.capture.is_open()
+    }
+
+    fn commit_while_open<T>(&self, value: T) -> Result<T> {
+        self.closing
+            .compare_exchange(false, false, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| value)
+            .map_err(|_| CaptureFault::SessionClosed.into())
     }
 
     /// Returns what this session actually accepted.
@@ -315,6 +337,84 @@ impl Session {
         )
     }
 
+    /// Recognizes one exact retained frame through the explicitly configured OCR backend.
+    ///
+    /// The request supplies the complete backend/model identity, source region,
+    /// output coordinate space, and operation context. The frame must belong to
+    /// this session's stream. Backend work and caller clock checks run without a
+    /// session lock; one atomic final gate orders result commit against close.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed outcome after close begins, an invalid-argument outcome
+    /// for another stream's frame, an unavailable-backend outcome when OCR was
+    /// not configured, a typed OCR failure, or the operation's terminal outcome.
+    pub fn recognize(&self, request: OcrRequest<'_>) -> Result<OcrResult> {
+        let operation = request.operation().clone();
+        let observed = self.observe(&operation, DiagnosticOperationKind::OcrRecognition)?;
+        let started = observed.map(|_| operation.now());
+        let source = request.frame().stamp();
+        let requested_region = requested_ocr_region(request.source_region());
+        let output_space = request.output_space();
+        let result = (|| {
+            let attempt = Operation::admit(&operation)?;
+            if !self.accepts_work() {
+                return Err(CaptureFault::SessionClosed.into());
+            }
+            if request.frame().stamp().stream() != self.description.stream() {
+                return Err(CaptureFault::ForeignStream.into());
+            }
+            let recognizer = self
+                .ocr
+                .as_ref()
+                .ok_or_else(|| mado_pilot_core::Error::from(OcrFault::BackendUnavailable))?;
+            let result = recognizer.recognize(request)?;
+            let result = attempt.commit(result)?;
+            self.commit_while_open(result)
+        })();
+
+        if let (Some(context), Some(started)) = (self.ocr_diagnostic, started) {
+            let elapsed_nanos = u64::try_from(
+                operation
+                    .now()
+                    .saturating_duration_since(started)
+                    .as_nanos(),
+            )
+            .unwrap_or(u64::MAX);
+            let (effective_region, outcome, result_count, source_pixels) = match &result {
+                Ok(result) => {
+                    let effective = result.effective_region();
+                    (
+                        Some(effective),
+                        if result.is_empty() {
+                            OcrDiagnosticOutcome::Empty
+                        } else {
+                            OcrDiagnosticOutcome::Recognized
+                        },
+                        result.regions().len() as u64,
+                        u64::from(effective.width()) * u64::from(effective.height()),
+                    )
+                }
+                Err(error) => (None, OcrDiagnosticOutcome::Failed(error.status()), 0, 0),
+            };
+            self.normal(observed, &operation, || {
+                DiagnosticPayload::Ocr(OcrDiagnostic {
+                    model_instance: context.model_instance,
+                    profile: context.profile,
+                    source,
+                    requested_region,
+                    effective_region,
+                    output_space,
+                    outcome,
+                    result_count,
+                    elapsed_nanos,
+                    source_pixels,
+                })
+            });
+        }
+        result
+    }
+
     /// Searches one of this session's frames for one prepared template.
     ///
     /// The whole sequence runs under one operation: the frame is acquired, the
@@ -364,7 +464,7 @@ impl Session {
 
         let result: Result<FindOutcome> = (|| {
             let mut attempt = Operation::admit(operation)?;
-            if !self.capture.is_open() {
+            if !self.accepts_work() {
                 return Err(CaptureFault::SessionClosed.into());
             }
 
@@ -547,6 +647,7 @@ impl Session {
     /// whatever the first one reports, so a retried close continues one lifecycle
     /// rather than two that diverged.
     pub fn close(&self, operation: &OperationContext) -> Result<()> {
+        self.closing.swap(true, Ordering::AcqRel);
         let observed = self.observe(operation, DiagnosticOperationKind::SessionClose)?;
         let input = match self.input.as_ref() {
             Some(controller) => controller.close(operation),
@@ -659,7 +760,7 @@ mod tests {
                 capture,
                 backend,
                 matcher: matcher.clone(),
-                session: Session::new(opened, matcher, None, diagnostics),
+                session: Session::new(opened, matcher, None, None, None, diagnostics),
                 reader,
             }
         }

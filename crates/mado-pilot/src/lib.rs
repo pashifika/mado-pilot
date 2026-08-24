@@ -113,14 +113,16 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 complete on both release targets, and the Phase 2 native capture and
-//! input workflow with it: native discovery, capture, mapping, matching,
-//! non-prompting permission reads where the platform has them, bounded input
-//! delivery with receipts, and close are implemented and reachable from here.
+//! Phase 1 capture/matching, Phase 2 native input, and Phase 3 one-shot OCR are
+//! reachable here. Replay and native engine requests accept an explicit
+//! `Arc<dyn OcrBackend>`; without one, the engine truthfully exposes no OCR
+//! backend and recognition returns the typed unavailable outcome. Requests name
+//! the exact backend/model descriptor, retained source frame, source region,
+//! output space, and executor-neutral operation context. No ONNX backend is
+//! selected or loaded by default.
 //!
-//! OCR, watchers, diagnostics, and scheduling are **not implemented** and cannot
-//! be reached from here. Neither can any platform-native type: a Windows or
-//! macOS handle is never returned, taken, or downcast to across this API.
+//! Watchers and scheduling are not implemented. No platform-native type is
+//! returned, accepted, or downcast through this API.
 //!
 //! # Names, and what may change
 //!
@@ -137,12 +139,11 @@
 //! version bump. The stability promise itself begins at 1.0; this package is
 //! at 0.2.1.
 //!
-//! The C ABI beneath this one is versioned separately. Its complete 1.0 prefix
-//! is frozen by `docs/adr/0007-phase-1-c-abi-freeze.md`; ABI 1.2 replaces the
-//! unreleased 1.1 draft with explicit route, submission-evidence, owned-receipt,
-//! and bounded-diagnostic contracts under
-//! `docs/adr/0023-input-submission-observation-and-abi-1-2.md`. A Rust rename
-//! does not propagate to it.
+//! The C ABI beneath this one is versioned separately. ABI 1.0 and ABI 1.2 are
+//! frozen complete prefixes; ABI 1.3 appends one-shot OCR and immutable owned
+//! results without moving either prefix. ADR 0035 records the OCR ownership,
+//! negotiation, and private-fixture boundary. A Rust rename does not propagate
+//! to the C ABI.
 //!
 //! # Where to start
 //!
@@ -187,7 +188,7 @@ use mado_pilot_adapter_replay::{ReplayProvider, ReplaySource};
 use mado_pilot_backend_opencv::OpenCvBackend;
 use mado_pilot_runtime::{
     CaptureProvider, EngineOptions as RuntimeEngineOptions, EngineWiring, IdentityIssuer, Matcher,
-    PackageLoader,
+    OcrRecognizer, PackageLoader,
 };
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -231,6 +232,7 @@ pub struct ReplayEngineRequest {
     source: ReplaySource,
     limits: AssetLimits,
     diagnostics: DiagnosticOptions,
+    ocr: Option<Arc<dyn OcrBackend>>,
 }
 
 impl ReplayEngineRequest {
@@ -241,6 +243,7 @@ impl ReplayEngineRequest {
             source,
             limits: AssetLimits::default(),
             diagnostics: DiagnosticOptions::off(),
+            ocr: None,
         }
     }
 
@@ -262,6 +265,16 @@ impl ReplayEngineRequest {
         self
     }
 
+    /// Configures the exact OCR backend used by one-shot recognition.
+    ///
+    /// There is no default OCR backend. The caller retains backend/model
+    /// selection authority and requests must name this backend's descriptor.
+    #[must_use]
+    pub fn with_ocr_backend(mut self, backend: Arc<dyn OcrBackend>) -> Self {
+        self.ocr = Some(backend);
+        self
+    }
+
     /// Returns the replay source the engine captures from.
     #[must_use]
     pub const fn source(&self) -> &ReplaySource {
@@ -278,6 +291,12 @@ impl ReplayEngineRequest {
     #[must_use]
     pub const fn diagnostics(&self) -> DiagnosticOptions {
         self.diagnostics
+    }
+
+    /// Returns the configured OCR backend, if any.
+    #[must_use]
+    pub fn ocr_backend(&self) -> Option<&dyn OcrBackend> {
+        self.ocr.as_deref()
     }
 }
 
@@ -320,6 +339,7 @@ pub fn replay_engine(request: impl Into<ReplayEngineRequest>) -> Result<Engine> 
             capture: Arc::new(capture),
             matcher: Matcher::new(Arc::new(backend)),
             loader: PackageLoader::with_limits(request.limits),
+            ocr: request.ocr.map(OcrRecognizer::new),
             // Replay is a source of prepared frames, so there is no target for input
             // to reach and no authorization behind one. A capture-only engine says
             // exactly that.
@@ -337,10 +357,11 @@ pub fn replay_engine(request: impl Into<ReplayEngineRequest>) -> Result<Engine> 
 /// contain. What a caller can decide is the policy the engine then applies, and
 /// this is where that lives — every later option arrives as a method here rather
 /// than as another constructor per target.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct NativeEngineRequest {
     limits: AssetLimits,
     diagnostics: DiagnosticOptions,
+    ocr: Option<Arc<dyn OcrBackend>>,
 }
 
 impl NativeEngineRequest {
@@ -350,6 +371,7 @@ impl NativeEngineRequest {
         Self {
             limits: AssetLimits::default(),
             diagnostics: DiagnosticOptions::off(),
+            ocr: None,
         }
     }
 
@@ -370,6 +392,15 @@ impl NativeEngineRequest {
         self
     }
 
+    /// Configures the exact OCR backend used by one-shot recognition.
+    ///
+    /// No native constructor selects a default OCR backend or runtime.
+    #[must_use]
+    pub fn with_ocr_backend(mut self, backend: Arc<dyn OcrBackend>) -> Self {
+        self.ocr = Some(backend);
+        self
+    }
+
     /// Returns the limits the engine will apply.
     #[must_use]
     pub const fn limits(&self) -> AssetLimits {
@@ -378,8 +409,14 @@ impl NativeEngineRequest {
 
     /// Returns the selected diagnostic configuration.
     #[must_use]
-    pub const fn diagnostics(self) -> DiagnosticOptions {
+    pub const fn diagnostics(&self) -> DiagnosticOptions {
         self.diagnostics
+    }
+
+    /// Returns the configured OCR backend, if any.
+    #[must_use]
+    pub fn ocr_backend(&self) -> Option<&dyn OcrBackend> {
+        self.ocr.as_deref()
     }
 }
 
@@ -418,6 +455,7 @@ impl From<AssetLimits> for NativeEngineRequest {
 #[cfg(windows)]
 pub fn windows_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine> {
     let request = request.into();
+    let diagnostics = request.diagnostics();
 
     // Required, not preferred, and first: constructing the backend is what
     // proves this host's OpenCV is usable, and a failure here leaves no adapter
@@ -436,10 +474,11 @@ pub fn windows_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine>
             capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
             matcher: Matcher::new(Arc::new(backend)),
             loader: PackageLoader::with_limits(request.limits()),
+            ocr: request.ocr.map(OcrRecognizer::new),
             input: Some(provider as Arc<dyn InputProvider>),
             permission: None,
         },
-        RuntimeEngineOptions::new().with_diagnostics(request.diagnostics()),
+        RuntimeEngineOptions::new().with_diagnostics(diagnostics),
     )
 }
 
@@ -474,6 +513,7 @@ pub fn windows_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine>
 #[cfg(target_os = "macos")]
 pub fn macos_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine> {
     let request = request.into();
+    let diagnostics = request.diagnostics();
 
     let backend = OpenCvBackend::new()?;
 
@@ -487,43 +527,54 @@ pub fn macos_engine(request: impl Into<NativeEngineRequest>) -> Result<Engine> {
             capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
             matcher: Matcher::new(Arc::new(backend)),
             loader: PackageLoader::with_limits(request.limits()),
+            ocr: request.ocr.map(OcrRecognizer::new),
             input: Some(provider as Arc<dyn InputProvider>),
             permission: Some(
                 Arc::new(mado_pilot_platform_macos::MacosPermissionProbe::new())
                     as Arc<dyn PermissionProbe>,
             ),
         },
-        RuntimeEngineOptions::new().with_diagnostics(request.diagnostics()),
+        RuntimeEngineOptions::new().with_diagnostics(diagnostics),
     )
 }
 
 pub use mado_pilot_runtime::{
-    ActivityTag, AssetFault, AssetFaultKind, AssetLimits, AssetPackage, BackendDescriptor,
-    BackendId, CancellationToken, CapabilitySupport, CaptureFault, CleanupBudget, CleanupState,
-    ClipPolicy, Clock, ContentDigest, Continuity, CoordinateSpace, CoordinateSupport, CpuMapping,
-    DeliveryPlan, DiagnosticBatch, DiagnosticCategory, DiagnosticDrain, DiagnosticKind,
-    DiagnosticLevel, DiagnosticLosses, DiagnosticOperationId, DiagnosticOperationKind,
-    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord,
-    DiagnosticRecordSequence, DiagnosticTemplateId, Engine, EngineId, EngineOptions, Error,
-    FindOutcome, FindRequest, FocusPolicy, Frame, FrameDescriptor, FrameDiagnostic, FrameOrder,
-    FrameRequest, FrameSelection, FrameSequence, FrameStamp, FrameView, GeometryFault,
-    GeometryPolicy, GeometryRevision, IdentityFault, InputAddressScope, InputAttempt,
-    InputCapability, InputDelivery, InputDescriptor, InputDiagnostic, InputEvent, InputFault,
-    InputOpenRequest, InputOperationKind, InputOperationSet, InputReceipt, InputRequest,
-    InputRequirement, InputRouteCapability, InputSequence, Interruption, Key, Lifecycle,
-    LifecycleDiagnostic, LoadStage, MAX_DIAGNOSTIC_CAPACITY, Manifest, MappingDiagnostic,
-    MappingObserver, Match, MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage,
-    Modifier, MonotonicInstant, OpenRequest, OperationContext, OperationStartedDiagnostic,
-    OverflowPolicy, PackagePath, PackageSource, PermissionDiagnostic, PermissionKind,
-    PermissionOutcome, PermissionReport, PermissionState, PixelExtent, PixelFormat, PixelRect,
-    PlatformCode, Point, PointerButton, PointerGeometry, PreparedTemplate, PressedState,
-    Provenance, ProviderId, QueuePolicy, Rect, RedactedDiagnostic, RegionSelection, Result,
-    RetainedStoragePolicy, RouteAttemptDiagnostic, Scale, SearchDiagnostic,
-    SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome, Session,
-    SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,
-    Suppression, SystemClock, TargetCapability, TargetDescription, TargetId, TargetKind,
-    TargetPlacement, TemplateDeclaration, TemplateEncoding, TemplateId, TemplateSource,
-    TemplateSourceRequest, TransformSnapshot, VisionFault,
+    ACCEPTED_G004_DECODER_ID, ACCEPTED_G004_LANGUAGE_PROFILE_ID, ACCEPTED_G004_MODEL_ID,
+    ACCEPTED_G004_MODEL_VERSION, ACCEPTED_G004_NORMALIZATION_ID, ACCEPTED_G004_PREPROCESSING_ID,
+    ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES, ActivityTag, AssetFault,
+    AssetFaultKind, AssetLimits, AssetPackage, BackendCandidate, BackendDescriptor, BackendId,
+    CancellationToken, CapabilitySupport, CaptureFault, CleanupBudget, CleanupState, ClipPolicy,
+    Clock, Confidence, ContentDigest, Continuity, CoordinateSpace, CoordinateSupport, CpuMapping,
+    DecoderId, DeliveryPlan, DiagnosticBatch, DiagnosticCategory, DiagnosticDrain, DiagnosticKind,
+    DiagnosticLevel, DiagnosticLosses, DiagnosticOcrModelInstanceId, DiagnosticOperationId,
+    DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, DiagnosticReader,
+    DiagnosticRecord, DiagnosticRecordSequence, DiagnosticTemplateId, Engine, EngineId,
+    EngineOptions, Error, FindOutcome, FindRequest, FocusPolicy, Frame, FrameDescriptor,
+    FrameDiagnostic, FrameOrder, FrameRequest, FrameSelection, FrameSequence, FrameStamp,
+    FrameView, GeometryFault, GeometryPolicy, GeometryRevision, IdentityFault, InputAddressScope,
+    InputAttempt, InputCapability, InputDelivery, InputDescriptor, InputDiagnostic, InputEvent,
+    InputFault, InputOpenRequest, InputOperationKind, InputOperationSet, InputReceipt,
+    InputRequest, InputRequirement, InputRouteCapability, InputSequence, Interruption, Key,
+    LanguageProfileId, Lifecycle, LifecycleDiagnostic, LoadStage, MAX_BACKEND_TEXT_BYTES,
+    MAX_DIAGNOSTIC_CAPACITY, MAX_MODEL_COMPONENT_BYTES, MAX_OCR_CANDIDATES, MAX_TEXT_BYTES,
+    Manifest, MappingDiagnostic, MappingObserver, Match, MatchDefaults, MatchOptions, MatchResult,
+    MemoryEntry, MemoryPackage, ModelComponentIdentity, ModelId, ModelVersion, Modifier,
+    MonotonicInstant, NormalizationId, OcrBackend, OcrBackendDescriptor, OcrBackendId,
+    OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink, OcrDiagnostic,
+    OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrFault, OcrModelComponent, OcrModelIdentity,
+    OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata, OcrQuadrilateral, OcrRegion,
+    OcrRequest, OcrRequestedRegionDiagnostic, OcrResult, OpenRequest, OperationContext,
+    OperationStartedDiagnostic, OverflowPolicy, PackagePath, PackageSource, PermissionDiagnostic,
+    PermissionKind, PermissionOutcome, PermissionReport, PermissionState, PixelExtent, PixelFormat,
+    PixelRect, PlatformCode, Point, PointerButton, PointerGeometry, PreparedTemplate,
+    PreprocessingId, PressedState, ProfileId, Provenance, ProviderId, QueuePolicy,
+    RecognizedRegion, Rect, RedactedDiagnostic, RegionSelection, Result, RetainedStoragePolicy,
+    RouteAttemptDiagnostic, Scale, SearchDiagnostic, SearchDiagnosticOutcome, SearchFrame,
+    SequenceLimits, SequenceOutcome, Session, SessionDescription, SessionRequest, Status,
+    StreamEpoch, StreamId, SubmissionEvidence, Suppression, SystemClock, TargetCapability,
+    TargetDescription, TargetId, TargetKind, TargetPlacement, TemplateDeclaration,
+    TemplateEncoding, TemplateId, TemplateSource, TemplateSourceRequest, TransformSnapshot,
+    VisionFault,
 };
 
 /// The asset vocabulary's three module-level constants, qualified.
