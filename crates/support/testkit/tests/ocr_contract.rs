@@ -210,7 +210,11 @@ fn empty_clipped_and_malformed_outputs_commit_nothing() {
     );
     assert_eq!(backend.recognition_count(), 0);
 
+    let over_backend_text = vec![b'a'; mado_pilot_ocr::MAX_BACKEND_TEXT_BYTES + 1];
+    let over_retained_text = vec![b'a'; mado_pilot_ocr::MAX_TEXT_BYTES + 1];
     let cases = [
+        vec![candidate(&over_backend_text, 0)],
+        vec![candidate(&over_retained_text, 0)],
         vec![candidate(&[0xff], 0)],
         vec![candidate_with(
             b"bad geometry",

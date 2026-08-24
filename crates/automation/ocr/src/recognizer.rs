@@ -291,7 +291,7 @@ fn normalize_confidence(value: f64) -> Result<Confidence> {
     if !value.is_finite() || !(0.0..=1.0).contains(&value) {
         return Err(OcrFault::BackendConfidenceOutOfRange.into());
     }
-    let rounded = (value * 100_000.0).round() / 100_000.0;
+    let rounded = (value * 100_000.0).round_ties_even() / 100_000.0;
     Ok(Confidence::new_validated(rounded))
 }
 
@@ -354,6 +354,13 @@ mod tests {
 
         assert_eq!(&*text, "é");
         assert_eq!(confidence.get(), 0.123_46);
+    }
+
+    #[test]
+    fn confidence_halfway_values_round_to_even() {
+        assert_eq!(normalize_confidence(0.000_005).unwrap().get(), 0.0);
+        assert_eq!(normalize_confidence(0.000_025).unwrap().get(), 0.000_02);
+        assert_eq!(normalize_confidence(0.123_445).unwrap().get(), 0.123_44);
     }
 
     #[test]
