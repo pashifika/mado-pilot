@@ -2478,12 +2478,15 @@ dual-4K production matrix. Windows final-source Phase 1 reruns pass on the exact
 exit candidate; Apple Silicon runs remain attributed to `d8336be` and apply by
 reviewed complete diff under unchanged ceilings.
 
-ADR 0037 accepts the Apple M1 Pro default-OCR profile: five precursor processes
-retained 50 correct samples per full/bounded/empty workload with zero growth, and
-the final enforced run passed p95 469.992/306.045/133.130 ms, exact mapped/copy
-bytes, 20 MiB heap, startup/cleanup, and 768 MiB RSS ceilings. Hosted CI applies
-only hard correctness/growth smoke. The missing approved Windows 11 quality and
-numeric performance rows keep Phase 3 release acceptance open.
+ADR 0037 accepts the Apple M1 Pro default-OCR profile after independent review
+made mapped bytes, detector/recognizer runs, session topology, and peak RSS
+observable/executable. Five review-fixed processes retained 100 correct samples
+per full/bounded/empty workload with zero growth and passed worst p95
+472.623/301.455/184.057 ms, 20 MiB heap, exact mapping/inference/session,
+startup/cleanup, and 768 MiB RSS ceilings. Producer-surface copy is not
+applicable to CPU replay. Hosted CI applies only hard correctness/resource/growth
+smoke. The missing approved Windows 11 quality and numeric performance rows keep
+Phase 3 release acceptance open.
 
 ### Phase 0 completion contract
 

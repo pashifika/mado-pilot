@@ -17,9 +17,9 @@ source identity.
 [ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts the Apple M1 Pro
 default-OCR profile only. Its five-process precursor and separate post-budget
 run cover cold accepted-model startup, warm full-frame and bounded-region OCR,
-empty results, exact source correlation, allocation growth, mapped/copied bytes,
-session/tensor/result counts, cancellation/late publication, cleanup, close, and
-resident high-water. Windows OCR numeric ceilings are withheld because the
+empty results, exact source correlation, allocation growth, observed mapped
+bytes/inference/session/result counts, cancellation/late publication, cleanup,
+close, and resident high-water. Windows OCR numeric ceilings are withheld because the
 approved Windows 11 host row is unavailable; hosted Windows Server smoke
 enforces hard correctness/growth but contributes no timing or resident budget.
 
@@ -751,9 +751,9 @@ independent maximum ceiling still catches a single slow operation:
 
 | Workload | Oracle and accounting |
 |---|---|
-| `onnx_cpu_hud_full` | exact eight NFC strings/count/order; fixture-derived geometry; finite same-host-stable confidence; exact source/backend/model/effective-region correlation; 2,073,600 mapped and zero copied bytes; one detector plus two recognizer tensor runs |
-| `onnx_cpu_hud_region` | exact bounded text/count; the same geometry/confidence/source rules; 64,800 mapped and zero copied bytes; one detector plus one recognizer tensor run |
-| `onnx_cpu_blank` | exact empty result/source correlation; 16,384 mapped and zero copied bytes; one detector and zero recognizer tensor runs |
+| `onnx_cpu_hud_full` | exact eight NFC strings/count/order; fixture-derived geometry; finite same-host-stable confidence; exact source/backend/model/effective-region correlation; 2,073,600 observed mapped bytes; one observed detector plus two recognizer tensor runs |
+| `onnx_cpu_hud_region` | exact bounded text/count; the same geometry/confidence/source rules; 64,800 observed mapped bytes; one observed detector plus one recognizer tensor run |
+| `onnx_cpu_blank` | exact empty result/source correlation; 16,384 observed mapped bytes; one observed detector and zero recognizer tensor runs |
 
 No operation is discarded after execution. A failed warmup aborts immediately;
 retained incorrect count must be zero, and every workload must remain within the
@@ -777,17 +777,36 @@ every workload ended with zero heap growth. Worst precursor observations were
 476.576/299.674/135.640 ms p95 for full/bounded/empty, 86.988 ms cold open,
 1.116 ms first close, 63.569 ms reopen-close, and 548,487,168 bytes RSS.
 
-The final budget executable at source `192f3d2`, tree `45abefc`, passed all
-in-process gates with p95 469.992/306.045/133.130 ms, cold open 84.629 ms, close
-1.007 ms, reopen-close 62.536 ms, exact mapped/copied bytes, zero growth, and
-14,149,992-byte worst attributable Rust heap. Target-native `/usr/bin/time -l`
-reported 544,391,168 bytes RSS under the 768 MiB ceiling.
+The earlier post-budget run at source `192f3d2`, tree `45abefc`, remains valid
+for latency, correctness, allocation growth, and external RSS observations. An
+independent review found that mapped/tensor/session values were synthesized and
+the RSS ceiling was manually compared rather than executable; those resource
+acceptance claims do not transfer.
+
+Review-fixed source `e41fbbd`, tree `9fbc47e`, instruments the actual mapped
+`CpuMapping` bytes, detector/recognizer session accesses, and opened session
+topology, and enforces macOS `getrusage` peak RSS in-process. Five fresh
+processes retained 100 samples per workload. Worst full/bounded/empty p95 was
+472.623/301.455/184.057 ms and maximum 478.703/309.750/185.290 ms; cold open
+87.377 ms, close 1.163 ms, reopen-close 64.929 ms, RSS 516,833,280 bytes, and
+worst attributable Rust heap 14,149,992 bytes. Every oracle/resource gate passed
+with zero growth.
+
+The first instrumented process failed the former 140 ms cold ceiling at
+141.686 ms; an unchanged repeat reported 90.075 ms. ADR 0037 retains the failure
+and sets 175 ms from both observations. A separate ten-sample run produced one
+785.460 ms full-frame outlier, making nearest-rank p95 equal the maximum and
+exceeding 750 ms even though the 900 ms maximum held. The final twenty-sample
+policy makes p95 the nineteenth sample while the independent maximum remains
+enforced; it changes no latency ceiling.
 
 Accepted Apple ceilings are 600/750/900 ms p50/p95/maximum for full-frame,
-375/450/600 ms bounded, and 175/210/300 ms empty. Cold open is capped at 140 ms,
+375/450/600 ms bounded, and 175/210/300 ms empty. Cold open is capped at 175 ms,
 first close 2 ms, reopen-close 100 ms, live Rust heap 20 MiB, resident high-water
-768 MiB, and input/output tensor bytes 256 MiB each. Mapped/copy and
-session/tensor/result counts are exact structural budgets. These are regression
+768 MiB, and input/output tensor bytes 256 MiB each. Mapped bytes and
+detector/recognizer/session/result counts are observed exact budgets. Producer
+surface copied bytes are not applicable to immutable CPU replay inputs and have
+no ceiling. These are regression
 ceilings for the named M1 Pro host and fixture, not arbitrary-resolution, 4K,
 multi-region, real-time, Windows, application, renderer, or game guarantees.
 

@@ -572,20 +572,22 @@ lineage.
 **Phase 3 is partially resolved.**
 [ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts the
 `aarch64-apple-darwin` default-OCR profile on the approved Apple M1 Pro host.
-Five fresh precursor processes retained 50 full-frame, 50 bounded-region, and
-50 empty-result samples with zero correctness failures, no exclusions/retries,
-zero post-warmup allocation growth, exact mapped/copied bytes, and explicit
-session/tensor/result counts. The final post-budget executable passed p95
-469.992/306.045/133.130 ms, cold open 84.629 ms, first close 1.007 ms,
-reopen-close 62.536 ms, and 544,391,168-byte RSS under its target-specific
-ceilings.
+Five fresh review-fixed processes retained 100 full-frame, 100 bounded-region,
+and 100 empty-result samples with zero correctness failures, no exclusions or
+retries, zero post-warmup allocation growth, exact observed mappings,
+detector/recognizer runs, opened session topology, and result counts. Worst p95
+was 472.623/301.455/184.057 ms, cold open 87.377 ms, first close 1.163 ms,
+reopen-close 64.929 ms, and target-native peak RSS 516,833,280 bytes under
+executable target-specific ceilings. Producer-surface copy is not applicable to
+the CPU replay profile and has no copied-byte ceiling.
 
 The equivalent approved Windows 11 25H2 precursor and final numeric rows are
 unavailable and deliberately have no profile or inferred ceiling. Hosted Windows
-Server runs the same hard correctness, source-correlation, copied/mapped
-accounting, cancellation/late-result, cleanup, and 4 KiB growth gates, but runner
-timing/resident memory cannot close `G-013`. Watcher scheduling and acceleration
-remain open for the later phases that introduce them.
+Server runs the same hard correctness, source-correlation, observed mapping/
+inference/session accounting, cancellation/late-result, cleanup, and 4 KiB
+growth gates, but runner timing/resident memory cannot close `G-013`. Watcher
+scheduling and acceleration remain open for the later phases that introduce
+them.
 
 **Resolution.** Committed benchmark profiles and budgets plus an ADR for each
 budget that is set or relaxed, recording the evidence behind the number.
