@@ -47,6 +47,16 @@ sha2 = "0.11.0"
 # NFC normalization is part of the accepted G-004 OCR profile and runs at the
 # platform-neutral OCR commit boundary, before any result becomes observable.
 unicode-normalization = "0.1.25"
+# The ONNX OCR backend owns dynamic loading explicitly. `alternative-backend`
+# prevents `ort-sys` from linking or downloading a native runtime, while API 17
+# is the reviewed compatibility floor. See
+# docs/adr/0034-onnx-runtime-cpu-loading-boundary.md.
+libloading = "0.8.9"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = [
+    "std",
+    "alternative-backend",
+    "api-17",
+] }
 # Default features are off by decision, not by preference: they add bzip2, LZMA,
 # PPMd, XZ, Zstd, and AES parsers for compression methods the archive contract
 # does not accept. See docs/adr/0001-asset-archive-container-and-safety-ceilings.md.
