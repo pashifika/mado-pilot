@@ -932,8 +932,8 @@ fn run_ocr_fixture_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Err
     if !c_output.status.success() || !cpp_output.status.success() {
         return Err("an OCR fixture example failed".into());
     }
-    let c_stdout = String::from_utf8(c_output.stdout)?;
-    let cpp_stdout = String::from_utf8(cpp_output.stdout)?;
+    let c_stdout = String::from_utf8(c_output.stdout)?.replace("\r\n", "\n");
+    let cpp_stdout = String::from_utf8(cpp_output.stdout)?.replace("\r\n", "\n");
     print!("{c_stdout}");
     print!("{cpp_stdout}");
     let expected = "ocr: sequence=0 text=魔導士 A-7 confidence=0.91000\n";
