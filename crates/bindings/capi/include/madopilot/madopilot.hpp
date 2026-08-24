@@ -693,6 +693,25 @@ private:
     std::uint32_t diagnostic_capacity_ = 0;
 };
 
+/// Explicit controlled paths for the integrated G-004 CPU OCR profile.
+class DefaultOcrOptions {
+public:
+    DefaultOcrOptions(std::string_view model_root,
+                      std::string_view runtime_path)
+        : model_root_(model_root), runtime_path_(runtime_path) {}
+
+    ::madopilot_default_ocr_options_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_default_ocr_options_t>();
+        value.model_root = detail::as_str(model_root_);
+        value.runtime_path = detail::as_str(runtime_path_);
+        return value;
+    }
+
+private:
+    std::string model_root_;
+    std::string runtime_path_;
+};
+
 /// One replay frame supplied as raw pixels.
 ///
 /// The pixels are borrowed until `Api::create_engine` returns, which copies
@@ -1150,6 +1169,10 @@ struct EngineCapabilities {
     bool reads_permissions() const noexcept {
         return (flags & MADOPILOT_ENGINE_READS_PERMISSIONS) != 0u;
     }
+
+    bool has_ocr() const noexcept {
+        return (flags & MADOPILOT_ENGINE_HAS_OCR) != 0u;
+    }
 };
 
 /// Redacted permission diagnostic. Both views borrow from the `Engine`.
@@ -1391,6 +1414,12 @@ struct BuildInfo {
     std::uint32_t table_size = 0;
     BorrowedStr library_version;
     BorrowedStr required_backend;
+    BorrowedStr default_ocr_backend;
+    BorrowedStr default_ocr_backend_version;
+    BorrowedStr default_ocr_runtime_profile;
+    BorrowedStr default_ocr_model;
+    BorrowedStr default_ocr_model_version;
+    BorrowedStr default_ocr_profile;
 };
 
 /// One discovered capture target. Both views borrow from the `TargetList`.
@@ -3221,6 +3250,15 @@ public:
         out.table_size = build.table_size;
         out.library_version = BorrowedStr(build.library_version);
         out.required_backend = BorrowedStr(build.required_backend);
+        out.default_ocr_backend = BorrowedStr(build.default_ocr_backend);
+        out.default_ocr_backend_version =
+            BorrowedStr(build.default_ocr_backend_version);
+        out.default_ocr_runtime_profile =
+            BorrowedStr(build.default_ocr_runtime_profile);
+        out.default_ocr_model = BorrowedStr(build.default_ocr_model);
+        out.default_ocr_model_version =
+            BorrowedStr(build.default_ocr_model_version);
+        out.default_ocr_profile = BorrowedStr(build.default_ocr_profile);
 
         return Result<BuildInfo>::success(out);
     }
@@ -3305,6 +3343,35 @@ public:
                 detail::take_error(table_, status, error));
         }
 
+        return Result<Engine>::success(Engine(table_, extent_, engine));
+    }
+
+    /// Builds an engine with the integrated G-004 CPU OCR profile.
+    Result<Engine> create_engine_with_default_ocr(
+        const Source& source, const EngineOptions& options,
+        const DefaultOcrOptions& default_ocr,
+        const Operation& operation) const {
+        if (table_ == nullptr) {
+            return detail::no_table<Engine>();
+        }
+        if (!detail::has_entry(
+                table_, extent_,
+                MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR)) {
+            return detail::unsupported<Engine>();
+        }
+        const auto source_c = source.to_c();
+        const auto options_c = options.to_c();
+        const auto default_ocr_c = default_ocr.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_engine_t* engine = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = table_->engine_create_with_default_ocr(
+            &source_c, &options_c, &default_ocr_c, &operation_c, &engine,
+            &error);
+        if (!is_ok(status)) {
+            return Result<Engine>::failure(
+                detail::take_error(table_, status, error));
+        }
         return Result<Engine>::success(Engine(table_, extent_, engine));
     }
 

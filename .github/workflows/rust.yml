@@ -228,7 +228,9 @@ jobs:
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/mado-onnx"
-          mkdir -p "${root}"
+          model_root="${root}/models"
+          profile_root="${model_root}/rapidocr-v3.9.2"
+          mkdir -p "${profile_root}"
           runtime_archive="${root}/onnxruntime-win-x64-${ONNXRUNTIME_VERSION}.zip"
           curl --fail --location --silent --show-error \
             --output "${runtime_archive}" \
@@ -237,8 +239,8 @@ jobs:
           powershell.exe -NoProfile -Command \
             "Expand-Archive -LiteralPath '$(cygpath -w "${runtime_archive}")' -DestinationPath '$(cygpath -w "${root}")' -Force"
 
-          detector="${root}/ch_PP-OCRv4_det_mobile.onnx"
-          recognizer="${root}/PP-OCRv6_rec_small.onnx"
+          detector="${profile_root}/ch_PP-OCRv4_det_mobile.onnx"
+          recognizer="${profile_root}/PP-OCRv6_rec_small.onnx"
           curl --fail --location --silent --show-error --output "${detector}" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"
           curl --fail --location --silent --show-error --output "${recognizer}" \
@@ -252,6 +254,7 @@ jobs:
             echo "MADO_PILOT_ONNX_RUNTIME=$(cygpath -m "${runtime}")"
             echo "MADO_PILOT_ONNX_DETECTOR=$(cygpath -m "${detector}")"
             echo "MADO_PILOT_ONNX_RECOGNIZER=$(cygpath -m "${recognizer}")"
+            echo "MADO_PILOT_G004_MODEL_ROOT=$(cygpath -m "${model_root}")"
           } >> "${GITHUB_ENV}"
 
       - name: Check the workspace inventory and dependency directions
@@ -269,6 +272,10 @@ jobs:
       - name: Test the accepted ONNX CPU OCR backend
         shell: bash
         run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
+
+      - name: Test the integrated default OCR facade
+        shell: bash
+        run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
 
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware
@@ -408,7 +415,9 @@ jobs:
         run: |
           set -euo pipefail
           root="${RUNNER_TEMP}/mado-onnx"
-          mkdir -p "${root}"
+          model_root="${root}/models"
+          profile_root="${model_root}/rapidocr-v3.9.2"
+          mkdir -p "${profile_root}"
           runtime_archive="${root}/onnxruntime-osx-arm64-${ONNXRUNTIME_VERSION}.tgz"
           curl --fail --location --silent --show-error \
             --output "${runtime_archive}" \
@@ -416,8 +425,8 @@ jobs:
           echo "${ONNXRUNTIME_OSX_ARM64_SHA256}  ${runtime_archive}" | shasum --algorithm 256 --check
           tar -xzf "${runtime_archive}" -C "${root}"
 
-          detector="${root}/ch_PP-OCRv4_det_mobile.onnx"
-          recognizer="${root}/PP-OCRv6_rec_small.onnx"
+          detector="${profile_root}/ch_PP-OCRv4_det_mobile.onnx"
+          recognizer="${profile_root}/PP-OCRv6_rec_small.onnx"
           curl --fail --location --silent --show-error --output "${detector}" \
             "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"
           curl --fail --location --silent --show-error --output "${recognizer}" \
@@ -431,6 +440,7 @@ jobs:
             echo "MADO_PILOT_ONNX_RUNTIME=${runtime}"
             echo "MADO_PILOT_ONNX_DETECTOR=${detector}"
             echo "MADO_PILOT_ONNX_RECOGNIZER=${recognizer}"
+            echo "MADO_PILOT_G004_MODEL_ROOT=${model_root}"
           } >> "${GITHUB_ENV}"
 
       - name: Check the workspace inventory and dependency directions
@@ -448,6 +458,10 @@ jobs:
       - name: Test the accepted ONNX CPU OCR backend
         shell: bash
         run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
+
+      - name: Test the integrated default OCR facade
+        shell: bash
+        run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
 
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware

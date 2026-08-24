@@ -533,6 +533,15 @@ table! {
         index: usize,
         out_text: *mut madopilot_str_t,
     ) => crate::ocr::result_text_at;
+    /// Builds an engine with the integrated G-004 CPU OCR profile.
+    engine_create_with_default_ocr(
+        source: *const crate::types::madopilot_source_t,
+        options: *const crate::types::madopilot_engine_options_t,
+        default_ocr: *const crate::types::madopilot_default_ocr_options_t,
+        operation: *const crate::types::madopilot_operation_t,
+        out_engine: *mut *mut crate::engine::madopilot_engine_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::engine::create_with_default_ocr;
 }
 
 /// `sizeof` the complete frozen ABI 1.0 function-table prefix.
@@ -678,6 +687,12 @@ impl Versioned for madopilot_build_info_t {
         reserved,
         library_version,
         required_backend,
+        default_ocr_backend,
+        default_ocr_backend_version,
+        default_ocr_runtime_profile,
+        default_ocr_model,
+        default_ocr_model_version,
+        default_ocr_profile,
     );
     const ZEROED_PADDING: &'static [(usize, usize)] = &[];
 
@@ -691,6 +706,12 @@ impl Versioned for madopilot_build_info_t {
             reserved: 0,
             library_version: madopilot_str_t::empty(),
             required_backend: madopilot_str_t::empty(),
+            default_ocr_backend: madopilot_str_t::empty(),
+            default_ocr_backend_version: madopilot_str_t::empty(),
+            default_ocr_runtime_profile: madopilot_str_t::empty(),
+            default_ocr_model: madopilot_str_t::empty(),
+            default_ocr_model_version: madopilot_str_t::empty(),
+            default_ocr_profile: madopilot_str_t::empty(),
         }
     }
 }
@@ -716,6 +737,18 @@ fn describe_build_impl(out_info: *mut madopilot_build_info_t) -> madopilot_statu
             reserved: 0,
             library_version: madopilot_str_t::borrowed(LIBRARY_VERSION),
             required_backend: madopilot_str_t::borrowed(mado_pilot::REQUIRED_BACKEND),
+            default_ocr_backend: madopilot_str_t::borrowed(mado_pilot::DEFAULT_OCR_BACKEND_ID),
+            default_ocr_backend_version: madopilot_str_t::borrowed(
+                mado_pilot::DEFAULT_OCR_BACKEND_VERSION,
+            ),
+            default_ocr_runtime_profile: madopilot_str_t::borrowed(
+                mado_pilot::DEFAULT_OCR_RUNTIME_PROFILE_ID,
+            ),
+            default_ocr_model: madopilot_str_t::borrowed(mado_pilot::ACCEPTED_G004_MODEL_ID),
+            default_ocr_model_version: madopilot_str_t::borrowed(
+                mado_pilot::ACCEPTED_G004_MODEL_VERSION,
+            ),
+            default_ocr_profile: madopilot_str_t::borrowed(mado_pilot::ACCEPTED_G004_PROFILE_ID),
         });
     }
 

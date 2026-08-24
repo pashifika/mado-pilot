@@ -81,6 +81,7 @@ FIRST_FIELD_IS_STRUCT_SIZE(madopilot_find_request_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_match_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_result_info_t);
 #if MADOPILOT_ABI_MINOR >= 3
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_default_ocr_options_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_request_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_result_info_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_region_t);
@@ -138,6 +139,13 @@ int main(void)
     FIELD(madopilot_engine_options_t, flags);
     FIELD(madopilot_engine_options_t, diagnostic_level);
     FIELD(madopilot_engine_options_t, diagnostic_capacity);
+#if MADOPILOT_ABI_MINOR >= 3
+    TYPE(madopilot_default_ocr_options_t);
+    FIELD(madopilot_default_ocr_options_t, struct_size);
+    FIELD(madopilot_default_ocr_options_t, flags);
+    FIELD(madopilot_default_ocr_options_t, model_root);
+    FIELD(madopilot_default_ocr_options_t, runtime_path);
+#endif
 
     TYPE(madopilot_diagnostic_batch_info_t);
     FIELD(madopilot_diagnostic_batch_info_t, struct_size);
@@ -311,6 +319,14 @@ int main(void)
     FIELD(madopilot_build_info_t, reserved);
     FIELD(madopilot_build_info_t, library_version);
     FIELD(madopilot_build_info_t, required_backend);
+#if MADOPILOT_ABI_MINOR >= 3
+    FIELD(madopilot_build_info_t, default_ocr_backend);
+    FIELD(madopilot_build_info_t, default_ocr_backend_version);
+    FIELD(madopilot_build_info_t, default_ocr_runtime_profile);
+    FIELD(madopilot_build_info_t, default_ocr_model);
+    FIELD(madopilot_build_info_t, default_ocr_model_version);
+    FIELD(madopilot_build_info_t, default_ocr_profile);
+#endif
 
     TYPE(madopilot_operation_t);
     FIELD(madopilot_operation_t, struct_size);
@@ -600,6 +616,7 @@ int main(void)
     FIELD(madopilot_api_t, ocr_result_info);
     FIELD(madopilot_api_t, ocr_result_region_at);
     FIELD(madopilot_api_t, ocr_result_text_at);
+    FIELD(madopilot_api_t, engine_create_with_default_ocr);
 #endif
 
     HANDLE(madopilot_cancellation_t);

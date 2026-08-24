@@ -1,9 +1,12 @@
 //! One-shot OCR execution and immutable owned result projection.
 //!
-//! A request borrows its session, exact frame, validated package, backend/model
-//! identity views, and operation context for one synchronous call. A successful
-//! result owns only the facade's immutable `OcrResult`; it retains no parent
-//! handle, frame storage, package bytes, backend buffer, lock, callback, or worker.
+//! A request borrows its session, exact frame, backend/model identity views, and
+//! operation context for one synchronous call. An explicitly injected backend
+//! also borrows a validated package; the integrated default borrows the model
+//! identity already retained by the engine and does not load model bytes twice.
+//! A successful result owns only the facade's immutable `OcrResult`; it retains
+//! no parent handle, frame storage, package bytes, backend buffer, lock, callback,
+//! or worker.
 //! Text returned by `ocr_result_text_at` is borrowed from that result owner.
 
 use std::mem::size_of;
@@ -192,11 +195,6 @@ fn run_session_recognize(
     let Some(frame) = (unsafe { handle::borrow::<FrameHandle>(request.frame) }) else {
         return Err(Fault::abi("`frame` is null"));
     };
-    // SAFETY: as above.
-    let Some(package) = (unsafe { handle::borrow::<AssetPackage>(request.package) }) else {
-        return Err(Fault::abi("`package` is null"));
-    };
-
     // Validate every pointer-length input before resolving model or invoking work.
     // SAFETY: the caller keeps these views readable and unmodified for the call.
     let model_id = unsafe { view::non_empty_string(request.model_id, "model_id") }?;
@@ -212,9 +210,30 @@ fn run_session_recognize(
     if backend_id != selected.id().as_str() || backend_version != selected.version().as_str() {
         return Err(ocr_fault(OcrFault::BackendMismatch));
     }
-    let model = package
-        .resolve_ocr_model(model_id)
-        .map_err(Fault::from_asset)?;
+
+    let package_model = if request.package.is_null() {
+        let integrated_default = selected.id().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_ID
+            && selected.version().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_VERSION
+            && selected.model().as_str() == mado_pilot::ACCEPTED_G004_MODEL_ID
+            && selected.profile().as_str() == mado_pilot::ACCEPTED_G004_PROFILE_ID;
+        if !integrated_default || model_id != selected.model().as_str() {
+            return Err(ocr_fault(OcrFault::ModelMismatch));
+        }
+        None
+    } else {
+        // SAFETY: the caller retains the non-null package handle for the call.
+        let Some(package) = (unsafe { handle::borrow::<AssetPackage>(request.package) }) else {
+            return Err(Fault::abi("`package` is null"));
+        };
+        Some(
+            package
+                .resolve_ocr_model(model_id)
+                .map_err(Fault::from_asset)?,
+        )
+    };
+    let model = package_model
+        .as_ref()
+        .map_or(selected.model_identity(), |source| source.identity());
     let region = if declared!(request, madopilot_ocr_request_t, MADOPILOT_OCR_HAS_REGION) {
         OcrRegion::Region {
             rect: source_rect(request.region)?,
@@ -230,7 +249,7 @@ fn run_session_recognize(
         .recognize(OcrRequest::new(
             frame.frame(),
             selected.backend_identity(),
-            model.identity(),
+            model,
             region,
             output_space,
             context.inner(),

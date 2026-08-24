@@ -222,6 +222,7 @@ name = "mado-pilot"
 version = "0.2.1"
 dependencies = [
  "mado-pilot-adapter-replay",
+ "mado-pilot-backend-onnx",
  "mado-pilot-backend-opencv",
  "mado-pilot-platform-macos",
  "mado-pilot-platform-windows",

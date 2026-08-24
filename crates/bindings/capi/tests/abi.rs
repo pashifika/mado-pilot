@@ -61,6 +61,30 @@ fn a_caller_that_knows_only_the_information_prefix_still_negotiates() {
     let status = unsafe { (api.describe_build)(&raw mut info) };
     assert_eq!(status, MADOPILOT_STATUS_OK);
     assert_eq!(info.abi_major, MADOPILOT_ABI_MAJOR);
+    assert_eq!(
+        borrowed_text(info.default_ocr_backend),
+        mado_pilot::DEFAULT_OCR_BACKEND_ID
+    );
+    assert_eq!(
+        borrowed_text(info.default_ocr_backend_version),
+        mado_pilot::DEFAULT_OCR_BACKEND_VERSION
+    );
+    assert_eq!(
+        borrowed_text(info.default_ocr_runtime_profile),
+        mado_pilot::DEFAULT_OCR_RUNTIME_PROFILE_ID
+    );
+    assert_eq!(
+        borrowed_text(info.default_ocr_model),
+        mado_pilot::ACCEPTED_G004_MODEL_ID
+    );
+    assert_eq!(
+        borrowed_text(info.default_ocr_model_version),
+        mado_pilot::ACCEPTED_G004_MODEL_VERSION
+    );
+    assert_eq!(
+        borrowed_text(info.default_ocr_profile),
+        mado_pilot::ACCEPTED_G004_PROFILE_ID
+    );
 
     let mut nanos = 0_u64;
     // SAFETY: as above.
@@ -248,6 +272,68 @@ fn an_input_using_an_older_valid_prefix_defaults_the_rest() {
     unsafe { (api.engine_release)(engine) };
 }
 
+#[test]
+fn frozen_abi_1_2_engine_options_remain_exact_and_default_ocr_has_its_own_entry() {
+    let api = table();
+    let scene = Scene::new();
+    let operation = operation();
+    let options = madopilot_engine_options_t {
+        struct_size: 16,
+        flags: 0,
+        diagnostic_level: MADOPILOT_DIAGNOSTIC_LEVEL_OFF,
+        diagnostic_capacity: 0,
+    };
+    let mut engine = ptr::null_mut();
+
+    // SAFETY: every input and output remains live for the synchronous call.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_options)(
+                scene.source(),
+                &options,
+                &operation,
+                &mut engine,
+                ptr::null_mut(),
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    let mut capabilities = madopilot_engine_capabilities_t {
+        struct_size: struct_size::<madopilot_engine_capabilities_t>(),
+        flags: u32::MAX,
+    };
+    // SAFETY: the engine is retained and the capability output is writable.
+    assert_eq!(
+        unsafe { (api.engine_capabilities)(engine, &mut capabilities) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(capabilities.flags & MADOPILOT_ENGINE_HAS_OCR, 0);
+    // SAFETY: release gives up the one owned engine reference.
+    assert_eq!(unsafe { (api.engine_release)(engine) }, MADOPILOT_STATUS_OK);
+
+    let default_ocr = madopilot_default_ocr_options_t {
+        struct_size: struct_size::<madopilot_default_ocr_options_t>(),
+        flags: 0,
+        model_root: madopilot_str_t::empty(),
+        runtime_path: madopilot_str_t::empty(),
+    };
+    engine = ptr::null_mut();
+    // SAFETY: the empty views are valid inputs and every output is writable.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_default_ocr)(
+                scene.source(),
+                &options,
+                &default_ocr,
+                &operation,
+                &mut engine,
+                ptr::null_mut(),
+            )
+        },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(engine.is_null());
+}
 #[test]
 fn an_input_smaller_than_its_mandatory_prefix_is_refused() {
     let api = table();
@@ -1982,6 +2068,14 @@ fn package_source(path: &str) -> madopilot_package_source_t {
     }
 }
 
+fn borrowed_text(view: madopilot_str_t) -> &'static str {
+    // SAFETY: build-info views borrow static library storage.
+    unsafe {
+        std::str::from_utf8(std::slice::from_raw_parts(view.data.cast(), view.len))
+            .expect("build identity is UTF-8")
+    }
+}
+
 fn build_info() -> madopilot_build_info_t {
     madopilot_build_info_t {
         struct_size: struct_size::<madopilot_build_info_t>(),
@@ -1992,6 +2086,12 @@ fn build_info() -> madopilot_build_info_t {
         reserved: 0,
         library_version: madopilot_str_t::empty(),
         required_backend: madopilot_str_t::empty(),
+        default_ocr_backend: madopilot_str_t::empty(),
+        default_ocr_backend_version: madopilot_str_t::empty(),
+        default_ocr_runtime_profile: madopilot_str_t::empty(),
+        default_ocr_model: madopilot_str_t::empty(),
+        default_ocr_model_version: madopilot_str_t::empty(),
+        default_ocr_profile: madopilot_str_t::empty(),
     }
 }
 

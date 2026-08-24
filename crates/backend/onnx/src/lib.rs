@@ -12,6 +12,7 @@ mod fault;
 mod image;
 mod inference;
 mod loader;
+mod model;
 #[cfg(test)]
 mod native_tests;
 mod session;
@@ -40,8 +41,12 @@ use crate::session::SessionPair;
 pub(crate) const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const RECOGNITION_BATCH: usize = 6;
 
-const BACKEND_ID: &str = "onnxruntime-cpu";
-const BACKEND_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ort-1.29.0-api17");
+/// Stable identity of the integrated CPU OCR backend.
+pub const BACKEND_ID: &str = "onnxruntime-cpu";
+/// Exact backend implementation identity, including the controlled runtime profile.
+pub const BACKEND_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ort-1.29.0-api17");
+/// Closed identity of the controlled native runtime and provider boundary.
+pub const RUNTIME_PROFILE_ID: &str = "onnxruntime-1.29.0-api17-cpu";
 
 /// One bounded reusable CPU backend for the exact accepted OCR source.
 pub struct OnnxOcrBackend {
@@ -173,6 +178,31 @@ impl<T> Drop for RunningSession<'_, T> {
 }
 
 impl OnnxOcrBackend {
+    /// Opens the fixed G-004 model pair from one explicit root against one
+    /// controlled runtime.
+    ///
+    /// Only `rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx` and
+    /// `rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx` are read beneath `model_root`.
+    /// Runtime initialization happens first so an unavailable runtime does not
+    /// allocate or hash the 25.9 MiB model pair. No path is inferred from the
+    /// process environment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed [`OnnxBackendFault`] for an invalid or unavailable
+    /// prerequisite, interruption, graph mismatch, or native initialization.
+    pub fn open_accepted(
+        model_root: &Path,
+        runtime_path: &Path,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendFault> {
+        checkpoint(operation)?;
+        loader::initialize(runtime_path)?;
+        checkpoint(operation)?;
+        let source = model::accepted_source(model_root, operation)?;
+        Self::open_initialized(source, operation)
+    }
+
     /// Opens the accepted detector and recognizer against one controlled runtime.
     ///
     /// `runtime_path` must be an absolute canonical path whose target-specific
@@ -190,9 +220,16 @@ impl OnnxOcrBackend {
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendFault> {
         checkpoint(operation)?;
-        let model_identity = source.identity().clone();
         loader::initialize(runtime_path)?;
         checkpoint(operation)?;
+        Self::open_initialized(source, operation)
+    }
+
+    fn open_initialized(
+        source: OcrModelSource,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendFault> {
+        let model_identity = source.identity().clone();
         let sessions = SessionPair::open(source, operation)?;
         let backend_identity = OcrBackendIdentity::new(
             BackendId::new(BACKEND_ID).map_err(|_| OnnxBackendFault::GraphMismatch)?,

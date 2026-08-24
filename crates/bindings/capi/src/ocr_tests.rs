@@ -304,6 +304,46 @@ fn successful_backend() -> Arc<dyn OcrBackend> {
     )
 }
 
+fn integrated_default_backend() -> Arc<dyn OcrBackend> {
+    let descriptor = OcrBackendDescriptor::new(
+        OcrBackendIdentity::new(
+            OcrBackendId::new(mado_pilot::DEFAULT_OCR_BACKEND_ID)
+                .expect("default backend id is valid"),
+            OcrBackendVersion::new(mado_pilot::DEFAULT_OCR_BACKEND_VERSION)
+                .expect("default backend version is valid"),
+        ),
+        OcrModelIdentity::accepted_g004(),
+        PixelFormat::Rgba8,
+    );
+    Arc::new(
+        ControlledOcr::new(PixelFormat::Rgba8)
+            .with_descriptor(descriptor)
+            .with_candidates(vec![ScriptedOcrCandidate::new(
+                "  魔導士 A-7  ".as_bytes(),
+                [(1.0, 2.0), (20.0, 2.0), (20.0, 9.0), (1.0, 9.0)],
+                0.91,
+                0,
+            )]),
+    )
+}
+
+fn integrated_default_request(
+    frame: *const crate::capture::madopilot_frame_t,
+) -> madopilot_ocr_request_t {
+    madopilot_ocr_request_t {
+        struct_size: struct_size::<madopilot_ocr_request_t>(),
+        flags: 0,
+        frame,
+        package: ptr::null(),
+        model_id: string(mado_pilot::ACCEPTED_G004_MODEL_ID),
+        backend_id: string(mado_pilot::DEFAULT_OCR_BACKEND_ID),
+        backend_version: string(mado_pilot::DEFAULT_OCR_BACKEND_VERSION),
+        output_space: MADOPILOT_SPACE_CAPTURE_PIXELS,
+        clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+        region: madopilot_pixel_rect_t::empty(),
+    }
+}
+
 fn empty_info() -> madopilot_ocr_result_info_t {
     <madopilot_ocr_result_info_t as Versioned>::failure(struct_size::<madopilot_ocr_result_info_t>())
 }
@@ -405,6 +445,47 @@ fn owned_c_result_and_views_survive_every_parent_release() {
     }
     result = ptr::null_mut();
     assert!(result.is_null());
+}
+
+#[test]
+fn integrated_default_uses_its_retained_model_identity_without_a_duplicate_package() {
+    let fixture = opened(integrated_default_backend());
+    let request = integrated_default_request(fixture.frame);
+    let operation = operation();
+    let mut result = ptr::null_mut();
+    let mut error = ptr::null_mut();
+
+    assert_eq!(
+        // SAFETY: request inputs and outputs remain valid for the synchronous call.
+        unsafe {
+            (fixture.api.session_recognize)(
+                fixture.session,
+                &request,
+                &operation,
+                &mut result,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(!result.is_null());
+    assert!(error.is_null());
+
+    let mut info = empty_info();
+    assert_eq!(
+        // SAFETY: the result is retained and `info` is fully writable.
+        unsafe { (fixture.api.ocr_result_info)(result, &mut info) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(text(info.backend_id), mado_pilot::DEFAULT_OCR_BACKEND_ID);
+    assert_eq!(text(info.model_id), mado_pilot::ACCEPTED_G004_MODEL_ID);
+    assert_eq!(text(info.profile_id), mado_pilot::ACCEPTED_G004_PROFILE_ID);
+
+    assert_eq!(
+        // SAFETY: release gives up the one owned result reference.
+        unsafe { (fixture.api.ocr_result_release)(result) },
+        MADOPILOT_STATUS_OK
+    );
 }
 
 #[test]

@@ -8,12 +8,11 @@ use std::mem::size_of;
 
 use mado_pilot::{
     ClipPolicy, DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel,
-    DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, DiagnosticReader,
-    DiagnosticRecord, Lifecycle, OcrDiagnosticOutcome, OcrDiagnosticProfile,
-    SearchDiagnosticOutcome,
+    DiagnosticOperationKind, DiagnosticPayload, DiagnosticReader, DiagnosticRecord, Lifecycle,
+    OcrDiagnosticOutcome, OcrDiagnosticProfile, SearchDiagnosticOutcome,
 };
 
-use crate::boundary::{self, Out, Versioned, covers, inputs, prefixes};
+use crate::boundary::{self, Out, Versioned, covers, prefixes};
 use crate::engine::{EngineHandle, madopilot_engine_t};
 use crate::error::Fault;
 use crate::handle::opaque;
@@ -21,10 +20,7 @@ use crate::input::{
     cleanup_state_code, input_address_scope_code, input_delivery_code, input_fault_code,
     permission_kind_code, permission_state_code, sequence_outcome_code, submission_evidence_code,
 };
-use crate::status::{
-    MADOPILOT_ERROR_CATEGORY_ENGINE, MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK,
-    madopilot_status_t,
-};
+use crate::status::{MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK, madopilot_status_t};
 use crate::types::*;
 use crate::{handle, hooks};
 
@@ -46,34 +42,6 @@ pub(crate) struct DiagnosticReaderHandle {
 #[derive(Debug)]
 pub(crate) struct DiagnosticBatchHandle {
     batch: DiagnosticBatch,
-}
-
-inputs! {
-    impl Input for madopilot_engine_options_t {
-        const MANDATORY: usize = 16;
-        const NAME: &'static str = "madopilot_engine_options_t";
-        const PREFIXES: &'static [usize] = prefixes!(
-            madopilot_engine_options_t,
-            struct_size,
-            flags,
-            diagnostic_level,
-            diagnostic_capacity,
-        );
-        const PRESENCE: &'static [(u32, usize)] = &[];
-
-        fn defaults() -> Self {
-            Self {
-                struct_size: 0,
-                flags: 0,
-                diagnostic_level: MADOPILOT_DIAGNOSTIC_LEVEL_OFF,
-                diagnostic_capacity: 0,
-            }
-        }
-
-        fn presence_bits(&self) -> u32 {
-            self.flags
-        }
-    }
 }
 
 impl Versioned for madopilot_diagnostic_batch_info_t {
@@ -200,31 +168,6 @@ impl Versioned for madopilot_diagnostic_record_t {
             ocr_source_pixels: 0,
         }
     }
-}
-
-/// Converts nullable C options. Null selects the allocation-free default.
-pub(crate) unsafe fn options(
-    options: *const madopilot_engine_options_t,
-) -> Result<DiagnosticOptions, Fault> {
-    if options.is_null() {
-        return Ok(DiagnosticOptions::off());
-    }
-    // SAFETY: forwarded unchanged from this function's own contract.
-    let options = unsafe { boundary::read_input(options) }?;
-    if options.flags != 0 {
-        return Err(Fault::abi(format!(
-            "madopilot_engine_options_t sets unknown flags {:#x}",
-            options.flags
-        )));
-    }
-    let level = match options.diagnostic_level {
-        MADOPILOT_DIAGNOSTIC_LEVEL_OFF => DiagnosticLevel::Off,
-        MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL => DiagnosticLevel::Normal,
-        MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG => DiagnosticLevel::Debug,
-        other => return Err(Fault::abi(format!("unrecognized diagnostic level {other}"))),
-    };
-    DiagnosticOptions::new(level, options.diagnostic_capacity as usize)
-        .map_err(|error| Fault::from_error(&error, MADOPILOT_ERROR_CATEGORY_ENGINE))
 }
 
 pub(crate) fn take_reader(
