@@ -277,7 +277,7 @@ prefix.
 | `crates/platform/windows` | `mado-pilot-platform-windows` | Picker-free Windows window/display discovery, WGC/D3D11 capture, system input, ordinary exact-window queue submission with unknown compatibility, and fixture-acknowledged exact-window submission, wired into the runtime and facade by `mado_pilot::windows_engine`; Windows exposes no separate capture/input authorization state, and receipts report integrity/UIPI failures without elevation |
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Non-prompting macOS target discovery, permission probes, ScreenCaptureKit capture, `CGEvent` system input, and gated process-directed input to the retained window's owning process, wired into the runtime and the facade by `mado_pilot::macos_engine` |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
-| `crates/backend/onnx` | `mado-pilot-backend-onnx` | Planned ONNX Runtime OCR and execution-provider adapter |
+| `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 CPU OCR for the exact accepted G-004 profile |
 | `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
 | `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, backend, and input doubles, synthetic clock, and contract-fixture support |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
@@ -352,7 +352,7 @@ graph TD
     OpenCV --> Capture
     OpenCV --> Vision
     ONNX --> Core
-    ONNX --> Vision
+    ONNX --> Capture
     ONNX --> OCR
 
     Facade --> Runtime
@@ -390,7 +390,7 @@ appear in this table, and an omitted future edge is always valid.
 | `mado-pilot-platform-windows` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-input` |
 | `mado-pilot-platform-macos` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-input` |
 | `mado-pilot-backend-opencv` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-vision` |
-| `mado-pilot-backend-onnx` | `mado-pilot-core`, `mado-pilot-vision`, `mado-pilot-ocr` |
+| `mado-pilot-backend-onnx` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-ocr` |
 | `mado-pilot` | `mado-pilot-runtime`, `mado-pilot-adapter-replay`, `mado-pilot-platform-windows`, `mado-pilot-platform-macos`, `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` |
 | `mado-pilot-capi` | `mado-pilot` |
 | `mado-pilot-testkit` | `mado-pilot-core`, `mado-pilot-capture`, `mado-pilot-input`, `mado-pilot-vision`, `mado-pilot-ocr` |
@@ -444,10 +444,11 @@ The two platform edges are target-specific in the facade's manifest, under
 Windows package and a Windows build resolves no macOS package. The dependency
 checker reads the whole manifest rather than one target's resolution, so both
 edges are checked against the row on either host. The row's sixth entry,
-`mado-pilot-backend-onnx`, is not implemented and the facade therefore does not
-name it — the table is an allowlist and an omitted future edge is always valid,
-as the subset rule above says. Widening the row itself is a normative change and
-needs an ADR, not a quiet allowlist edit.
+`mado-pilot-backend-onnx`, is implemented but the facade still does not name it:
+this Change supplies no default wiring or public support surface. The table is an
+allowlist and an omitted edge is always valid, as the subset rule above says.
+Widening the row itself is a normative change and needs an ADR, not a quiet
+allowlist edit.
 
 Vision and OCR depend on the capture contract because their public operations
 consume capture-owned frame views. That is a contract-to-contract dependency and
@@ -842,7 +843,8 @@ responsibilities a later phase takes on.
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
-| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes the accepted G-004 profile; bounded model/backend/profile identities, immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented. Concrete preprocessing, inference, backend performance budgets, default wiring, packaging, and support remain later work |
+| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes the accepted G-004 profile; bounded model/backend/profile identities, immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented. Default wiring, final product budgets, packaging, and support remain later work |
+| Exact G-004 CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx` behind the OCR contract. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17; the adapter has no facade, runtime, C, C++, GPU-provider, fallback, download, or packaging edge |
 | OCR runtime/facade/ABI operations, watchers, and scheduling | Not implemented |
 | Bounded engine-scoped diagnostic observation | Implemented in `mado-pilot-runtime` and the facade with allocation-free `Off`, finite `Normal`/`Debug` streams, strict record order, exact loss counts, immutable owned batches, independent reader lifetime, and privacy-reviewed payloads; exposed through C ABI 1.2 and the C++ wrapper |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
@@ -2242,9 +2244,15 @@ The supported normalization profile permits at most 1,000 backend candidates and
 at most 16 KiB of raw UTF-8 per submitted candidate. A committed text region is
 at most 4 KiB. A backend lends candidate text to an `OcrCandidateSink` rather than
 returning an owned `Vec<Arc<[u8]>>`; the sink refuses the 1,001st candidate before
-collection and bounds normalization before copying retained text. Native tensor,
-session, and decoder allocations remain backend-owned and require separate
-measured limits in the ONNX Change.
+collection and bounds normalization before copying retained text.
+`mado-pilot-backend-onnx` additionally caps one detector/recognizer session pair,
+one admitted inference, 256 MiB per input tensor, 256 MiB per native output,
+2 MiB of native contour storage including conservative vector growth, a 16 MiB
+scanline component queue, 1,000 detector candidates, and six recognition crops
+per batch. Boundary-edge and foreground/background component preflights reject a
+probability map before OpenCV can materialize contour storage beyond those
+ceilings. Public results copy bounded text and geometry and retain no native
+tensor, model, or session buffer.
 
 Candidate quadrilaterals are relative to the effective region and must be finite,
 strictly convex, and inside it. Confidence must be finite in `0.0..=1.0` and is
@@ -2274,8 +2282,20 @@ isolation, while separate cases cover non-empty clipping, hard request ceilings,
 profile refusal, malformed output, interruption precedence, redacted diagnostics,
 and independence from backend buffers, frame storage, and model allocations.
 
-No concrete OCR backend, public runtime/facade/ABI operation, default wiring, or
-OCR support claim is added by these contracts.
+`mado-pilot-backend-onnx` is the concrete CPU implementation for only the exact
+ADR 0033 G-004 profile. It requires a caller-supplied canonical absolute path to
+ONNX Runtime 1.29.0 (`libonnxruntime.1.29.0.dylib` on Apple Silicon or
+`onnxruntime.dll` on Windows), verifies exact runtime/API and graph/vocabulary
+metadata before admission, and never searches ambient locations, downloads,
+bundles, or falls back to another provider. [ADR 0034](adr/0034-onnx-runtime-cpu-loading-boundary.md)
+records the native loading boundary. The backend owns one mutable session pair,
+uses checked BGRA preprocessing and borrowed tensor views, applies joinable
+best-effort native termination, and rejects concurrent calls instead of queueing
+or invoking `Session::run` concurrently.
+
+This backend is not wired through `mado-pilot-runtime`, the facade, C, or C++ and
+does not establish a default OCR backend, packaging result, final performance
+budget, or support-table claim.
 
 ### The public Rust workflow
 
