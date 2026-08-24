@@ -692,6 +692,8 @@ pub const MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION: u32 = 1 << 2;
 pub const MADOPILOT_ENGINE_DELIVERS_INPUT: u32 = 1 << 0;
 /// The engine can run non-prompting permission probes.
 pub const MADOPILOT_ENGINE_READS_PERMISSIONS: u32 = 1 << 1;
+/// The engine has one configured OCR backend/model profile.
+pub const MADOPILOT_ENGINE_HAS_OCR: u32 = 1 << 2;
 
 /// `madopilot_permission_t` carries a redacted diagnostic.
 pub const MADOPILOT_PERMISSION_HAS_DIAGNOSTIC: u32 = 1 << 0;
@@ -1085,6 +1087,18 @@ pub struct madopilot_build_info_t {
     pub library_version: madopilot_str_t,
     /// The matching backend this build requires. Borrowed from static storage.
     pub required_backend: madopilot_str_t,
+    /// Default OCR backend identity. Borrowed from static storage.
+    pub default_ocr_backend: madopilot_str_t,
+    /// Exact default OCR backend version. Borrowed from static storage.
+    pub default_ocr_backend_version: madopilot_str_t,
+    /// Controlled runtime/provider profile. Borrowed from static storage.
+    pub default_ocr_runtime_profile: madopilot_str_t,
+    /// Accepted default OCR model identity. Borrowed from static storage.
+    pub default_ocr_model: madopilot_str_t,
+    /// Accepted default OCR model version. Borrowed from static storage.
+    pub default_ocr_model_version: madopilot_str_t,
+    /// Accepted default OCR profile identity. Borrowed from static storage.
+    pub default_ocr_profile: madopilot_str_t,
 }
 
 /// A deadline and a cancellation token, supplied by the caller.
@@ -1154,10 +1168,24 @@ pub struct madopilot_engine_options_t {
     pub struct_size: u32,
     /// No bits are defined; the caller sets zero.
     pub flags: u32,
-    /// Diagnostic detail level.
+    /// Engine-wide diagnostic level.
     pub diagnostic_level: madopilot_diagnostic_level_t,
     /// Maximum retained records.
     pub diagnostic_capacity: u32,
+}
+
+/// Explicit controlled paths for integrated default OCR construction.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_default_ocr_options_t {
+    /// `sizeof(madopilot_default_ocr_options_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; the caller sets zero.
+    pub flags: u32,
+    /// Absolute root containing the fixed G-004 relative model paths.
+    pub model_root: madopilot_str_t,
+    /// Canonical absolute ONNX Runtime 1.29.0 file.
+    pub runtime_path: madopilot_str_t,
 }
 
 /// Summary of one immutable owned diagnostic batch.

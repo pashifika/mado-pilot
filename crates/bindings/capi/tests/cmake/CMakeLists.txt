@@ -58,11 +58,22 @@ add_executable(
 )
 target_link_libraries(consumer-native-cpp PRIVATE MadoPilot::Cpp)
 
+# The integrated default OCR example is a normal public C++ consumer. It runs
+# when the surrounding native job supplies the controlled model/runtime paths
+# and reports a CTest skip otherwise.
+add_executable(
+  consumer-ocr-default-cpp
+  "${MADOPILOT_SOURCE_DIR}/examples/cpp/ocr-default.cpp"
+)
+target_link_libraries(consumer-ocr-default-cpp PRIVATE MadoPilot::Cpp)
+
 enable_testing()
 
 add_test(NAME consumer-c COMMAND consumer-c)
 add_test(NAME consumer-cpp COMMAND consumer-cpp)
 add_test(NAME consumer-native-cpp COMMAND consumer-native-cpp --check)
+add_test(NAME consumer-ocr-default-cpp COMMAND consumer-ocr-default-cpp)
+set_tests_properties(consumer-ocr-default-cpp PROPERTIES SKIP_RETURN_CODE 77)
 
 if(WIN32)
   # Windows has no run path: the loader searches the executable's directory and
@@ -70,7 +81,7 @@ if(WIN32)
   # process only.
   file(TO_NATIVE_PATH "${MADOPILOT_ARTIFACT_DIR}" _madopilot_native_artifacts)
   set_tests_properties(
-    consumer-c consumer-cpp consumer-native-cpp
+    consumer-c consumer-cpp consumer-native-cpp consumer-ocr-default-cpp
     PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${_madopilot_native_artifacts}"
   )

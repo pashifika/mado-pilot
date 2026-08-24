@@ -114,6 +114,7 @@ dependency surface over a framework that pulls in unrelated features.
 | `opencv` 0.99 | `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` | Binds the OpenCV C++ image-processing API used by the CPU matching profile and the accepted OCR resize, contour, dilation, and perspective-crop profile. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
 | `ort` 2.0.0-rc.13 | `mado-pilot-backend-onnx` | Exact-pinned safe session/tensor/metadata/run-options wrapper. Default features **off**; only `std`, `alternative-backend`, and `api-17`. No downloader, dynamic-search helper, telemetry feature, GPU provider, or model fetcher is enabled | MIT OR Apache-2.0 |
 | `libloading` 0.8.9 | `mado-pilot-backend-onnx` | Opens one caller-supplied canonical ONNX Runtime file with target-specific restricted flags and retains it for the process-global API lifetime. The version was already resolved by the OpenCV binding generator | ISC |
+| `libc` 0.2.189 | `mado-pilot-backend-onnx` (macOS benchmark dev-only) | Supplies the target `rusage` layout and `getrusage` declaration used to enforce the Apple OCR process peak-RSS ceiling. The target-gated direct edge adds no crate to the lockfile and is absent from product dependencies | MIT OR Apache-2.0 |
 | `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, DPI, system input, window messaging, and token-integrity APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
 | `cc` 1.4 | `mado-pilot-platform-macos` (build) | Compiles the Objective-C shim that owns the macOS native boundary. The package declares the build dependency unconditionally, so Cargo resolves the edge on every host; `build.rs` gates Objective-C compilation and Apple framework link directives on a macOS target. It was already an indirect build dependency through the OpenCV binding generator, so the graph gains an edge rather than a crate | MIT OR Apache-2.0 |
 
@@ -262,18 +263,30 @@ fixes the loading boundary:
 The reviewed Apple runtime is 33,332,888 bytes, declares minimum macOS 14.0, and
 depends only on system libraries. It is MIT-licensed and is not redistributed.
 The accepted detector and recognizer remain caller-supplied Apache-2.0 model
-bytes validated by exact length and SHA-256 through `OcrModelSource`; the backend
-receives immutable bytes rather than model paths. Windows build/load evidence is
-owned by the release-target CI job and must not be inferred from the Apple
-observation. This Change makes no packaging or support-table claim.
+bytes. `OnnxOcrBackend::open_accepted` reads only
+`rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx` and
+`rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx` beneath the selected root, validates
+exact length/SHA-256 before graph/session admission, and commits directly into
+immutable shared storage. Explicit schema-v2 packages validate the same
+`OcrModelSource` contract; default composition does not create a duplicate
+25,979,900-byte package allocation.
 
-The two native CI jobs provision these inputs only inside an ephemeral runner in
-order to execute the explicit backend contract/oracle test. They download the
-official ONNX Runtime 1.29.0 target archive and the two tag-pinned ModelScope
-files, verify the reviewed archive/model SHA-256 values before extraction or
-session creation, and pass canonical paths through the test environment. This is
-verification-fixture provisioning, not a product download path, release bundle,
-cache shipped to users, or ambient discovery mechanism.
+The two native CI jobs provision these inputs only inside an ephemeral runner.
+They download the official ONNX Runtime 1.29.0 target archive and the two
+tag-pinned ModelScope files, verify reviewed archive/model SHA-256 values before
+extraction/session creation, and pass canonical paths to native tests. Both jobs
+run the backend contract, Rust default facade, production C/C++/CMake default
+flows, frozen C headers, and the target-independent OCR performance smoke gate.
+This is verification-fixture provisioning, not a product download path, release
+bundle, shipped cache, ambient discovery mechanism, or approved-host quality/
+numeric-performance evidence.
+
+ADR 0036 makes the default an explicit composition choice: ordinary engine
+constructors remain unchanged, while `*_engine_with_default_ocr`,
+`engine_create_with_default_ocr`, and C++ `DefaultOcrOptions` require the caller
+to supply the two controlled paths. ADR 0037 accepts separate Apple M1 Pro and
+Core i7-12700KF numeric profiles after approved-host precursor and final runs.
+Hosted Windows Server smoke remains supporting hard-contract evidence only.
 
 ### G-003 macOS shim boundary
 

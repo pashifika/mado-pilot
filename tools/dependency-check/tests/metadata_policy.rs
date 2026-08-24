@@ -165,14 +165,14 @@ fn every_required_member_must_inherit_workspace_lints() {
 
 #[test]
 fn a_diverging_version_is_rejected_against_the_root_workspace() {
-    let members = members_with(TESTKIT, |member| member.version = "0.3.0".to_owned());
+    let members = members_with(TESTKIT, |member| member.version = "9.9.9".to_owned());
 
     assert_eq!(
         violations_of(&members),
         vec![Violation::InconsistentMetadata {
             name: TESTKIT.to_owned(),
             field: "version",
-            value: Some("0.3.0".to_owned()),
+            value: Some("9.9.9".to_owned()),
             expected: Some(REQUIRED_VERSION.to_owned()),
         }]
     );

@@ -40,14 +40,22 @@ use mado_pilot_testkit::bench_harness::{
     PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STAGING_TEXTURES_LIMIT,
     PHASE2_WINDOWS_PRODUCTION_DUAL_4K_STALE_WORK_LIMIT,
     PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_HEAP_LIMIT_BYTES,
-    PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS, benchmark_block,
+    PHASE2_WINDOWS_PRODUCTION_TRANSITION_1280_LATENCY_BUDGETS, PHASE3_APPLE_OCR_CLOSE_LIMIT,
+    PHASE3_APPLE_OCR_COLD_LOAD_LIMIT, PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES,
+    PHASE3_APPLE_OCR_LATENCY_BUDGETS, PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT,
+    PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES, PHASE3_OCR_EMPTY_MAPPED_BYTES,
+    PHASE3_OCR_FULL_MAPPED_BYTES, PHASE3_OCR_MAX_OUTPUT_BYTES, PHASE3_OCR_MAX_TENSOR_BYTES,
+    PHASE3_OCR_REGION_MAPPED_BYTES, PHASE3_WINDOWS_OCR_CLOSE_LIMIT,
+    PHASE3_WINDOWS_OCR_COLD_LOAD_LIMIT, PHASE3_WINDOWS_OCR_HEAP_LIMIT_BYTES,
+    PHASE3_WINDOWS_OCR_LATENCY_BUDGETS, PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT,
+    PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES, benchmark_block,
 };
 
 /// Every committed benchmark profile, by repository path and content.
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 22] = [
+const PROFILES: [(&str, &str); 24] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -174,10 +182,18 @@ const PROFILES: [(&str, &str); 22] = [
             "../../../../docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-3-ocr-aarch64-apple-darwin.toml",
+        include_str!("../../../../docs/benchmarks/phase-3-ocr-aarch64-apple-darwin.toml"),
+    ),
+    (
+        "docs/benchmarks/phase-3-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!("../../../../docs/benchmarks/phase-3-ocr-x86_64-pc-windows-msvc.toml"),
+    ),
 ];
 
 /// Native profiles and the latency ceilings enforced by their benchmark.
-const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 10] = [
+const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 12] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -247,6 +263,16 @@ const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 10] = [
             "../../../../docs/benchmarks/phase-2-production-capture-dual-4k-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE2_WINDOWS_PRODUCTION_DUAL_4K_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-3-ocr-aarch64-apple-darwin.toml",
+        include_str!("../../../../docs/benchmarks/phase-3-ocr-aarch64-apple-darwin.toml"),
+        &PHASE3_APPLE_OCR_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-3-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!("../../../../docs/benchmarks/phase-3-ocr-x86_64-pc-windows-msvc.toml"),
+        &PHASE3_WINDOWS_OCR_LATENCY_BUDGETS,
     ),
 ];
 
@@ -337,6 +363,26 @@ impl<'a> BudgetBlock<'a> {
             limit: None,
         }
     }
+}
+
+fn absolute_budget<'a>(
+    workload: Option<&'a str>,
+    measure: &'a str,
+    unit: &'a str,
+    limit: f64,
+) -> BudgetBlock<'a> {
+    BudgetBlock {
+        workload,
+        measure: Some(measure),
+        kind: Some("absolute"),
+        unit: Some(unit),
+        direction: Some("at_most"),
+        limit: Some(limit),
+    }
+}
+
+fn exact_limit(value: u64) -> f64 {
+    f64::from(u32::try_from(value).expect("the accepted profile limit fits u32 exactly"))
 }
 
 /// Returns every top-level or measurement-local budget in file order.
@@ -527,7 +573,117 @@ fn native_profiles_state_exactly_the_latency_budgets_the_harness_enforces() {
             recorded,
             expected_latency_blocks(enforced),
             "{path} must record every frozen p50, p95, and maximum latency \
-             ceiling enforced by `native-phase2`, with no stale extra ceiling"
+             ceiling enforced by its native benchmark, with no stale extra ceiling"
+        );
+    }
+}
+
+#[test]
+fn ocr_profiles_state_exactly_the_resource_budgets_the_benchmark_enforces() {
+    let profiles = [
+        (
+            "Apple",
+            include_str!("../../../../docs/benchmarks/phase-3-ocr-aarch64-apple-darwin.toml"),
+            PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES,
+            PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES,
+            PHASE3_APPLE_OCR_COLD_LOAD_LIMIT,
+            PHASE3_APPLE_OCR_CLOSE_LIMIT,
+            PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT,
+        ),
+        (
+            "Windows",
+            include_str!("../../../../docs/benchmarks/phase-3-ocr-x86_64-pc-windows-msvc.toml"),
+            PHASE3_WINDOWS_OCR_HEAP_LIMIT_BYTES,
+            PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES,
+            PHASE3_WINDOWS_OCR_COLD_LOAD_LIMIT,
+            PHASE3_WINDOWS_OCR_CLOSE_LIMIT,
+            PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT,
+        ),
+    ];
+
+    for (target, profile, heap_limit, resident_limit, cold_limit, close_limit, reopen_limit) in
+        profiles
+    {
+        let recorded_global: Vec<BudgetBlock<'_>> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| budget.workload.is_none() && budget.kind == Some("absolute"))
+            .collect();
+        assert_eq!(
+            recorded_global,
+            vec![
+                absolute_budget(
+                    None,
+                    "peak_allocated_bytes",
+                    "bytes",
+                    exact_limit(u64::try_from(heap_limit).expect("the OCR heap limit fits u64")),
+                ),
+                absolute_budget(
+                    None,
+                    "peak_resident_bytes",
+                    "bytes",
+                    exact_limit(resident_limit),
+                ),
+                absolute_budget(
+                    None,
+                    "cold_load_p95",
+                    "milliseconds",
+                    cold_limit.as_secs_f64() * 1_000.0,
+                ),
+                absolute_budget(
+                    None,
+                    "first_close_max",
+                    "milliseconds",
+                    close_limit.as_secs_f64() * 1_000.0,
+                ),
+                absolute_budget(
+                    None,
+                    "reopen_close_max",
+                    "milliseconds",
+                    reopen_limit.as_secs_f64() * 1_000.0,
+                ),
+                absolute_budget(
+                    None,
+                    "max_tensor_bytes",
+                    "bytes",
+                    exact_limit(PHASE3_OCR_MAX_TENSOR_BYTES),
+                ),
+                absolute_budget(
+                    None,
+                    "max_output_bytes",
+                    "bytes",
+                    exact_limit(PHASE3_OCR_MAX_OUTPUT_BYTES),
+                ),
+            ],
+            "the {target} OCR profile and executable global resource ceilings drifted"
+        );
+
+        let recorded_per_workload: Vec<BudgetBlock<'_>> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| budget.measure == Some("mapped_bytes_per_result"))
+            .collect();
+        assert_eq!(
+            recorded_per_workload,
+            vec![
+                absolute_budget(
+                    Some("onnx_cpu_hud_full"),
+                    "mapped_bytes_per_result",
+                    "bytes",
+                    exact_limit(PHASE3_OCR_FULL_MAPPED_BYTES),
+                ),
+                absolute_budget(
+                    Some("onnx_cpu_hud_region"),
+                    "mapped_bytes_per_result",
+                    "bytes",
+                    exact_limit(PHASE3_OCR_REGION_MAPPED_BYTES),
+                ),
+                absolute_budget(
+                    Some("onnx_cpu_blank"),
+                    "mapped_bytes_per_result",
+                    "bytes",
+                    exact_limit(PHASE3_OCR_EMPTY_MAPPED_BYTES),
+                ),
+            ],
+            "the {target} OCR profile and executable per-workload byte ceilings drifted"
         );
     }
 }

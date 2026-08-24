@@ -35,6 +35,7 @@ const DECLARED: &[&str] = &[
     "Source",
     "PackageSource",
     "EngineOptions",
+    "DefaultOcrOptions",
     "InputOpenRequest",
     "InputEvent",
     "InputRequest",

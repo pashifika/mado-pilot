@@ -12,7 +12,9 @@ The replay workflow is
 [`examples/cpp/deterministic-slice.cpp`](../crates/bindings/capi/examples/cpp/deterministic-slice.cpp);
 the cross-target native workflow is
 [`examples/cpp/native-input.cpp`](../crates/bindings/capi/examples/cpp/native-input.cpp).
-The one-shot OCR fixture flow is
+The production and fixture one-shot OCR flows are
+[`examples/cpp/ocr-default.cpp`](../crates/bindings/capi/examples/cpp/ocr-default.cpp)
+and
 [`examples/cpp/ocr-fixture.cpp`](../crates/bindings/capi/examples/cpp/ocr-fixture.cpp).
 The contract underneath is [c-abi.md](c-abi.md). Read that one first: every
 rule here is a rule about how the C rules are expressed in C++, and none of them
@@ -22,7 +24,9 @@ replaces one.
 
 The only ABI is the C one. ABI 1.0 and 1.2 are frozen complete prefixes under
 ADRs 0007 and 0023. ABI 1.3 appends one-shot OCR and immutable owned OCR results
-under [ADR 0035](adr/0035-ocr-public-surfaces-and-private-fixture-boundary.md).
+through 640 bytes under ADR 0035, then accepted default construction through
+648 bytes under
+[ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md).
 The wrapper adds source compatibility only, governed by ADR 0006's reviewed
 Rust-side naming policy.
 
@@ -309,12 +313,14 @@ the text most likely to outlive the handle it came from.
 
 ## Typed requests
 
-`Operation`, `EngineOptions`, `Source`, `PackageSource`, `InputOpenRequest`,
-`InputEvent`, `OpenRequest`, `MapRequest`, `MatchOptions`, `FindRequest`, and
-`InputRequest` are values a caller composes. Each fills the C structure's
-`struct_size` itself, so no call site can write a stale one. `InputRequest` owns
-its typed events and route plan, while each `to_c()` call owns an independent
-event-record projection that borrows text and route storage from that request.
+`Operation`, `EngineOptions`, `DefaultOcrOptions`, `Source`, `PackageSource`,
+`InputOpenRequest`, `InputEvent`, `OpenRequest`, `MapRequest`, `MatchOptions`,
+`FindRequest`, `OcrRequest`, and `InputRequest` are values a caller composes.
+Each fills the C structure's `struct_size` itself, so no call site can write a
+stale one. `DefaultOcrOptions` owns model-root/runtime strings. `InputRequest`
+owns its typed events and route plan, while each `to_c()` call owns an
+independent event-record projection that borrows text and route storage from
+that request.
 
 ```cpp
 const madopilot::Result<std::uint64_t> now = api.clock_now();
@@ -335,13 +341,13 @@ operation semantics. A platform route may expose it through documented native
 observational metadata; macOS `ProcessDirected` carries it in Core Graphics
 event-source user data visible to the addressed process.
 
-Four request values borrow handles rather than owning them, and say so:
+Four request relationships borrow handles rather than owning them, and say so:
 
 - an `Operation` borrows its `Cancellation`, which must outlive every call the
   operation is passed to;
 - a `FindRequest` borrows its `Frame` and its `Template`;
-- an `OcrRequest` borrows its `Frame` and `Package` through each
-  `Session::recognize` call;
+- an `OcrRequest` borrows its `Frame` and, for explicit package composition,
+  its `Package` through each `Session::recognize` call; and
 - an `InputRequest` borrows its source `Frame`, which must stay retained until
   `Session::send_input` returns.
 
@@ -362,19 +368,29 @@ return the C entry's `MADOPILOT_STATUS_INVALID_ARGUMENT` unchanged.
 
 ### One-shot OCR
 
-`OcrRequest` owns model/backend ID and version strings and borrows one `Frame`
-and `Package` for each call. It keeps source region, clip policy, and output
-space explicit. Every call constructs a fresh `OcrRequest::CView`; copy/move
-construction and assignment rebind all pointer-length fields to that projection's
-own storage, including the moved-from object's still-callable accessors.
+`OcrRequest` owns model/backend ID and version strings, borrows one `Frame`, and
+optionally borrows a `Package`. Explicit package-backed models set the package;
+the exact accepted default leaves it unset and uses the backend/model identities
+reported by `Api::describe_build()`. It keeps source region, clip policy, and
+output space explicit. Every call constructs a fresh `OcrRequest::CView`;
+copy/move construction and assignment rebind every pointer-length field to that
+projection's own storage, including the moved-from object's still-callable
+accessors.
 
-`Session::recognize` gates on the complete ABI 1.3 OCR suffix before reading any
-appended function pointer. Success returns move-only `OcrResult`; `clone()` is
-the only refcounting copy. `describe()` returns source identity, effective region,
-count, and borrowed descriptors; `region_at()` returns value geometry/confidence;
-`text_at()` returns a borrowed normalized string. Borrowing accessors are
-lvalue-only and deleted on temporaries. The wrapper adds no backend choice,
-runtime loading, normalization, coordinate inference, queue, fallback, or input.
+`DefaultOcrOptions` owns canonical model-root/runtime path strings.
+`Api::create_engine_with_default_ocr` requires the complete 648-byte ABI 1.3
+table, calls only the C default-constructor entry, and returns no engine when a
+controlled prerequisite is invalid. It does not change `Api::create_engine`,
+which retains its ordinary non-default behavior.
+
+`Session::recognize` gates on the complete OCR owner/accessor suffix before
+reading any appended function pointer. Success returns move-only `OcrResult`;
+`clone()` is the only refcounting copy. `describe()` returns source identity,
+effective region, count, and borrowed descriptors; `region_at()` returns value
+geometry/confidence; `text_at()` returns a borrowed normalized string.
+Borrowing accessors are lvalue-only and deleted on temporaries. The wrapper adds
+no runtime discovery, normalization, coordinate inference, queue, retry,
+fallback, download, bundling, or input.
 
 Input capability keeps operation and route separate.
 `InputOpenRequest` accepts exact `MADOPILOT_INPUT_PAIR_*` masks;
@@ -460,10 +476,10 @@ concurrently with a call remains invalid caller behavior.
 
 ## What ABI 1.3 does not wrap
 
-The ABI 1.3 table ends at immutable one-shot OCR access. There is no watcher,
-wait-for-text, query, callback/fence, retry, automatic action/input, acceleration,
-packaging, or native-frame extension. OCR and later input remain separate facts.
-`cpp_surface.rs` asserts this inventory.
+The ABI 1.3 table ends at accepted default OCR construction. There is no watcher,
+wait-for-text, query, callback/fence, retry, automatic action/input,
+acceleration, packaging/download, or native-frame extension. OCR and later input
+remain separate facts. `cpp_surface.rs` asserts this inventory.
 
 `Api::table()` is the escape hatch: it returns the negotiated
 `const madopilot_api_t*` for a caller that needs an entry this wrapper does not
@@ -530,20 +546,25 @@ wrapper never throws one.
 ```sh
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+cargo build --locked --package mado-pilot-capi --features private-fixture
 cargo run --locked --package mado-pilot-capi --features private-fixture \
   --example c-abi-check -- --label "<host>"
 ```
 
-That one command covers the C surface and the C++ surface together. For the C++
-half it:
+This sequence covers the C and C++ surfaces together. The explicit feature build
+is required because compiling the checker example alone does not replace the
+profile-root dynamic library with its private-fixture variant. For the C++ half
+the checker:
 
 1. compiles and runs `tests/cpp/madopilot-cpp-ownership.cpp`: move-only OCR
-   ownership, explicit clone, lvalue-only views, copy/move request rebinding,
-   ABI 1.2 and partial ABI 1.3 refusal, parent independence, panic/error release,
-   receipts, diagnostics, close, and concurrent const access;
-2. runs deterministic matching plus feature-gated C/C++ OCR examples and
-   requires identical source/text/confidence observations; the OCR examples also
-   validate content-redacted diagnostic projection;
+   ownership, explicit clone, lvalue-only views, copy/move request and
+   `DefaultOcrOptions` rebinding, ABI 1.2/partial-1.3 refusal, parent
+   independence, panic/error release, receipts, diagnostics, close, and
+   concurrent const access;
+2. runs deterministic matching, production default C/C++ OCR, and feature-gated
+   fixture OCR examples. Production examples must agree after line-ending
+   normalization on backend/model/count output, and fixture examples must agree
+   on source/text/confidence plus content-redacted diagnostics;
 3. compiles and runs `examples/cpp/native-input.cpp`. The default `--check`
    creates the real target Adapter and reads only non-prompting permission state
    before stopping without discovery or input. Windows CI instead asks
@@ -554,10 +575,10 @@ half it:
    and explicit close twice: the ordinary contract must report unknown
    compatibility and target-queue admission, while the dedicated contract must
    report supported compatibility and target-protocol acknowledgement. Neither
-   run takes focus or permits system fallback;
+   run takes focus or permits system fallback; and
 4. configures, builds, and runs the independent CMake consumer project under
-   CTest. That project also builds the native example through `MadoPilot::Cpp`
-   alone and runs its safe `--check` mode.
+   CTest. That project builds the production default OCR and native examples
+   through `MadoPilot::Cpp` alone and runs their controlled modes.
 
 When the caller owns a fixture lifecycle, pass `--ordinary "<full title>"` or
 `--acknowledged "<full title>"` directly to the native example. Those modes send

@@ -12,13 +12,16 @@
 //! retaining a second identity registry.
 
 use std::ops::Deref;
+#[cfg(feature = "private-fixture")]
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "private-fixture")]
+use mado_pilot::OcrBackend;
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
-    DiagnosticOptions, Engine, FrameDescriptor, MonotonicInstant, OcrBackend, PixelExtent,
-    TargetDescription, TargetId,
+    DefaultOcrConfig, DiagnosticLevel, DiagnosticOptions, Engine, FrameDescriptor,
+    MonotonicInstant, PixelExtent, TargetDescription, TargetId,
 };
 
 use crate::boundary::{self, Input, Out, Versioned, covers, inputs, prefixes};
@@ -30,12 +33,14 @@ use crate::status::{
     madopilot_status_t,
 };
 use crate::types::{
-    MADOPILOT_PIXEL_FORMAT_RGBA8, MADOPILOT_SOURCE_NATIVE_MACOS, MADOPILOT_SOURCE_NATIVE_WINDOWS,
-    MADOPILOT_SOURCE_REPLAY_DIRECTORY, MADOPILOT_SOURCE_REPLAY_MEMORY,
-    MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION, MADOPILOT_TARGET_HAS_KIND,
-    MADOPILOT_TARGET_SUPPORTS_PLACEMENT, madopilot_permission_kind_t, madopilot_replay_frame_t,
-    madopilot_source_t, madopilot_target_kind_t, madopilot_target_t, pixel_format,
-    pixel_format_code, space_code,
+    MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG, MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL,
+    MADOPILOT_DIAGNOSTIC_LEVEL_OFF, MADOPILOT_PIXEL_FORMAT_RGBA8, MADOPILOT_SOURCE_NATIVE_MACOS,
+    MADOPILOT_SOURCE_NATIVE_WINDOWS, MADOPILOT_SOURCE_REPLAY_DIRECTORY,
+    MADOPILOT_SOURCE_REPLAY_MEMORY, MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION,
+    MADOPILOT_TARGET_HAS_KIND, MADOPILOT_TARGET_SUPPORTS_PLACEMENT,
+    madopilot_default_ocr_options_t, madopilot_engine_options_t, madopilot_permission_kind_t,
+    madopilot_replay_frame_t, madopilot_source_t, madopilot_target_kind_t, madopilot_target_t,
+    pixel_format, pixel_format_code, space_code,
 };
 use crate::view::{self, madopilot_bytes_t, madopilot_str_t};
 use crate::{handle, hooks};
@@ -105,6 +110,60 @@ pub(crate) struct TargetList(Vec<TargetRecord>);
 impl TargetList {
     pub(crate) fn targets(&self) -> &[TargetRecord] {
         &self.0
+    }
+}
+
+inputs! {
+    impl Input for madopilot_engine_options_t {
+        const MANDATORY: usize = 16;
+        const NAME: &'static str = "madopilot_engine_options_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_engine_options_t,
+            struct_size,
+            flags,
+            diagnostic_level,
+            diagnostic_capacity,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[];
+
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                diagnostic_level: MADOPILOT_DIAGNOSTIC_LEVEL_OFF,
+                diagnostic_capacity: 0,
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            self.flags
+        }
+    }
+
+    impl Input for madopilot_default_ocr_options_t {
+        const MANDATORY: usize = 40;
+        const NAME: &'static str = "madopilot_default_ocr_options_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_default_ocr_options_t,
+            struct_size,
+            flags,
+            model_root,
+            runtime_path,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[];
+
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                model_root: madopilot_str_t::empty(),
+                runtime_path: madopilot_str_t::empty(),
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            self.flags
+        }
     }
 }
 
@@ -183,6 +242,57 @@ inputs! {
         }
     }
 }
+/// Converts nullable engine options. Null selects the allocation-free default.
+///
+/// # Safety
+///
+/// A non-null `options` pointer remains readable for the call.
+unsafe fn engine_options(
+    options: *const madopilot_engine_options_t,
+) -> Result<DiagnosticOptions, Fault> {
+    if options.is_null() {
+        return Ok(DiagnosticOptions::off());
+    }
+    // SAFETY: forwarded unchanged from this function's own contract.
+    let options = unsafe { boundary::read_input(options) }?;
+    if options.flags != 0 {
+        return Err(Fault::abi(format!(
+            "madopilot_engine_options_t sets unknown flags {:#x}",
+            options.flags
+        )));
+    }
+    let level = match options.diagnostic_level {
+        MADOPILOT_DIAGNOSTIC_LEVEL_OFF => DiagnosticLevel::Off,
+        MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL => DiagnosticLevel::Normal,
+        MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG => DiagnosticLevel::Debug,
+        other => return Err(Fault::abi(format!("unrecognized diagnostic level {other}"))),
+    };
+    DiagnosticOptions::new(level, options.diagnostic_capacity as usize)
+        .map_err(|error| Fault::from_error(&error, MADOPILOT_ERROR_CATEGORY_ENGINE))
+}
+
+/// Converts the mandatory default OCR prerequisite structure.
+///
+/// # Safety
+///
+/// The structure and both string views remain readable for the call.
+unsafe fn default_ocr_options(
+    options: *const madopilot_default_ocr_options_t,
+) -> Result<DefaultOcrConfig, Fault> {
+    // SAFETY: forwarded unchanged from this function's own contract.
+    let options = unsafe { boundary::read_input(options) }?;
+    if options.flags != 0 {
+        return Err(Fault::abi(format!(
+            "madopilot_default_ocr_options_t sets unknown flags {:#x}",
+            options.flags
+        )));
+    }
+    // SAFETY: both views remain readable under this function's contract.
+    let model_root = unsafe { view::non_empty_string(options.model_root, "model_root") }?;
+    // SAFETY: as above.
+    let runtime_path = unsafe { view::non_empty_string(options.runtime_path, "runtime_path") }?;
+    Ok(DefaultOcrConfig::new(model_root, runtime_path))
+}
 
 impl Versioned for madopilot_target_t {
     // Through `coordinate_spaces`: what a target is, before what it is called.
@@ -256,13 +366,26 @@ unsafe fn replay_source(source: &madopilot_source_t) -> Result<ReplaySource, Fau
 }
 
 #[cfg(windows)]
-fn native_windows_engine(diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
-    mado_pilot::windows_engine(mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics))
-        .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
+fn native_windows_engine(
+    diagnostics: DiagnosticOptions,
+    default_ocr: Option<&DefaultOcrConfig>,
+    operation: &mado_pilot::OperationContext,
+) -> Result<Engine, Fault> {
+    let request = mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics);
+    let result = if let Some(config) = default_ocr {
+        mado_pilot::windows_engine_with_default_ocr(request, config, operation)
+    } else {
+        mado_pilot::windows_engine(request)
+    };
+    result.map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
 }
 
 #[cfg(not(windows))]
-fn native_windows_engine(_diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+fn native_windows_engine(
+    _diagnostics: DiagnosticOptions,
+    _default_ocr: Option<&DefaultOcrConfig>,
+    _operation: &mado_pilot::OperationContext,
+) -> Result<Engine, Fault> {
     Err(Fault::from_error(
         &mado_pilot::Error::new(
             mado_pilot::Status::Unsupported,
@@ -273,13 +396,26 @@ fn native_windows_engine(_diagnostics: DiagnosticOptions) -> Result<Engine, Faul
 }
 
 #[cfg(target_os = "macos")]
-fn native_macos_engine(diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
-    mado_pilot::macos_engine(mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics))
-        .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
+fn native_macos_engine(
+    diagnostics: DiagnosticOptions,
+    default_ocr: Option<&DefaultOcrConfig>,
+    operation: &mado_pilot::OperationContext,
+) -> Result<Engine, Fault> {
+    let request = mado_pilot::NativeEngineRequest::new().with_diagnostics(diagnostics);
+    let result = if let Some(config) = default_ocr {
+        mado_pilot::macos_engine_with_default_ocr(request, config, operation)
+    } else {
+        mado_pilot::macos_engine(request)
+    };
+    result.map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn native_macos_engine(_diagnostics: DiagnosticOptions) -> Result<Engine, Fault> {
+fn native_macos_engine(
+    _diagnostics: DiagnosticOptions,
+    _default_ocr: Option<&DefaultOcrConfig>,
+    _operation: &mado_pilot::OperationContext,
+) -> Result<Engine, Fault> {
     Err(Fault::from_error(
         &mado_pilot::Error::new(
             mado_pilot::Status::Unsupported,
@@ -383,6 +519,13 @@ unsafe fn replay_frame(
     .map_err(|fault| Fault::from_error(&fault.into(), MADOPILOT_ERROR_CATEGORY_CAPTURE))
 }
 
+enum OcrWiring {
+    None,
+    #[cfg(feature = "private-fixture")]
+    Backend(Arc<dyn OcrBackend>),
+    Default(*const madopilot_default_ocr_options_t),
+}
+
 pub(crate) fn create(
     source: *const madopilot_source_t,
     operation: *const crate::types::madopilot_operation_t,
@@ -394,7 +537,7 @@ pub(crate) fn create(
 
 pub(crate) fn create_with_options(
     source: *const madopilot_source_t,
-    options: *const crate::types::madopilot_engine_options_t,
+    options: *const madopilot_engine_options_t,
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
@@ -402,20 +545,10 @@ pub(crate) fn create_with_options(
     create_inner(source, options, operation, out_engine, out_error)
 }
 
-fn create_inner(
+pub(crate) fn create_with_default_ocr(
     source: *const madopilot_source_t,
-    options: *const crate::types::madopilot_engine_options_t,
-    operation: *const crate::types::madopilot_operation_t,
-    out_engine: *mut *mut madopilot_engine_t,
-    out_error: *mut *mut madopilot_error_t,
-) -> madopilot_status_t {
-    create_inner_with_ocr(source, options, operation, out_engine, out_error, None)
-}
-
-#[cfg(feature = "private-fixture")]
-pub(crate) fn create_private_ocr_fixture(
-    source: *const madopilot_source_t,
-    options: *const crate::types::madopilot_engine_options_t,
+    options: *const madopilot_engine_options_t,
+    default_ocr: *const madopilot_default_ocr_options_t,
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
@@ -426,17 +559,52 @@ pub(crate) fn create_private_ocr_fixture(
         operation,
         out_engine,
         out_error,
-        Some(crate::fixture::ocr_backend()),
+        OcrWiring::Default(default_ocr),
+    )
+}
+
+fn create_inner(
+    source: *const madopilot_source_t,
+    options: *const madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
+    create_inner_with_ocr(
+        source,
+        options,
+        operation,
+        out_engine,
+        out_error,
+        OcrWiring::None,
+    )
+}
+
+#[cfg(feature = "private-fixture")]
+pub(crate) fn create_private_ocr_fixture(
+    source: *const madopilot_source_t,
+    options: *const madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
+    create_inner_with_ocr(
+        source,
+        options,
+        operation,
+        out_engine,
+        out_error,
+        OcrWiring::Backend(crate::fixture::ocr_backend()),
     )
 }
 
 fn create_inner_with_ocr(
     source: *const madopilot_source_t,
-    options: *const crate::types::madopilot_engine_options_t,
+    options: *const madopilot_engine_options_t,
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
-    ocr_backend: Option<Arc<dyn OcrBackend>>,
+    ocr_wiring: OcrWiring,
 ) -> madopilot_status_t {
     if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
@@ -445,22 +613,27 @@ fn create_inner_with_ocr(
         return status;
     }
     hooks::reach(hooks::Site::Entry);
+    if matches!(&ocr_wiring, OcrWiring::Default(default_ocr) if default_ocr.is_null()) {
+        // SAFETY: `out_error` was validated above and `out_engine` remains
+        // initialized to null.
+        return unsafe { report(out_error, Err(Fault::abi("default_ocr must not be null"))) };
+    }
 
     // SAFETY: `out_error` was validated above.
     unsafe {
         report(
             out_error,
-            build_engine(source, options, operation, out_engine, ocr_backend),
+            build_engine(source, options, operation, out_engine, ocr_wiring),
         )
     }
 }
 
 fn build_engine(
     source: *const madopilot_source_t,
-    options: *const crate::types::madopilot_engine_options_t,
+    options: *const madopilot_engine_options_t,
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
-    ocr_backend: Option<Arc<dyn OcrBackend>>,
+    ocr_wiring: OcrWiring,
 ) -> Result<(), Fault> {
     // SAFETY: the caller keeps every structure and handle it named readable and
     // retained for the call.
@@ -470,7 +643,17 @@ fn build_engine(
     // SAFETY: as above.
     let request = unsafe { boundary::read_input::<madopilot_source_t>(source) }?;
     // SAFETY: null selects defaults; otherwise the caller keeps the options readable.
-    let diagnostics = unsafe { crate::diagnostic::options(options) }?;
+    let diagnostics = unsafe { engine_options(options) }?;
+    let (ocr_backend, default_ocr) = match ocr_wiring {
+        OcrWiring::None => (None, None),
+        #[cfg(feature = "private-fixture")]
+        OcrWiring::Backend(backend) => (Some(backend), None),
+        OcrWiring::Default(default_ocr) => {
+            // SAFETY: the required non-null structure and both views remain
+            // readable for this synchronous call.
+            (None, Some(unsafe { default_ocr_options(default_ocr) }?))
+        }
+    };
 
     // SAFETY: as above. Fields not selected by the source tag remain unread.
     let fixture_ocr = ocr_backend.is_some();
@@ -484,11 +667,19 @@ fn build_engine(
             if let Some(backend) = ocr_backend {
                 replay = replay.with_ocr_backend(backend);
             }
-            mado_pilot::replay_engine(replay)
-                .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
+            let result = if let Some(config) = default_ocr.as_ref() {
+                mado_pilot::replay_engine_with_default_ocr(replay, config, context.inner())
+            } else {
+                mado_pilot::replay_engine(replay)
+            };
+            result.map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
         }
-        MADOPILOT_SOURCE_NATIVE_WINDOWS if !fixture_ocr => native_windows_engine(diagnostics)?,
-        MADOPILOT_SOURCE_NATIVE_MACOS if !fixture_ocr => native_macos_engine(diagnostics)?,
+        MADOPILOT_SOURCE_NATIVE_WINDOWS if !fixture_ocr => {
+            native_windows_engine(diagnostics, default_ocr.as_ref(), context.inner())?
+        }
+        MADOPILOT_SOURCE_NATIVE_MACOS if !fixture_ocr => {
+            native_macos_engine(diagnostics, default_ocr.as_ref(), context.inner())?
+        }
         MADOPILOT_SOURCE_NATIVE_WINDOWS | MADOPILOT_SOURCE_NATIVE_MACOS => {
             return Err(Fault::abi(
                 "the private OCR fixture constructor accepts replay sources only",

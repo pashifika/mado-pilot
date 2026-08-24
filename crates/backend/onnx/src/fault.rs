@@ -10,6 +10,18 @@ use mado_pilot_core::{Error, Interruption, Status};
 pub enum OnnxBackendFault {
     /// The runtime path was not an absolute canonical path to the reviewed filename.
     InvalidRuntimePath,
+    /// The model root was not an explicit absolute directory.
+    InvalidModelRoot,
+    /// The caller-selected model root could not be opened.
+    ModelRootUnavailable,
+    /// The accepted detector was absent or unreadable at its fixed relative path.
+    DetectorUnavailable,
+    /// The accepted detector path, size, or digest did not match G-004.
+    DetectorMismatch,
+    /// The accepted recognizer was absent or unreadable at its fixed relative path.
+    RecognizerUnavailable,
+    /// The accepted recognizer path, size, or digest did not match G-004.
+    RecognizerMismatch,
     /// The controlled runtime file could not be opened.
     RuntimeUnavailable,
     /// The runtime version or API table did not match the reviewed boundary.
@@ -43,12 +55,17 @@ impl OnnxBackendFault {
     #[must_use]
     pub const fn status(self) -> Status {
         match self {
-            Self::InvalidRuntimePath | Self::ProfileMismatch | Self::GraphMismatch => {
-                Status::InvalidArgument
-            }
-            Self::RuntimeUnavailable | Self::RuntimeIncompatible | Self::RuntimeConflict => {
-                Status::Unsupported
-            }
+            Self::InvalidRuntimePath
+            | Self::InvalidModelRoot
+            | Self::ProfileMismatch
+            | Self::GraphMismatch => Status::InvalidArgument,
+            Self::ModelRootUnavailable
+            | Self::DetectorUnavailable
+            | Self::RecognizerUnavailable
+            | Self::RuntimeUnavailable
+            | Self::RuntimeIncompatible
+            | Self::RuntimeConflict => Status::Unsupported,
+            Self::DetectorMismatch | Self::RecognizerMismatch => Status::AssetInvalid,
             Self::ResourceLimit | Self::Busy => Status::LimitExceeded,
             Self::Closed => Status::Closed,
             Self::InvalidPixels | Self::NativeFailure | Self::MalformedOutput => {
@@ -59,12 +76,26 @@ impl OnnxBackendFault {
         }
     }
 
-    /// Returns a static diagnostic detail with no path, model, text, or native message.
+    /// Returns a static diagnostic detail with no host path, text, or native message.
     #[must_use]
     pub const fn detail(self) -> &'static str {
         match self {
             Self::InvalidRuntimePath => {
                 "ONNX runtime path is not the controlled canonical target file"
+            }
+            Self::InvalidModelRoot => "accepted OCR model root is not an absolute directory",
+            Self::ModelRootUnavailable => "accepted OCR model root is unavailable",
+            Self::DetectorUnavailable => {
+                "accepted OCR detector is unavailable at rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx"
+            }
+            Self::DetectorMismatch => {
+                "accepted OCR detector must be 4745517 bytes with SHA-256 d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+            }
+            Self::RecognizerUnavailable => {
+                "accepted OCR recognizer is unavailable at rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx"
+            }
+            Self::RecognizerMismatch => {
+                "accepted OCR recognizer must be 21234383 bytes with SHA-256 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
             }
             Self::RuntimeUnavailable => "controlled ONNX runtime is unavailable",
             Self::RuntimeIncompatible => "controlled ONNX runtime is incompatible",
@@ -190,5 +221,71 @@ impl OnnxBackendFacts {
     #[must_use]
     pub const fn recognition_batch(self) -> u32 {
         self.recognition_batch
+    }
+}
+
+/// Cumulative, path-free resource observations for one opened session pair.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OnnxBackendObservations {
+    mapped_bytes: u64,
+    detector_runs: u64,
+    recognizer_runs: u64,
+    session_pairs: u32,
+    sessions: u32,
+}
+
+impl OnnxBackendObservations {
+    pub(crate) const fn opened() -> Self {
+        Self {
+            mapped_bytes: 0,
+            detector_runs: 0,
+            recognizer_runs: 0,
+            session_pairs: 1,
+            sessions: 2,
+        }
+    }
+
+    pub(crate) fn record_mapping(&mut self, bytes: usize) {
+        self.mapped_bytes = self
+            .mapped_bytes
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn record_detector_run(&mut self) {
+        self.detector_runs = self.detector_runs.saturating_add(1);
+    }
+
+    pub(crate) fn record_recognizer_run(&mut self) {
+        self.recognizer_runs = self.recognizer_runs.saturating_add(1);
+    }
+
+    /// Returns cumulative mapped pixels presented to native inference.
+    #[must_use]
+    pub const fn mapped_bytes(self) -> u64 {
+        self.mapped_bytes
+    }
+
+    /// Returns cumulative detector tensor runs.
+    #[must_use]
+    pub const fn detector_runs(self) -> u64 {
+        self.detector_runs
+    }
+
+    /// Returns cumulative recognizer tensor runs.
+    #[must_use]
+    pub const fn recognizer_runs(self) -> u64 {
+        self.recognizer_runs
+    }
+
+    /// Returns the number of opened detector/recognizer pairs.
+    #[must_use]
+    pub const fn session_pairs(self) -> u32 {
+        self.session_pairs
+    }
+
+    /// Returns the number of opened native sessions.
+    #[must_use]
+    pub const fn sessions(self) -> u32 {
+        self.sessions
     }
 }

@@ -310,6 +310,7 @@ cargo deny --locked check
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 cargo run --locked --package mado-pilot --example ocr-fixture
+cargo build --locked --package mado-pilot-capi --features private-fixture
 cargo run --locked --package mado-pilot-capi --features private-fixture \
   --example c-abi-check -- --label "<host>"
 

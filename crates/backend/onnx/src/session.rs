@@ -9,7 +9,7 @@ use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{TensorElementType, ValueType};
 
-use crate::fault::OnnxBackendFault;
+use crate::fault::{OnnxBackendFault, OnnxBackendObservations};
 use crate::vocabulary::Vocabulary;
 
 const DETECTOR_INPUT: &str = "x";
@@ -44,6 +44,7 @@ pub(crate) struct SessionPair {
     detector: Session,
     recognizer: Session,
     vocabulary: Vocabulary,
+    observations: OnnxBackendObservations,
     _source: OcrModelSource,
     _lease: PairLease,
 }
@@ -95,17 +96,28 @@ impl SessionPair {
             detector,
             recognizer,
             vocabulary,
+            observations: OnnxBackendObservations::opened(),
             _source: source,
             _lease: lease,
         })
     }
 
+    pub(crate) fn record_mapping(&mut self, bytes: usize) {
+        self.observations.record_mapping(bytes);
+    }
+
     pub(crate) fn detector_mut(&mut self) -> &mut Session {
+        self.observations.record_detector_run();
         &mut self.detector
     }
 
     pub(crate) fn recognizer_and_vocabulary_mut(&mut self) -> (&mut Session, &Vocabulary) {
+        self.observations.record_recognizer_run();
         (&mut self.recognizer, &self.vocabulary)
+    }
+
+    pub(crate) const fn observations(&self) -> OnnxBackendObservations {
+        self.observations
     }
 }
 

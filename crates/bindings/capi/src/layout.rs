@@ -25,18 +25,18 @@ use crate::ocr::madopilot_ocr_result_t;
 use crate::operation::madopilot_cancellation_t;
 use crate::table::madopilot_api_t;
 use crate::types::{
-    madopilot_build_info_t, madopilot_diagnostic_batch_info_t, madopilot_diagnostic_record_t,
-    madopilot_engine_capabilities_t, madopilot_engine_options_t, madopilot_error_detail_t,
-    madopilot_find_request_t, madopilot_frame_info_t, madopilot_frame_stamp_t, madopilot_image_t,
-    madopilot_input_attempt_t, madopilot_input_capability_t, madopilot_input_descriptor_t,
-    madopilot_input_event_t, madopilot_input_open_request_t, madopilot_input_receipt_info_t,
-    madopilot_input_request_t, madopilot_map_request_t, madopilot_match_options_t,
-    madopilot_match_t, madopilot_ocr_point_t, madopilot_ocr_region_t, madopilot_ocr_request_t,
-    madopilot_ocr_requested_region_t, madopilot_ocr_result_info_t, madopilot_open_request_t,
-    madopilot_operation_t, madopilot_package_info_t, madopilot_package_source_t,
-    madopilot_permission_t, madopilot_pixel_rect_t, madopilot_replay_frame_t,
-    madopilot_result_info_t, madopilot_session_info_t, madopilot_source_t, madopilot_target_t,
-    madopilot_template_info_t,
+    madopilot_build_info_t, madopilot_default_ocr_options_t, madopilot_diagnostic_batch_info_t,
+    madopilot_diagnostic_record_t, madopilot_engine_capabilities_t, madopilot_engine_options_t,
+    madopilot_error_detail_t, madopilot_find_request_t, madopilot_frame_info_t,
+    madopilot_frame_stamp_t, madopilot_image_t, madopilot_input_attempt_t,
+    madopilot_input_capability_t, madopilot_input_descriptor_t, madopilot_input_event_t,
+    madopilot_input_open_request_t, madopilot_input_receipt_info_t, madopilot_input_request_t,
+    madopilot_map_request_t, madopilot_match_options_t, madopilot_match_t, madopilot_ocr_point_t,
+    madopilot_ocr_region_t, madopilot_ocr_request_t, madopilot_ocr_requested_region_t,
+    madopilot_ocr_result_info_t, madopilot_open_request_t, madopilot_operation_t,
+    madopilot_package_info_t, madopilot_package_source_t, madopilot_permission_t,
+    madopilot_pixel_rect_t, madopilot_replay_frame_t, madopilot_result_info_t,
+    madopilot_session_info_t, madopilot_source_t, madopilot_target_t, madopilot_template_info_t,
 };
 use crate::view::{madopilot_bytes_t, madopilot_str_t};
 
@@ -92,6 +92,13 @@ pub const LAYOUT: &[TypeLayout] = &[
         flags,
         diagnostic_level,
         diagnostic_capacity,
+    ),
+    measure!(
+        madopilot_default_ocr_options_t,
+        struct_size,
+        flags,
+        model_root,
+        runtime_path,
     ),
     measure!(
         madopilot_diagnostic_batch_info_t,
@@ -272,6 +279,12 @@ pub const LAYOUT: &[TypeLayout] = &[
         reserved,
         library_version,
         required_backend,
+        default_ocr_backend,
+        default_ocr_backend_version,
+        default_ocr_runtime_profile,
+        default_ocr_model,
+        default_ocr_model_version,
+        default_ocr_profile,
     ),
     measure!(
         madopilot_operation_t,
@@ -566,6 +579,7 @@ pub const LAYOUT: &[TypeLayout] = &[
         ocr_result_info,
         ocr_result_region_at,
         ocr_result_text_at,
+        engine_create_with_default_ocr,
     ),
 ];
 

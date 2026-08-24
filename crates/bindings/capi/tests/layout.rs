@@ -47,6 +47,7 @@ const FROZEN_LAYOUT: [(&str, &str); 2] = [
 /// asymmetry is recorded.
 const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_engine_options_t", 16),
+    ("madopilot_default_ocr_options_t", 40),
     ("madopilot_engine_capabilities_t", 8),
     ("madopilot_permission_t", 16),
     ("madopilot_input_capability_t", 28),
@@ -178,6 +179,7 @@ const TABLE_ORDER: &[&str] = &[
     "ocr_result_info",
     "ocr_result_region_at",
     "ocr_result_text_at",
+    "engine_create_with_default_ocr",
 ];
 
 fn find(name: &str) -> &'static TypeLayout {
@@ -378,10 +380,10 @@ fn the_function_table_keeps_its_abi_major_one_order() {
     let ocr = &table.fields[phase_1_2_start + 21..];
     assert_eq!(
         ocr.iter().map(|field| field.offset).collect::<Vec<_>>(),
-        [592, 600, 608, 616, 624, 632],
-        "ABI 1.3 appends OCR after the complete 1.2 extent"
+        [592, 600, 608, 616, 624, 632, 640],
+        "ABI 1.3 appends OCR and its default composition after the complete 1.2 extent"
     );
-    assert_eq!(table.size, 640, "ABI 1.3 table extent is frozen");
+    assert_eq!(table.size, 648, "ABI 1.3 table extent is frozen");
 }
 
 #[test]
