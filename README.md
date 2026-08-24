@@ -246,9 +246,11 @@ cannot compile them. It needs a C and C++ toolchain and CMake, and it compares t
 measured ABI layout against current and frozen headers, compiles the frozen ABI
 1.0 and 1.2 callers against the current library, and runs consumer programs:
 ```sh
+cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 cargo run --locked --package mado-pilot --example ocr-fixture
 cargo run --locked --package mado-pilot --example ocr-default
+cargo build --locked --package mado-pilot-capi --features private-fixture
 cargo run --locked --package mado-pilot-capi --features private-fixture \
   --example c-abi-check -- --label "<host>"
 ```

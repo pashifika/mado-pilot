@@ -546,12 +546,15 @@ wrapper never throws one.
 ```sh
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+cargo build --locked --package mado-pilot-capi --features private-fixture
 cargo run --locked --package mado-pilot-capi --features private-fixture \
   --example c-abi-check -- --label "<host>"
 ```
 
-That one command covers the C surface and the C++ surface together. For the C++
-half it:
+This sequence covers the C and C++ surfaces together. The explicit feature build
+is required because compiling the checker example alone does not replace the
+profile-root dynamic library with its private-fixture variant. For the C++ half
+the checker:
 
 1. compiles and runs `tests/cpp/madopilot-cpp-ownership.cpp`: move-only OCR
    ownership, explicit clone, lvalue-only views, copy/move request and

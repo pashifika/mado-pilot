@@ -752,6 +752,7 @@ with the Rust `#[repr(C)]` definitions is proved rather than asserted:
 ```sh
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+cargo build --locked --package mado-pilot-capi --features private-fixture
 cargo run --locked --package mado-pilot-capi --features private-fixture \
   --example c-abi-check -- --label "<host>"
 ```
