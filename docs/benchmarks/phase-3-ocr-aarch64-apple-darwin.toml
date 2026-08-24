@@ -1,6 +1,6 @@
-# Phase 3 accepted CPU OCR profile measured on Apple M1 Pro at source
-# b83f23f73876e7d5eb1fd75e31ec44c2e3f4a1b3 and tree
-# 7dfe9c278ff5e1481b07cfe9a5b9a374b4f419d4. Windows ceilings remain withheld.
+# Phase 3 accepted CPU OCR profile measured on Apple M1 Pro at review-fixed source
+# e41fbbd5457d5f9c10da55982a799c608ccc195e and tree
+# 9fbc47ef0698047aaab5c51e3616712e87ae9b08. Windows ceilings remain withheld.
 
 format_version = 1
 
