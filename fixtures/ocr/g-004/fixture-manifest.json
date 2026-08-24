@@ -1,0 +1,1059 @@
+{
+  "schema_version": 1,
+  "fixture_profile_id": "g-004-japanese-ui-v3",
+  "supersedes_fixture_profile_id": "g-004-japanese-ui-v2",
+  "license": "Apache-2.0",
+  "font": {
+    "name": "Noto Sans JP",
+    "source_revision": "ec626514f79f831f1ab848a82114a0ce7e2d6372",
+    "source_url": "https://github.com/google/fonts/blob/ec626514f79f831f1ab848a82114a0ce7e2d6372/ofl/notosansjp/NotoSansJP%5Bwght%5D.ttf",
+    "sha256": "c2f3b4d463500a2ddcd3849cded1fceeb9fd6d1c32e6cbecd568453ba50fc68f",
+    "license": "OFL-1.1",
+    "bytes_bundled": false
+  },
+  "language_profile": {
+    "scripts": [
+      "Japanese",
+      "basic Latin",
+      "ASCII digits",
+      "declared UI symbols"
+    ],
+    "orientation": "horizontal-only",
+    "vertical_text_supported": false,
+    "normalization": {
+      "unicode": "NFC",
+      "trim_leading_trailing_whitespace": true,
+      "internal_whitespace": "preserve",
+      "case_fold": false,
+      "width_fold": false
+    }
+  },
+  "oracle": {
+    "text": "exact normalized UTF-8 per region",
+    "region_count": "exact",
+    "ordering": "RapidOCR v3.9.2 detector order, fixed explicitly in manifest order",
+    "geometry_space": "source-relative quadrilateral",
+    "minimum_iou": 0.5,
+    "maximum_center_delta_x": 0.025,
+    "maximum_center_delta_y": 0.025,
+    "confidence": {
+      "meaning": "RapidOCR CTC mean of retained non-blank token maxima after duplicate removal",
+      "valid_range": [
+        0.0,
+        1.0
+      ],
+      "deterministic_across_measured_passes": true,
+      "universal_hard_floor": null
+    },
+    "unexpected_region_threshold": 0.5,
+    "cross_target": "all normalized text, region count, ordering, and pass/fail outcomes identical; confidence values may differ"
+  },
+  "images": [
+    {
+      "file": "hud.png",
+      "sha256": "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288",
+      "width": 960,
+      "height": 540,
+      "regions": [
+        {
+          "id": "hud-name",
+          "order": 0,
+          "text_nfc": "魔導士",
+          "source_relative_quad": [
+            [
+              0.05520833,
+              0.11111111
+            ],
+            [
+              0.21145833,
+              0.11111111
+            ],
+            [
+              0.21145833,
+              0.20740741
+            ],
+            [
+              0.05520833,
+              0.20740741
+            ]
+          ]
+        },
+        {
+          "id": "hud-level",
+          "order": 1,
+          "text_nfc": "Lv.42",
+          "source_relative_quad": [
+            [
+              0.734375,
+              0.12407407
+            ],
+            [
+              0.84479167,
+              0.12407407
+            ],
+            [
+              0.84479167,
+              0.19814815
+            ],
+            [
+              0.734375,
+              0.19814815
+            ]
+          ]
+        },
+        {
+          "id": "hud-hp",
+          "order": 2,
+          "text_nfc": "HP1234/5678",
+          "source_relative_quad": [
+            [
+              0.05520833,
+              0.32222222
+            ],
+            [
+              0.33229167,
+              0.32222222
+            ],
+            [
+              0.33229167,
+              0.41111111
+            ],
+            [
+              0.05520833,
+              0.41111111
+            ]
+          ]
+        },
+        {
+          "id": "hud-mp",
+          "order": 3,
+          "text_nfc": "MP98%",
+          "source_relative_quad": [
+            [
+              0.746875,
+              0.33333333
+            ],
+            [
+              0.890625,
+              0.33333333
+            ],
+            [
+              0.890625,
+              0.3962963
+            ],
+            [
+              0.746875,
+              0.3962963
+            ]
+          ]
+        },
+        {
+          "id": "hud-quest",
+          "order": 4,
+          "text_nfc": "クエスト",
+          "source_relative_quad": [
+            [
+              0.05520833,
+              0.53888889
+            ],
+            [
+              0.24479167,
+              0.53888889
+            ],
+            [
+              0.24479167,
+              0.62037037
+            ],
+            [
+              0.05520833,
+              0.62037037
+            ]
+          ]
+        },
+        {
+          "id": "hud-code",
+          "order": 5,
+          "text_nfc": "[A-7]",
+          "source_relative_quad": [
+            [
+              0.765625,
+              0.55
+            ],
+            [
+              0.85416667,
+              0.55
+            ],
+            [
+              0.85416667,
+              0.62592593
+            ],
+            [
+              0.765625,
+              0.62592593
+            ]
+          ]
+        },
+        {
+          "id": "hud-next",
+          "order": 6,
+          "text_nfc": "次へ>",
+          "source_relative_quad": [
+            [
+              0.05520833,
+              0.76296296
+            ],
+            [
+              0.17291667,
+              0.76296296
+            ],
+            [
+              0.17291667,
+              0.84814815
+            ],
+            [
+              0.05520833,
+              0.84814815
+            ]
+          ]
+        },
+        {
+          "id": "hud-ready",
+          "order": 7,
+          "text_nfc": "READY!",
+          "source_relative_quad": [
+            [
+              0.721875,
+              0.77962963
+            ],
+            [
+              0.846875,
+              0.77962963
+            ],
+            [
+              0.846875,
+              0.83888889
+            ],
+            [
+              0.721875,
+              0.83888889
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "file": "menu.png",
+      "sha256": "9ed48e4311e94556ca11cbfc4e109aaf0abc6dd7aae3faf7f04e419c1873ca09",
+      "width": 720,
+      "height": 480,
+      "regions": [
+        {
+          "id": "menu-title",
+          "order": 0,
+          "text_nfc": "設定",
+          "source_relative_quad": [
+            [
+              0.07361111,
+              0.11458333
+            ],
+            [
+              0.20416667,
+              0.11458333
+            ],
+            [
+              0.20416667,
+              0.21458333
+            ],
+            [
+              0.07361111,
+              0.21458333
+            ]
+          ]
+        },
+        {
+          "id": "menu-title-latin",
+          "order": 1,
+          "text_nfc": "MENU",
+          "source_relative_quad": [
+            [
+              0.72638889,
+              0.12916667
+            ],
+            [
+              0.86944444,
+              0.12916667
+            ],
+            [
+              0.86944444,
+              0.19375
+            ],
+            [
+              0.72638889,
+              0.19375
+            ]
+          ]
+        },
+        {
+          "id": "menu-volume",
+          "order": 2,
+          "text_nfc": "音量",
+          "source_relative_quad": [
+            [
+              0.08472222,
+              0.32916667
+            ],
+            [
+              0.19861111,
+              0.32916667
+            ],
+            [
+              0.19861111,
+              0.41666667
+            ],
+            [
+              0.08472222,
+              0.41666667
+            ]
+          ]
+        },
+        {
+          "id": "menu-volume-value",
+          "order": 3,
+          "text_nfc": "75%",
+          "source_relative_quad": [
+            [
+              0.75694444,
+              0.33958333
+            ],
+            [
+              0.86666667,
+              0.33958333
+            ],
+            [
+              0.86666667,
+              0.40625
+            ],
+            [
+              0.75694444,
+              0.40625
+            ]
+          ]
+        },
+        {
+          "id": "menu-subtitle",
+          "order": 4,
+          "text_nfc": "字幕",
+          "source_relative_quad": [
+            [
+              0.08472222,
+              0.54375
+            ],
+            [
+              0.19861111,
+              0.54375
+            ],
+            [
+              0.19861111,
+              0.63333333
+            ],
+            [
+              0.08472222,
+              0.63333333
+            ]
+          ]
+        },
+        {
+          "id": "menu-subtitle-value",
+          "order": 5,
+          "text_nfc": "[ON]",
+          "source_relative_quad": [
+            [
+              0.71805556,
+              0.55
+            ],
+            [
+              0.82777778,
+              0.55
+            ],
+            [
+              0.82777778,
+              0.63125
+            ],
+            [
+              0.71805556,
+              0.63125
+            ]
+          ]
+        },
+        {
+          "id": "menu-back",
+          "order": 6,
+          "text_nfc": "戻る",
+          "source_relative_quad": [
+            [
+              0.08472222,
+              0.77083333
+            ],
+            [
+              0.19861111,
+              0.77083333
+            ],
+            [
+              0.19861111,
+              0.85416667
+            ],
+            [
+              0.08472222,
+              0.85416667
+            ]
+          ]
+        },
+        {
+          "id": "menu-back-key",
+          "order": 7,
+          "text_nfc": "ESC",
+          "source_relative_quad": [
+            [
+              0.74583333,
+              0.78125
+            ],
+            [
+              0.83472222,
+              0.78125
+            ],
+            [
+              0.83472222,
+              0.84375
+            ],
+            [
+              0.74583333,
+              0.84375
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "file": "status.png",
+      "sha256": "49cd6f4ff13516f08028e06120e0ce844f612c95587b1fe6f462bfb999c8969f",
+      "width": 640,
+      "height": 360,
+      "regions": [
+        {
+          "id": "status-save",
+          "order": 0,
+          "text_nfc": "セーブ完了",
+          "source_relative_quad": [
+            [
+              0.0578125,
+              0.13611111
+            ],
+            [
+              0.3140625,
+              0.13611111
+            ],
+            [
+              0.3140625,
+              0.24166667
+            ],
+            [
+              0.0578125,
+              0.24166667
+            ]
+          ]
+        },
+        {
+          "id": "status-slot",
+          "order": 1,
+          "text_nfc": "SLOT03",
+          "source_relative_quad": [
+            [
+              0.7421875,
+              0.15555556
+            ],
+            [
+              0.8953125,
+              0.15555556
+            ],
+            [
+              0.8953125,
+              0.22777778
+            ],
+            [
+              0.7421875,
+              0.22777778
+            ]
+          ]
+        },
+        {
+          "id": "status-money",
+          "order": 2,
+          "text_nfc": "所持金",
+          "source_relative_quad": [
+            [
+              0.0578125,
+              0.43333333
+            ],
+            [
+              0.2171875,
+              0.43333333
+            ],
+            [
+              0.2171875,
+              0.53611111
+            ],
+            [
+              0.0578125,
+              0.53611111
+            ]
+          ]
+        },
+        {
+          "id": "status-money-value",
+          "order": 3,
+          "text_nfc": "12,345G",
+          "source_relative_quad": [
+            [
+              0.6671875,
+              0.44722222
+            ],
+            [
+              0.840625,
+              0.44722222
+            ],
+            [
+              0.840625,
+              0.53888889
+            ],
+            [
+              0.6671875,
+              0.53888889
+            ]
+          ]
+        },
+        {
+          "id": "status-confirm",
+          "order": 4,
+          "text_nfc": "確認#1",
+          "source_relative_quad": [
+            [
+              0.0578125,
+              0.73333333
+            ],
+            [
+              0.2125,
+              0.73333333
+            ],
+            [
+              0.2125,
+              0.82777778
+            ],
+            [
+              0.0578125,
+              0.82777778
+            ]
+          ]
+        },
+        {
+          "id": "status-confirm-key",
+          "order": 5,
+          "text_nfc": "[OK]",
+          "source_relative_quad": [
+            [
+              0.7421875,
+              0.75277778
+            ],
+            [
+              0.8359375,
+              0.75277778
+            ],
+            [
+              0.8359375,
+              0.84444444
+            ],
+            [
+              0.7421875,
+              0.84444444
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "file": "tooltip-v3.png",
+      "sha256": "52e6e8e954b63faba80a7c50cf09467c9e3df11f41e647b90528d457ea55b621",
+      "width": 1440,
+      "height": 720,
+      "regions": [
+        {
+          "id": "tooltip-card-title",
+          "order": 0,
+          "text_nfc": "戦術カード",
+          "source_relative_quad": [
+            [
+              0.09513889,
+              0.15972222
+            ],
+            [
+              0.21041667,
+              0.15972222
+            ],
+            [
+              0.21041667,
+              0.2125
+            ],
+            [
+              0.09513889,
+              0.2125
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-rule-title",
+          "order": 1,
+          "text_nfc": "一点照準",
+          "source_relative_quad": [
+            [
+              0.53541667,
+              0.15
+            ],
+            [
+              0.62291667,
+              0.15
+            ],
+            [
+              0.62291667,
+              0.19861111
+            ],
+            [
+              0.53541667,
+              0.19861111
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-card-type",
+          "order": 2,
+          "text_nfc": "強化",
+          "source_relative_quad": [
+            [
+              0.09513889,
+              0.22777778
+            ],
+            [
+              0.13819444,
+              0.22777778
+            ],
+            [
+              0.13819444,
+              0.27361111
+            ],
+            [
+              0.09513889,
+              0.27361111
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-rule-line-1",
+          "order": 3,
+          "text_nfc": "ターン終了時、HPが回復",
+          "source_relative_quad": [
+            [
+              0.53541667,
+              0.225
+            ],
+            [
+              0.72777778,
+              0.225
+            ],
+            [
+              0.72777778,
+              0.26666667
+            ],
+            [
+              0.53541667,
+              0.26666667
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-rule-line-2",
+          "order": 4,
+          "text_nfc": "追加攻撃35%",
+          "source_relative_quad": [
+            [
+              0.53541667,
+              0.28888889
+            ],
+            [
+              0.64027778,
+              0.28888889
+            ],
+            [
+              0.64027778,
+              0.33055556
+            ],
+            [
+              0.53541667,
+              0.33055556
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-rule-line-3",
+          "order": 5,
+          "text_nfc": "最大60重複",
+          "source_relative_quad": [
+            [
+              0.53541667,
+              0.35416667
+            ],
+            [
+              0.625,
+              0.35416667
+            ],
+            [
+              0.625,
+              0.39444444
+            ],
+            [
+              0.53541667,
+              0.39444444
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-unique-title",
+          "order": 6,
+          "text_nfc": "唯一",
+          "source_relative_quad": [
+            [
+              0.53541667,
+              0.49444444
+            ],
+            [
+              0.57847222,
+              0.49444444
+            ],
+            [
+              0.57847222,
+              0.53888889
+            ],
+            [
+              0.53541667,
+              0.53888889
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-unique-line",
+          "order": 7,
+          "text_nfc": "同じカードは1枚まで",
+          "source_relative_quad": [
+            [
+              0.53541667,
+              0.56666667
+            ],
+            [
+              0.69861111,
+              0.56666667
+            ],
+            [
+              0.69861111,
+              0.60833333
+            ],
+            [
+              0.53541667,
+              0.60833333
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-opening-title",
+          "order": 8,
+          "text_nfc": "開戦",
+          "source_relative_quad": [
+            [
+              0.53541667,
+              0.725
+            ],
+            [
+              0.57847222,
+              0.725
+            ],
+            [
+              0.57847222,
+              0.77083333
+            ],
+            [
+              0.53541667,
+              0.77083333
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-card-rule",
+          "order": 9,
+          "text_nfc": "ドロー2",
+          "source_relative_quad": [
+            [
+              0.09513889,
+              0.77222222
+            ],
+            [
+              0.17361111,
+              0.77222222
+            ],
+            [
+              0.17361111,
+              0.81666667
+            ],
+            [
+              0.09513889,
+              0.81666667
+            ]
+          ]
+        },
+        {
+          "id": "tooltip-opening-line",
+          "order": 10,
+          "text_nfc": "戦闘開始時に配置",
+          "source_relative_quad": [
+            [
+              0.53541667,
+              0.79722222
+            ],
+            [
+              0.67291667,
+              0.79722222
+            ],
+            [
+              0.67291667,
+              0.83888889
+            ],
+            [
+              0.53541667,
+              0.83888889
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "file": "mission.png",
+      "sha256": "b810dc93c6e69b37fca0c338c0a791c3e952268474b0930c340ca155923b1c90",
+      "width": 1440,
+      "height": 720,
+      "regions": [
+        {
+          "id": "mission-team",
+          "order": 0,
+          "text_nfc": "チーム編成",
+          "source_relative_quad": [
+            [
+              0.04930556,
+              0.07222222
+            ],
+            [
+              0.16388889,
+              0.07222222
+            ],
+            [
+              0.16388889,
+              0.12222222
+            ],
+            [
+              0.04930556,
+              0.12222222
+            ]
+          ]
+        },
+        {
+          "id": "mission-material",
+          "order": 1,
+          "text_nfc": "パートナーレベルアップ素材",
+          "source_relative_quad": [
+            [
+              0.60902778,
+              0.11388889
+            ],
+            [
+              0.86597222,
+              0.11388889
+            ],
+            [
+              0.86597222,
+              0.15972222
+            ],
+            [
+              0.60902778,
+              0.15972222
+            ]
+          ]
+        },
+        {
+          "id": "mission-difficulty",
+          "order": 2,
+          "text_nfc": "難易度6",
+          "source_relative_quad": [
+            [
+              0.61180556,
+              0.25277778
+            ],
+            [
+              0.67986111,
+              0.25277778
+            ],
+            [
+              0.67986111,
+              0.29583333
+            ],
+            [
+              0.61180556,
+              0.29583333
+            ]
+          ]
+        },
+        {
+          "id": "mission-recommended",
+          "order": 3,
+          "text_nfc": "推奨Lv.50",
+          "source_relative_quad": [
+            [
+              0.61180556,
+              0.37916667
+            ],
+            [
+              0.69513889,
+              0.37916667
+            ],
+            [
+              0.69513889,
+              0.42361111
+            ],
+            [
+              0.61180556,
+              0.42361111
+            ]
+          ]
+        },
+        {
+          "id": "mission-monster",
+          "order": 4,
+          "text_nfc": "登場モンスター",
+          "source_relative_quad": [
+            [
+              0.61180556,
+              0.50833333
+            ],
+            [
+              0.74166667,
+              0.50833333
+            ],
+            [
+              0.74166667,
+              0.55138889
+            ],
+            [
+              0.61180556,
+              0.55138889
+            ]
+          ]
+        },
+        {
+          "id": "mission-loot",
+          "order": 5,
+          "text_nfc": "獲得できる戦利品",
+          "source_relative_quad": [
+            [
+              0.61180556,
+              0.63611111
+            ],
+            [
+              0.75972222,
+              0.63611111
+            ],
+            [
+              0.75972222,
+              0.67916667
+            ],
+            [
+              0.61180556,
+              0.67916667
+            ]
+          ]
+        },
+        {
+          "id": "mission-efficiency",
+          "order": 6,
+          "text_nfc": "戦闘効率:5",
+          "source_relative_quad": [
+            [
+              0.61180556,
+              0.76944444
+            ],
+            [
+              0.70347222,
+              0.76944444
+            ],
+            [
+              0.70347222,
+              0.8125
+            ],
+            [
+              0.61180556,
+              0.8125
+            ]
+          ]
+        },
+        {
+          "id": "mission-enter",
+          "order": 7,
+          "text_nfc": "次の任務へ",
+          "source_relative_quad": [
+            [
+              0.62291667,
+              0.8875
+            ],
+            [
+              0.71736111,
+              0.8875
+            ],
+            [
+              0.71736111,
+              0.93194444
+            ],
+            [
+              0.62291667,
+              0.93194444
+            ]
+          ]
+        },
+        {
+          "id": "mission-confirm",
+          "order": 8,
+          "text_nfc": "確認",
+          "source_relative_quad": [
+            [
+              0.83819444,
+              0.88888889
+            ],
+            [
+              0.87847222,
+              0.88888889
+            ],
+            [
+              0.87847222,
+              0.93055556
+            ],
+            [
+              0.83819444,
+              0.93055556
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

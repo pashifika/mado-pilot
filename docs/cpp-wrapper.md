@@ -1,10 +1,10 @@
 # The C++ wrapper
 
 MadoPilot's C++ surface is a header-only RAII adapter over the released C ABI.
-It owns handles, turns statuses into an exception-free `Result`, and copies the
-text a caller needs after a C handle is gone. It performs no capture, mapping,
-matching, coordinate, or status logic of its own: every answer it returns came
-from a C table entry.
+It owns handles, turns statuses into an exception-free `Result`, and marks
+borrowed views. It performs no capture, matching, OCR, coordinate conversion,
+normalization, scheduling, fallback, or status logic of its own: every answer
+comes from a negotiated C table entry.
 
 The declarations are in
 [`crates/bindings/capi/include/madopilot/madopilot.hpp`](../crates/bindings/capi/include/madopilot/madopilot.hpp).
@@ -12,21 +12,23 @@ The replay workflow is
 [`examples/cpp/deterministic-slice.cpp`](../crates/bindings/capi/examples/cpp/deterministic-slice.cpp);
 the cross-target native workflow is
 [`examples/cpp/native-input.cpp`](../crates/bindings/capi/examples/cpp/native-input.cpp).
+The production and fixture one-shot OCR flows are
+[`examples/cpp/ocr-default.cpp`](../crates/bindings/capi/examples/cpp/ocr-default.cpp)
+and
+[`examples/cpp/ocr-fixture.cpp`](../crates/bindings/capi/examples/cpp/ocr-fixture.cpp).
 The contract underneath is [c-abi.md](c-abi.md). Read that one first: every
 rule here is a rule about how the C rules are expressed in C++, and none of them
 replaces one.
 
 ## This wrapper declares no ABI of its own
 
-The only ABI is the C one. Its complete 1.0 prefix is frozen under gate
-[`G-010`](validation-gates.md#g-010) by
-[ADR 0007](adr/0007-phase-1-c-abi-freeze.md). ABI 1.2 replaces the unreleased
-1.1 draft with explicit input routes and submission evidence, owned receipt
-access, operation activity tags, and bounded diagnostic readers under
-[ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md). What this
-header adds is source compatibility, governed by the Rust-side policy in
-[ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md): reviewed
-names, not yet a stability promise.
+The only ABI is the C one. ABI 1.0 and 1.2 are frozen complete prefixes under
+ADRs 0007 and 0023. ABI 1.3 appends one-shot OCR and immutable owned OCR results
+through 640 bytes under ADR 0035, then accepted default construction through
+648 bytes under
+[ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md).
+The wrapper adds source compatibility only, governed by ADR 0006's reviewed
+Rust-side naming policy.
 
 The wrapper is deliberately not a second place those values are written down.
 Its enumerated types are `using` aliases of the C types, so a caller writes
@@ -62,7 +64,7 @@ const madopilot::Api api = loaded.take();
 |---|---|---|
 | `Api` | nothing — the table belongs to the library | copyable |
 | `Error` | its own copies of the message and identifiers | copyable |
-| `Cancellation`, `Engine`, `TargetList`, `Package`, `Template`, `Session`, `Frame`, `Mapping`, `MatchResult`, `InputReceipt`, `DiagnosticReader`, `DiagnosticBatch` | one reference-counted C handle | `clone()` |
+| `Cancellation`, `Engine`, `TargetList`, `Package`, `Template`, `Session`, `Frame`, `Mapping`, `MatchResult`, `OcrResult`, `InputReceipt`, `DiagnosticReader`, `DiagnosticBatch` | one reference-counted C handle | `clone()` |
 
 **Every owner is move-only.** Copy construction and copy assignment are deleted,
 because an implicit copy would hide a reference-count bump behind an assignment.
@@ -93,23 +95,22 @@ refuses it with `MADOPILOT_STATUS_INVALID_ARGUMENT`. The wrapper itself returns
 `MADOPILOT_STATUS_UNSUPPORTED` when the negotiated prefix omits a required
 entry.
 
-Any method that can return a new owner requires the complete negotiated
-lifecycle and accessor suffix that owner exposes before invoking the creating C
-entry. In particular, `Session::send_input` requires every `InputReceipt`
-retain/release/accessor entry, and `Engine::take_diagnostic_reader` requires the
-complete reader/batch suffix. A C caller may negotiate and use a shorter
-individual-entry prefix directly; the C++ wrapper refuses to create an owner it
+Any method that returns a new owner requires the complete negotiated lifecycle
+and accessor suffix that owner exposes before invoking its creating C entry.
+`Session::recognize` therefore requires through
+`MADOPILOT_API_SIZE_OCR_RESULT_TEXT_AT`; `Session::send_input` and diagnostic
+reader creation apply the same rule to their own complete suffixes. A C caller
+may use a shorter individual-entry prefix directly; C++ refuses an owner it
 could not safely clone, inspect, and destroy.
 
 ### Parents and children
 
 The C rule is that releasing a parent never invalidates a separately retained
-child, and the wrapper preserves it. A `Mapping` stays readable after its
-`Frame`, `Session`, and `Engine` are destroyed. A `Template` outlives its
-`Package`. A `MatchResult` outlives all of them because it owns the exact frame
-it searched. An `InputReceipt` outlives its `Session` and `Engine`.
-A `DiagnosticReader` continues draining after engine release, and an owned
-`DiagnosticBatch` outlives both reader and engine.
+child. `Mapping` outlives frame/session/engine; `Template` outlives package;
+`MatchResult` outlives its search parents; `OcrResult` outlives frame, package,
+session, engine, and backend; receipts and diagnostic batches outlive their
+producers. Borrowed OCR text and result-description strings remain valid only
+while their `OcrResult` owner is retained.
 
 In a function returning `madopilot::Error`:
 
@@ -148,14 +149,11 @@ operation throws to report a MadoPilot failure. Every failure the library can
 report arrives as a status in a `Result`, and no status is translated into an
 exception.
 
-The wrapper does throw what its own allocations throw, which is `std::bad_alloc`.
-Allocations occur only when the wrapper creates caller-owned storage: copying an
-error's text, filling `MatchResult::matches`, copying typed request storage,
-copying an explicit borrowed string or byte view, and engaging owned wrapper
-values such as diagnostic batches. A caller that cannot tolerate
-`std::bad_alloc` from text copies can read `Error::status()` and borrowed views
-without copying. Describing an error releases its C handle whether or not a text
-copy succeeds.
+The wrapper can throw only its own allocation failures: copying error text,
+collecting match vectors, owning OCR request strings, copying an explicit
+borrowed view, or engaging standard-library containers. MadoPilot failures remain
+statuses in `Result`. Describing an error releases its C handle even when a text
+copy throws.
 
 ```cpp
 madopilot::Result<madopilot::Package> loaded = engine.load_package(source, operation);
@@ -315,12 +313,14 @@ the text most likely to outlive the handle it came from.
 
 ## Typed requests
 
-`Operation`, `EngineOptions`, `Source`, `PackageSource`, `InputOpenRequest`,
-`InputEvent`, `OpenRequest`, `MapRequest`, `MatchOptions`, `FindRequest`, and
-`InputRequest` are values a caller composes. Each fills the C structure's
-`struct_size` itself, so no call site can write a stale one. `InputRequest` owns
-its typed events and route plan, while each `to_c()` call owns an independent
-event-record projection that borrows text and route storage from that request.
+`Operation`, `EngineOptions`, `DefaultOcrOptions`, `Source`, `PackageSource`,
+`InputOpenRequest`, `InputEvent`, `OpenRequest`, `MapRequest`, `MatchOptions`,
+`FindRequest`, `OcrRequest`, and `InputRequest` are values a caller composes.
+Each fills the C structure's `struct_size` itself, so no call site can write a
+stale one. `DefaultOcrOptions` owns model-root/runtime strings. `InputRequest`
+owns its typed events and route plan, while each `to_c()` call owns an
+independent event-record projection that borrows text and route storage from
+that request.
 
 ```cpp
 const madopilot::Result<std::uint64_t> now = api.clock_now();
@@ -341,11 +341,13 @@ operation semantics. A platform route may expose it through documented native
 observational metadata; macOS `ProcessDirected` carries it in Core Graphics
 event-source user data visible to the addressed process.
 
-Three request values borrow handles rather than owning them, and say so:
+Four request relationships borrow handles rather than owning them, and say so:
 
 - an `Operation` borrows its `Cancellation`, which must outlive every call the
   operation is passed to;
 - a `FindRequest` borrows its `Frame` and its `Template`;
+- an `OcrRequest` borrows its `Frame` and, for explicit package composition,
+  its `Package` through each `Session::recognize` call; and
 - an `InputRequest` borrows its source `Frame`, which must stay retained until
   `Session::send_input` returns.
 
@@ -359,14 +361,36 @@ and `DiagnosticRecord::region` are `madopilot_pixel_rect_t` under the alias
 `Rect`, and each names the space it is measured in rather than reducing to an
 integer pair.
 
-A `Rect` the caller *supplies* is the other direction, and is narrower:
-`MapRequest::region` and `FindRequest::region` accept
-`MADOPILOT_SPACE_CAPTURE_PIXELS` only, because the C ABI has no general
-coordinate-conversion entry for the wrapper to delegate one to. Any other space
-comes back as a failed `Result` carrying
-`MADOPILOT_STATUS_INVALID_ARGUMENT` — the C entry's own answer, unchanged and
-not thrown. Converting before asking is the caller's step; see
-[c-abi.md](c-abi.md).
+A caller-supplied `Rect` is narrower than the Rust facade:
+`MapRequest::region`, `FindRequest::region`, and `OcrRequest::region` accept
+capture pixels only because the C ABI has no conversion entry. Other spaces
+return the C entry's `MADOPILOT_STATUS_INVALID_ARGUMENT` unchanged.
+
+### One-shot OCR
+
+`OcrRequest` owns model/backend ID and version strings, borrows one `Frame`, and
+optionally borrows a `Package`. Explicit package-backed models set the package;
+the exact accepted default leaves it unset and uses the backend/model identities
+reported by `Api::describe_build()`. It keeps source region, clip policy, and
+output space explicit. Every call constructs a fresh `OcrRequest::CView`;
+copy/move construction and assignment rebind every pointer-length field to that
+projection's own storage, including the moved-from object's still-callable
+accessors.
+
+`DefaultOcrOptions` owns canonical model-root/runtime path strings.
+`Api::create_engine_with_default_ocr` requires the complete 648-byte ABI 1.3
+table, calls only the C default-constructor entry, and returns no engine when a
+controlled prerequisite is invalid. It does not change `Api::create_engine`,
+which retains its ordinary non-default behavior.
+
+`Session::recognize` gates on the complete OCR owner/accessor suffix before
+reading any appended function pointer. Success returns move-only `OcrResult`;
+`clone()` is the only refcounting copy. `describe()` returns source identity,
+effective region, count, and borrowed descriptors; `region_at()` returns value
+geometry/confidence; `text_at()` returns a borrowed normalized string.
+Borrowing accessors are lvalue-only and deleted on temporaries. The wrapper adds
+no runtime discovery, normalization, coordinate inference, queue, retry,
+fallback, download, bundling, or input.
 
 Input capability keeps operation and route separate.
 `InputOpenRequest` accepts exact `MADOPILOT_INPUT_PAIR_*` masks;
@@ -418,21 +442,13 @@ The default is `diagnostics_off()` and allocates no queue.
 optional; diagnostics-off engines and repeated takes return an empty optional.
 
 `DiagnosticReader::drain()` is non-blocking and returns `BATCH`, `OPEN_EMPTY`, or
-`END_OF_STREAM`. An owned `DiagnosticBatch` reports retained-record and exact
-normal/debug loss counts, including loss-only batches, and provides indexed
-`DiagnosticRecord` values in strict sequence order. Records preserve presence
-flags rather than inventing optional values. They contain no borrowed string,
-event payload, or captured-byte view, so they remain ordinary values after the
-batch is released.
-A search record's `region` is the exact coordinate-qualified rectangle the
-search covered after clipping, not a space tag alone. Identity scalars are
-engine-scoped projections of the engine's own ordinals; comparing them across
-engines proves nothing.
-
-The reader can outlive the engine and drain already retained records after
-production seals. Draining is self-silent. The wrapper performs no logging,
-callback dispatch, ordering inference, or correlation logic beyond exposing the
-C values unchanged.
+`END_OF_STREAM`. `DiagnosticBatch` carries exact normal/debug losses and indexed
+fixed-width values. OCR records project opaque model-instance ID, accepted
+profile classification, source/requested/effective geometry, typed outcome,
+count, elapsed nanoseconds, and source-pixel count. They expose no recognized
+text, backend/runtime name, caller model/asset identity, model path/digest/bytes,
+vocabulary, pixels/hash, credential, or free-form failure. The wrapper performs
+no logging, callback dispatch, ordering inference, or causal synthesis.
 
 ## Threads
 
@@ -452,22 +468,18 @@ call on it is invalid caller behaviour, exactly as it is in C: no check can
 distinguish it from a valid handle without racing the release it is trying to
 detect.
 
-Session close races an in-flight operation safely, and both sides observe the
-terminal outcomes the C ABI defines. Two threads may send the same immutable
-`InputRequest`: each call builds an independent C projection before the runtime
-serializes sequences, so their events cannot interleave. Several threads may
-clone and drain the same diagnostic reader; each committed batch contains
-disjoint records and exact intervening loss counts. Mutating a request or
-destroying its final owner concurrently remains invalid caller behavior.
+Session close races in-flight operations under the C contract. Two threads may
+submit the same immutable `OcrRequest` or `InputRequest`: each call owns an
+independent repaired C projection. Clone an immutable result/reader per thread;
+retain/release remain atomic. Mutating a request or destroying the final owner
+concurrently with a call remains invalid caller behavior.
 
-## What ABI 1.2 does not wrap
+## What ABI 1.3 does not wrap
 
-The 1.2 C table ends at bounded diagnostic batch access, and the wrapper wraps
-only that negotiated extent. There is no OCR, watcher, action, retry,
-wait-for-effect, callback, callback-fence, acceleration, packaging, or
-native-frame type. Receipt submission and a later visual search remain separate
-operations. `crates/bindings/capi/tests/cpp_surface.rs` asserts that inventory
-and rejects close spellings, so a deferred surface cannot appear accidentally.
+The ABI 1.3 table ends at accepted default OCR construction. There is no watcher,
+wait-for-text, query, callback/fence, retry, automatic action/input,
+acceleration, packaging/download, or native-frame extension. OCR and later input
+remain separate facts. `cpp_surface.rs` asserts this inventory.
 
 `Api::table()` is the escape hatch: it returns the negotiated
 `const madopilot_api_t*` for a caller that needs an entry this wrapper does not
@@ -534,20 +546,25 @@ wrapper never throws one.
 ```sh
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+cargo build --locked --package mado-pilot-capi --features private-fixture
+cargo run --locked --package mado-pilot-capi --features private-fixture \
+  --example c-abi-check -- --label "<host>"
 ```
 
-That one command covers the C surface and the C++ surface together. For the C++
-half it:
+This sequence covers the C and C++ surfaces together. The explicit feature build
+is required because compiling the checker example alone does not replace the
+profile-root dynamic library with its private-fixture variant. For the C++ half
+the checker:
 
-1. compiles and runs `tests/cpp/madopilot-cpp-ownership.cpp`, whose
-   `static_assert`s prove the move-only shape, lvalue-only view accessors, owned
-   request storage, and preservation of unknown C values, while runtime checks
-   prove clone independence, parent/child lifetime, error release under a
-   throwing copy, zero-match success, ABI 1.0 and partial ABI 1.2 owner-prefix
-   gating, owned receipt and attempt behavior, diagnostic reader/batch lifetime
-   and concurrent drains, close reporting, and concurrent const access;
-2. compiles and runs `examples/cpp/deterministic-slice.cpp` and requires the
-   same match rectangles and scores as the C example;
+1. compiles and runs `tests/cpp/madopilot-cpp-ownership.cpp`: move-only OCR
+   ownership, explicit clone, lvalue-only views, copy/move request and
+   `DefaultOcrOptions` rebinding, ABI 1.2/partial-1.3 refusal, parent
+   independence, panic/error release, receipts, diagnostics, close, and
+   concurrent const access;
+2. runs deterministic matching, production default C/C++ OCR, and feature-gated
+   fixture OCR examples. Production examples must agree after line-ending
+   normalization on backend/model/count output, and fixture examples must agree
+   on source/text/confidence plus content-redacted diagnostics;
 3. compiles and runs `examples/cpp/native-input.cpp`. The default `--check`
    creates the real target Adapter and reads only non-prompting permission state
    before stopping without discovery or input. Windows CI instead asks
@@ -558,10 +575,10 @@ half it:
    and explicit close twice: the ordinary contract must report unknown
    compatibility and target-queue admission, while the dedicated contract must
    report supported compatibility and target-protocol acknowledgement. Neither
-   run takes focus or permits system fallback;
+   run takes focus or permits system fallback; and
 4. configures, builds, and runs the independent CMake consumer project under
-   CTest. That project also builds the native example through `MadoPilot::Cpp`
-   alone and runs its safe `--check` mode.
+   CTest. That project builds the production default OCR and native examples
+   through `MadoPilot::Cpp` alone and runs their controlled modes.
 
 When the caller owns a fixture lifecycle, pass `--ordinary "<full title>"` or
 `--acknowledged "<full title>"` directly to the native example. Those modes send

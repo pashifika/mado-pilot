@@ -17,7 +17,7 @@ use std::mem::size_of;
 
 use mado_pilot::{
     ClipPolicy, CoordinateSpace, CpuMapping, Frame, FrameRequest, FrameStamp, MappingObserver,
-    OpenRequest, PixelRect, Rect, Session, SessionRequest, TargetId,
+    OcrBackendDescriptor, OpenRequest, PixelRect, Rect, Session, SessionRequest, TargetId,
 };
 
 use crate::boundary::{self, Out, Versioned, covers, declared, inputs, prefixes};
@@ -68,6 +68,8 @@ pub(crate) struct SessionHandle {
     /// Copied at open, so a failed search can name the backend that failed
     /// without the caller having to still hold the engine.
     backend: String,
+    /// OCR backend/model/profile identity copied at open, when explicitly configured.
+    ocr_backend: Option<OcrBackendDescriptor>,
     /// Facade identity copied from the discovery snapshot.
     target: TargetId,
     /// Immutable C projection of what the session accepted.
@@ -82,6 +84,10 @@ impl SessionHandle {
 
     pub(crate) fn backend(&self) -> &str {
         &self.backend
+    }
+
+    pub(crate) const fn ocr_backend(&self) -> Option<&OcrBackendDescriptor> {
+        self.ocr_backend.as_ref()
     }
 
     pub(crate) const fn target(&self) -> TargetId {
@@ -523,6 +529,7 @@ fn run_session_open(
     let payload = SessionHandle {
         session,
         backend: engine.backend().id().to_owned(),
+        ocr_backend: engine.ocr_backend(),
         target: facade_target,
         input_descriptor,
         input_available,

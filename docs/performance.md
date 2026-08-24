@@ -9,20 +9,21 @@ This document defines the format that evidence takes. Setting a numeric budget
 for a workload is gate [`G-013`](validation-gates.md#g-013), which is resolved
 per workload and target rather than once. Phase 1 is resolved. ADR 0021
 invalidated the three historical macOS Phase 2 native profiles after source and
-correctness-oracle drift. [ADR 0024](adr/0024-input-diagnostic-performance-budgets.md)
-now accepts the macOS diagnostic slice,
-[ADR 0025](adr/0025-macos-native-input-performance-budgets.md) accepts the
-revision-bound macOS native input and public-language profile. Accepted-design
-[ADR 0029](adr/0029-macos-process-directed-input.md) binds the Phase 2.2 macOS
-process-directed and controlled-stimulus lineage below. Final candidate
-`dec43d7` passes the exact-source controlled AppKit and game-like profiles
-under their frozen regression budgets. Independent `single`, exact two-display
-non-mirrored `same-scale`, and `mixed-scale` qualification matrices also pass,
-so all fourteen controlled release pair decisions are qualified. ADRs 0030,
-0031, and 0032 accept the target-specific production profiles. Windows
-final-source Phase 1 reruns pass on the exact exit candidate; Apple Silicon runs
-remain attributed to `d8336be` and apply by reviewed complete diff. Both keep
-their unchanged ceilings and never re-derive a budget.
+correctness-oracle drift. ADRs 0024–0032 accept the current target-specific
+Phase 2 diagnostic, native input, controlled owning-process, production capture,
+transition, and corrected dual-4K profiles while preserving each historical
+source identity.
+
+[ADR 0037](adr/0037-phase-3-ocr-performance-budgets.md) accepts target-specific
+Apple M1 Pro and Core i7-12700KF default-OCR profiles. Each uses five precursor
+processes and a separate five-process post-budget run for cold accepted-model
+startup, warm full-frame and bounded-region OCR, empty results, exact source
+correlation, allocation growth, observed mapped bytes/inference/session/result
+counts, cleanup, close, and target-native resident high-water. A separate native
+contract test covers cancellation, late-publication suppression, recovery, and
+close races without mixing that instrumentation into latency samples. Hosted
+Windows Server smoke enforces hard correctness and growth only; its timing and
+resident observations define no release-host budget.
 
 Nothing in this document is itself a measured result. The numbers live in the
 profiles under [benchmarks/](benchmarks/), each naming the host it was measured
@@ -735,3 +736,108 @@ complete. Windows Phase 1 reruns pass on the exact exit candidate; Apple Silicon
 runs remain attributed to `d8336be` and apply by reviewed complete diff.
 The complete workload and correctness obligations are in
 [windows-capture-contract-tests.md](windows-capture-contract-tests.md).
+
+## Phase 3 accepted CPU OCR performance
+
+The Phase 3 benchmark is
+`crates/backend/onnx/benches/onnx-cpu.rs`. It exercises only the accepted
+`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1` model through controlled ONNX
+Runtime 1.29.0 API 17, CPU provider, one admitted inference, one session pair,
+two sessions, one thread per session axis, disabled CPU arena, and recognition
+batch ceiling six.
+
+Every process opens through the same default path a Rust/C/C++ caller uses.
+Three warmups precede twenty retained samples for each workload. With twenty
+samples, nearest-rank p95 is the nineteenth value rather than the maximum; the
+independent maximum ceiling still catches a single slow operation:
+
+| Workload | Oracle and accounting |
+|---|---|
+| `onnx_cpu_hud_full` | exact eight NFC strings/count/order; fixture-derived geometry; finite same-host-stable confidence; exact source/backend/model/effective-region correlation; 2,073,600 observed mapped bytes; one observed detector plus two recognizer tensor runs |
+| `onnx_cpu_hud_region` | exact bounded text/count; the same geometry/confidence/source rules; 64,800 observed mapped bytes; one observed detector plus one recognizer tensor run |
+| `onnx_cpu_blank` | exact empty result/source correlation; 16,384 observed mapped bytes; one observed detector and zero recognizer tensor runs |
+
+No operation is discarded after execution. A failed warmup aborts immediately;
+retained incorrect count must be zero, and every workload must remain within the
+shared 4,096-byte live-heap growth gate. The native ignored contract test
+separately proves cancellation after native-run admission, termination and
+`Cancelled` within 250 ms, no late publication, recovery, close-race safety, and
+idempotent repeated close; instrumentation from that proof is not mixed into
+latency percentiles.
+
+The first smoke attempt rejected a draft exact-geometry assumption for bounded
+recognition. Independent crop preprocessing legitimately produced a different
+quadrilateral while passing the pre-existing fixture thresholds, so the
+performance oracle was corrected before precursor measurement. The failed
+attempt remains recorded; no measured failure was excluded and no target result
+selected a threshold.
+
+[`phase-3-ocr-aarch64-apple-darwin.toml`](benchmarks/phase-3-ocr-aarch64-apple-darwin.toml)
+is normative under ADR 0037. Five fresh precursor processes at source `b83f23f`,
+tree `7dfe9c2`, retained 50 samples per workload. Every warmup/sample passed and
+every workload ended with zero heap growth. Worst precursor observations were
+476.576/299.674/135.640 ms p95 for full/bounded/empty, 86.988 ms cold open,
+1.116 ms first close, 63.569 ms reopen-close, and 548,487,168 bytes RSS.
+
+The earlier post-budget run at source `192f3d2`, tree `45abefc`, remains valid
+for latency, correctness, allocation growth, and external RSS observations. An
+independent review found that mapped/tensor/session values were synthesized and
+the RSS ceiling was manually compared rather than executable; those resource
+acceptance claims do not transfer.
+
+Review-fixed source `e41fbbd`, tree `9fbc47e`, instruments the actual mapped
+`CpuMapping` bytes, detector/recognizer session accesses, and opened session
+topology, and enforces macOS `getrusage` peak RSS in-process. Five fresh
+processes retained 100 samples per workload. Worst full/bounded/empty p95 was
+472.623/301.455/184.057 ms and maximum 478.703/309.750/185.290 ms; cold open
+87.377 ms, close 1.163 ms, reopen-close 64.929 ms, RSS 516,833,280 bytes, and
+worst attributable Rust heap 14,149,992 bytes. Every oracle/resource gate passed
+with zero growth.
+
+[`phase-3-ocr-x86_64-pc-windows-msvc.toml`](benchmarks/phase-3-ocr-x86_64-pc-windows-msvc.toml)
+is the matching normative Windows profile. Precursor source `6b5f3c1`, tree
+`0a9fc22`, executable SHA-256
+`f3c13157807c9617fb03039b9689cd53ccc138701d9c412180c03fc28800a316`
+ran in five fresh processes on the approved Windows 11 Pro 25H2 build-family-26200
+Core i7-12700KF host. All 100 retained samples per workload passed with zero
+growth. Worst full/bounded/empty p95 was 810.143/581.789/320.843 ms and maximum
+849.570/586.828/359.929 ms; cold open was 182.002 ms, first close 5.652 ms,
+reopen-close 161.748 ms, and `GetProcessMemoryInfo` peak RSS 242,667,520 bytes.
+The full-frame process-5 and empty-result process-4 slow rows remain in the
+profile derivation rather than being excluded.
+
+Separate final source `f2d3f29`, tree `b9c8fb5`, executable SHA-256
+`f0292ce5fafc106ddff2ffc4ef1066543e780dfa0ca8958eb6784e891d187310`
+ran five more fresh processes. Every target budget and hard oracle passed without
+retry or exclusion. Worst full/bounded/empty p95 was
+717.487/579.638/275.385 ms and maximum 724.006/581.872/290.567 ms; cold open was
+177.195 ms, first close 6.081 ms, reopen-close 160.820 ms, and peak RSS
+242,810,880 bytes.
+
+The first Apple resource-instrumented process failed the former 140 ms cold
+ceiling at 141.686 ms; an unchanged repeat reported 90.075 ms. ADR 0037 retains
+the failure and sets 175 ms from both observations. A separate ten-sample run produced one
+785.460 ms full-frame outlier, making nearest-rank p95 equal the maximum and
+exceeding 750 ms even though the 900 ms maximum held. The final twenty-sample
+policy makes p95 the nineteenth sample while the independent maximum remains
+enforced; it changes no latency ceiling.
+
+Accepted Apple ceilings are 600/750/900 ms p50/p95/maximum for full-frame,
+375/450/600 ms bounded, and 175/210/300 ms empty. Cold open is capped at 175 ms,
+first close 2 ms, reopen-close 100 ms, live Rust heap 20 MiB, and resident
+high-water 768 MiB.
+
+Accepted Windows ceilings are 900/1,000/1,200 ms p50/p95/maximum for full-frame,
+725/750/850 ms bounded, and 350/425/500 ms empty. Cold open is capped at 250 ms,
+first close 10 ms, reopen-close 225 ms, live Rust heap 20 MiB, and resident
+high-water 320 MiB. These are derived only from the approved Windows desktop,
+not Apple or hosted Windows Server.
+
+Both profiles cap input/output tensor bytes at 256 MiB and enforce exact mapped
+bytes plus detector/recognizer/session/result counts. Producer-surface copied
+bytes are not applicable to immutable CPU replay inputs and have no ceiling.
+These are regression ceilings for the named hosts and fixture, not
+arbitrary-resolution, 4K, multi-region, real-time, renderer, application, or
+game guarantees. Phase 3 default-OCR `G-013` is complete on both release
+targets; watcher scheduling and acceleration remain open until later phases
+introduce those workloads.

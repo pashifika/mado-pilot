@@ -47,6 +47,7 @@ const FROZEN_LAYOUT: [(&str, &str); 2] = [
 /// asymmetry is recorded.
 const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_engine_options_t", 16),
+    ("madopilot_default_ocr_options_t", 40),
     ("madopilot_engine_capabilities_t", 8),
     ("madopilot_permission_t", 16),
     ("madopilot_input_capability_t", 28),
@@ -79,6 +80,9 @@ const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_find_request_t", 24),
     ("madopilot_match_t", 56),
     ("madopilot_result_info_t", 72),
+    ("madopilot_ocr_request_t", 76),
+    ("madopilot_ocr_result_info_t", 168),
+    ("madopilot_ocr_region_t", 80),
     ("madopilot_package_info_t", 64),
     ("madopilot_template_info_t", 64),
     ("madopilot_error_detail_t", 16),
@@ -169,6 +173,13 @@ const TABLE_ORDER: &[&str] = &[
     "diagnostic_batch_release",
     "diagnostic_batch_info",
     "diagnostic_batch_record_at",
+    "session_recognize",
+    "ocr_result_retain",
+    "ocr_result_release",
+    "ocr_result_info",
+    "ocr_result_region_at",
+    "ocr_result_text_at",
+    "engine_create_with_default_ocr",
 ];
 
 fn find(name: &str) -> &'static TypeLayout {
@@ -342,12 +353,17 @@ fn the_function_table_keeps_its_abi_major_one_order() {
         "the mandatory prefix fits inside the frozen ABI 1.0 table"
     );
 
-    let suffix = &table.fields[TABLE_ORDER.len() - 21..];
+    let phase_1_2_start = table
+        .fields
+        .iter()
+        .position(|field| field.name == "engine_create_with_options")
+        .expect("ABI 1.2 suffix is present");
+    let phase_1_2 = &table.fields[phase_1_2_start..phase_1_2_start + 21];
     assert_eq!(
-        suffix[0].offset, MADOPILOT_API_SIZE_PHASE1 as usize,
+        phase_1_2[0].offset, MADOPILOT_API_SIZE_PHASE1 as usize,
         "ABI 1.2 starts immediately after the complete frozen ABI 1.0 table"
     );
-    let offsets: Vec<usize> = suffix.iter().map(|field| field.offset).collect();
+    let offsets: Vec<usize> = phase_1_2.iter().map(|field| field.offset).collect();
     assert_eq!(
         offsets,
         [
@@ -357,9 +373,17 @@ fn the_function_table_keeps_its_abi_major_one_order() {
         "the accepted ABI 1.2 entry offsets are frozen"
     );
     assert_eq!(
-        table.size, 592,
+        MADOPILOT_API_SIZE_1_2, 592,
         "the accepted ABI 1.2 table extent is frozen"
     );
+
+    let ocr = &table.fields[phase_1_2_start + 21..];
+    assert_eq!(
+        ocr.iter().map(|field| field.offset).collect::<Vec<_>>(),
+        [592, 600, 608, 616, 624, 632, 640],
+        "ABI 1.3 appends OCR and its default composition after the complete 1.2 extent"
+    );
+    assert_eq!(table.size, 648, "ABI 1.3 table extent is frozen");
 }
 
 #[test]

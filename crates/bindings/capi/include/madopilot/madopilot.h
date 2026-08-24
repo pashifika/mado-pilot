@@ -1,5 +1,5 @@
 /*
- * MadoPilot C ABI — ABI 1.2.
+ * MadoPilot C ABI — ABI 1.3.
  *
  * MadoPilot is a headless visual automation runtime. This header is the whole
  * C contract: one exported symbol, an immutable function table reached through
@@ -7,14 +7,15 @@
  * size-versioned structures with documented mandatory prefixes.
  *
  * ============================================================================
- * ABI 1.2. COMPLETE RELEASED ABI 1.0 PREFIX FROZEN.
+ * ABI 1.3. COMPLETE RELEASED ABI 1.0 AND 1.2 PREFIXES FROZEN.
  *
  * Every ABI 1.0 numeric value, structure prefix, field offset, and
  * function-table position is frozen for ABI major 1 by
- * docs/adr/0007-phase-1-c-abi-freeze.md. ABI 1.2 replaces the unreleased ABI
+ * docs/adr/0007-phase-1-c-abi-freeze.md. ABI 1.2 replaced the unreleased ABI
  * 1.1 draft after that boundary with explicit input-submission evidence and
- * bounded caller-owned diagnostics. ABI 1.1 is intentionally unsupported.
- * Within this major, ABI 1.2 and later append only.
+ * bounded caller-owned diagnostics. ABI 1.3 appends one-shot OCR execution and
+ * immutable owned OCR results after the complete ABI 1.2 extent. ABI 1.1 is
+ * intentionally unsupported. Within this major, later minors append only.
  *
  * Use the smaller of your sizeof and the returned table's struct_size to decide
  * which members exist. crates/bindings/capi/tests/abi-compat/ keeps every
@@ -57,7 +58,7 @@ extern "C" {
 #define MADOPILOT_ABI_MAJOR 1u
 
 /* The ABI minor version this header declares. ABI 1.1 was never released. */
-#define MADOPILOT_ABI_MINOR 2u
+#define MADOPILOT_ABI_MINOR 3u
 
 /* ---------------------------------------------------------------------------
  * Status
@@ -88,7 +89,7 @@ enum {
     MADOPILOT_STATUS_CAPTURE_FAILED = 8,
     /* An asset package broke one of the rules that make it trustworthy. */
     MADOPILOT_STATUS_ASSET_INVALID = 9,
-    /* The matching backend was unavailable or could not complete the search. */
+    /* The matching or OCR backend was unavailable or failed. */
     MADOPILOT_STATUS_VISION_FAILED = 10,
     /* An invariant the library is responsible for did not hold. */
     MADOPILOT_STATUS_INTERNAL = 11,
@@ -233,7 +234,13 @@ enum {
     MADOPILOT_ASSET_FAULT_UNSUPPORTED_CONTENT_ENCODING = 25,
     MADOPILOT_ASSET_FAULT_ARITHMETIC_OVERFLOW = 26,
     MADOPILOT_ASSET_FAULT_CANCELLED = 27,
-    MADOPILOT_ASSET_FAULT_DEADLINE_EXCEEDED = 28
+    MADOPILOT_ASSET_FAULT_DEADLINE_EXCEEDED = 28,
+    /* A committed package contains no OCR model with the requested identity. */
+    MADOPILOT_ASSET_FAULT_UNKNOWN_OCR_MODEL = 29,
+    /* OCR model/profile metadata is incomplete, unbounded, or inconsistent. */
+    MADOPILOT_ASSET_FAULT_INVALID_OCR_MODEL_METADATA = 30,
+    /* The OCR normalization profile is unsupported by this build. */
+    MADOPILOT_ASSET_FAULT_UNSUPPORTED_OCR_PROFILE = 31
 };
 
 /* How far package loading had got when it refused. */
@@ -521,7 +528,8 @@ enum {
     MADOPILOT_DIAGNOSTIC_KIND_INPUT = 5,
     MADOPILOT_DIAGNOSTIC_KIND_ROUTE_ATTEMPT = 6,
     MADOPILOT_DIAGNOSTIC_KIND_LIFECYCLE = 7,
-    MADOPILOT_DIAGNOSTIC_KIND_PERMISSION = 8
+    MADOPILOT_DIAGNOSTIC_KIND_PERMISSION = 8,
+    MADOPILOT_DIAGNOSTIC_KIND_OCR = 9
 };
 
 typedef int32_t madopilot_diagnostic_operation_kind_t;
@@ -535,7 +543,8 @@ enum {
     MADOPILOT_DIAGNOSTIC_OPERATION_TEMPLATE_PREPARATION = 7,
     MADOPILOT_DIAGNOSTIC_OPERATION_SEARCH = 8,
     MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_SUBMISSION = 9,
-    MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_CLOSE = 10
+    MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_CLOSE = 10,
+    MADOPILOT_DIAGNOSTIC_OPERATION_OCR_RECOGNITION = 11
 };
 
 typedef int32_t madopilot_search_diagnostic_outcome_t;
@@ -543,6 +552,20 @@ enum {
     MADOPILOT_SEARCH_DIAGNOSTIC_MATCHED = 1,
     MADOPILOT_SEARCH_DIAGNOSTIC_NO_MATCH = 2,
     MADOPILOT_SEARCH_DIAGNOSTIC_FAILED = 3
+};
+
+typedef int32_t madopilot_ocr_diagnostic_profile_t;
+enum {
+    MADOPILOT_OCR_DIAGNOSTIC_PROFILE_UNSPECIFIED = 0,
+    MADOPILOT_OCR_DIAGNOSTIC_PROFILE_G004 = 1
+};
+
+typedef int32_t madopilot_ocr_diagnostic_outcome_t;
+enum {
+    MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_UNSPECIFIED = 0,
+    MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_RECOGNIZED = 1,
+    MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_EMPTY = 2,
+    MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_FAILED = 3
 };
 
 typedef int32_t madopilot_lifecycle_t;
@@ -570,6 +593,9 @@ enum {
 /* madopilot_find_request_t.region is set. */
 #define MADOPILOT_FIND_HAS_REGION 0x1u
 
+/* madopilot_ocr_request_t.region is set; the whole frame is recognized without it. */
+#define MADOPILOT_OCR_HAS_REGION 0x1u
+
 /* madopilot_match_options_t overrides. */
 #define MADOPILOT_MATCH_HAS_MIN_SCORE 0x1u
 #define MADOPILOT_MATCH_HAS_MAX_RESULTS 0x2u
@@ -585,6 +611,8 @@ enum {
 /* Engine-wide capability bits. */
 #define MADOPILOT_ENGINE_DELIVERS_INPUT 0x1u
 #define MADOPILOT_ENGINE_READS_PERMISSIONS 0x2u
+#define MADOPILOT_ENGINE_HAS_OCR 0x4u
+
 
 /* madopilot_permission_t presence bits. */
 #define MADOPILOT_PERMISSION_HAS_DIAGNOSTIC 0x1u
@@ -624,6 +652,11 @@ enum {
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT 0x400u
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_STATUS 0x800u
 #define MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE 0x1000u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_MODEL_INSTANCE 0x2000u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_PROFILE 0x4000u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_REQUESTED_REGION 0x8000u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_TIMING 0x10000u
+#define MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESOURCES 0x20000u
 
 /* madopilot_error_detail_t optional fields. */
 #define MADOPILOT_ERROR_HAS_ASSET_DETAIL 0x1u
@@ -690,6 +723,7 @@ typedef struct madopilot_result_t madopilot_result_t;
 typedef struct madopilot_input_receipt_t madopilot_input_receipt_t;
 typedef struct madopilot_diagnostic_reader_t madopilot_diagnostic_reader_t;
 typedef struct madopilot_diagnostic_batch_t madopilot_diagnostic_batch_t;
+typedef struct madopilot_ocr_result_t madopilot_ocr_result_t;
 
 /* ---------------------------------------------------------------------------
  * Structures
@@ -724,6 +758,12 @@ typedef struct madopilot_diagnostic_batch_t madopilot_diagnostic_batch_t;
  * how much of what it knows is really there.
  * ------------------------------------------------------------------------ */
 
+/* One point in a declared coordinate space. Not versioned. */
+typedef struct madopilot_ocr_point_t {
+    double x;
+    double y;
+} madopilot_ocr_point_t;
+
 /* A half-open rectangle: [left, right) x [top, bottom). Not versioned.
  *
  * `space` is read in one direction and written in the other. On a rectangle the
@@ -744,7 +784,7 @@ typedef struct madopilot_pixel_rect_t {
 /* Capability flags that apply to the whole engine. Mandatory prefix: whole. */
 typedef struct madopilot_engine_capabilities_t {
     uint32_t struct_size;
-    uint32_t flags; /* MADOPILOT_ENGINE_{DELIVERS_INPUT,READS_PERMISSIONS} */
+    uint32_t flags; /* MADOPILOT_ENGINE_{DELIVERS_INPUT,READS_PERMISSIONS,HAS_OCR} */
 } madopilot_engine_capabilities_t;
 /* Engine-wide diagnostic configuration. Mandatory prefix: whole. Off requires
  * zero capacity; enabled levels accept capacities from 1 through 65,536. */
@@ -754,6 +794,16 @@ typedef struct madopilot_engine_options_t {
     madopilot_diagnostic_level_t diagnostic_level;
     uint32_t diagnostic_capacity;
 } madopilot_engine_options_t;
+
+/* Controlled prerequisites for the integrated G-004 CPU OCR profile.
+ * Mandatory prefix: whole. Both views are borrowed for
+ * engine_create_with_default_ocr only. */
+typedef struct madopilot_default_ocr_options_t {
+    uint32_t struct_size;
+    uint32_t flags; /* No bits defined; the caller sets zero. */
+    madopilot_str_t model_root;   /* Absolute root of fixed model paths. */
+    madopilot_str_t runtime_path; /* Canonical absolute ORT 1.29.0 file. */
+} madopilot_default_ocr_options_t;
 
 /* Summary of one immutable owned diagnostic batch. */
 typedef struct madopilot_diagnostic_batch_info_t {
@@ -884,7 +934,8 @@ typedef struct madopilot_input_attempt_t {
     uint32_t reserved;
 } madopilot_input_attempt_t;
 
-/* What the loaded library is. Mandatory prefix: through table_size. */
+/* What the loaded library is. Mandatory prefix: through table_size. Every
+ * string is static and remains valid while the library is loaded. */
 typedef struct madopilot_build_info_t {
     uint32_t struct_size;
     uint32_t flags; /* No bits defined; the library writes zero. */
@@ -892,8 +943,14 @@ typedef struct madopilot_build_info_t {
     uint32_t abi_minor;
     uint32_t table_size; /* sizeof the library's own function table. */
     uint32_t reserved;   /* Alignment padding. Written as zero. */
-    madopilot_str_t library_version;   /* Static; valid while loaded. */
-    madopilot_str_t required_backend;  /* Static; valid while loaded. */
+    madopilot_str_t library_version;
+    madopilot_str_t required_backend;
+    madopilot_str_t default_ocr_backend;
+    madopilot_str_t default_ocr_backend_version;
+    madopilot_str_t default_ocr_runtime_profile;
+    madopilot_str_t default_ocr_model;
+    madopilot_str_t default_ocr_model_version;
+    madopilot_str_t default_ocr_profile;
 } madopilot_build_info_t;
 
 /* A deadline and a cancellation token. Mandatory prefix: through flags.
@@ -924,8 +981,20 @@ typedef struct madopilot_frame_stamp_t {
     uint64_t sequence;
     uint64_t geometry;
 } madopilot_frame_stamp_t;
+
+/* Exact caller-requested OCR geometry. Not size-versioned: it is appended by
+ * value to the extensible diagnostic record. */
+typedef struct madopilot_ocr_requested_region_t {
+    madopilot_space_t space;
+    madopilot_clip_policy_t clip_policy;
+    double left;
+    double top;
+    double right;
+    double bottom;
+} madopilot_ocr_requested_region_t;
 /* One privacy-reviewed immutable diagnostic record. Presence flags distinguish
- * optional scalar values from valid zero values. Mandatory prefix: whole. */
+ * optional scalar values from valid zero values. The mandatory released ABI
+ * 1.2 prefix ends through cleanup_owed; ABI 1.3 appends the OCR fields. */
 typedef struct madopilot_diagnostic_record_t {
     uint32_t struct_size;
     uint32_t flags; /* MADOPILOT_DIAGNOSTIC_RECORD_HAS_* */
@@ -962,6 +1031,12 @@ typedef struct madopilot_diagnostic_record_t {
     uint64_t result_count;
     uint64_t cleanup_released;
     uint64_t cleanup_owed;
+    uint64_t ocr_model_instance;
+    madopilot_ocr_diagnostic_profile_t ocr_profile;
+    madopilot_ocr_diagnostic_outcome_t ocr_outcome;
+    madopilot_ocr_requested_region_t ocr_requested_region;
+    uint64_t ocr_elapsed_nanos;
+    uint64_t ocr_source_pixels;
 } madopilot_diagnostic_record_t;
 
 
@@ -1102,6 +1177,30 @@ typedef struct madopilot_find_request_t {
     madopilot_clip_policy_t clip_policy;
 } madopilot_find_request_t;
 
+/* One OCR operation against one exact retained frame. Mandatory prefix:
+ * through output_space.
+ *
+ * The frame handle and every string view are borrowed for the call. model_id,
+ * backend_id, and backend_version must exactly match the backend configured on
+ * the source session. package resolves the model identity for an explicitly
+ * injected backend. It may be null only for the integrated default OCR backend,
+ * whose exact accepted model identity is already retained by the engine.
+ * region is read only when MADOPILOT_OCR_HAS_REGION is set and accepts capture
+ * pixels only; clip_policy defaults to REJECT when omitted. */
+typedef struct madopilot_ocr_request_t {
+    uint32_t struct_size;
+    uint32_t flags; /* MADOPILOT_OCR_HAS_REGION */
+    const madopilot_frame_t* frame;     /* Required; retained for the call. */
+    const madopilot_package_t* package; /* Required except for default OCR. */
+    madopilot_str_t model_id;           /* Required and non-empty. */
+    madopilot_str_t backend_id;         /* Required and non-empty. */
+    madopilot_str_t backend_version;    /* Required and non-empty. */
+    madopilot_space_t output_space;
+    madopilot_clip_policy_t clip_policy;
+    madopilot_pixel_rect_t region;
+} madopilot_ocr_request_t;
+
+
 /* One match. Mandatory prefix: the whole structure.
  *
  * `template_id` is borrowed from the result handle. */
@@ -1125,6 +1224,36 @@ typedef struct madopilot_result_info_t {
     madopilot_str_t backend_version;
     madopilot_pixel_rect_t searched;
 } madopilot_result_info_t;
+
+/* Fixed description of one immutable OCR result. Mandatory prefix: whole.
+ *
+ * Every string view is borrowed from the result handle and becomes invalid at
+ * its final release. region_count is semantic and fixed-width; accessor indexes
+ * remain size_t because they address the caller-visible process view. */
+typedef struct madopilot_ocr_result_info_t {
+    uint32_t struct_size;
+    uint32_t flags; /* No bits defined; the library writes zero. */
+    madopilot_frame_stamp_t source;
+    madopilot_pixel_rect_t effective_region;
+    madopilot_space_t output_space;
+    uint32_t reserved; /* Zero. */
+    uint64_t region_count;
+    madopilot_str_t backend_id;
+    madopilot_str_t backend_version;
+    madopilot_str_t model_id;
+    madopilot_str_t model_version;
+    madopilot_str_t profile_id;
+} madopilot_ocr_result_info_t;
+
+/* Geometry and confidence of one immutable OCR region. Mandatory prefix: whole.
+ * Text is accessed separately so its borrowed lifetime is explicit. */
+typedef struct madopilot_ocr_region_t {
+    uint32_t struct_size;
+    uint32_t flags; /* No bits defined; the library writes zero. */
+    double confidence;
+    madopilot_ocr_point_t points[4];
+} madopilot_ocr_region_t;
+
 
 /* What a loaded package declares. Mandatory prefix: the whole structure.
  *
@@ -1525,6 +1654,50 @@ typedef struct madopilot_api_t {
         const madopilot_diagnostic_batch_t* batch,
         size_t index,
         madopilot_diagnostic_record_t* out_record);
+
+    /* --- ABI 1.3 one-shot OCR suffix ----------------------------------- */
+
+    /* Initializes *out_result and *out_error to null before reading inputs.
+     * On success, returns one owned immutable result and leaves out_error null.
+     * On failure, leaves out_result null and may return one owned typed error.
+     * No unwind crosses this entry. The caller keeps session, frame, package,
+     * request views, and operation inputs alive for the whole call. */
+    madopilot_status_t (*session_recognize)(
+        const madopilot_session_t* session,
+        const madopilot_ocr_request_t* request,
+        const madopilot_operation_t* operation,
+        madopilot_ocr_result_t** out_result,
+        madopilot_error_t** out_error);
+    /* Retain/release are atomic. Null is a no-op. Const access is safe from
+     * several threads while each caller owns a live result reference. */
+    madopilot_status_t (*ocr_result_retain)(
+        const madopilot_ocr_result_t* result);
+    madopilot_status_t (*ocr_result_release)(
+        madopilot_ocr_result_t* result);
+    /* Accessors initialize valid outputs to their failure state first. A null
+     * result, invalid size, or out-of-range index returns INVALID_ARGUMENT and
+     * leaves that failure state. Views borrow from the retained result. */
+    madopilot_status_t (*ocr_result_info)(
+        const madopilot_ocr_result_t* result,
+        madopilot_ocr_result_info_t* out_info);
+    madopilot_status_t (*ocr_result_region_at)(
+        const madopilot_ocr_result_t* result,
+        size_t index,
+        madopilot_ocr_region_t* out_region);
+    madopilot_status_t (*ocr_result_text_at)(
+        const madopilot_ocr_result_t* result,
+        size_t index,
+        madopilot_str_t* out_text);
+    /* Initializes both outputs before reading inputs. The engine options may be
+     * null; default_ocr and operation are required. No ambient path lookup,
+     * download, retry, or provider fallback occurs. */
+    madopilot_status_t (*engine_create_with_default_ocr)(
+        const madopilot_source_t* source,
+        const madopilot_engine_options_t* options,
+        const madopilot_default_ocr_options_t* default_ocr,
+        const madopilot_operation_t* operation,
+        madopilot_engine_t** out_engine,
+        madopilot_error_t** out_error);
 } madopilot_api_t;
 
 /* The table's mandatory prefix: everything through status_text.
@@ -1583,7 +1756,21 @@ typedef struct madopilot_api_t {
     offsetof(madopilot_api_t, diagnostic_batch_info)
 #define MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_INFO \
     offsetof(madopilot_api_t, diagnostic_batch_record_at)
-#define MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT sizeof(madopilot_api_t)
+#define MADOPILOT_API_SIZE_DIAGNOSTIC_BATCH_RECORD_AT \
+    offsetof(madopilot_api_t, session_recognize)
+#define MADOPILOT_API_SIZE_SESSION_RECOGNIZE \
+    offsetof(madopilot_api_t, ocr_result_retain)
+#define MADOPILOT_API_SIZE_OCR_RESULT_RETAIN \
+    offsetof(madopilot_api_t, ocr_result_release)
+#define MADOPILOT_API_SIZE_OCR_RESULT_RELEASE \
+    offsetof(madopilot_api_t, ocr_result_info)
+#define MADOPILOT_API_SIZE_OCR_RESULT_INFO \
+    offsetof(madopilot_api_t, ocr_result_region_at)
+#define MADOPILOT_API_SIZE_OCR_RESULT_REGION_AT \
+    offsetof(madopilot_api_t, ocr_result_text_at)
+#define MADOPILOT_API_SIZE_OCR_RESULT_TEXT_AT \
+    offsetof(madopilot_api_t, engine_create_with_default_ocr)
+#define MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR sizeof(madopilot_api_t)
 
 /* ---------------------------------------------------------------------------
  * The one exported symbol

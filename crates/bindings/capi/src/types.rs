@@ -184,6 +184,12 @@ pub const MADOPILOT_ASSET_FAULT_ARITHMETIC_OVERFLOW: madopilot_asset_fault_t = 2
 pub const MADOPILOT_ASSET_FAULT_CANCELLED: madopilot_asset_fault_t = 27;
 /// The deadline passed before the package committed.
 pub const MADOPILOT_ASSET_FAULT_DEADLINE_EXCEEDED: madopilot_asset_fault_t = 28;
+/// A committed package was asked for an OCR model it does not contain.
+pub const MADOPILOT_ASSET_FAULT_UNKNOWN_OCR_MODEL: madopilot_asset_fault_t = 29;
+/// An OCR model/profile declaration is incomplete, unbounded, or inconsistent.
+pub const MADOPILOT_ASSET_FAULT_INVALID_OCR_MODEL_METADATA: madopilot_asset_fault_t = 30;
+/// The package names OCR normalization semantics this build does not support.
+pub const MADOPILOT_ASSET_FAULT_UNSUPPORTED_OCR_PROFILE: madopilot_asset_fault_t = 31;
 
 /// How far package loading had got when it refused.
 pub type madopilot_asset_stage_t = i32;
@@ -576,6 +582,8 @@ pub const MADOPILOT_DIAGNOSTIC_KIND_ROUTE_ATTEMPT: madopilot_diagnostic_kind_t =
 pub const MADOPILOT_DIAGNOSTIC_KIND_LIFECYCLE: madopilot_diagnostic_kind_t = 7;
 /// A non-prompting permission probe reached a terminal result.
 pub const MADOPILOT_DIAGNOSTIC_KIND_PERMISSION: madopilot_diagnostic_kind_t = 8;
+/// One OCR recognition reached a terminal result.
+pub const MADOPILOT_DIAGNOSTIC_KIND_OCR: madopilot_diagnostic_kind_t = 9;
 
 /// A public operation observed by diagnostics.
 pub type madopilot_diagnostic_operation_kind_t = i32;
@@ -602,6 +610,9 @@ pub const MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_SUBMISSION: madopilot_diagnostic_
     9;
 /// Capture-session closing.
 pub const MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_CLOSE: madopilot_diagnostic_operation_kind_t = 10;
+/// One-shot OCR recognition.
+pub const MADOPILOT_DIAGNOSTIC_OPERATION_OCR_RECOGNITION: madopilot_diagnostic_operation_kind_t =
+    11;
 
 /// A terminal template-search result in diagnostics.
 pub type madopilot_search_diagnostic_outcome_t = i32;
@@ -611,6 +622,24 @@ pub const MADOPILOT_SEARCH_DIAGNOSTIC_MATCHED: madopilot_search_diagnostic_outco
 pub const MADOPILOT_SEARCH_DIAGNOSTIC_NO_MATCH: madopilot_search_diagnostic_outcome_t = 2;
 /// The search failed before producing a result.
 pub const MADOPILOT_SEARCH_DIAGNOSTIC_FAILED: madopilot_search_diagnostic_outcome_t = 3;
+
+/// Accepted public OCR profile classification in diagnostics.
+pub type madopilot_ocr_diagnostic_profile_t = i32;
+/// No accepted public profile claim is made.
+pub const MADOPILOT_OCR_DIAGNOSTIC_PROFILE_UNSPECIFIED: madopilot_ocr_diagnostic_profile_t = 0;
+/// Accepted G-004 RapidOCR PP-OCRv4 detector / PP-OCRv6 recognizer profile.
+pub const MADOPILOT_OCR_DIAGNOSTIC_PROFILE_G004: madopilot_ocr_diagnostic_profile_t = 1;
+
+/// Typed terminal OCR outcome in diagnostics.
+pub type madopilot_ocr_diagnostic_outcome_t = i32;
+/// No OCR outcome is present.
+pub const MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_UNSPECIFIED: madopilot_ocr_diagnostic_outcome_t = 0;
+/// One or more normalized regions committed.
+pub const MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_RECOGNIZED: madopilot_ocr_diagnostic_outcome_t = 1;
+/// Recognition committed with no non-empty normalized text.
+pub const MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_EMPTY: madopilot_ocr_diagnostic_outcome_t = 2;
+/// Recognition failed with the record's typed status.
+pub const MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_FAILED: madopilot_ocr_diagnostic_outcome_t = 3;
 
 /// A lifecycle state in diagnostics.
 pub type madopilot_lifecycle_t = i32;
@@ -639,6 +668,8 @@ pub const MADOPILOT_MAP_HAS_REGION: u32 = 1 << 0;
 
 /// `madopilot_find_request_t.region` is set; the whole frame is searched without it.
 pub const MADOPILOT_FIND_HAS_REGION: u32 = 1 << 0;
+/// `madopilot_ocr_request_t.region` is set; the whole frame is recognized without it.
+pub const MADOPILOT_OCR_HAS_REGION: u32 = 1 << 0;
 
 /// `madopilot_match_options_t.min_score` is set.
 pub const MADOPILOT_MATCH_HAS_MIN_SCORE: u32 = 1 << 0;
@@ -661,6 +692,8 @@ pub const MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION: u32 = 1 << 2;
 pub const MADOPILOT_ENGINE_DELIVERS_INPUT: u32 = 1 << 0;
 /// The engine can run non-prompting permission probes.
 pub const MADOPILOT_ENGINE_READS_PERMISSIONS: u32 = 1 << 1;
+/// The engine has one configured OCR backend/model profile.
+pub const MADOPILOT_ENGINE_HAS_OCR: u32 = 1 << 2;
 
 /// `madopilot_permission_t` carries a redacted diagnostic.
 pub const MADOPILOT_PERMISSION_HAS_DIAGNOSTIC: u32 = 1 << 0;
@@ -723,11 +756,33 @@ pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT: u32 = 1 << 10;
 pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_STATUS: u32 = 1 << 11;
 /// `madopilot_diagnostic_record_t.permission_state` is populated.
 pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE: u32 = 1 << 12;
+/// `madopilot_diagnostic_record_t.ocr_model_instance` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_MODEL_INSTANCE: u32 = 1 << 13;
+/// `madopilot_diagnostic_record_t.ocr_profile` is an accepted public profile.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_PROFILE: u32 = 1 << 14;
+/// `madopilot_diagnostic_record_t.ocr_requested_region` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_REQUESTED_REGION: u32 = 1 << 15;
+/// `madopilot_diagnostic_record_t.ocr_elapsed_nanos` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_TIMING: u32 = 1 << 16;
+/// `madopilot_diagnostic_record_t.ocr_source_pixels` is populated.
+pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESOURCES: u32 = 1 << 17;
 
 /// `madopilot_error_detail_t` carries `asset_fault` and `asset_stage`.
 pub const MADOPILOT_ERROR_HAS_ASSET_DETAIL: u32 = 1 << 0;
 /// `madopilot_error_detail_t.backend` names the backend that failed.
 pub const MADOPILOT_ERROR_HAS_BACKEND: u32 = 1 << 1;
+
+/// One point in a declared coordinate space.
+///
+/// Not size-versioned: four points are embedded by value in one OCR region.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct madopilot_ocr_point_t {
+    /// Horizontal coordinate.
+    pub x: f64,
+    /// Vertical coordinate.
+    pub y: f64,
+}
 
 /// A half-open rectangle in a named coordinate space.
 ///
@@ -1032,6 +1087,18 @@ pub struct madopilot_build_info_t {
     pub library_version: madopilot_str_t,
     /// The matching backend this build requires. Borrowed from static storage.
     pub required_backend: madopilot_str_t,
+    /// Default OCR backend identity. Borrowed from static storage.
+    pub default_ocr_backend: madopilot_str_t,
+    /// Exact default OCR backend version. Borrowed from static storage.
+    pub default_ocr_backend_version: madopilot_str_t,
+    /// Controlled runtime/provider profile. Borrowed from static storage.
+    pub default_ocr_runtime_profile: madopilot_str_t,
+    /// Accepted default OCR model identity. Borrowed from static storage.
+    pub default_ocr_model: madopilot_str_t,
+    /// Accepted default OCR model version. Borrowed from static storage.
+    pub default_ocr_model_version: madopilot_str_t,
+    /// Accepted default OCR profile identity. Borrowed from static storage.
+    pub default_ocr_profile: madopilot_str_t,
 }
 
 /// A deadline and a cancellation token, supplied by the caller.
@@ -1101,10 +1168,24 @@ pub struct madopilot_engine_options_t {
     pub struct_size: u32,
     /// No bits are defined; the caller sets zero.
     pub flags: u32,
-    /// Diagnostic detail level.
+    /// Engine-wide diagnostic level.
     pub diagnostic_level: madopilot_diagnostic_level_t,
     /// Maximum retained records.
     pub diagnostic_capacity: u32,
+}
+
+/// Explicit controlled paths for integrated default OCR construction.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_default_ocr_options_t {
+    /// `sizeof(madopilot_default_ocr_options_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; the caller sets zero.
+    pub flags: u32,
+    /// Absolute root containing the fixed G-004 relative model paths.
+    pub model_root: madopilot_str_t,
+    /// Canonical absolute ONNX Runtime 1.29.0 file.
+    pub runtime_path: madopilot_str_t,
 }
 
 /// Summary of one immutable owned diagnostic batch.
@@ -1123,10 +1204,46 @@ pub struct madopilot_diagnostic_batch_info_t {
     pub discarded_debug: u64,
 }
 
+/// Exact caller-requested OCR geometry.
+///
+/// Not size-versioned: it is appended by value to the extensible diagnostic record.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct madopilot_ocr_requested_region_t {
+    /// Coordinate space of all four edges.
+    pub space: madopilot_space_t,
+    /// Requested clipping policy.
+    pub clip_policy: madopilot_clip_policy_t,
+    /// Requested left edge.
+    pub left: f64,
+    /// Requested top edge.
+    pub top: f64,
+    /// Requested right edge.
+    pub right: f64,
+    /// Requested bottom edge.
+    pub bottom: f64,
+}
+
+impl madopilot_ocr_requested_region_t {
+    /// Failure state.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            space: MADOPILOT_SPACE_CAPTURE_PIXELS,
+            clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+        }
+    }
+}
+
 /// One privacy-reviewed immutable diagnostic record.
 ///
-/// Mandatory prefix: the whole structure. `kind` selects the payload fields and
-/// presence flags distinguish optional scalar values from valid zero values.
+/// The mandatory released ABI 1.2 prefix ends through `cleanup_owed`; ABI 1.3
+/// appends the OCR fields. `kind` selects the payload fields, and presence flags
+/// distinguish optional scalar values from valid zero values.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct madopilot_diagnostic_record_t {
@@ -1200,6 +1317,18 @@ pub struct madopilot_diagnostic_record_t {
     pub cleanup_released: u64,
     /// Cleanup releases owed when cleanup began.
     pub cleanup_owed: u64,
+    /// Opaque library-issued OCR model-instance identity, when present.
+    pub ocr_model_instance: u64,
+    /// Accepted public OCR profile classification.
+    pub ocr_profile: madopilot_ocr_diagnostic_profile_t,
+    /// Typed terminal OCR outcome.
+    pub ocr_outcome: madopilot_ocr_diagnostic_outcome_t,
+    /// Exact caller-requested region, when present.
+    pub ocr_requested_region: madopilot_ocr_requested_region_t,
+    /// Caller-clock elapsed recognition duration in nanoseconds.
+    pub ocr_elapsed_nanos: u64,
+    /// Effective source-region pixel count.
+    pub ocr_source_pixels: u64,
 }
 
 /// A frame's pixel geometry.
@@ -1414,6 +1543,37 @@ pub struct madopilot_find_request_t {
     pub clip_policy: madopilot_clip_policy_t,
 }
 
+/// One OCR operation against one exact retained frame.
+///
+/// Mandatory prefix: through `output_space`. The frame and package handles and
+/// all string views are borrowed for the call. `model_id` resolves one complete
+/// validated model/profile identity from `package`; backend ID and version must
+/// equal the backend explicitly configured on the source session.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_ocr_request_t {
+    /// `sizeof(madopilot_ocr_request_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// [`MADOPILOT_OCR_HAS_REGION`].
+    pub flags: u32,
+    /// The exact retained source frame. Required.
+    pub frame: *const madopilot_frame_t,
+    /// The validated package from which `model_id` is resolved. Required.
+    pub package: *const crate::assets::madopilot_package_t,
+    /// Stable package model identity. Required and non-empty.
+    pub model_id: madopilot_str_t,
+    /// Stable configured backend identity. Required and non-empty.
+    pub backend_id: madopilot_str_t,
+    /// Exact configured backend implementation version. Required and non-empty.
+    pub backend_version: madopilot_str_t,
+    /// Coordinate space of every returned quadrilateral.
+    pub output_space: madopilot_space_t,
+    /// What to do when the optional source region leaves the frame.
+    pub clip_policy: madopilot_clip_policy_t,
+    /// Optional source region selected by [`MADOPILOT_OCR_HAS_REGION`].
+    pub region: madopilot_pixel_rect_t,
+}
+
 /// One match within a result.
 ///
 /// Mandatory prefix: through `bounds`. `template_id` is borrowed from the result
@@ -1452,6 +1612,56 @@ pub struct madopilot_result_info_t {
     pub backend_version: madopilot_str_t,
     /// The region of the source frame that was searched.
     pub searched: madopilot_pixel_rect_t,
+}
+
+/// Fixed description of one immutable OCR result.
+///
+/// Mandatory prefix: the whole structure. Every string view is borrowed from
+/// the result handle and becomes invalid at its final release.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_ocr_result_info_t {
+    /// `sizeof(madopilot_ocr_result_info_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; the library writes zero.
+    pub flags: u32,
+    /// Complete identity of the exact source frame.
+    pub source: madopilot_frame_stamp_t,
+    /// Effective clipped source region in capture pixels.
+    pub effective_region: madopilot_pixel_rect_t,
+    /// Coordinate space of every returned quadrilateral.
+    pub output_space: madopilot_space_t,
+    /// Reserved; the library writes zero.
+    pub reserved: u32,
+    /// Number of immutable recognized regions.
+    pub region_count: u64,
+    /// Backend identity that produced the result.
+    pub backend_id: madopilot_str_t,
+    /// Backend implementation version that produced the result.
+    pub backend_version: madopilot_str_t,
+    /// Model identity that produced the result.
+    pub model_id: madopilot_str_t,
+    /// Exact model version that produced the result.
+    pub model_version: madopilot_str_t,
+    /// Accepted result profile identity.
+    pub profile_id: madopilot_str_t,
+}
+
+/// Geometry and confidence of one immutable recognized region.
+///
+/// Mandatory prefix: the whole structure. Text is read separately through
+/// `ocr_result_text_at`, tying that borrowed view to the live result owner.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_ocr_region_t {
+    /// `sizeof(madopilot_ocr_region_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; the library writes zero.
+    pub flags: u32,
+    /// Profile-defined finite confidence in `0.0..=1.0`.
+    pub confidence: f64,
+    /// Ordered quadrilateral points in the result's declared coordinate space.
+    pub points: [madopilot_ocr_point_t; 4],
 }
 
 /// What a loaded asset package declares about itself.
@@ -1709,8 +1919,11 @@ pub(crate) const fn asset_fault_code(kind: AssetFaultKind) -> madopilot_asset_fa
         AssetFaultKind::DuplicateIdentity => MADOPILOT_ASSET_FAULT_DUPLICATE_IDENTITY,
         AssetFaultKind::MissingEntry => MADOPILOT_ASSET_FAULT_MISSING_ENTRY,
         AssetFaultKind::UnknownTemplate => MADOPILOT_ASSET_FAULT_UNKNOWN_TEMPLATE,
+        AssetFaultKind::UnknownOcrModel => MADOPILOT_ASSET_FAULT_UNKNOWN_OCR_MODEL,
         AssetFaultKind::UnsupportedSource => MADOPILOT_ASSET_FAULT_UNSUPPORTED_SOURCE,
         AssetFaultKind::InvalidTemplateMetadata => MADOPILOT_ASSET_FAULT_INVALID_TEMPLATE_METADATA,
+        AssetFaultKind::InvalidOcrModelMetadata => MADOPILOT_ASSET_FAULT_INVALID_OCR_MODEL_METADATA,
+        AssetFaultKind::UnsupportedOcrProfile => MADOPILOT_ASSET_FAULT_UNSUPPORTED_OCR_PROFILE,
         AssetFaultKind::UnsupportedTemplateSpace => {
             MADOPILOT_ASSET_FAULT_UNSUPPORTED_TEMPLATE_SPACE
         }

@@ -44,7 +44,8 @@ use crate::madopilot_error_t;
 use crate::status::{MADOPILOT_STATUS_INTERNAL_PANIC, madopilot_status_t};
 use crate::types::{
     madopilot_find_request_t, madopilot_input_request_t, madopilot_map_request_t,
-    madopilot_match_options_t, madopilot_open_request_t, madopilot_operation_t,
+    madopilot_match_options_t, madopilot_ocr_request_t, madopilot_open_request_t,
+    madopilot_operation_t,
 };
 
 /// Runs one table entry with a panic containment fence around it.
@@ -761,6 +762,7 @@ const FAMILY_OWNERS: &[&str] = &[
     <madopilot_open_request_t as Input>::NAME,
     <madopilot_map_request_t as Input>::NAME,
     <madopilot_find_request_t as Input>::NAME,
+    <madopilot_ocr_request_t as Input>::NAME,
     <madopilot_match_options_t as Input>::NAME,
     <madopilot_input_request_t as Input>::NAME,
 ];
@@ -951,7 +953,7 @@ mod tests {
     use super::{
         FAMILY_OWNERS, Input, Out, Versioned, boundary, madopilot_find_request_t,
         madopilot_input_request_t, madopilot_map_request_t, madopilot_match_options_t,
-        madopilot_open_request_t, madopilot_operation_t,
+        madopilot_ocr_request_t, madopilot_open_request_t, madopilot_operation_t,
     };
     use crate::status::MADOPILOT_STATUS_INTERNAL_PANIC;
     use crate::types::{
@@ -1114,6 +1116,11 @@ mod tests {
             table: <madopilot_find_request_t as Input>::PRESENCE,
         },
         PresenceFamily {
+            prefix: "MADOPILOT_OCR_HAS_",
+            owner: <madopilot_ocr_request_t as Input>::NAME,
+            table: <madopilot_ocr_request_t as Input>::PRESENCE,
+        },
+        PresenceFamily {
             prefix: "MADOPILOT_MATCH_HAS_",
             owner: <madopilot_match_options_t as Input>::NAME,
             table: <madopilot_match_options_t as Input>::PRESENCE,
@@ -1137,6 +1144,7 @@ mod tests {
         "MADOPILOT_ERROR_HAS_BACKEND",
         "MADOPILOT_ENGINE_DELIVERS_INPUT",
         "MADOPILOT_ENGINE_READS_PERMISSIONS",
+        "MADOPILOT_ENGINE_HAS_OCR",
         "MADOPILOT_TARGET_HAS_KIND",
         "MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION",
         "MADOPILOT_PERMISSION_HAS_DIAGNOSTIC",
@@ -1166,6 +1174,11 @@ mod tests {
         "MADOPILOT_DIAGNOSTIC_RECORD_HAS_INPUT_FAULT",
         "MADOPILOT_DIAGNOSTIC_RECORD_HAS_STATUS",
         "MADOPILOT_DIAGNOSTIC_RECORD_HAS_PERMISSION_STATE",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_MODEL_INSTANCE",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_PROFILE",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_REQUESTED_REGION",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_TIMING",
+        "MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESOURCES",
     ];
 
     /// The families this module compares are exactly the families the

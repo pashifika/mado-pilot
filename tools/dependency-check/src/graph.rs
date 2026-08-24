@@ -235,18 +235,18 @@ pub const ALLOWED_DEPENDENCIES: &[(&str, &[&str])] = &[
     (CAPTURE, &[CORE]),
     (INPUT, &[CORE]),
     (VISION, &[CORE, CAPTURE]),
-    (OCR, &[CORE, CAPTURE, VISION]),
+    (OCR, &[CORE, CAPTURE]),
     (ASSETS, &[CORE, VISION, OCR]),
     (RUNTIME, &[CORE, CAPTURE, INPUT, VISION, OCR, ASSETS]),
     (ADAPTER_REPLAY, &[CORE, CAPTURE]),
     (PLATFORM_WINDOWS, &[CORE, CAPTURE, INPUT]),
     (PLATFORM_MACOS, &[CORE, CAPTURE, INPUT]),
-    // Capture is here for the same reason it is in the vision row: the matching
-    // backend contract hands an adapter a capture-owned CPU mapping and declares
-    // its required pixel format, so an implementation has to name both types.
-    // It is a contract-to-contract edge and exposes no adapter type.
+    // Capture is here for the same reason it is in the vision and OCR rows:
+    // backend contracts hand an adapter a capture-owned CPU mapping and declare
+    // their required pixel format, so implementations have to name both types.
+    // These are contract-to-contract edges and expose no adapter type.
     (BACKEND_OPENCV, &[CORE, CAPTURE, VISION]),
-    (BACKEND_ONNX, &[CORE, VISION, OCR]),
+    (BACKEND_ONNX, &[CORE, CAPTURE, OCR]),
     (
         FACADE,
         &[
@@ -671,7 +671,7 @@ impl fmt::Display for Violation {
 }
 
 /// Package version the repository contract fixes for the whole workspace.
-pub const REQUIRED_VERSION: &str = "0.2.1";
+pub const REQUIRED_VERSION: &str = "0.3.0";
 /// Edition every workspace member must use.
 pub const REQUIRED_EDITION: &str = "2024";
 /// Tested minimum supported Rust version, which is also the pinned toolchain.

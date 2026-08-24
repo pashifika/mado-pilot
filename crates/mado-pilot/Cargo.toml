@@ -13,6 +13,7 @@ qualification-unsupported-api = ["mado-pilot-platform-windows/qualification-unsu
 
 [dependencies]
 mado-pilot-adapter-replay = { path = "../adapter/replay" }
+mado-pilot-backend-onnx = { path = "../backend/onnx" }
 mado-pilot-backend-opencv = { path = "../backend/opencv" }
 mado-pilot-runtime = { path = "../automation/runtime" }
 

@@ -22,10 +22,11 @@ use mado_pilot_capture::{
 use mado_pilot_core::{OperationContext, ProviderId, Result, TargetId};
 use mado_pilot_input::Admission;
 use mado_pilot_runtime::{
-    CapabilitySupport, CaptureProvider, Engine, EngineWiring, IdentityIssuer, InputCapability,
-    InputController, InputDelivery, InputDescriptor, InputFault, InputOpenRequest,
-    InputOperationKind, InputProvider, InputReceipt, InputRequest, Matcher, PackageLoader,
-    PermissionProbe, PixelExtent, PixelFormat, SubmissionEvidence, TargetDescription,
+    CapabilitySupport, CaptureProvider, DiagnosticOptions, Engine, EngineOptions, EngineWiring,
+    IdentityIssuer, InputCapability, InputController, InputDelivery, InputDescriptor, InputFault,
+    InputOpenRequest, InputOperationKind, InputProvider, InputReceipt, InputRequest, Matcher,
+    PackageLoader, PermissionProbe, PixelExtent, PixelFormat, SubmissionEvidence,
+    TargetDescription,
 };
 use mado_pilot_testkit::{ControlledCapture, ControlledInput, ControlledMatcher, ManualClock};
 use mado_pilot_vision::MatchBackend;
@@ -58,7 +59,21 @@ impl Harness {
         Self::build(ControlledMatcher::new(PixelFormat::Rgba8), true)
     }
 
+    /// Wires the input harness with a finite diagnostic stream.
+    pub(crate) fn with_input_and_diagnostics() -> Self {
+        Self::build_with_options(
+            ControlledMatcher::new(PixelFormat::Rgba8),
+            true,
+            EngineOptions::new()
+                .with_diagnostics(DiagnosticOptions::normal(8).expect("valid diagnostic capacity")),
+        )
+    }
+
     fn build(matcher: ControlledMatcher, input: bool) -> Self {
+        Self::build_with_options(matcher, input, EngineOptions::new())
+    }
+
+    fn build_with_options(matcher: ControlledMatcher, input: bool, options: EngineOptions) -> Self {
         let issuer = Arc::new(IdentityIssuer::new());
         let capture = Arc::new(
             ControlledCapture::new(Arc::clone(&issuer), EXTENT, PixelFormat::Rgba8)
@@ -66,16 +81,20 @@ impl Harness {
         );
         let matcher = Arc::new(matcher);
         let input = input.then(|| Arc::new(ControlledInput::new(capture.target())));
-        let engine = Engine::new(EngineWiring {
-            engine: issuer.engine(),
-            capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
-            matcher: Matcher::new(Arc::clone(&matcher) as Arc<dyn MatchBackend>),
-            loader: PackageLoader::new(),
-            input: input
-                .as_ref()
-                .map(|input| Arc::clone(input) as Arc<dyn InputProvider>),
-            permission: None,
-        })
+        let engine = Engine::new_with_options(
+            EngineWiring {
+                engine: issuer.engine(),
+                capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
+                matcher: Matcher::new(Arc::clone(&matcher) as Arc<dyn MatchBackend>),
+                loader: PackageLoader::new(),
+                ocr: None,
+                input: input
+                    .as_ref()
+                    .map(|input| Arc::clone(input) as Arc<dyn InputProvider>),
+                permission: None,
+            },
+            options,
+        )
         .expect("the doubles share one provider identity");
 
         Self {
@@ -108,6 +127,7 @@ impl Harness {
             capture,
             matcher: Matcher::new(Arc::clone(&matcher) as Arc<dyn MatchBackend>),
             loader: PackageLoader::new(),
+            ocr: None,
             input: None,
             permission: None,
         })
@@ -139,6 +159,7 @@ pub(crate) fn wire(
         capture,
         matcher: Matcher::new(Arc::new(ControlledMatcher::new(PixelFormat::Rgba8))),
         loader: PackageLoader::new(),
+        ocr: None,
         input,
         permission,
     })

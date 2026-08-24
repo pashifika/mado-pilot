@@ -109,8 +109,12 @@ dependency surface over a framework that pulls in unrelated features.
 | `serde`, `serde_json` | `mado-pilot-adapter-replay`, `mado-pilot-assets` | Reads the replay sequence manifest and the asset package manifest. JSON is the manifest serialization [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) chose, so a reader meets one format rather than two, and both crates were already resolved in the committed lockfile for the maintenance tool | MIT OR Apache-2.0 |
 | `zip` 8.6 | `mado-pilot-assets` | Reads the ZIP central directory and decompresses entries. Default features **off**, `deflate-flate2` only | MIT |
 | `flate2` 1.1 | `mado-pilot-assets` | Selects the DEFLATE backend `zip` decompresses with. Not called directly | MIT OR Apache-2.0 |
-| `sha2` 0.11 | `mado-pilot-assets` | Verifies the content hash a manifest declares for each entry | MIT OR Apache-2.0 |
-| `opencv` 0.99 | `mado-pilot-backend-opencv` | Binds the OpenCV C++ API the CPU matching profile uses. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
+| `sha2` 0.11 | `mado-pilot-assets`, `mado-pilot-ocr`, `mado-pilot-backend-onnx` | Verifies package entry digests, immutable OCR model component identities, and the recognizer graph's embedded vocabulary before session admission | MIT OR Apache-2.0 |
+| `unicode-normalization` 0.1.25 | `mado-pilot-ocr` | Applies the accepted G-004 NFC rule once at the platform-neutral OCR commit boundary. Its only dependency is the small `tinyvec`/`tinyvec_macros` pair already pinned in `Cargo.lock` | MIT OR Apache-2.0 |
+| `opencv` 0.99 | `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` | Binds the OpenCV C++ image-processing API used by the CPU matching profile and the accepted OCR resize, contour, dilation, and perspective-crop profile. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
+| `ort` 2.0.0-rc.13 | `mado-pilot-backend-onnx` | Exact-pinned safe session/tensor/metadata/run-options wrapper. Default features **off**; only `std`, `alternative-backend`, and `api-17`. No downloader, dynamic-search helper, telemetry feature, GPU provider, or model fetcher is enabled | MIT OR Apache-2.0 |
+| `libloading` 0.8.9 | `mado-pilot-backend-onnx` | Opens one caller-supplied canonical ONNX Runtime file with target-specific restricted flags and retains it for the process-global API lifetime. The version was already resolved by the OpenCV binding generator | ISC |
+| `libc` 0.2.189 | `mado-pilot-backend-onnx` (macOS benchmark dev-only) | Supplies the target `rusage` layout and `getrusage` declaration used to enforce the Apple OCR process peak-RSS ceiling. The target-gated direct edge adds no crate to the lockfile and is absent from product dependencies | MIT OR Apache-2.0 |
 | `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, DPI, system input, window messaging, and token-integrity APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
 | `cc` 1.4 | `mado-pilot-platform-macos` (build) | Compiles the Objective-C shim that owns the macOS native boundary. The package declares the build dependency unconditionally, so Cargo resolves the edge on every host; `build.rs` gates Objective-C compilation and Apple framework link directives on a macOS target. It was already an indirect build dependency through the OpenCV binding generator, so the graph gains an edge rather than a crate | MIT OR Apache-2.0 |
 
@@ -175,6 +179,25 @@ the installation requirement to what
 uses. `clang-runtime` is separate and not optional in practice; the OpenCV section
 below records why.
 
+The ONNX CPU adapter's feature selection is equally contractual. `ort`'s default
+features are disabled; `alternative-backend` selects `ort-sys/disable-linking`,
+so its build entry performs no native discovery, eager link, binary copy, or
+download. API 17 contains every session, tensor, metadata, and run-termination
+entry this adapter needs and omits newer automatic device-selection policy. The
+active `ort` closure is only exact-version `ort-sys` and `smallvec`; both are
+`MIT OR Apache-2.0`. `libloading` reuses the existing 0.8.9 resolution and its
+existing `cfg-if` / target `windows-link` closure. ADR 0034 records the exact
+source, feature, maintenance, MSRV, license, and native compatibility review.
+
+The lockfile also records `ort`'s disabled optional `ndarray` and `tracing`
+families: `matrixmultiply`, `ndarray`, `num-complex`, `num-integer`,
+`once_cell`, `pin-project-lite`, `portable-atomic`, `portable-atomic-util`,
+`rawpointer`, `tracing`, and `tracing-core`. They are absent from the active
+`cargo tree -p mado-pilot-backend-onnx` graph and are not compiled into the
+backend, but lockfile-wide advisory and license policy still reviews them. Every
+recorded package is MIT, Apache-2.0, or a permitted dual-license expression, so
+no policy exception is required.
+
 ## Reviewed decisions not yet in the lockfile
 
 A gate resolution can settle which dependency a later change will need before
@@ -188,6 +211,82 @@ can see the license position was checked when the choice was made.
 
 The exact versions are pinned by the change that adds them, against the
 lockfile and the advisory database as they stand at that time.
+
+### G-004 accepted OCR profile
+
+`G-004` selects RapidOCR v3.9.2's `ch_PP-OCRv4_det_mobile.onnx` plus
+`PP-OCRv6_rec_small.onnx`, 25,979,900 bytes total, through an explicit
+caller-selected model root and fixed safe relative paths. Under independently
+reviewed evaluator v5, this is the only candidate that passes every identity and
+quality row on Apple Silicon and `x86_64-pc-windows-msvc`; every deterministic
+candidate and image gate matches across targets. The exact SHA-256 values,
+model/vocabulary shapes, preprocessing/decoder, fixture terms, public provenance,
+cross-target outcomes, review record, and privacy constraints are recorded in
+[evidence/g-004/](evidence/g-004/).
+
+This decision adds no Cargo dependency, model/runtime/font bytes, backend, or
+support claim. The implementation Change must independently select and review its
+native and Rust dependency closure while consuming the accepted immutable
+profile.
+
+The profile is controlled host-provided: MadoPilot bundles and downloads nothing,
+performs no ambient search, verifies byte count and SHA-256 before session
+creation, and must return an actionable typed absence/mismatch outcome. If a later
+release redistributes a model or ONNX Runtime, that Change reopens the packaging
+decision, supplies the applicable Apache-2.0 or MIT notices, records package size
+and operating-system impact, and resolves the still-open `G-007` obligations.
+
+The qualification environment's Python, RapidOCR, OpenCV Python, Pillow, NumPy,
+Shapely, and ONNX Runtime packages are disposable evidence tools only. They add no
+workspace edge or lockfile entry. The implementation independently reviews its
+actual native and Rust closure against the then-current advisory database.
+
+### Implemented ONNX Runtime prerequisite
+
+`mado-pilot-backend-onnx` implements only the accepted G-004 detector,
+recognizer, vocabulary, preprocessing, and decoder through ONNX Runtime 1.29.0's
+CPU provider and C API 17. [ADR 0034](adr/0034-onnx-runtime-cpu-loading-boundary.md)
+fixes the loading boundary:
+
+- the host supplies one regular file at a caller-selected canonical absolute
+  path: `libonnxruntime.1.29.0.dylib` on `aarch64-apple-darwin` or
+  `onnxruntime.dll` on `x86_64-pc-windows-msvc`;
+- the loader requires exact version string `1.29.0`, non-null API 17, and the
+  target filename before model session creation;
+- macOS uses `RTLD_NOW | RTLD_LOCAL`; Windows uses
+  `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32`;
+- MadoPilot does not install, bundle, download, search `PATH`, accept an
+  environment override, or fall back to another runtime/provider; and
+- the runtime handle remains loaded for process life because the installed API
+  table contains pointers into it.
+
+The reviewed Apple runtime is 33,332,888 bytes, declares minimum macOS 14.0, and
+depends only on system libraries. It is MIT-licensed and is not redistributed.
+The accepted detector and recognizer remain caller-supplied Apache-2.0 model
+bytes. `OnnxOcrBackend::open_accepted` reads only
+`rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx` and
+`rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx` beneath the selected root, validates
+exact length/SHA-256 before graph/session admission, and commits directly into
+immutable shared storage. Explicit schema-v2 packages validate the same
+`OcrModelSource` contract; default composition does not create a duplicate
+25,979,900-byte package allocation.
+
+The two native CI jobs provision these inputs only inside an ephemeral runner.
+They download the official ONNX Runtime 1.29.0 target archive and the two
+tag-pinned ModelScope files, verify reviewed archive/model SHA-256 values before
+extraction/session creation, and pass canonical paths to native tests. Both jobs
+run the backend contract, Rust default facade, production C/C++/CMake default
+flows, frozen C headers, and the target-independent OCR performance smoke gate.
+This is verification-fixture provisioning, not a product download path, release
+bundle, shipped cache, ambient discovery mechanism, or approved-host quality/
+numeric-performance evidence.
+
+ADR 0036 makes the default an explicit composition choice: ordinary engine
+constructors remain unchanged, while `*_engine_with_default_ocr`,
+`engine_create_with_default_ocr`, and C++ `DefaultOcrOptions` require the caller
+to supply the two controlled paths. ADR 0037 accepts separate Apple M1 Pro and
+Core i7-12700KF numeric profiles after approved-host precursor and final runs.
+Hosted Windows Server smoke remains supporting hard-contract evidence only.
 
 ### G-003 macOS shim boundary
 

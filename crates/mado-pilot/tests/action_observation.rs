@@ -69,6 +69,7 @@ fn process_directed_invocation_and_newer_visual_observation_remain_independent_f
         capture: capture.clone(),
         matcher: Matcher::new(Arc::new(ControlledMatcher::new(PixelFormat::Rgba8))),
         loader: PackageLoader::new(),
+        ocr: None,
         input: Some(input.clone()),
         permission: None,
     })
@@ -264,6 +265,7 @@ fn gated_process_pair_refuses_without_substituting_available_system_input() {
         capture: capture.clone(),
         matcher: Matcher::new(Arc::new(ControlledMatcher::new(PixelFormat::Rgba8))),
         loader: PackageLoader::new(),
+        ocr: None,
         input: Some(input.clone()),
         permission: None,
     })
@@ -346,6 +348,7 @@ fn retained_frame_mapping_is_debug_observed_without_delaying_stream_seal() {
             capture: capture.clone(),
             matcher: Matcher::new(Arc::new(ControlledMatcher::new(PixelFormat::Rgba8))),
             loader: PackageLoader::new(),
+            ocr: None,
             input: None,
             permission: None,
         },
@@ -433,6 +436,7 @@ fn retained_diagnostics_survive_repeated_sessions_reader_drop_and_engine_drop() 
             capture: capture.clone(),
             matcher: Matcher::new(Arc::new(ControlledMatcher::new(PixelFormat::Rgba8))),
             loader: PackageLoader::new(),
+            ocr: None,
             input: None,
             permission: None,
         },

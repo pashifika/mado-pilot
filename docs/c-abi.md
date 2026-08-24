@@ -12,23 +12,23 @@ The replay workflow is
 [`examples/c/deterministic-slice.c`](../crates/bindings/capi/examples/c/deterministic-slice.c);
 the native Windows and macOS common flows are under
 [`examples/c/`](../crates/bindings/capi/examples/c/).
+The production and fixture one-shot OCR flows are
+[`examples/c/ocr-default.c`](../crates/bindings/capi/examples/c/ocr-default.c) and
+[`examples/c/ocr-fixture.c`](../crates/bindings/capi/examples/c/ocr-fixture.c).
 
 A C++ caller uses the header-only RAII wrapper over this contract rather than
 calling the table directly; see [cpp-wrapper.md](cpp-wrapper.md). Everything
 below still applies to it, because it is the same contract.
 
-## ABI 1.2, with the complete released 1.0 prefix preserved
+## ABI 1.3, with complete released 1.0 and 1.2 prefixes preserved
 
-The current header declares ABI 1.2. Every 1.0 status value, structure prefix,
-field offset, function-table entry, ownership rule, and failure state remains
-frozen for ABI major 1 by
-[ADR 0007](adr/0007-phase-1-c-abi-freeze.md), which resolved gate
-[`G-010`](validation-gates.md#g-010). ABI 1.2 replaces the unreleased 1.1
-development draft with explicit input routes and submission evidence, owned
-receipt access, operation activity tags, and bounded caller-owned diagnostics
-under
-[ADR 0023](adr/0023-input-submission-observation-and-abi-1-2.md). Within this
-major:
+The current header declares ABI 1.3. ADR 0007 freezes ABI 1.0's 424-byte
+capture/matching table; ADR 0023 freezes ABI 1.2's 592-byte input/diagnostic
+table. ABI 1.3 appends one-shot OCR execution and immutable owned OCR results
+through 640 bytes under ADR 0035, then the accepted default constructor for a
+complete 648-byte table under
+[ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md).
+The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
 - no released numeric value changes its number;
 - no released structure field moves, and none is removed;
@@ -37,52 +37,63 @@ major:
   and raises `MADOPILOT_ABI_MINOR`.
 
 A different ABI major is a different library, and `madopilot_get_api` refuses it.
-Use the smaller of your `sizeof(madopilot_api_t)` and the returned table's
-`struct_size` to decide which members exist. An ABI 1.0 caller negotiates its
-424-byte table and cannot see the suffix. An ABI 1.2 caller negotiates 592 bytes
-and checks the `MADOPILOT_API_SIZE_*` macro for each appended entry before using
-it. Minimum minor 1 is intentionally unsupported because that draft was never
-released; a development caller using it must recompile.
+Use the smaller of caller `sizeof(madopilot_api_t)` and the returned
+`struct_size`. ABI 1.0 and 1.2 callers negotiate 424 and 592 bytes. An ABI 1.3
+caller checks the entry-specific macro: 640 bytes reaches the complete OCR
+owner/accessor suffix, while
+`MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR` requires the complete
+648-byte table. The C++ wrapper requires the complete lifecycle/accessor suffix
+before constructing an owner and all 648 bytes before default construction.
 
-The released promise is checked rather than stated.
-`tests/abi-compat/v1/` keeps the exact ABI 1.0 header and compiles its caller
-against that frozen copy — never the working header — then links it to the
-library built now, negotiates only the extent that caller declared, and runs its
-complete flow. The unreleased 1.1 draft has no header fixture, executable caller,
-alias, or compatibility surface in the current tree.
+The released promise is executable. `tests/abi-compat/v1/` and `v1_2/` keep exact
+headers and callers, compile them without the working header, link them to the
+current library, negotiate only their declared extents, and run their complete
+flows. Current C++ checks also negotiate complete 1.2 and partial 1.3 extents and
+refuse OCR before reading a missing entry.
 
 ## Migrating from the unreleased 1.1 draft
 
-The 1.1 header was development-only and has no compatibility tail in ABI 1.2.
-Recompile C and C++ consumers; do not copy its numeric values, record layouts, or
-table offsets into a 1.2 integration. The cutover is:
+The 1.1 header was development-only. Recompile against 1.2 or 1.3; do not copy
+its numeric values, layouts, or offsets. Explicit input routes, owned receipts,
+submission evidence, and bounded diagnostics are the ABI 1.2 replacement. The
+frozen ABI 1.0 prefix remains compatible; there is no 1.1 alias, tombstone,
+reserved slot, or negotiation profile.
 
-1. negotiate major 1, minimum minor 2, the caller's 1.2 table extent, and then
-   gate each optional call with its `MADOPILOT_API_SIZE_*` macro;
-2. replace the coarse background route with explicit `SYSTEM`,
-   `WINDOW_MESSAGE`, or `PROCESS_DIRECTED` routes and inspect compatibility,
-   address scope, focus, permission, coordinate spaces, and strongest evidence
-   for every operation/route pair;
-3. replace direct receipt records and `delivered`/`last_completed` fields with an
-   owned `madopilot_input_receipt_t`, `submitted`, optional
-   `last_submitted`, selected route, address scope, submission evidence, typed
-   attempts, partial-native-effect, and cleanup accessors;
-4. treat `COMPLETE` as completion of the advertised native submission threshold,
-   not application effect; acquire a strictly newer frame and run the caller's
-   own visual search when visual change is the success condition;
-5. use `engine_create_with_options` to opt into a finite `NORMAL` or `DEBUG`
-   diagnostic stream and take its one owned reader, or retain the default `OFF`
-   behavior, which allocates no queue and emits no records.
+## Migrating an ABI 1.2 caller to one-shot OCR
 
-The Rust and C++ surfaces make the same clean cutover: old route variants,
-receipt methods, and wrapper aliases do not exist. The frozen ABI 1.0 prefix
-remains compatible; there is intentionally no ABI 1.1 alias, tombstone, reserved
-slot, or negotiation profile.
+An existing 1.2 caller remains unchanged. To use OCR:
+
+1. compile the ABI 1.3 header and require
+   `MADOPILOT_API_SIZE_OCR_RESULT_TEXT_AT` before creating an OCR owner;
+2. choose explicit package-backed composition or the accepted default:
+   - explicit composition retains one validated package and fills
+     `madopilot_ocr_request_t` with that package/model and the configured backend
+     identity;
+   - default composition requires
+     `MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR`, fills a standalone
+     `madopilot_default_ocr_options_t` with canonical model-root/runtime views,
+     and constructs through `engine_create_with_default_ocr`;
+3. retain one exact source frame for the synchronous call, keep backend/model
+   views exact, and name output space plus any capture-pixel region;
+4. pass the same operation record across validation, mapping, backend work, and
+   final commit;
+5. own the returned `madopilot_ocr_result_t` independently, use fixed-width
+   `ocr_result_info`, indexed region geometry/confidence, and borrowed text views,
+   and release with the module entry; and
+6. keep each borrowed text view only while its result owner remains retained.
+
+For the exact integrated default, `madopilot_ocr_request_t.package` may be null
+when backend/model views match the default identities returned by
+`describe_build`; any explicit package model still requires its package. There
+is no watcher, retry, callback, scheduling, fallback, automatic input, ambient
+runtime/model search, download, or bundling. The feature-gated
+`private-fixture` constructor remains outside the public header/table and absent
+from release builds.
 
 ## One exported symbol
 
-`madopilot_get_api` is the only symbol the library exports. Everything else is a
-member of the immutable function table it returns.
+In release builds, `madopilot_get_api` is the only exported symbol. Every public
+operation is a member of the immutable function table it returns.
 
 ```c
 const madopilot_api_t* api = NULL;
@@ -127,17 +138,19 @@ the rule the whole design turns on, and it is what makes the following true:
 - a prepared template outlives the package it was compiled from;
 - a match result outlives the session, template, package, and engine because it
   owns the exact frame it searched;
+- an OCR result outlives its frame, package, session, engine, and backend because
+  it owns immutable public text, geometry, source identity, and descriptors;
 - an input receipt and all of its indexed attempt values outlive the session
   and engine;
 - an independently retained diagnostic reader keeps the sealed stream alive
   after engine release, and an owned batch outlives both engine and reader.
 
 **A borrowed view is valid only while its owner is retained.** Each declaration
-names the owner. `madopilot_error_detail_t.message` borrows from the error
-handle, `madopilot_match_t.template_id` borrows from the result, a target's
-`name` borrows from the target list, and `madopilot_image_t.bytes` borrows from
-the mapping. Receipt attempts and diagnostic records contain value fields and
-borrow no child handle. Copy any borrowed view still needed before final release.
+names the owner. Error messages borrow from errors, match template IDs borrow
+from match results, target names borrow from target lists, mapping bytes borrow
+from mappings, and OCR text borrows from the OCR result. Receipt attempts and
+diagnostic records are value fields. Copy any borrowed view needed after final
+owner release.
 
 **A view the caller supplies is borrowed the other way, for exactly the call.**
 Every input structure, every view it carries, and every view passed directly as an
@@ -195,19 +208,18 @@ covers every field a presence bit can name.
 - writes back the number of bytes it actually populated, so a caller built
   against a newer header learns how much of what it knows is really there.
 
-Two structures carry no `struct_size`: `madopilot_str_t` and
-`madopilot_bytes_t`. They are the boundary's primitives rather than extensible
-records — they appear inside other structures, so growing one would move every
-field after it. Semantic numeric fields and frozen version/report fields use
-fixed-width integer types: every structure size and reported table size is
-`uint32_t`, while row strides and semantic result, package, receipt, attempt,
-and diagnostic counts are `uint64_t`. `size_t` is limited to ABI-native
-addressability quantities: pointer-view lengths, replay and input event counts
-and element strides, target-list counts, accessor indexes, and the caller-known
-table extent passed to `madopilot_get_api`. The 1.0 choices are frozen by
-ADR 0007 on the two 64-bit release targets, and the ABI 1.2 receipt, attempt,
-and diagnostic counts follow them under ADR 0023. A later phase that needs a
-different representation introduces a different type or ABI major.
+The pointer-length `madopilot_str_t` and `madopilot_bytes_t` primitives carry no
+`struct_size`. Semantic numeric fields use fixed widths: structure/table sizes
+are `uint32_t`; row strides and semantic OCR/match/package/receipt/diagnostic
+counts are `uint64_t`; `size_t` is limited to addressability quantities such as
+view lengths, caller array extents, accessor indexes, and negotiated table
+extent. ABI 1.3 keeps those rules.
+
+`madopilot_diagnostic_record_t` has a 240-byte mandatory ABI 1.2 prefix and
+appended ABI 1.3 OCR fields. A 1.2 caller receives its exact initialized prefix;
+a 1.3 caller receives the opaque model instance, accepted profile
+classification, requested geometry, typed outcome, timing, and source-pixel
+counter too.
 
 **One structure has two mandatory prefixes.** `madopilot_match_options_t` is the
 only one the table uses in both directions. As an *input* its mandatory prefix
@@ -235,6 +247,8 @@ ABI 1.2 has these conditional-prefix cases:
 - `madopilot_input_request_t` reaches through `source_frame` normally. Setting
   `MADOPILOT_INPUT_REQUEST_HAS_CLEANUP_BUDGET` requires the complete structure
   through `cleanup_timeout_nanos`.
+- `madopilot_ocr_request_t` reaches through `output_space` normally. Setting
+  `MADOPILOT_OCR_HAS_REGION` requires the complete structure through `region`.
 The event array carries both `event_count` and `event_stride`. Its elements may
 come from an older header, but every element must end on a prefix valid for its
 selected kind and fit within that stride.
@@ -351,20 +365,12 @@ anything. It names no backend, because none ran. The status says whose mistake
 it was and the fault pair says which one; see
 [ADR 0007](adr/0007-phase-1-c-abi-freeze.md), decision 4.
 
-**A caller-supplied region must be in capture pixels**, and any other coordinate
-space is `MADOPILOT_STATUS_INVALID_ARGUMENT` with
-`MADOPILOT_ERROR_CATEGORY_ABI`. That applies to `madopilot_map_request_t.region`
-and `madopilot_find_request_t.region`, and it is a property of this table rather
-than of the runtime underneath: the ABI has no general coordinate-conversion
-entry, so a rectangle it accepts is one it can use without converting, and a
-caller converts before it asks. It is `MADOPILOT_STATUS_INVALID_ARGUMENT` rather
-than `MADOPILOT_STATUS_UNSUPPORTED` because the request names a space this table
-does not read at all, which is the same answer an unrecognized space tag gets;
-reserving `MADOPILOT_STATUS_UNSUPPORTED` for a request the table does read and
-cannot satisfy keeps the two distinguishable. The Rust facade, which does have a
-conversion, answers the equivalent question with its own unsupported-coordinate
-outcome instead: the two surfaces differ here, and the C prefix is deliberately
-the narrower of them.
+**A caller-supplied C region is in capture pixels.** Any other space is
+`MADOPILOT_STATUS_INVALID_ARGUMENT` with `MADOPILOT_ERROR_CATEGORY_ABI`; this
+applies to map, find, and OCR request regions. The C table has no general
+coordinate-conversion entry, so callers convert before the request. The Rust
+facade is broader because it can resolve other spaces through the immutable frame
+transform; the C surface intentionally stays narrower.
 
 `madopilot_pixel_rect_t.space` is still read in the other direction: on a
 rectangle the library writes, it names whichever space that rectangle was
@@ -390,6 +396,38 @@ error handle never survives a call; when `out_error` itself passed validation, t
 entry then reports through it which output was null or misaligned. Only a call
 whose `out_error` is the rejected output gets the status alone, because there is
 then nowhere to put the message.
+
+## One-shot OCR and immutable results
+
+`session_recognize` initializes both outputs before reading inputs. The session,
+exact frame, request views, and operation record are borrowed for the
+synchronous call. An explicit request also borrows its package, which resolves a
+complete validated model/profile identity. The accepted default may pass a null
+package only with the exact backend/model identity retained by the engine.
+Backend ID/version and model must exactly match the session. A foreign stream,
+missing backend, unknown model, missing required package, malformed view, invalid
+region, deadline, cancellation, close, or backend fault returns one typed status
+with no partial result.
+
+Success returns one opaque immutable `madopilot_ocr_result_t`. `ocr_result_info`
+reports complete source identity, effective region, output space, fixed-width
+count, and borrowed backend/model/profile views. `ocr_result_region_at` reports
+four points and finite confidence; `ocr_result_text_at` returns normalized text
+borrowed from the result owner. Retain/release are atomic, const access is
+concurrent, indexes are checked, and releasing every parent leaves the result
+unchanged.
+
+Runtime performs final deadline/cancellation/close arbitration before the C
+boundary publishes the handle. A backend panic is contained as
+`MADOPILOT_STATUS_INTERNAL_PANIC`; result and error outputs remain initialized
+and no unwind crosses C.
+
+`madopilot_default_ocr_options_t` is a separate size-versioned record containing
+only model-root and runtime-path views. It was not appended to the frozen
+`madopilot_engine_options_t`: that structure remains size 16, alignment 4 on both
+release targets. `engine_create_with_default_ocr` validates the controlled
+runtime first, then the two fixed accepted model paths, and returns no engine on
+failure. It never changes the behavior of `engine_create`.
 
 ## Native capabilities and non-prompting permissions
 
@@ -540,20 +578,18 @@ timestamp, checked operation identity, optional caller activity tag, level,
 operation kind, and one closed typed payload. Timestamp proximity is not
 causality; sequence is the total commit order.
 
-The record schema is privacy-reviewed and fixed-width. It can report public
-target/frame identities, coordinate spaces, the exact searched rectangle
-after clipping — a full `madopilot_pixel_rect_t`, never a coordinate-space
-tag alone — statuses, permission/lifecycle state, route and submission
-evidence, result counts, cleanup counts, and opaque engine-local identities.
-It contains no pixels, recognized text, key or event payloads, window titles,
-platform namespaces, backend names, paths, signing identifiers, or native
-free-form messages. Draining is self-silent and never creates another record.
+The record schema is privacy-reviewed and fixed-width. OCR records may carry an
+opaque library-issued model-instance ID, accepted G-004 classification, exact
+source frame, requested/effective geometry, output space, typed outcome,
+result count, elapsed nanoseconds, and source-pixel count. Admission and terminal
+records remain independent observations under the caller's opaque activity tag;
+they do not claim prior input caused a frame or that later input succeeded.
 
-Template metadata behind record template identities is bounded to 65,536
-entries per engine. Reaching that ceiling changes no preparation or search
-outcome: a terminal `NORMAL` record that cannot name its template is omitted
-and counted once in the normal loss count. Diagnostic bookkeeping never
-changes the status of an otherwise successful call.
+Records contain no pixels/hashes, recognized text, vocabulary, key/event
+payload, window title, platform namespace, backend/runtime name, caller
+asset/model identity, model digest/path/bytes, signing identifier, credential,
+or native/free-form backend message. Full or contended streams never block OCR;
+they preserve exact normal/debug loss counts. Draining remains self-silent.
 
 ## Panic containment
 
@@ -716,28 +752,29 @@ with the Rust `#[repr(C)]` definitions is proved rather than asserted:
 ```sh
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
+cargo build --locked --package mado-pilot-capi --features private-fixture
+cargo run --locked --package mado-pilot-capi --features private-fixture \
+  --example c-abi-check -- --label "<host>"
 ```
 
-That compiles and runs `tests/c/madopilot-abi-layout.c`, which reports every
-size, alignment, and field offset as the C compiler produced them; compares the
-report line by line against the same values measured from the Rust definitions;
-and then compiles, links, and runs the replay and non-prompting native C
-examples. Two compilers, one comparison — a divergence names the structure and
-the field.
+The checker compares every C and Rust size/alignment/offset, compiles and runs
+the deterministic/native consumers, and then compiles frozen ABI 1.0 and 1.2
+callers only against their own headers. Those callers negotiate 424 and 592
+bytes and run unchanged against ABI 1.3. Current C++ checks negotiate complete
+1.2 and partial 1.3 extents and refuse OCR/default construction before a missing
+function pointer is read.
 
-It runs the released ABI 1.0 probe under `tests/abi-compat/v1/`, compiled
-against that header rather than the working one, and requires every structure,
-field, numeric value, and table entry it declares to retain its answer. The 1.0
-caller links to the current library, negotiates only its 424-byte extent, and
-runs. This catches a coordinated Rust/header edit that a working-header
-comparison alone cannot: swapping same-width fields moves no offset but makes
-an old caller read the wrong meaning. Current-header C and Rust checks separately
-prove that minimum minor 1 and a minor-zero caller claiming suffix entries are
-both refused with a null table output.
+The ordinary checker also compiles and runs the production C and C++ default OCR
+examples with reviewed prerequisites, requires identical normalized
+backend/model/count output, and runs the independent CMake consumer. The
+`private-fixture` mode separately runs deterministic C/C++ OCR against the
+fixture-only constructor and validates content-redacted diagnostics. Both paths
+exercise ownership, repeated close, and immutable result independence without
+turning the fixture symbol into a release entry.
 
 The same command continues into the C++ surface: compile-time and runtime
-ownership tests, the replay example, the safe native example, and the
-independent CMake consumer project. See
+ownership tests, replay/native/default examples, and the independent CMake
+consumer project. See
 [cpp-wrapper.md](cpp-wrapper.md#how-the-wrapper-is-verified).
 
 The invariants that need no C compiler — versioned prefixes, per-event required
@@ -766,6 +803,13 @@ development record without turning it into a compatibility target.
 the native route capability and submission-evidence vocabulary, owned receipt
 and attempt access, operation activity tags, bounded diagnostics, the complete
 592-byte table, and the deliberate rejection of minimum minor 1.
+
+[ADR 0035](adr/0035-ocr-public-surfaces-and-private-fixture-boundary.md) records
+ABI 1.3's six-entry OCR suffix, immutable result/view ownership, the 640-byte
+owner/accessor extent, redacted diagnostic append, and isolation of the local
+fixture constructor. [ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md)
+records the standalone default options, preserved engine-options layout, and
+`engine_create_with_default_ocr` at offset 640 completing the table at 648 bytes.
 
 Each released header gets an immutable fixture. New coverage goes in the next
 fixture rather than editing an old caller; the rule is in

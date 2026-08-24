@@ -77,7 +77,15 @@ pub(crate) fn read_capped<R: Read>(
     stage: LoadStage,
     operation: &mut Operation<'_>,
 ) -> Result<Vec<u8>, AssetFault> {
-    let mut produced: Vec<u8> = Vec::new();
+    let length = usize::try_from(declared)
+        .map_err(|_| AssetFault::new(AssetFaultKind::ArithmeticOverflow, stage))?;
+    operation
+        .checkpoint()
+        .map_err(|interruption| AssetFault::interrupted(interruption, stage))?;
+    let mut produced = Vec::new();
+    produced
+        .try_reserve_exact(length)
+        .map_err(|_| AssetFault::new(AssetFaultKind::SourceUnreadable, stage))?;
     let mut chunk = vec![0u8; CHUNK_BYTES];
     let mut total: u64 = 0;
 

@@ -11,12 +11,15 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, TryLockError, Weak};
 
 use mado_pilot_core::{
-    ActivityTag, CoordinateSpace, Error, FrameStamp, InputAddressScope, InputDelivery,
+    ActivityTag, ClipPolicy, CoordinateSpace, Error, FrameStamp, InputAddressScope, InputDelivery,
     InputOperationKind, Lifecycle, MonotonicInstant, Operation, OperationContext, PermissionKind,
-    PermissionState, PixelRect, Status, SubmissionEvidence, TargetId,
+    PermissionState, PixelRect, Rect, Status, SubmissionEvidence, TargetId,
 };
 use mado_pilot_input::{
     CleanupState, InputAttempt, InputFault, InputReceipt, InputRequest, SequenceOutcome,
+};
+use mado_pilot_ocr::{
+    ACCEPTED_G004_PROFILE_ID, OcrBackendDescriptor, OcrRegion as RequestedOcrRegion,
 };
 use mado_pilot_vision::prepared::{PreparedTemplate, PreparedTemplateInstance};
 
@@ -152,6 +155,10 @@ nonzero_identity!(
     DiagnosticTemplateId,
     "An opaque engine-local identity for one prepared template instance."
 );
+nonzero_identity!(
+    DiagnosticOcrModelInstanceId,
+    "An opaque library-issued engine-local identity for one configured OCR model instance."
+);
 
 /// Public operations that may produce diagnostic records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -175,6 +182,8 @@ pub enum DiagnosticOperationKind {
     Search,
     /// Input submission.
     InputSubmission,
+    /// One-shot OCR recognition.
+    OcrRecognition,
     /// Session close.
     SessionClose,
 }
@@ -191,6 +200,8 @@ pub enum DiagnosticKind {
     Mapping,
     /// A search reached a terminal result.
     Search,
+    /// OCR recognition reached a terminal result.
+    Ocr,
     /// An input submission reached a terminal receipt.
     Input,
     /// One route attempt was made or refused.
@@ -441,6 +452,129 @@ pub struct PermissionDiagnostic {
     pub fault: Option<Status>,
 }
 
+/// The accepted public OCR profile, without backend or caller model identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum OcrDiagnosticProfile {
+    /// Accepted G-004 RapidOCR PP-OCRv4 detector / PP-OCRv6 small recognizer profile.
+    AcceptedG004,
+    /// No accepted public profile claim is made, as for a deterministic test double.
+    Unspecified,
+}
+
+/// Exact caller-requested OCR geometry without storing floating-point values directly.
+///
+/// Edge bit patterns preserve the request exactly while keeping the diagnostic
+/// payload closed, copyable, comparable, and hashable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OcrRequestedRegionDiagnostic {
+    space: CoordinateSpace,
+    left_bits: u64,
+    top_bits: u64,
+    right_bits: u64,
+    bottom_bits: u64,
+    /// The request's clipping policy.
+    pub clip_policy: ClipPolicy,
+}
+
+impl OcrRequestedRegionDiagnostic {
+    fn new(rect: Rect, clip_policy: ClipPolicy) -> Self {
+        Self {
+            space: rect.space(),
+            left_bits: rect.left().to_bits(),
+            top_bits: rect.top().to_bits(),
+            right_bits: rect.right().to_bits(),
+            bottom_bits: rect.bottom().to_bits(),
+            clip_policy,
+        }
+    }
+
+    /// Returns the request coordinate space.
+    #[must_use]
+    pub const fn space(self) -> CoordinateSpace {
+        self.space
+    }
+
+    /// Returns the requested left edge.
+    #[must_use]
+    pub const fn left(self) -> f64 {
+        f64::from_bits(self.left_bits)
+    }
+
+    /// Returns the requested top edge.
+    #[must_use]
+    pub const fn top(self) -> f64 {
+        f64::from_bits(self.top_bits)
+    }
+
+    /// Returns the requested right edge.
+    #[must_use]
+    pub const fn right(self) -> f64 {
+        f64::from_bits(self.right_bits)
+    }
+
+    /// Returns the requested bottom edge.
+    #[must_use]
+    pub const fn bottom(self) -> f64 {
+        f64::from_bits(self.bottom_bits)
+    }
+}
+
+/// Typed terminal OCR outcome without recognized text or backend output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum OcrDiagnosticOutcome {
+    /// One or more normalized regions committed.
+    Recognized,
+    /// Recognition committed successfully with no non-empty normalized text.
+    Empty,
+    /// Recognition failed with the enclosed public status.
+    Failed(Status),
+}
+
+/// One terminal OCR observation with content-redacted identities and counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OcrDiagnostic {
+    /// Opaque library-issued configured-model instance identity.
+    pub model_instance: DiagnosticOcrModelInstanceId,
+    /// Accepted public profile classification.
+    pub profile: OcrDiagnosticProfile,
+    /// Complete exact source-frame identity.
+    pub source: FrameStamp,
+    /// Requested source region, or `None` for the full frame.
+    pub requested_region: Option<OcrRequestedRegionDiagnostic>,
+    /// Effective clipped source region, when geometry resolution completed.
+    pub effective_region: Option<PixelRect>,
+    /// Coordinate space of returned quadrilaterals.
+    pub output_space: CoordinateSpace,
+    /// Typed terminal outcome.
+    pub outcome: OcrDiagnosticOutcome,
+    /// Semantic committed result count, zero on failure.
+    pub result_count: u64,
+    /// Caller-clock elapsed duration from runtime admission through final arbitration.
+    pub elapsed_nanos: u64,
+    /// Number of source pixels in the effective region, zero before resolution.
+    pub source_pixels: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OcrDiagnosticContext {
+    pub(crate) model_instance: DiagnosticOcrModelInstanceId,
+    pub(crate) profile: OcrDiagnosticProfile,
+}
+
+pub(crate) fn requested_ocr_region(
+    region: RequestedOcrRegion,
+) -> Option<OcrRequestedRegionDiagnostic> {
+    match region {
+        RequestedOcrRegion::FullFrame => None,
+        RequestedOcrRegion::Region { rect, policy } => {
+            Some(OcrRequestedRegionDiagnostic::new(rect, policy))
+        }
+        _ => None,
+    }
+}
+
 /// Closed, privacy-reviewed diagnostic payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -453,6 +587,8 @@ pub enum DiagnosticPayload {
     Mapping(MappingDiagnostic),
     /// Terminal search summary.
     Search(SearchDiagnostic),
+    /// Terminal OCR summary.
+    Ocr(OcrDiagnostic),
     /// Terminal input summary.
     Input(InputDiagnostic),
     /// Per-route attempt detail.
@@ -472,6 +608,7 @@ impl DiagnosticPayload {
             Self::Frame(_) => DiagnosticKind::Frame,
             Self::Mapping(_) => DiagnosticKind::Mapping,
             Self::Search(_) => DiagnosticKind::Search,
+            Self::Ocr(_) => DiagnosticKind::Ocr,
             Self::Input(_) => DiagnosticKind::Input,
             Self::RouteAttempt(_) => DiagnosticKind::RouteAttempt,
             Self::Lifecycle(_) => DiagnosticKind::Lifecycle,
@@ -662,6 +799,7 @@ struct DiagnosticStream {
     pending_debug: AtomicU64,
     next_operation: AtomicU64,
     next_template: AtomicU64,
+    next_ocr_model: AtomicU64,
     templates: Mutex<HashMap<PreparedTemplateInstance, DiagnosticTemplateId>>,
 }
 
@@ -681,6 +819,7 @@ impl DiagnosticStream {
             producers: AtomicUsize::new(1),
             next_operation: AtomicU64::new(1),
             next_template: AtomicU64::new(1),
+            next_ocr_model: AtomicU64::new(1),
             templates: Mutex::new(HashMap::new()),
         })
     }
@@ -715,6 +854,15 @@ impl DiagnosticStream {
         )
         .ok()
         .map(DiagnosticTemplateId::new)
+    }
+
+    fn issue_ocr_model(&self) -> Option<DiagnosticOcrModelInstanceId> {
+        Self::issue(
+            &self.next_ocr_model,
+            "diagnostic OCR model identity space is exhausted",
+        )
+        .ok()
+        .map(DiagnosticOcrModelInstanceId::new)
     }
 
     fn template(&self, template: &PreparedTemplate) -> Option<DiagnosticTemplateId> {
@@ -897,6 +1045,23 @@ impl DiagnosticSink {
         }
     }
 
+    pub(crate) fn ocr_model(
+        &self,
+        descriptor: &OcrBackendDescriptor,
+    ) -> Option<OcrDiagnosticContext> {
+        self.stream.issue_ocr_model().map(|model_instance| {
+            let profile = if descriptor.profile().as_str() == ACCEPTED_G004_PROFILE_ID {
+                OcrDiagnosticProfile::AcceptedG004
+            } else {
+                OcrDiagnosticProfile::Unspecified
+            };
+            OcrDiagnosticContext {
+                model_instance,
+                profile,
+            }
+        })
+    }
+
     pub(crate) fn observe(
         &self,
         context: &OperationContext,
@@ -1047,6 +1212,28 @@ mod tests {
             target: Some(target()),
             lifecycle: Lifecycle::Open,
             fault: None,
+        })
+    }
+
+    fn ocr_payload() -> DiagnosticPayload {
+        let issuer = IdentityIssuer::new();
+        let source = FrameStamp::new(
+            issuer.issue_stream().expect("issued"),
+            StreamEpoch::FIRST,
+            FrameSequence::FIRST,
+            GeometryRevision::FIRST,
+        );
+        DiagnosticPayload::Ocr(OcrDiagnostic {
+            model_instance: DiagnosticOcrModelInstanceId::new(NonZeroU64::new(1).expect("nonzero")),
+            profile: OcrDiagnosticProfile::AcceptedG004,
+            source,
+            requested_region: None,
+            effective_region: Some(PixelRect::new(0, 0, 8, 8).expect("valid")),
+            output_space: CoordinateSpace::CapturePixels,
+            outcome: OcrDiagnosticOutcome::Recognized,
+            result_count: 1,
+            elapsed_nanos: 4,
+            source_pixels: 64,
         })
     }
 
@@ -1294,6 +1481,18 @@ mod tests {
                     format!("{:?}", value.outcome),
                     format!("{:?}", value.result_count),
                 ],
+                DiagnosticPayload::Ocr(value) => vec![
+                    format!("{:?}", value.model_instance),
+                    format!("{:?}", value.profile),
+                    format!("{:?}", value.source),
+                    format!("{:?}", value.requested_region),
+                    format!("{:?}", value.effective_region),
+                    format!("{:?}", value.output_space),
+                    format!("{:?}", value.outcome),
+                    format!("{:?}", value.result_count),
+                    format!("{:?}", value.elapsed_nanos),
+                    format!("{:?}", value.source_pixels),
+                ],
                 DiagnosticPayload::Input(value) => vec![
                     format!("{:?}", value.target),
                     format!("{:?}", value.operations),
@@ -1337,6 +1536,9 @@ mod tests {
         const TEMPLATE_NAME: &str = "private/assets/account-name-template.png";
         const INPUT_TEXT: &str = "caller-secret-input-text";
         const INPUT_KEY: char = '🔐';
+        const OCR_TEXT: &str = "caller-secret-recognized-text";
+        const OCR_BACKEND: &str = "caller-selected-secret-backend";
+        const OCR_MODEL: &str = "caller-selected-secret-model";
         const PID: &str = "1972681003";
         const NATIVE_WINDOW_NUMBER: &str = "1983792004";
         const APP_NAME: &str = "PrivateGameApplication";
@@ -1430,6 +1632,23 @@ mod tests {
                     result_count: 0,
                 }),
             ),
+            (
+                DiagnosticKind::Ocr,
+                DiagnosticPayload::Ocr(OcrDiagnostic {
+                    model_instance: DiagnosticOcrModelInstanceId::new(
+                        NonZeroU64::new(1).expect("nonzero"),
+                    ),
+                    profile: OcrDiagnosticProfile::AcceptedG004,
+                    source: frame,
+                    requested_region: None,
+                    effective_region: Some(region),
+                    output_space: CoordinateSpace::CapturePixels,
+                    outcome: OcrDiagnosticOutcome::Recognized,
+                    result_count: 1,
+                    elapsed_nanos: 9,
+                    source_pixels: 64,
+                }),
+            ),
             (DiagnosticKind::Input, DiagnosticPayload::Input(input)),
             (
                 DiagnosticKind::RouteAttempt,
@@ -1456,7 +1675,7 @@ mod tests {
             ),
         ];
 
-        assert_eq!(matrix.len(), 8);
+        assert_eq!(matrix.len(), 9);
         let input_key = INPUT_KEY.to_string();
         let sensitive = [
             TEMPLATE_NAME,
@@ -1470,6 +1689,9 @@ mod tests {
             SIGNING_IDENTIFIER,
             RAW_AUTHORIZATION_VALUES,
             PLATFORM_FAILURE,
+            OCR_TEXT,
+            OCR_BACKEND,
+            OCR_MODEL,
             pixel_contents.as_str(),
         ];
         for (kind, payload) in matrix {
@@ -1587,17 +1809,18 @@ mod tests {
     }
 
     #[test]
-    fn contention_produces_a_loss_only_batch() {
+    fn contended_ocr_diagnostics_do_not_wait_and_report_exact_normal_loss() {
         let (sink, reader) = enabled(DiagnosticLevel::Normal, 2);
         let context = OperationContext::new();
         let operation = observe(&sink, &context);
         let _guard = sink.stream.state.lock().expect("uncontended");
-        sink.normal(operation, &context, input_payload);
+        sink.normal(operation, &context, ocr_payload);
         drop(_guard);
 
         let batch = batch(&reader);
         assert!(batch.is_empty());
         assert_eq!(batch.losses().normal(), 1);
+        assert_eq!(batch.losses().debug(), 0);
     }
 
     #[test]

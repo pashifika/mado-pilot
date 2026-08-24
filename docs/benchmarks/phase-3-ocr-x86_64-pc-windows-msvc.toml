@@ -1,0 +1,241 @@
+# Phase 3 accepted CPU OCR profile measured on Core i7-12700KF at final source
+# f2d3f297c95b9c331f3d2f6f4232d2b97d1918bb and tree
+# b9c8fb5d3da4124885e7fd58e49cd6ac1cf20a73.
+
+format_version = 1
+
+[benchmark]
+id = "phase-3-ocr-x86_64-pc-windows-msvc"
+workload = "accepted ONNX CPU OCR cold startup, full frame, bounded region, empty result, allocation growth, and cleanup"
+phase = "3"
+status = "measured"
+normative = true
+measurements_recorded = true
+# A committed profile under docs/benchmarks/ carries the budgets.
+
+[profile]
+fixture = "fixtures/ocr/g-004/hud.png plus a synthetic 64x64 packed BGRA empty frame"
+fixture_sha256 = "10f0163cf298453e55922cc6104ee3066f59a328a55e9bac6c04f24d36c9e288"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF, 20 logical CPUs, 32 GiB"
+os_version = "Windows 11 Pro 25H2, build family 26200"
+build_profile = "cargo bench, default features, debug_assertions=false; five fresh processes"
+warmup_iterations = 3
+sample_count = 20
+process_count = 5
+correctness_oracle = "every warmup and retained sample checks exact NFC text/count/order, fixture-derived geometry bounds, finite same-host-stable confidence, frame/effective-region/output/backend/model correlation, and the exact empty outcome"
+queue_policy = "one synchronous admitted inference, one session pair, two sessions, CPU provider only, intra/inter operation threads 1, CPU arena disabled, recognition batch ceiling 6"
+producer_surface_copy = "not applicable: the profile maps immutable CPU replay frames and owns no producer/native surface; no copied-byte ceiling is set"
+notes = "final source commit f2d3f297c95b9c331f3d2f6f4232d2b97d1918bb; tree b9c8fb5d3da4124885e7fd58e49cd6ac1cf20a73; budgets derived from precursor source 6b5f3c1435b983c560fd01da513f721d8d21ba8d, tree 0a9fc22d5093d9ad61c9dfa0c93f01a619fe7177, executable sha256 f3c13157807c9617fb03039b9689cd53ccc138701d9c412180c03fc28800a316; rustc/cargo 1.97.1; MSVC 14.44.35207; OpenCV 4.14.0; runtime profile onnxruntime-1.29.0-api17-cpu; runtime archive sha256 c9b4b7086b529ad814f428c1bad028e20a25d7dc0699836775faace4ab5b78b2; runtime library sha256 69d8e6d3879a3b4001cdc74c8ed9ccc7e7f799a5b847059738323404519ec471; detector sha256 d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9; recognizer sha256 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884; vocabulary 18708 entries sha256 f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e; mapped and inference/session counts observed in-process; peak RSS enforced through GetProcessMemoryInfo; no failed-sample exclusion or retry"
+benchmark_executable_sha256 = "f0292ce5fafc106ddff2ffc4ef1066543e780dfa0ca8958eb6784e891d187310"
+deployment_target = "Windows 11 Pro 25H2, build family 26200"
+cold_load_p95_ms = 177.195
+first_close_max_ms = 6.081
+reopen_close_max_ms = 160.820
+peak_resident_bytes = 242810880
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its text, geometry, order, confidence, source-correlation, and resource oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "repeated OCR and result cleanup gives back transient Rust allocations"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 20971520
+rationale = "20 MiB is 1.48 times the 14,149,928-byte worst precursor workload peak"
+
+[[budget]]
+measure = "peak_resident_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 335544320
+rationale = "320 MiB is 1.38 times the 242,667,520-byte five-process precursor high-water; precursor RSS varied 0.57 percent"
+
+[[budget]]
+measure = "cold_load_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 250.0
+rationale = "1.37 times the 182.002 ms five-process maximum, rounded up"
+
+[[budget]]
+measure = "first_close_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 10.0
+rationale = "1.77 times the 5.652 ms worst first close, rounded up"
+
+[[budget]]
+measure = "reopen_close_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 225.0
+rationale = "1.39 times the 161.748 ms worst accepted-model reopen and close, rounded up"
+
+[[budget]]
+measure = "max_tensor_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 268435456
+rationale = "the accepted backend's fixed 256 MiB input tensor ceiling"
+
+[[budget]]
+measure = "max_output_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 268435456
+rationale = "the accepted backend's fixed 256 MiB native output ceiling"
+
+[[measurement]]
+workload = "onnx_cpu_hud_full"
+correctness_oracle = "exact eight strings/count/order; fixture-derived geometry; finite stable confidence; exact full-frame source correlation"
+result_correctness = 0
+latency_p50_ms = 707.187
+latency_p95_ms = 717.487
+latency_max_ms = 724.006
+mapped_bytes_per_result = 2073600
+peak_allocated_bytes = 12695272
+allocated_growth_bytes = 0
+detector_tensor_runs = 1
+recognizer_tensor_runs = 2
+result_regions = 8
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "1.25 times the worst process p50, rounded up"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1000.0
+rationale = "1.23 times the worst process p95 after retaining the 13.10-percent cross-process range"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1200.0
+rationale = "an independent per-scenario bound 1.41 times the retained maximum"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "one exact 960x540 BGRA frame"
+
+[[measurement]]
+workload = "onnx_cpu_hud_region"
+correctness_oracle = "exact bounded text/count; fixture-derived geometry; finite stable confidence; exact bounded source correlation"
+result_correctness = 0
+latency_p50_ms = 573.969
+latency_p95_ms = 579.638
+latency_max_ms = 581.872
+mapped_bytes_per_result = 64800
+peak_allocated_bytes = 14149928
+allocated_growth_bytes = 0
+detector_tensor_runs = 1
+recognizer_tensor_runs = 1
+result_regions = 1
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 725.0
+rationale = "1.28 times the worst process p50, rounded up"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 750.0
+rationale = "1.29 times the worst process p95, rounded up"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 850.0
+rationale = "an independent per-scenario bound 1.45 times the retained maximum"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 64800
+rationale = "one exact 180x90 BGRA bounded region"
+
+[[measurement]]
+workload = "onnx_cpu_blank"
+correctness_oracle = "zero regions with exact empty-frame source correlation"
+result_correctness = 0
+latency_p50_ms = 263.440
+latency_p95_ms = 275.385
+latency_max_ms = 290.567
+mapped_bytes_per_result = 16384
+peak_allocated_bytes = 7042656
+allocated_growth_bytes = 0
+detector_tensor_runs = 1
+recognizer_tensor_runs = 0
+result_regions = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "1.32 times the worst process p50, rounded up"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 425.0
+rationale = "1.32 times the worst process p95 after retaining the 20.52-percent cross-process range"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 500.0
+rationale = "an independent per-scenario bound 1.39 times the retained maximum"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 16384
+rationale = "one exact 64x64 BGRA empty frame"

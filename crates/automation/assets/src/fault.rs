@@ -121,12 +121,18 @@ pub enum AssetFaultKind {
     MissingEntry,
     /// A caller asked a committed package for a template it does not contain.
     UnknownTemplate,
+    /// A caller asked a committed package for an OCR model it does not contain.
+    UnknownOcrModel,
     /// The manifest requires content this loader will not fetch, such as a
     /// remote reference.
     UnsupportedSource,
     /// A template's declared extent, coordinate metadata, or matching defaults
     /// are not values the vision contract accepts.
     InvalidTemplateMetadata,
+    /// An OCR model/profile declaration is incomplete, unbounded, or inconsistent.
+    InvalidOcrModelMetadata,
+    /// The package names OCR result-normalization semantics this build does not support.
+    UnsupportedOcrProfile,
     /// A template declares its geometry in an unsupported coordinate space.
     UnsupportedTemplateSpace,
     /// The manifest declares a hash algorithm this build does not implement.
@@ -151,9 +157,9 @@ impl AssetFaultKind {
     #[must_use]
     pub const fn status(self) -> Status {
         match self {
-            AssetFaultKind::LimitAboveCeiling | AssetFaultKind::UnknownTemplate => {
-                Status::InvalidArgument
-            }
+            AssetFaultKind::LimitAboveCeiling
+            | AssetFaultKind::UnknownTemplate
+            | AssetFaultKind::UnknownOcrModel => Status::InvalidArgument,
             AssetFaultKind::ArchiveLimit => Status::LimitExceeded,
             AssetFaultKind::UnsupportedCompressionMethod
             | AssetFaultKind::EncryptedEntry
@@ -161,7 +167,8 @@ impl AssetFaultKind {
             | AssetFaultKind::UnsupportedSource
             | AssetFaultKind::UnsupportedTemplateSpace
             | AssetFaultKind::UnsupportedHashAlgorithm
-            | AssetFaultKind::UnsupportedContentEncoding => Status::Unsupported,
+            | AssetFaultKind::UnsupportedContentEncoding
+            | AssetFaultKind::UnsupportedOcrProfile => Status::Unsupported,
             AssetFaultKind::Cancelled => Status::Cancelled,
             AssetFaultKind::DeadlineExceeded => Status::DeadlineExceeded,
             AssetFaultKind::ArithmeticOverflow => Status::Internal,
@@ -178,6 +185,7 @@ impl AssetFaultKind {
             | AssetFaultKind::DuplicateIdentity
             | AssetFaultKind::MissingEntry
             | AssetFaultKind::InvalidTemplateMetadata
+            | AssetFaultKind::InvalidOcrModelMetadata
             | AssetFaultKind::MalformedHash
             | AssetFaultKind::HashMismatch => Status::AssetInvalid,
         }
@@ -209,8 +217,11 @@ impl AssetFaultKind {
             AssetFaultKind::DuplicateIdentity => "duplicate_identity",
             AssetFaultKind::MissingEntry => "missing_entry",
             AssetFaultKind::UnknownTemplate => "unknown_template",
+            AssetFaultKind::UnknownOcrModel => "unknown_ocr_model",
             AssetFaultKind::UnsupportedSource => "unsupported_source",
             AssetFaultKind::InvalidTemplateMetadata => "invalid_template_metadata",
+            AssetFaultKind::InvalidOcrModelMetadata => "invalid_ocr_model_metadata",
+            AssetFaultKind::UnsupportedOcrProfile => "unsupported_ocr_profile",
             AssetFaultKind::UnsupportedTemplateSpace => "unsupported_template_space",
             AssetFaultKind::UnsupportedHashAlgorithm => "unsupported_hash_algorithm",
             AssetFaultKind::MalformedHash => "malformed_hash",
@@ -250,10 +261,15 @@ impl AssetFaultKind {
             AssetFaultKind::DuplicateIdentity => "two manifest entries claim the same identity",
             AssetFaultKind::MissingEntry => "manifest references an entry the package lacks",
             AssetFaultKind::UnknownTemplate => "package contains no template with that identity",
+            AssetFaultKind::UnknownOcrModel => "package contains no OCR model with that identity",
             AssetFaultKind::UnsupportedSource => {
                 "manifest requires content this loader will not fetch"
             }
             AssetFaultKind::InvalidTemplateMetadata => "template metadata is not a valid value",
+            AssetFaultKind::InvalidOcrModelMetadata => {
+                "OCR model metadata is incomplete, unbounded, or inconsistent"
+            }
+            AssetFaultKind::UnsupportedOcrProfile => "OCR profile normalization is not supported",
             AssetFaultKind::UnsupportedTemplateSpace => {
                 "template geometry uses an unsupported coordinate space"
             }
@@ -396,8 +412,11 @@ mod tests {
             AssetFaultKind::DuplicateIdentity,
             AssetFaultKind::MissingEntry,
             AssetFaultKind::UnknownTemplate,
+            AssetFaultKind::UnknownOcrModel,
             AssetFaultKind::UnsupportedSource,
             AssetFaultKind::InvalidTemplateMetadata,
+            AssetFaultKind::InvalidOcrModelMetadata,
+            AssetFaultKind::UnsupportedOcrProfile,
             AssetFaultKind::UnsupportedTemplateSpace,
             AssetFaultKind::UnsupportedHashAlgorithm,
             AssetFaultKind::MalformedHash,

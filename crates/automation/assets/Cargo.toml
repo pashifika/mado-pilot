@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 mado-pilot-core = { path = "../core" }
+mado-pilot-ocr = { path = "../ocr" }
 mado-pilot-vision = { path = "../vision" }
 # Not called directly: it selects the DEFLATE backend `zip` decompresses with.
 flate2 = { workspace = true }

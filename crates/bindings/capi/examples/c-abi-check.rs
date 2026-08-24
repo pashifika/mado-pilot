@@ -126,6 +126,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(native_fixtures);
     check_cpp_ownership(&paths)?;
     run_cpp_example(&paths, &label)?;
+    #[cfg(feature = "private-fixture")]
+    run_ocr_fixture_examples(&paths)?;
+    run_default_ocr_examples(&paths)?;
     let native_fixtures = if run_windows_native_fixture {
         Some([
             WindowsNativeFixture::spawn(&paths, WindowsFixtureKind::Ordinary)?,
@@ -901,6 +904,98 @@ fn package(paths: &Paths) -> String {
         .into_owned()
 }
 
+#[cfg(feature = "private-fixture")]
+fn ocr_package(paths: &Paths) -> String {
+    paths
+        .root
+        .join("fixtures/assets/ocr-public-surface")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Runs the C and C++ OCR examples against the explicit private fixture backend.
+#[cfg(feature = "private-fixture")]
+fn run_ocr_fixture_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    let c_source = paths
+        .root
+        .join("crates/bindings/capi/examples/c/ocr-fixture.c");
+    let c = compile(paths, Language::C, "ocr-fixture-c", &c_source, true)?;
+    let cpp_source = paths
+        .root
+        .join("crates/bindings/capi/examples/cpp/ocr-fixture.cpp");
+    let cpp = compile(paths, Language::Cpp, "ocr-fixture-cpp", &cpp_source, true)?;
+    let package = ocr_package(paths);
+    let c_output = run(paths, &c, &["--package", &package])?;
+    let cpp_output = run(paths, &cpp, &["--package", &package])?;
+    report_output("OCR fixture C", &c_output);
+    report_output("OCR fixture C++", &cpp_output);
+    if !c_output.status.success() || !cpp_output.status.success() {
+        return Err("an OCR fixture example failed".into());
+    }
+    let c_stdout = String::from_utf8(c_output.stdout)?.replace("\r\n", "\n");
+    let cpp_stdout = String::from_utf8(cpp_output.stdout)?.replace("\r\n", "\n");
+    print!("{c_stdout}");
+    print!("{cpp_stdout}");
+    let expected = "ocr: sequence=0 text=魔導士 A-7 confidence=0.91000\n";
+    if c_stdout != expected || cpp_stdout != expected {
+        return Err("C/C++ OCR fixture observations diverged".into());
+    }
+    println!("OCR fixture examples agree");
+    Ok(())
+}
+
+/// Compiles both production-language default OCR examples and runs them when
+/// the caller supplied the reviewed native prerequisites.
+fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
+    let c_source = paths
+        .root
+        .join("crates/bindings/capi/examples/c/ocr-default.c");
+    let c = compile(paths, Language::C, "ocr-default-c", &c_source, true)?;
+    let cpp_source = paths
+        .root
+        .join("crates/bindings/capi/examples/cpp/ocr-default.cpp");
+    let cpp = compile(paths, Language::Cpp, "ocr-default-cpp", &cpp_source, true)?;
+
+    let (Some(model_root), Some(runtime)) = (
+        env::var_os("MADO_PILOT_G004_MODEL_ROOT"),
+        env::var_os("MADO_PILOT_ONNX_RUNTIME"),
+    ) else {
+        println!("default OCR C/C++ examples compiled; native run skipped without explicit paths");
+        return Ok(());
+    };
+    let model_root = PathBuf::from(model_root).canonicalize()?;
+    let runtime = PathBuf::from(runtime).canonicalize()?;
+    let model_root = model_root.to_string_lossy().into_owned();
+    let runtime = runtime.to_string_lossy().into_owned();
+    let arguments = [
+        "--model-root",
+        model_root.as_str(),
+        "--runtime",
+        runtime.as_str(),
+    ];
+    let c_output = run(paths, &c, &arguments)?;
+    let cpp_output = run(paths, &cpp, &arguments)?;
+    report_output("default OCR C", &c_output);
+    report_output("default OCR C++", &cpp_output);
+    if !c_output.status.success() || !cpp_output.status.success() {
+        return Err("an integrated default OCR example failed".into());
+    }
+    let c_stdout = String::from_utf8(c_output.stdout)?.replace("\r\n", "\n");
+    let cpp_stdout = String::from_utf8(cpp_output.stdout)?.replace("\r\n", "\n");
+    print!("{c_stdout}");
+    print!("{cpp_stdout}");
+    let expected = format!(
+        "default-ocr: backend={} model={} full=0 region=0\n",
+        mado_pilot::DEFAULT_OCR_BACKEND_ID,
+        mado_pilot::ACCEPTED_G004_MODEL_ID,
+    );
+    if c_stdout != expected || cpp_stdout != expected {
+        return Err("C/C++ default OCR observations diverged".into());
+    }
+    println!("default OCR C/C++ examples agree");
+    Ok(())
+}
+
 /// Compiles, links, and runs the C example against the built library.
 fn run_c_example(paths: &Paths, label: &str) -> Result<(), Box<dyn std::error::Error>> {
     let source = paths
@@ -1123,9 +1218,9 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
 
 /// Released header profiles whose frozen declarations remain ABI obligations.
 ///
-/// ABI 1.0 is the only released profile older than the working ABI 1.2 header.
+/// ABI 1.0 and 1.2 are released frozen profiles older than the working ABI 1.3 header.
 /// The unreleased ABI 1.1 draft has no compatibility fixture.
-const FROZEN_HEADERS: &[&str] = &["v1"];
+const FROZEN_HEADERS: &[&str] = &["v1", "v1_2"];
 
 /// Runs the layout probe against each frozen header, and checks that what that
 /// header declares is still true of the library built now.

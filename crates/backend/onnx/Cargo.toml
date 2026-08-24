@@ -1,12 +1,34 @@
 [package]
 name = "mado-pilot-backend-onnx"
-description = "Planned MadoPilot ONNX Runtime OCR and execution-provider adapter."
+description = "MadoPilot bounded ONNX Runtime CPU OCR adapter."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+
+[dependencies]
+libloading = { workspace = true }
+mado-pilot-capture = { path = "../../automation/capture" }
+mado-pilot-core = { path = "../../automation/core" }
+mado-pilot-ocr = { path = "../../automation/ocr" }
+opencv = { workspace = true }
+ort = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+mado-pilot-testkit = { path = "../../support/testkit" }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows.workspace = true
+
+[[bench]]
+name = "onnx-cpu"
+harness = false
 
 [lints]
 workspace = true

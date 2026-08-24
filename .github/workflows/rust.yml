@@ -37,6 +37,11 @@ env:
   # it. macOS takes whatever `opencv@4` Homebrew currently carries, which is not the
   # same version and deliberately is not pinned; the macOS job explains why.
   OPENCV_VERSION: 4.14.0
+  ONNXRUNTIME_VERSION: 1.29.0
+  ONNXRUNTIME_WIN_X64_SHA256: c9b4b7086b529ad814f428c1bad028e20a25d7dc0699836775faace4ab5b78b2
+  ONNXRUNTIME_OSX_ARM64_SHA256: d0706fc34f315d8c88639d0a8c81f2e09e815f282cabed3493c06a054352cf92
+  G004_DETECTOR_SHA256: d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9
+  G004_RECOGNIZER_SHA256: 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884
 
 jobs:
   repository-policy:
@@ -80,6 +85,10 @@ jobs:
       - name: Check the workspace inventory and dependency directions
         shell: bash
         run: cargo run --locked --package mado-pilot-dependency-check
+
+      - name: Check G-004 OCR profile evidence
+        shell: bash
+        run: python3 docs/evidence/g-004/validate.py
 
       - name: Check formatting
         shell: bash
@@ -214,6 +223,40 @@ jobs:
           } >> "${GITHUB_ENV}"
           echo "${root}/x64/vc16/bin" >> "${GITHUB_PATH}"
 
+      - name: Provision the reviewed ONNX runtime and G-004 models
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mado-onnx"
+          model_root="${root}/models"
+          profile_root="${model_root}/rapidocr-v3.9.2"
+          mkdir -p "${profile_root}"
+          runtime_archive="${root}/onnxruntime-win-x64-${ONNXRUNTIME_VERSION}.zip"
+          curl --fail --location --silent --show-error \
+            --output "${runtime_archive}" \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-win-x64-${ONNXRUNTIME_VERSION}.zip"
+          echo "${ONNXRUNTIME_WIN_X64_SHA256}  ${runtime_archive}" | sha256sum --check -
+          powershell.exe -NoProfile -Command \
+            "Expand-Archive -LiteralPath '$(cygpath -w "${runtime_archive}")' -DestinationPath '$(cygpath -w "${root}")' -Force"
+
+          detector="${profile_root}/ch_PP-OCRv4_det_mobile.onnx"
+          recognizer="${profile_root}/PP-OCRv6_rec_small.onnx"
+          curl --fail --location --silent --show-error --output "${detector}" \
+            "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"
+          curl --fail --location --silent --show-error --output "${recognizer}" \
+            "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
+          echo "${G004_DETECTOR_SHA256}  ${detector}" | sha256sum --check -
+          echo "${G004_RECOGNIZER_SHA256}  ${recognizer}" | sha256sum --check -
+
+          runtime="${root}/onnxruntime-win-x64-${ONNXRUNTIME_VERSION}/lib/onnxruntime.dll"
+          [[ -f "${runtime}" ]]
+          {
+            echo "MADO_PILOT_ONNX_RUNTIME=$(cygpath -m "${runtime}")"
+            echo "MADO_PILOT_ONNX_DETECTOR=$(cygpath -m "${detector}")"
+            echo "MADO_PILOT_ONNX_RECOGNIZER=$(cygpath -m "${recognizer}")"
+            echo "MADO_PILOT_G004_MODEL_ROOT=$(cygpath -m "${model_root}")"
+          } >> "${GITHUB_ENV}"
+
       - name: Check the workspace inventory and dependency directions
         shell: bash
         run: cargo run --locked --package mado-pilot-dependency-check
@@ -226,9 +269,25 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      - name: Test the accepted ONNX CPU OCR backend
+        shell: bash
+        run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
+
+      - name: Test the integrated default OCR facade
+        shell: bash
+        run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
+
+      - name: Run the integrated default OCR Rust example
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-default
+
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware
       # profile.
+      - name: Run the OCR benchmark smoke gate
+        shell: bash
+        run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
+
       - name: Run the diagnostic benchmark smoke gate
         shell: bash
         run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
@@ -271,6 +330,7 @@ jobs:
           cargo build --locked --package mado-pilot-capi || exit /b 1
           cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture || exit /b 1
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
+          certutil -hashfile target\debug\madopilot.dll SHA256 || exit /b 1
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift
@@ -359,6 +419,39 @@ jobs:
             exit 1
           fi
 
+      - name: Provision the reviewed ONNX runtime and G-004 models
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TEMP}/mado-onnx"
+          model_root="${root}/models"
+          profile_root="${model_root}/rapidocr-v3.9.2"
+          mkdir -p "${profile_root}"
+          runtime_archive="${root}/onnxruntime-osx-arm64-${ONNXRUNTIME_VERSION}.tgz"
+          curl --fail --location --silent --show-error \
+            --output "${runtime_archive}" \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-osx-arm64-${ONNXRUNTIME_VERSION}.tgz"
+          echo "${ONNXRUNTIME_OSX_ARM64_SHA256}  ${runtime_archive}" | shasum --algorithm 256 --check
+          tar -xzf "${runtime_archive}" -C "${root}"
+
+          detector="${profile_root}/ch_PP-OCRv4_det_mobile.onnx"
+          recognizer="${profile_root}/PP-OCRv6_rec_small.onnx"
+          curl --fail --location --silent --show-error --output "${detector}" \
+            "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx"
+          curl --fail --location --silent --show-error --output "${recognizer}" \
+            "https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
+          echo "${G004_DETECTOR_SHA256}  ${detector}" | shasum --algorithm 256 --check
+          echo "${G004_RECOGNIZER_SHA256}  ${recognizer}" | shasum --algorithm 256 --check
+
+          runtime="${root}/onnxruntime-osx-arm64-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.1.29.0.dylib"
+          [[ -f "${runtime}" ]]
+          {
+            echo "MADO_PILOT_ONNX_RUNTIME=${runtime}"
+            echo "MADO_PILOT_ONNX_DETECTOR=${detector}"
+            echo "MADO_PILOT_ONNX_RECOGNIZER=${recognizer}"
+            echo "MADO_PILOT_G004_MODEL_ROOT=${model_root}"
+          } >> "${GITHUB_ENV}"
+
       - name: Check the workspace inventory and dependency directions
         shell: bash
         run: cargo run --locked --package mado-pilot-dependency-check
@@ -371,9 +464,25 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      - name: Test the accepted ONNX CPU OCR backend
+        shell: bash
+        run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
+
+      - name: Test the integrated default OCR facade
+        shell: bash
+        run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
+
+      - name: Run the integrated default OCR Rust example
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-default
+
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware
       # profile.
+      - name: Run the OCR benchmark smoke gate
+        shell: bash
+        run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
+
       - name: Run the diagnostic benchmark smoke gate
         shell: bash
         run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
@@ -403,6 +512,7 @@ jobs:
           cargo build --locked --package mado-pilot-capi
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
             --label "CI ${{ runner.os }} ${{ runner.arch }}"
+          shasum -a 256 target/debug/libmadopilot.dylib
 
       # This asserts nothing about the scores. It names the OpenCV build the run
       # actually used and prints what that build matched, so a provisioning drift

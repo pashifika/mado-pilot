@@ -2,6 +2,9 @@
 /rasen/
 /.rasen/
 
+# Local design drafts and private evaluation inputs are never tracked.
+/local_docs/
+
 # Agent configuration, which is each contributor's own: a settings file naming
 # local paths, a machine-local override beside it, and a symlink into it. Listed
 # rather than left untracked so the exclusion is a decision on the record instead

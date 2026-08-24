@@ -1,19 +1,18 @@
 /*
- * MadoPilot C++ wrapper - ABI 1.2.
+ * MadoPilot C++ wrapper - ABI 1.3.
  *
  * A header-only RAII adapter over the released C ABI. It owns handles, turns
- * statuses into an exception-free `Result`, and copies the text a caller needs
- * after a C handle is gone. It performs no capture, mapping, matching,
- * coordinate, input, diagnostic, status, or error logic of its own: every
- * answer here came from a C table entry.
+ * statuses into an exception-free `Result`, and marks every view by its
+ * borrowed lifetime. It performs no capture, mapping, matching, OCR,
+ * coordinate, input, diagnostic, normalization, scheduling, fallback, status,
+ * or error logic of its own: every answer here came from a C table entry.
  *
  * ============================================================================
  * This header declares no ABI of its own.
  *
- * The only ABI is the C one: its complete 1.0 prefix was frozen by
- * docs/adr/0007-phase-1-c-abi-freeze.md, and ABI 1.2 replaces the unreleased
- * 1.1 draft with the suffix reviewed for Phase 2. Nothing below restates a
- * numeric value from that contract: the enumerated types are aliases of the C
+ * The only ABI is the C one: ABI 1.0 and 1.2 are frozen complete prefixes;
+ * ABI 1.3 appends one-shot OCR and immutable owned results. Nothing below
+ * restates a numeric value from that contract: enumerated types alias the C
  * types, so a caller writes `MADOPILOT_STATUS_OK` and gets whatever the header
  * it compiled against says that is. A hand-written mirror fails silently when
  * the C set grows - it compiles, one value short - and freezing the values does
@@ -28,7 +27,7 @@
 #define MADOPILOT_MADOPILOT_HPP
 
 #include "madopilot/madopilot.h"
-
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -90,6 +89,8 @@ using CleanupState = ::madopilot_cleanup_state_t;
 using InputFault = ::madopilot_input_fault_t;
 using DiagnosticLevel = ::madopilot_diagnostic_level_t;
 using DiagnosticDrainState = ::madopilot_diagnostic_drain_state_t;
+using OcrDiagnosticProfile = ::madopilot_ocr_diagnostic_profile_t;
+using OcrDiagnosticOutcome = ::madopilot_ocr_diagnostic_outcome_t;
 using DiagnosticKind = ::madopilot_diagnostic_kind_t;
 using DiagnosticOperationKind = ::madopilot_diagnostic_operation_kind_t;
 using SearchDiagnosticOutcome = ::madopilot_search_diagnostic_outcome_t;
@@ -101,8 +102,10 @@ using Lifecycle = ::madopilot_lifecycle_t;
 using Rect = ::madopilot_pixel_rect_t;
 using FrameStamp = ::madopilot_frame_stamp_t;
 using FrameInfo = ::madopilot_frame_info_t;
+using OcrRequestedRegion = ::madopilot_ocr_requested_region_t;
 using SessionInfo = ::madopilot_session_info_t;
 using EffectiveMatchOptions = ::madopilot_match_options_t;
+using OcrPoint = ::madopilot_ocr_point_t;
 
 /// True when a status is the success value.
 inline bool is_ok(Status status) noexcept { return status == MADOPILOT_STATUS_OK; }
@@ -690,6 +693,25 @@ private:
     std::uint32_t diagnostic_capacity_ = 0;
 };
 
+/// Explicit controlled paths for the integrated G-004 CPU OCR profile.
+class DefaultOcrOptions {
+public:
+    DefaultOcrOptions(std::string_view model_root,
+                      std::string_view runtime_path)
+        : model_root_(model_root), runtime_path_(runtime_path) {}
+
+    ::madopilot_default_ocr_options_t to_c() const noexcept {
+        auto value = detail::sized<::madopilot_default_ocr_options_t>();
+        value.model_root = detail::as_str(model_root_);
+        value.runtime_path = detail::as_str(runtime_path_);
+        return value;
+    }
+
+private:
+    std::string model_root_;
+    std::string runtime_path_;
+};
+
 /// One replay frame supplied as raw pixels.
 ///
 /// The pixels are borrowed until `Api::create_engine` returns, which copies
@@ -1147,6 +1169,10 @@ struct EngineCapabilities {
     bool reads_permissions() const noexcept {
         return (flags & MADOPILOT_ENGINE_READS_PERMISSIONS) != 0u;
     }
+
+    bool has_ocr() const noexcept {
+        return (flags & MADOPILOT_ENGINE_HAS_OCR) != 0u;
+    }
 };
 
 /// Redacted permission diagnostic. Both views borrow from the `Engine`.
@@ -1364,6 +1390,16 @@ struct DiagnosticRecord {
     std::uint64_t result_count = 0;
     std::uint64_t cleanup_released = 0;
     std::uint64_t cleanup_owed = 0;
+    std::uint64_t ocr_model_instance = 0;
+    OcrDiagnosticProfile ocr_profile =
+        MADOPILOT_OCR_DIAGNOSTIC_PROFILE_UNSPECIFIED;
+    OcrDiagnosticOutcome ocr_outcome =
+        MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_UNSPECIFIED;
+    OcrRequestedRegion ocr_requested_region{
+        MADOPILOT_SPACE_CAPTURE_PIXELS, MADOPILOT_CLIP_POLICY_REJECT,
+        0.0, 0.0, 0.0, 0.0};
+    std::uint64_t ocr_elapsed_nanos = 0;
+    std::uint64_t ocr_source_pixels = 0;
 
     bool has(std::uint32_t presence_flag) const noexcept {
         return (flags & presence_flag) != 0u;
@@ -1378,6 +1414,12 @@ struct BuildInfo {
     std::uint32_t table_size = 0;
     BorrowedStr library_version;
     BorrowedStr required_backend;
+    BorrowedStr default_ocr_backend;
+    BorrowedStr default_ocr_backend_version;
+    BorrowedStr default_ocr_runtime_profile;
+    BorrowedStr default_ocr_model;
+    BorrowedStr default_ocr_model_version;
+    BorrowedStr default_ocr_profile;
 };
 
 /// One discovered capture target. Both views borrow from the `TargetList`.
@@ -1468,6 +1510,25 @@ struct ResultInfo {
     BorrowedStr backend_id;
     BorrowedStr backend_version;
     Rect searched{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+};
+
+/// Fixed OCR result description. Every string borrows from the `OcrResult`.
+struct OcrResultInfo {
+    FrameStamp source{};
+    Rect effective_region{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+    Space output_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    std::uint64_t region_count = 0;
+    BorrowedStr backend_id;
+    BorrowedStr backend_version;
+    BorrowedStr model_id;
+    BorrowedStr model_version;
+    BorrowedStr profile_id;
+};
+
+/// Geometry and confidence of one recognized region.
+struct OcrRegion {
+    double confidence = 0.0;
+    std::array<OcrPoint, 4> points{};
 };
 
 /// One match. `template_id` borrows from the `MatchResult`.
@@ -2073,6 +2134,147 @@ private:
     ClipPolicy clip_ = MADOPILOT_CLIP_POLICY_REJECT;
 };
 
+/// One exact-frame OCR request with explicit model and backend identity.
+///
+/// Handles are borrowed for each call. `package` is required for an explicitly
+/// injected backend and omitted for the integrated default. Strings are owned
+/// by this value. `to_c` builds a fresh projection whose interior views point
+/// only into that projection, including after every copy or move.
+class OcrRequest {
+public:
+    class CView;
+
+    OcrRequest() = default;
+
+    OcrRequest& frame(const Frame& frame) noexcept {
+        frame_ = frame.get();
+        return *this;
+    }
+
+    OcrRequest& package(const Package& package) noexcept {
+        package_ = package.get();
+        return *this;
+    }
+
+    OcrRequest& model(std::string_view id) {
+        model_id_ = std::string(id);
+        return *this;
+    }
+
+    OcrRequest& backend(std::string_view id, std::string_view version) {
+        backend_id_ = std::string(id);
+        backend_version_ = std::string(version);
+        return *this;
+    }
+
+    OcrRequest& output_space(Space space) noexcept {
+        output_space_ = space;
+        return *this;
+    }
+
+    OcrRequest& region(Rect region) noexcept {
+        flags_ |= MADOPILOT_OCR_HAS_REGION;
+        region_ = region;
+        return *this;
+    }
+
+    OcrRequest& full_frame() noexcept {
+        flags_ &= ~MADOPILOT_OCR_HAS_REGION;
+        return *this;
+    }
+
+    OcrRequest& clip_policy(ClipPolicy policy) noexcept {
+        clip_ = policy;
+        return *this;
+    }
+
+    CView to_c() const;
+
+private:
+    std::uint32_t flags_ = 0;
+    const ::madopilot_frame_t* frame_ = nullptr;
+    const ::madopilot_package_t* package_ = nullptr;
+    std::string model_id_;
+    std::string backend_id_;
+    std::string backend_version_;
+    Space output_space_ = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    ClipPolicy clip_ = MADOPILOT_CLIP_POLICY_REJECT;
+    Rect region_{MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 0, 0};
+};
+
+class OcrRequest::CView {
+public:
+    explicit CView(const OcrRequest& request)
+        : model_id_(request.model_id_), backend_id_(request.backend_id_),
+          backend_version_(request.backend_version_) {
+        value_ = detail::sized<::madopilot_ocr_request_t>();
+        value_.flags = request.flags_;
+        value_.frame = request.frame_;
+        value_.package = request.package_;
+        value_.output_space = request.output_space_;
+        value_.clip_policy = request.clip_;
+        value_.region = request.region_;
+        rebind();
+    }
+
+    CView(const CView& other)
+        : model_id_(other.model_id_), backend_id_(other.backend_id_),
+          backend_version_(other.backend_version_), value_(other.value_) {
+        rebind();
+    }
+
+    CView& operator=(const CView& other) {
+        if (this != &other) {
+            model_id_ = other.model_id_;
+            backend_id_ = other.backend_id_;
+            backend_version_ = other.backend_version_;
+            value_ = other.value_;
+            rebind();
+        }
+        return *this;
+    }
+
+    CView(CView&& other) noexcept
+        : model_id_(std::move(other.model_id_)),
+          backend_id_(std::move(other.backend_id_)),
+          backend_version_(std::move(other.backend_version_)), value_(other.value_) {
+        rebind();
+        other.rebind();
+    }
+
+    CView& operator=(CView&& other) noexcept {
+        if (this != &other) {
+            model_id_ = std::move(other.model_id_);
+            backend_id_ = std::move(other.backend_id_);
+            backend_version_ = std::move(other.backend_version_);
+            value_ = other.value_;
+            rebind();
+            other.rebind();
+        }
+        return *this;
+    }
+
+    const ::madopilot_ocr_request_t& value() const& noexcept { return value_; }
+    const ::madopilot_ocr_request_t& value() const&& = delete;
+
+    const ::madopilot_ocr_request_t* get() const& noexcept { return &value_; }
+    const ::madopilot_ocr_request_t* get() const&& = delete;
+
+private:
+    void rebind() noexcept {
+        value_.model_id = detail::as_str(model_id_);
+        value_.backend_id = detail::as_str(backend_id_);
+        value_.backend_version = detail::as_str(backend_version_);
+    }
+
+    std::string model_id_;
+    std::string backend_id_;
+    std::string backend_version_;
+    ::madopilot_ocr_request_t value_{};
+};
+
+inline OcrRequest::CView OcrRequest::to_c() const { return CView(*this); }
+
 /// An immutable completed search.
 ///
 /// It owns the exact frame it searched, so it stays correlated after the
@@ -2217,6 +2419,101 @@ private:
     static void release_handle(const ::madopilot_api_t* api,
                                ::madopilot_result_t* handle) noexcept {
         api->result_release(handle);
+    }
+};
+
+/// An immutable source-correlated OCR result.
+///
+/// The owner is independent of frame, package, session, engine, and backend
+/// lifetimes. Views returned by lvalue-only accessors die with this owner.
+class OcrResult : public detail::Owner<OcrResult, ::madopilot_ocr_result_t> {
+public:
+    OcrResult() noexcept = default;
+
+    Result<OcrResultInfo> describe() const& {
+        if (api_ == nullptr) {
+            return detail::no_table<OcrResultInfo>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_OCR_RESULT_INFO)) {
+            return detail::unsupported<OcrResultInfo>();
+        }
+        auto info = detail::sized<::madopilot_ocr_result_info_t>();
+        const Status status = api_->ocr_result_info(handle_, &info);
+        if (!is_ok(status)) {
+            return Result<OcrResultInfo>::failure(Error::from_status(status));
+        }
+
+        OcrResultInfo out;
+        out.source = info.source;
+        out.effective_region = info.effective_region;
+        out.output_space = info.output_space;
+        out.region_count = info.region_count;
+        out.backend_id = BorrowedStr(info.backend_id);
+        out.backend_version = BorrowedStr(info.backend_version);
+        out.model_id = BorrowedStr(info.model_id);
+        out.model_version = BorrowedStr(info.model_version);
+        out.profile_id = BorrowedStr(info.profile_id);
+        return Result<OcrResultInfo>::success(out);
+    }
+
+    Result<OcrResultInfo> describe() const&& = delete;
+
+    Result<OcrRegion> region_at(std::size_t index) const {
+        if (api_ == nullptr) {
+            return detail::no_table<OcrRegion>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_OCR_RESULT_REGION_AT)) {
+            return detail::unsupported<OcrRegion>();
+        }
+        auto region = detail::sized<::madopilot_ocr_region_t>();
+        const Status status = api_->ocr_result_region_at(handle_, index, &region);
+        if (!is_ok(status)) {
+            return Result<OcrRegion>::failure(Error::from_status(status));
+        }
+
+        OcrRegion out;
+        out.confidence = region.confidence;
+        for (std::size_t index = 0; index < out.points.size(); ++index) {
+            out.points[index] = region.points[index];
+        }
+        return Result<OcrRegion>::success(out);
+    }
+
+    Result<BorrowedStr> text_at(std::size_t index) const& {
+        if (api_ == nullptr) {
+            return detail::no_table<BorrowedStr>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_OCR_RESULT_TEXT_AT)) {
+            return detail::unsupported<BorrowedStr>();
+        }
+        ::madopilot_str_t text{nullptr, 0};
+        const Status status = api_->ocr_result_text_at(handle_, index, &text);
+        return is_ok(status)
+                   ? Result<BorrowedStr>::success(BorrowedStr(text))
+                   : Result<BorrowedStr>::failure(Error::from_status(status));
+    }
+
+
+    Result<BorrowedStr> text_at(std::size_t index) const&& = delete;
+private:
+    friend class Session;
+    friend class detail::Owner<OcrResult, ::madopilot_ocr_result_t>;
+
+    OcrResult(const ::madopilot_api_t* api, std::size_t extent,
+              ::madopilot_ocr_result_t* handle) noexcept
+        : Owner(api, extent, handle) {}
+
+    static Status retain_handle(const ::madopilot_api_t* api,
+                                ::madopilot_ocr_result_t* handle) noexcept {
+        return api->ocr_result_retain(handle);
+    }
+
+    static void release_handle(const ::madopilot_api_t* api,
+                               ::madopilot_ocr_result_t* handle) noexcept {
+        api->ocr_result_release(handle);
     }
 };
 
@@ -2375,6 +2672,12 @@ public:
         out.result_count = value.result_count;
         out.cleanup_released = value.cleanup_released;
         out.cleanup_owed = value.cleanup_owed;
+        out.ocr_model_instance = value.ocr_model_instance;
+        out.ocr_profile = value.ocr_profile;
+        out.ocr_outcome = value.ocr_outcome;
+        out.ocr_requested_region = value.ocr_requested_region;
+        out.ocr_elapsed_nanos = value.ocr_elapsed_nanos;
+        out.ocr_source_pixels = value.ocr_source_pixels;
         return Result<DiagnosticRecord>::success(out);
     }
 
@@ -2549,6 +2852,37 @@ public:
         return Result<MatchResult>::success(MatchResult(api_, extent_, result));
     }
 
+    /// Recognizes one exact retained frame through the explicitly configured backend.
+    ///
+    /// The complete OCR suffix is required before any appended function pointer
+    /// is read, because the returned owner needs retain, release, description,
+    /// region, and text access throughout its independent lifetime.
+    Result<OcrResult> recognize(const OcrRequest& request,
+                                const Operation& operation) const {
+        if (api_ == nullptr) {
+            return detail::no_table<OcrResult>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_OCR_RESULT_TEXT_AT)) {
+            return detail::unsupported<OcrResult>();
+        }
+        const auto request_c = request.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_ocr_result_t* result = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = api_->session_recognize(
+            handle_, request_c.get(), &operation_c, &result, &error);
+        if (!is_ok(status)) {
+            return Result<OcrResult>::failure(
+                detail::take_error(api_, status, error));
+        }
+        if (result == nullptr) {
+            return Result<OcrResult>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+        return Result<OcrResult>::success(OcrResult(api_, extent_, result));
+    }
+
     /// The immutable input capability accepted when this session opened.
     Result<InputDescriptor> input_descriptor() const {
         if (api_ == nullptr) {
@@ -2715,6 +3049,7 @@ public:
 
     Result<Permission> permission(PermissionKind kind,
                                   const Operation& operation) const&& = delete;
+
 
     /// Queries a target's input descriptor without opening it.
     Result<InputDescriptor> input_descriptor(const TargetList& targets,
@@ -2916,6 +3251,15 @@ public:
         out.table_size = build.table_size;
         out.library_version = BorrowedStr(build.library_version);
         out.required_backend = BorrowedStr(build.required_backend);
+        out.default_ocr_backend = BorrowedStr(build.default_ocr_backend);
+        out.default_ocr_backend_version =
+            BorrowedStr(build.default_ocr_backend_version);
+        out.default_ocr_runtime_profile =
+            BorrowedStr(build.default_ocr_runtime_profile);
+        out.default_ocr_model = BorrowedStr(build.default_ocr_model);
+        out.default_ocr_model_version =
+            BorrowedStr(build.default_ocr_model_version);
+        out.default_ocr_profile = BorrowedStr(build.default_ocr_profile);
 
         return Result<BuildInfo>::success(out);
     }
@@ -3000,6 +3344,35 @@ public:
                 detail::take_error(table_, status, error));
         }
 
+        return Result<Engine>::success(Engine(table_, extent_, engine));
+    }
+
+    /// Builds an engine with the integrated G-004 CPU OCR profile.
+    Result<Engine> create_engine_with_default_ocr(
+        const Source& source, const EngineOptions& options,
+        const DefaultOcrOptions& default_ocr,
+        const Operation& operation) const {
+        if (table_ == nullptr) {
+            return detail::no_table<Engine>();
+        }
+        if (!detail::has_entry(
+                table_, extent_,
+                MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR)) {
+            return detail::unsupported<Engine>();
+        }
+        const auto source_c = source.to_c();
+        const auto options_c = options.to_c();
+        const auto default_ocr_c = default_ocr.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_engine_t* engine = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = table_->engine_create_with_default_ocr(
+            &source_c, &options_c, &default_ocr_c, &operation_c, &engine,
+            &error);
+        if (!is_ok(status)) {
+            return Result<Engine>::failure(
+                detail::take_error(table_, status, error));
+        }
         return Result<Engine>::success(Engine(table_, extent_, engine));
     }
 
