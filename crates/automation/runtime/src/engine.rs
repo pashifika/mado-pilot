@@ -19,11 +19,13 @@ use mado_pilot_input::{
     InputController, InputDescriptor, InputFault, InputOpenRequest, InputProvider,
     check_provider_pair,
 };
+use mado_pilot_ocr::{OcrBackendDescriptor, OcrRecognizer};
 use mado_pilot_vision::{BackendDescriptor, Matcher, PreparedTemplate, TemplateSource};
 
 use crate::diagnostic::{
     DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, DiagnosticReader,
-    DiagnosticSink, LifecycleDiagnostic, ObservedOperation, PermissionDiagnostic,
+    DiagnosticSink, LifecycleDiagnostic, ObservedOperation, OcrDiagnosticContext,
+    PermissionDiagnostic,
 };
 use crate::session::Session;
 
@@ -59,6 +61,10 @@ pub struct EngineWiring {
     pub matcher: Matcher,
     /// The loader every asset package this engine loads is validated by.
     pub loader: PackageLoader,
+    /// The explicitly configured one-shot OCR recognizer, when there is one.
+    ///
+    /// `None` exposes no OCR operation and never selects a default backend.
+    pub ocr: Option<OcrRecognizer>,
     /// The input adapter sessions deliver sequences through, when there is one.
     ///
     /// `None` is a capture-only engine: every target it describes accepts no
@@ -168,6 +174,8 @@ pub struct Engine {
     capture: Arc<dyn CaptureProvider>,
     matcher: Matcher,
     loader: PackageLoader,
+    ocr: Option<OcrRecognizer>,
+    ocr_diagnostic: Option<OcrDiagnosticContext>,
     input: Option<Arc<dyn InputProvider>>,
     permission: Option<Arc<dyn PermissionProbe>>,
     diagnostics: Option<DiagnosticSink>,
@@ -208,12 +216,18 @@ impl Engine {
             Some((sink, reader)) => (Some(sink), Some(reader)),
             None => (None, None),
         };
+        let ocr_diagnostic = diagnostics
+            .as_ref()
+            .zip(wiring.ocr.as_ref())
+            .and_then(|(diagnostics, ocr)| diagnostics.ocr_model(&ocr.descriptor()));
 
         Ok(Self {
             engine: wiring.engine,
             capture: wiring.capture,
             matcher: wiring.matcher,
             loader: wiring.loader,
+            ocr: wiring.ocr,
+            ocr_diagnostic,
             input: wiring.input,
             permission: wiring.permission,
             diagnostics,
@@ -235,6 +249,12 @@ impl Engine {
     #[must_use]
     pub fn backend(&self) -> BackendDescriptor {
         self.matcher.descriptor()
+    }
+
+    /// Returns the configured OCR backend/model/profile descriptor, if any.
+    #[must_use]
+    pub fn ocr_backend(&self) -> Option<OcrBackendDescriptor> {
+        self.ocr.as_ref().map(OcrRecognizer::descriptor)
     }
 
     /// Returns the limits every package loaded through this engine is held to.
@@ -490,6 +510,8 @@ impl Engine {
                     return Ok(Session::new(
                         capture,
                         self.matcher.clone(),
+                        self.ocr.clone(),
+                        self.ocr_diagnostic,
                         input,
                         self.diagnostics.clone(),
                     ));
@@ -744,6 +766,7 @@ mod tests {
                 capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
                 matcher: Matcher::new(Arc::clone(&backend) as Arc<dyn MatchBackend>),
                 loader: PackageLoader::new(),
+                ocr: None,
                 input: None,
                 permission: None,
             },

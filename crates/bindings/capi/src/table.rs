@@ -48,9 +48,9 @@ pub const MADOPILOT_ABI_MAJOR: u32 = 1;
 
 /// The ABI minor version this library implements.
 ///
-/// ABI 1.2 preserves the complete released 1.0 prefix and replaces the
-/// unreleased 1.1 draft with the native input and bounded diagnostic surface.
-pub const MADOPILOT_ABI_MINOR: u32 = 2;
+/// ABI 1.3 preserves the released ABI 1.0 and 1.2 prefixes and appends one-shot
+/// OCR execution plus immutable owned result access.
+pub const MADOPILOT_ABI_MINOR: u32 = 3;
 
 /// The library package version, for [`madopilot_build_info_t::library_version`].
 const LIBRARY_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -500,6 +500,39 @@ table! {
         index: usize,
         out_record: *mut crate::types::madopilot_diagnostic_record_t,
     ) => crate::diagnostic::batch_record_at;
+    /// Recognizes one exact retained frame and returns one immutable owned result.
+    session_recognize(
+        session: *const crate::capture::madopilot_session_t,
+        request: *const crate::types::madopilot_ocr_request_t,
+        operation: *const crate::types::madopilot_operation_t,
+        out_result: *mut *mut crate::ocr::madopilot_ocr_result_t,
+        out_error: *mut *mut crate::error::madopilot_error_t,
+    ) => crate::ocr::session_recognize;
+    /// Adds one owned OCR result reference. Null is a no-op.
+    ocr_result_retain(
+        result: *const crate::ocr::madopilot_ocr_result_t,
+    ) => crate::ocr::result_retain;
+    /// Drops one owned OCR result reference. Null is a no-op.
+    ocr_result_release(
+        result: *mut crate::ocr::madopilot_ocr_result_t,
+    ) => crate::ocr::result_release;
+    /// Reports the fixed description of one immutable OCR result.
+    ocr_result_info(
+        result: *const crate::ocr::madopilot_ocr_result_t,
+        out_info: *mut crate::types::madopilot_ocr_result_info_t,
+    ) => crate::ocr::result_info;
+    /// Reports geometry and confidence for one recognized region.
+    ocr_result_region_at(
+        result: *const crate::ocr::madopilot_ocr_result_t,
+        index: usize,
+        out_region: *mut crate::types::madopilot_ocr_region_t,
+    ) => crate::ocr::result_region_at;
+    /// Reports borrowed normalized text for one recognized region.
+    ocr_result_text_at(
+        result: *const crate::ocr::madopilot_ocr_result_t,
+        index: usize,
+        out_text: *mut madopilot_str_t,
+    ) => crate::ocr::result_text_at;
 }
 
 /// `sizeof` the complete frozen ABI 1.0 function-table prefix.
@@ -512,6 +545,20 @@ pub const MADOPILOT_API_SIZE_PHASE1: u32 = {
     assert!(
         size <= u32::MAX as usize,
         "the ABI 1.0 table prefix fits a u32 size"
+    );
+    size as u32
+};
+
+/// `sizeof` the complete frozen ABI 1.2 function-table prefix.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "guarded against the only value that could truncate"
+)]
+pub const MADOPILOT_API_SIZE_1_2: u32 = {
+    let size = std::mem::offset_of!(madopilot_api_t, session_recognize);
+    assert!(
+        size <= u32::MAX as usize,
+        "the ABI 1.2 table prefix fits a u32 size"
     );
     size as u32
 };

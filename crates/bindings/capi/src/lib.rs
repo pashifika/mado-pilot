@@ -39,15 +39,12 @@
 //!
 //! # Implementation status
 //!
-//! ABI 1.2, with the complete released ABI 1.0 prefix preserved. The 1.0 table
-//! covers build and clock information, cancellation, structured errors, replay
-//! engine construction, asset packages, prepared templates, discovery, capture,
-//! mapping, matching, and immutable results. ABI 1.2 replaces the unreleased 1.1
-//! draft with native engine and route capability records, non-prompting
-//! permission reads, input-aware open, bounded input submission, owned receipts
-//! and attempts, operation activity tags, and bounded diagnostic readers and
-//! batches. It contains no OCR, watcher, query, callback, or native-frame entry,
-//! and none is reserved as a null table slot.
+//! ABI 1.3 preserves the complete released ABI 1.0 and 1.2 prefixes. ABI 1.0
+//! covers the deterministic capture/matching flow; ABI 1.2 appends native input,
+//! receipts, activity tags, and bounded diagnostics. ABI 1.3 appends one-shot
+//! OCR execution, immutable owned results, region/text accessors, and
+//! content-redacted OCR diagnostic fields. It contains no watcher, query,
+//! callback, automatic-input, or native-frame entry.
 //!
 //! The C++ wrapper covers exactly the negotiated table and declares no ABI of
 //! its own, so it adds no binary compatibility surface;
@@ -55,12 +52,11 @@
 //! header-only.
 //!
 //! **Every released numeric value, structure prefix, field offset, and table
-//! position is frozen for ABI major 1.** ADR 0007 froze the complete 1.0 prefix
-//! and resolved gate `G-010`; ADR 0023 defines the accepted additive 1.2 suffix.
-//! Within this major nothing changes its number and nothing moves; a later minor
-//! appends and raises `MADOPILOT_ABI_MINOR`. `tests/abi-compat/` keeps every
-//! released header and compiles each one against every later build. The
-//! unreleased 1.1 draft has no fixture or compatibility surface.
+//! position is frozen for ABI major 1.** ADR 0007 froze ABI 1.0, ADR 0023 froze
+//! ABI 1.2, and ADR 0035 records the additive ABI 1.3 OCR boundary. Within this
+//! major nothing moves; a later minor appends. `tests/abi-compat/` compiles and
+//! runs every released header against later builds. The unreleased 1.1 draft has
+//! no fixture or compatibility surface.
 //!
 //! # Where to start
 //!
@@ -101,11 +97,14 @@ mod capture;
 mod diagnostic;
 mod engine;
 mod error;
+#[cfg(feature = "private-fixture")]
+mod fixture;
 mod handle;
 mod hooks;
 mod input;
 pub mod layout;
 mod matching;
+mod ocr;
 mod operation;
 mod status;
 mod table;
@@ -119,6 +118,7 @@ pub use engine::{madopilot_engine_t, madopilot_target_list_t};
 pub use error::madopilot_error_t;
 pub use input::madopilot_input_receipt_t;
 pub use matching::madopilot_result_t;
+pub use ocr::madopilot_ocr_result_t;
 pub use operation::madopilot_cancellation_t;
 pub use status::*;
 pub use table::*;

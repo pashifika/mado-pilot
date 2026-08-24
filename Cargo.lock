@@ -354,6 +354,7 @@ dependencies = [
  "mado-pilot-capture",
  "mado-pilot-core",
  "mado-pilot-input",
+ "mado-pilot-ocr",
  "mado-pilot-testkit",
  "mado-pilot-vision",
 ]

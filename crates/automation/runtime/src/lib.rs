@@ -32,7 +32,7 @@
 //!
 //! # Allowed seam
 //!
-//! This package depends on the MadoPilot core, capture, input, vision, and
+//! This package depends on the MadoPilot core, capture, input, vision, OCR, and
 //! assets contract packages. It knows no concrete platform or backend adapter
 //! type, so it never depends on the replay, Windows, macOS, OpenCV, or ONNX
 //! packages: [`EngineWiring`] is filled in by the public facade, which is where
@@ -41,23 +41,23 @@
 //! # Re-exports
 //!
 //! The contract types below are re-exported because the facade's dependency row
-//! lists no contract package. Every core, capture, vision, or asset type the
-//! public Rust API exposes reaches a caller through this package, so a host
+//! lists no contract package. Every core, capture, vision, OCR, or asset type
+//! the public Rust API exposes reaches a caller through this package, so a host
 //! never has to depend on a contract package to name a value the facade handed
 //! it. See `docs/architecture.md`.
 //!
 //! # Implementation status
 //!
-//! Phase 1 complete, and the Phase 2 input composition with it. Target
-//! discovery and session opening, exact and latest frame selection, package
-//! loading, template preparation, the deep search, the result envelope, and
-//! explicit close are implemented; so are optional input and permission wiring,
-//! required-versus-optional input admission, one bounded sequence at a time per
-//! controller, the terminal receipt rule, and the two-sided close. There is no
-//! scheduler, no watcher, no bounded work queue, no coalescing policy, and no
-//! diagnostic event, and none of them is reserved here as an empty seam. The
-//! default change-detection policy remains unresolved; see gate `G-005` in
-//! `docs/validation-gates.md`.
+//! Phase 1 capture/matching, Phase 2 input, and Phase 3 one-shot OCR composition
+//! are implemented. OCR runs over one exact retained frame through an explicitly
+//! configured platform-neutral recognizer, uses the caller operation context,
+//! and arbitrates deadline, cancellation, and session close before publication.
+//! Immutable results retain no frame or backend storage. Optional finite
+//! diagnostics include content-redacted OCR admission and terminal records.
+//!
+//! There is no watcher, scheduling queue, coalescing policy, retry, automatic
+//! input, or default OCR backend. The default change-detection policy remains
+//! unresolved; see gate `G-005` in `docs/validation-gates.md`.
 //!
 //! **The public names here are reviewed, not yet stable.**
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the
@@ -97,6 +97,7 @@
 //!     capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
 //!     matcher: Matcher::new(Arc::new(ControlledMatcher::new(PixelFormat::Rgba8))),
 //!     loader: PackageLoader::new(),
+//!     ocr: None,
 //!     input: Some(Arc::clone(&input) as Arc<dyn InputProvider>),
 //!     permission: None,
 //! })?;
@@ -144,11 +145,13 @@ pub mod session;
 
 pub use diagnostic::{
     DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticLosses,
-    DiagnosticOperationId, DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload,
-    DiagnosticReader, DiagnosticRecord, DiagnosticRecordSequence, DiagnosticTemplateId,
-    FrameDiagnostic, InputDiagnostic, InputOperationSet, LifecycleDiagnostic,
-    MAX_DIAGNOSTIC_CAPACITY, MappingDiagnostic, OperationStartedDiagnostic, PermissionDiagnostic,
-    RouteAttemptDiagnostic, SearchDiagnostic, SearchDiagnosticOutcome,
+    DiagnosticOcrModelInstanceId, DiagnosticOperationId, DiagnosticOperationKind,
+    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord,
+    DiagnosticRecordSequence, DiagnosticTemplateId, FrameDiagnostic, InputDiagnostic,
+    InputOperationSet, LifecycleDiagnostic, MAX_DIAGNOSTIC_CAPACITY, MappingDiagnostic,
+    OcrDiagnostic, OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrRequestedRegionDiagnostic,
+    OperationStartedDiagnostic, PermissionDiagnostic, RouteAttemptDiagnostic, SearchDiagnostic,
+    SearchDiagnosticOutcome,
 };
 pub use engine::{Engine, EngineOptions, EngineWiring, SessionRequest};
 pub use find::{FindOutcome, FindRequest, SearchFrame};
@@ -179,6 +182,18 @@ pub use mado_pilot_input::{
     InputController, InputDescriptor, InputEvent, InputFault, InputOpenRequest, InputProvider,
     InputReceipt, InputRequest, InputRequirement, InputSequence, Key, Modifier, PointerButton,
     PointerGeometry, PressedState, SequenceLimits, SequenceOutcome,
+};
+pub use mado_pilot_ocr::{
+    ACCEPTED_G004_DECODER_ID, ACCEPTED_G004_LANGUAGE_PROFILE_ID, ACCEPTED_G004_MODEL_ID,
+    ACCEPTED_G004_MODEL_VERSION, ACCEPTED_G004_NORMALIZATION_ID, ACCEPTED_G004_PREPROCESSING_ID,
+    ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES, BackendCandidate,
+    BackendId as OcrBackendId, BackendRequest as OcrBackendRequest,
+    BackendVersion as OcrBackendVersion, Confidence, DecoderId, LanguageProfileId,
+    MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES as MAX_OCR_CANDIDATES, MAX_MODEL_COMPONENT_BYTES,
+    MAX_TEXT_BYTES, ModelComponentIdentity, ModelId, ModelVersion, NormalizationId, OcrBackend,
+    OcrBackendDescriptor, OcrBackendIdentity, OcrCandidateSink, OcrFault, OcrModelComponent,
+    OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata, OcrQuadrilateral,
+    OcrRecognizer, OcrRegion, OcrRequest, OcrResult, PreprocessingId, ProfileId, RecognizedRegion,
 };
 pub use mado_pilot_vision::{
     BackendDescriptor, BackendId, Match, MatchDefaults, MatchOptions, MatchResult, Matcher,

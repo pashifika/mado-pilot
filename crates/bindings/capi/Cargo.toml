@@ -33,6 +33,9 @@ harness = false
 
 [features]
 qualification-unsupported-api = ["mado-pilot/qualification-unsupported-api"]
+# Builds an explicitly non-production OCR fixture constructor used only by
+# local C/C++ examples and ownership probes. It is never enabled by release builds.
+private-fixture = []
 
 [dependencies]
 mado-pilot = { path = "../../mado-pilot" }

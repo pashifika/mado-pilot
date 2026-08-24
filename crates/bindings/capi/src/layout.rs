@@ -21,6 +21,7 @@ use crate::engine::{madopilot_engine_t, madopilot_target_list_t};
 use crate::error::madopilot_error_t;
 use crate::input::madopilot_input_receipt_t;
 use crate::matching::madopilot_result_t;
+use crate::ocr::madopilot_ocr_result_t;
 use crate::operation::madopilot_cancellation_t;
 use crate::table::madopilot_api_t;
 use crate::types::{
@@ -30,10 +31,12 @@ use crate::types::{
     madopilot_input_attempt_t, madopilot_input_capability_t, madopilot_input_descriptor_t,
     madopilot_input_event_t, madopilot_input_open_request_t, madopilot_input_receipt_info_t,
     madopilot_input_request_t, madopilot_map_request_t, madopilot_match_options_t,
-    madopilot_match_t, madopilot_open_request_t, madopilot_operation_t, madopilot_package_info_t,
-    madopilot_package_source_t, madopilot_permission_t, madopilot_pixel_rect_t,
-    madopilot_replay_frame_t, madopilot_result_info_t, madopilot_session_info_t,
-    madopilot_source_t, madopilot_target_t, madopilot_template_info_t,
+    madopilot_match_t, madopilot_ocr_point_t, madopilot_ocr_region_t, madopilot_ocr_request_t,
+    madopilot_ocr_requested_region_t, madopilot_ocr_result_info_t, madopilot_open_request_t,
+    madopilot_operation_t, madopilot_package_info_t, madopilot_package_source_t,
+    madopilot_permission_t, madopilot_pixel_rect_t, madopilot_replay_frame_t,
+    madopilot_result_info_t, madopilot_session_info_t, madopilot_source_t, madopilot_target_t,
+    madopilot_template_info_t,
 };
 use crate::view::{madopilot_bytes_t, madopilot_str_t};
 
@@ -80,6 +83,7 @@ macro_rules! measure {
 pub const LAYOUT: &[TypeLayout] = &[
     measure!(madopilot_str_t, data, len),
     measure!(madopilot_bytes_t, data, len),
+    measure!(madopilot_ocr_point_t, x, y),
     measure!(madopilot_pixel_rect_t, space, left, top, right, bottom),
     measure!(madopilot_engine_capabilities_t, struct_size, flags,),
     measure!(
@@ -96,6 +100,15 @@ pub const LAYOUT: &[TypeLayout] = &[
         record_count,
         discarded_normal,
         discarded_debug,
+    ),
+    measure!(
+        madopilot_ocr_requested_region_t,
+        space,
+        clip_policy,
+        left,
+        top,
+        right,
+        bottom,
     ),
     measure!(
         madopilot_diagnostic_record_t,
@@ -134,6 +147,12 @@ pub const LAYOUT: &[TypeLayout] = &[
         result_count,
         cleanup_released,
         cleanup_owed,
+        ocr_model_instance,
+        ocr_profile,
+        ocr_outcome,
+        ocr_requested_region,
+        ocr_elapsed_nanos,
+        ocr_source_pixels,
     ),
     measure!(
         madopilot_permission_t,
@@ -374,6 +393,41 @@ pub const LAYOUT: &[TypeLayout] = &[
         searched,
     ),
     measure!(
+        madopilot_ocr_request_t,
+        struct_size,
+        flags,
+        frame,
+        package,
+        model_id,
+        backend_id,
+        backend_version,
+        output_space,
+        clip_policy,
+        region,
+    ),
+    measure!(
+        madopilot_ocr_result_info_t,
+        struct_size,
+        flags,
+        source,
+        effective_region,
+        output_space,
+        reserved,
+        region_count,
+        backend_id,
+        backend_version,
+        model_id,
+        model_version,
+        profile_id,
+    ),
+    measure!(
+        madopilot_ocr_region_t,
+        struct_size,
+        flags,
+        confidence,
+        points,
+    ),
+    measure!(
         madopilot_package_info_t,
         struct_size,
         flags,
@@ -506,6 +560,12 @@ pub const LAYOUT: &[TypeLayout] = &[
         diagnostic_batch_release,
         diagnostic_batch_info,
         diagnostic_batch_record_at,
+        session_recognize,
+        ocr_result_retain,
+        ocr_result_release,
+        ocr_result_info,
+        ocr_result_region_at,
+        ocr_result_text_at,
     ),
 ];
 
@@ -535,6 +595,7 @@ pub const HANDLE_POINTERS: &[TypeLayout] = &[
     handle!(madopilot_frame_t),
     handle!(madopilot_mapping_t),
     handle!(madopilot_result_t),
+    handle!(madopilot_ocr_result_t),
     handle!(madopilot_input_receipt_t),
     handle!(madopilot_diagnostic_reader_t),
     handle!(madopilot_diagnostic_batch_t),

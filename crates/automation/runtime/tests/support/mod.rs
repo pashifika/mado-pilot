@@ -71,6 +71,7 @@ impl Harness {
             capture: Arc::clone(&capture) as Arc<dyn CaptureProvider>,
             matcher: Matcher::new(Arc::clone(&matcher) as Arc<dyn MatchBackend>),
             loader: PackageLoader::new(),
+            ocr: None,
             input: input
                 .as_ref()
                 .map(|input| Arc::clone(input) as Arc<dyn InputProvider>),
@@ -108,6 +109,7 @@ impl Harness {
             capture,
             matcher: Matcher::new(Arc::clone(&matcher) as Arc<dyn MatchBackend>),
             loader: PackageLoader::new(),
+            ocr: None,
             input: None,
             permission: None,
         })
@@ -139,6 +141,7 @@ pub(crate) fn wire(
         capture,
         matcher: Matcher::new(Arc::new(ControlledMatcher::new(PixelFormat::Rgba8))),
         loader: PackageLoader::new(),
+        ocr: None,
         input,
         permission,
     })

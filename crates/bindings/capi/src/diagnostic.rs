@@ -7,8 +7,9 @@
 use std::mem::size_of;
 
 use mado_pilot::{
-    DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel, DiagnosticOperationKind,
-    DiagnosticOptions, DiagnosticPayload, DiagnosticReader, DiagnosticRecord, Lifecycle,
+    ClipPolicy, DiagnosticBatch, DiagnosticDrain, DiagnosticKind, DiagnosticLevel,
+    DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, DiagnosticReader,
+    DiagnosticRecord, Lifecycle, OcrDiagnosticOutcome, OcrDiagnosticProfile,
     SearchDiagnosticOutcome,
 };
 
@@ -100,7 +101,7 @@ impl Versioned for madopilot_diagnostic_batch_info_t {
 }
 
 impl Versioned for madopilot_diagnostic_record_t {
-    const MANDATORY: usize = size_of::<madopilot_diagnostic_record_t>();
+    const MANDATORY: usize = 240;
     const NAME: &'static str = "madopilot_diagnostic_record_t";
     const PREFIXES: &'static [usize] = prefixes!(
         madopilot_diagnostic_record_t,
@@ -139,6 +140,12 @@ impl Versioned for madopilot_diagnostic_record_t {
         result_count,
         cleanup_released,
         cleanup_owed,
+        ocr_model_instance,
+        ocr_profile,
+        ocr_outcome,
+        ocr_requested_region,
+        ocr_elapsed_nanos,
+        ocr_source_pixels,
     );
     const ZEROED_PADDING: &'static [(usize, usize)] = &[(
         covers!(madopilot_diagnostic_record_t, reserved: u32),
@@ -185,6 +192,12 @@ impl Versioned for madopilot_diagnostic_record_t {
             result_count: 0,
             cleanup_released: 0,
             cleanup_owed: 0,
+            ocr_model_instance: 0,
+            ocr_profile: MADOPILOT_OCR_DIAGNOSTIC_PROFILE_UNSPECIFIED,
+            ocr_outcome: MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_UNSPECIFIED,
+            ocr_requested_region: madopilot_ocr_requested_region_t::empty(),
+            ocr_elapsed_nanos: 0,
+            ocr_source_pixels: 0,
         }
     }
 }
@@ -431,6 +444,70 @@ fn record(
                 }
             }
         }
+        DiagnosticPayload::Ocr(payload) => {
+            value.frame = boundary_frame(payload.source);
+            value.source_space = payload
+                .requested_region
+                .map_or(MADOPILOT_SPACE_CAPTURE_PIXELS, |region| {
+                    space_code(region.space())
+                });
+            value.destination_space = space_code(payload.output_space);
+            value.result_count = payload.result_count;
+            value.ocr_model_instance = payload.model_instance.get();
+            value.ocr_elapsed_nanos = payload.elapsed_nanos;
+            value.ocr_source_pixels = payload.source_pixels;
+            value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME
+                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_SOURCE_SPACE
+                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_DESTINATION_SPACE
+                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_MODEL_INSTANCE
+                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_TIMING
+                | MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESOURCES;
+            match payload.profile {
+                OcrDiagnosticProfile::AcceptedG004 => {
+                    value.ocr_profile = MADOPILOT_OCR_DIAGNOSTIC_PROFILE_G004;
+                    value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_PROFILE;
+                }
+                OcrDiagnosticProfile::Unspecified => {}
+                _ => {
+                    return Err(Fault::internal(
+                        "an OCR diagnostic profile has no C ABI projection",
+                    ));
+                }
+            }
+            if let Some(requested) = payload.requested_region {
+                value.ocr_requested_region = madopilot_ocr_requested_region_t {
+                    space: space_code(requested.space()),
+                    clip_policy: clip_policy_code(requested.clip_policy),
+                    left: requested.left(),
+                    top: requested.top(),
+                    right: requested.right(),
+                    bottom: requested.bottom(),
+                };
+                value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_REQUESTED_REGION;
+            }
+            if let Some(effective) = payload.effective_region {
+                value.region = crate::capture::rect(effective);
+                value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION;
+            }
+            match payload.outcome {
+                OcrDiagnosticOutcome::Recognized => {
+                    value.ocr_outcome = MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_RECOGNIZED;
+                }
+                OcrDiagnosticOutcome::Empty => {
+                    value.ocr_outcome = MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_EMPTY;
+                }
+                OcrDiagnosticOutcome::Failed(status) => {
+                    value.ocr_outcome = MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_FAILED;
+                    value.status = crate::status::code(status);
+                    value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_STATUS;
+                }
+                _ => {
+                    return Err(Fault::internal(
+                        "an OCR diagnostic outcome has no C ABI projection",
+                    ));
+                }
+            }
+        }
         DiagnosticPayload::Input(payload) => {
             value.target = payload.target.get();
             value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_TARGET;
@@ -538,6 +615,7 @@ const fn diagnostic_kind_code(kind: DiagnosticKind) -> madopilot_diagnostic_kind
         DiagnosticKind::Frame => MADOPILOT_DIAGNOSTIC_KIND_FRAME,
         DiagnosticKind::Mapping => MADOPILOT_DIAGNOSTIC_KIND_MAPPING,
         DiagnosticKind::Search => MADOPILOT_DIAGNOSTIC_KIND_SEARCH,
+        DiagnosticKind::Ocr => MADOPILOT_DIAGNOSTIC_KIND_OCR,
         DiagnosticKind::Input => MADOPILOT_DIAGNOSTIC_KIND_INPUT,
         DiagnosticKind::RouteAttempt => MADOPILOT_DIAGNOSTIC_KIND_ROUTE_ATTEMPT,
         DiagnosticKind::Lifecycle => MADOPILOT_DIAGNOSTIC_KIND_LIFECYCLE,
@@ -563,9 +641,17 @@ const fn diagnostic_operation_code(
         }
         DiagnosticOperationKind::Search => MADOPILOT_DIAGNOSTIC_OPERATION_SEARCH,
         DiagnosticOperationKind::InputSubmission => MADOPILOT_DIAGNOSTIC_OPERATION_INPUT_SUBMISSION,
+        DiagnosticOperationKind::OcrRecognition => MADOPILOT_DIAGNOSTIC_OPERATION_OCR_RECOGNITION,
         DiagnosticOperationKind::SessionClose => MADOPILOT_DIAGNOSTIC_OPERATION_SESSION_CLOSE,
 
         _ => 0,
+    }
+}
+
+const fn clip_policy_code(policy: ClipPolicy) -> madopilot_clip_policy_t {
+    match policy {
+        ClipPolicy::Reject => MADOPILOT_CLIP_POLICY_REJECT,
+        ClipPolicy::Clip => MADOPILOT_CLIP_POLICY_CLIP,
     }
 }
 

@@ -12,12 +12,13 @@
 //! retaining a second identity registry.
 
 use std::ops::Deref;
+use std::sync::Arc;
 use std::time::Duration;
 
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
-    DiagnosticOptions, Engine, FrameDescriptor, MonotonicInstant, PixelExtent, TargetDescription,
-    TargetId,
+    DiagnosticOptions, Engine, FrameDescriptor, MonotonicInstant, OcrBackend, PixelExtent,
+    TargetDescription, TargetId,
 };
 
 use crate::boundary::{self, Input, Out, Versioned, covers, inputs, prefixes};
@@ -51,7 +52,7 @@ pub(crate) struct EngineHandle {
 }
 
 impl EngineHandle {
-    fn new(engine: Engine) -> Self {
+    pub(crate) fn new(engine: Engine) -> Self {
         Self { engine }
     }
 }
@@ -408,6 +409,35 @@ fn create_inner(
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
 ) -> madopilot_status_t {
+    create_inner_with_ocr(source, options, operation, out_engine, out_error, None)
+}
+
+#[cfg(feature = "private-fixture")]
+pub(crate) fn create_private_ocr_fixture(
+    source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
+    create_inner_with_ocr(
+        source,
+        options,
+        operation,
+        out_engine,
+        out_error,
+        Some(crate::fixture::ocr_backend()),
+    )
+}
+
+fn create_inner_with_ocr(
+    source: *const madopilot_source_t,
+    options: *const crate::types::madopilot_engine_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+    ocr_backend: Option<Arc<dyn OcrBackend>>,
+) -> madopilot_status_t {
     if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
         unsafe { boundary::begin_outputs(out_engine, "out_engine", out_error) }
@@ -420,7 +450,7 @@ fn create_inner(
     unsafe {
         report(
             out_error,
-            build_engine(source, options, operation, out_engine),
+            build_engine(source, options, operation, out_engine, ocr_backend),
         )
     }
 }
@@ -430,6 +460,7 @@ fn build_engine(
     options: *const crate::types::madopilot_engine_options_t,
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
+    ocr_backend: Option<Arc<dyn OcrBackend>>,
 ) -> Result<(), Fault> {
     // SAFETY: the caller keeps every structure and handle it named readable and
     // retained for the call.
@@ -442,18 +473,27 @@ fn build_engine(
     let diagnostics = unsafe { crate::diagnostic::options(options) }?;
 
     // SAFETY: as above. Fields not selected by the source tag remain unread.
+    let fixture_ocr = ocr_backend.is_some();
     let engine = match request.kind {
         MADOPILOT_SOURCE_REPLAY_MEMORY | MADOPILOT_SOURCE_REPLAY_DIRECTORY => {
             // SAFETY: the replay fields selected by the tag remain readable for
             // the call under this function's boundary contract.
             let configured = unsafe { replay_source(&request) }?;
-            mado_pilot::replay_engine(
-                mado_pilot::ReplayEngineRequest::new(configured).with_diagnostics(diagnostics),
-            )
-            .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
+            let mut replay =
+                mado_pilot::ReplayEngineRequest::new(configured).with_diagnostics(diagnostics);
+            if let Some(backend) = ocr_backend {
+                replay = replay.with_ocr_backend(backend);
+            }
+            mado_pilot::replay_engine(replay)
+                .map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))?
         }
-        MADOPILOT_SOURCE_NATIVE_WINDOWS => native_windows_engine(diagnostics)?,
-        MADOPILOT_SOURCE_NATIVE_MACOS => native_macos_engine(diagnostics)?,
+        MADOPILOT_SOURCE_NATIVE_WINDOWS if !fixture_ocr => native_windows_engine(diagnostics)?,
+        MADOPILOT_SOURCE_NATIVE_MACOS if !fixture_ocr => native_macos_engine(diagnostics)?,
+        MADOPILOT_SOURCE_NATIVE_WINDOWS | MADOPILOT_SOURCE_NATIVE_MACOS => {
+            return Err(Fault::abi(
+                "the private OCR fixture constructor accepts replay sources only",
+            ));
+        }
         other => return Err(Fault::abi(format!("unrecognized source kind {other}"))),
     };
     let engine = EngineHandle::new(engine);
