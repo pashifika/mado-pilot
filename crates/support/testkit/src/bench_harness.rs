@@ -2087,6 +2087,43 @@ pub const PHASE3_APPLE_OCR_CLOSE_LIMIT: Duration = Duration::from_millis(2);
 /// Maximum accepted-model reopen and close cycle.
 pub const PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::from_millis(100);
 
+/// Phase 3 Windows accepted-profile OCR inference ceilings from ADR 0037.
+pub const PHASE3_WINDOWS_OCR_LATENCY_BUDGETS: [LatencyBudget; 3] = [
+    LatencyBudget::new(
+        "onnx_cpu_hud_full",
+        Duration::from_millis(900),
+        Duration::from_millis(1_000),
+        Duration::from_millis(1_200),
+    ),
+    LatencyBudget::new(
+        "onnx_cpu_hud_region",
+        Duration::from_millis(725),
+        Duration::from_millis(750),
+        Duration::from_millis(850),
+    ),
+    LatencyBudget::new(
+        "onnx_cpu_blank",
+        Duration::from_millis(350),
+        Duration::from_millis(425),
+        Duration::from_millis(500),
+    ),
+];
+
+/// Maximum live Rust heap attributable to any Windows OCR workload.
+pub const PHASE3_WINDOWS_OCR_HEAP_LIMIT_BYTES: usize = 20 * 1024 * 1024;
+
+/// Maximum process resident high-water for the Windows OCR profile.
+pub const PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES: u64 = 320 * 1024 * 1024;
+
+/// Maximum accepted default model validation and session-pair startup on Windows.
+pub const PHASE3_WINDOWS_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(250);
+
+/// Maximum first close after the complete Windows OCR workload set.
+pub const PHASE3_WINDOWS_OCR_CLOSE_LIMIT: Duration = Duration::from_millis(10);
+
+/// Maximum accepted-model reopen and close cycle on Windows.
+pub const PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::from_millis(225);
+
 /// Accepted backend input-tensor byte ceiling recorded by the OCR profile.
 pub const PHASE3_OCR_MAX_TENSOR_BYTES: u64 = 256 * 1024 * 1024;
 

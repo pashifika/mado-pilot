@@ -4,6 +4,8 @@
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+#[cfg(any(all(target_arch = "aarch64", target_os = "macos"), windows))]
+use std::time::Duration;
 use std::time::Instant;
 
 use mado_pilot_backend_onnx::{OnnxBackendFacts, OnnxBackendObservations, OnnxOcrBackend};
@@ -18,8 +20,17 @@ use mado_pilot_testkit::bench_harness::{
     PHASE3_APPLE_OCR_CLOSE_LIMIT, PHASE3_APPLE_OCR_COLD_LOAD_LIMIT,
     PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES, PHASE3_APPLE_OCR_LATENCY_BUDGETS,
     PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT, PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES,
+};
+#[cfg(any(all(target_arch = "aarch64", target_os = "macos"), windows))]
+use mado_pilot_testkit::bench_harness::{
     PHASE3_OCR_EMPTY_MAPPED_BYTES, PHASE3_OCR_FULL_MAPPED_BYTES, PHASE3_OCR_MAX_OUTPUT_BYTES,
     PHASE3_OCR_MAX_TENSOR_BYTES, PHASE3_OCR_REGION_MAPPED_BYTES,
+};
+#[cfg(windows)]
+use mado_pilot_testkit::bench_harness::{
+    PHASE3_WINDOWS_OCR_CLOSE_LIMIT, PHASE3_WINDOWS_OCR_COLD_LOAD_LIMIT,
+    PHASE3_WINDOWS_OCR_HEAP_LIMIT_BYTES, PHASE3_WINDOWS_OCR_LATENCY_BUDGETS,
+    PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT, PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES,
 };
 use mado_pilot_testkit::vision_contract;
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual};
@@ -461,8 +472,22 @@ fn print_observation(
     }
 }
 
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-fn enforce_target_budgets(
+#[cfg(any(all(target_arch = "aarch64", target_os = "macos"), windows))]
+struct TargetBudgets {
+    target: &'static str,
+    label: &'static str,
+    resident_name: &'static str,
+    latency: &'static [bench_harness::LatencyBudget],
+    cold_load: Duration,
+    close: Duration,
+    reopen_close: Duration,
+    heap_bytes: usize,
+    resident_bytes: u64,
+}
+
+#[cfg(any(all(target_arch = "aarch64", target_os = "macos"), windows))]
+fn enforce_target_budget_set(
+    budgets: TargetBudgets,
     cold_load_ms: f64,
     close_ms: f64,
     reopen_close_ms: &[f64],
@@ -470,35 +495,34 @@ fn enforce_target_budgets(
     facts: OnnxBackendFacts,
     workloads: &[bench_harness::Workload],
 ) {
-    bench_harness::enforce_latency_budgets(workloads, &PHASE3_APPLE_OCR_LATENCY_BUDGETS);
+    bench_harness::enforce_latency_budgets(workloads, budgets.latency);
     assert!(
-        cold_load_ms <= PHASE3_APPLE_OCR_COLD_LOAD_LIMIT.as_secs_f64() * 1_000.0,
-        "cold default OCR startup exceeded the Apple Silicon ceiling"
+        cold_load_ms <= budgets.cold_load.as_secs_f64() * 1_000.0,
+        "cold default OCR startup exceeded the {} ceiling",
+        budgets.label
     );
     assert!(
-        close_ms <= PHASE3_APPLE_OCR_CLOSE_LIMIT.as_secs_f64() * 1_000.0,
-        "OCR close exceeded the Apple Silicon ceiling"
+        close_ms <= budgets.close.as_secs_f64() * 1_000.0,
+        "OCR close exceeded the {} ceiling",
+        budgets.label
     );
     assert!(
-        percentile(reopen_close_ms, 1.0)
-            <= PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT.as_secs_f64() * 1_000.0,
-        "OCR reopen-close exceeded the Apple Silicon ceiling"
+        percentile(reopen_close_ms, 1.0) <= budgets.reopen_close.as_secs_f64() * 1_000.0,
+        "OCR reopen-close exceeded the {} ceiling",
+        budgets.label
     );
     assert_eq!(facts.max_concurrent_inferences(), 1);
     assert_eq!(facts.max_tensor_bytes(), PHASE3_OCR_MAX_TENSOR_BYTES);
     assert_eq!(facts.max_output_bytes(), PHASE3_OCR_MAX_OUTPUT_BYTES);
     assert_eq!(facts.recognition_batch(), 6);
-    bench_harness::nonzero_at_most(
-        "Apple Silicon OCR peak resident bytes",
-        peak_resident,
-        PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES,
-    );
+    bench_harness::nonzero_at_most(budgets.resident_name, peak_resident, budgets.resident_bytes);
 
     for workload in workloads {
         assert!(
-            workload.peak_allocated_bytes() <= PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES,
-            "{} exceeded the Apple Silicon live-Rust-heap ceiling",
-            workload.name()
+            workload.peak_allocated_bytes() <= budgets.heap_bytes,
+            "{} exceeded the {} live-Rust-heap ceiling",
+            workload.name(),
+            budgets.label
         );
         let expected_mapped = match workload.name() {
             FULL_NAME => PHASE3_OCR_FULL_MAPPED_BYTES,
@@ -513,10 +537,73 @@ fn enforce_target_budgets(
             workload.name()
         );
     }
-    println!("onnx-cpu-target-budgets target=aarch64-apple-darwin status=passed");
+    println!(
+        "onnx-cpu-target-budgets target={} status=passed",
+        budgets.target
+    );
 }
 
-#[cfg(not(all(target_arch = "aarch64", target_os = "macos")))]
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+fn enforce_target_budgets(
+    cold_load_ms: f64,
+    close_ms: f64,
+    reopen_close_ms: &[f64],
+    peak_resident: Option<u64>,
+    facts: OnnxBackendFacts,
+    workloads: &[bench_harness::Workload],
+) {
+    enforce_target_budget_set(
+        TargetBudgets {
+            target: "aarch64-apple-darwin",
+            label: "Apple Silicon",
+            resident_name: "Apple Silicon OCR peak resident bytes",
+            latency: &PHASE3_APPLE_OCR_LATENCY_BUDGETS,
+            cold_load: PHASE3_APPLE_OCR_COLD_LOAD_LIMIT,
+            close: PHASE3_APPLE_OCR_CLOSE_LIMIT,
+            reopen_close: PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT,
+            heap_bytes: PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES,
+            resident_bytes: PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES,
+        },
+        cold_load_ms,
+        close_ms,
+        reopen_close_ms,
+        peak_resident,
+        facts,
+        workloads,
+    );
+}
+
+#[cfg(windows)]
+fn enforce_target_budgets(
+    cold_load_ms: f64,
+    close_ms: f64,
+    reopen_close_ms: &[f64],
+    peak_resident: Option<u64>,
+    facts: OnnxBackendFacts,
+    workloads: &[bench_harness::Workload],
+) {
+    enforce_target_budget_set(
+        TargetBudgets {
+            target: "x86_64-pc-windows-msvc",
+            label: "Windows",
+            resident_name: "Windows OCR peak resident bytes",
+            latency: &PHASE3_WINDOWS_OCR_LATENCY_BUDGETS,
+            cold_load: PHASE3_WINDOWS_OCR_COLD_LOAD_LIMIT,
+            close: PHASE3_WINDOWS_OCR_CLOSE_LIMIT,
+            reopen_close: PHASE3_WINDOWS_OCR_REOPEN_CLOSE_LIMIT,
+            heap_bytes: PHASE3_WINDOWS_OCR_HEAP_LIMIT_BYTES,
+            resident_bytes: PHASE3_WINDOWS_OCR_RESIDENT_LIMIT_BYTES,
+        },
+        cold_load_ms,
+        close_ms,
+        reopen_close_ms,
+        peak_resident,
+        facts,
+        workloads,
+    );
+}
+
+#[cfg(not(any(all(target_arch = "aarch64", target_os = "macos"), windows)))]
 fn enforce_target_budgets(
     _cold_load_ms: f64,
     _close_ms: f64,
