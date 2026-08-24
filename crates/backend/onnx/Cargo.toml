@@ -23,6 +23,9 @@ mado-pilot-testkit = { path = "../../support/testkit" }
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 libc = { workspace = true }
 
+[target.'cfg(windows)'.dev-dependencies]
+windows.workspace = true
+
 [[bench]]
 name = "onnx-cpu"
 harness = false

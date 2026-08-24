@@ -1,5 +1,7 @@
 //! Focused cold-load, warm-inference, allocation-growth, and cleanup observations.
 
+#[cfg(windows)]
+use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -23,6 +25,10 @@ use mado_pilot_testkit::vision_contract;
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual};
 use opencv::imgcodecs::{IMREAD_COLOR, imread};
 use opencv::imgproc::{COLOR_BGR2BGRA, cvt_color_def};
+#[cfg(windows)]
+use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+#[cfg(windows)]
+use windows::Win32::System::Threading::GetCurrentProcess;
 
 #[global_allocator]
 static ACCOUNTING: Accounting = Accounting;
@@ -540,7 +546,20 @@ fn peak_resident_bytes() -> Option<u64> {
         .filter(|bytes| *bytes > 0)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn peak_resident_bytes() -> Option<u64> {
+    let mut counters = PROCESS_MEMORY_COUNTERS::default();
+    let bytes = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
+    counters.cb = bytes;
+    // SAFETY: the pseudo handle names this process and `counters` is writable
+    // for the complete native structure declared by `bytes`.
+    unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, bytes) }.ok()?;
+    u64::try_from(counters.PeakWorkingSetSize)
+        .ok()
+        .filter(|bytes| *bytes > 0)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn peak_resident_bytes() -> Option<u64> {
     None
 }

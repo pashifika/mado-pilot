@@ -269,6 +269,7 @@ dependencies = [
  "opencv",
  "ort",
  "sha2",
+ "windows",
 ]
 
 [[package]]
