@@ -20,6 +20,9 @@ sha2 = { workspace = true }
 [dev-dependencies]
 mado-pilot-testkit = { path = "../../support/testkit" }
 
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libc = { workspace = true }
+
 [[bench]]
 name = "onnx-cpu"
 harness = false

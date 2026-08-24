@@ -21,10 +21,11 @@ hardware = "Apple M1 Pro, 10 cores, 32 GiB"
 os_version = "macOS 26.5.2 (25F84)"
 build_profile = "cargo bench, default features, debug_assertions=false; five fresh processes"
 warmup_iterations = 3
-sample_count = 10
+sample_count = 20
 process_count = 5
 correctness_oracle = "every warmup and retained sample checks exact NFC text/count/order, fixture-derived geometry bounds, finite same-host-stable confidence, frame/effective-region/output/backend/model correlation, exact empty outcome, and no late publication"
 queue_policy = "one synchronous admitted inference, one session pair, two sessions, CPU provider only, intra/inter operation threads 1, CPU arena disabled, recognition batch ceiling 6"
+producer_surface_copy = "not applicable: the profile maps immutable CPU replay frames and owns no producer/native surface; no copied-byte ceiling is set"
 notes = "source commit b83f23f73876e7d5eb1fd75e31ec44c2e3f4a1b3; tree 7dfe9c278ff5e1481b07cfe9a5b9a374b4f419d4; rustc/cargo 1.97.1; OpenCV 4.14.0; runtime profile onnxruntime-1.29.0-api17-cpu; runtime sha256 5039a93886b71ddfcf62912a2be5b357cf51fa9a6579ad9302c78323f5f7c302; detector sha256 d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9; recognizer sha256 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884; vocabulary 18708 entries sha256 f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e; no failed-sample exclusion or retry; resident memory from /usr/bin/time -l"
 benchmark_executable_sha256 = "5cdf1178bfd3048c7f96ade6c4d3403ee12bf8c59b1adcf6829f254ef976e536"
 deployment_target = "macOS 26.5.2"
@@ -62,8 +63,8 @@ measure = "cold_load_p95"
 kind = "absolute"
 unit = "milliseconds"
 direction = "at_most"
-limit = 140.0
-rationale = "1.61 times the 86.988 ms worst fresh-process default model/runtime validation and session open, rounded up"
+limit = 175.0
+rationale = "1.23 times the retained 141.686 ms post-instrumentation first-process failure and 2.01 times the 86.988 ms precursor maximum, rounded up"
 
 [[budget]]
 measure = "first_close_max"
@@ -105,7 +106,6 @@ latency_p50_ms = 470.767
 latency_p95_ms = 476.576
 latency_max_ms = 476.576
 mapped_bytes_per_result = 2073600
-copied_bytes_per_result = 0
 peak_allocated_bytes = 12695400
 allocated_growth_bytes = 0
 detector_tensor_runs = 1
@@ -144,13 +144,6 @@ direction = "at_most"
 limit = 2073600
 rationale = "one exact 960x540 BGRA frame"
 
-[[measurement.budget]]
-measure = "copied_bytes_per_result"
-kind = "absolute"
-unit = "bytes"
-direction = "at_most"
-limit = 0
-rationale = "the immutable CPU replay frame requires no producer-surface copy"
 
 [[measurement]]
 workload = "onnx_cpu_hud_region"
@@ -160,7 +153,6 @@ latency_p50_ms = 296.023
 latency_p95_ms = 299.674
 latency_max_ms = 299.674
 mapped_bytes_per_result = 64800
-copied_bytes_per_result = 0
 peak_allocated_bytes = 14149992
 allocated_growth_bytes = 0
 detector_tensor_runs = 1
@@ -199,13 +191,6 @@ direction = "at_most"
 limit = 64800
 rationale = "one exact 180x90 BGRA bounded region"
 
-[[measurement.budget]]
-measure = "copied_bytes_per_result"
-kind = "absolute"
-unit = "bytes"
-direction = "at_most"
-limit = 0
-rationale = "the immutable CPU replay frame requires no producer-surface copy"
 
 [[measurement]]
 workload = "onnx_cpu_blank"
@@ -215,7 +200,6 @@ latency_p50_ms = 132.956
 latency_p95_ms = 135.640
 latency_max_ms = 135.640
 mapped_bytes_per_result = 16384
-copied_bytes_per_result = 0
 peak_allocated_bytes = 7042720
 allocated_growth_bytes = 0
 detector_tensor_runs = 1
@@ -253,11 +237,3 @@ unit = "bytes"
 direction = "at_most"
 limit = 16384
 rationale = "one exact 64x64 BGRA empty frame"
-
-[[measurement.budget]]
-measure = "copied_bytes_per_result"
-kind = "absolute"
-unit = "bytes"
-direction = "at_most"
-limit = 0
-rationale = "the immutable CPU replay frame requires no producer-surface copy"

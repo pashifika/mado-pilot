@@ -31,7 +31,8 @@ use mado_pilot_ocr::{
 use opencv::core::MatTraitConst;
 
 pub use fault::{
-    OnnxBackendFacts, OnnxBackendFault, OnnxExecutionProvider, OnnxRuntimeCompatibility,
+    OnnxBackendFacts, OnnxBackendFault, OnnxBackendObservations, OnnxExecutionProvider,
+    OnnxRuntimeCompatibility,
 };
 
 use crate::decode::DecodedText;
@@ -258,11 +259,22 @@ impl OnnxOcrBackend {
         self.facts
     }
 
+    /// Returns cumulative path-free mapping, inference, and session observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OnnxBackendFault::Busy`] while inference owns the session pair,
+    /// or [`OnnxBackendFault::Closed`] after close.
+    pub fn observations(&self) -> Result<OnnxBackendObservations, OnnxBackendFault> {
+        self.state.try_with(|pair| pair.observations())
+    }
+
     fn recognize_with_pair(
         pair: &mut SessionPair,
         request: &BackendRequest<'_>,
         operation: &OperationContext,
     ) -> Result<Vec<OwnedCandidate>, OnnxBackendFault> {
+        pair.record_mapping(request.pixels().bytes().len());
         image::with_bgra_view(request.pixels(), |source| {
             checkpoint(operation)?;
             let detector_input = image::detector_input(source)?;

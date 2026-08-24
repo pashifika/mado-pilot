@@ -4,20 +4,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use mado_pilot_backend_onnx::{OnnxBackendFacts, OnnxOcrBackend};
+use mado_pilot_backend_onnx::{OnnxBackendFacts, OnnxBackendObservations, OnnxOcrBackend};
 use mado_pilot_capture::{Frame, PixelFormat};
 use mado_pilot_core::{
     ClipPolicy, CoordinateSpace, OperationContext, PixelExtent, PixelRect, Rect,
 };
 use mado_pilot_ocr::{OcrBackend, OcrRecognizer, OcrRegion, OcrRequest, OcrResult};
-use mado_pilot_testkit::bench_harness::{self, Accounting, CaptureResources, Plan, Sample};
+use mado_pilot_testkit::bench_harness::{self, Accounting, Plan, Sample};
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 use mado_pilot_testkit::bench_harness::{
     PHASE3_APPLE_OCR_CLOSE_LIMIT, PHASE3_APPLE_OCR_COLD_LOAD_LIMIT,
     PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES, PHASE3_APPLE_OCR_LATENCY_BUDGETS,
-    PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT, PHASE3_OCR_EMPTY_MAPPED_BYTES,
-    PHASE3_OCR_FULL_MAPPED_BYTES, PHASE3_OCR_MAX_OUTPUT_BYTES, PHASE3_OCR_MAX_TENSOR_BYTES,
-    PHASE3_OCR_REGION_MAPPED_BYTES,
+    PHASE3_APPLE_OCR_REOPEN_CLOSE_LIMIT, PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES,
+    PHASE3_OCR_EMPTY_MAPPED_BYTES, PHASE3_OCR_FULL_MAPPED_BYTES, PHASE3_OCR_MAX_OUTPUT_BYTES,
+    PHASE3_OCR_MAX_TENSOR_BYTES, PHASE3_OCR_REGION_MAPPED_BYTES,
 };
 use mado_pilot_testkit::vision_contract;
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual};
@@ -106,7 +106,7 @@ fn main() {
     let plan = if smoke {
         Plan::smoke()
     } else {
-        Plan::new(3, 10)
+        Plan::new(3, 20)
     };
 
     let cold_started = Instant::now();
@@ -127,8 +127,8 @@ fn main() {
         plan,
         || {
             Fixture::new(
-                FULL_NAME,
                 recognizer.clone(),
+                Arc::clone(&backend),
                 hud.clone(),
                 OcrRegion::FullFrame,
                 &HUD_EXPECTED,
@@ -144,8 +144,8 @@ fn main() {
         plan,
         || {
             Fixture::new(
-                REGION_NAME,
                 recognizer.clone(),
+                Arc::clone(&backend),
                 hud.clone(),
                 OcrRegion::Region {
                     rect: Rect::new(CoordinateSpace::CapturePixels, 40.0, 40.0, 220.0, 130.0)
@@ -165,8 +165,8 @@ fn main() {
         plan,
         || {
             Fixture::new(
-                EMPTY_NAME,
                 recognizer.clone(),
+                Arc::clone(&backend),
                 blank,
                 OcrRegion::FullFrame,
                 &[],
@@ -192,23 +192,32 @@ fn main() {
         reopen_close_ms.push(started.elapsed().as_secs_f64() * 1_000.0);
     }
 
+    let peak_resident = peak_resident_bytes();
     print_observation(
         plan,
         cold_load_ms,
         close_ms,
         &reopen_close_ms,
+        peak_resident,
         facts,
         &workloads,
     );
     bench_harness::enforce_hard_budgets(&workloads);
     if !smoke {
-        enforce_target_budgets(cold_load_ms, close_ms, &reopen_close_ms, facts, &workloads);
+        enforce_target_budgets(
+            cold_load_ms,
+            close_ms,
+            &reopen_close_ms,
+            peak_resident,
+            facts,
+            &workloads,
+        );
     }
 }
 
 struct Fixture {
-    name: &'static str,
     recognizer: OcrRecognizer,
+    backend: Arc<OnnxOcrBackend>,
     frame: Frame,
     region: OcrRegion,
     expected: &'static [ExpectedRegion],
@@ -219,8 +228,8 @@ struct Fixture {
 
 impl Fixture {
     fn new(
-        name: &'static str,
         recognizer: OcrRecognizer,
+        backend: Arc<OnnxOcrBackend>,
         frame: Frame,
         region: OcrRegion,
         expected: &'static [ExpectedRegion],
@@ -228,8 +237,8 @@ impl Fixture {
         mapped_bytes: u64,
     ) -> Self {
         Self {
-            name,
             recognizer,
+            backend,
             frame,
             region,
             expected,
@@ -242,6 +251,10 @@ impl Fixture {
 
 fn recognize(fixture: &Fixture) -> Sample {
     let descriptor = fixture.recognizer.descriptor();
+    let before = fixture
+        .backend
+        .observations()
+        .expect("benchmark observes an idle open backend");
     let started = Instant::now();
     let result = fixture.recognizer.recognize(OcrRequest::new(
         &fixture.frame,
@@ -252,17 +265,53 @@ fn recognize(fixture: &Fixture) -> Sample {
         &OperationContext::new(),
     ));
     let elapsed = started.elapsed();
-    let correct = result.as_ref().is_ok_and(|result| oracle(fixture, result));
+    let after = fixture
+        .backend
+        .observations()
+        .expect("completed inference returns the session pair");
+    let resources = observation_delta(before, after);
+    let expected_recognizer_runs = u64::try_from(fixture.expected.len().div_ceil(6))
+        .expect("the fixture candidate count fits u64");
+    let correct = result.as_ref().is_ok_and(|result| oracle(fixture, result))
+        && resources.mapped_bytes == fixture.mapped_bytes
+        && resources.detector_runs == 1
+        && resources.recognizer_runs == expected_recognizer_runs
+        && after.session_pairs() == 1
+        && after.sessions() == 2;
     if !correct {
-        eprintln!("{} rejected result: {result:#?}", fixture.name);
+        eprintln!(
+            "OCR benchmark rejected result/resources: result={result:#?} resources={resources:?}"
+        );
     }
-    assert!(correct, "{} correctness oracle failed", fixture.name);
-    Sample::new(elapsed, correct, fixture.mapped_bytes).with_capture_resources(CaptureResources {
-        copied_bytes: 0,
-        detached_textures_peak: 0,
-        staging_textures_peak: 0,
-        gpu_resources_peak: 0,
-    })
+    assert!(correct, "OCR benchmark correctness/resource oracle failed");
+    Sample::new(elapsed, correct, resources.mapped_bytes)
+}
+
+#[derive(Debug)]
+struct ObservationDelta {
+    mapped_bytes: u64,
+    detector_runs: u64,
+    recognizer_runs: u64,
+}
+
+fn observation_delta(
+    before: OnnxBackendObservations,
+    after: OnnxBackendObservations,
+) -> ObservationDelta {
+    ObservationDelta {
+        mapped_bytes: after
+            .mapped_bytes()
+            .checked_sub(before.mapped_bytes())
+            .expect("mapped-byte observations are monotonic"),
+        detector_runs: after
+            .detector_runs()
+            .checked_sub(before.detector_runs())
+            .expect("detector-run observations are monotonic"),
+        recognizer_runs: after
+            .recognizer_runs()
+            .checked_sub(before.recognizer_runs())
+            .expect("recognizer-run observations are monotonic"),
+    }
 }
 
 fn oracle(fixture: &Fixture, result: &OcrResult) -> bool {
@@ -345,6 +394,7 @@ fn print_observation(
     cold_load_ms: f64,
     close_ms: f64,
     reopen_close_ms: &[f64],
+    peak_resident: Option<u64>,
     facts: OnnxBackendFacts,
     workloads: &[bench_harness::Workload],
 ) {
@@ -354,9 +404,9 @@ fn print_observation(
             "cold_load_ms={cold_load_ms:.3} close_ms={close_ms:.3} ",
             "reopen_close_p95_ms={reopen_close_p95_ms:.3} ",
             "reopen_close_max_ms={reopen_close_max_ms:.3} ",
-            "session_pairs_peak=1 sessions_peak=2 max_concurrency={max_concurrency} ",
-            "max_tensor_bytes={max_tensor_bytes} max_output_bytes={max_output_bytes} ",
-            "recognition_batch={recognition_batch}"
+            "configured_session_pairs=1 configured_sessions=2 ",
+            "max_concurrency={max_concurrency} max_tensor_bytes={max_tensor_bytes} ",
+            "max_output_bytes={max_output_bytes} recognition_batch={recognition_batch}"
         ),
         cold_load_ms = cold_load_ms,
         close_ms = close_ms,
@@ -367,6 +417,10 @@ fn print_observation(
         max_output_bytes = facts.max_output_bytes(),
         recognition_batch = facts.recognition_batch(),
     );
+    match peak_resident {
+        Some(bytes) => println!("onnx-cpu-resident peak_resident_bytes={bytes}"),
+        None => println!("onnx-cpu-resident peak_resident_bytes=unavailable"),
+    }
     for workload in workloads {
         let (detector_tensors, recognizer_tensors, result_regions) = match workload.name() {
             FULL_NAME => (1, 2, HUD_EXPECTED.len()),
@@ -378,7 +432,8 @@ fn print_observation(
             concat!(
                 "onnx-cpu-workload name={name} warmups={warmups} samples={samples} ",
                 "p50_ms={p50_ms:.3} p95_ms={p95_ms:.3} max_ms={max_ms:.3} ",
-                "incorrect={incorrect} mapped_bytes={mapped_bytes} copied_bytes={copied_bytes} ",
+                "incorrect={incorrect} mapped_bytes={mapped_bytes} ",
+                "producer_copy_bytes=not_applicable ",
                 "rust_peak_allocated_bytes={peak_bytes} rust_growth_bytes={growth_bytes} ",
                 "detector_tensor_runs={detector_tensors} ",
                 "recognizer_tensor_runs={recognizer_tensors} result_regions={result_regions}"
@@ -391,9 +446,6 @@ fn print_observation(
             max_ms = workload.max_elapsed().as_secs_f64() * 1_000.0,
             incorrect = workload.incorrect(),
             mapped_bytes = workload.mapped_bytes_per_result(),
-            copied_bytes = workload
-                .copied_bytes()
-                .expect("every OCR workload reports copy accounting"),
             peak_bytes = workload.peak_allocated_bytes(),
             growth_bytes = workload.growth_bytes(),
             detector_tensors = detector_tensors,
@@ -408,6 +460,7 @@ fn enforce_target_budgets(
     cold_load_ms: f64,
     close_ms: f64,
     reopen_close_ms: &[f64],
+    peak_resident: Option<u64>,
     facts: OnnxBackendFacts,
     workloads: &[bench_harness::Workload],
 ) {
@@ -429,6 +482,11 @@ fn enforce_target_budgets(
     assert_eq!(facts.max_tensor_bytes(), PHASE3_OCR_MAX_TENSOR_BYTES);
     assert_eq!(facts.max_output_bytes(), PHASE3_OCR_MAX_OUTPUT_BYTES);
     assert_eq!(facts.recognition_batch(), 6);
+    bench_harness::nonzero_at_most(
+        "Apple Silicon OCR peak resident bytes",
+        peak_resident,
+        PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES,
+    );
 
     for workload in workloads {
         assert!(
@@ -448,12 +506,6 @@ fn enforce_target_budgets(
             "{} changed its exact mapped-byte cost",
             workload.name()
         );
-        assert_eq!(
-            workload.copied_bytes(),
-            Some(0),
-            "{} unexpectedly copied producer-surface bytes",
-            workload.name()
-        );
     }
     println!("onnx-cpu-target-budgets target=aarch64-apple-darwin status=passed");
 }
@@ -463,6 +515,7 @@ fn enforce_target_budgets(
     _cold_load_ms: f64,
     _close_ms: f64,
     _reopen_close_ms: &[f64],
+    _peak_resident: Option<u64>,
     _facts: OnnxBackendFacts,
     _workloads: &[bench_harness::Workload],
 ) {
@@ -470,6 +523,26 @@ fn enforce_target_budgets(
         "onnx-cpu-target-budgets target={} status=withheld",
         bench_harness::RELEASE_TARGET
     );
+}
+
+#[cfg(target_os = "macos")]
+fn peak_resident_bytes() -> Option<u64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: `usage` is writable for the complete target `rusage` structure;
+    // a zero return initializes it before `assume_init`.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: successful `getrusage` initialized the complete structure.
+    let usage = unsafe { usage.assume_init() };
+    u64::try_from(usage.ru_maxrss)
+        .ok()
+        .filter(|bytes| *bytes > 0)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn peak_resident_bytes() -> Option<u64> {
+    None
 }
 
 fn percentile(samples: &[f64], percentile: f64) -> f64 {

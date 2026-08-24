@@ -745,7 +745,9 @@ two sessions, one thread per session axis, disabled CPU arena, and recognition
 batch ceiling six.
 
 Every process opens through the same default path a Rust/C/C++ caller uses.
-Three warmups precede ten retained samples for each workload:
+Three warmups precede twenty retained samples for each workload. With twenty
+samples, nearest-rank p95 is the nineteenth value rather than the maximum; the
+independent maximum ceiling still catches a single slow operation:
 
 | Workload | Oracle and accounting |
 |---|---|

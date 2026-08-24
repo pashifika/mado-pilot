@@ -627,12 +627,7 @@ fn apple_ocr_profile_states_exactly_the_resource_budgets_the_benchmark_enforces(
 
     let recorded_per_workload: Vec<BudgetBlock<'_>> = budget_blocks(profile)
         .into_iter()
-        .filter(|budget| {
-            matches!(
-                budget.measure,
-                Some("mapped_bytes_per_result" | "copied_bytes_per_result")
-            )
-        })
+        .filter(|budget| budget.measure == Some("mapped_bytes_per_result"))
         .collect();
     assert_eq!(
         recorded_per_workload,
@@ -644,34 +639,16 @@ fn apple_ocr_profile_states_exactly_the_resource_budgets_the_benchmark_enforces(
                 exact_limit(PHASE3_OCR_FULL_MAPPED_BYTES),
             ),
             absolute_budget(
-                Some("onnx_cpu_hud_full"),
-                "copied_bytes_per_result",
-                "bytes",
-                0.0,
-            ),
-            absolute_budget(
                 Some("onnx_cpu_hud_region"),
                 "mapped_bytes_per_result",
                 "bytes",
                 exact_limit(PHASE3_OCR_REGION_MAPPED_BYTES),
             ),
             absolute_budget(
-                Some("onnx_cpu_hud_region"),
-                "copied_bytes_per_result",
-                "bytes",
-                0.0,
-            ),
-            absolute_budget(
                 Some("onnx_cpu_blank"),
                 "mapped_bytes_per_result",
                 "bytes",
                 exact_limit(PHASE3_OCR_EMPTY_MAPPED_BYTES),
-            ),
-            absolute_budget(
-                Some("onnx_cpu_blank"),
-                "copied_bytes_per_result",
-                "bytes",
-                0.0,
             ),
         ],
         "the Apple OCR profile and executable per-workload byte ceilings drifted"

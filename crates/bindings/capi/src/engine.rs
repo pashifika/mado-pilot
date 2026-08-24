@@ -12,13 +12,16 @@
 //! retaining a second identity registry.
 
 use std::ops::Deref;
+#[cfg(feature = "private-fixture")]
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(feature = "private-fixture")]
+use mado_pilot::OcrBackend;
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
     DefaultOcrConfig, DiagnosticLevel, DiagnosticOptions, Engine, FrameDescriptor,
-    MonotonicInstant, OcrBackend, PixelExtent, TargetDescription, TargetId,
+    MonotonicInstant, PixelExtent, TargetDescription, TargetId,
 };
 
 use crate::boundary::{self, Input, Out, Versioned, covers, inputs, prefixes};
@@ -516,6 +519,13 @@ unsafe fn replay_frame(
     .map_err(|fault| Fault::from_error(&fault.into(), MADOPILOT_ERROR_CATEGORY_CAPTURE))
 }
 
+enum OcrWiring {
+    None,
+    #[cfg(feature = "private-fixture")]
+    Backend(Arc<dyn OcrBackend>),
+    Default(*const madopilot_default_ocr_options_t),
+}
+
 pub(crate) fn create(
     source: *const madopilot_source_t,
     operation: *const crate::types::madopilot_operation_t,
@@ -549,8 +559,7 @@ pub(crate) fn create_with_default_ocr(
         operation,
         out_engine,
         out_error,
-        None,
-        default_ocr,
+        OcrWiring::Default(default_ocr),
     )
 }
 
@@ -567,8 +576,7 @@ fn create_inner(
         operation,
         out_engine,
         out_error,
-        None,
-        std::ptr::null(),
+        OcrWiring::None,
     )
 }
 
@@ -586,8 +594,7 @@ pub(crate) fn create_private_ocr_fixture(
         operation,
         out_engine,
         out_error,
-        Some(crate::fixture::ocr_backend()),
-        std::ptr::null(),
+        OcrWiring::Backend(crate::fixture::ocr_backend()),
     )
 }
 
@@ -597,8 +604,7 @@ fn create_inner_with_ocr(
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
     out_error: *mut *mut madopilot_error_t,
-    ocr_backend: Option<Arc<dyn OcrBackend>>,
-    default_ocr: *const madopilot_default_ocr_options_t,
+    ocr_wiring: OcrWiring,
 ) -> madopilot_status_t {
     if let Err(status) =
         // SAFETY: the caller supplies writable, correctly aligned output addresses.
@@ -607,19 +613,17 @@ fn create_inner_with_ocr(
         return status;
     }
     hooks::reach(hooks::Site::Entry);
+    if matches!(&ocr_wiring, OcrWiring::Default(default_ocr) if default_ocr.is_null()) {
+        // SAFETY: `out_error` was validated above and `out_engine` remains
+        // initialized to null.
+        return unsafe { report(out_error, Err(Fault::abi("default_ocr must not be null"))) };
+    }
 
     // SAFETY: `out_error` was validated above.
     unsafe {
         report(
             out_error,
-            build_engine(
-                source,
-                options,
-                operation,
-                out_engine,
-                ocr_backend,
-                default_ocr,
-            ),
+            build_engine(source, options, operation, out_engine, ocr_wiring),
         )
     }
 }
@@ -629,8 +633,7 @@ fn build_engine(
     options: *const madopilot_engine_options_t,
     operation: *const crate::types::madopilot_operation_t,
     out_engine: *mut *mut madopilot_engine_t,
-    ocr_backend: Option<Arc<dyn OcrBackend>>,
-    default_ocr: *const madopilot_default_ocr_options_t,
+    ocr_wiring: OcrWiring,
 ) -> Result<(), Fault> {
     // SAFETY: the caller keeps every structure and handle it named readable and
     // retained for the call.
@@ -641,17 +644,16 @@ fn build_engine(
     let request = unsafe { boundary::read_input::<madopilot_source_t>(source) }?;
     // SAFETY: null selects defaults; otherwise the caller keeps the options readable.
     let diagnostics = unsafe { engine_options(options) }?;
-    let default_ocr = if default_ocr.is_null() {
-        None
-    } else {
-        // SAFETY: the caller keeps the structure and both views readable.
-        Some(unsafe { default_ocr_options(default_ocr) }?)
+    let (ocr_backend, default_ocr) = match ocr_wiring {
+        OcrWiring::None => (None, None),
+        #[cfg(feature = "private-fixture")]
+        OcrWiring::Backend(backend) => (Some(backend), None),
+        OcrWiring::Default(default_ocr) => {
+            // SAFETY: the required non-null structure and both views remain
+            // readable for this synchronous call.
+            (None, Some(unsafe { default_ocr_options(default_ocr) }?))
+        }
     };
-    if ocr_backend.is_some() && default_ocr.is_some() {
-        return Err(Fault::abi(
-            "the private OCR fixture and default OCR constructor are mutually exclusive",
-        ));
-    }
 
     // SAFETY: as above. Fields not selected by the source tag remain unread.
     let fixture_ocr = ocr_backend.is_some();

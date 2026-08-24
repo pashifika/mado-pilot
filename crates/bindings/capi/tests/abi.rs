@@ -311,6 +311,32 @@ fn frozen_abi_1_2_engine_options_remain_exact_and_default_ocr_has_its_own_entry(
     // SAFETY: release gives up the one owned engine reference.
     assert_eq!(unsafe { (api.engine_release)(engine) }, MADOPILOT_STATUS_OK);
 
+    engine = ptr::NonNull::<madopilot_engine_t>::dangling().as_ptr();
+    let mut error = ptr::null_mut();
+    // SAFETY: every non-null input remains live; the required default options
+    // pointer is intentionally null.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_default_ocr)(
+                scene.source(),
+                &options,
+                ptr::null(),
+                &operation,
+                &mut engine,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(
+        engine.is_null(),
+        "the owned output is initialized before refusal"
+    );
+    assert!(!error.is_null(), "the required-input refusal is described");
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.status, MADOPILOT_STATUS_INVALID_ARGUMENT);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
+
     let default_ocr = madopilot_default_ocr_options_t {
         struct_size: struct_size::<madopilot_default_ocr_options_t>(),
         flags: 0,

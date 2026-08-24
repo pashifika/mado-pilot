@@ -260,6 +260,7 @@ dependencies = [
 name = "mado-pilot-backend-onnx"
 version = "0.3.0"
 dependencies = [
+ "libc",
  "libloading",
  "mado-pilot-capture",
  "mado-pilot-core",

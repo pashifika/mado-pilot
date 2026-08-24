@@ -52,6 +52,9 @@ unicode-normalization = "0.1.25"
 # is the reviewed compatibility floor. See
 # docs/adr/0034-onnx-runtime-cpu-loading-boundary.md.
 libloading = "0.8.9"
+# Benchmark-only access to the target-native peak-RSS probe. The crate is
+# already in the lockfile transitively; the direct edge is target-gated below.
+libc = "0.2.189"
 ort = { version = "=2.0.0-rc.13", default-features = false, features = [
     "std",
     "alternative-backend",

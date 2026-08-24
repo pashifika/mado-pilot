@@ -115,11 +115,11 @@
 //!
 //! Phase 1 capture/matching, Phase 2 native input, and Phase 3 one-shot OCR are
 //! reachable here. Replay and native engine requests accept an explicit
-//! `Arc<dyn OcrBackend>`; without one, the engine truthfully exposes no OCR
-//! backend and recognition returns the typed unavailable outcome. Requests name
-//! the exact backend/model descriptor, retained source frame, source region,
-//! output space, and executor-neutral operation context. No ONNX backend is
-//! selected or loaded by default.
+//! `Arc<dyn OcrBackend>`; ordinary constructors without one expose no OCR.
+//! Separate `*_engine_with_default_ocr` constructors load only the accepted
+//! controlled ONNX CPU profile from caller-supplied paths. Requests name the
+//! exact backend/model descriptor, retained source frame, source region, output
+//! space, and executor-neutral operation context.
 //!
 //! Watchers and scheduling are not implemented. No platform-native type is
 //! returned, accepted, or downcast through this API.
@@ -137,13 +137,13 @@
 //! extend is already `#[non_exhaustive]`, so keep a fallback arm. Renaming or
 //! removing one of these names is a breaking change and needs an ADR and a
 //! version bump. The stability promise itself begins at 1.0; this package is
-//! at 0.2.1.
+//! at 0.3.0.
 //!
 //! The C ABI beneath this one is versioned separately. ABI 1.0 and ABI 1.2 are
-//! frozen complete prefixes; ABI 1.3 appends one-shot OCR and immutable owned
-//! results without moving either prefix. ADR 0035 records the OCR ownership,
-//! negotiation, and private-fixture boundary. A Rust rename does not propagate
-//! to the C ABI.
+//! frozen complete prefixes; ABI 1.3 appends one-shot OCR, immutable owned
+//! results, and accepted default construction without moving either prefix.
+//! ADRs 0035 and 0036 record those ownership and negotiation boundaries. A Rust
+//! rename does not propagate to the C ABI.
 //!
 //! # Where to start
 //!
@@ -281,6 +281,13 @@ fn configured_ocr(
     }
 }
 
+fn construction_checkpoint(operation: Option<&OperationContext>) -> Result<()> {
+    match operation.and_then(OperationContext::interruption) {
+        Some(interruption) => Err(interruption.into()),
+        None => Ok(()),
+    }
+}
+
 /// What a replay engine is built from.
 ///
 /// The composition root has no type of its own — [`replay_engine`] is a
@@ -415,6 +422,8 @@ fn replay_engine_inner(
     request: ReplayEngineRequest,
     default_ocr: Option<(&DefaultOcrConfig, &OperationContext)>,
 ) -> Result<Engine> {
+    let operation = default_ocr.map(|(_, operation)| operation);
+    construction_checkpoint(operation)?;
     // Required, not preferred: constructing the backend is what proves this
     // host's OpenCV is usable, and a failure here leaves no engine that could
     // have fallen back to something else.
@@ -425,7 +434,7 @@ fn replay_engine_inner(
     let engine = issuer.engine();
     let capture = ReplayProvider::new(issuer, request.source)?;
 
-    Engine::new_with_options(
+    let engine = Engine::new_with_options(
         EngineWiring {
             engine,
             capture: Arc::new(capture),
@@ -439,7 +448,9 @@ fn replay_engine_inner(
             permission: None,
         },
         RuntimeEngineOptions::new().with_diagnostics(request.diagnostics),
-    )
+    )?;
+    construction_checkpoint(operation)?;
+    Ok(engine)
 }
 
 /// What a native engine is built from.
@@ -564,6 +575,8 @@ fn windows_engine_inner(
     request: NativeEngineRequest,
     default_ocr: Option<(&DefaultOcrConfig, &OperationContext)>,
 ) -> Result<Engine> {
+    let operation = default_ocr.map(|(_, operation)| operation);
+    construction_checkpoint(operation)?;
     let diagnostics = request.diagnostics();
     let limits = request.limits();
 
@@ -579,7 +592,7 @@ fn windows_engine_inner(
         issuer,
     ));
 
-    Engine::new_with_options(
+    let engine = Engine::new_with_options(
         EngineWiring {
             engine,
             capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
@@ -590,7 +603,9 @@ fn windows_engine_inner(
             permission: None,
         },
         RuntimeEngineOptions::new().with_diagnostics(diagnostics),
-    )
+    )?;
+    construction_checkpoint(operation)?;
+    Ok(engine)
 }
 
 /// Builds an engine over native macOS discovery, capture, permissions, and
@@ -641,6 +656,8 @@ fn macos_engine_inner(
     request: NativeEngineRequest,
     default_ocr: Option<(&DefaultOcrConfig, &OperationContext)>,
 ) -> Result<Engine> {
+    let operation = default_ocr.map(|(_, operation)| operation);
+    construction_checkpoint(operation)?;
     let diagnostics = request.diagnostics();
     let limits = request.limits();
 
@@ -651,7 +668,7 @@ fn macos_engine_inner(
     let engine = issuer.engine();
     let provider = Arc::new(mado_pilot_platform_macos::MacosCaptureProvider::new(issuer));
 
-    Engine::new_with_options(
+    let engine = Engine::new_with_options(
         EngineWiring {
             engine,
             capture: Arc::clone(&provider) as Arc<dyn CaptureProvider>,
@@ -665,7 +682,9 @@ fn macos_engine_inner(
             ),
         },
         RuntimeEngineOptions::new().with_diagnostics(diagnostics),
-    )
+    )?;
+    construction_checkpoint(operation)?;
+    Ok(engine)
 }
 
 pub use mado_pilot_runtime::{
@@ -718,3 +737,22 @@ pub use mado_pilot_runtime::{
     HASH_ALGORITHM as ASSET_HASH_ALGORITHM, MANIFEST_PATH as ASSET_MANIFEST_PATH,
     SCHEMA_VERSION as ASSET_SCHEMA_VERSION,
 };
+
+#[cfg(test)]
+mod tests {
+    use super::{CancellationToken, OperationContext, Status, construction_checkpoint};
+
+    #[test]
+    fn default_construction_checkpoint_refuses_a_late_cancellation() {
+        let cancellation = CancellationToken::new();
+        let operation = OperationContext::new().with_cancellation(cancellation.clone());
+        cancellation.cancel();
+
+        assert_eq!(
+            construction_checkpoint(Some(&operation))
+                .expect_err("a cancelled construction cannot publish")
+                .status(),
+            Status::Cancelled
+        );
+    }
+}

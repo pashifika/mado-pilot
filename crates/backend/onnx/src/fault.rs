@@ -223,3 +223,69 @@ impl OnnxBackendFacts {
         self.recognition_batch
     }
 }
+
+/// Cumulative, path-free resource observations for one opened session pair.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct OnnxBackendObservations {
+    mapped_bytes: u64,
+    detector_runs: u64,
+    recognizer_runs: u64,
+    session_pairs: u32,
+    sessions: u32,
+}
+
+impl OnnxBackendObservations {
+    pub(crate) const fn opened() -> Self {
+        Self {
+            mapped_bytes: 0,
+            detector_runs: 0,
+            recognizer_runs: 0,
+            session_pairs: 1,
+            sessions: 2,
+        }
+    }
+
+    pub(crate) fn record_mapping(&mut self, bytes: usize) {
+        self.mapped_bytes = self
+            .mapped_bytes
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn record_detector_run(&mut self) {
+        self.detector_runs = self.detector_runs.saturating_add(1);
+    }
+
+    pub(crate) fn record_recognizer_run(&mut self) {
+        self.recognizer_runs = self.recognizer_runs.saturating_add(1);
+    }
+
+    /// Returns cumulative mapped pixels presented to native inference.
+    #[must_use]
+    pub const fn mapped_bytes(self) -> u64 {
+        self.mapped_bytes
+    }
+
+    /// Returns cumulative detector tensor runs.
+    #[must_use]
+    pub const fn detector_runs(self) -> u64 {
+        self.detector_runs
+    }
+
+    /// Returns cumulative recognizer tensor runs.
+    #[must_use]
+    pub const fn recognizer_runs(self) -> u64 {
+        self.recognizer_runs
+    }
+
+    /// Returns the number of opened detector/recognizer pairs.
+    #[must_use]
+    pub const fn session_pairs(self) -> u32 {
+        self.session_pairs
+    }
+
+    /// Returns the number of opened native sessions.
+    #[must_use]
+    pub const fn sessions(self) -> u32 {
+        self.sessions
+    }
+}

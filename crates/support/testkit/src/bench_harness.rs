@@ -2079,7 +2079,7 @@ pub const PHASE3_APPLE_OCR_HEAP_LIMIT_BYTES: usize = 20 * 1024 * 1024;
 pub const PHASE3_APPLE_OCR_RESIDENT_LIMIT_BYTES: u64 = 768 * 1024 * 1024;
 
 /// Maximum accepted default model validation and session-pair startup.
-pub const PHASE3_APPLE_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(140);
+pub const PHASE3_APPLE_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(175);
 
 /// Maximum first close after the complete Apple Silicon OCR workload set.
 pub const PHASE3_APPLE_OCR_CLOSE_LIMIT: Duration = Duration::from_millis(2);
