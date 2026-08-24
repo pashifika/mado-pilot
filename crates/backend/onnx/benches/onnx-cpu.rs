@@ -99,7 +99,10 @@ fn main() {
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
     let operation = OperationContext::new();
-    let smoke = std::env::args().any(|argument| argument == "--smoke");
+    // `cargo test --all-targets` executes this custom benchmark in the debug
+    // profile. It enforces host-independent oracles/growth only; target timing
+    // belongs exclusively to an optimized qualification process.
+    let smoke = cfg!(debug_assertions) || std::env::args().any(|argument| argument == "--smoke");
     let plan = if smoke {
         Plan::smoke()
     } else {
