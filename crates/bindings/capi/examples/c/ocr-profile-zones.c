@@ -1,5 +1,10 @@
 /* Explicit bounded OCR profile and grouped zones through C ABI 1.4. */
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +17,67 @@ static madopilot_str_t borrow(const char* text)
     view.data = text;
     view.len = strlen(text);
     return view;
+}
+
+static char* controlled_path(const char* path)
+{
+#ifdef _WIN32
+    int source_len = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+    if (source_len == 0) return NULL;
+    wchar_t* source = (wchar_t*)malloc((size_t)source_len * sizeof(wchar_t));
+    if (source == NULL ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1,
+                            source, source_len) == 0) {
+        free(source);
+        return NULL;
+    }
+
+    HANDLE handle = CreateFileW(
+        source, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(source);
+    if (handle == INVALID_HANDLE_VALUE) return NULL;
+
+    const DWORD flags = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS;
+    DWORD final_len = GetFinalPathNameByHandleW(handle, NULL, 0, flags);
+    if (final_len == 0) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    wchar_t* final_path =
+        (wchar_t*)malloc(((size_t)final_len + 1u) * sizeof(wchar_t));
+    if (final_path == NULL) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    DWORD written = GetFinalPathNameByHandleW(
+        handle, final_path, final_len + 1u, flags);
+    CloseHandle(handle);
+    if (written == 0 || written > final_len) {
+        free(final_path);
+        return NULL;
+    }
+
+    int utf8_len = WideCharToMultiByte(
+        CP_UTF8, WC_ERR_INVALID_CHARS, final_path, -1, NULL, 0, NULL, NULL);
+    if (utf8_len == 0) {
+        free(final_path);
+        return NULL;
+    }
+    char* canonical = (char*)malloc((size_t)utf8_len);
+    if (canonical == NULL ||
+        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, final_path, -1,
+                            canonical, utf8_len, NULL, NULL) == 0) {
+        free(final_path);
+        free(canonical);
+        return NULL;
+    }
+    free(final_path);
+    return canonical;
+#else
+    return realpath(path, NULL);
+#endif
 }
 
 static int ok(madopilot_status_t status, const char* call)
@@ -39,6 +105,8 @@ int main(int argc, char** argv)
 {
     const char* model_root = NULL;
     const char* runtime_path = NULL;
+    char* controlled_model_root = NULL;
+    char* controlled_runtime_path = NULL;
     for (int index = 1; index + 1 < argc; index += 2) {
         if (strcmp(argv[index], "--model-root") == 0) {
             model_root = argv[index + 1];
@@ -52,6 +120,16 @@ int main(int argc, char** argv)
         fprintf(stderr, "profile OCR prerequisites are not configured; skipping\n");
         return 77;
     }
+    controlled_model_root = controlled_path(model_root);
+    controlled_runtime_path = controlled_path(runtime_path);
+    if (controlled_model_root == NULL || controlled_runtime_path == NULL) {
+        fprintf(stderr, "profile OCR prerequisites are not canonicalizable\n");
+        free(controlled_model_root);
+        free(controlled_runtime_path);
+        return 1;
+    }
+    model_root = controlled_model_root;
+    runtime_path = controlled_runtime_path;
 
     const madopilot_api_t* api = NULL;
     if (!ok(madopilot_get_api(MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
@@ -59,6 +137,8 @@ int main(int argc, char** argv)
             "madopilot_get_api") ||
         api == NULL ||
         api->struct_size < MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT) {
+        free(controlled_model_root);
+        free(controlled_runtime_path);
         return 1;
     }
 
@@ -179,5 +259,7 @@ cleanup:
     }
     if (targets != NULL) api->target_list_release(targets);
     if (engine != NULL) api->engine_release(engine);
+    free(controlled_model_root);
+    free(controlled_runtime_path);
     return success ? 0 : 1;
 }
