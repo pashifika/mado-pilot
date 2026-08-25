@@ -36,6 +36,7 @@ const SOURCE_ENV: &str = "MADO_PILOT_BOUNDED_SOURCE_REVISION";
 const HOST_ENV: &str = "MADO_PILOT_BOUNDED_HOST_ID";
 const PROCESS_ENV: &str = "MADO_PILOT_BOUNDED_PROCESS_INDEX";
 const HEAP_GROWTH_LIMIT: i64 = 4_096;
+const HEAP_PEAK_LIMIT_BYTES: usize = 20 * 1024 * 1024;
 const DETECTOR_SHA256: &str = "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9";
 const RECOGNIZER_SHA256: &str = "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884";
 const VOCABULARY_SHA256: &str = "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e";
@@ -47,6 +48,7 @@ struct FixtureManifest {
 
 #[derive(Debug, Deserialize)]
 struct FixtureImage {
+    sha256: String,
     file: String,
     width: u32,
     height: u32,
@@ -182,73 +184,47 @@ struct ProfileReport {
     passed: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct TargetLimits {
-    nonempty_p50_ms: f64,
-    nonempty_p95_ms: f64,
-    nonempty_max_ms: f64,
-    empty_p50_ms: f64,
-    empty_p95_ms: f64,
-    empty_max_ms: f64,
-    cold_open_ms: f64,
-    first_close_ms: f64,
-    reopen_close_ms: f64,
-    resident_bytes: u64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunMode {
     Smoke,
     Precursor,
-    EnforceBudgets,
 }
 
 impl RunMode {
     fn from_arguments(arguments: &[String]) -> Self {
         let smoke = arguments.iter().any(|argument| argument == "--smoke");
         let precursor = arguments.iter().any(|argument| argument == "--precursor");
-        let enforce = arguments.iter().any(|argument| argument == "--qualify");
         assert!(
-            usize::from(smoke) + usize::from(precursor) + usize::from(enforce) <= 1,
+            !arguments.iter().any(|argument| argument == "--qualify"),
+            "final budgets are not accepted; run --precursor until the final budget ADR lands"
+        );
+        assert!(
+            usize::from(smoke) + usize::from(precursor) <= 1,
             "select only one benchmark mode"
         );
         if cfg!(debug_assertions) {
-            assert!(
-                !precursor && !enforce,
-                "debug benchmark execution is smoke-only"
-            );
+            assert!(!precursor, "debug benchmark execution is smoke-only");
             return Self::Smoke;
         }
-        if smoke {
-            Self::Smoke
-        } else if enforce {
-            Self::EnforceBudgets
-        } else {
-            Self::Precursor
-        }
+        if smoke { Self::Smoke } else { Self::Precursor }
     }
 
     const fn name(self) -> &'static str {
         match self {
             Self::Smoke => "smoke",
             Self::Precursor => "precursor",
-            Self::EnforceBudgets => "enforce-budgets",
         }
     }
 
     fn plan(self) -> Plan {
         match self {
             Self::Smoke => Plan::smoke(),
-            Self::Precursor | Self::EnforceBudgets => Plan::new(3, 20),
+            Self::Precursor => Plan::new(3, 20),
         }
     }
 
     const fn requires_bound_identity(self) -> bool {
         !matches!(self, Self::Smoke)
-    }
-
-    const fn enforces_budgets(self) -> bool {
-        matches!(self, Self::EnforceBudgets)
     }
 }
 
@@ -310,10 +286,7 @@ fn run_profile(
 ) -> ProfileReport {
     let plan = mode.plan();
     if mode.requires_bound_identity() {
-        assert!(
-            target_limits().is_some(),
-            "qualification requires an approved release target"
-        );
+        require_release_target();
         assert!(
             std::env::var_os(SOURCE_ENV).is_some(),
             "qualification requires exact source identity"
@@ -414,7 +387,7 @@ fn run_profile(
         workloads: workload_reports,
         passed: false,
     };
-    report.passed = report_passes(&report, profile, mode.enforces_budgets());
+    report.passed = report_passes(&report);
     report
 }
 
@@ -679,8 +652,8 @@ fn measure_cancelled(
     }
 }
 
-fn report_passes(report: &ProfileReport, profile: OnnxOcrProfile, enforce_budgets: bool) -> bool {
-    let structural = report.max_concurrent_inferences == 1
+fn report_passes(report: &ProfileReport) -> bool {
+    report.max_concurrent_inferences == 1
         && report.session_pairs == 1
         && report.sessions == 2
         && report.cancellation.status == format!("{:?}", Status::Cancelled)
@@ -689,40 +662,23 @@ fn report_passes(report: &ProfileReport, profile: OnnxOcrProfile, enforce_budget
             workload.incorrect_retained == 0
                 && workload.all_call_failures == 0
                 && workload.growth_bytes <= HEAP_GROWTH_LIMIT
+                && workload.peak_allocated_bytes <= HEAP_PEAK_LIMIT_BYTES
                 && workload.resources.is_some()
-        });
-    if !structural || !enforce_budgets || profile == OnnxOcrProfile::NativeG004 {
-        return structural;
-    }
+        })
+}
 
-    let Some(limits) = target_limits() else {
-        return false;
-    };
-    let timing = report.workloads.iter().all(|workload| {
-        let limits = if workload.name == "bounded_blank_4k" {
-            (
-                limits.empty_p50_ms,
-                limits.empty_p95_ms,
-                limits.empty_max_ms,
-            )
-        } else {
-            (
-                limits.nonempty_p50_ms,
-                limits.nonempty_p95_ms,
-                limits.nonempty_max_ms,
-            )
-        };
-        workload.p50_ms <= limits.0
-            && workload.p95_ms <= limits.1
-            && workload.maximum_ms <= limits.2
-    });
-    timing
-        && report.cold_open_ms <= limits.cold_open_ms
-        && report.first_close_ms <= limits.first_close_ms
-        && report.reopen_close_ms <= limits.reopen_close_ms
-        && report
-            .peak_resident_bytes
-            .is_some_and(|bytes| bytes <= limits.resident_bytes)
+#[cfg(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+))]
+fn require_release_target() {}
+
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+)))]
+fn require_release_target() {
+    panic!("precursor requires one release target");
 }
 
 fn open_profile(
@@ -753,11 +709,11 @@ fn build_workloads(root: &Path, manifest: &FixtureManifest) -> Vec<WorkloadSpec>
     let tooltip = image(manifest, "tooltip-v3.png");
     let mission = image(manifest, "mission.png");
 
-    let hud_mat = load_bgra(&root.join("hud.png"));
-    let menu_mat = load_bgra(&root.join("menu.png"));
-    let status_mat = load_bgra(&root.join("status.png"));
-    let tooltip_mat = load_bgra(&root.join("tooltip-v3.png"));
-    let mission_mat = load_bgra(&root.join("mission.png"));
+    let hud_mat = load_bgra(&root.join("hud.png"), &hud.sha256);
+    let menu_mat = load_bgra(&root.join("menu.png"), &menu.sha256);
+    let status_mat = load_bgra(&root.join("status.png"), &status.sha256);
+    let tooltip_mat = load_bgra(&root.join("tooltip-v3.png"), &tooltip.sha256);
+    let mission_mat = load_bgra(&root.join("mission.png"), &mission.sha256);
 
     let hud_4k_mat = resize_bgra(&hud_mat, 3_840, 2_160, INTER_NEAREST_EXACT);
     let hud_odd_mat = resize_bgra(&hud_mat, 1_001, 563, INTER_LINEAR);
@@ -937,7 +893,12 @@ fn expected_regions(
         .collect()
 }
 
-fn load_bgra(path: &Path) -> Mat {
+fn load_bgra(path: &Path, expected_sha256: &str) -> Mat {
+    assert_eq!(
+        digest_file(path),
+        expected_sha256,
+        "tracked fixture bytes drifted from their manifest"
+    );
     let bgr = imread(path.to_str().expect("UTF-8 fixture path"), IMREAD_COLOR)
         .expect("decode tracked fixture");
     let mut bgra = Mat::default();
@@ -1077,45 +1038,5 @@ fn peak_resident_bytes() -> Option<u64> {
 
 #[cfg(not(any(target_os = "macos", windows)))]
 fn peak_resident_bytes() -> Option<u64> {
-    None
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-fn target_limits() -> Option<TargetLimits> {
-    Some(TargetLimits {
-        nonempty_p50_ms: 600.0,
-        nonempty_p95_ms: 750.0,
-        nonempty_max_ms: 900.0,
-        empty_p50_ms: 175.0,
-        empty_p95_ms: 210.0,
-        empty_max_ms: 300.0,
-        cold_open_ms: 175.0,
-        first_close_ms: 2.0,
-        reopen_close_ms: 100.0,
-        resident_bytes: 768 * 1024 * 1024,
-    })
-}
-
-#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
-fn target_limits() -> Option<TargetLimits> {
-    Some(TargetLimits {
-        nonempty_p50_ms: 900.0,
-        nonempty_p95_ms: 1_000.0,
-        nonempty_max_ms: 1_200.0,
-        empty_p50_ms: 350.0,
-        empty_p95_ms: 425.0,
-        empty_max_ms: 500.0,
-        cold_open_ms: 250.0,
-        first_close_ms: 10.0,
-        reopen_close_ms: 225.0,
-        resident_bytes: 320 * 1024 * 1024,
-    })
-}
-
-#[cfg(not(any(
-    all(target_arch = "aarch64", target_os = "macos"),
-    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
-)))]
-fn target_limits() -> Option<TargetLimits> {
     None
 }

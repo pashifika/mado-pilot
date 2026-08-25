@@ -278,7 +278,7 @@ fn f64_to_u32(value: f64) -> Result<u32, OnnxBackendFault> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BOUNDED_MAX_HEIGHT, BOUNDED_MAX_WIDTH, SelectedProfile};
+    use super::{BOUNDED_MAX_HEIGHT, BOUNDED_MAX_WIDTH, SelectedProfile, round_to_multiple};
     use crate::fault::OnnxBackendFault;
 
     #[test]
@@ -311,6 +311,12 @@ mod tests {
                 plan.tensor_elements() * size_of::<f32>()
             );
         }
+    }
+
+    #[test]
+    fn multiple_of_32_rounding_preserves_ties_to_even_in_both_directions() {
+        assert_eq!(round_to_multiple(752, 32), Ok(768));
+        assert_eq!(round_to_multiple(720, 32), Ok(704));
     }
 
     #[test]

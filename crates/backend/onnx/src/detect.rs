@@ -505,12 +505,14 @@ fn clipper_round(value: f64) -> Result<i64, OnnxBackendFault> {
 fn scale_quad(quad: &Quad, plan: DetectorPlan) -> Result<Quad, OnnxBackendFault> {
     let mut scaled = [Point2f::default(); 4];
     for (destination, point) in scaled.iter_mut().zip(quad) {
-        let x = (f64::from(point.x) * plan.inverse_x())
-            .round_ties_even()
-            .clamp(0.0, f64::from(plan.source_width()));
-        let y = (f64::from(point.y) * plan.inverse_y())
-            .round_ties_even()
-            .clamp(0.0, f64::from(plan.source_height()));
+        let x = (f64::from(point.x) / f64::from(plan.final_width())
+            * f64::from(plan.source_width()))
+        .round_ties_even()
+        .clamp(0.0, f64::from(plan.source_width()));
+        let y = (f64::from(point.y) / f64::from(plan.final_height())
+            * f64::from(plan.source_height()))
+        .round_ties_even()
+        .clamp(0.0, f64::from(plan.source_height()));
         *destination = Point2f::new(f64_to_f32(x)?, f64_to_f32(y)?);
     }
     Ok(scaled)
@@ -642,6 +644,21 @@ mod tests {
         assert_eq!(source_quad[1], Point2f::new(1_000.0, 0.0));
         assert_eq!(source_quad[2], Point2f::new(1_000.0, 562.0));
         assert_eq!(source_quad[3], Point2f::new(0.0, 562.0));
+    }
+
+    #[test]
+    fn inverse_geometry_preserves_released_divide_then_multiply_tie_order() {
+        let plan = DetectorPlan::for_test(1_440, 720, 1_312, 640).unwrap();
+        let detector_quad = [
+            Point2f::new(102.5, 0.0),
+            Point2f::new(103.0, 0.0),
+            Point2f::new(103.0, 1.0),
+            Point2f::new(102.5, 1.0),
+        ];
+
+        let source_quad = scale_quad(&detector_quad, plan).unwrap();
+
+        assert_eq!(source_quad[0].x, 112.0);
     }
 
     #[test]

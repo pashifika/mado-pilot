@@ -850,15 +850,17 @@ and the explicit ADR 0038 bounded profile on identical 4K, wide, extreme-wide,
 checks text/count/order, fixture geometry, same-host confidence, complete source
 and profile identity, final detector dimensions/bytes, one direct resize,
 detector/recognizer runs, mapped bytes, one-pair/two-session topology,
-cancellation, and post-warm live Rust growth before latency can be considered.
+cancellation, at most 20 MiB attributable live Rust heap, and at most 4,096
+post-warm live Rust growth before latency can be considered.
 
-ADR 0039 separates three modes. `smoke` is the target-independent hosted gate.
+ADR 0039 separates three phases. `smoke` is the target-independent hosted gate.
 `precursor` runs three warmups and 20 retained samples in five fresh processes,
 enforces all hard correctness/resource rules, and records timing/RSS without a
-numeric verdict. `enforce-budgets` is reserved for a fresh executable after both
-approved targets have precursor evidence and a final budget ADR. Result count
-does not select a cost class: the 3840×2160 blank workload maps and detects 4K
-input despite returning no regions.
+numeric verdict. The current executable refuses `--qualify`;
+`enforce-budgets` is added to a fresh executable only after both approved
+targets have precursor evidence and a final budget ADR. Result count does not
+select a cost class: the 3840×2160 blank workload maps and detects 4K input
+despite returning no regions.
 
 The first Apple run at source `2782564`, executable SHA-256
 `3a4bb04477b14092c9b3b34153275819684790d072aa1659e44183bafbd1f8b4`,

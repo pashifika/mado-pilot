@@ -477,6 +477,21 @@ mod tests {
         assert_eq!(facts.max_detector_height(), Some(736));
         assert_eq!(facts.max_detector_tensor_bytes(), 11_587_584);
         assert!(!format!("{facts:?}").contains('/'));
+
+        let native = OnnxBackendFacts::accepted(
+            SelectedProfile::NativeG004.preprocessing(),
+            u64::try_from(crate::image::MAX_TENSOR_BYTES).expect("tensor ceiling fits"),
+            u64::try_from(MAX_OUTPUT_BYTES).expect("output ceiling fits"),
+            1000,
+            u32::try_from(RECOGNITION_BATCH).expect("batch ceiling fits"),
+        );
+        assert_eq!(native.profile(), OnnxOcrProfile::NativeG004);
+        assert_eq!(native.max_detector_width(), None);
+        assert_eq!(native.max_detector_height(), None);
+        assert_eq!(
+            native.max_detector_tensor_bytes(),
+            u64::try_from(crate::image::MAX_TENSOR_BYTES).unwrap()
+        );
     }
 
     #[test]

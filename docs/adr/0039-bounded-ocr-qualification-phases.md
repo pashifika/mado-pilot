@@ -15,11 +15,11 @@ The original Phase 3 process established budgets from retained precursor evidenc
 
 ## Decision
 
-The rejected v1 run remains immutable evidence and is not retried, excluded, or relabeled as a pass. Qualification v2 separates three executable modes:
+The rejected v1 run remains immutable evidence and is not retried, excluded, or relabeled as a pass. Qualification v2 separates three phases. The current executable exposes the first two and refuses final enforcement until accepted budgets are committed:
 
 1. `smoke` uses one warmup and three retained samples and enforces target-independent correctness, arithmetic, privacy-safe observations, session topology, cancellation, cleanup, and allocation-growth gates only.
 2. `precursor` uses three warmups and 20 retained samples in each of five fresh processes. It requires exact source, executable, host, fixture, model, and runtime identity and enforces every hard correctness/resource gate, but records target timing and resident memory without a numeric verdict.
-3. `enforce-budgets` uses the same full sample policy in fresh processes after both target precursor records and a final ceiling ADR. It enforces the accepted target-specific numeric budgets in addition to every precursor gate.
+3. `enforce-budgets` is added only after both target precursor records and a final ceiling ADR. It uses the same full sample policy in fresh processes and enforces the accepted target-specific numeric budgets in addition to every precursor gate.
 
 Result cardinality does not select a latency class. Each workload has its own final budget because mapping extent, detector dimensions, candidate count, and recognizer work determine cost. `bounded_blank_4k` remains a 4K detector workload even when it returns no regions.
 
@@ -31,7 +31,7 @@ Before v2 precursor execution, the final budget-selection rule is fixed as follo
 - cold open and reopen-close use 1.25 times the worst observation rounded upward to 25 ms, capped at 175/100 ms on Apple Silicon and 250/225 ms on Windows; exceeding a cap rejects the candidate;
 - first close uses 1.5 times the worst observation rounded upward to 1 ms, with an absolute 10 ms ceiling on both targets;
 - peak resident memory uses 1.25 times the worst target-native observation rounded upward to 16 MiB, capped at 768 MiB on Apple Silicon and 320 MiB on Windows; exceeding a cap rejects the candidate;
-- live Rust growth remains at most 4,096 bytes; detector tensor, output, concurrency, model/session, resize/run, mapping, cancellation, and cleanup bounds are unchanged and receive no numeric relaxation.
+- live Rust growth remains at most 4,096 bytes and attributable live Rust peak remains at most 20 MiB; detector tensor, output, concurrency, model/session, resize/run, mapping, cancellation, and cleanup bounds are unchanged and receive no numeric relaxation.
 
 The final ceiling ADR may choose a smaller rounded ceiling but cannot exceed this rule, omit a process, or change a fixture/oracle. A fresh executable with those constants must then pass five new processes on each approved target.
 
@@ -44,7 +44,7 @@ The final ceiling ADR may choose a smaller rounded ceiling but cannot exceed thi
 
 ## Consequences
 
-The implementation adds an explicit precursor mode and reports its mode in schema version 2. The original schema-version-1 reports remain rejected evidence. Benchmark smoke in CI is unchanged. Support remains withheld until Windows and Apple precursor records pass, a final budget ADR applies the fixed rule, and fresh budget-enforcing runs pass on both targets.
+The implementation adds an explicit precursor mode, refuses `--qualify` before final budgets exist, and reports its selected mode in schema version 2. The original schema-version-1 reports remain rejected evidence. Benchmark smoke in CI is unchanged. Support remains withheld until Windows and Apple precursor records pass, a final budget ADR applies the fixed rule, and fresh budget-enforcing runs pass on both targets.
 
 This decision changes qualification procedure only. It does not change profile identity, detector pixels, expected text/geometry, resource ceilings, runtime/model bytes, defaults, or historical Phase 3 evidence.
 
@@ -52,6 +52,6 @@ This decision changes qualification procedure only. It does not change profile i
 
 - The v1 Apple record retains all five failed process rows and exact source/executable/runtime/fixture identities.
 - `--precursor` requires source, host, and process bindings and emits schema version 2 with `mode = "precursor"`.
-- `--qualify` remains the final budget-enforcing mode; smoke and precursor cannot silently select it.
+- `--qualify` is refused until the final budget ADR and executable constants land; smoke and precursor cannot silently enforce historical values.
 - Review compares the v1 and v2 source diff and requires it to contain only benchmark-mode/reporting procedure plus this ADR/evidence.
 - Final profiles and hard-budget registries are added only after both target precursor records and the final ceiling ADR.

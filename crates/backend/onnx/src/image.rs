@@ -114,6 +114,14 @@ fn detector_tensor_for_plan(
         plan.forward_y(),
         f64::from(plan.final_height()) / f64::from(plan.source_height())
     );
+    debug_assert_eq!(
+        plan.inverse_x(),
+        f64::from(plan.source_width()) / f64::from(plan.final_width())
+    );
+    debug_assert_eq!(
+        plan.inverse_y(),
+        f64::from(plan.source_height()) / f64::from(plan.final_height())
+    );
     let width = usize::try_from(plan.final_width()).map_err(|_| OnnxBackendFault::ResourceLimit)?;
     let height =
         usize::try_from(plan.final_height()).map_err(|_| OnnxBackendFault::ResourceLimit)?;
