@@ -68,6 +68,6 @@ No released native G-004 identifier, default constructor, C ABI/C++ surface, dep
 - Planner tests cover fitted high-area, fitted low-area, reference, odd, small, tie, extreme, exact-rectangle, zero, and overflow cases and assert the secondary byte bound where applicable.
 - The existing fixed direct-pixel and divide-then-multiply inverse-geometry tests remain unchanged.
 - The ignored native backend contract passes both profiles, including zero-tolerance reference HUD geometry, cancellation, recovery, and close races.
-- Exact source `a647ebb` passed five fresh bounded and five fresh native processes on the approved Apple M1 Pro with zero oracle failure/growth, complete RSS, and every formula-derived Apple candidate within its unchanged cap.
+- Exact source `41ffaf8` passed five fresh bounded and five fresh native processes on the approved Apple M1 Pro with zero oracle failure/growth, complete RSS, and every formula-derived Apple candidate within its unchanged cap.
 - Approved Windows fresh precursor and both-target final enforcement remain required under ADR 0039.
 - Frozen Phase 3 evidence paths must remain byte-identical to `dabfc3c27d634e19a073f68aa906712479eb1af2`.
