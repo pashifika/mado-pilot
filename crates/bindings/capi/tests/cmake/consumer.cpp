@@ -38,6 +38,33 @@ int main()
                 build.value().table_size,
                 build.value().library_version.to_string().c_str());
 
+
+    if (api.extent() < MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT ||
+        build.value().bounded_ocr_model.empty() ||
+        build.value().bounded_ocr_profile.empty()) {
+        std::fprintf(stderr, "ABI 1.4 grouped OCR surface is incomplete\n");
+        return 1;
+    }
+    madopilot::OcrProfileOptions profile(
+        MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR, "/controlled/model",
+        "/controlled/runtime");
+    auto profile_projection = profile.to_c();
+    madopilot::ZoneScanOcrRequest zones;
+    zones.model(build.value().bounded_ocr_model.view())
+        .backend(build.value().default_ocr_backend.view(),
+                 build.value().default_ocr_backend_version.view())
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 8, 8})
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 16, 0, 24, 8})
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 16, 8, 24});
+    auto first_projection = zones.to_c();
+    auto second_projection = first_projection;
+    if (profile_projection.value().kind !=
+            MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR ||
+        first_projection.value().zone_count != 3 ||
+        first_projection.value().zones == second_projection.value().zones) {
+        std::fprintf(stderr, "ABI 1.4 projection ownership is incomplete\n");
+        return 1;
+    }
     // One RAII owner, taken and released without a single explicit release call.
     auto cancellation = api.create_cancellation();
     if (!cancellation) {

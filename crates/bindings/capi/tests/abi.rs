@@ -85,6 +85,18 @@ fn a_caller_that_knows_only_the_information_prefix_still_negotiates() {
         borrowed_text(info.default_ocr_profile),
         mado_pilot::ACCEPTED_G004_PROFILE_ID
     );
+    assert_eq!(
+        borrowed_text(info.bounded_ocr_model),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_ID
+    );
+    assert_eq!(
+        borrowed_text(info.bounded_ocr_model_version),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_VERSION
+    );
+    assert_eq!(
+        borrowed_text(info.bounded_ocr_profile),
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID
+    );
 
     let mut nanos = 0_u64;
     // SAFETY: as above.
@@ -351,6 +363,94 @@ fn frozen_abi_1_2_engine_options_remain_exact_and_default_ocr_has_its_own_entry(
                 scene.source(),
                 &options,
                 &default_ocr,
+                &operation,
+                &mut engine,
+                ptr::null_mut(),
+            )
+        },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(engine.is_null());
+}
+
+#[test]
+fn explicit_ocr_profile_entry_initializes_outputs_and_validates_kind_before_paths() {
+    let api = table();
+    let scene = Scene::new();
+    let operation = operation();
+    let options = madopilot_engine_options_t {
+        struct_size: struct_size::<madopilot_engine_options_t>(),
+        flags: 0,
+        diagnostic_level: MADOPILOT_DIAGNOSTIC_LEVEL_OFF,
+        diagnostic_capacity: 0,
+    };
+    let mut engine = ptr::NonNull::<madopilot_engine_t>::dangling().as_ptr();
+    let mut error = ptr::null_mut();
+
+    // SAFETY: outputs are writable; null is the intentional required-input case.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_ocr_profile)(
+                scene.source(),
+                &options,
+                ptr::null(),
+                &operation,
+                &mut engine,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(engine.is_null());
+    assert!(!error.is_null());
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
+
+    let unreadable = madopilot_str_t {
+        data: ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+        len: 1,
+    };
+    let mut profile = madopilot_ocr_profile_options_t {
+        struct_size: struct_size::<madopilot_ocr_profile_options_t>(),
+        flags: 0,
+        kind: 99,
+        reserved: 0,
+        model_root: unreadable,
+        runtime_path: unreadable,
+    };
+    engine = ptr::NonNull::<madopilot_engine_t>::dangling().as_ptr();
+    error = ptr::null_mut();
+    // SAFETY: the closed kind is validated before either deliberately
+    // unreadable path view, and outputs are writable.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_ocr_profile)(
+                scene.source(),
+                &options,
+                &profile,
+                &operation,
+                &mut engine,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(engine.is_null());
+    assert!(!error.is_null());
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
+
+    profile.kind = MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR;
+    profile.model_root = madopilot_str_t::empty();
+    profile.runtime_path = madopilot_str_t::empty();
+    engine = ptr::null_mut();
+    // SAFETY: the complete profile and empty readable views remain live.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_ocr_profile)(
+                scene.source(),
+                &options,
+                &profile,
                 &operation,
                 &mut engine,
                 ptr::null_mut(),
@@ -2118,6 +2218,9 @@ fn build_info() -> madopilot_build_info_t {
         default_ocr_model: madopilot_str_t::empty(),
         default_ocr_model_version: madopilot_str_t::empty(),
         default_ocr_profile: madopilot_str_t::empty(),
+        bounded_ocr_model: madopilot_str_t::empty(),
+        bounded_ocr_model_version: madopilot_str_t::empty(),
+        bounded_ocr_profile: madopilot_str_t::empty(),
     }
 }
 

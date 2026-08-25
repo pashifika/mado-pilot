@@ -48,6 +48,7 @@ const FROZEN_LAYOUT: [(&str, &str); 2] = [
 const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_engine_options_t", 16),
     ("madopilot_default_ocr_options_t", 40),
+    ("madopilot_ocr_profile_options_t", 48),
     ("madopilot_engine_capabilities_t", 8),
     ("madopilot_permission_t", 16),
     ("madopilot_input_capability_t", 28),
@@ -81,7 +82,11 @@ const MANDATORY: &[(&str, usize)] = &[
     ("madopilot_match_t", 56),
     ("madopilot_result_info_t", 72),
     ("madopilot_ocr_request_t", 76),
+    ("madopilot_ocr_zone_t", 32),
+    ("madopilot_ocr_zone_scan_request_t", 104),
     ("madopilot_ocr_result_info_t", 168),
+    ("madopilot_ocr_zone_scan_result_info_t", 176),
+    ("madopilot_ocr_zone_result_t", 40),
     ("madopilot_ocr_region_t", 80),
     ("madopilot_package_info_t", 64),
     ("madopilot_template_info_t", 64),
@@ -180,6 +185,14 @@ const TABLE_ORDER: &[&str] = &[
     "ocr_result_region_at",
     "ocr_result_text_at",
     "engine_create_with_default_ocr",
+    "engine_create_with_ocr_profile",
+    "session_scan_ocr_zones",
+    "ocr_zone_scan_result_retain",
+    "ocr_zone_scan_result_release",
+    "ocr_zone_scan_result_info",
+    "ocr_zone_scan_result_zone_at",
+    "ocr_zone_scan_result_region_at",
+    "ocr_zone_scan_result_text_at",
 ];
 
 fn find(name: &str) -> &'static TypeLayout {
@@ -377,13 +390,21 @@ fn the_function_table_keeps_its_abi_major_one_order() {
         "the accepted ABI 1.2 table extent is frozen"
     );
 
-    let ocr = &table.fields[phase_1_2_start + 21..];
+    let abi_1_3 = &table.fields[phase_1_2_start + 21..phase_1_2_start + 28];
     assert_eq!(
-        ocr.iter().map(|field| field.offset).collect::<Vec<_>>(),
+        abi_1_3.iter().map(|field| field.offset).collect::<Vec<_>>(),
         [592, 600, 608, 616, 624, 632, 640],
         "ABI 1.3 appends OCR and its default composition after the complete 1.2 extent"
     );
-    assert_eq!(table.size, 648, "ABI 1.3 table extent is frozen");
+    assert_eq!(MADOPILOT_API_SIZE_1_3, 648, "ABI 1.3 extent is frozen");
+
+    let abi_1_4 = &table.fields[phase_1_2_start + 28..];
+    assert_eq!(
+        abi_1_4.iter().map(|field| field.offset).collect::<Vec<_>>(),
+        [648, 656, 664, 672, 680, 688, 696, 704],
+        "ABI 1.4 appends explicit profile and grouped OCR after the complete 1.3 extent"
+    );
+    assert_eq!(table.size, 712, "ABI 1.4 table extent is fixed");
 }
 
 #[test]

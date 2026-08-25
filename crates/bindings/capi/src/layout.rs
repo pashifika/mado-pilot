@@ -21,7 +21,7 @@ use crate::engine::{madopilot_engine_t, madopilot_target_list_t};
 use crate::error::madopilot_error_t;
 use crate::input::madopilot_input_receipt_t;
 use crate::matching::madopilot_result_t;
-use crate::ocr::madopilot_ocr_result_t;
+use crate::ocr::{madopilot_ocr_result_t, madopilot_ocr_zone_scan_result_t};
 use crate::operation::madopilot_cancellation_t;
 use crate::table::madopilot_api_t;
 use crate::types::{
@@ -32,11 +32,13 @@ use crate::types::{
     madopilot_input_capability_t, madopilot_input_descriptor_t, madopilot_input_event_t,
     madopilot_input_open_request_t, madopilot_input_receipt_info_t, madopilot_input_request_t,
     madopilot_map_request_t, madopilot_match_options_t, madopilot_match_t, madopilot_ocr_point_t,
-    madopilot_ocr_region_t, madopilot_ocr_request_t, madopilot_ocr_requested_region_t,
-    madopilot_ocr_result_info_t, madopilot_open_request_t, madopilot_operation_t,
-    madopilot_package_info_t, madopilot_package_source_t, madopilot_permission_t,
-    madopilot_pixel_rect_t, madopilot_replay_frame_t, madopilot_result_info_t,
-    madopilot_session_info_t, madopilot_source_t, madopilot_target_t, madopilot_template_info_t,
+    madopilot_ocr_profile_options_t, madopilot_ocr_region_t, madopilot_ocr_request_t,
+    madopilot_ocr_requested_region_t, madopilot_ocr_result_info_t, madopilot_ocr_zone_result_t,
+    madopilot_ocr_zone_scan_request_t, madopilot_ocr_zone_scan_result_info_t, madopilot_ocr_zone_t,
+    madopilot_open_request_t, madopilot_operation_t, madopilot_package_info_t,
+    madopilot_package_source_t, madopilot_permission_t, madopilot_pixel_rect_t,
+    madopilot_replay_frame_t, madopilot_result_info_t, madopilot_session_info_t,
+    madopilot_source_t, madopilot_target_t, madopilot_template_info_t,
 };
 use crate::view::{madopilot_bytes_t, madopilot_str_t};
 
@@ -101,6 +103,15 @@ pub const LAYOUT: &[TypeLayout] = &[
         runtime_path,
     ),
     measure!(
+        madopilot_ocr_profile_options_t,
+        struct_size,
+        flags,
+        kind,
+        reserved,
+        model_root,
+        runtime_path,
+    ),
+    measure!(
         madopilot_diagnostic_batch_info_t,
         struct_size,
         flags,
@@ -160,6 +171,16 @@ pub const LAYOUT: &[TypeLayout] = &[
         ocr_requested_region,
         ocr_elapsed_nanos,
         ocr_source_pixels,
+        ocr_source_envelope,
+        ocr_grouped_reserved,
+        ocr_zone_count,
+        ocr_unique_candidate_count,
+        ocr_membership_count,
+        ocr_result_bytes,
+        ocr_detector_runs,
+        ocr_recognizer_runs,
+        ocr_detector_bytes,
+        ocr_recognizer_bytes,
     ),
     measure!(
         madopilot_permission_t,
@@ -285,6 +306,9 @@ pub const LAYOUT: &[TypeLayout] = &[
         default_ocr_model,
         default_ocr_model_version,
         default_ocr_profile,
+        bounded_ocr_model,
+        bounded_ocr_model_version,
+        bounded_ocr_profile,
     ),
     measure!(
         madopilot_operation_t,
@@ -419,6 +443,28 @@ pub const LAYOUT: &[TypeLayout] = &[
         region,
     ),
     measure!(
+        madopilot_ocr_zone_t,
+        struct_size,
+        flags,
+        region,
+        clip_policy,
+    ),
+    measure!(
+        madopilot_ocr_zone_scan_request_t,
+        struct_size,
+        flags,
+        frame,
+        package,
+        model_id,
+        backend_id,
+        backend_version,
+        output_space,
+        reserved,
+        zones,
+        zone_count,
+        zone_stride,
+    ),
+    measure!(
         madopilot_ocr_result_info_t,
         struct_size,
         flags,
@@ -432,6 +478,30 @@ pub const LAYOUT: &[TypeLayout] = &[
         model_id,
         model_version,
         profile_id,
+    ),
+    measure!(
+        madopilot_ocr_zone_scan_result_info_t,
+        struct_size,
+        flags,
+        source,
+        source_envelope,
+        output_space,
+        zone_count,
+        unique_candidate_count,
+        membership_count,
+        backend_id,
+        backend_version,
+        model_id,
+        model_version,
+        profile_id,
+    ),
+    measure!(
+        madopilot_ocr_zone_result_t,
+        struct_size,
+        flags,
+        effective_zone,
+        reserved,
+        region_count,
     ),
     measure!(
         madopilot_ocr_region_t,
@@ -580,6 +650,14 @@ pub const LAYOUT: &[TypeLayout] = &[
         ocr_result_region_at,
         ocr_result_text_at,
         engine_create_with_default_ocr,
+        engine_create_with_ocr_profile,
+        session_scan_ocr_zones,
+        ocr_zone_scan_result_retain,
+        ocr_zone_scan_result_release,
+        ocr_zone_scan_result_info,
+        ocr_zone_scan_result_zone_at,
+        ocr_zone_scan_result_region_at,
+        ocr_zone_scan_result_text_at,
     ),
 ];
 
@@ -610,6 +688,7 @@ pub const HANDLE_POINTERS: &[TypeLayout] = &[
     handle!(madopilot_mapping_t),
     handle!(madopilot_result_t),
     handle!(madopilot_ocr_result_t),
+    handle!(madopilot_ocr_zone_scan_result_t),
     handle!(madopilot_input_receipt_t),
     handle!(madopilot_diagnostic_reader_t),
     handle!(madopilot_diagnostic_batch_t),

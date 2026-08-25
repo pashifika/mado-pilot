@@ -35,21 +35,30 @@
 /* ---------------------------------------------------------------------------
  * A starvable allocator
  *
- * One check needs an allocation to fail, because the wrapper's one documented
- * exception comes from copying owned error text and the release on that path
- * cannot be observed any other way. The replacement forwards to malloc unless a
- * check has armed it, so every other allocation in the program behaves as it
- * did. It is armed around a single call and disarmed before anything reports.
+ * Checks need allocations to fail either immediately or after one successful
+ * allocation. They cover owned error-text cleanup and the strong exception
+ * guarantee of C-record projections. The replacement forwards to malloc unless
+ * a check has armed it, so every other allocation behaves normally. Each check
+ * disarms it before reporting.
  * ------------------------------------------------------------------------ */
 
 namespace {
 bool starve_allocations = false;
+std::atomic<int> allocations_before_failure{-1};
 }
 
 void* operator new(std::size_t size)
 {
     if (starve_allocations) {
         throw std::bad_alloc();
+    }
+    const int remaining =
+        allocations_before_failure.load(std::memory_order_relaxed);
+    if (remaining == 0) {
+        throw std::bad_alloc();
+    }
+    if (remaining > 0) {
+        allocations_before_failure.fetch_sub(1, std::memory_order_relaxed);
     }
     // Zero bytes still has to yield a distinct address, which malloc is allowed
     // to refuse to provide.
@@ -92,6 +101,8 @@ static_assert(is_move_only_owner<madopilot::Frame>(), "Frame is move-only");
 static_assert(is_move_only_owner<madopilot::Mapping>(), "Mapping is move-only");
 static_assert(is_move_only_owner<madopilot::MatchResult>(), "MatchResult is move-only");
 static_assert(is_move_only_owner<madopilot::OcrResult>(), "OcrResult is move-only");
+static_assert(is_move_only_owner<madopilot::ZoneScanOcrResult>(),
+              "ZoneScanOcrResult is move-only");
 static_assert(is_move_only_owner<madopilot::InputReceipt>(),
               "InputReceipt is move-only");
 static_assert(is_move_only_owner<madopilot::DiagnosticReader>(),
@@ -140,6 +151,14 @@ struct reads_ocr_text : std::false_type {};
 template <class T>
 struct reads_ocr_text<T, std::void_t<decltype(std::declval<T>().text_at(0))>>
     : std::true_type {};
+template <class T, class = void>
+struct reads_zone_ocr_text : std::false_type {};
+
+template <class T>
+struct reads_zone_ocr_text<
+    T, std::void_t<decltype(std::declval<T>().text_at(0, 0))>>
+    : std::true_type {};
+
 
 template <class T, class = void>
 struct indexes : std::false_type {};
@@ -174,6 +193,14 @@ static_assert(reads_ocr_text<madopilot::OcrResult&>::value,
               "a named OCR result exposes borrowed text");
 static_assert(!reads_ocr_text<madopilot::OcrResult>::value,
               "a temporary OCR result cannot expose borrowed text");
+static_assert(describes<madopilot::ZoneScanOcrResult&>::value,
+              "a named grouped OCR result describes itself");
+static_assert(!describes<madopilot::ZoneScanOcrResult>::value,
+              "a temporary grouped OCR result exposes no borrowed description");
+static_assert(reads_zone_ocr_text<madopilot::ZoneScanOcrResult&>::value,
+              "a named grouped OCR result exposes borrowed text");
+static_assert(!reads_zone_ocr_text<madopilot::ZoneScanOcrResult>::value,
+              "a temporary grouped OCR result cannot expose borrowed text");
 static_assert(indexes<madopilot::TargetList&>::value, "a named target list is indexable");
 static_assert(!indexes<madopilot::TargetList>::value, "a temporary target list is not");
 static_assert(probes_permission<madopilot::Engine&>::value,
@@ -188,6 +215,13 @@ static_assert(std::is_copy_constructible_v<madopilot::EngineOptions>,
               "EngineOptions is a value");
 static_assert(std::is_copy_constructible_v<madopilot::DefaultOcrOptions>,
               "DefaultOcrOptions owns both controlled paths");
+static_assert(std::is_copy_constructible_v<madopilot::OcrProfileOptions>,
+              "OcrProfileOptions owns both controlled paths");
+static_assert(std::is_copy_constructible_v<madopilot::OcrProfileOptions::CView>,
+              "each profile C projection repairs its own paths after copy");
+static_assert(
+    std::is_nothrow_move_constructible_v<madopilot::OcrProfileOptions::CView>,
+    "profile C projection move repairs views without throwing");
 static_assert(std::is_copy_constructible_v<madopilot::FindRequest>,
               "FindRequest is a value");
 static_assert(std::is_copy_constructible_v<madopilot::OcrRequest>,
@@ -196,6 +230,15 @@ static_assert(std::is_copy_constructible_v<madopilot::OcrRequest::CView>,
               "each OCR C projection repairs its own views after copy");
 static_assert(std::is_nothrow_move_constructible_v<madopilot::OcrRequest::CView>,
               "OCR C projection move repairs views without throwing");
+static_assert(std::is_copy_constructible_v<madopilot::ZoneScanOcrRequest>,
+              "ZoneScanOcrRequest owns identities and zones");
+static_assert(
+    std::is_copy_constructible_v<madopilot::ZoneScanOcrRequest::CView>,
+    "each grouped OCR C projection repairs strings and zones after copy");
+static_assert(
+    std::is_nothrow_move_constructible_v<
+        madopilot::ZoneScanOcrRequest::CView>,
+    "grouped OCR C projection move repairs views without throwing");
 static_assert(std::is_copy_constructible_v<madopilot::Source>, "Source is a value");
 static_assert(std::is_copy_constructible_v<madopilot::InputOpenRequest>,
               "InputOpenRequest is a value");
@@ -1542,6 +1585,201 @@ void ocr_request_projections_rebind_after_every_copy_and_move(Fixture&)
           "concurrent immutable projections have distinct stable C records");
 }
 
+void profile_and_zone_projections_rebind_after_every_copy_and_move(
+    Fixture& fixture)
+{
+    const std::string model_root(96, 'r');
+    const std::string runtime_path(96, 't');
+    madopilot::OcrProfileOptions profile(
+        MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR, model_root, runtime_path);
+    auto profile_original = profile.to_c();
+    auto profile_copied = profile_original;
+    madopilot::OcrProfileOptions::CView profile_copy_assigned(profile);
+    profile_copy_assigned = profile_original;
+    auto profile_moved = std::move(profile_copy_assigned);
+    madopilot::OcrProfileOptions::CView profile_move_assigned(profile);
+    profile_move_assigned = std::move(profile_copied);
+    check(profile_copy_assigned.value().model_root.data !=
+                  profile_moved.value().model_root.data &&
+              profile_copy_assigned.value().runtime_path.data !=
+                  profile_moved.value().runtime_path.data,
+          "profile move construction rebinds the moved-from projection");
+    check(profile_copied.value().model_root.data !=
+                  profile_move_assigned.value().model_root.data &&
+              profile_copied.value().runtime_path.data !=
+                  profile_move_assigned.value().runtime_path.data,
+          "profile move assignment rebinds the moved-from projection");
+    profile = madopilot::OcrProfileOptions(
+        MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR, "mutated", "mutated");
+
+    const auto equals = [](madopilot_str_t view, const std::string& expected) {
+        return std::string_view(view.data, view.len) == expected;
+    };
+    check(equals(profile_original.value().model_root, model_root) &&
+              equals(profile_moved.value().runtime_path, runtime_path) &&
+              equals(profile_move_assigned.value().model_root, model_root),
+          "profile projections own path values after source mutation");
+    check(profile_original.value().model_root.data !=
+                  profile_moved.value().model_root.data &&
+              profile_original.value().runtime_path.data !=
+                  profile_move_assigned.value().runtime_path.data,
+          "profile copy and move rebind both path views");
+
+    const std::string model(96, 'm');
+    const std::string backend(96, 'b');
+    const std::string version(96, 'v');
+    madopilot::ZoneScanOcrRequest request;
+    request.frame(fixture.frame)
+        .package(fixture.package)
+        .model(model)
+        .backend(backend, version);
+    for (std::int32_t index = 0; index < 8; ++index) {
+        request.zone(madopilot::Rect{
+            MADOPILOT_SPACE_CAPTURE_PIXELS, index * 10, 0, index * 10 + 8, 8});
+    }
+
+    auto original = request.to_c();
+    auto copied = original;
+    madopilot::ZoneScanOcrRequest::CView copy_assigned(request);
+    copy_assigned = original;
+    auto moved = std::move(copy_assigned);
+    madopilot::ZoneScanOcrRequest::CView move_assigned(request);
+    move_assigned = std::move(copied);
+    check(copy_assigned.value().zones != moved.value().zones &&
+              copy_assigned.value().zone_stride ==
+                  sizeof(madopilot_ocr_zone_t) &&
+              (copy_assigned.value().zone_count == 0 ||
+               copy_assigned.value().zones != nullptr) &&
+              copy_assigned.value().model_id.data !=
+                  moved.value().model_id.data,
+          "zone move construction rebinds the moved-from projection");
+    check(copied.value().zones != move_assigned.value().zones &&
+              copied.value().zone_stride == sizeof(madopilot_ocr_zone_t) &&
+              (copied.value().zone_count == 0 ||
+               copied.value().zones != nullptr) &&
+              copied.value().backend_id.data !=
+                  move_assigned.value().backend_id.data,
+          "zone move assignment rebinds the moved-from projection");
+    request.clear_zones().model("mutated").backend("mutated", "mutated");
+
+    check(original.value().zone_count == 8 && moved.value().zone_count == 8 &&
+              move_assigned.value().zone_count == 8,
+          "copy and move preserve all eight zone records");
+    check(original.value().zone_stride == sizeof(madopilot_ocr_zone_t) &&
+              moved.value().zone_stride == sizeof(madopilot_ocr_zone_t),
+          "every projection repairs the exact zone stride");
+    check(original.value().zones != moved.value().zones &&
+              original.value().zones != move_assigned.value().zones &&
+              moved.value().zones != move_assigned.value().zones,
+          "each grouped projection owns distinct zone storage");
+    check(equals(original.value().model_id, model) &&
+              equals(moved.value().backend_id, backend) &&
+              equals(move_assigned.value().backend_version, version),
+          "grouped projections own identity strings after source mutation");
+    check(original.value().model_id.data != moved.value().model_id.data &&
+              original.value().backend_id.data !=
+                  move_assigned.value().backend_id.data,
+          "grouped copy and move rebind every identity view");
+    check(original.value().zones[7].region.left == 70 &&
+              original.value().zones[7].region.right == 78,
+          "zone geometry remains caller ordered after projection moves");
+
+    auto first = original;
+    auto second = original;
+    std::atomic<bool> both_valid{true};
+    std::thread one([&] {
+        both_valid.store(
+            first.value().zones != nullptr && first.value().zone_count == 8 &&
+                equals(first.value().model_id, model),
+            std::memory_order_release);
+    });
+    std::thread two([&] {
+        if (second.value().zones == nullptr ||
+            second.value().zone_count != 8 ||
+            !equals(second.value().backend_version, version)) {
+            both_valid.store(false, std::memory_order_release);
+        }
+    });
+    one.join();
+    two.join();
+    check(both_valid.load(std::memory_order_acquire) &&
+              first.value().zones != second.value().zones &&
+              first.value().model_id.data != second.value().model_id.data,
+          "concurrent grouped projections own distinct stable C records");
+}
+
+void projection_copy_assignment_preserves_the_destination_on_allocation_failure(
+    Fixture&)
+{
+    const std::string old_model_root(96, 'o');
+    const std::string old_runtime_path(96, 'p');
+    const std::string new_model_root(192, 'r');
+    const std::string new_runtime_path(192, 't');
+    madopilot::OcrProfileOptions old_profile(
+        MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR, old_model_root,
+        old_runtime_path);
+    madopilot::OcrProfileOptions new_profile(
+        MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR, new_model_root,
+        new_runtime_path);
+    auto profile_destination = old_profile.to_c();
+    const auto profile_source = new_profile.to_c();
+
+    bool profile_threw = false;
+    allocations_before_failure.store(1, std::memory_order_relaxed);
+    try {
+        profile_destination = profile_source;
+    } catch (const std::bad_alloc&) {
+        profile_threw = true;
+    }
+    allocations_before_failure.store(-1, std::memory_order_relaxed);
+
+    const auto equals = [](madopilot_str_t view, const std::string& expected) {
+        return std::string_view(view.data, view.len) == expected;
+    };
+    check(profile_threw &&
+              equals(profile_destination.value().model_root, old_model_root) &&
+              equals(profile_destination.value().runtime_path, old_runtime_path),
+          "profile copy assignment leaves its C projection unchanged on bad_alloc");
+
+    const std::string old_model(96, 'm');
+    const std::string old_backend(96, 'b');
+    const std::string old_version(96, 'v');
+    const std::string new_model(192, 'M');
+    const std::string new_backend(192, 'B');
+    const std::string new_version(192, 'V');
+    madopilot::ZoneScanOcrRequest old_request;
+    old_request.model(old_model)
+        .backend(old_backend, old_version)
+        .zone(madopilot::Rect{MADOPILOT_SPACE_CAPTURE_PIXELS, 1, 2, 3, 4});
+    madopilot::ZoneScanOcrRequest new_request;
+    new_request.model(new_model).backend(new_backend, new_version);
+    for (std::int32_t index = 0; index < 8; ++index) {
+        new_request.zone(madopilot::Rect{
+            MADOPILOT_SPACE_CAPTURE_PIXELS, index, 0, index + 1, 1});
+    }
+    auto request_destination = old_request.to_c();
+    const auto request_source = new_request.to_c();
+
+    bool request_threw = false;
+    allocations_before_failure.store(1, std::memory_order_relaxed);
+    try {
+        request_destination = request_source;
+    } catch (const std::bad_alloc&) {
+        request_threw = true;
+    }
+    allocations_before_failure.store(-1, std::memory_order_relaxed);
+
+    check(request_threw &&
+              equals(request_destination.value().model_id, old_model) &&
+              equals(request_destination.value().backend_id, old_backend) &&
+              equals(request_destination.value().backend_version, old_version) &&
+              request_destination.value().zone_count == 1 &&
+              request_destination.value().zones != nullptr &&
+              request_destination.value().zones[0].region.left == 1 &&
+              request_destination.value().zones[0].region.bottom == 4,
+          "zone copy assignment leaves its C projection unchanged on bad_alloc");
+}
+
 madopilot::Result<madopilot::Session> prefix_session(
     madopilot::Api& api, Fixture& fixture, std::string_view name)
 {
@@ -1567,7 +1805,7 @@ madopilot::Result<madopilot::Session> prefix_session(
     return engine.open_session(targets, 0, open, fixture.operation);
 }
 
-void abi_1_2_and_partial_1_3_extents_hide_ocr(Fixture& fixture)
+void old_and_partial_extents_hide_ocr_before_missing_entries(Fixture& fixture)
 {
     auto old_loaded = madopilot::Api::load(
         MADOPILOT_ABI_MAJOR, 2,
@@ -1604,6 +1842,99 @@ void abi_1_2_and_partial_1_3_extents_hide_ocr(Fixture& fixture)
     check(!partial_refusal &&
               partial_refusal.status() == MADOPILOT_STATUS_UNSUPPORTED,
           "partial ABI 1.3 refuses OCR before reading a missing owner entry");
+
+    madopilot::ReplayFrame supplied;
+    supplied.extent(SCENE_WIDTH, SCENE_HEIGHT)
+        .format(MADOPILOT_PIXEL_FORMAT_RGBA8)
+        .continuity(MADOPILOT_CONTINUITY_CONTINUOUS)
+        .pixels(fixture.scene.data(), fixture.scene.size());
+    auto source = madopilot::Source::replay_memory("partial-abi-1.4-profile");
+    source.frame(supplied);
+    madopilot::EngineOptions options;
+    madopilot::OcrProfileOptions profile(
+        MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR, "", "");
+
+    auto no_profile_entry_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR);
+    if (!check_ok(no_profile_entry_loaded,
+                  "load the complete ABI 1.3 extent")) {
+        return;
+    }
+    madopilot::Api no_profile_entry_api = no_profile_entry_loaded.take();
+    const auto no_profile_entry =
+        no_profile_entry_api.create_engine_with_ocr_profile(
+            source, options, profile, fixture.operation);
+    check(!no_profile_entry &&
+              no_profile_entry.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "complete ABI 1.3 refuses profile construction before its entry");
+
+    auto profile_entry_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROFILE);
+    if (!check_ok(profile_entry_loaded,
+                  "load the complete profile-construction entry")) {
+        return;
+    }
+    madopilot::Api profile_entry_api = profile_entry_loaded.take();
+    const auto current_profile_call =
+        profile_entry_api.create_engine_with_ocr_profile(
+            source, options, profile, fixture.operation);
+    check(!current_profile_call &&
+              current_profile_call.status() ==
+                  MADOPILOT_STATUS_INVALID_ARGUMENT,
+          "complete profile entry reaches C validation rather than fallback");
+
+    auto partial_zone_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_SESSION_SCAN_OCR_ZONES);
+    if (!check_ok(partial_zone_loaded,
+                  "load a grouped scan without its owner suffix")) {
+        return;
+    }
+    madopilot::Api partial_zone_api = partial_zone_loaded.take();
+    auto partial_zone_session_result =
+        prefix_session(partial_zone_api, fixture, "partial-abi-1.4-zone");
+    if (!check_ok(partial_zone_session_result,
+                  "open through partial ABI 1.4")) {
+        return;
+    }
+    madopilot::Session partial_zone_session =
+        partial_zone_session_result.take();
+    madopilot::ZoneScanOcrRequest zone_request;
+    const auto partial_zone_refusal =
+        partial_zone_session.scan_ocr_zones(zone_request, fixture.operation);
+    check(!partial_zone_refusal &&
+              partial_zone_refusal.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "partial ABI 1.4 refuses grouped OCR before a missing owner entry");
+
+    auto final_partial_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_REGION_AT);
+    if (!check_ok(final_partial_loaded,
+                  "load ABI 1.4 through the final incomplete owner extent")) {
+        return;
+    }
+    madopilot::Api final_partial_api = final_partial_loaded.take();
+    auto final_partial_session_result =
+        prefix_session(final_partial_api, fixture, "final-partial-abi-1.4-zone");
+    if (!check_ok(final_partial_session_result,
+                  "open through the final incomplete ABI 1.4 extent")) {
+        return;
+    }
+    madopilot::Session final_partial_session =
+        final_partial_session_result.take();
+    const auto final_partial_refusal =
+        final_partial_session.scan_ocr_zones(zone_request, fixture.operation);
+    check(!final_partial_refusal &&
+              final_partial_refusal.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "the 704-byte ABI 1.4 extent refuses grouped OCR before text_at");
+
+    const auto current_zone_call =
+        fixture.session.scan_ocr_zones(zone_request, fixture.operation);
+    check(!current_zone_call &&
+              current_zone_call.status() == MADOPILOT_STATUS_INVALID_ARGUMENT,
+          "complete ABI 1.4 reaches grouped request validation");
 }
 void run(const char* name, void (*test)(Fixture&), Fixture& fixture)
 {
@@ -1676,8 +2007,14 @@ int main(int argc, char** argv)
 
     run("OCR request projections rebind after copy and move",
         ocr_request_projections_rebind_after_every_copy_and_move, fixture);
-    run("ABI 1.2 and partial ABI 1.3 extents hide OCR",
-        abi_1_2_and_partial_1_3_extents_hide_ocr, fixture);
+    run("profile and zone projections rebind after copy and move",
+        profile_and_zone_projections_rebind_after_every_copy_and_move,
+        fixture);
+    run("projection copy assignment preserves its destination on bad_alloc",
+        projection_copy_assignment_preserves_the_destination_on_allocation_failure,
+        fixture);
+    run("old and partial extents hide OCR before missing entries",
+        old_and_partial_extents_hide_ocr_before_missing_entries, fixture);
     if (failures != 0) {
         std::printf("%d C++ ownership check(s) failed\n", failures);
         return 1;

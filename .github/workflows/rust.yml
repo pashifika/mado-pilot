@@ -273,13 +273,17 @@ jobs:
         shell: bash
         run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
 
-      - name: Test the integrated default OCR facade
+      - name: Test the integrated default and bounded OCR facade
         shell: bash
         run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
 
       - name: Run the integrated default OCR Rust example
         shell: bash
         run: cargo run --locked --package mado-pilot --example ocr-default
+
+      - name: Run the explicit bounded-profile zone OCR Rust example
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profile-zones
 
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware
@@ -474,13 +478,17 @@ jobs:
         shell: bash
         run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
 
-      - name: Test the integrated default OCR facade
+      - name: Test the integrated default and bounded OCR facade
         shell: bash
         run: cargo test --locked --package mado-pilot --test ocr_public_surface default_ocr_profile_runs_full_and_bounded_replay_regions -- --ignored --nocapture
 
       - name: Run the integrated default OCR Rust example
         shell: bash
         run: cargo run --locked --package mado-pilot --example ocr-default
+
+      - name: Run the explicit bounded-profile zone OCR Rust example
+        shell: bash
+        run: cargo run --locked --package mado-pilot --example ocr-profile-zones
 
       # Hosted CI enforces only host-independent correctness and bounded-growth
       # predicates. It never substitutes runner timing for a named hardware

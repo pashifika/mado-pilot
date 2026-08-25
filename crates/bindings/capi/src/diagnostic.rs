@@ -114,6 +114,16 @@ impl Versioned for madopilot_diagnostic_record_t {
         ocr_requested_region,
         ocr_elapsed_nanos,
         ocr_source_pixels,
+        ocr_source_envelope,
+        ocr_grouped_reserved,
+        ocr_zone_count,
+        ocr_unique_candidate_count,
+        ocr_membership_count,
+        ocr_result_bytes,
+        ocr_detector_runs,
+        ocr_recognizer_runs,
+        ocr_detector_bytes,
+        ocr_recognizer_bytes,
     );
     const ZEROED_PADDING: &'static [(usize, usize)] = &[(
         covers!(madopilot_diagnostic_record_t, reserved: u32),
@@ -166,6 +176,16 @@ impl Versioned for madopilot_diagnostic_record_t {
             ocr_requested_region: madopilot_ocr_requested_region_t::empty(),
             ocr_elapsed_nanos: 0,
             ocr_source_pixels: 0,
+            ocr_source_envelope: madopilot_pixel_rect_t::empty(),
+            ocr_grouped_reserved: 0,
+            ocr_zone_count: 0,
+            ocr_unique_candidate_count: 0,
+            ocr_membership_count: 0,
+            ocr_result_bytes: 0,
+            ocr_detector_runs: 0,
+            ocr_recognizer_runs: 0,
+            ocr_detector_bytes: 0,
+            ocr_recognizer_bytes: 0,
         }
     }
 }
@@ -410,6 +430,10 @@ fn record(
                     value.ocr_profile = MADOPILOT_OCR_DIAGNOSTIC_PROFILE_G004;
                     value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_PROFILE;
                 }
+                OcrDiagnosticProfile::BoundedDetector => {
+                    value.ocr_profile = MADOPILOT_OCR_DIAGNOSTIC_PROFILE_BOUNDED;
+                    value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_PROFILE;
+                }
                 OcrDiagnosticProfile::Unspecified => {}
                 _ => {
                     return Err(Fault::internal(
@@ -431,6 +455,42 @@ fn record(
             if let Some(effective) = payload.effective_region {
                 value.region = crate::capture::rect(effective);
                 value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION;
+            }
+            if let Some(envelope) = payload.source_envelope {
+                value.ocr_source_envelope = crate::capture::rect(envelope);
+                value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_SOURCE_ENVELOPE;
+            }
+            if let Some(zone_count) = payload.zone_count {
+                value.ocr_zone_count = zone_count;
+                value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_ZONE_COUNT;
+            }
+            if let (Some(unique), Some(memberships)) =
+                (payload.unique_candidate_count, payload.membership_count)
+            {
+                value.ocr_unique_candidate_count = unique;
+                value.ocr_membership_count = memberships;
+                value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESULT_COUNTS;
+            }
+            if let Some(result_bytes) = payload.result_bytes {
+                value.ocr_result_bytes = result_bytes;
+                value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESULT_BYTES;
+            }
+            if let (
+                Some(detector_runs),
+                Some(detector_bytes),
+                Some(recognizer_runs),
+                Some(recognizer_bytes),
+            ) = (
+                payload.detector_runs,
+                payload.detector_bytes,
+                payload.recognizer_runs,
+                payload.recognizer_bytes,
+            ) {
+                value.ocr_detector_runs = detector_runs;
+                value.ocr_detector_bytes = detector_bytes;
+                value.ocr_recognizer_runs = recognizer_runs;
+                value.ocr_recognizer_bytes = recognizer_bytes;
+                value.flags |= MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_BACKEND_WORK;
             }
             match payload.outcome {
                 OcrDiagnosticOutcome::Recognized => {

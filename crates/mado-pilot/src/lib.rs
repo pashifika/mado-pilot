@@ -113,13 +113,16 @@
 //!
 //! # Implementation status
 //!
-//! Phase 1 capture/matching, Phase 2 native input, and Phase 3 one-shot OCR are
-//! reachable here. Replay and native engine requests accept an explicit
+//! Phase 1 capture/matching, Phase 2 native input, and Phase 3 singular/grouped
+//! OCR are reachable here. Replay and native engine requests accept an injected
 //! `Arc<dyn OcrBackend>`; ordinary constructors without one expose no OCR.
-//! Separate `*_engine_with_default_ocr` constructors load only the accepted
-//! controlled ONNX CPU profile from caller-supplied paths. Requests name the
-//! exact backend/model descriptor, retained source frame, source region, output
-//! space, and executor-neutral operation context.
+//! Separate `*_engine_with_default_ocr` constructors preserve native G-004;
+//! `*_engine_with_ocr_profile` accepts the closed
+//! [`OcrProfile::BoundedDetector`] selection through [`OcrProfileConfig`].
+//! [`Session::recognize`] preserves singular optional-region results, while
+//! [`Session::scan_ocr_zones`] borrows one through eight capture-pixel zones and
+//! returns one independent caller-grouped result. See
+//! `examples/ocr-default.rs` and `examples/ocr-profile-zones.rs`.
 //!
 //! Watchers and scheduling are not implemented. No platform-native type is
 //! returned, accepted, or downcast through this API.
@@ -139,11 +142,11 @@
 //! version bump. The stability promise itself begins at 1.0; this package is
 //! at 0.3.0.
 //!
-//! The C ABI beneath this one is versioned separately. ABI 1.0 and ABI 1.2 are
-//! frozen complete prefixes; ABI 1.3 appends one-shot OCR, immutable owned
-//! results, and accepted default construction without moving either prefix.
-//! ADRs 0035 and 0036 record those ownership and negotiation boundaries. A Rust
-//! rename does not propagate to the C ABI.
+//! The C ABI beneath this one is versioned separately. ABI 1.0, 1.2, and 1.3
+//! are frozen complete prefixes; ABI 1.4 appends explicit profile construction,
+//! grouped scan ownership, and two-dimensional access without moving them.
+//! ADRs 0035, 0036, and 0043 record those ownership and negotiation boundaries.
+//! A Rust rename does not propagate to the C ABI.
 //!
 //! # Where to start
 //!
@@ -258,22 +261,96 @@ impl DefaultOcrConfig {
     }
 }
 
+/// Closed explicit selection for a non-default product OCR profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OcrProfile {
+    /// ADR 0040/0041 bounded-detector preprocessing over the accepted model pair.
+    BoundedDetector,
+}
+
+/// Controlled prerequisites for one explicitly selected product OCR profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcrProfileConfig {
+    profile: OcrProfile,
+    model_root: PathBuf,
+    runtime_path: PathBuf,
+}
+
+impl OcrProfileConfig {
+    /// Selects `profile` and names its controlled model root and runtime file.
+    pub fn new(
+        profile: OcrProfile,
+        model_root: impl Into<PathBuf>,
+        runtime_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            profile,
+            model_root: model_root.into(),
+            runtime_path: runtime_path.into(),
+        }
+    }
+
+    /// Returns the selected closed product profile.
+    #[must_use]
+    pub const fn profile(&self) -> OcrProfile {
+        self.profile
+    }
+
+    /// Returns the caller-selected model root.
+    #[must_use]
+    pub fn model_root(&self) -> &Path {
+        &self.model_root
+    }
+
+    /// Returns the caller-selected controlled runtime file.
+    #[must_use]
+    pub fn runtime_path(&self) -> &Path {
+        &self.runtime_path
+    }
+}
+
+#[derive(Clone, Copy)]
+enum IntegratedOcr<'a> {
+    Default(&'a DefaultOcrConfig, &'a OperationContext),
+    Profile(&'a OcrProfileConfig, &'a OperationContext),
+}
+
+impl<'a> IntegratedOcr<'a> {
+    const fn operation(self) -> &'a OperationContext {
+        match self {
+            Self::Default(_, operation) | Self::Profile(_, operation) => operation,
+        }
+    }
+}
+
 fn configured_ocr(
     explicit: Option<Arc<dyn OcrBackend>>,
-    default: Option<(&DefaultOcrConfig, &OperationContext)>,
+    integrated: Option<IntegratedOcr<'_>>,
 ) -> Result<Option<OcrRecognizer>> {
-    match (explicit, default) {
+    match (explicit, integrated) {
         (Some(_), Some(_)) => Err(Error::new(
             Status::InvalidArgument,
-            "an explicit OCR backend and the default OCR profile are mutually exclusive",
+            "an explicit OCR backend and an integrated OCR profile are mutually exclusive",
         )),
         (Some(backend), None) => Ok(Some(OcrRecognizer::new(backend))),
-        (None, Some((config, operation))) => {
+        (None, Some(IntegratedOcr::Default(config, operation))) => {
             let backend = OnnxOcrBackend::open_accepted(
                 config.model_root(),
                 config.runtime_path(),
                 operation,
             )
+            .map_err(Error::from)?;
+            Ok(Some(OcrRecognizer::new(Arc::new(backend))))
+        }
+        (None, Some(IntegratedOcr::Profile(config, operation))) => {
+            let backend = match config.profile() {
+                OcrProfile::BoundedDetector => OnnxOcrBackend::open_bounded_detector(
+                    config.model_root(),
+                    config.runtime_path(),
+                    operation,
+                ),
+            }
             .map_err(Error::from)?;
             Ok(Some(OcrRecognizer::new(Arc::new(backend))))
         }
@@ -415,20 +492,44 @@ pub fn replay_engine_with_default_ocr(
     config: &DefaultOcrConfig,
     operation: &OperationContext,
 ) -> Result<Engine> {
-    replay_engine_inner(request.into(), Some((config, operation)))
+    replay_engine_inner(
+        request.into(),
+        Some(IntegratedOcr::Default(config, operation)),
+    )
+}
+
+/// Builds a replay engine with one explicitly selected product OCR profile.
+///
+/// Construction consumes only the controlled paths in `config` under
+/// `operation`. It publishes no engine on interruption or profile failure and
+/// never substitutes the released default profile.
+///
+/// # Errors
+///
+/// Returns the selected profile's typed prerequisite, identity, interruption,
+/// or native initialization failure and the existing matching/capture failures.
+pub fn replay_engine_with_ocr_profile(
+    request: impl Into<ReplayEngineRequest>,
+    config: &OcrProfileConfig,
+    operation: &OperationContext,
+) -> Result<Engine> {
+    replay_engine_inner(
+        request.into(),
+        Some(IntegratedOcr::Profile(config, operation)),
+    )
 }
 
 fn replay_engine_inner(
     request: ReplayEngineRequest,
-    default_ocr: Option<(&DefaultOcrConfig, &OperationContext)>,
+    integrated_ocr: Option<IntegratedOcr<'_>>,
 ) -> Result<Engine> {
-    let operation = default_ocr.map(|(_, operation)| operation);
+    let operation = integrated_ocr.map(IntegratedOcr::operation);
     construction_checkpoint(operation)?;
     // Required, not preferred: constructing the backend is what proves this
     // host's OpenCV is usable, and a failure here leaves no engine that could
     // have fallen back to something else.
     let backend = OpenCvBackend::new()?;
-    let ocr = configured_ocr(request.ocr, default_ocr)?;
+    let ocr = configured_ocr(request.ocr, integrated_ocr)?;
 
     let issuer = Arc::new(IdentityIssuer::new());
     let engine = issuer.engine();
@@ -567,15 +668,31 @@ pub fn windows_engine_with_default_ocr(
     config: &DefaultOcrConfig,
     operation: &OperationContext,
 ) -> Result<Engine> {
-    windows_engine_inner(request.into(), Some((config, operation)))
+    windows_engine_inner(
+        request.into(),
+        Some(IntegratedOcr::Default(config, operation)),
+    )
+}
+
+/// Builds the native Windows engine with an explicitly selected OCR profile.
+#[cfg(windows)]
+pub fn windows_engine_with_ocr_profile(
+    request: impl Into<NativeEngineRequest>,
+    config: &OcrProfileConfig,
+    operation: &OperationContext,
+) -> Result<Engine> {
+    windows_engine_inner(
+        request.into(),
+        Some(IntegratedOcr::Profile(config, operation)),
+    )
 }
 
 #[cfg(windows)]
 fn windows_engine_inner(
     request: NativeEngineRequest,
-    default_ocr: Option<(&DefaultOcrConfig, &OperationContext)>,
+    integrated_ocr: Option<IntegratedOcr<'_>>,
 ) -> Result<Engine> {
-    let operation = default_ocr.map(|(_, operation)| operation);
+    let operation = integrated_ocr.map(IntegratedOcr::operation);
     construction_checkpoint(operation)?;
     let diagnostics = request.diagnostics();
     let limits = request.limits();
@@ -584,7 +701,7 @@ fn windows_engine_inner(
     // proves this host's OpenCV is usable, and a failure here leaves no adapter
     // and no identity space behind.
     let backend = OpenCvBackend::new()?;
-    let ocr = configured_ocr(request.ocr, default_ocr)?;
+    let ocr = configured_ocr(request.ocr, integrated_ocr)?;
 
     let issuer = Arc::new(IdentityIssuer::new());
     let engine = issuer.engine();
@@ -648,21 +765,37 @@ pub fn macos_engine_with_default_ocr(
     config: &DefaultOcrConfig,
     operation: &OperationContext,
 ) -> Result<Engine> {
-    macos_engine_inner(request.into(), Some((config, operation)))
+    macos_engine_inner(
+        request.into(),
+        Some(IntegratedOcr::Default(config, operation)),
+    )
+}
+
+/// Builds the native macOS engine with an explicitly selected OCR profile.
+#[cfg(target_os = "macos")]
+pub fn macos_engine_with_ocr_profile(
+    request: impl Into<NativeEngineRequest>,
+    config: &OcrProfileConfig,
+    operation: &OperationContext,
+) -> Result<Engine> {
+    macos_engine_inner(
+        request.into(),
+        Some(IntegratedOcr::Profile(config, operation)),
+    )
 }
 
 #[cfg(target_os = "macos")]
 fn macos_engine_inner(
     request: NativeEngineRequest,
-    default_ocr: Option<(&DefaultOcrConfig, &OperationContext)>,
+    integrated_ocr: Option<IntegratedOcr<'_>>,
 ) -> Result<Engine> {
-    let operation = default_ocr.map(|(_, operation)| operation);
+    let operation = integrated_ocr.map(IntegratedOcr::operation);
     construction_checkpoint(operation)?;
     let diagnostics = request.diagnostics();
     let limits = request.limits();
 
     let backend = OpenCvBackend::new()?;
-    let ocr = configured_ocr(request.ocr, default_ocr)?;
+    let ocr = configured_ocr(request.ocr, integrated_ocr)?;
 
     let issuer = Arc::new(IdentityIssuer::new());
     let engine = issuer.engine();
@@ -707,14 +840,15 @@ pub use mado_pilot_runtime::{
     InputOpenRequest, InputOperationKind, InputOperationSet, InputReceipt, InputRequest,
     InputRequirement, InputRouteCapability, InputSequence, Interruption, Key, LanguageProfileId,
     Lifecycle, LifecycleDiagnostic, LoadStage, MAX_BACKEND_TEXT_BYTES, MAX_DIAGNOSTIC_CAPACITY,
-    MAX_MODEL_COMPONENT_BYTES, MAX_OCR_CANDIDATES, MAX_TEXT_BYTES, Manifest, MappingDiagnostic,
-    MappingObserver, Match, MatchDefaults, MatchOptions, MatchResult, MemoryEntry, MemoryPackage,
-    ModelComponentIdentity, ModelId, ModelVersion, Modifier, MonotonicInstant, NormalizationId,
-    OcrBackend, OcrBackendDescriptor, OcrBackendId, OcrBackendIdentity, OcrBackendRequest,
-    OcrBackendVersion, OcrCandidateSink, OcrDiagnostic, OcrDiagnosticOutcome, OcrDiagnosticProfile,
-    OcrFault, OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest,
-    OcrProfileMetadata, OcrQuadrilateral, OcrRegion, OcrRequest, OcrRequestedRegionDiagnostic,
-    OcrResult, OpenRequest, OperationContext, OperationStartedDiagnostic, OverflowPolicy,
+    MAX_MODEL_COMPONENT_BYTES, MAX_OCR_CANDIDATES, MAX_OCR_ZONES, MAX_TEXT_BYTES, Manifest,
+    MappingDiagnostic, MappingObserver, Match, MatchDefaults, MatchOptions, MatchResult,
+    MemoryEntry, MemoryPackage, ModelComponentIdentity, ModelId, ModelVersion, Modifier,
+    MonotonicInstant, NormalizationId, OcrBackend, OcrBackendDescriptor, OcrBackendId,
+    OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink, OcrDiagnostic,
+    OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrFault, OcrModelComponent, OcrModelIdentity,
+    OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata, OcrQuadrilateral, OcrRegion,
+    OcrRequest, OcrRequestedRegionDiagnostic, OcrResult, OcrZone, OcrZoneGroup, OcrZoneScanRequest,
+    OcrZoneScanResult, OpenRequest, OperationContext, OperationStartedDiagnostic, OverflowPolicy,
     PackagePath, PackageSource, PermissionDiagnostic, PermissionKind, PermissionOutcome,
     PermissionReport, PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point,
     PointerButton, PointerGeometry, PreparedTemplate, PreprocessingId, PressedState, ProfileId,

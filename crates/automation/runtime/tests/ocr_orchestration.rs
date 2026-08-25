@@ -5,12 +5,12 @@ use std::thread;
 use std::time::Duration;
 
 use mado_pilot_runtime::{
-    ActivityTag, CaptureProvider, Continuity, CoordinateSpace, DiagnosticDrain, DiagnosticKind,
-    DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, Engine, EngineOptions,
-    EngineWiring, Frame, FrameRequest, IdentityIssuer, Matcher, OcrBackend, OcrBackendDescriptor,
-    OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrModelIdentity, OcrRecognizer, OcrRegion,
-    OcrRequest, OpenRequest, OperationContext, PackageLoader, PixelExtent, PixelFormat, Session,
-    Status,
+    ActivityTag, CaptureProvider, ClipPolicy, Continuity, CoordinateSpace, DiagnosticDrain,
+    DiagnosticKind, DiagnosticOperationKind, DiagnosticOptions, DiagnosticPayload, Engine,
+    EngineOptions, EngineWiring, Frame, FrameRequest, IdentityIssuer, Matcher, OcrBackend,
+    OcrBackendDescriptor, OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrModelIdentity,
+    OcrRecognizer, OcrRegion, OcrRequest, OcrZone, OcrZoneScanRequest, OpenRequest,
+    OperationContext, PackageLoader, PixelExtent, PixelFormat, Rect, Session, Status,
 };
 use mado_pilot_testkit::{
     CompletionGate, ControlledCapture, ControlledMatcher, ControlledOcr, ManualClock,
@@ -115,6 +115,65 @@ fn recognition_uses_the_exact_retained_frame_named_by_the_request() {
     assert_eq!(result.regions()[0].text(), "retained");
     assert_eq!(result.backend(), &descriptor);
     assert_eq!(engine.ocr_backend(), Some(descriptor));
+}
+
+#[test]
+fn zone_scan_uses_the_exact_frame_and_outlives_every_parent() {
+    let ocr = Arc::new(
+        ControlledOcr::new(PixelFormat::Rgba8).with_candidates(vec![candidate(b"  grouped  ")]),
+    );
+    let backend_lifetime = Arc::downgrade(&ocr);
+    let descriptor = ocr.descriptor();
+    let (engine, capture) = wired(Some(Arc::clone(&ocr)));
+    let operation = OperationContext::new();
+    let (session, retained) = opened_with_frame(&engine, &capture, &operation);
+    capture
+        .publish(0x52, Continuity::Continuous)
+        .expect("published a newer frame");
+    let zones = [OcrZone::new(
+        Rect::new(CoordinateSpace::CapturePixels, 0.0, 0.0, 16.0, 12.0).expect("valid zone"),
+        ClipPolicy::Reject,
+    )];
+
+    let result = session
+        .scan_ocr_zones(
+            OcrZoneScanRequest::new(
+                &retained,
+                descriptor.backend_identity(),
+                descriptor.model_identity(),
+                &zones,
+                CoordinateSpace::CapturePixels,
+                &operation,
+            )
+            .expect("one zone is valid"),
+        )
+        .expect("scanned the retained frame");
+
+    assert_eq!(result.stamp(), retained.stamp());
+    assert_eq!(result.stamp().sequence().value(), 0);
+    assert_eq!(result.source_envelope().left(), 0);
+    assert_eq!(result.source_envelope().right(), 16);
+    assert_eq!(result.group(0).expect("group").len(), 1);
+    assert_eq!(
+        result
+            .group(0)
+            .expect("group")
+            .get(0)
+            .expect("candidate")
+            .text(),
+        "grouped"
+    );
+
+    drop(retained);
+    session.close(&operation).expect("closed");
+    drop(session);
+    drop(engine);
+    drop(capture);
+    drop(ocr);
+
+    assert!(backend_lifetime.upgrade().is_none());
+    assert_eq!(result.group(0).expect("group").len(), 1);
+    assert_eq!(result.backend(), &descriptor);
 }
 
 #[test]
@@ -252,6 +311,20 @@ fn accepted_backend() -> Arc<ControlledOcr> {
     )
 }
 
+fn accepted_bounded_backend() -> Arc<ControlledOcr> {
+    let backend = ControlledOcr::new(PixelFormat::Rgba8);
+    let identity = backend.descriptor().backend_identity().clone();
+    Arc::new(
+        backend
+            .with_descriptor(OcrBackendDescriptor::new(
+                identity,
+                OcrModelIdentity::accepted_bounded_detector(),
+                PixelFormat::Rgba8,
+            ))
+            .with_candidates(vec![candidate(b"caller-secret-grouped-text")]),
+    )
+}
+
 fn diagnostic_batch(
     reader: &mado_pilot_runtime::DiagnosticReader,
 ) -> mado_pilot_runtime::DiagnosticBatch {
@@ -309,9 +382,18 @@ fn ocr_diagnostics_are_source_correlated_profile_typed_and_content_redacted() {
     assert_eq!(terminal.1.source, frame.stamp());
     assert_eq!(terminal.1.requested_region, None);
     assert_eq!(terminal.1.effective_region, Some(result.effective_region()));
+    assert_eq!(terminal.1.source_envelope, None);
     assert_eq!(terminal.1.output_space, CoordinateSpace::CapturePixels);
     assert_eq!(terminal.1.outcome, OcrDiagnosticOutcome::Recognized);
     assert_eq!(terminal.1.result_count, 1);
+    assert_eq!(terminal.1.zone_count, None);
+    assert_eq!(terminal.1.unique_candidate_count, None);
+    assert_eq!(terminal.1.membership_count, None);
+    assert_eq!(terminal.1.result_bytes, None);
+    assert_eq!(terminal.1.detector_runs, None);
+    assert_eq!(terminal.1.detector_bytes, None);
+    assert_eq!(terminal.1.recognizer_runs, None);
+    assert_eq!(terminal.1.recognizer_bytes, None);
     assert_eq!(
         terminal.1.source_pixels,
         u64::from(EXTENT.width()) * u64::from(EXTENT.height())
@@ -327,6 +409,87 @@ fn ocr_diagnostics_are_source_correlated_profile_typed_and_content_redacted() {
     }
 }
 
+#[test]
+fn grouped_ocr_diagnostics_are_aggregate_bounded_and_content_redacted() {
+    let ocr = accepted_bounded_backend();
+    let descriptor = ocr.descriptor();
+    let (engine, capture) = wired_with_options(
+        Some(Arc::clone(&ocr)),
+        EngineOptions::new()
+            .with_diagnostics(DiagnosticOptions::debug(16).expect("bounded diagnostics")),
+    );
+    let reader = engine.take_diagnostic_reader().expect("enabled reader");
+    let operation = OperationContext::new();
+    let (session, frame) = opened_with_frame(&engine, &capture, &operation);
+    let _ = reader.drain();
+    let zones = [
+        OcrZone::new(
+            Rect::new(CoordinateSpace::CapturePixels, 0.0, 0.0, 8.0, 12.0).expect("valid zone"),
+            ClipPolicy::Reject,
+        ),
+        OcrZone::new(
+            Rect::new(CoordinateSpace::CapturePixels, 24.0, 0.0, 32.0, 12.0).expect("valid zone"),
+            ClipPolicy::Reject,
+        ),
+        OcrZone::new(
+            Rect::new(CoordinateSpace::CapturePixels, 4.0, 0.0, 16.0, 12.0).expect("valid zone"),
+            ClipPolicy::Reject,
+        ),
+    ];
+
+    let result = session
+        .scan_ocr_zones(
+            OcrZoneScanRequest::new(
+                &frame,
+                descriptor.backend_identity(),
+                descriptor.model_identity(),
+                &zones,
+                CoordinateSpace::CapturePixels,
+                &operation,
+            )
+            .expect("three zones"),
+        )
+        .expect("grouped recognition");
+    assert_eq!(
+        result.unique_candidates()[0].text(),
+        "caller-secret-grouped-text"
+    );
+    let batch = diagnostic_batch(&reader);
+    assert!(batch.losses().is_empty());
+    let terminal = batch
+        .records()
+        .iter()
+        .find_map(|record| match record.payload() {
+            DiagnosticPayload::Ocr(value) => Some(value),
+            _ => None,
+        })
+        .expect("grouped OCR terminal");
+    assert_eq!(terminal.profile, OcrDiagnosticProfile::BoundedDetector);
+    assert_eq!(terminal.source, frame.stamp());
+    assert_eq!(terminal.requested_region, None);
+    assert_eq!(terminal.effective_region, None);
+    assert_eq!(terminal.source_envelope, Some(result.source_envelope()));
+    assert_eq!(terminal.zone_count, Some(3));
+    assert_eq!(terminal.unique_candidate_count, Some(1));
+    assert_eq!(terminal.membership_count, Some(2));
+    assert_eq!(terminal.result_count, 2);
+    assert_eq!(terminal.result_bytes, None);
+    assert_eq!(terminal.detector_runs, None);
+    assert_eq!(terminal.detector_bytes, None);
+    assert_eq!(terminal.recognizer_runs, None);
+    assert_eq!(terminal.recognizer_bytes, None);
+    assert_eq!(terminal.source_pixels, 32 * 12);
+
+    let visible = format!("{terminal:?}");
+    for secret in [
+        "caller-secret-grouped-text",
+        descriptor.id().as_str(),
+        descriptor.model().as_str(),
+        descriptor.profile().as_str(),
+    ] {
+        assert!(!visible.contains(secret), "diagnostics exposed {secret}");
+    }
+}
 #[test]
 fn a_full_diagnostic_queue_never_changes_ocr_and_reports_exact_normal_loss() {
     let ocr = accepted_backend();

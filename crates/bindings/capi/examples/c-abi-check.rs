@@ -944,8 +944,8 @@ fn run_ocr_fixture_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// Compiles both production-language default OCR examples and runs them when
-/// the caller supplied the reviewed native prerequisites.
+/// Compiles the production default and explicit-profile OCR examples in C and
+/// C++, then runs them when reviewed native prerequisites are available.
 fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
     let c_source = paths
         .root
@@ -955,12 +955,34 @@ fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Err
         .root
         .join("crates/bindings/capi/examples/cpp/ocr-default.cpp");
     let cpp = compile(paths, Language::Cpp, "ocr-default-cpp", &cpp_source, true)?;
+    let profile_c_source = paths
+        .root
+        .join("crates/bindings/capi/examples/c/ocr-profile-zones.c");
+    let profile_c = compile(
+        paths,
+        Language::C,
+        "ocr-profile-zones-c",
+        &profile_c_source,
+        true,
+    )?;
+    let profile_cpp_source = paths
+        .root
+        .join("crates/bindings/capi/examples/cpp/ocr-profile-zones.cpp");
+    let profile_cpp = compile(
+        paths,
+        Language::Cpp,
+        "ocr-profile-zones-cpp",
+        &profile_cpp_source,
+        true,
+    )?;
 
     let (Some(model_root), Some(runtime)) = (
         env::var_os("MADO_PILOT_G004_MODEL_ROOT"),
         env::var_os("MADO_PILOT_ONNX_RUNTIME"),
     ) else {
-        println!("default OCR C/C++ examples compiled; native run skipped without explicit paths");
+        println!(
+            "default/profile OCR C/C++ examples compiled; native run skipped without explicit paths"
+        );
         return Ok(());
     };
     let model_root = PathBuf::from(model_root).canonicalize()?;
@@ -975,15 +997,27 @@ fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Err
     ];
     let c_output = run(paths, &c, &arguments)?;
     let cpp_output = run(paths, &cpp, &arguments)?;
+    let profile_c_output = run(paths, &profile_c, &arguments)?;
+    let profile_cpp_output = run(paths, &profile_cpp, &arguments)?;
     report_output("default OCR C", &c_output);
     report_output("default OCR C++", &cpp_output);
-    if !c_output.status.success() || !cpp_output.status.success() {
-        return Err("an integrated default OCR example failed".into());
+    report_output("profile zone OCR C", &profile_c_output);
+    report_output("profile zone OCR C++", &profile_cpp_output);
+    if !c_output.status.success()
+        || !cpp_output.status.success()
+        || !profile_c_output.status.success()
+        || !profile_cpp_output.status.success()
+    {
+        return Err("a production OCR example failed".into());
     }
     let c_stdout = String::from_utf8(c_output.stdout)?.replace("\r\n", "\n");
     let cpp_stdout = String::from_utf8(cpp_output.stdout)?.replace("\r\n", "\n");
+    let profile_c_stdout = String::from_utf8(profile_c_output.stdout)?.replace("\r\n", "\n");
+    let profile_cpp_stdout = String::from_utf8(profile_cpp_output.stdout)?.replace("\r\n", "\n");
     print!("{c_stdout}");
     print!("{cpp_stdout}");
+    print!("{profile_c_stdout}");
+    print!("{profile_cpp_stdout}");
     let expected = format!(
         "default-ocr: backend={} model={} full=0 region=0\n",
         mado_pilot::DEFAULT_OCR_BACKEND_ID,
@@ -993,6 +1027,10 @@ fn run_default_ocr_examples(paths: &Paths) -> Result<(), Box<dyn std::error::Err
         return Err("C/C++ default OCR observations diverged".into());
     }
     println!("default OCR C/C++ examples agree");
+    if !profile_c_stdout.is_empty() || profile_c_stdout != profile_cpp_stdout {
+        return Err("C/C++ profile-zone OCR observations diverged".into());
+    }
+    println!("profile zone OCR C/C++ examples agree");
     Ok(())
 }
 
@@ -1218,9 +1256,9 @@ fn check_cpp_ownership(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> 
 
 /// Released header profiles whose frozen declarations remain ABI obligations.
 ///
-/// ABI 1.0 and 1.2 are released frozen profiles older than the working ABI 1.3 header.
-/// The unreleased ABI 1.1 draft has no compatibility fixture.
-const FROZEN_HEADERS: &[&str] = &["v1", "v1_2"];
+/// ABI 1.0, 1.2, and 1.3 are released frozen profiles older than the working
+/// ABI 1.4 header. The unreleased ABI 1.1 draft has no compatibility fixture.
+const FROZEN_HEADERS: &[&str] = &["v1", "v1_2", "v1_3"];
 
 /// Runs the layout probe against each frozen header, and checks that what that
 /// header declares is still true of the library built now.

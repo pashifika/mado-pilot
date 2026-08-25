@@ -21,7 +21,9 @@ use mado_pilot_core::{
 use mado_pilot_input::{
     InputController, InputDescriptor, InputFault, InputReceipt, InputRequest, SequenceOutcome,
 };
-use mado_pilot_ocr::{OcrFault, OcrRecognizer, OcrRequest, OcrResult};
+use mado_pilot_ocr::{
+    OcrFault, OcrRecognizer, OcrRequest, OcrResult, OcrZoneScanRequest, OcrZoneScanResult,
+};
 use mado_pilot_vision::{MatchRequest, Matcher};
 
 use crate::diagnostic::{
@@ -412,9 +414,129 @@ impl Session {
                     source,
                     requested_region,
                     effective_region,
+                    source_envelope: None,
                     output_space,
                     outcome,
                     result_count,
+                    zone_count: None,
+                    unique_candidate_count: None,
+                    membership_count: None,
+                    result_bytes: None,
+                    detector_runs: None,
+                    detector_bytes: None,
+                    recognizer_runs: None,
+                    recognizer_bytes: None,
+                    elapsed_nanos,
+                    source_pixels,
+                })
+            });
+        }
+        result
+    }
+
+    /// Scans caller-order zones on one exact retained frame.
+    ///
+    /// The borrowed request is consumed synchronously and the returned grouped
+    /// result owns every source, descriptor, zone, candidate, and membership
+    /// value it exposes. No request or result state is stored by the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same stream, lifecycle, backend, geometry, limit, and
+    /// interruption failures as singular recognition. The complete operation
+    /// publishes one immutable result or no result.
+    pub fn scan_ocr_zones(&self, request: OcrZoneScanRequest<'_>) -> Result<OcrZoneScanResult> {
+        let operation = request.operation().clone();
+        let observed = self.observe(&operation, DiagnosticOperationKind::OcrRecognition)?;
+        let started = observed.map(|_| operation.now());
+        let source = request.frame().stamp();
+        let output_space = request.output_space();
+        let zone_count =
+            u64::try_from(request.zones().len()).expect("OCR zone count is bounded below u64::MAX");
+        let result = (|| {
+            let attempt = Operation::admit(&operation)?;
+            if !self.accepts_work() {
+                return Err(CaptureFault::SessionClosed.into());
+            }
+            if request.frame().stamp().stream() != self.description.stream() {
+                return Err(CaptureFault::ForeignStream.into());
+            }
+            let recognizer = self
+                .ocr
+                .as_ref()
+                .ok_or_else(|| mado_pilot_core::Error::from(OcrFault::BackendUnavailable))?;
+            let result = recognizer.scan_zones(request)?;
+            let result = attempt.commit(result)?;
+            self.commit_while_open(result)
+        })();
+
+        if let (Some(context), Some(started)) = (self.ocr_diagnostic, started) {
+            let elapsed_nanos = u64::try_from(
+                operation
+                    .now()
+                    .saturating_duration_since(started)
+                    .as_nanos(),
+            )
+            .unwrap_or(u64::MAX);
+            let (
+                source_envelope,
+                outcome,
+                result_count,
+                unique_candidate_count,
+                membership_count,
+                source_pixels,
+            ) = match &result {
+                Ok(result) => {
+                    let envelope = result.source_envelope();
+                    let memberships: usize = (0..result.effective_zones().len())
+                        .map(|index| result.group(index).expect("zone has group").len())
+                        .sum();
+                    let memberships = u64::try_from(memberships)
+                        .expect("OCR memberships are bounded below u64::MAX");
+                    (
+                        Some(envelope),
+                        if result.is_empty() {
+                            OcrDiagnosticOutcome::Empty
+                        } else {
+                            OcrDiagnosticOutcome::Recognized
+                        },
+                        memberships,
+                        Some(
+                            u64::try_from(result.unique_candidates().len())
+                                .expect("OCR candidates are bounded below u64::MAX"),
+                        ),
+                        Some(memberships),
+                        u64::from(envelope.width()) * u64::from(envelope.height()),
+                    )
+                }
+                Err(error) => (
+                    None,
+                    OcrDiagnosticOutcome::Failed(error.status()),
+                    0,
+                    None,
+                    None,
+                    0,
+                ),
+            };
+            self.normal(observed, &operation, || {
+                DiagnosticPayload::Ocr(OcrDiagnostic {
+                    model_instance: context.model_instance,
+                    profile: context.profile,
+                    source,
+                    requested_region: None,
+                    effective_region: None,
+                    source_envelope,
+                    output_space,
+                    outcome,
+                    result_count,
+                    zone_count: Some(zone_count),
+                    unique_candidate_count,
+                    membership_count,
+                    result_bytes: None,
+                    detector_runs: None,
+                    detector_bytes: None,
+                    recognizer_runs: None,
+                    recognizer_bytes: None,
                     elapsed_nanos,
                     source_pixels,
                 })
