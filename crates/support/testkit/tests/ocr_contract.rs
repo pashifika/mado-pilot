@@ -9,10 +9,11 @@ use mado_pilot_core::{
     MonotonicInstant, OperationContext, PixelExtent, Rect, Status, StreamCursor, TransformSnapshot,
 };
 use mado_pilot_ocr::{
-    ACCEPTED_G004_NORMALIZATION_ID, BackendVersion, DecoderId, LanguageProfileId,
-    ModelComponentIdentity, ModelId, ModelVersion, NormalizationId, OcrBackend, OcrBackendIdentity,
-    OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata,
-    OcrRecognizer, OcrRegion, OcrRequest, PreprocessingId, ProfileId,
+    ACCEPTED_G004_NORMALIZATION_ID, BackendId, BackendVersion, DecoderId, LanguageProfileId,
+    ModelComponentIdentity, ModelId, ModelVersion, NormalizationId, OcrBackend,
+    OcrBackendDescriptor, OcrBackendIdentity, OcrModelComponent, OcrModelIdentity, OcrModelSource,
+    OcrModelSourceRequest, OcrProfileMetadata, OcrRecognizer, OcrRegion, OcrRequest,
+    PreprocessingId, ProfileId,
 };
 use mado_pilot_testkit::{
     CompletionGate, ControlledOcr, ControlledProducer, ManualClock, OcrBehavior, ScriptedOcrCall,
@@ -113,6 +114,97 @@ fn test_identity(
 fn controlled_backend_passes_the_shared_contract_suite() {
     let backend: Arc<dyn OcrBackend> = Arc::new(ControlledOcr::new(PixelFormat::Bgra8));
     ocr_contract::run(&backend);
+}
+
+#[test]
+fn bounded_profile_results_preserve_source_identity_geometry_order_and_output_space() {
+    let model = OcrModelIdentity::accepted_bounded_detector();
+    let backend_identity = OcrBackendIdentity::new(
+        BackendId::new("controlled-bounded").unwrap(),
+        BackendVersion::new("1").unwrap(),
+    );
+    let backend = Arc::new(
+        ControlledOcr::new(PixelFormat::Bgra8)
+            .with_descriptor(OcrBackendDescriptor::new(
+                backend_identity,
+                model.clone(),
+                PixelFormat::Bgra8,
+            ))
+            .with_candidates(vec![
+                candidate_with(
+                    b"second",
+                    [(4.0, 3.0), (10.0, 3.0), (10.0, 7.0), (4.0, 7.0)],
+                    0.75,
+                    1,
+                ),
+                candidate_with(
+                    b"first",
+                    [(1.0, 1.0), (6.0, 1.0), (6.0, 5.0), (1.0, 5.0)],
+                    0.875,
+                    0,
+                ),
+            ]),
+    );
+    let port: Arc<dyn OcrBackend> = backend.clone();
+    let recognizer = OcrRecognizer::new(port);
+    let descriptor = FrameDescriptor::packed(PixelExtent::new(32, 24), PixelFormat::Bgra8)
+        .expect("bounded contract frame");
+    let issuer = IdentityIssuer::new();
+    let mut cursor = StreamCursor::new(issuer.issue_stream().unwrap());
+    let stamp = cursor.publish(GeometryRevision::FIRST).unwrap();
+    let source = Frame::new(
+        stamp,
+        MonotonicInstant::ORIGIN,
+        descriptor,
+        TransformSnapshot::with_target_extent(GeometryRevision::FIRST, descriptor.extent()),
+        vec![0; descriptor.byte_len()].into_boxed_slice(),
+    )
+    .unwrap();
+    let selected = recognizer.descriptor();
+    let requested = Rect::new(CoordinateSpace::CapturePixels, 8.0, 6.0, 24.0, 18.0).unwrap();
+
+    let result = recognizer
+        .recognize(OcrRequest::new(
+            &source,
+            selected.backend_identity(),
+            selected.model_identity(),
+            OcrRegion::Region {
+                rect: requested,
+                policy: ClipPolicy::Clip,
+            },
+            CoordinateSpace::TargetNormalized,
+            &OperationContext::new(),
+        ))
+        .unwrap();
+
+    assert_eq!(result.stamp(), stamp);
+    assert_eq!(
+        result.effective_region(),
+        mado_pilot_core::PixelRect::new(8, 6, 24, 18).unwrap()
+    );
+    assert_eq!(result.output_space(), CoordinateSpace::TargetNormalized);
+    assert_eq!(
+        result.backend().backend_identity(),
+        selected.backend_identity()
+    );
+    assert_eq!(result.backend().model_identity(), &model);
+    assert_eq!(
+        result
+            .regions()
+            .iter()
+            .map(|region| region.text())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert_eq!(
+        result.regions()[0].geometry().points()[0],
+        mado_pilot_core::Point::new(CoordinateSpace::TargetNormalized, 9.0 / 32.0, 7.0 / 24.0,)
+            .unwrap()
+    );
+    assert_eq!(
+        backend.last_region(),
+        Some(mado_pilot_core::PixelRect::new(8, 6, 24, 18).unwrap())
+    );
 }
 
 #[test]

@@ -6,6 +6,10 @@ use std::fs;
 use std::sync::Arc;
 
 use mado_pilot_assets::{AssetFaultKind, MANIFEST_PATH, Manifest, MemoryPackage, PackageSource};
+use mado_pilot_ocr::{
+    ACCEPTED_BOUNDED_MODEL_ID, ACCEPTED_BOUNDED_PREPROCESSING_ID, ACCEPTED_BOUNDED_PROFILE_ID,
+    ACCEPTED_G004_MODEL_ID, ACCEPTED_G004_PREPROCESSING_ID, ACCEPTED_G004_PROFILE_ID,
+};
 use serde_json::{Value, json};
 
 use support::{ArchiveEntry, TempDir, hex_sha256, load, write_archive};
@@ -67,14 +71,14 @@ fn memory_source(
     )
 }
 
-fn accepted_manifest_value() -> Value {
+fn accepted_g004_manifest_value() -> Value {
     let mut value = manifest_value(DETECTOR, RECOGNIZER);
     let model = &mut value["ocr_models"][0];
-    model["id"] = json!("g-004-rapidocr-ppocrv4-det-v6-rec-small-v1");
+    model["id"] = json!(ACCEPTED_G004_MODEL_ID);
     model["version"] = json!("rapidocr-3.9.2+095232a4c94f7f0e6600ba5bba1177010ad696d4");
-    model["profile"] = json!("g-004-rapidocr-ppocrv4-det-v6-rec-small-v1");
+    model["profile"] = json!(ACCEPTED_G004_PROFILE_ID);
     model["language_profile"] = json!("horizontal-ja-basic-latin-ascii-digits-ui-symbols-v1");
-    model["preprocessing"] = json!("rapidocr-ppocrv4-det-bgr-db736-v1");
+    model["preprocessing"] = json!(ACCEPTED_G004_PREPROCESSING_ID);
     model["decoder"] = json!("rapidocr-ppocrv6-rec-small-greedy-ctc-v1");
     model["normalization"] = json!("nfc-trim-stable-detector-order-five-decimal-v1");
     model["detector"]["byte_len"] = json!(4_745_517);
@@ -86,44 +90,82 @@ fn accepted_manifest_value() -> Value {
     value
 }
 
-#[test]
-fn every_accepted_profile_field_is_bound_to_adr_0033() {
-    let accepted = accepted_manifest_value();
-    Manifest::parse(&serde_json::to_vec(&accepted).unwrap()).expect("accepted metadata");
+fn accepted_bounded_manifest_value() -> Value {
+    let mut value = accepted_g004_manifest_value();
+    let model = &mut value["ocr_models"][0];
+    model["id"] = json!(ACCEPTED_BOUNDED_MODEL_ID);
+    model["profile"] = json!(ACCEPTED_BOUNDED_PROFILE_ID);
+    model["preprocessing"] = json!(ACCEPTED_BOUNDED_PREPROCESSING_ID);
+    value
+}
 
-    let mutations = [
-        ("/ocr_models/0/id", json!("drift")),
-        ("/ocr_models/0/profile", json!("drift")),
-        ("/ocr_models/0/version", json!("drift")),
-        ("/ocr_models/0/language_profile", json!("drift")),
-        ("/ocr_models/0/preprocessing", json!("drift")),
-        ("/ocr_models/0/decoder", json!("drift")),
-        ("/ocr_models/0/normalization", json!("drift")),
-        ("/ocr_models/0/vocabulary/entries", json!(1)),
-        (
-            "/ocr_models/0/vocabulary/content/value",
-            json!("0000000000000000000000000000000000000000000000000000000000000000"),
-        ),
-        ("/ocr_models/0/detector/byte_len", json!(1)),
-        (
-            "/ocr_models/0/detector/content/value",
-            json!("0000000000000000000000000000000000000000000000000000000000000000"),
-        ),
-        ("/ocr_models/0/recognizer/byte_len", json!(1)),
-        (
-            "/ocr_models/0/recognizer/content/value",
-            json!("0000000000000000000000000000000000000000000000000000000000000000"),
-        ),
-    ];
-    for (pointer, replacement) in mutations {
-        let mut drifted = accepted.clone();
-        *drifted.pointer_mut(pointer).expect("fixture pointer") = replacement;
+#[test]
+fn every_closed_profile_field_is_bound_to_its_adr() {
+    for accepted in [
+        accepted_g004_manifest_value(),
+        accepted_bounded_manifest_value(),
+    ] {
+        Manifest::parse(&serde_json::to_vec(&accepted).unwrap()).expect("accepted metadata");
+
+        let mutations = [
+            ("/ocr_models/0/id", json!("drift")),
+            ("/ocr_models/0/profile", json!("drift")),
+            ("/ocr_models/0/version", json!("drift")),
+            ("/ocr_models/0/language_profile", json!("drift")),
+            ("/ocr_models/0/preprocessing", json!("drift")),
+            ("/ocr_models/0/decoder", json!("drift")),
+            ("/ocr_models/0/normalization", json!("drift")),
+            ("/ocr_models/0/vocabulary/entries", json!(1)),
+            (
+                "/ocr_models/0/vocabulary/content/value",
+                json!("0000000000000000000000000000000000000000000000000000000000000000"),
+            ),
+            ("/ocr_models/0/detector/byte_len", json!(1)),
+            (
+                "/ocr_models/0/detector/content/value",
+                json!("0000000000000000000000000000000000000000000000000000000000000000"),
+            ),
+            ("/ocr_models/0/recognizer/byte_len", json!(1)),
+            (
+                "/ocr_models/0/recognizer/content/value",
+                json!("0000000000000000000000000000000000000000000000000000000000000000"),
+            ),
+        ];
+        for (pointer, replacement) in mutations {
+            let mut drifted = accepted.clone();
+            *drifted.pointer_mut(pointer).expect("fixture pointer") = replacement;
+            assert_eq!(
+                Manifest::parse(&serde_json::to_vec(&drifted).unwrap())
+                    .unwrap_err()
+                    .kind(),
+                AssetFaultKind::InvalidOcrModelMetadata,
+                "{pointer}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cross_profile_tuples_are_rejected() {
+    let mut bounded_with_native_preprocessing = accepted_bounded_manifest_value();
+    bounded_with_native_preprocessing["ocr_models"][0]["preprocessing"] =
+        json!(ACCEPTED_G004_PREPROCESSING_ID);
+    let mut native_with_bounded_preprocessing = accepted_g004_manifest_value();
+    native_with_bounded_preprocessing["ocr_models"][0]["preprocessing"] =
+        json!(ACCEPTED_BOUNDED_PREPROCESSING_ID);
+    let mut mixed_ids = accepted_g004_manifest_value();
+    mixed_ids["ocr_models"][0]["profile"] = json!(ACCEPTED_BOUNDED_PROFILE_ID);
+
+    for mismatch in [
+        bounded_with_native_preprocessing,
+        native_with_bounded_preprocessing,
+        mixed_ids,
+    ] {
         assert_eq!(
-            Manifest::parse(&serde_json::to_vec(&drifted).unwrap())
+            Manifest::parse(&serde_json::to_vec(&mismatch).unwrap())
                 .unwrap_err()
                 .kind(),
-            AssetFaultKind::InvalidOcrModelMetadata,
-            "{pointer}"
+            AssetFaultKind::InvalidOcrModelMetadata
         );
     }
 }

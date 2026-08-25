@@ -3,13 +3,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use mado_pilot_core::OperationContext;
-use mado_pilot_ocr::{OcrModelIdentity, OcrModelSource};
+use mado_pilot_ocr::OcrModelSource;
 use ort::ep::CPU;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{TensorElementType, ValueType};
 
 use crate::fault::{OnnxBackendFault, OnnxBackendObservations};
+use crate::profile::{DetectorPlan, SelectedProfile};
 use crate::vocabulary::Vocabulary;
 
 const DETECTOR_INPUT: &str = "x";
@@ -55,9 +56,7 @@ impl SessionPair {
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendFault> {
         checkpoint(operation)?;
-        if source.identity() != &OcrModelIdentity::accepted_g004() {
-            return Err(OnnxBackendFault::ProfileMismatch);
-        }
+        SelectedProfile::from_identity(source.identity())?;
 
         let lease = PairLease::acquire()?;
         let detector = build_session(source.detector())?;
@@ -104,6 +103,14 @@ impl SessionPair {
 
     pub(crate) fn record_mapping(&mut self, bytes: usize) {
         self.observations.record_mapping(bytes);
+    }
+
+    pub(crate) fn record_detector_input(&mut self, plan: DetectorPlan) {
+        self.observations.record_detector_input(
+            plan.final_width(),
+            plan.final_height(),
+            plan.tensor_bytes(),
+        );
     }
 
     pub(crate) fn detector_mut(&mut self) -> &mut Session {

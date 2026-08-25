@@ -4,6 +4,8 @@ use std::fmt;
 
 use mado_pilot_core::{Error, Interruption, Status};
 
+use crate::profile::PreprocessingDescriptor;
+
 /// One closed failure class owned by the ONNX OCR adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -28,9 +30,9 @@ pub enum OnnxBackendFault {
     RuntimeIncompatible,
     /// Another process-global ONNX API or environment was initialized first.
     RuntimeConflict,
-    /// The source did not carry the exact accepted G-004 identity.
+    /// The source did not carry either exact accepted closed profile.
     ProfileMismatch,
-    /// The model graph or embedded vocabulary did not match the accepted profile.
+    /// The model graph or embedded vocabulary did not match the selected profile.
     GraphMismatch,
     /// A checked tensor, output, candidate, or text ceiling would be exceeded.
     ResourceLimit,
@@ -100,8 +102,8 @@ impl OnnxBackendFault {
             Self::RuntimeUnavailable => "controlled ONNX runtime is unavailable",
             Self::RuntimeIncompatible => "controlled ONNX runtime is incompatible",
             Self::RuntimeConflict => "a conflicting ONNX runtime is already initialized",
-            Self::ProfileMismatch => "OCR source does not match the accepted G-004 profile",
-            Self::GraphMismatch => "OCR graph metadata does not match the accepted profile",
+            Self::ProfileMismatch => "OCR source does not match an accepted closed profile",
+            Self::GraphMismatch => "OCR graph metadata does not match the selected profile",
             Self::ResourceLimit => "ONNX backend resource ceiling would be exceeded",
             Self::Busy => "ONNX backend inference slot is occupied",
             Self::Closed => "ONNX backend is closed",
@@ -151,20 +153,34 @@ pub enum OnnxRuntimeCompatibility {
     Version1_29Api17,
 }
 
+/// The closed OCR preprocessing profile selected for this backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OnnxOcrProfile {
+    /// Released native G-004 DB736 preprocessing without a final dimension ceiling.
+    NativeG004,
+    /// ADR 0038 direct bounded detector sampling with original-source recognition.
+    BoundedDetector,
+}
+
 /// Privacy-safe, closed observations about one opened backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OnnxBackendFacts {
     provider: OnnxExecutionProvider,
     runtime: OnnxRuntimeCompatibility,
     max_concurrent_inferences: u32,
+    profile: OnnxOcrProfile,
     max_tensor_bytes: u64,
+    max_detector_width: Option<u32>,
+    max_detector_height: Option<u32>,
+    max_detector_tensor_bytes: u64,
     max_output_bytes: u64,
     max_detector_candidates: u32,
     recognition_batch: u32,
 }
 
 impl OnnxBackendFacts {
-    pub(crate) const fn accepted(
+    pub(crate) fn accepted(
+        preprocessing: PreprocessingDescriptor,
         max_tensor_bytes: u64,
         max_output_bytes: u64,
         max_detector_candidates: u32,
@@ -173,8 +189,17 @@ impl OnnxBackendFacts {
         Self {
             provider: OnnxExecutionProvider::Cpu,
             runtime: OnnxRuntimeCompatibility::Version1_29Api17,
+            profile: preprocessing.selected().public(),
             max_concurrent_inferences: 1,
             max_tensor_bytes,
+            max_detector_width: preprocessing.max_width(),
+            max_detector_height: preprocessing.max_height(),
+            max_detector_tensor_bytes: match (preprocessing.max_width(), preprocessing.max_height())
+            {
+                (Some(width), Some(height)) => u64::from(width) * u64::from(height) * 3 * 4,
+                (None, None) => max_tensor_bytes,
+                _ => 0,
+            },
             max_output_bytes,
             max_detector_candidates,
             recognition_batch,
@@ -193,6 +218,11 @@ impl OnnxBackendFacts {
         self.runtime
     }
 
+    /// Returns the selected closed OCR profile.
+    #[must_use]
+    pub const fn profile(self) -> OnnxOcrProfile {
+        self.profile
+    }
     /// Returns the number of calls admitted concurrently.
     #[must_use]
     pub const fn max_concurrent_inferences(self) -> u32 {
@@ -205,6 +235,23 @@ impl OnnxBackendFacts {
         self.max_tensor_bytes
     }
 
+    /// Returns the selected profile's final detector-width ceiling, if fixed.
+    #[must_use]
+    pub const fn max_detector_width(self) -> Option<u32> {
+        self.max_detector_width
+    }
+
+    /// Returns the selected profile's final detector-height ceiling, if fixed.
+    #[must_use]
+    pub const fn max_detector_height(self) -> Option<u32> {
+        self.max_detector_height
+    }
+
+    /// Returns the selected profile's detector tensor byte ceiling.
+    #[must_use]
+    pub const fn max_detector_tensor_bytes(self) -> u64 {
+        self.max_detector_tensor_bytes
+    }
     /// Returns the per-native-output byte ceiling.
     #[must_use]
     pub const fn max_output_bytes(self) -> u64 {
@@ -228,6 +275,10 @@ impl OnnxBackendFacts {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct OnnxBackendObservations {
     mapped_bytes: u64,
+    latest_detector_width: Option<u32>,
+    latest_detector_height: Option<u32>,
+    detector_tensor_bytes: u64,
+    detector_resizes: u64,
     detector_runs: u64,
     recognizer_runs: u64,
     session_pairs: u32,
@@ -238,6 +289,10 @@ impl OnnxBackendObservations {
     pub(crate) const fn opened() -> Self {
         Self {
             mapped_bytes: 0,
+            latest_detector_width: None,
+            latest_detector_height: None,
+            detector_tensor_bytes: 0,
+            detector_resizes: 0,
             detector_runs: 0,
             recognizer_runs: 0,
             session_pairs: 1,
@@ -249,6 +304,15 @@ impl OnnxBackendObservations {
         self.mapped_bytes = self
             .mapped_bytes
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn record_detector_input(&mut self, width: u32, height: u32, bytes: usize) {
+        self.latest_detector_width = Some(width);
+        self.latest_detector_height = Some(height);
+        self.detector_tensor_bytes = self
+            .detector_tensor_bytes
+            .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
+        self.detector_resizes = self.detector_resizes.saturating_add(1);
     }
 
     pub(crate) fn record_detector_run(&mut self) {
@@ -263,6 +327,30 @@ impl OnnxBackendObservations {
     #[must_use]
     pub const fn mapped_bytes(self) -> u64 {
         self.mapped_bytes
+    }
+
+    /// Returns the most recently prepared final detector width.
+    #[must_use]
+    pub const fn latest_detector_width(self) -> Option<u32> {
+        self.latest_detector_width
+    }
+
+    /// Returns the most recently prepared final detector height.
+    #[must_use]
+    pub const fn latest_detector_height(self) -> Option<u32> {
+        self.latest_detector_height
+    }
+
+    /// Returns cumulative bytes in prepared detector tensors.
+    #[must_use]
+    pub const fn detector_tensor_bytes(self) -> u64 {
+        self.detector_tensor_bytes
+    }
+
+    /// Returns cumulative direct source-to-detector resizes.
+    #[must_use]
+    pub const fn detector_resizes(self) -> u64 {
+        self.detector_resizes
     }
 
     /// Returns cumulative detector tensor runs.

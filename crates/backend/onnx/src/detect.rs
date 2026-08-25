@@ -18,6 +18,7 @@ use opencv::imgproc::{
 };
 
 use crate::fault::OnnxBackendFault;
+use crate::profile::DetectorPlan;
 
 pub(crate) const MAX_DETECTOR_CANDIDATES: usize = 1_000;
 const THRESHOLD: f32 = 0.3;
@@ -40,8 +41,7 @@ pub(crate) struct Detection {
 pub(crate) fn postprocess(
     shape: &[i64],
     probability: &[f32],
-    source_width: u32,
-    source_height: u32,
+    plan: DetectorPlan,
     request_ceiling: usize,
 ) -> Result<Vec<Detection>, OnnxBackendFault> {
     if shape.len() != 4 || shape[0] != 1 || shape[1] != 1 || shape[2] <= 0 || shape[3] <= 0 {
@@ -49,10 +49,18 @@ pub(crate) fn postprocess(
     }
     let height = usize::try_from(shape[2]).map_err(|_| OnnxBackendFault::MalformedOutput)?;
     let width = usize::try_from(shape[3]).map_err(|_| OnnxBackendFault::MalformedOutput)?;
+    if width
+        != usize::try_from(plan.final_width()).map_err(|_| OnnxBackendFault::MalformedOutput)?
+        || height
+            != usize::try_from(plan.final_height())
+                .map_err(|_| OnnxBackendFault::MalformedOutput)?
+    {
+        return Err(OnnxBackendFault::MalformedOutput);
+    }
     let elements = height
         .checked_mul(width)
         .ok_or(OnnxBackendFault::ResourceLimit)?;
-    if probability.len() != elements || source_width == 0 || source_height == 0 {
+    if probability.len() != elements {
         return Err(OnnxBackendFault::MalformedOutput);
     }
     let output_bytes = elements
@@ -122,9 +130,9 @@ pub(crate) fn postprocess(
         if expanded_short < f64::from(MIN_SIDE + 2.0) {
             continue;
         }
-        let mut scaled = scale_quad(&expanded, width, height, source_width, source_height)?;
+        let mut scaled = scale_quad(&expanded, plan)?;
         order_clockwise(&mut scaled);
-        clip_quad(&mut scaled, source_width, source_height);
+        clip_quad(&mut scaled, plan.source_width(), plan.source_height());
         // RapidOCR truncates these positive lengths to an integer before the
         // `<= 3` check; that is exactly the same predicate as `< 4.0`.
         if distance(scaled[0], scaled[1]) < 4.0 || distance(scaled[0], scaled[3]) < 4.0 {
@@ -494,21 +502,15 @@ fn clipper_round(value: f64) -> Result<i64, OnnxBackendFault> {
     f64_to_i64(adjusted)
 }
 
-fn scale_quad(
-    quad: &Quad,
-    map_width: usize,
-    map_height: usize,
-    source_width: u32,
-    source_height: u32,
-) -> Result<Quad, OnnxBackendFault> {
+fn scale_quad(quad: &Quad, plan: DetectorPlan) -> Result<Quad, OnnxBackendFault> {
     let mut scaled = [Point2f::default(); 4];
     for (destination, point) in scaled.iter_mut().zip(quad) {
-        let x = (f64::from(point.x) / map_width as f64 * f64::from(source_width))
+        let x = (f64::from(point.x) * plan.inverse_x())
             .round_ties_even()
-            .clamp(0.0, f64::from(source_width));
-        let y = (f64::from(point.y) / map_height as f64 * f64::from(source_height))
+            .clamp(0.0, f64::from(plan.source_width()));
+        let y = (f64::from(point.y) * plan.inverse_y())
             .round_ties_even()
-            .clamp(0.0, f64::from(source_height));
+            .clamp(0.0, f64::from(plan.source_height()));
         *destination = Point2f::new(f64_to_f32(x)?, f64_to_f32(y)?);
     }
     Ok(scaled)
@@ -588,7 +590,15 @@ fn f64_to_i64(value: f64) -> Result<i64, OnnxBackendFault> {
 }
 #[cfg(test)]
 mod tests {
-    use super::postprocess;
+    use opencv::core::Point2f;
+
+    use super::{clip_quad, postprocess, scale_quad};
+    use crate::fault::OnnxBackendFault;
+    use crate::profile::DetectorPlan;
+
+    fn plan(width: u32, height: u32) -> DetectorPlan {
+        DetectorPlan::for_test(width, height, width, height).unwrap()
+    }
 
     #[test]
     fn bounded_probability_map_produces_one_ordered_box() {
@@ -598,7 +608,7 @@ mod tests {
                 probability[row * 32 + column] = 0.9;
             }
         }
-        let detections = postprocess(&[1, 1, 32, 32], &probability, 32, 32, 1000)
+        let detections = postprocess(&[1, 1, 32, 32], &probability, plan(32, 32), 1000)
             .expect("valid probability map");
 
         assert_eq!(detections.len(), 1);
@@ -608,10 +618,37 @@ mod tests {
     }
 
     #[test]
+    fn output_dimensions_must_match_the_checked_plan() {
+        assert!(matches!(
+            postprocess(&[1, 1, 32, 31], &[0.0; 32 * 31], plan(32, 32), 1),
+            Err(OnnxBackendFault::MalformedOutput)
+        ));
+    }
+
+    #[test]
+    fn inverse_geometry_uses_source_axes_and_clips_edges() {
+        let plan = DetectorPlan::for_test(1_001, 563, 1_312, 736).unwrap();
+        let detector_quad = [
+            Point2f::new(-1.0, -1.0),
+            Point2f::new(1_312.0, 0.0),
+            Point2f::new(1_312.0, 736.0),
+            Point2f::new(0.0, 736.0),
+        ];
+
+        let mut source_quad = scale_quad(&detector_quad, plan).unwrap();
+        clip_quad(&mut source_quad, plan.source_width(), plan.source_height());
+
+        assert_eq!(source_quad[0], Point2f::new(0.0, 0.0));
+        assert_eq!(source_quad[1], Point2f::new(1_000.0, 0.0));
+        assert_eq!(source_quad[2], Point2f::new(1_000.0, 562.0));
+        assert_eq!(source_quad[3], Point2f::new(0.0, 562.0));
+    }
+
+    #[test]
     fn probability_outside_sigmoid_range_is_rejected() {
         assert!(matches!(
-            postprocess(&[1, 1, 1, 1], &[1.1], 1, 1, 1),
-            Err(crate::fault::OnnxBackendFault::MalformedOutput)
+            postprocess(&[1, 1, 1, 1], &[1.1], plan(1, 1), 1),
+            Err(OnnxBackendFault::MalformedOutput)
         ));
     }
 
@@ -624,8 +661,8 @@ mod tests {
             }
         }
         assert!(matches!(
-            postprocess(&[1, 1, 256, 256], &probability, 256, 256, 1000),
-            Err(crate::fault::OnnxBackendFault::ResourceLimit)
+            postprocess(&[1, 1, 256, 256], &probability, plan(256, 256), 1000),
+            Err(OnnxBackendFault::ResourceLimit)
         ));
     }
 
@@ -639,8 +676,8 @@ mod tests {
             probability[row * 1024] = 0.9;
         }
         assert!(matches!(
-            postprocess(&[1, 1, 1024, 1024], &probability, 1024, 1024, 1000),
-            Err(crate::fault::OnnxBackendFault::ResourceLimit)
+            postprocess(&[1, 1, 1024, 1024], &probability, plan(1024, 1024), 1000),
+            Err(OnnxBackendFault::ResourceLimit)
         ));
     }
 }

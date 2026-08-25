@@ -5,21 +5,17 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::OnnxOcrBackend;
+use crate::{OnnxBackendFault, OnnxOcrBackend, OnnxOcrProfile};
 use mado_pilot_capture::PixelFormat;
 use mado_pilot_core::{CancellationToken, CoordinateSpace, OperationContext, PixelExtent, Status};
-use mado_pilot_ocr::{
-    OcrBackend, OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest,
-    OcrRecognizer, OcrRegion, OcrRequest,
-};
+use mado_pilot_ocr::{OcrBackend, OcrModelIdentity, OcrRecognizer, OcrRegion, OcrRequest};
 use mado_pilot_testkit::{ocr_contract, vision_contract};
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual};
 use opencv::imgcodecs::{IMREAD_COLOR, imread};
 use opencv::imgproc::{COLOR_BGR2BGRA, cvt_color_def};
 
 const RUNTIME_ENV: &str = "MADO_PILOT_ONNX_RUNTIME";
-const DETECTOR_ENV: &str = "MADO_PILOT_ONNX_DETECTOR";
-const RECOGNIZER_ENV: &str = "MADO_PILOT_ONNX_RECOGNIZER";
+const MODEL_ROOT_ENV: &str = "MADO_PILOT_G004_MODEL_ROOT";
 
 const HUD_TEXT: [&str; 8] = [
     "魔導士",
@@ -64,98 +60,114 @@ const NATIVE_GATE_BOUND: Duration = Duration::from_secs(2);
 #[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
 fn accepted_runtime_passes_contract_and_hud_oracle() {
     let runtime = required_path(RUNTIME_ENV);
+    let model_root = required_path(MODEL_ROOT_ENV);
     let operation = OperationContext::new();
 
-    let backend: Arc<dyn OcrBackend> = Arc::new(
-        OnnxOcrBackend::open(source(), &runtime, &operation).expect("accepted backend opens"),
-    );
-    ocr_contract::run(&backend);
-    drop(backend);
+    for (identity, profile) in [
+        (
+            OcrModelIdentity::accepted_g004(),
+            OnnxOcrProfile::NativeG004,
+        ),
+        (
+            OcrModelIdentity::accepted_bounded_detector(),
+            OnnxOcrProfile::BoundedDetector,
+        ),
+    ] {
+        let opened = open_profile(profile, &model_root, &runtime, &operation)
+            .expect("accepted backend opens");
+        assert_eq!(opened.descriptor().model_identity(), &identity);
+        assert_eq!(opened.facts().profile(), profile);
+        let backend: Arc<dyn OcrBackend> = Arc::new(opened);
+        ocr_contract::run(&backend);
+        drop(backend);
 
-    let backend: Arc<dyn OcrBackend> = Arc::new(
-        OnnxOcrBackend::open(source(), &runtime, &operation).expect("backend reopens after close"),
-    );
-    let first = recognize_hud(Arc::clone(&backend), &operation);
-    assert_hud(&first);
-    for _ in 1..3 {
-        let repeated = recognize_hud(Arc::clone(&backend), &operation);
-        assert_hud(&repeated);
-        assert_confidence_stable(&first, &repeated);
-    }
+        let opened = open_profile(profile, &model_root, &runtime, &operation)
+            .expect("backend reopens after close");
+        assert_eq!(opened.descriptor().model_identity(), &identity);
+        assert_eq!(opened.facts().profile(), profile);
+        let backend: Arc<dyn OcrBackend> = Arc::new(opened);
+        let first = recognize_hud(Arc::clone(&backend), &operation);
+        assert_hud(&first);
+        for _ in 1..3 {
+            let repeated = recognize_hud(Arc::clone(&backend), &operation);
+            assert_hud(&repeated);
+            assert_confidence_stable(&first, &repeated);
+        }
 
-    let cancellation_gate = crate::inference::test_hook::install();
-    let token = CancellationToken::new();
-    let worker_token = token.clone();
-    let worker_backend = Arc::clone(&backend);
-    let (cancelled_sender, cancelled_receiver) = mpsc::sync_channel(1);
-    let cancelled = thread::spawn(move || {
-        let context = OperationContext::new().with_cancellation(worker_token);
-        let status = recognize_hud_result(worker_backend, &context)
-            .expect_err("cancelled inference cannot publish")
-            .status();
-        cancelled_sender
-            .send(status)
-            .expect("cancellation result receiver remains live");
-    });
-    assert!(
-        cancellation_gate.wait_until_admitted(NATIVE_GATE_BOUND),
-        "native run admission timed out"
-    );
-    cancellation_gate.release();
-    assert!(
-        cancellation_gate.wait_until_run_started(NATIVE_GATE_BOUND),
-        "native run start timed out"
-    );
-    let cancellation_started = Instant::now();
-    token.cancel();
-    assert!(
-        cancellation_gate.wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
-        "native termination was not issued within the explicit test bound"
-    );
-    let remaining = NATIVE_TERMINATION_BOUND.saturating_sub(cancellation_started.elapsed());
-    assert_eq!(
-        cancelled_receiver
-            .recv_timeout(remaining)
-            .expect("cancelled native run returns within the explicit test bound"),
-        Status::Cancelled
-    );
-    cancelled.join().expect("cancellation worker joins");
-    drop(cancellation_gate);
-    let after_cancellation = recognize_hud(Arc::clone(&backend), &operation);
-    assert_hud(&after_cancellation);
-    assert_confidence_stable(&first, &after_cancellation);
+        let cancellation_gate = crate::inference::test_hook::install();
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let worker_backend = Arc::clone(&backend);
+        let (cancelled_sender, cancelled_receiver) = mpsc::sync_channel(1);
+        let cancelled = thread::spawn(move || {
+            let context = OperationContext::new().with_cancellation(worker_token);
+            let status = recognize_hud_result(worker_backend, &context)
+                .expect_err("cancelled inference cannot publish")
+                .status();
+            cancelled_sender
+                .send(status)
+                .expect("cancellation result receiver remains live");
+        });
+        assert!(
+            cancellation_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+            "native run admission timed out"
+        );
+        cancellation_gate.release();
+        assert!(
+            cancellation_gate.wait_until_run_started(NATIVE_GATE_BOUND),
+            "native run start timed out"
+        );
+        let cancellation_started = Instant::now();
+        token.cancel();
+        assert!(
+            cancellation_gate.wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
+            "native termination was not issued within the explicit test bound"
+        );
+        let remaining = NATIVE_TERMINATION_BOUND.saturating_sub(cancellation_started.elapsed());
+        assert_eq!(
+            cancelled_receiver
+                .recv_timeout(remaining)
+                .expect("cancelled native run returns within the explicit test bound"),
+            Status::Cancelled
+        );
+        cancelled.join().expect("cancellation worker joins");
+        drop(cancellation_gate);
+        let after_cancellation = recognize_hud(Arc::clone(&backend), &operation);
+        assert_hud(&after_cancellation);
+        assert_confidence_stable(&first, &after_cancellation);
 
-    let close_gate = crate::inference::test_hook::install();
-    let worker_backend = Arc::clone(&backend);
-    let (in_flight_sender, in_flight_receiver) = mpsc::sync_channel(1);
-    let in_flight = thread::spawn(move || {
-        in_flight_sender
-            .send(recognize_hud(worker_backend, &OperationContext::new()))
-            .expect("in-flight result receiver remains live");
-    });
-    assert!(
-        close_gate.wait_until_admitted(NATIVE_GATE_BOUND),
-        "close-race admission timed out"
-    );
-    assert_eq!(
+        let close_gate = crate::inference::test_hook::install();
+        let worker_backend = Arc::clone(&backend);
+        let (in_flight_sender, in_flight_receiver) = mpsc::sync_channel(1);
+        let in_flight = thread::spawn(move || {
+            in_flight_sender
+                .send(recognize_hud(worker_backend, &OperationContext::new()))
+                .expect("in-flight result receiver remains live");
+        });
+        assert!(
+            close_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+            "close-race admission timed out"
+        );
+        assert_eq!(
+            backend
+                .close(&operation)
+                .expect_err("close does not tear down admitted work")
+                .status(),
+            Status::LimitExceeded
+        );
+        close_gate.release();
+        let raced = in_flight_receiver
+            .recv_timeout(NATIVE_GATE_BOUND)
+            .expect("in-flight run returns within the native test bound");
+        in_flight.join().expect("inference worker joins");
+        drop(close_gate);
+        assert_hud(&raced);
+        assert_confidence_stable(&first, &raced);
+        backend.close(&operation).expect("native backend closes");
         backend
             .close(&operation)
-            .expect_err("close does not tear down admitted work")
-            .status(),
-        Status::LimitExceeded
-    );
-    close_gate.release();
-    let raced = in_flight_receiver
-        .recv_timeout(NATIVE_GATE_BOUND)
-        .expect("in-flight run returns within the native test bound");
-    in_flight.join().expect("inference worker joins");
-    drop(close_gate);
-    assert_hud(&raced);
-    assert_confidence_stable(&first, &raced);
-    backend.close(&operation).expect("native backend closes");
-    backend
-        .close(&operation)
-        .expect("repeated close is idempotent");
+            .expect("repeated close is idempotent");
+    }
 }
 
 fn recognize_hud(
@@ -219,22 +231,18 @@ fn assert_confidence_stable(
     assert!(baseline.eq(repeated), "same-host confidence drift");
 }
 
-fn source() -> OcrModelSource {
-    let identity = OcrModelIdentity::accepted_g004();
-    let detector: Arc<[u8]> = std::fs::read(required_path(DETECTOR_ENV))
-        .expect("read accepted detector")
-        .into();
-    let recognizer: Arc<[u8]> = std::fs::read(required_path(RECOGNIZER_ENV))
-        .expect("read accepted recognizer")
-        .into();
-    OcrModelSource::new(OcrModelSourceRequest {
-        detector: OcrModelComponent::new(Arc::clone(&detector), identity.detector())
-            .expect("accepted detector identity"),
-        recognizer: OcrModelComponent::new(Arc::clone(&recognizer), identity.recognizer())
-            .expect("accepted recognizer identity"),
-        identity,
-    })
-    .expect("accepted source")
+fn open_profile(
+    profile: OnnxOcrProfile,
+    model_root: &Path,
+    runtime: &Path,
+    operation: &OperationContext,
+) -> Result<OnnxOcrBackend, OnnxBackendFault> {
+    match profile {
+        OnnxOcrProfile::NativeG004 => OnnxOcrBackend::open_accepted(model_root, runtime, operation),
+        OnnxOcrProfile::BoundedDetector => {
+            OnnxOcrBackend::open_bounded_detector(model_root, runtime, operation)
+        }
+    }
 }
 
 fn hud_frame() -> mado_pilot_capture::Frame {
