@@ -304,9 +304,10 @@ RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --no-deps
 # 7. Dependency licenses, advisories, sources, and duplicate versions
 cargo deny --locked check
 
-# 8. C/C++ ABI, ownership, frozen 1.0/1.2 callers, and CMake consumers.
-#    The feature-gated run additionally compiles/runs local OCR fixtures; the
-#    fixture constructor is absent from release builds and the public table.
+# 8. C/C++ ABI, ownership, frozen 1.0/1.2/1.3 callers, current profile/zone
+#    examples, and CMake consumers. The feature-gated run additionally
+#    compiles/runs local OCR fixtures; the fixture constructor is absent from
+#    release builds and the public table.
 cargo build --locked --package mado-pilot-capi
 cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "<host>"
 cargo run --locked --package mado-pilot --example ocr-fixture

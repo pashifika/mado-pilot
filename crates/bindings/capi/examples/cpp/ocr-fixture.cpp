@@ -38,7 +38,7 @@ int main(int argc, char** argv)
     auto loaded = madopilot::Api::load();
     madopilot::Api api;
     if (!take(loaded, api, "Api::load") ||
-        api.extent() < MADOPILOT_API_SIZE_OCR_RESULT_TEXT_AT) {
+        api.extent() < MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR) {
         return 1;
     }
 
@@ -52,11 +52,21 @@ int main(int argc, char** argv)
     source.frame(supplied);
     madopilot::Operation operation;
     madopilot::EngineOptions options;
-    options.diagnostics(MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG, 16);
+    options.diagnostics(MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG, 32);
     auto built = madopilot::private_fixture::OcrEngine::create(
         api, source, options, operation);
     madopilot::private_fixture::OcrEngine engine;
     if (!take(built, engine, "create_private_ocr_fixture_engine")) return 1;
+    const auto descriptor = engine.ocr_descriptor();
+    if (!descriptor ||
+        descriptor.value().backend_id.view() !=
+            MADOPILOT_FIXTURE_OCR_BACKEND_ID ||
+        descriptor.value().backend_version.view() !=
+            MADOPILOT_FIXTURE_OCR_BACKEND_VERSION ||
+        descriptor.value().model_id.view() != MADOPILOT_FIXTURE_OCR_MODEL_ID) {
+        std::fprintf(stderr, "engine OCR descriptor mismatch\n");
+        return 1;
+    }
     auto reader_result = engine.take_diagnostic_reader();
     if (!reader_result || !reader_result.value().has_value()) {
         std::fprintf(stderr, "diagnostic reader unavailable\n");
@@ -93,6 +103,73 @@ int main(int argc, char** argv)
     madopilot::OcrResult retained = result.clone();
     result.reset();
 
+    madopilot::ZoneScanOcrRequest one_zone_request;
+    one_zone_request.frame(frame)
+        .package(package)
+        .model(MADOPILOT_FIXTURE_OCR_MODEL_ID)
+        .backend(MADOPILOT_FIXTURE_OCR_BACKEND_ID,
+                 MADOPILOT_FIXTURE_OCR_BACKEND_VERSION)
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 32, 24});
+    auto one_scanned = session.scan_ocr_zones(one_zone_request, operation);
+    madopilot::ZoneScanOcrResult one_result;
+    if (!take(one_scanned, one_result, "scan one OCR zone")) return 1;
+    const auto one_info = one_result.describe();
+    const auto one_group = one_result.zone_at(0);
+    if (!one_info || !one_group || one_info.value().zone_count != 1 ||
+        one_info.value().unique_candidate_count != 1 ||
+        one_info.value().membership_count != 1 ||
+        one_group.value().region_count != 1) {
+        return 1;
+    }
+    one_result.reset();
+
+    madopilot::ZoneScanOcrRequest eight_zone_request;
+    eight_zone_request.frame(frame)
+        .package(package)
+        .model(MADOPILOT_FIXTURE_OCR_MODEL_ID)
+        .backend(MADOPILOT_FIXTURE_OCR_BACKEND_ID,
+                 MADOPILOT_FIXTURE_OCR_BACKEND_VERSION);
+    for (std::int32_t row = 0; row < 2; ++row) {
+        for (std::int32_t column = 0; column < 4; ++column) {
+            eight_zone_request.zone(
+                {MADOPILOT_SPACE_CAPTURE_PIXELS, column * 8, row * 12,
+                 column * 8 + 8, row * 12 + 12});
+        }
+    }
+    auto eight_scanned =
+        session.scan_ocr_zones(eight_zone_request, operation);
+    madopilot::ZoneScanOcrResult eight_result;
+    if (!take(eight_scanned, eight_result, "scan eight OCR zones")) return 1;
+    const auto eight_info = eight_result.describe();
+    const auto eight_empty = eight_result.zone_at(0);
+    const auto eight_hit = eight_result.zone_at(1);
+    if (!eight_info || !eight_empty || !eight_hit ||
+        eight_info.value().zone_count != 8 ||
+        eight_info.value().unique_candidate_count != 1 ||
+        eight_info.value().membership_count != 1 ||
+        !eight_empty.value().empty() || eight_hit.value().region_count != 1) {
+        return 1;
+    }
+    eight_result.reset();
+
+    madopilot::ZoneScanOcrRequest zone_request;
+    zone_request.frame(frame)
+        .package(package)
+        .model(MADOPILOT_FIXTURE_OCR_MODEL_ID)
+        .backend(MADOPILOT_FIXTURE_OCR_BACKEND_ID,
+                 MADOPILOT_FIXTURE_OCR_BACKEND_VERSION)
+        .output_space(MADOPILOT_SPACE_CAPTURE_PIXELS)
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 16, 12})
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 24, 0, 32, 12})
+        .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 8, 0, 24, 12});
+    auto scanned = session.scan_ocr_zones(zone_request, operation);
+    madopilot::ZoneScanOcrResult grouped;
+    if (!take(scanned, grouped, "scan_ocr_zones")) return 1;
+    madopilot::ZoneScanOcrResult grouped_retained = grouped.clone();
+    madopilot::ZoneScanOcrResult grouped_moved =
+        std::move(grouped_retained);
+    grouped.reset();
+
     const auto closed = session.close(operation);
     if (!closed) return 1;
     frame.reset();
@@ -106,6 +183,31 @@ int main(int argc, char** argv)
     const auto text = retained.text_at(0);
     if (!info || !region || !text || info.value().region_count != 1) {
         std::fprintf(stderr, "OCR result access failed\n");
+        return 1;
+    }
+
+    const auto grouped_info = grouped_moved.describe();
+    const auto grouped_first = grouped_moved.zone_at(0);
+    const auto grouped_empty = grouped_moved.zone_at(1);
+    const auto grouped_overlap = grouped_moved.zone_at(2);
+    const auto grouped_region = grouped_moved.region_at(0, 0);
+    const auto grouped_text = grouped_moved.text_at(0, 0);
+    const auto overlap_text = grouped_moved.text_at(2, 0);
+    if (!grouped_info || !grouped_first || !grouped_empty ||
+        !grouped_overlap || !grouped_region || !grouped_text ||
+        !overlap_text || grouped_info.value().zone_count != 3 ||
+        grouped_info.value().unique_candidate_count != 1 ||
+        grouped_info.value().membership_count != 2 ||
+        grouped_info.value().source.sequence != info.value().source.sequence ||
+        grouped_first.value().region_count != 1 ||
+        !grouped_empty.value().empty() ||
+        grouped_overlap.value().region_count != 1 ||
+        grouped_region.value().confidence != region.value().confidence ||
+        grouped_region.value().points[0].x != region.value().points[0].x ||
+        grouped_region.value().points[0].y != region.value().points[0].y ||
+        grouped_text.value().view() != text.value().view() ||
+        grouped_text.value().view() != overlap_text.value().view()) {
+        std::fprintf(stderr, "grouped OCR ownership/access failed\n");
         return 1;
     }
 
@@ -123,7 +225,8 @@ int main(int argc, char** argv)
     const auto batch_info = batch.describe();
     if (!batch_info) return 1;
     bool saw_admission = false;
-    bool saw_terminal = false;
+    bool saw_singular_terminal = false;
+    bool saw_grouped_terminal = false;
     for (std::uint64_t index = 0; index < batch_info.value().record_count; ++index) {
         const auto record_result = batch.record_at(static_cast<std::size_t>(index));
         if (!record_result) return 1;
@@ -132,23 +235,46 @@ int main(int argc, char** argv)
             saw_admission ||
             (record.kind == MADOPILOT_DIAGNOSTIC_KIND_OPERATION_STARTED &&
              record.operation == MADOPILOT_DIAGNOSTIC_OPERATION_OCR_RECOGNITION);
-        if (record.kind == MADOPILOT_DIAGNOSTIC_KIND_OCR) {
-            saw_terminal =
+        if (record.kind == MADOPILOT_DIAGNOSTIC_KIND_OCR &&
+            record.result_count == 1 &&
+            !record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_SOURCE_ENVELOPE)) {
+            saw_singular_terminal =
                 record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME) &&
                 record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION) &&
                 record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_MODEL_INSTANCE) &&
                 record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_TIMING) &&
                 record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESOURCES) &&
                 !record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_PROFILE) &&
+                !record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_ZONE_COUNT) &&
                 record.ocr_profile ==
                     MADOPILOT_OCR_DIAGNOSTIC_PROFILE_UNSPECIFIED &&
                 record.ocr_outcome ==
                     MADOPILOT_OCR_DIAGNOSTIC_OUTCOME_RECOGNIZED &&
-                record.ocr_model_instance != 0 && record.result_count == 1 &&
+                record.ocr_model_instance != 0 &&
                 record.frame.sequence == info.value().source.sequence;
+        } else if (record.kind == MADOPILOT_DIAGNOSTIC_KIND_OCR &&
+                   record.result_count == 2) {
+            saw_grouped_terminal =
+                record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_FRAME) &&
+                record.has(
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_SOURCE_ENVELOPE) &&
+                record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_ZONE_COUNT) &&
+                record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESULT_COUNTS) &&
+                !record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_REGION) &&
+                !record.has(
+                    MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_REQUESTED_REGION) &&
+                !record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESULT_BYTES) &&
+                !record.has(MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_BACKEND_WORK) &&
+                record.ocr_zone_count == 3 &&
+                record.ocr_unique_candidate_count == 1 &&
+                record.ocr_membership_count == 2 &&
+                record.ocr_source_envelope.left == 0 &&
+                record.ocr_source_envelope.top == 0 &&
+                record.ocr_source_envelope.right == 32 &&
+                record.ocr_source_envelope.bottom == 12;
         }
     }
-    if (!saw_admission || !saw_terminal) {
+    if (!saw_admission || !saw_singular_terminal || !saw_grouped_terminal) {
         std::fprintf(stderr, "OCR diagnostics were incomplete\n");
         return 1;
     }

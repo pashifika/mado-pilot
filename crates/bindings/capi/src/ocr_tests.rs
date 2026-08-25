@@ -1,3 +1,4 @@
+use std::mem::{align_of, size_of};
 use std::ptr;
 use std::sync::Arc;
 use std::thread;
@@ -25,7 +26,10 @@ use crate::table::{
     MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR, MADOPILOT_API_SIZE_CURRENT, madopilot_api_t,
     madopilot_get_api,
 };
-use crate::types::{madopilot_ocr_request_t, madopilot_open_request_t, madopilot_operation_t};
+use crate::types::{
+    madopilot_ocr_engine_descriptor_t, madopilot_ocr_request_t, madopilot_ocr_zone_scan_request_t,
+    madopilot_ocr_zone_t, madopilot_open_request_t, madopilot_operation_t,
+};
 
 const DETECTOR: &[u8] = b"detector-model-bytes";
 const RECOGNIZER: &[u8] = b"recognizer-model-bytes";
@@ -170,6 +174,42 @@ fn c_request(
     }
 }
 
+fn c_zone(left: i32, top: i32, right: i32, bottom: i32) -> madopilot_ocr_zone_t {
+    madopilot_ocr_zone_t {
+        struct_size: struct_size::<madopilot_ocr_zone_t>(),
+        flags: 0,
+        region: madopilot_pixel_rect_t {
+            space: MADOPILOT_SPACE_CAPTURE_PIXELS,
+            left,
+            top,
+            right,
+            bottom,
+        },
+        clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
+    }
+}
+
+fn c_zone_request(
+    frame: *const crate::capture::madopilot_frame_t,
+    package: *const crate::assets::madopilot_package_t,
+    zones: &[madopilot_ocr_zone_t],
+) -> madopilot_ocr_zone_scan_request_t {
+    madopilot_ocr_zone_scan_request_t {
+        struct_size: struct_size::<madopilot_ocr_zone_scan_request_t>(),
+        flags: 0,
+        frame,
+        package,
+        model_id: string(MODEL_ID),
+        backend_id: string(BACKEND_ID),
+        backend_version: string(BACKEND_VERSION),
+        output_space: MADOPILOT_SPACE_CAPTURE_PIXELS,
+        reserved: 0,
+        zones: zones.as_ptr(),
+        zone_count: zones.len(),
+        zone_stride: size_of::<madopilot_ocr_zone_t>(),
+    }
+}
+
 struct Opened {
     api: &'static madopilot_api_t,
     engine: *mut madopilot_engine_t,
@@ -291,7 +331,7 @@ fn opened(backend: Arc<dyn OcrBackend>) -> Opened {
     }
 }
 
-fn successful_backend() -> Arc<dyn OcrBackend> {
+fn successful_backend() -> Arc<ControlledOcr> {
     Arc::new(
         ControlledOcr::new(PixelFormat::Rgba8)
             .with_descriptor(descriptor())
@@ -304,7 +344,7 @@ fn successful_backend() -> Arc<dyn OcrBackend> {
     )
 }
 
-fn integrated_default_backend() -> Arc<dyn OcrBackend> {
+fn integrated_backend(model: OcrModelIdentity) -> Arc<dyn OcrBackend> {
     let descriptor = OcrBackendDescriptor::new(
         OcrBackendIdentity::new(
             OcrBackendId::new(mado_pilot::DEFAULT_OCR_BACKEND_ID)
@@ -312,7 +352,7 @@ fn integrated_default_backend() -> Arc<dyn OcrBackend> {
             OcrBackendVersion::new(mado_pilot::DEFAULT_OCR_BACKEND_VERSION)
                 .expect("default backend version is valid"),
         ),
-        OcrModelIdentity::accepted_g004(),
+        model,
         PixelFormat::Rgba8,
     );
     Arc::new(
@@ -327,15 +367,24 @@ fn integrated_default_backend() -> Arc<dyn OcrBackend> {
     )
 }
 
-fn integrated_default_request(
+fn integrated_default_backend() -> Arc<dyn OcrBackend> {
+    integrated_backend(OcrModelIdentity::accepted_g004())
+}
+
+fn integrated_bounded_backend() -> Arc<dyn OcrBackend> {
+    integrated_backend(OcrModelIdentity::accepted_bounded_detector())
+}
+
+fn integrated_request(
     frame: *const crate::capture::madopilot_frame_t,
+    model_id: &'static str,
 ) -> madopilot_ocr_request_t {
     madopilot_ocr_request_t {
         struct_size: struct_size::<madopilot_ocr_request_t>(),
         flags: 0,
         frame,
         package: ptr::null(),
-        model_id: string(mado_pilot::ACCEPTED_G004_MODEL_ID),
+        model_id: string(model_id),
         backend_id: string(mado_pilot::DEFAULT_OCR_BACKEND_ID),
         backend_version: string(mado_pilot::DEFAULT_OCR_BACKEND_VERSION),
         output_space: MADOPILOT_SPACE_CAPTURE_PIXELS,
@@ -344,12 +393,34 @@ fn integrated_default_request(
     }
 }
 
+fn integrated_default_request(
+    frame: *const crate::capture::madopilot_frame_t,
+) -> madopilot_ocr_request_t {
+    integrated_request(frame, mado_pilot::ACCEPTED_G004_MODEL_ID)
+}
+
+fn integrated_bounded_request(
+    frame: *const crate::capture::madopilot_frame_t,
+) -> madopilot_ocr_request_t {
+    integrated_request(frame, mado_pilot::ACCEPTED_BOUNDED_MODEL_ID)
+}
+
 fn empty_info() -> madopilot_ocr_result_info_t {
     <madopilot_ocr_result_info_t as Versioned>::failure(struct_size::<madopilot_ocr_result_info_t>())
 }
 
 fn empty_region() -> madopilot_ocr_region_t {
     <madopilot_ocr_region_t as Versioned>::failure(struct_size::<madopilot_ocr_region_t>())
+}
+
+fn empty_zone_info() -> madopilot_ocr_zone_scan_result_info_t {
+    <madopilot_ocr_zone_scan_result_info_t as Versioned>::failure(struct_size::<
+        madopilot_ocr_zone_scan_result_info_t,
+    >())
+}
+
+fn empty_zone_result() -> madopilot_ocr_zone_result_t {
+    <madopilot_ocr_zone_result_t as Versioned>::failure(struct_size::<madopilot_ocr_zone_result_t>())
 }
 
 fn text(view: madopilot_str_t) -> &'static str {
@@ -448,6 +519,198 @@ fn owned_c_result_and_views_survive_every_parent_release() {
 }
 
 #[test]
+fn grouped_result_owns_unique_candidates_and_survives_every_parent() {
+    let mut fixture = opened(successful_backend());
+    let zones = [
+        c_zone(0, 0, 16, 12),
+        c_zone(24, 0, 32, 12),
+        c_zone(8, 0, 24, 12),
+    ];
+    let request = c_zone_request(fixture.frame, fixture.package, &zones);
+    let operation = operation();
+    let mut result = ptr::NonNull::<madopilot_ocr_zone_scan_result_t>::dangling().as_ptr();
+    let mut error = ptr::null_mut();
+
+    // SAFETY: all handles, views, the zone array, and writable outputs remain live.
+    assert_eq!(
+        // SAFETY: the complete inputs and outputs remain live for this call.
+        unsafe {
+            (fixture.api.session_scan_ocr_zones)(
+                fixture.session,
+                &request,
+                &operation,
+                &mut result,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(!result.is_null());
+    assert!(error.is_null());
+
+    let mut info = empty_zone_info();
+    // SAFETY: the result is retained and `info` is writable.
+    assert_eq!(
+        // SAFETY: this fixture owns the retained result and writable output.
+        unsafe { (fixture.api.ocr_zone_scan_result_info)(result, &mut info) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(info.zone_count, 3);
+    assert_eq!(info.unique_candidate_count, 1);
+    assert_eq!(info.membership_count, 2);
+    assert_eq!(text(info.backend_id), BACKEND_ID);
+    assert_eq!(text(info.model_id), MODEL_ID);
+
+    let mut first = empty_zone_result();
+    let mut empty = empty_zone_result();
+    let mut overlap = empty_zone_result();
+    // SAFETY: each index is in range and every output is writable.
+    unsafe {
+        assert_eq!(
+            (fixture.api.ocr_zone_scan_result_zone_at)(result, 0, &mut first),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(
+            (fixture.api.ocr_zone_scan_result_zone_at)(result, 1, &mut empty),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(
+            (fixture.api.ocr_zone_scan_result_zone_at)(result, 2, &mut overlap),
+            MADOPILOT_STATUS_OK
+        );
+    }
+    assert_eq!(first.region_count, 1);
+    assert_eq!(empty.region_count, 0);
+    assert_eq!(overlap.region_count, 1);
+
+    let mut first_text = madopilot_str_t::empty();
+    let mut overlap_text = madopilot_str_t::empty();
+    // SAFETY: both group-relative indexes exist and outputs are writable.
+    unsafe {
+        assert_eq!(
+            (fixture.api.ocr_zone_scan_result_text_at)(result, 0, 0, &mut first_text),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(
+            (fixture.api.ocr_zone_scan_result_text_at)(result, 2, 0, &mut overlap_text),
+            MADOPILOT_STATUS_OK
+        );
+    }
+    assert_eq!(text(first_text), "魔導士 A-7");
+    assert_eq!(first_text.data, overlap_text.data);
+    assert_eq!(first_text.len, overlap_text.len);
+
+    // SAFETY: retain creates a second owner; the first release balances the
+    // original reference and the final release balances the retained one.
+    unsafe {
+        assert_eq!(
+            (fixture.api.ocr_zone_scan_result_retain)(result),
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(
+            (fixture.api.ocr_zone_scan_result_release)(result),
+            MADOPILOT_STATUS_OK
+        );
+    }
+    fixture.release_parents();
+
+    let mut retained_text = madopilot_str_t::empty();
+    // SAFETY: one result reference remains live after every parent release.
+    assert_eq!(
+        // SAFETY: one retained result reference survives all released parents.
+        unsafe { (fixture.api.ocr_zone_scan_result_text_at)(result, 0, 0, &mut retained_text) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(text(retained_text), "魔導士 A-7");
+    // SAFETY: gives up the final owned result reference.
+    assert_eq!(
+        // SAFETY: this gives up the final retained result reference.
+        unsafe { (fixture.api.ocr_zone_scan_result_release)(result) },
+        MADOPILOT_STATUS_OK
+    );
+}
+
+#[test]
+fn grouped_result_supports_concurrent_const_access_with_owned_references() {
+    let fixture = opened(successful_backend());
+    let zones = [c_zone(0, 0, 32, 24)];
+    let request = c_zone_request(fixture.frame, fixture.package, &zones);
+    let operation = operation();
+    let mut result = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: complete inputs and writable outputs remain live.
+    assert_eq!(
+        // SAFETY: complete inputs and writable outputs remain live.
+        unsafe {
+            (fixture.api.session_scan_ocr_zones)(
+                fixture.session,
+                &request,
+                &operation,
+                &mut result,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(error.is_null());
+
+    let mut workers = Vec::new();
+    for _ in 0..4 {
+        // SAFETY: each successful retain transfers one independent reference
+        // into the worker that releases it.
+        assert_eq!(
+            // SAFETY: the main thread owns the live reference it duplicates.
+            unsafe { (fixture.api.ocr_zone_scan_result_retain)(result) },
+            MADOPILOT_STATUS_OK
+        );
+        let api = fixture.api;
+        let address = result as usize;
+        workers.push(thread::spawn(move || {
+            let result = address as *mut madopilot_ocr_zone_scan_result_t;
+            let mut info = empty_zone_info();
+            let mut zone = empty_zone_result();
+            let mut text_out = madopilot_str_t::empty();
+            // SAFETY: this worker owns one result reference and all outputs.
+            unsafe {
+                assert_eq!(
+                    (api.ocr_zone_scan_result_info)(result, &mut info),
+                    MADOPILOT_STATUS_OK
+                );
+                assert_eq!(
+                    (api.ocr_zone_scan_result_zone_at)(result, 0, &mut zone),
+                    MADOPILOT_STATUS_OK
+                );
+                assert_eq!(
+                    (api.ocr_zone_scan_result_text_at)(result, 0, 0, &mut text_out),
+                    MADOPILOT_STATUS_OK
+                );
+            }
+            let owned_text = text(text_out).to_owned();
+            // SAFETY: the borrowed view has been copied; this worker now gives
+            // up its independent result reference.
+            assert_eq!(
+                // SAFETY: this worker owns the reference it releases.
+                unsafe { (api.ocr_zone_scan_result_release)(result) },
+                MADOPILOT_STATUS_OK
+            );
+            (info.zone_count, zone.region_count, owned_text)
+        }));
+    }
+    for worker in workers {
+        assert_eq!(
+            worker.join().expect("const reader completed"),
+            (1, 1, "魔導士 A-7".to_owned())
+        );
+    }
+    // SAFETY: gives up the original result reference.
+    assert_eq!(
+        // SAFETY: this gives up the original retained result reference.
+        unsafe { (fixture.api.ocr_zone_scan_result_release)(result) },
+        MADOPILOT_STATUS_OK
+    );
+}
+
+#[test]
 fn integrated_default_uses_its_retained_model_identity_without_a_duplicate_package() {
     let fixture = opened(integrated_default_backend());
     let request = integrated_default_request(fixture.frame);
@@ -484,6 +747,366 @@ fn integrated_default_uses_its_retained_model_identity_without_a_duplicate_packa
     assert_eq!(
         // SAFETY: release gives up the one owned result reference.
         unsafe { (fixture.api.ocr_result_release)(result) },
+        MADOPILOT_STATUS_OK
+    );
+}
+
+#[test]
+fn integrated_bounded_profile_supports_singular_without_a_duplicate_package() {
+    let fixture = opened(integrated_bounded_backend());
+    let request = integrated_bounded_request(fixture.frame);
+    let operation = operation();
+    let mut result = ptr::null_mut();
+    let mut error = ptr::null_mut();
+
+    assert_eq!(
+        // SAFETY: request inputs and outputs remain valid for the synchronous call.
+        unsafe {
+            (fixture.api.session_recognize)(
+                fixture.session,
+                &request,
+                &operation,
+                &mut result,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(!result.is_null());
+    assert!(error.is_null());
+
+    let mut info = empty_info();
+    assert_eq!(
+        // SAFETY: the result is retained and `info` is fully writable.
+        unsafe { (fixture.api.ocr_result_info)(result, &mut info) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(text(info.backend_id), mado_pilot::DEFAULT_OCR_BACKEND_ID);
+    assert_eq!(text(info.model_id), mado_pilot::ACCEPTED_BOUNDED_MODEL_ID);
+    assert_eq!(
+        text(info.model_version),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_VERSION
+    );
+    assert_eq!(
+        text(info.profile_id),
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID
+    );
+
+    assert_eq!(
+        // SAFETY: release gives up the one owned result reference.
+        unsafe { (fixture.api.ocr_result_release)(result) },
+        MADOPILOT_STATUS_OK
+    );
+}
+
+#[test]
+fn engine_ocr_descriptor_borrows_the_exact_retained_selection() {
+    let fixture = opened(integrated_bounded_backend());
+    let mut descriptor = <madopilot_ocr_engine_descriptor_t as Versioned>::failure(struct_size::<
+        madopilot_ocr_engine_descriptor_t,
+    >());
+
+    assert_eq!(
+        // SAFETY: the engine is retained and the full output is writable.
+        unsafe { (fixture.api.engine_ocr_descriptor)(fixture.engine, &mut descriptor) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(
+        text(descriptor.backend_id),
+        mado_pilot::DEFAULT_OCR_BACKEND_ID
+    );
+    assert_eq!(
+        text(descriptor.backend_version),
+        mado_pilot::DEFAULT_OCR_BACKEND_VERSION
+    );
+    assert_eq!(
+        text(descriptor.model_id),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_ID
+    );
+    assert_eq!(
+        text(descriptor.model_version),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_VERSION
+    );
+    assert_eq!(
+        text(descriptor.profile_id),
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID
+    );
+}
+
+#[test]
+fn engine_ocr_descriptor_initializes_failure_before_reading_the_engine() {
+    let poison = madopilot_str_t {
+        data: ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+        len: usize::MAX,
+    };
+    let mut descriptor = madopilot_ocr_engine_descriptor_t {
+        struct_size: struct_size::<madopilot_ocr_engine_descriptor_t>(),
+        flags: u32::MAX,
+        backend_id: poison,
+        backend_version: poison,
+        model_id: poison,
+        model_version: poison,
+        profile_id: poison,
+    };
+
+    assert_eq!(
+        // SAFETY: the engine is deliberately null and the complete output is
+        // writable, exercising failure-state initialization order.
+        unsafe { (api().engine_ocr_descriptor)(ptr::null(), &mut descriptor) },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(descriptor.flags, 0);
+    assert!(descriptor.backend_id.data.is_null());
+    assert!(descriptor.backend_version.data.is_null());
+    assert!(descriptor.model_id.data.is_null());
+    assert!(descriptor.model_version.data.is_null());
+    assert!(descriptor.profile_id.data.is_null());
+}
+
+#[test]
+fn engine_ocr_descriptor_supports_concurrent_const_access_with_owned_references() {
+    let fixture = opened(integrated_bounded_backend());
+    let mut workers = Vec::new();
+    for _ in 0..4 {
+        assert_eq!(
+            // SAFETY: each successful retain transfers one independent engine
+            // reference into the worker that releases it.
+            unsafe { (fixture.api.engine_retain)(fixture.engine) },
+            MADOPILOT_STATUS_OK
+        );
+        let api = fixture.api;
+        let address = fixture.engine as usize;
+        workers.push(thread::spawn(move || {
+            let engine = address as *mut madopilot_engine_t;
+            let mut descriptor =
+                <madopilot_ocr_engine_descriptor_t as Versioned>::failure(struct_size::<
+                    madopilot_ocr_engine_descriptor_t,
+                >());
+            assert_eq!(
+                // SAFETY: this worker owns one engine reference and its output
+                // is fully writable.
+                unsafe { (api.engine_ocr_descriptor)(engine, &mut descriptor) },
+                MADOPILOT_STATUS_OK
+            );
+            let identity = (
+                text(descriptor.backend_id).to_owned(),
+                text(descriptor.backend_version).to_owned(),
+                text(descriptor.model_id).to_owned(),
+                text(descriptor.model_version).to_owned(),
+                text(descriptor.profile_id).to_owned(),
+            );
+            let addresses = (
+                descriptor.backend_id.data.addr(),
+                descriptor.backend_version.data.addr(),
+                descriptor.model_id.data.addr(),
+                descriptor.model_version.data.addr(),
+                descriptor.profile_id.data.addr(),
+            );
+            // SAFETY: every borrowed view has been copied and this worker now
+            // gives up its independent engine reference.
+            assert_eq!(unsafe { (api.engine_release)(engine) }, MADOPILOT_STATUS_OK);
+            (identity, addresses)
+        }));
+    }
+
+    let expected_identity = (
+        mado_pilot::DEFAULT_OCR_BACKEND_ID.to_owned(),
+        mado_pilot::DEFAULT_OCR_BACKEND_VERSION.to_owned(),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_ID.to_owned(),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_VERSION.to_owned(),
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID.to_owned(),
+    );
+    let mut retained_addresses = None;
+    for worker in workers {
+        let (identity, addresses) = worker.join().expect("descriptor reader completed");
+        assert_eq!(identity, expected_identity);
+        assert_eq!(*retained_addresses.get_or_insert(addresses), addresses);
+    }
+}
+
+#[test]
+fn grouped_array_and_accessor_edges_fail_before_dereference_or_borrow() {
+    let backend = successful_backend();
+    let fixture = opened(Arc::clone(&backend) as Arc<dyn OcrBackend>);
+    let operation = operation();
+    let call = |request: &madopilot_ocr_zone_scan_request_t| {
+        let mut result = ptr::NonNull::<madopilot_ocr_zone_scan_result_t>::dangling().as_ptr();
+        let mut error = ptr::null_mut();
+        // SAFETY: the request itself and outputs are live. Each case declares
+        // its intentionally invalid nested pointer and must be refused before use.
+        let status = unsafe {
+            (fixture.api.session_scan_ocr_zones)(
+                fixture.session,
+                request,
+                &operation,
+                &mut result,
+                &mut error,
+            )
+        };
+        assert!(result.is_null(), "failure publishes no grouped owner");
+        if !error.is_null() {
+            // SAFETY: the failed call returned one owned error.
+            unsafe { (fixture.api.error_release)(error) };
+        }
+        status
+    };
+
+    let zero: [madopilot_ocr_zone_t; 0] = [];
+    assert_eq!(
+        call(&c_zone_request(fixture.frame, fixture.package, &zero)),
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    let nine = [c_zone(0, 0, 32, 24); 9];
+    assert_eq!(
+        call(&c_zone_request(fixture.frame, fixture.package, &nine)),
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+
+    let one = [c_zone(0, 0, 32, 24)];
+    let mut request = c_zone_request(fixture.frame, fixture.package, &one);
+    request.flags = 1;
+    assert_eq!(call(&request), MADOPILOT_STATUS_INVALID_ARGUMENT);
+    assert_eq!(backend.recognition_count(), 0);
+
+    request = c_zone_request(fixture.frame, fixture.package, &one);
+    request.frame = ptr::null();
+    assert_eq!(call(&request), MADOPILOT_STATUS_INVALID_ARGUMENT);
+
+    request = c_zone_request(fixture.frame, fixture.package, &one);
+    request.backend_id = string("wrong-backend");
+    assert_eq!(call(&request), MADOPILOT_STATUS_INVALID_ARGUMENT);
+
+    request = c_zone_request(fixture.frame, fixture.package, &one);
+    request.zones = ptr::null();
+    assert_eq!(call(&request), MADOPILOT_STATUS_INVALID_ARGUMENT);
+
+    request = c_zone_request(fixture.frame, fixture.package, &one);
+    request.zone_stride = size_of::<madopilot_ocr_zone_t>() - 1;
+    assert_eq!(call(&request), MADOPILOT_STATUS_INVALID_ARGUMENT);
+
+    request = c_zone_request(fixture.frame, fixture.package, &one);
+    request.zone_stride = size_of::<madopilot_ocr_zone_t>() + 1;
+    assert_eq!(call(&request), MADOPILOT_STATUS_INVALID_ARGUMENT);
+
+    let storage = [0_u8; size_of::<madopilot_ocr_zone_t>() + 1];
+    request = c_zone_request(fixture.frame, fixture.package, &one);
+    // SAFETY: forming an unaligned raw pointer is allowed; the boundary must
+    // reject it before any typed read.
+    request.zones = unsafe { storage.as_ptr().add(1) }.cast();
+    assert_eq!(call(&request), MADOPILOT_STATUS_INVALID_ARGUMENT);
+
+    request = c_zone_request(fixture.frame, fixture.package, &one);
+    request.zone_stride = usize::MAX & !(align_of::<madopilot_ocr_zone_t>() - 1);
+    assert_eq!(call(&request), MADOPILOT_STATUS_INVALID_ARGUMENT);
+
+    request = c_zone_request(fixture.frame, fixture.package, &one);
+    request.zones = ptr::with_exposed_provenance::<madopilot_ocr_zone_t>(usize::MAX - 15);
+    assert_eq!(call(&request), MADOPILOT_STATUS_INVALID_ARGUMENT);
+
+    let mut short = one;
+    short[0].struct_size = 31;
+    assert_eq!(
+        call(&c_zone_request(fixture.frame, fixture.package, &short)),
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    let mut unknown_flags = one;
+    unknown_flags[0].flags = 1;
+    assert_eq!(
+        call(&c_zone_request(
+            fixture.frame,
+            fixture.package,
+            &unknown_flags
+        )),
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(backend.recognition_count(), 0);
+    let mut wrong_space = one;
+    wrong_space[0].region.space = crate::types::MADOPILOT_SPACE_DESKTOP_LOGICAL;
+    assert_eq!(
+        call(&c_zone_request(
+            fixture.frame,
+            fixture.package,
+            &wrong_space
+        )),
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    let mut wrong_clip = one;
+    wrong_clip[0].clip_policy = i32::MAX;
+    assert_eq!(
+        call(&c_zone_request(fixture.frame, fixture.package, &wrong_clip)),
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+
+    let zones = [c_zone(0, 0, 16, 12), c_zone(24, 0, 32, 12)];
+    let valid = c_zone_request(fixture.frame, fixture.package, &zones);
+    let mut result = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: complete valid inputs and writable outputs remain live.
+    assert_eq!(
+        // SAFETY: complete valid inputs and writable outputs remain live.
+        unsafe {
+            (fixture.api.session_scan_ocr_zones)(
+                fixture.session,
+                &valid,
+                &operation,
+                &mut result,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(error.is_null());
+
+    let mut zone = madopilot_ocr_zone_result_t {
+        struct_size: struct_size::<madopilot_ocr_zone_result_t>(),
+        flags: u32::MAX,
+        effective_zone: c_zone(0, 0, 1, 1).region,
+        reserved: u32::MAX,
+        region_count: u64::MAX,
+    };
+    // SAFETY: result is retained; the invalid index and writable output are intentional.
+    assert_eq!(
+        // SAFETY: the retained result is live and the output is writable.
+        unsafe { (fixture.api.ocr_zone_scan_result_zone_at)(result, 2, &mut zone) },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(zone.flags, 0);
+    assert_eq!(zone.region_count, 0);
+    assert_eq!(zone.effective_zone, madopilot_pixel_rect_t::empty());
+
+    let mut region = empty_region();
+    region.confidence = 1.0;
+    // SAFETY: zone one is an explicit empty group; output is writable.
+    assert_eq!(
+        // SAFETY: the retained result is live and the output is writable.
+        unsafe { (fixture.api.ocr_zone_scan_result_region_at)(result, 1, 0, &mut region) },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(region.confidence, 0.0);
+
+    let mut text_out = string("sentinel");
+    // SAFETY: the empty-group index is invalid and the scalar output is writable.
+    assert_eq!(
+        // SAFETY: the retained result is live and the scalar output is writable.
+        unsafe { (fixture.api.ocr_zone_scan_result_text_at)(result, 1, 0, &mut text_out) },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(text_out.data.is_null());
+    assert_eq!(text_out.len, 0);
+
+    let mut info = empty_zone_info();
+    info.zone_count = u64::MAX;
+    // SAFETY: null is the intentional invalid owner and the output is writable.
+    assert_eq!(
+        // SAFETY: null is the intentional owner input and the output is writable.
+        unsafe { (fixture.api.ocr_zone_scan_result_info)(ptr::null(), &mut info) },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(info.zone_count, 0);
+    // SAFETY: gives up the one successful grouped-result reference.
+    assert_eq!(
+        // SAFETY: this gives up the successful result reference.
+        unsafe { (fixture.api.ocr_zone_scan_result_release)(result) },
         MADOPILOT_STATUS_OK
     );
 }
@@ -562,6 +1185,108 @@ fn invalid_inputs_and_indexes_leave_every_output_in_failure_state() {
     unsafe { (fixture.api.ocr_result_release)(result) };
 }
 
+#[test]
+fn grouped_c_terminal_and_malformed_output_paths_publish_no_result() {
+    let fixture = opened(successful_backend());
+    let zones = [c_zone(0, 0, 32, 24)];
+    let request = c_zone_request(fixture.frame, fixture.package, &zones);
+    let mut cancellation = ptr::null_mut();
+    // SAFETY: the cancellation output is writable.
+    assert_eq!(
+        // SAFETY: the cancellation output is writable.
+        unsafe { (fixture.api.cancellation_create)(&mut cancellation) },
+        MADOPILOT_STATUS_OK
+    );
+    // SAFETY: the fixture owns the live cancellation handle.
+    assert_eq!(
+        // SAFETY: this fixture owns the live cancellation handle.
+        unsafe { (fixture.api.cancellation_cancel)(cancellation) },
+        MADOPILOT_STATUS_OK
+    );
+    let mut cancelled_operation = operation();
+    cancelled_operation.cancellation = cancellation;
+    let mut result = ptr::NonNull::<madopilot_ocr_zone_scan_result_t>::dangling().as_ptr();
+    let mut error = ptr::null_mut();
+    // SAFETY: complete inputs and outputs remain live; cancellation is authoritative.
+    assert_eq!(
+        // SAFETY: complete inputs and outputs remain live for the cancelled call.
+        unsafe {
+            (fixture.api.session_scan_ocr_zones)(
+                fixture.session,
+                &request,
+                &cancelled_operation,
+                &mut result,
+                &mut error,
+            )
+        },
+        crate::status::MADOPILOT_STATUS_CANCELLED
+    );
+    assert!(result.is_null());
+    assert!(!error.is_null());
+    // SAFETY: both returned/created handles are owned here.
+    unsafe {
+        (fixture.api.error_release)(error);
+        (fixture.api.cancellation_release)(cancellation);
+    }
+
+    let mut expired = operation();
+    expired.flags = crate::types::MADOPILOT_OPERATION_HAS_DEADLINE;
+    expired.deadline_nanos = 0;
+    result = ptr::NonNull::<madopilot_ocr_zone_scan_result_t>::dangling().as_ptr();
+    error = ptr::null_mut();
+    // SAFETY: complete inputs and outputs remain live; the origin deadline is expired.
+    assert_eq!(
+        // SAFETY: complete inputs and outputs remain live for the expired call.
+        unsafe {
+            (fixture.api.session_scan_ocr_zones)(
+                fixture.session,
+                &request,
+                &expired,
+                &mut result,
+                &mut error,
+            )
+        },
+        crate::status::MADOPILOT_STATUS_DEADLINE_EXCEEDED
+    );
+    assert!(result.is_null());
+    assert!(!error.is_null());
+    // SAFETY: the failed call returned one owned error.
+    unsafe { (fixture.api.error_release)(error) };
+
+    let malformed = Arc::new(
+        ControlledOcr::new(PixelFormat::Rgba8)
+            .with_descriptor(descriptor())
+            .with_candidates(vec![ScriptedOcrCandidate::new(
+                Arc::<[u8]>::from([0xff_u8].as_slice()),
+                [(1.0, 1.0), (8.0, 1.0), (8.0, 6.0), (1.0, 6.0)],
+                0.8,
+                0,
+            )]),
+    );
+    let malformed_fixture = opened(malformed);
+    let request = c_zone_request(malformed_fixture.frame, malformed_fixture.package, &zones);
+    result = ptr::NonNull::<madopilot_ocr_zone_scan_result_t>::dangling().as_ptr();
+    error = ptr::null_mut();
+    // SAFETY: complete inputs and outputs remain live; malformed UTF-8 is intentional.
+    assert_eq!(
+        // SAFETY: complete inputs and outputs remain live; malformed data is intentional.
+        unsafe {
+            (malformed_fixture.api.session_scan_ocr_zones)(
+                malformed_fixture.session,
+                &request,
+                &operation(),
+                &mut result,
+                &mut error,
+            )
+        },
+        crate::status::MADOPILOT_STATUS_VISION_FAILED
+    );
+    assert!(result.is_null());
+    assert!(!error.is_null());
+    // SAFETY: the failed call returned one owned error.
+    unsafe { (malformed_fixture.api.error_release)(error) };
+}
+
 #[derive(Debug)]
 struct PanickingBackend {
     descriptor: OcrBackendDescriptor,
@@ -608,10 +1333,28 @@ fn backend_panic_is_contained_with_initialized_outputs() {
     assert_eq!(status, MADOPILOT_STATUS_INTERNAL_PANIC);
     assert!(result.is_null());
     assert!(error.is_null());
+
+    let zones = [c_zone(0, 0, 32, 24)];
+    let request = c_zone_request(fixture.frame, fixture.package, &zones);
+    let mut grouped = usize::MAX as *mut madopilot_ocr_zone_scan_result_t;
+    error = usize::MAX as *mut madopilot_error_t;
+    // SAFETY: all C arguments and the zone array are valid; the panic is deliberate.
+    let status = unsafe {
+        (fixture.api.session_scan_ocr_zones)(
+            fixture.session,
+            &request,
+            &operation,
+            &mut grouped,
+            &mut error,
+        )
+    };
+    assert_eq!(status, MADOPILOT_STATUS_INTERNAL_PANIC);
+    assert!(grouped.is_null());
+    assert!(error.is_null());
 }
 
 #[test]
-fn concurrent_close_wins_before_c_result_publication() {
+fn concurrent_close_wins_before_grouped_c_result_publication() {
     let gate = Arc::new(CompletionGate::new());
     let backend = Arc::new(
         ControlledOcr::new(PixelFormat::Rgba8)
@@ -632,15 +1375,17 @@ fn concurrent_close_wins_before_c_result_publication() {
 
     let worker = thread::spawn(move || {
         let operation = operation();
-        let request = c_request(
+        let zones = [c_zone(0, 0, 32, 24)];
+        let request = c_zone_request(
             frame as *const crate::capture::madopilot_frame_t,
             package as *const crate::assets::madopilot_package_t,
+            &zones,
         );
         let mut result = ptr::null_mut();
         let mut error = ptr::null_mut();
         // SAFETY: the fixture remains alive until this worker joins.
         let status = unsafe {
-            (api.session_recognize)(
+            (api.session_scan_ocr_zones)(
                 session as *const madopilot_session_t,
                 &request,
                 &operation,

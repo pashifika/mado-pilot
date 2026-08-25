@@ -21,6 +21,7 @@ itself.
 |---|---|---|---|
 | [`v1`](v1/) | [ADR 0007](../../../../../docs/adr/0007-phase-1-c-abi-freeze.md), resolving [`G-010`](../../../../../docs/validation-gates.md#g-010) | [`v1/madopilot/madopilot.h`](v1/madopilot/madopilot.h) | [`v1/old-prefix.c`](v1/old-prefix.c) |
 | [`v1_2`](v1_2/) | [ADR 0023](../../../../../docs/adr/0023-input-submission-observation-and-abi-1-2.md) | [`v1_2/madopilot/madopilot.h`](v1_2/madopilot/madopilot.h) | [`v1_2/old-prefix.c`](v1_2/old-prefix.c) |
+| [`v1_3`](v1_3/) | [ADR 0043](../../../../../docs/adr/0043-ocr-profile-and-zone-public-surfaces.md) | [`v1_3/madopilot/madopilot.h`](v1_3/madopilot/madopilot.h) | [`v1_3/old-prefix.c`](v1_3/old-prefix.c) |
 
 ## How a fixture is compiled
 

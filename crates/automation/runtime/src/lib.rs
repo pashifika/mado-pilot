@@ -191,10 +191,11 @@ pub use mado_pilot_ocr::{
     BackendCandidate, BackendId as OcrBackendId, BackendRequest as OcrBackendRequest,
     BackendVersion as OcrBackendVersion, Confidence, DecoderId, LanguageProfileId,
     MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES as MAX_OCR_CANDIDATES, MAX_MODEL_COMPONENT_BYTES,
-    MAX_TEXT_BYTES, ModelComponentIdentity, ModelId, ModelVersion, NormalizationId, OcrBackend,
-    OcrBackendDescriptor, OcrBackendIdentity, OcrCandidateSink, OcrFault, OcrModelComponent,
-    OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata, OcrQuadrilateral,
-    OcrRecognizer, OcrRegion, OcrRequest, OcrResult, PreprocessingId, ProfileId, RecognizedRegion,
+    MAX_OCR_ZONES, MAX_TEXT_BYTES, ModelComponentIdentity, ModelId, ModelVersion, NormalizationId,
+    OcrBackend, OcrBackendDescriptor, OcrBackendIdentity, OcrCandidateSink, OcrFault,
+    OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata,
+    OcrQuadrilateral, OcrRecognizer, OcrRegion, OcrRequest, OcrResult, OcrZone, OcrZoneGroup,
+    OcrZoneScanRequest, OcrZoneScanResult, PreprocessingId, ProfileId, RecognizedRegion,
 };
 pub use mado_pilot_vision::{
     BackendDescriptor, BackendId, Match, MatchDefaults, MatchOptions, MatchResult, Matcher,

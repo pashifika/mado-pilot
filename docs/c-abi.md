@@ -12,22 +12,24 @@ The replay workflow is
 [`examples/c/deterministic-slice.c`](../crates/bindings/capi/examples/c/deterministic-slice.c);
 the native Windows and macOS common flows are under
 [`examples/c/`](../crates/bindings/capi/examples/c/).
-The production and fixture one-shot OCR flows are
-[`examples/c/ocr-default.c`](../crates/bindings/capi/examples/c/ocr-default.c) and
-[`examples/c/ocr-fixture.c`](../crates/bindings/capi/examples/c/ocr-fixture.c).
+The production default/profile-zone and fixture OCR flows are
+[`examples/c/ocr-default.c`](../crates/bindings/capi/examples/c/ocr-default.c),
+[`examples/c/ocr-profile-zones.c`](../crates/bindings/capi/examples/c/ocr-profile-zones.c),
+and [`examples/c/ocr-fixture.c`](../crates/bindings/capi/examples/c/ocr-fixture.c).
 
 A C++ caller uses the header-only RAII wrapper over this contract rather than
 calling the table directly; see [cpp-wrapper.md](cpp-wrapper.md). Everything
 below still applies to it, because it is the same contract.
 
-## ABI 1.3, with complete released 1.0 and 1.2 prefixes preserved
+## ABI 1.4, with complete released 1.0, 1.2, and 1.3 prefixes preserved
 
-The current header declares ABI 1.3. ADR 0007 freezes ABI 1.0's 424-byte
+The current header declares ABI 1.4. ADR 0007 freezes ABI 1.0's 424-byte
 capture/matching table; ADR 0023 freezes ABI 1.2's 592-byte input/diagnostic
-table. ABI 1.3 appends one-shot OCR execution and immutable owned OCR results
-through 640 bytes under ADR 0035, then the accepted default constructor for a
-complete 648-byte table under
-[ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md).
+table; ADRs 0035/0036 freeze ABI 1.3's singular OCR/default construction at 648
+bytes. ABI 1.4 appends explicit profile construction, grouped scan ownership,
+and engine-selected OCR descriptor access at offsets 648 through 712 for a
+complete 720-byte table under
+[ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md).
 The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
 - no released numeric value changes its number;
@@ -38,26 +40,27 @@ The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
 A different ABI major is a different library, and `madopilot_get_api` refuses it.
 Use the smaller of caller `sizeof(madopilot_api_t)` and the returned
-`struct_size`. ABI 1.0 and 1.2 callers negotiate 424 and 592 bytes. An ABI 1.3
-caller checks the entry-specific macro: 640 bytes reaches the complete OCR
-owner/accessor suffix, while
-`MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_DEFAULT_OCR` requires the complete
-648-byte table. The C++ wrapper requires the complete lifecycle/accessor suffix
-before constructing an owner and all 648 bytes before default construction.
+`struct_size`. ABI 1.0, 1.2, and 1.3 callers negotiate 424, 592, and 648 bytes.
+ABI 1.4 C callers use the per-entry extent macros. Profile construction requires
+`MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROFILE`; a high-level grouped owner
+needs `MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT` (712 bytes), while
+engine descriptor access needs
+`MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR` (720 bytes). The C++ wrapper checks
+both caller-known and returned extents before reading a pointer.
 
-The released promise is executable. `tests/abi-compat/v1/` and `v1_2/` keep exact
-headers and callers, compile them without the working header, link them to the
-current library, negotiate only their declared extents, and run their complete
-flows. Current C++ checks also negotiate complete 1.2 and partial 1.3 extents and
-refuse OCR before reading a missing entry.
+The released promise is executable. `tests/abi-compat/v1/`, `v1_2/`, and
+`v1_3/` keep exact headers/callers, compile without the working header, link to
+the current library, negotiate only their declared extents, and execute their
+complete flows. Current C++ checks also negotiate partial 1.3/1.4 extents and
+refuse high-level operations before a missing entry is read.
 
 ## Migrating from the unreleased 1.1 draft
 
-The 1.1 header was development-only. Recompile against 1.2 or 1.3; do not copy
-its numeric values, layouts, or offsets. Explicit input routes, owned receipts,
-submission evidence, and bounded diagnostics are the ABI 1.2 replacement. The
-frozen ABI 1.0 prefix remains compatible; there is no 1.1 alias, tombstone,
-reserved slot, or negotiation profile.
+The 1.1 header was development-only. Recompile against 1.2, 1.3, or 1.4; do not
+copy its numeric values, layouts, or offsets. Explicit input routes, owned
+receipts, submission evidence, and bounded diagnostics are the ABI 1.2
+replacement. The frozen ABI 1.0 prefix remains compatible; there is no 1.1
+alias, tombstone, reserved slot, or negotiation profile.
 
 ## Migrating an ABI 1.2 caller to one-shot OCR
 
@@ -82,13 +85,38 @@ An existing 1.2 caller remains unchanged. To use OCR:
    and release with the module entry; and
 6. keep each borrowed text view only while its result owner remains retained.
 
-For the exact integrated default, `madopilot_ocr_request_t.package` may be null
-when backend/model views match the default identities returned by
-`describe_build`; any explicit package model still requires its package. There
+For the exact integrated profile configured on the engine,
+`madopilot_ocr_request_t.package` may be null when backend/model views match the
+descriptor reported by `engine_ocr_descriptor`. Existing default construction
+reports native G-004; ABI 1.4 explicit construction reports the bounded profile.
+Any explicit package model still requires its package. There
 is no watcher, retry, callback, scheduling, fallback, automatic input, ambient
 runtime/model search, download, or bundling. The feature-gated
 `private-fixture` constructor remains outside the public header/table and absent
 from release builds.
+
+## Migrating an ABI 1.3 caller to explicit profile and grouped OCR
+
+An existing 1.3 caller remains unchanged. To use ABI 1.4:
+
+1. negotiate minor 4 and require the entry extent needed by the operation;
+2. fill `madopilot_ocr_profile_options_t` with
+   `MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR`, canonical controlled model-root and
+   runtime views, then call `engine_create_with_ocr_profile`;
+3. call `engine_ocr_descriptor` and read the exact bounded
+   backend/model/profile identity from its engine-borrowed views;
+4. retain one exact frame and supply `1..=8` complete
+   `madopilot_ocr_zone_t` elements through a pointer, `size_t` count, and
+   aligned byte stride for the synchronous call;
+5. own the returned `madopilot_ocr_zone_scan_result_t` independently, inspect
+   source/envelope/counts, then use zone plus group-relative region indexes; and
+6. retain borrowed descriptor/text views only while that grouped owner lives.
+
+Zero/nine zones, null or misaligned arrays, short/misaligned strides, overflowing
+final addresses, short elements, non-capture-pixel zones, unknown profile/enums,
+identity mismatches, interruption, close, and backend faults publish no result.
+The caller owns duplicate/adjacent/overlapping-zone reconciliation; ordinary
+exact membership remains deterministic but carries no quality/performance claim.
 
 ## One exported symbol
 
@@ -397,13 +425,14 @@ entry then reports through it which output was null or misaligned. Only a call
 whose `out_error` is the rejected output gets the status alone, because there is
 then nowhere to put the message.
 
-## One-shot OCR and immutable results
+## Singular and grouped OCR with immutable results
 
 `session_recognize` initializes both outputs before reading inputs. The session,
 exact frame, request views, and operation record are borrowed for the
 synchronous call. An explicit request also borrows its package, which resolves a
-complete validated model/profile identity. The accepted default may pass a null
-package only with the exact backend/model identity retained by the engine.
+complete validated model/profile identity. A configured integrated profile may
+pass a null package only with the exact backend/model identity retained by the
+engine and reported by `engine_ocr_descriptor`.
 Backend ID/version and model must exactly match the session. A foreign stream,
 missing backend, unknown model, missing required package, malformed view, invalid
 region, deadline, cancellation, close, or backend fault returns one typed status
@@ -429,11 +458,33 @@ release targets. `engine_create_with_default_ocr` validates the controlled
 runtime first, then the two fixed accepted model paths, and returns no engine on
 failure. It never changes the behavior of `engine_create`.
 
+`madopilot_ocr_profile_options_t` is the separate explicit counterpart. Unknown
+kind and nonzero reserved/flags fail before path reads. The only ABI 1.4 value is
+`MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR`; construction validates one controlled
+runtime/model tuple under the caller operation and publishes no half-configured
+engine or fallback.
+
+`session_scan_ocr_zones` borrows its request and zone array for one synchronous
+call. It validates count, pointer, base/stride alignment, checked span/final
+address, every size-versioned element, capture-pixel geometry, clip policy,
+identity, handles, and aggregate limits before mapping. Success returns one
+independent immutable owner with exact source identity, smallest source envelope,
+caller-order effective zones, unique candidate payloads, and compact
+memberships. `zone_at` represents empty groups explicitly; `region_at` and
+`text_at` take a zone index plus group-relative region index. Atomic retain/
+release and concurrent const access require one live reference per caller.
+
 ## Native capabilities and non-prompting permissions
 
 ABI 1.2 makes capability checks explicit before a caller opens anything.
-`engine_capabilities` reports whether the configured source can submit input and
-whether it can read permission state.
+`engine_capabilities` reports whether the configured source can submit input,
+whether it can read permission state, and whether OCR is configured.
+ABI 1.4 appends `engine_ocr_descriptor`, which writes one complete 88-byte
+backend/model/profile identity record whose string views borrow from the retained
+engine. It returns `MADOPILOT_STATUS_UNSUPPORTED` with an initialized empty
+record when that engine has no OCR selection. Appending a table entry instead of
+extending the released 8-byte capability record preserves its alignment and
+allows ABI 1.2/1.3 callers to keep passing their original output.
 `target_list_input_capability` reports one target and operation/route pair:
 compatibility support, exact address scope, focus requirement, accepted pointer
 spaces, related permission, and strongest submission evidence.
@@ -578,18 +629,21 @@ timestamp, checked operation identity, optional caller activity tag, level,
 operation kind, and one closed typed payload. Timestamp proximity is not
 causality; sequence is the total commit order.
 
-The record schema is privacy-reviewed and fixed-width. OCR records may carry an
-opaque library-issued model-instance ID, accepted G-004 classification, exact
-source frame, requested/effective geometry, output space, typed outcome,
-result count, elapsed nanoseconds, and source-pixel count. Admission and terminal
-records remain independent observations under the caller's opaque activity tag;
-they do not claim prior input caused a frame or that later input succeeded.
+The record schema is privacy-reviewed and fixed-width. Singular/grouped OCR may
+carry an opaque model-instance ID, accepted G-004 or bounded profile
+classification, exact source frame, singular requested/effective geometry or one
+grouped source envelope, bounded zone/unique-candidate/membership counts, typed
+outcome, elapsed time, and resource totals. Detector/recognizer run/byte fields
+are present only for exact request-scoped evidence; generic process-wide counter
+deltas are never inferred. Admission and terminal records remain independent
+observations under the caller activity tag.
 
-Records contain no pixels/hashes, recognized text, vocabulary, key/event
-payload, window title, platform namespace, backend/runtime name, caller
-asset/model identity, model digest/path/bytes, signing identifier, credential,
-or native/free-form backend message. Full or contended streams never block OCR;
-they preserve exact normal/debug loss counts. Draining remains self-silent.
+Records contain no zone array or individual zone geometry, pixels/hashes,
+recognized text, vocabulary, key/event payload, window title, platform
+namespace, backend/runtime name, caller asset/model identity, model
+digest/path/bytes, label, signing identifier, credential, or native/free-form
+message. Full or contended streams never block OCR and preserve exact
+normal/debug loss counts. Draining remains self-silent.
 
 ## Panic containment
 
@@ -664,6 +718,11 @@ Compiling the examples additionally needs a C and C++ toolchain, and the check
 needs **CMake 3.22 or later** for the consumer-project step. All of them are the
 release target's own, and neither CI runner nor either verification host
 installs anything extra for them:
+
+The default and explicit-profile OCR examples additionally require canonical
+paths in `MADO_PILOT_G004_MODEL_ROOT` and `MADO_PILOT_ONNX_RUNTIME`. They compile
+without those values; CMake reports the runtime row as skipped rather than
+pretending native OCR ran.
 
 | Target | Compiler | Flags used by the check |
 |---|---|---|
@@ -810,6 +869,12 @@ owner/accessor extent, redacted diagnostic append, and isolation of the local
 fixture constructor. [ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md)
 records the standalone default options, preserved engine-options layout, and
 `engine_create_with_default_ocr` at offset 640 completing the table at 648 bytes.
+
+[ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md) records ABI 1.4:
+the frozen 648-byte ABI 1.3 prefix, 720-byte current table, explicit profile
+kind/options, grouped pointer/count/stride validation, independent owner and
+two-dimensional access, engine-selected descriptor entry, C++ rebinding,
+build-info append, and aggregate-only diagnostics.
 
 Each released header gets an immutable fixture. New coverage goes in the next
 fixture rather than editing an old caller; the rule is in

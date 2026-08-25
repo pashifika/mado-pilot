@@ -12,23 +12,22 @@ The replay workflow is
 [`examples/cpp/deterministic-slice.cpp`](../crates/bindings/capi/examples/cpp/deterministic-slice.cpp);
 the cross-target native workflow is
 [`examples/cpp/native-input.cpp`](../crates/bindings/capi/examples/cpp/native-input.cpp).
-The production and fixture one-shot OCR flows are
-[`examples/cpp/ocr-default.cpp`](../crates/bindings/capi/examples/cpp/ocr-default.cpp)
-and
-[`examples/cpp/ocr-fixture.cpp`](../crates/bindings/capi/examples/cpp/ocr-fixture.cpp).
+The production default/profile-zone and fixture OCR flows are
+[`examples/cpp/ocr-default.cpp`](../crates/bindings/capi/examples/cpp/ocr-default.cpp),
+[`examples/cpp/ocr-profile-zones.cpp`](../crates/bindings/capi/examples/cpp/ocr-profile-zones.cpp),
+and [`examples/cpp/ocr-fixture.cpp`](../crates/bindings/capi/examples/cpp/ocr-fixture.cpp).
 The contract underneath is [c-abi.md](c-abi.md). Read that one first: every
 rule here is a rule about how the C rules are expressed in C++, and none of them
 replaces one.
 
 ## This wrapper declares no ABI of its own
 
-The only ABI is the C one. ABI 1.0 and 1.2 are frozen complete prefixes under
-ADRs 0007 and 0023. ABI 1.3 appends one-shot OCR and immutable owned OCR results
-through 640 bytes under ADR 0035, then accepted default construction through
-648 bytes under
-[ADR 0036](adr/0036-default-ocr-composition-and-abi-prefix.md).
-The wrapper adds source compatibility only, governed by ADR 0006's reviewed
-Rust-side naming policy.
+The only ABI is the C one. ABI 1.0, 1.2, and 1.3 are frozen complete prefixes.
+ABI 1.4 appends explicit profile construction, grouped OCR ownership, and
+engine-selected descriptor access through the complete 720-byte table under
+[ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md). The wrapper adds
+source compatibility only, governed by ADR 0006's reviewed Rust-side naming
+policy.
 
 The wrapper is deliberately not a second place those values are written down.
 Its enumerated types are `using` aliases of the C types, so a caller writes
@@ -64,7 +63,7 @@ const madopilot::Api api = loaded.take();
 |---|---|---|
 | `Api` | nothing — the table belongs to the library | copyable |
 | `Error` | its own copies of the message and identifiers | copyable |
-| `Cancellation`, `Engine`, `TargetList`, `Package`, `Template`, `Session`, `Frame`, `Mapping`, `MatchResult`, `OcrResult`, `InputReceipt`, `DiagnosticReader`, `DiagnosticBatch` | one reference-counted C handle | `clone()` |
+| `Cancellation`, `Engine`, `TargetList`, `Package`, `Template`, `Session`, `Frame`, `Mapping`, `MatchResult`, `OcrResult`, `ZoneScanOcrResult`, `InputReceipt`, `DiagnosticReader`, `DiagnosticBatch` | one reference-counted C handle | `clone()` |
 
 **Every owner is move-only.** Copy construction and copy assignment are deleted,
 because an implicit copy would hide a reference-count bump behind an assignment.
@@ -270,6 +269,7 @@ documents the owner that keeps them valid.
 | `BuildInfo::library_version`, `required_backend` | the loaded library |
 | `TargetDescriptor::name`, `provider` | the `TargetList` |
 | `PermissionDiagnostic::platform_namespace`, `context` | the `Engine` |
+| `OcrEngineDescriptor::backend_id`, `backend_version`, `model_id`, `model_version`, `profile_id` | the `Engine` |
 | `PackageInfo::package_id`, `package_version`, `license` | the `Package` |
 | `TemplateInfo::id`, `backend` | the `Template` |
 | `Package::template_id` | the `Package` |
@@ -347,7 +347,10 @@ Four request relationships borrow handles rather than owning them, and say so:
   operation is passed to;
 - a `FindRequest` borrows its `Frame` and its `Template`;
 - an `OcrRequest` borrows its `Frame` and, for explicit package composition,
-  its `Package` through each `Session::recognize` call; and
+  its `Package` through each `Session::recognize` call;
+- a `ZoneScanOcrRequest` owns all identity strings/zones, borrows its
+  `Frame`/optional `Package`, and keeps its call-local `CView` alive through
+  `Session::scan_ocr_zones`; and
 - an `InputRequest` borrows its source `Frame`, which must stay retained until
   `Session::send_input` returns.
 
@@ -366,31 +369,34 @@ A caller-supplied `Rect` is narrower than the Rust facade:
 capture pixels only because the C ABI has no conversion entry. Other spaces
 return the C entry's `MADOPILOT_STATUS_INVALID_ARGUMENT` unchanged.
 
-### One-shot OCR
+### Singular and grouped OCR
 
 `OcrRequest` owns model/backend ID and version strings, borrows one `Frame`, and
 optionally borrows a `Package`. Explicit package-backed models set the package;
-the exact accepted default leaves it unset and uses the backend/model identities
-reported by `Api::describe_build()`. It keeps source region, clip policy, and
-output space explicit. Every call constructs a fresh `OcrRequest::CView`;
-copy/move construction and assignment rebind every pointer-length field to that
-projection's own storage, including the moved-from object's still-callable
-accessors.
+integrated construction leaves it unset and uses the selected identity from the
+named engine's lvalue-only `ocr_descriptor()`. Every call constructs a fresh
+`OcrRequest::CView`; copy/move operations rebind every view to the projection's
+own storage.
 
-`DefaultOcrOptions` owns canonical model-root/runtime path strings.
-`Api::create_engine_with_default_ocr` requires the complete 648-byte ABI 1.3
-table, calls only the C default-constructor entry, and returns no engine when a
-controlled prerequisite is invalid. It does not change `Api::create_engine`,
-which retains its ordinary non-default behavior.
+`DefaultOcrOptions` preserves native G-004 construction. `OcrProfileOptions`
+owns the explicit kind/model-root/runtime values;
+`Api::create_engine_with_ocr_profile` checks its complete negotiated entry before
+building a call-local projection. `ZoneScanOcrRequest` owns model/backend strings
+and a caller-order zone vector. Its one `CView::rebind` repairs every string,
+zone pointer, count, and stride after construction, copy, or move, including the
+moved-from projection. Two immutable projections therefore share no backing
+pointer.
 
-`Session::recognize` gates on the complete OCR owner/accessor suffix before
-reading any appended function pointer. Success returns move-only `OcrResult`;
-`clone()` is the only refcounting copy. `describe()` returns source identity,
-effective region, count, and borrowed descriptors; `region_at()` returns value
-geometry/confidence; `text_at()` returns a borrowed normalized string.
-Borrowing accessors are lvalue-only and deleted on temporaries. The wrapper adds
-no runtime discovery, normalization, coordinate inference, queue, retry,
-fallback, download, bundling, or input.
+`Session::recognize` gates on the complete singular owner suffix and returns
+move-only `OcrResult`. `Session::scan_ocr_zones` requires the complete 712-byte
+grouped lifecycle/accessor suffix before reading any ABI 1.4 pointer and returns
+move-only `ZoneScanOcrResult`. `clone()` is the only refcounting copy. Grouped
+`describe()` returns source/envelope/counts and borrowed descriptors; `zone_at()`
+represents empty groups; `region_at(zone, region)` returns value
+geometry/confidence; `text_at(zone, region)` returns owner-borrowed text. All
+grouped accessors are lvalue-only. The wrapper adds no runtime discovery,
+normalization, coordinate inference, deduplication, queue, retry, fallback,
+download, bundling, or input.
 
 Input capability keeps operation and route separate.
 `InputOpenRequest` accepts exact `MADOPILOT_INPUT_PAIR_*` masks;
@@ -430,9 +436,10 @@ request.event(madopilot::InputEvent::pointer_move(
 
 `Engine::capabilities`, `Engine::permission`,
 `TargetList::input_capability`, `Engine::input_descriptor`, and
-`Session::input_descriptor` project ABI 1.2 records into value types. Optional
-fields remain `std::optional`; an unknown C numeric value stays in its
-fixed-width alias rather than being narrowed into a wrapper enum.
+`Session::input_descriptor` project size-versioned C records into value types.
+`Engine::ocr_descriptor` projects the appended ABI 1.4 descriptor record and is
+lvalue-only because its views borrow the `Engine`. Permission is lvalue-only for
+the same reason. Unknown C numeric values stay in their fixed-width aliases.
 
 ### Engine-scoped diagnostics
 
@@ -443,12 +450,14 @@ optional; diagnostics-off engines and repeated takes return an empty optional.
 
 `DiagnosticReader::drain()` is non-blocking and returns `BATCH`, `OPEN_EMPTY`, or
 `END_OF_STREAM`. `DiagnosticBatch` carries exact normal/debug losses and indexed
-fixed-width values. OCR records project opaque model-instance ID, accepted
-profile classification, source/requested/effective geometry, typed outcome,
-count, elapsed nanoseconds, and source-pixel count. They expose no recognized
-text, backend/runtime name, caller model/asset identity, model path/digest/bytes,
-vocabulary, pixels/hash, credential, or free-form failure. The wrapper performs
-no logging, callback dispatch, ordering inference, or causal synthesis.
+fixed-width values. OCR records project opaque model-instance ID, G-004/bounded
+profile classification, source, singular requested/effective geometry or one
+grouped source envelope, zone/unique-candidate/membership counts, typed outcome,
+timing, and resource/work fields when present. They expose no zone array,
+individual zone geometry, recognized text, backend/runtime name, caller
+model/asset identity, path/digest/bytes, vocabulary, pixels/hash, label,
+credential, or free-form failure. The wrapper performs no logging, callback
+dispatch, ordering inference, or causal synthesis.
 
 ## Threads
 
@@ -474,9 +483,9 @@ independent repaired C projection. Clone an immutable result/reader per thread;
 retain/release remain atomic. Mutating a request or destroying the final owner
 concurrently with a call remains invalid caller behavior.
 
-## What ABI 1.3 does not wrap
+## What ABI 1.4 does not wrap
 
-The ABI 1.3 table ends at accepted default OCR construction. There is no watcher,
+The ABI 1.4 table ends at grouped OCR text access. There is no watcher,
 wait-for-text, query, callback/fence, retry, automatic action/input,
 acceleration, packaging/download, or native-frame extension. OCR and later input
 remain separate facts. `cpp_surface.rs` asserts this inventory.
@@ -525,6 +534,12 @@ project does not produce. Consumption is from the development tree.
 No generator is named. Ninja is not guaranteed on either release target's
 runner; MSBuild and Unix Makefiles are.
 
+The independent `tests/cmake` project also builds/runs the default and
+explicit-profile OCR consumers through only `MadoPilot::C`/`MadoPilot::Cpp`.
+Without `MADO_PILOT_G004_MODEL_ROOT` and `MADO_PILOT_ONNX_RUNTIME`, native OCR
+rows report a CTest skip; compilation, negotiation, projections, and ordinary
+consumers still run.
+
 ### Without CMake
 
 The wrapper is one header. A compiler invocation is enough:
@@ -540,6 +555,23 @@ On Windows, compile with `/std:c++17 /EHsc`, link `target\debug\madopilot.dll.li
 and put `target\debug` on `PATH` before running. `/EHsc` is needed because the
 standard library the wrapper uses assumes exceptions are enabled, even though the
 wrapper never throws one.
+
+### Troubleshooting OCR 1.4
+
+- `MADOPILOT_STATUS_UNSUPPORTED` before construction/scan/descriptor access
+  usually means the caller-known or returned table extent omits a required
+  entry. Profile construction needs its complete entry; grouped
+  `Session::scan_ocr_zones` requires 712 bytes; `Engine::ocr_descriptor`
+  requires all 720 bytes.
+- `MADOPILOT_STATUS_INVALID_ARGUMENT` from profile construction means an unknown
+  kind, empty/noncanonical controlled path, or malformed projection. It never
+  triggers default fallback.
+- `MADOPILOT_STATUS_INVALID_ARGUMENT` from grouped scanning includes zero/nine
+  zones, malformed geometry/identity, or an incomplete array element. The
+  wrapper preserves the C error rather than retrying singular OCR.
+- A borrowed descriptor/text view that must outlive the grouped owner must be
+  copied with `to_string()`; keep an explicit `clone()` when owner lifetime,
+  rather than just the bytes, is required.
 
 ## How the wrapper is verified
 
