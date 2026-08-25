@@ -387,7 +387,7 @@ fn run_profile(
         workloads: workload_reports,
         passed: false,
     };
-    report.passed = report_passes(profile, &report);
+    report.passed = report_passes(mode, profile, &report);
     report
 }
 
@@ -652,10 +652,11 @@ fn measure_cancelled(
     }
 }
 
-fn report_passes(profile: OnnxOcrProfile, report: &ProfileReport) -> bool {
+fn report_passes(mode: RunMode, profile: OnnxOcrProfile, report: &ProfileReport) -> bool {
     report.max_concurrent_inferences == 1
         && report.session_pairs == 1
         && report.sessions == 2
+        && (mode == RunMode::Smoke || report.peak_resident_bytes.is_some())
         && report.cancellation.status == format!("{:?}", Status::Cancelled)
         && report.cancellation.resources_unchanged
         && report.workloads.iter().all(|workload| {
@@ -664,6 +665,7 @@ fn report_passes(profile: OnnxOcrProfile, report: &ProfileReport) -> bool {
                 && workload.growth_bytes <= HEAP_GROWTH_LIMIT
                 && (profile != OnnxOcrProfile::BoundedDetector
                     || workload.peak_allocated_bytes <= HEAP_PEAK_LIMIT_BYTES)
+                && (mode == RunMode::Smoke || workload.peak_resident_bytes.is_some())
                 && workload.resources.is_some()
         })
 }
