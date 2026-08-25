@@ -2229,51 +2229,74 @@ stated gap rather than a satisfied contract.
 ### OCR recognition
 
 `mado-pilot-ocr` owns the rules between a borrowed backend candidate stream and
-one observable OCR result. It depends on the platform-neutral core and capture
-contracts only. ONNX Runtime, platform adapters, executors, queues, facade types,
-and ABI types remain outside this package.
+one observable singular or grouped OCR result. It depends on the
+platform-neutral core and capture contracts only. ONNX Runtime, platform
+adapters, executors, queues, facade types, and ABI types remain outside this
+package.
 
-One `OcrRequest` borrows one immutable `Frame`, one exact `OcrBackendIdentity`
-(stable ID plus implementation version), one complete `OcrModelIdentity`, and one
-`OperationContext`, then explicitly names the optional source region and clip
-policy and output coordinate space. The model
-identity includes model revision, detector and recognizer byte identities, profile
-and language/preprocessing/decoder/normalization identities, and vocabulary count
-and digest. A committed result carries that identity through its backend
-descriptor and copies the frame's complete stream, epoch, sequence, and geometry
-identity, transform snapshot, and effective clipped region.
+One `OcrRequest` borrows one immutable `Frame`, one exact
+`OcrBackendIdentity` (stable ID plus implementation version), one complete
+`OcrModelIdentity`, and one `OperationContext`, then explicitly names the
+optional source region and clip policy and output coordinate space. The separate
+`OcrZoneScanRequest` borrows the same exact identities plus one through eight
+caller-order `OcrZone` entries. It resolves and clips every zone before mapping,
+rejects the whole request if any effective zone is empty, and maps the smallest
+capture-pixel envelope containing them once.
 
-The result owns all normalized text and converted geometry, so retaining it does
-not retain a frame, backend candidate buffer, model bytes, or capture storage
-slot. Manual `Debug` implementations report only reviewed identities, geometry,
-counts, and byte lengths; they never print recognized text or model bytes.
+The model identity includes model revision, detector and recognizer byte
+identities, profile and language/preprocessing/decoder/normalization identities,
+and vocabulary count and digest. Both result forms copy the frame's complete
+stream, epoch, sequence, and geometry identity, transform snapshot, output
+space, and backend/model/profile descriptor. `OcrResult` repeats one effective
+region. `OcrZoneScanResult` repeats the source envelope and every effective zone
+in caller order.
+
+Results own all normalized text and converted geometry, so retaining one does
+not retain a frame, backend candidate buffer, model bytes, mapping, tensor,
+session lock, or capture storage slot. A grouped result owns each unique
+candidate once and stores group membership as checked `u16` indexes with nine
+offsets; empty groups have equal adjacent offsets. Manual `Debug`
+implementations report only reviewed identities, geometry, counts, and byte
+lengths; they never print recognized text or model bytes.
 
 Every backend is normalized through the same boundary:
 
 | Rule | Applied by |
 |---|---|
 | Equality of exact backend ID/version and complete model/profile identity, plus supported normalization identity | `mado-pilot-ocr`, before mapping or backend work |
-| Region resolution and non-empty clipping against the source frame snapshot | `mado-pilot-ocr` |
-| One mapped `FrameView` in the backend's declared pixel format | `mado-pilot-capture`, under the request's operation context |
-| Candidate and raw-text ceilings communicated before backend collection/allocation | `BackendRequest`; the backend must enforce them, and the contract revalidates each borrowed candidate through its bounded sink |
-| Recognition over the effective region and bounded internal tensor/session/decoder work | the backend, under the same operation context and its own measured budgets |
-| UTF-8, geometry, confidence, and detector-order validation | `mado-pilot-ocr` as each borrowed candidate is submitted |
-| NFC normalization, Unicode edge trim, empty-text omission, five-decimal confidence, and stable detector ordering | `mado-pilot-ocr` |
-| Output-space conversion and immutable result commit | `mado-pilot-ocr`, through the source frame transform and `Operation` authority |
+| Singular-region or all-zone resolution and non-empty clipping against the source frame snapshot | `mado-pilot-ocr` |
+| One mapped `FrameView` for the singular region or smallest grouped source envelope, in the backend's declared pixel format | `mado-pilot-capture`, under the request's operation context |
+| Candidate and raw-text ceilings plus optional borrowed relative interests communicated before backend collection/allocation | `BackendRequest`; a backend may ignore interests, while the contract revalidates each borrowed candidate and final membership |
+| Recognition over the effective region/envelope and bounded internal tensor/session/decoder work | the backend, under the same operation context and its own measured budgets |
+| UTF-8, geometry, confidence, global detector order, and exact half-open centroid membership validation | `mado-pilot-ocr` as candidates are submitted and before grouped commit |
+| NFC normalization, Unicode edge trim, empty-text omission, five-decimal confidence, stable detector ordering, and explicit empty groups | `mado-pilot-ocr` |
+| Output-space conversion and immutable flat/grouped result commit | `mado-pilot-ocr`, through the source frame transform and `Operation` authority |
 
-The supported normalization profile permits at most 1,000 backend candidates and
-at most 16 KiB of raw UTF-8 per submitted candidate. A committed text region is
-at most 4 KiB. A backend lends candidate text to an `OcrCandidateSink` rather than
-returning an owned `Vec<Arc<[u8]>>`; the sink refuses the 1,001st candidate before
-collection and bounds normalization before copying retained text.
-`mado-pilot-backend-onnx` additionally caps one detector/recognizer session pair,
-one admitted inference, 256 MiB per input tensor, 256 MiB per native output,
-2 MiB of native contour storage including conservative vector growth, a 16 MiB
-scanline component queue, 1,000 detector candidates, and six recognition crops
-per batch. Boundary-edge and foreground/background component preflights reject a
-probability map before OpenCV can materialize contour storage beyond those
-ceilings. Public results copy bounded text and geometry and retain no native
-tensor, model, or session buffer.
+The supported normalization profile permits at most 1,000 backend candidates
+and at most 16 KiB of raw UTF-8 per submitted candidate. A committed text region
+is at most 4 KiB. A backend lends candidate text to an `OcrCandidateSink` rather
+than returning an owned `Vec<Arc<[u8]>>`; the sink refuses the 1,001st candidate
+before collection and bounds normalization before copying retained text.
+
+A grouped operation additionally permits one through eight zones, at most 8,000
+logical memberships, a 256 MiB mapping, 262,144 temporary semantic bytes,
+16,000 membership-index bytes, and 5,242,880 immutable-result semantic bytes.
+Candidate/zone and per-candidate text limits entail the aggregate raw,
+normalized, membership, temporary, index, and result ceilings; compile-time
+layout assertions prove those products. A putative 8,001st membership requires
+candidate 1,001 and therefore fails the earlier candidate gate. Mapping size
+remains input-dependent: the complete source descriptor is checked because a
+native conversion may materialize the full source before cropping, and the
+returned mapping is checked again.
+
+`mado-pilot-backend-onnx` additionally caps one detector/recognizer session
+pair, one admitted inference, 256 MiB per input tensor, 256 MiB per native
+output, 2 MiB of native contour storage including conservative vector growth, a
+16 MiB scanline component queue, 1,000 raw detector candidates, and six
+recognition crops per batch. Boundary-edge and foreground/background component
+preflights reject a probability map before OpenCV can materialize contour
+storage beyond those ceilings. Public results copy bounded text and geometry
+and retain no native tensor, model, or session buffer.
 
 Candidate quadrilaterals are relative to the effective region and must be finite,
 strictly convex, and inside it. Confidence must be finite in `0.0..=1.0` and is
@@ -2284,15 +2307,25 @@ result commits. Text is normalized to NFC, then trimmed with Unicode whitespace
 rules; empty normalized text is omitted. A source region that clips to no pixels
 is invalid because no pixels remain to recognize.
 
+Grouped membership uses the finite arithmetic centroid of each
+source-envelope-relative quadrilateral before output conversion. A candidate is
+referenced by every relative zone satisfying `left <= x < right` and
+`top <= y < bottom`, with no epsilon, intersection, proximity, priority, or
+nearest-zone rule. Global detector order is preserved within every group.
+Duplicate, one-pixel-different, adjacent, and overlapping zone entries consume
+ordinary list positions and remain bounded and deterministic, but callers own
+deduplication and semantic reconciliation; no OCR quality, latency, or
+independence claim applies to those layouts.
+
 The one operation context is checked before admission, after mapping, after the
-backend returns, after final bounded normalization/order work, and at commit.
-Cancellation or deadline therefore wins over a simultaneous backend,
+backend returns, during/following bounded normalization and grouping, and at
+commit. Cancellation or deadline therefore wins over a simultaneous backend,
 malformed-output, or close failure. The synchronous call is also the caller's
-only wait: there is no hidden query wait or executor-specific future. As the core
-operation contract states, a backend call that cannot be interrupted may return
-after the deadline; its late value is discarded and the call reports the
-authoritative interruption when control returns. This contract promises terminal
-authority, not thread preemption.
+only wait: there is no hidden query wait or executor-specific future. As the
+core operation contract states, a backend call that cannot be interrupted may
+return after the deadline; its late flat or grouped value is discarded and the
+call reports the authoritative interruption when control returns. This contract
+promises terminal authority, not thread preemption.
 
 `OcrRecognizer` stores no per-request or latest-result state, so an older
 out-of-order completion has nothing it can replace. Backend close is explicit and
@@ -2314,14 +2347,16 @@ nanoseconds, source pixels, typed outcome, and existing exact loss accounting.
 They contain no backend/runtime name, caller asset/model identity, model
 digest/path/bytes, vocabulary, pixels/hash, recognized text, credential, or
 free-form backend output.
-`mado-pilot-testkit` supplies a FIFO-scripted controlled backend and common suite:
-two gated calls through clones of one recognizer prove same-stream out-of-order
-isolation, while separate cases cover non-empty clipping, hard request ceilings,
-profile refusal, malformed output, interruption precedence, redacted diagnostics,
-and independence from backend buffers, frame storage, and model allocations.
+`mado-pilot-testkit` supplies a FIFO-scripted controlled backend and common
+suite: gated calls through recognizer clones prove out-of-order isolation and
+terminal authority, while grouped cases cover one/three/eight zones, caller
+reordering, clipping, exact half-open edges, empty groups, ignored versus
+honored interests, hard derived bounds, malformed output, final-commit races,
+redacted observations, overlap safety, and independence from backend buffers,
+frame storage, mappings, and model allocations.
 
 `mado-pilot-backend-onnx` is the concrete CPU implementation for the two exact
-closed profiles from ADRs 0033 and 0038. It requires a caller-supplied canonical
+closed profiles from ADRs 0033 and 0040. It requires a caller-supplied canonical
 absolute path to ONNX Runtime 1.29.0
 (`libonnxruntime.1.29.0.dylib` on Apple Silicon or `onnxruntime.dll` on Windows),
 verifies exact runtime/API and graph/vocabulary metadata before admission, and
@@ -2341,9 +2376,18 @@ one second aspect-preserving floor-to-32 fit. Desired work that already fits the
 rectangle, including 960×540 and odd HUD inputs, retains the 11,587,584-byte
 reference detector and exact geometry. The backend resizes directly once, maps
 detector output back to the original source view, and perspective-crops that
-original source for recognition. Facts report the absolute rectangle; per-call
-observations report actual bounded dimensions/counts/bytes and the
-one-pair/two-session topology.
+original source for recognition. For a grouped request it applies the shared
+centroid helper after detector postprocessing and before perspective crops,
+recognizes every unique relevant detection once in batches of at most six, and
+submits each candidate once with its global detector order. Raw detector
+candidates remain bounded before filtering.
+
+Facts report the absolute rectangle. Path-free cumulative observations report
+source-envelope mapping count/dimensions/bytes, actual detector dimensions and
+runs, selected/ignored/unique candidates, memberships, recognizer batch runs,
+native inference-scope cleanup completions, and the one-pair/two-session
+topology. They contain no pixels, recognized text, paths, hashes, model bytes,
+or raw native identifiers.
 
 The facade depends on this backend only for separate
 `replay_engine_with_default_ocr`, `windows_engine_with_default_ocr`, and

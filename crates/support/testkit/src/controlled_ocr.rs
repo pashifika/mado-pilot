@@ -13,6 +13,7 @@ use mado_pilot_ocr::{
     DecoderId, LanguageProfileId, ModelComponentIdentity, ModelId, ModelVersion, NormalizationId,
     OcrBackend, OcrBackendDescriptor, OcrBackendIdentity, OcrCandidateSink, OcrFault,
     OcrModelIdentity, OcrProfileMetadata, PreprocessingId, ProfileId,
+    candidate_interest_membership,
 };
 
 use crate::clock::ManualClock;
@@ -233,13 +234,19 @@ pub struct ControlledOcr {
     descriptor: OcrBackendDescriptor,
     clock: Option<Arc<ManualClock>>,
     cancel_during_recognize: Option<CancellationToken>,
+    cancel_after_candidates: Option<(CancellationToken, usize)>,
+    cancel_after_output: Option<CancellationToken>,
     cancel_during_close: Option<CancellationToken>,
     script: Mutex<Script>,
+    honor_interests: bool,
     recognitions: AtomicUsize,
     closes: AtomicUsize,
     last_max_candidates: AtomicUsize,
     last_max_text_bytes: AtomicUsize,
     last_region: Mutex<Option<PixelRect>>,
+    last_interests: Mutex<Option<Vec<PixelRect>>>,
+    last_selected_candidates: AtomicUsize,
+    last_ignored_candidates: AtomicUsize,
 }
 
 impl ControlledOcr {
@@ -276,12 +283,18 @@ impl ControlledOcr {
             clock: None,
             cancel_during_close: None,
             cancel_during_recognize: None,
+            cancel_after_candidates: None,
+            cancel_after_output: None,
+            honor_interests: false,
             script: Mutex::new(Script::default()),
             recognitions: AtomicUsize::new(0),
             closes: AtomicUsize::new(0),
             last_max_candidates: AtomicUsize::new(0),
             last_max_text_bytes: AtomicUsize::new(0),
             last_region: Mutex::new(None),
+            last_interests: Mutex::new(None),
+            last_selected_candidates: AtomicUsize::new(0),
+            last_ignored_candidates: AtomicUsize::new(0),
         }
     }
 
@@ -296,6 +309,13 @@ impl ControlledOcr {
     #[must_use]
     pub fn with_candidates(self, candidates: Vec<ScriptedOcrCandidate>) -> Self {
         self.script().default_call.candidates = candidates;
+        self
+    }
+
+    /// Filters scripted candidates through grouped request interests.
+    #[must_use]
+    pub const fn honoring_interests(mut self) -> Self {
+        self.honor_interests = true;
         self
     }
 
@@ -325,6 +345,20 @@ impl ControlledOcr {
     #[must_use]
     pub fn cancelling(mut self, token: CancellationToken) -> Self {
         self.cancel_during_recognize = Some(token);
+        self
+    }
+
+    /// Cancels `token` after the sink accepts `count` candidates.
+    #[must_use]
+    pub fn cancelling_after_candidates(mut self, token: CancellationToken, count: usize) -> Self {
+        self.cancel_after_candidates = Some((token, count));
+        self
+    }
+
+    /// Cancels `token` after every scripted candidate has reached the sink.
+    #[must_use]
+    pub fn cancelling_after_output(mut self, token: CancellationToken) -> Self {
+        self.cancel_after_output = Some(token);
         self
     }
 
@@ -389,6 +423,27 @@ impl ControlledOcr {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Returns the latest caller-order relative interests.
+    #[must_use]
+    pub fn last_interests(&self) -> Option<Vec<PixelRect>> {
+        self.last_interests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Returns candidates submitted by the latest call.
+    #[must_use]
+    pub fn last_selected_candidates(&self) -> usize {
+        self.last_selected_candidates.load(Ordering::Acquire)
+    }
+
+    /// Returns candidates removed by honored interests in the latest call.
+    #[must_use]
+    pub fn last_ignored_candidates(&self) -> usize {
+        self.last_ignored_candidates.load(Ordering::Acquire)
+    }
+
     fn script(&self) -> std::sync::MutexGuard<'_, Script> {
         self.script
             .lock()
@@ -427,6 +482,12 @@ impl OcrBackend for ControlledOcr {
             .last_region
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(request.region());
+        let interests = request.interests();
+        *self
+            .last_interests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            interests.map(|interests| interests.zones().to_vec());
         if let Some(interruption) = operation.interruption() {
             return Err(interruption.into());
         }
@@ -449,9 +510,37 @@ impl OcrBackend for ControlledOcr {
         if call.behavior == OcrBehavior::Unavailable {
             call.behavior.apply()?;
         }
+        let mut selected = 0_usize;
+        let mut ignored = 0_usize;
         for candidate in &call.candidates {
+            if self.honor_interests
+                && let Some(interests) = interests
+            {
+                let membership = candidate_interest_membership(
+                    candidate.quadrilateral,
+                    request.region().extent(),
+                    interests,
+                )?;
+                if membership == 0 {
+                    ignored += 1;
+                    continue;
+                }
+            }
             output.push(candidate.borrowed())?;
+            selected += 1;
+            if let Some((token, count)) = &self.cancel_after_candidates
+                && selected == *count
+            {
+                token.cancel();
+            }
         }
+        if let Some(token) = &self.cancel_after_output {
+            token.cancel();
+        }
+        self.last_selected_candidates
+            .store(selected, Ordering::Release);
+        self.last_ignored_candidates
+            .store(ignored, Ordering::Release);
         if call.behavior == OcrBehavior::Fail {
             call.behavior.apply()?;
         }

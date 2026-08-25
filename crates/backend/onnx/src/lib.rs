@@ -1,10 +1,16 @@
-//! Bounded ONNX Runtime CPU OCR backend for the accepted G-004 profile.
+//! Bounded ONNX Runtime CPU OCR backend for the accepted G-004 profiles.
 //!
 //! The adapter loads one exact host-provided runtime from a caller-supplied
 //! canonical path, validates the accepted detector/recognizer graphs and
 //! vocabulary, reuses one session pair, and admits one synchronous inference at
-//! a time. It performs no download, ambient library search, provider fallback,
-//! default wiring, or public-contract modification.
+//! a time. Grouped requests keep one detector run, filter exact relative
+//! interests before perspective crops, and recognize each relevant detection
+//! once in existing bounded batches. Path-free observations expose only
+//! dimensions, counts, bytes, runs, memberships, and cleanup.
+//!
+//! It performs no download, ambient library search, provider fallback, default
+//! wiring, public-contract modification, per-zone detector loop, or captured
+//! content logging.
 
 mod decode;
 mod detect;
@@ -19,6 +25,11 @@ mod profile;
 mod session;
 mod vocabulary;
 
+#[cfg(test)]
+#[global_allocator]
+static TEST_ACCOUNTING: mado_pilot_testkit::bench_harness::Accounting =
+    mado_pilot_testkit::bench_harness::Accounting;
+
 use std::mem::replace;
 use std::path::Path;
 use std::sync::{Mutex, TryLockError};
@@ -27,7 +38,7 @@ use mado_pilot_capture::PixelFormat;
 use mado_pilot_core::{OperationContext, Result as CoreResult};
 use mado_pilot_ocr::{
     BackendCandidate, BackendId, BackendRequest, BackendVersion, OcrBackend, OcrBackendDescriptor,
-    OcrBackendIdentity, OcrCandidateSink, OcrModelSource,
+    OcrBackendIdentity, OcrCandidateSink, OcrModelSource, candidate_interest_membership,
 };
 
 pub use fault::{
@@ -305,8 +316,13 @@ impl OnnxOcrBackend {
         request: &BackendRequest<'_>,
         operation: &OperationContext,
     ) -> Result<Vec<OwnedCandidate>, OnnxBackendFault> {
-        pair.record_mapping(request.pixels().bytes().len());
-        image::with_bgra_view(request.pixels(), |source| {
+        let region = request.region();
+        pair.record_mapping(
+            region.width(),
+            region.height(),
+            request.pixels().bytes().len(),
+        );
+        let outcome = image::with_bgra_view(request.pixels(), |source| {
             checkpoint(operation)?;
             let detector_input = image::detector_input(source, preprocessing)?;
             pair.record_detector_input(detector_input.plan);
@@ -317,6 +333,41 @@ impl OnnxOcrBackend {
                 request.max_candidates(),
                 operation,
             )?;
+            checkpoint(operation)?;
+            let raw_candidates = detections.len();
+            let detections = if let Some(interests) = request.interests() {
+                let mut selected = Vec::with_capacity(raw_candidates);
+                let mut memberships = 0_usize;
+                for detection in detections {
+                    let quadrilateral = detection
+                        .quad
+                        .map(|point| (f64::from(point.x), f64::from(point.y)));
+                    let membership = candidate_interest_membership(
+                        quadrilateral,
+                        request.region().extent(),
+                        interests,
+                    )
+                    .map_err(|_| OnnxBackendFault::MalformedOutput)?;
+                    memberships = memberships
+                        .checked_add(
+                            usize::try_from(membership.count_ones())
+                                .map_err(|_| OnnxBackendFault::ResourceLimit)?,
+                        )
+                        .ok_or(OnnxBackendFault::ResourceLimit)?;
+                    if membership != 0 {
+                        selected.push(detection);
+                    }
+                }
+                pair.record_interest_filter(
+                    selected.len(),
+                    raw_candidates - selected.len(),
+                    memberships,
+                );
+                selected
+            } else {
+                pair.record_interest_filter(raw_candidates, 0, 0);
+                detections
+            };
             if detections.is_empty() {
                 return Ok(Vec::new());
             }
@@ -353,15 +404,19 @@ impl OnnxOcrBackend {
                 }
             }
 
-            detections
+            let candidates = detections
                 .into_iter()
                 .zip(decoded)
                 .map(|(detection, decoded)| {
                     let decoded = decoded.ok_or(OnnxBackendFault::MalformedOutput)?;
                     Ok(OwnedCandidate::new(detection, decoded))
                 })
-                .collect()
-        })
+                .collect::<Result<Vec<_>, OnnxBackendFault>>()?;
+            pair.record_unique_candidates(candidates.len());
+            Ok(candidates)
+        });
+        pair.record_cleanup();
+        outcome
     }
 }
 
@@ -497,18 +552,30 @@ mod tests {
     #[test]
     fn observations_report_only_bounded_dimensions_counts_and_bytes() {
         let mut observations = OnnxBackendObservations::opened();
-        observations.record_mapping(33_177_600);
+        observations.record_mapping(3_840, 2_160, 33_177_600);
         observations.record_detector_input(960, 512, 5_898_240);
         observations.record_detector_run();
         observations.record_recognizer_run();
+        observations.record_interest_filter(8, 2, 8);
+        assert_eq!(observations.unique_candidates(), 0);
+        observations.record_unique_candidates(8);
+        observations.record_cleanup();
 
         assert_eq!(observations.mapped_bytes(), 33_177_600);
+        assert_eq!(observations.mapping_calls(), 1);
+        assert_eq!(observations.latest_mapping_width(), Some(3_840));
+        assert_eq!(observations.latest_mapping_height(), Some(2_160));
         assert_eq!(observations.latest_detector_width(), Some(960));
         assert_eq!(observations.latest_detector_height(), Some(512));
         assert_eq!(observations.detector_tensor_bytes(), 5_898_240);
         assert_eq!(observations.detector_resizes(), 1);
         assert_eq!(observations.detector_runs(), 1);
         assert_eq!(observations.recognizer_runs(), 1);
+        assert_eq!(observations.selected_candidates(), 8);
+        assert_eq!(observations.ignored_candidates(), 2);
+        assert_eq!(observations.unique_candidates(), 8);
+        assert_eq!(observations.memberships(), 8);
+        assert_eq!(observations.cleanup_completions(), 1);
         assert_eq!(observations.session_pairs(), 1);
         assert_eq!(observations.sessions(), 2);
 

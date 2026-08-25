@@ -101,8 +101,8 @@ impl SessionPair {
         })
     }
 
-    pub(crate) fn record_mapping(&mut self, bytes: usize) {
-        self.observations.record_mapping(bytes);
+    pub(crate) fn record_mapping(&mut self, width: u32, height: u32, bytes: usize) {
+        self.observations.record_mapping(width, height, bytes);
     }
 
     pub(crate) fn record_detector_input(&mut self, plan: DetectorPlan) {
@@ -121,6 +121,24 @@ impl SessionPair {
     pub(crate) fn recognizer_and_vocabulary_mut(&mut self) -> (&mut Session, &Vocabulary) {
         self.observations.record_recognizer_run();
         (&mut self.recognizer, &self.vocabulary)
+    }
+
+    pub(crate) fn record_interest_filter(
+        &mut self,
+        selected: usize,
+        ignored: usize,
+        memberships: usize,
+    ) {
+        self.observations
+            .record_interest_filter(selected, ignored, memberships);
+    }
+
+    pub(crate) fn record_unique_candidates(&mut self, candidates: usize) {
+        self.observations.record_unique_candidates(candidates);
+    }
+
+    pub(crate) fn record_cleanup(&mut self) {
+        self.observations.record_cleanup();
     }
 
     pub(crate) const fn observations(&self) -> OnnxBackendObservations {
