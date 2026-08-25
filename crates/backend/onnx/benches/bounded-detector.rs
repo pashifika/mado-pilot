@@ -163,7 +163,7 @@ struct ProfileReport {
     model_id: String,
     profile_id: String,
     preprocessing_id: String,
-    smoke: bool,
+    mode: &'static str,
     warmup_iterations: usize,
     retained_samples: usize,
     cold_open_ms: f64,
@@ -196,6 +196,62 @@ struct TargetLimits {
     resident_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    Smoke,
+    Precursor,
+    EnforceBudgets,
+}
+
+impl RunMode {
+    fn from_arguments(arguments: &[String]) -> Self {
+        let smoke = arguments.iter().any(|argument| argument == "--smoke");
+        let precursor = arguments.iter().any(|argument| argument == "--precursor");
+        let enforce = arguments.iter().any(|argument| argument == "--qualify");
+        assert!(
+            usize::from(smoke) + usize::from(precursor) + usize::from(enforce) <= 1,
+            "select only one benchmark mode"
+        );
+        if cfg!(debug_assertions) {
+            assert!(
+                !precursor && !enforce,
+                "debug benchmark execution is smoke-only"
+            );
+            return Self::Smoke;
+        }
+        if smoke {
+            Self::Smoke
+        } else if enforce {
+            Self::EnforceBudgets
+        } else {
+            Self::Precursor
+        }
+    }
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Smoke => "smoke",
+            Self::Precursor => "precursor",
+            Self::EnforceBudgets => "enforce-budgets",
+        }
+    }
+
+    fn plan(self) -> Plan {
+        match self {
+            Self::Smoke => Plan::smoke(),
+            Self::Precursor | Self::EnforceBudgets => Plan::new(3, 20),
+        }
+    }
+
+    const fn requires_bound_identity(self) -> bool {
+        !matches!(self, Self::Smoke)
+    }
+
+    const fn enforces_budgets(self) -> bool {
+        matches!(self, Self::EnforceBudgets)
+    }
+}
+
 fn main() {
     if [RUNTIME_ENV, MODEL_ROOT_ENV]
         .into_iter()
@@ -206,18 +262,8 @@ fn main() {
     }
 
     let arguments = std::env::args().collect::<Vec<_>>();
-    let smoke = cfg!(debug_assertions) || arguments.iter().any(|argument| argument == "--smoke");
-    let qualify = arguments.iter().any(|argument| argument == "--qualify");
-    assert!(
-        !(smoke && qualify),
-        "qualification cannot use the smoke sample policy"
-    );
+    let mode = RunMode::from_arguments(&arguments);
     let profile = selected_profile(&arguments);
-    let plan = if smoke {
-        Plan::smoke()
-    } else {
-        Plan::new(3, 20)
-    };
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
     let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/ocr/g-004");
@@ -232,9 +278,7 @@ fn main() {
         &model_root,
         &runtime,
         &workloads,
-        plan,
-        smoke,
-        qualify,
+        mode,
         hex_digest(&manifest_bytes),
     );
     println!(
@@ -256,21 +300,16 @@ fn selected_profile(arguments: &[String]) -> OnnxOcrProfile {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the qualification report binds each independent source identity explicitly"
-)]
 fn run_profile(
     profile: OnnxOcrProfile,
     model_root: &Path,
     runtime: &Path,
     specs: &[WorkloadSpec],
-    plan: Plan,
-    smoke: bool,
-    qualify: bool,
+    mode: RunMode,
     fixture_manifest_sha256: String,
 ) -> ProfileReport {
-    if qualify {
+    let plan = mode.plan();
+    if mode.requires_bound_identity() {
         assert!(
             target_limits().is_some(),
             "qualification requires an approved release target"
@@ -335,7 +374,7 @@ fn run_profile(
 
     let identity = descriptor.model_identity();
     let mut report = ProfileReport {
-        schema_version: 1,
+        schema_version: 2,
         release_target: bench_harness::RELEASE_TARGET,
         host_id: environment_or(HOST_ENV, "unbound-smoke-host"),
         source_revision: environment_or(SOURCE_ENV, "unbound-smoke-source"),
@@ -357,7 +396,7 @@ fn run_profile(
             .preprocessing()
             .as_str()
             .to_owned(),
-        smoke,
+        mode: mode.name(),
         warmup_iterations: plan.warmup(),
         retained_samples: plan.samples(),
         cold_open_ms,
@@ -375,7 +414,7 @@ fn run_profile(
         workloads: workload_reports,
         passed: false,
     };
-    report.passed = report_passes(&report, profile, qualify);
+    report.passed = report_passes(&report, profile, mode.enforces_budgets());
     report
 }
 
@@ -640,7 +679,7 @@ fn measure_cancelled(
     }
 }
 
-fn report_passes(report: &ProfileReport, profile: OnnxOcrProfile, qualify: bool) -> bool {
+fn report_passes(report: &ProfileReport, profile: OnnxOcrProfile, enforce_budgets: bool) -> bool {
     let structural = report.max_concurrent_inferences == 1
         && report.session_pairs == 1
         && report.sessions == 2
@@ -652,7 +691,7 @@ fn report_passes(report: &ProfileReport, profile: OnnxOcrProfile, qualify: bool)
                 && workload.growth_bytes <= HEAP_GROWTH_LIMIT
                 && workload.resources.is_some()
         });
-    if !structural || !qualify || profile == OnnxOcrProfile::NativeG004 {
+    if !structural || !enforce_budgets || profile == OnnxOcrProfile::NativeG004 {
         return structural;
     }
 
