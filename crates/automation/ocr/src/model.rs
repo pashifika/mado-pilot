@@ -316,7 +316,7 @@ impl OcrModelIdentity {
     /// # Errors
     ///
     /// Returns [`OcrFault::AcceptedProfileMismatch`] when a value claims either
-    /// closed accepted model or profile ID but any field differs from ADR 0033 or 0038.
+    /// closed accepted model or profile ID but any field differs from ADR 0033 or 0040.
     pub fn new(
         model: ModelId,
         version: ModelVersion,
