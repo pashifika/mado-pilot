@@ -34,12 +34,14 @@ pub use backend::{
 };
 pub use fault::OcrFault;
 pub use model::{
-    ACCEPTED_G004_DECODER_ID, ACCEPTED_G004_LANGUAGE_PROFILE_ID, ACCEPTED_G004_MODEL_ID,
-    ACCEPTED_G004_MODEL_VERSION, ACCEPTED_G004_NORMALIZATION_ID, ACCEPTED_G004_PREPROCESSING_ID,
-    ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES, BackendId, BackendVersion,
-    DecoderId, LanguageProfileId, MAX_MODEL_COMPONENT_BYTES, ModelComponentIdentity, ModelId,
-    ModelVersion, NormalizationId, OcrModelComponent, OcrModelIdentity, OcrModelSource,
-    OcrModelSourceRequest, OcrProfileMetadata, PreprocessingId, ProfileId,
+    ACCEPTED_BOUNDED_MODEL_ID, ACCEPTED_BOUNDED_MODEL_VERSION, ACCEPTED_BOUNDED_PREPROCESSING_ID,
+    ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_DECODER_ID, ACCEPTED_G004_LANGUAGE_PROFILE_ID,
+    ACCEPTED_G004_MODEL_ID, ACCEPTED_G004_MODEL_VERSION, ACCEPTED_G004_NORMALIZATION_ID,
+    ACCEPTED_G004_PREPROCESSING_ID, ACCEPTED_G004_PROFILE_ID, ACCEPTED_G004_VOCABULARY_ENTRIES,
+    BackendId, BackendVersion, DecoderId, LanguageProfileId, MAX_MODEL_COMPONENT_BYTES,
+    ModelComponentIdentity, ModelId, ModelVersion, NormalizationId, OcrModelComponent,
+    OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata, PreprocessingId,
+    ProfileId,
 };
 pub use recognizer::{MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES, MAX_TEXT_BYTES, OcrRecognizer};
 pub use request::{OcrRegion, OcrRequest};

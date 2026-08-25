@@ -21,9 +21,27 @@ pub(crate) fn accepted_source(
     model_root: &Path,
     operation: &OperationContext,
 ) -> Result<OcrModelSource, OnnxBackendFault> {
+    selected_source(model_root, OcrModelIdentity::accepted_g004(), operation)
+}
+
+pub(crate) fn bounded_source(
+    model_root: &Path,
+    operation: &OperationContext,
+) -> Result<OcrModelSource, OnnxBackendFault> {
+    selected_source(
+        model_root,
+        OcrModelIdentity::accepted_bounded_detector(),
+        operation,
+    )
+}
+
+fn selected_source(
+    model_root: &Path,
+    identity: OcrModelIdentity,
+    operation: &OperationContext,
+) -> Result<OcrModelSource, OnnxBackendFault> {
     checkpoint(operation)?;
     let root = canonical_root(model_root)?;
-    let identity = OcrModelIdentity::accepted_g004();
     let detector = read_component(
         &root,
         DETECTOR_RELATIVE_PATH,

@@ -288,6 +288,12 @@ jobs:
         shell: bash
         run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
 
+      - name: Run the bounded detector profile smoke gate
+        shell: bash
+        run: |
+          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=native
+          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded
+
       - name: Run the diagnostic benchmark smoke gate
         shell: bash
         run: cargo bench --locked --package mado-pilot-runtime --bench diagnostic-overhead -- --smoke
@@ -482,6 +488,12 @@ jobs:
       - name: Run the OCR benchmark smoke gate
         shell: bash
         run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
+
+      - name: Run the bounded detector profile smoke gate
+        shell: bash
+        run: |
+          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=native
+          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded
 
       - name: Run the diagnostic benchmark smoke gate
         shell: bash

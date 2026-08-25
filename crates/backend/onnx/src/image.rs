@@ -18,11 +18,10 @@ use opencv::imgproc::{INTER_CUBIC, INTER_LINEAR, resize, warp_perspective};
 
 use crate::detect::Quad;
 use crate::fault::OnnxBackendFault;
+use crate::profile::{DetectorPlan, PreprocessingDescriptor};
 
 pub(crate) const MAX_TENSOR_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const MAX_RECOGNIZER_WIDTH: usize = 4_096;
-const DETECTOR_MIN_SIDE: u32 = 736;
-const DETECTOR_MULTIPLE: u32 = 32;
 const RECOGNIZER_HEIGHT: usize = 48;
 const RECOGNIZER_BASE_WIDTH: usize = 320;
 const CHANNELS: usize = 3;
@@ -32,6 +31,12 @@ const BGRA_BYTES: usize = 4;
 pub(crate) struct TensorInput {
     pub(crate) data: Vec<f32>,
     pub(crate) shape: [usize; 4],
+}
+
+#[derive(Debug)]
+pub(crate) struct DetectorInput {
+    pub(crate) tensor: TensorInput,
+    pub(crate) plan: DetectorPlan,
 }
 
 /// Exposes one validated borrowed BGRA matrix only for the closure's duration.
@@ -79,43 +84,66 @@ pub(crate) fn with_bgra_view<T>(
     result
 }
 
-pub(crate) fn detector_input(image: &Mat) -> Result<TensorInput, OnnxBackendFault> {
+pub(crate) fn detector_input(
+    image: &Mat,
+    preprocessing: PreprocessingDescriptor,
+) -> Result<DetectorInput, OnnxBackendFault> {
     let source_height = u32::try_from(image.rows()).map_err(|_| OnnxBackendFault::InvalidPixels)?;
     let source_width = u32::try_from(image.cols()).map_err(|_| OnnxBackendFault::InvalidPixels)?;
-    if source_height == 0 || source_width == 0 {
+    let plan = preprocessing.plan(source_width, source_height)?;
+    let tensor = detector_tensor_for_plan(image, plan)?;
+    Ok(DetectorInput { tensor, plan })
+}
+
+fn detector_tensor_for_plan(
+    image: &Mat,
+    plan: DetectorPlan,
+) -> Result<TensorInput, OnnxBackendFault> {
+    if u32::try_from(image.cols()).map_err(|_| OnnxBackendFault::InvalidPixels)?
+        != plan.source_width()
+        || u32::try_from(image.rows()).map_err(|_| OnnxBackendFault::InvalidPixels)?
+            != plan.source_height()
+    {
         return Err(OnnxBackendFault::InvalidPixels);
     }
-
-    let ratio = if source_height.min(source_width) < DETECTOR_MIN_SIDE {
-        f64::from(DETECTOR_MIN_SIDE) / f64::from(source_height.min(source_width))
-    } else {
-        1.0
-    };
-    let scaled_height = f64_to_u32(f64::from(source_height) * ratio)?;
-    let scaled_width = f64_to_u32(f64::from(source_width) * ratio)?;
-    let height = round_to_multiple(scaled_height, DETECTOR_MULTIPLE)?;
-    let width = round_to_multiple(scaled_width, DETECTOR_MULTIPLE)?;
-    let height_usize = usize::try_from(height).map_err(|_| OnnxBackendFault::ResourceLimit)?;
-    let width_usize = usize::try_from(width).map_err(|_| OnnxBackendFault::ResourceLimit)?;
-    let elements = tensor_elements(1, height_usize, width_usize)?;
+    debug_assert_eq!(
+        plan.forward_x(),
+        f64::from(plan.final_width()) / f64::from(plan.source_width())
+    );
+    debug_assert_eq!(
+        plan.forward_y(),
+        f64::from(plan.final_height()) / f64::from(plan.source_height())
+    );
+    debug_assert_eq!(
+        plan.inverse_x(),
+        f64::from(plan.source_width()) / f64::from(plan.final_width())
+    );
+    debug_assert_eq!(
+        plan.inverse_y(),
+        f64::from(plan.source_height()) / f64::from(plan.final_height())
+    );
+    let width = usize::try_from(plan.final_width()).map_err(|_| OnnxBackendFault::ResourceLimit)?;
+    let height =
+        usize::try_from(plan.final_height()).map_err(|_| OnnxBackendFault::ResourceLimit)?;
 
     let mut resized = Mat::default();
     resize(
         image,
         &mut resized,
         Size::new(
-            i32::try_from(width).map_err(|_| OnnxBackendFault::ResourceLimit)?,
-            i32::try_from(height).map_err(|_| OnnxBackendFault::ResourceLimit)?,
+            i32::try_from(plan.final_width()).map_err(|_| OnnxBackendFault::ResourceLimit)?,
+            i32::try_from(plan.final_height()).map_err(|_| OnnxBackendFault::ResourceLimit)?,
         ),
         0.0,
         0.0,
         INTER_LINEAR,
     )
     .map_err(|_| OnnxBackendFault::NativeFailure)?;
-    let data = bgra_to_planar(&resized, 1, height_usize, width_usize, elements)?;
+    let data = bgra_to_planar(&resized, 1, height, width, plan.tensor_elements())?;
+    drop(resized);
     Ok(TensorInput {
         data,
-        shape: [1, CHANNELS, height_usize, width_usize],
+        shape: [1, CHANNELS, height, width],
     })
 }
 
@@ -283,15 +311,6 @@ fn distance(left: Point2f, right: Point2f) -> f64 {
     x.hypot(y)
 }
 
-fn round_to_multiple(value: u32, multiple: u32) -> Result<u32, OnnxBackendFault> {
-    let rounded = (f64::from(value) / f64::from(multiple)).round_ties_even();
-    let result = rounded * f64::from(multiple);
-    if !result.is_finite() || result < f64::from(multiple) || result > f64::from(u32::MAX) {
-        return Err(OnnxBackendFault::ResourceLimit);
-    }
-    f64_to_u32(result)
-}
-
 fn tensor_elements(batch: usize, height: usize, width: usize) -> Result<usize, OnnxBackendFault> {
     let elements = batch
         .checked_mul(CHANNELS)
@@ -376,18 +395,6 @@ fn normalize(channel: u8) -> f32 {
     centered / 0.5
 }
 
-fn f64_to_u32(value: f64) -> Result<u32, OnnxBackendFault> {
-    if !value.is_finite() || value < 0.0 || value > f64::from(u32::MAX) {
-        return Err(OnnxBackendFault::ResourceLimit);
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the finite nonnegative value was range-checked and profile semantics require truncation"
-    )]
-    Ok(value as u32)
-}
-
 fn f64_to_usize(value: f64) -> Result<usize, OnnxBackendFault> {
     if !value.is_finite() || value < 0.0 || value > usize::MAX as f64 {
         return Err(OnnxBackendFault::ResourceLimit);
@@ -412,15 +419,53 @@ fn f64_to_i32(value: f64) -> Result<i32, OnnxBackendFault> {
 }
 #[cfg(test)]
 mod tests {
-    use super::{
-        DETECTOR_MULTIPLE, MAX_TENSOR_BYTES, normalize, round_to_multiple, tensor_elements,
-    };
+    use opencv::core::{Mat, Vec4b};
+
+    use super::{MAX_TENSOR_BYTES, detector_tensor_for_plan, normalize, tensor_elements};
     use crate::fault::OnnxBackendFault;
+    use crate::profile::DetectorPlan;
 
     #[test]
-    fn detector_rounding_matches_python_ties_to_even() {
-        assert_eq!(round_to_multiple(752, DETECTOR_MULTIPLE), Ok(768));
-        assert_eq!(round_to_multiple(720, DETECTOR_MULTIPLE), Ok(704));
+    fn direct_resize_matches_the_fixed_bgra_and_planar_oracle() {
+        let source = [
+            [
+                Vec4b::from([0, 20, 40, 200]),
+                Vec4b::from([6, 26, 46, 201]),
+                Vec4b::from([12, 32, 52, 202]),
+                Vec4b::from([18, 38, 58, 203]),
+            ],
+            [
+                Vec4b::from([4, 24, 44, 204]),
+                Vec4b::from([10, 30, 50, 205]),
+                Vec4b::from([16, 36, 56, 206]),
+                Vec4b::from([22, 42, 62, 207]),
+            ],
+            [
+                Vec4b::from([8, 28, 48, 208]),
+                Vec4b::from([14, 34, 54, 209]),
+                Vec4b::from([20, 40, 60, 210]),
+                Vec4b::from([26, 46, 66, 211]),
+            ],
+        ];
+        let image = Mat::from_slice_2d(&source).unwrap();
+        let plan = DetectorPlan::for_test(4, 3, 3, 2).unwrap();
+
+        let input = detector_tensor_for_plan(&image, plan).unwrap();
+
+        assert_eq!(input.shape, [1, 3, 2, 3]);
+        let expected_bits = [
+            0xbf7bfbfc, 0xbf6bebec, 0xbf5bdbdc, 0xbf6feff0, 0xbf5fdfe0, 0xbf4fcfd0, 0xbf53d3d4,
+            0xbf43c3c4, 0xbf33b3b4, 0xbf47c7c8, 0xbf37b7b8, 0xbf27a7a8, 0xbf2babac, 0xbf1b9b9c,
+            0xbf0b8b8c, 0xbf1f9fa0, 0xbf0f8f90, 0xbefefefe,
+        ];
+        assert_eq!(
+            input
+                .data
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected_bits
+        );
     }
 
     #[test]

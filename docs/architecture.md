@@ -23,15 +23,22 @@ owning-process-scoped `ProcessDirected` input.
 The qualified Windows floor, both Phase 2 platform native/public-language
 matrices, macOS production capture/transitions, Windows 1280×720 production
 capture/transitions, and corrected Windows mixed-DPI dual-4K production capture
-have accepted revision-bound evidence and target-specific budgets. Phase 3 adds
-the exact accepted G-004 default from caller-supplied canonical model/runtime
-paths plus separate Apple M1 Pro and Core i7-12700KF regression profiles.
-Approved Apple Silicon and Windows 11 Pro hosts reproduce the same integrated
-42-region quality boundary. It does not add bundling, download, ambient search,
-provider fallback, scheduling, or automatic input. The v0.3.0 source candidate
-still requires protected release delivery; hosted Windows Server hard-gate
-smoke is supporting evidence rather than a release-host substitute. Watchers,
-scheduling, and release packaging remain future work.
+have accepted revision-bound evidence and target-specific budgets. Released
+`v0.3.0` includes the exact accepted native G-004 default from caller-supplied
+canonical model/runtime paths plus separate Apple M1 Pro and Core i7-12700KF
+regression profiles. Approved Apple Silicon and Windows 11 Pro hosts reproduce
+the same integrated 42-region quality boundary.
+
+The `v0.3.1` bounded-detector topic adds a second closed, explicit, non-default
+profile over the same immutable model components. The initial ADR 0038 rectangle
+passed both-target correctness/resource oracles but the fixed ADR 0039 formula
+rejected its Windows latency margins. ADR 0040 replaces that unreleased tuple
+with candidate v2. Exact-source Apple and Windows precursors and strict final
+enforcement pass; ADR 0041 accepts separate target budgets and revision-bound
+profiles. The explicit profile is qualified on both release targets without
+changing defaults. Neither profile adds bundling, download, ambient search,
+provider fallback, scheduling, or automatic input. Watchers, scheduling, and
+release packaging remain future work.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -279,7 +286,7 @@ prefix.
 | `crates/platform/windows` | `mado-pilot-platform-windows` | Picker-free Windows window/display discovery, WGC/D3D11 capture, system input, ordinary exact-window queue submission with unknown compatibility, and fixture-acknowledged exact-window submission, wired into the runtime and facade by `mado_pilot::windows_engine`; Windows exposes no separate capture/input authorization state, and receipts report integrity/UIPI failures without elevation |
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Non-prompting macOS target discovery, permission probes, ScreenCaptureKit capture, `CGEvent` system input, and gated process-directed input to the retained window's owning process, wired into the runtime and the facade by `mado_pilot::macos_engine` |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
-| `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 CPU OCR for the exact accepted G-004 profile |
+| `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 CPU OCR for the exact accepted native G-004 and explicit bounded-detector profiles |
 | `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
 | `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, backend, and input doubles, synthetic clock, and contract-fixture support |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
@@ -845,10 +852,9 @@ responsibilities a later phase takes on.
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
-| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes the accepted G-004 profile; bounded model/backend/profile identities, immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
-| Exact G-004 CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership |
-| OCR runtime/facade/ABI one-shot operation and immutable results | Implemented through `mado-pilot-runtime`, the facade, C ABI 1.3, and C++; backend/model/context/frame/region/output space remain explicit, and close/deadline/cancellation arbitrate before publication |
-| Accepted default OCR composition | Implemented by ADR 0036 as separate Rust/C/C++ constructors over caller-supplied canonical model-root/runtime paths. Existing constructors still omit OCR, explicit package/backends remain available, and missing prerequisites fail construction without fallback or a half-configured engine |
+| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts target budgets after strict both-host final enforcement. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
+| Exact accepted CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection first fits a `1312x736` rectangle, applies a 6 MiB secondary tensor fit only when that rectangle had to fit oversized desired work, keeps original-source recognizer crops, and enforces ADR 0041 target budgets |
+| Accepted default OCR composition | Implemented by ADR 0036 as separate Rust/C/C++ constructors over caller-supplied canonical model-root/runtime paths. Existing constructors still omit OCR, explicit package/backends remain available, missing prerequisites fail construction without fallback or a half-configured engine, and bounded-backend admission does not alter this default |
 | Bounded engine-scoped diagnostic observation | Implemented through Rust, C ABI 1.3, and C++ with allocation-free `Off`, finite `Normal`/`Debug`, strict order, exact level losses, independent readers/batches, and content-redacted OCR admission/terminal records |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
 | Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text and process-directed pointer/keyboard/text with owning-process scope, unknown compatibility, and invocation-only evidence; final candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. No macOS window-message route exists. Both implementations are reached through `mado-pilot-runtime`, the Rust facade, C ABI 1.2/1.3, and C++ |
@@ -865,7 +871,7 @@ responsibilities a later phase takes on.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.3 as a header-only adapter, including move-only OCR results, `DefaultOcrOptions`, production default construction, explicit clone, lvalue-only borrowed views, repaired request projections, typed native/input/diagnostic values, and negotiated-prefix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles with hard correctness/growth gates plus executable inference/startup/heap/mapping/cleanup limits and target-native RSS; Phase 3 default-OCR `G-013` is complete on both release targets |
+| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles with hard correctness/growth gates plus executable inference/startup/heap/mapping/cleanup limits and target-native RSS; Phase 3 default-OCR `G-013` is complete on both release targets. ADR 0039 separates bounded-profile precursor measurement from final budget enforcement; Apple precursor passes, while Windows precursor and all final bounded budgets remain open |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for frozen ABI 1.0 and 1.2 headers plus current ABI 1.3. Both historical callers compile against immutable headers, negotiate only their extents, and run against the current library; current C++ tests refuse complete 1.2 and partial 1.3 OCR access before missing entries are read |
@@ -1973,15 +1979,20 @@ package-relative path, exact byte length, and SHA-256 digest. A missing field,
 empty or over-limit component, malformed identity, path alias, unsupported hash,
 or malformed digest refuses the manifest before any model bytes are read.
 
-Claiming the accepted model or profile ID
-`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1` additionally binds every one
-of those values to ADR 0033: model revision, both component lengths and digests,
-language, preprocessing, decoder, normalization, vocabulary count, and
-vocabulary digest must all match the trusted in-crate descriptor. Self-consistent
-manifest hashes are not authority for that profile. Other explicit profile IDs
-remain caller-provided assets, but a result-normalization identity this contract
-does not implement fails at manifest parsing with typed
-`UnsupportedOcrProfile`; it never reaches component expansion or backend work.
+Claiming either accepted model or profile ID additionally binds every field to
+one complete closed tuple. Native
+`g-004-rapidocr-ppocrv4-det-v6-rec-small-v1` is fixed by ADR 0033. Explicit
+candidate `phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2` is fixed by
+ADR 0040 and uses preprocessing
+`rapidocr-ppocrv4-det-bgr-db736-fit-1312x736-then-tensor6291456b-linear-half-pixel-source-rec-v2`.
+The rejected ADR 0038 `bounded-v1` tuple is not an alias. The accepted tuples
+share model revision, component lengths/digests, language, decoder,
+normalization, vocabulary count, and vocabulary digest; their model, profile,
+and preprocessing IDs are not interchangeable. Self-consistent manifest hashes
+are not authority for either tuple. Other explicit profile IDs remain
+caller-provided assets, but a result-normalization identity this contract does
+not implement fails at manifest parsing with typed `UnsupportedOcrProfile`; it
+never reaches component expansion or backend work.
 The complete validated identity travels with `OcrModelSource` to the backend.
 
 The default composition path does not synthesize a schema-v2 package. It reads
@@ -2309,23 +2320,48 @@ isolation, while separate cases cover non-empty clipping, hard request ceilings,
 profile refusal, malformed output, interruption precedence, redacted diagnostics,
 and independence from backend buffers, frame storage, and model allocations.
 
-`mado-pilot-backend-onnx` is the concrete CPU implementation for only the exact
-ADR 0033 G-004 profile. It requires a caller-supplied canonical absolute path to
-ONNX Runtime 1.29.0 (`libonnxruntime.1.29.0.dylib` on Apple Silicon or
-`onnxruntime.dll` on Windows), verifies exact runtime/API and graph/vocabulary
-metadata before admission, and never searches ambient locations, downloads,
-bundles, or falls back to another provider. [ADR 0034](adr/0034-onnx-runtime-cpu-loading-boundary.md)
+`mado-pilot-backend-onnx` is the concrete CPU implementation for the two exact
+closed profiles from ADRs 0033 and 0038. It requires a caller-supplied canonical
+absolute path to ONNX Runtime 1.29.0
+(`libonnxruntime.1.29.0.dylib` on Apple Silicon or `onnxruntime.dll` on Windows),
+verifies exact runtime/API and graph/vocabulary metadata before admission, and
+never searches ambient locations, downloads, bundles, or falls back to another
+profile/provider. [ADR 0034](adr/0034-onnx-runtime-cpu-loading-boundary.md)
 records the native loading boundary. The backend owns one mutable session pair,
 uses checked BGRA preprocessing and borrowed tensor views, applies joinable
 best-effort native termination, and rejects concurrent calls instead of queueing
 or invoking `Session::run` concurrently.
+
+`OnnxOcrBackend::open_accepted` retains released native G-004 preprocessing.
+`OnnxOcrBackend::open_bounded_detector` is the only fixed-path bounded
+constructor. It computes source/final dimensions, forward/inverse scale, tensor
+elements, and bytes before allocation. Candidate v2 first fits oversized desired
+work within `1312x736`; only after that fit, tensors above 6,291,456 bytes receive
+one second aspect-preserving floor-to-32 fit. Desired work that already fits the
+rectangle, including 960×540 and odd HUD inputs, retains the 11,587,584-byte
+reference detector and exact geometry. The backend resizes directly once, maps
+detector output back to the original source view, and perspective-crops that
+original source for recognition. Facts report the absolute rectangle; per-call
+observations report actual bounded dimensions/counts/bytes and the
+one-pair/two-session topology.
 
 The facade depends on this backend only for separate
 `replay_engine_with_default_ocr`, `windows_engine_with_default_ocr`, and
 `macos_engine_with_default_ocr` constructors. `DefaultOcrConfig` carries a
 caller-selected model root and canonical absolute runtime path. Existing
 constructors continue to omit OCR unless a caller supplies an explicit backend;
-there is no ambient search, download, fallback, or support-table inference.
+default OCR continues to select only native G-004, with no ambient search,
+download, fallback, or support-table inference.
+
+For troubleshooting, `ProfileMismatch` means the source is not one complete
+accepted tuple; changing only a profile or preprocessing string is never
+accepted. `DetectorMismatch`/`RecognizerMismatch` means the fixed relative file
+failed exact length or digest validation. `RuntimeIncompatible` means the
+canonical target library did not report exact 1.29.0/API 17. Callers must repair
+the controlled prerequisite or selection; the backend does not retry, search, or
+substitute the other profile. Bounded construction success reports availability,
+not release-target support, until both target qualification and final budgets
+pass.
 
 ### The public Rust workflow
 

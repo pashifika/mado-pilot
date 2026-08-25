@@ -13,21 +13,19 @@ use ort::value::TensorRef;
 use crate::decode::{self, DecodedText};
 use crate::detect::{self, Detection};
 use crate::fault::OnnxBackendFault;
-use crate::image::TensorInput;
+use crate::image::{DetectorInput, TensorInput};
 use crate::vocabulary::Vocabulary;
 
 const MONITOR_INTERVAL: Duration = Duration::from_millis(1);
 
 pub(crate) fn detector(
     session: &mut Session,
-    input: &TensorInput,
-    source_width: u32,
-    source_height: u32,
+    input: &DetectorInput,
     max_candidates: usize,
     operation: &OperationContext,
 ) -> Result<Vec<Detection>, OnnxBackendFault> {
     checkpoint(operation)?;
-    let tensor = TensorRef::from_array_view((input.shape, input.data.as_slice()))
+    let tensor = TensorRef::from_array_view((input.tensor.shape, input.tensor.data.as_slice()))
         .map_err(|_| OnnxBackendFault::ResourceLimit)?;
     let options = Arc::new(RunOptions::new().map_err(|_| OnnxBackendFault::NativeFailure)?);
     let mut monitor = TerminationMonitor::start(Arc::clone(&options), operation.clone())?;
@@ -48,8 +46,7 @@ pub(crate) fn detector(
     let (shape, values) = output
         .try_extract_tensor::<f32>()
         .map_err(|_| OnnxBackendFault::MalformedOutput)?;
-    let detections =
-        detect::postprocess(shape, values, source_width, source_height, max_candidates)?;
+    let detections = detect::postprocess(shape, values, input.plan, max_candidates)?;
     drop(outputs);
     monitor.finish()?;
     checkpoint(operation)?;

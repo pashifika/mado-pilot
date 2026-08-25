@@ -2139,6 +2139,140 @@ pub const PHASE3_OCR_REGION_MAPPED_BYTES: u64 = 180 * 90 * 4;
 /// Exact mapped BGRA bytes for the accepted 64 by 64 empty frame.
 pub const PHASE3_OCR_EMPTY_MAPPED_BYTES: u64 = 64 * 64 * 4;
 
+/// Phase 3.1 Apple Silicon bounded-detector latency ceilings from ADR 0041.
+pub const PHASE3_1_APPLE_BOUNDED_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
+    LatencyBudget::new(
+        "bounded_hud_4k",
+        Duration::from_millis(475),
+        Duration::from_millis(475),
+        Duration::from_millis(475),
+    ),
+    LatencyBudget::new(
+        "bounded_menu_wide",
+        Duration::from_millis(425),
+        Duration::from_millis(450),
+        Duration::from_millis(450),
+    ),
+    LatencyBudget::new(
+        "bounded_status_extreme_wide",
+        Duration::from_millis(300),
+        Duration::from_millis(300),
+        Duration::from_millis(300),
+    ),
+    LatencyBudget::new(
+        "bounded_hud_reference",
+        Duration::from_millis(600),
+        Duration::from_millis(600),
+        Duration::from_millis(600),
+    ),
+    LatencyBudget::new(
+        "bounded_hud_odd",
+        Duration::from_millis(600),
+        Duration::from_millis(600),
+        Duration::from_millis(625),
+    ),
+    LatencyBudget::new(
+        "bounded_tooltip_dense",
+        Duration::from_millis(600),
+        Duration::from_millis(600),
+        Duration::from_millis(600),
+    ),
+    LatencyBudget::new(
+        "bounded_mission_boundary",
+        Duration::from_millis(500),
+        Duration::from_millis(500),
+        Duration::from_millis(500),
+    ),
+    LatencyBudget::new(
+        "bounded_blank_4k",
+        Duration::from_millis(175),
+        Duration::from_millis(175),
+        Duration::from_millis(175),
+    ),
+];
+
+/// Phase 3.1 Windows bounded-detector latency ceilings from ADR 0041.
+pub const PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
+    LatencyBudget::new(
+        "bounded_hud_4k",
+        Duration::from_millis(600),
+        Duration::from_millis(675),
+        Duration::from_millis(700),
+    ),
+    LatencyBudget::new(
+        "bounded_menu_wide",
+        Duration::from_millis(550),
+        Duration::from_millis(625),
+        Duration::from_millis(625),
+    ),
+    LatencyBudget::new(
+        "bounded_status_extreme_wide",
+        Duration::from_millis(350),
+        Duration::from_millis(350),
+        Duration::from_millis(375),
+    ),
+    LatencyBudget::new(
+        "bounded_hud_reference",
+        Duration::from_millis(900),
+        Duration::from_millis(900),
+        Duration::from_millis(925),
+    ),
+    LatencyBudget::new(
+        "bounded_hud_odd",
+        Duration::from_millis(900),
+        Duration::from_millis(925),
+        Duration::from_millis(950),
+    ),
+    LatencyBudget::new(
+        "bounded_tooltip_dense",
+        Duration::from_millis(725),
+        Duration::from_millis(750),
+        Duration::from_millis(775),
+    ),
+    LatencyBudget::new(
+        "bounded_mission_boundary",
+        Duration::from_millis(600),
+        Duration::from_millis(625),
+        Duration::from_millis(650),
+    ),
+    LatencyBudget::new(
+        "bounded_blank_4k",
+        Duration::from_millis(300),
+        Duration::from_millis(325),
+        Duration::from_millis(325),
+    ),
+];
+
+/// Phase 3.1 bounded-detector live-Rust-heap ceiling on both targets.
+pub const PHASE3_1_BOUNDED_OCR_HEAP_LIMIT_BYTES: usize = 20 * 1024 * 1024;
+
+/// Phase 3.1 Apple bounded-detector final process RSS ceiling.
+pub const PHASE3_1_APPLE_BOUNDED_OCR_RESIDENT_LIMIT_BYTES: u64 = 587_202_560;
+
+/// Phase 3.1 Windows bounded-detector final process RSS ceiling.
+pub const PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES: u64 = 301_989_888;
+
+/// Phase 3.1 Apple bounded-detector cold-open ceiling.
+pub const PHASE3_1_APPLE_BOUNDED_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(125);
+
+/// Phase 3.1 Apple bounded-detector first-close ceiling.
+pub const PHASE3_1_APPLE_BOUNDED_OCR_CLOSE_LIMIT: Duration = Duration::from_millis(2);
+
+/// Phase 3.1 Apple bounded-detector reopen-close ceiling.
+pub const PHASE3_1_APPLE_BOUNDED_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::from_millis(100);
+
+/// Phase 3.1 Windows bounded-detector cold-open ceiling.
+pub const PHASE3_1_WINDOWS_BOUNDED_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(250);
+
+/// Phase 3.1 Windows bounded-detector first-close ceiling.
+pub const PHASE3_1_WINDOWS_BOUNDED_OCR_CLOSE_LIMIT: Duration = Duration::from_millis(8);
+
+/// Phase 3.1 Windows bounded-detector reopen-close ceiling.
+pub const PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::from_millis(200);
+
+/// Phase 3.1 bounded profile's absolute rectangular detector tensor fact.
+pub const PHASE3_1_BOUNDED_OCR_MAX_DETECTOR_TENSOR_BYTES: u64 = 11_587_584;
+
 /// Enforces frozen p50, p95, and per-scenario latency ceilings.
 ///
 /// A missing or duplicated workload is a harness error rather than a skipped

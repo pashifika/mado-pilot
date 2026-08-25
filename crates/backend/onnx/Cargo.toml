@@ -19,6 +19,8 @@ sha2 = { workspace = true }
 
 [dev-dependencies]
 mado-pilot-testkit = { path = "../../support/testkit" }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 libc = { workspace = true }
@@ -28,6 +30,10 @@ windows.workspace = true
 
 [[bench]]
 name = "onnx-cpu"
+harness = false
+
+[[bench]]
+name = "bounded-detector"
 harness = false
 
 [lints]

@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1, affected Phase 2 workloads, and Phase 3 default OCR on both release targets are resolved by ADRs 0008, 0024–0032, and 0037 |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded OCR on both release targets are resolved by ADRs 0008, 0024–0032, 0037, and 0041 |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -593,8 +593,51 @@ cancellation/late-result, cleanup, and 4 KiB growth gates, but its
 timing/resident memory defines no release-host budget. Watcher scheduling and
 acceleration remain open for the later phases that introduce them.
 
-**Resolution.** Committed benchmark profiles and budgets plus an ADR for each
-budget that is set or relaxed, recording the evidence behind the number.
+**The v0.3.1 bounded-detector workloads remain open.** ADR 0038 records the
+rejected rectangular-only tuple, ADR 0040 fixes candidate v2, and ADR 0039 keeps
+target-independent smoke, exact-source precursor measurement, and final budget
+enforcement separate. Hosted timing/RSS establishes no release-host budget.
+
+The reviewed approved-host rectangular precursor used exact source `cff5338`.
+All five bounded processes passed on both Apple M1 Pro and Windows Core
+i7-12700KF hosts. All 3,200 retained native/bounded samples across both targets
+passed quality/source/resource/session/cancellation/growth oracles; ten native
+raw false verdicts remain retained because that precursor applied the
+bounded-only 20 MiB peak to arbitrary-4K native comparison work.
+
+ADR 0039's predeclared formula rejected the rectangular candidate on Windows.
+Margin-derived latency ceilings crossed fixed caps for 4K, reference, odd, and
+dense workloads; cold derived 275 ms above 250 ms. Observed RSS derived 384 MiB
+above 320 MiB, but the harness retained all source fixtures simultaneously, so
+that row is preserved and not reused as one-operation memory evidence. No fixed
+cap or expected result was changed.
+
+**The v0.3.1 explicit bounded-detector row is resolved.** ADR 0038 retains the
+rejected rectangular candidate. ADR 0040 accepts candidate v2, and ADR 0041
+accepts target budgets derived by the unchanged ADR 0039 formula.
+
+Exact schema-v3 source `ce658b3` passed five bounded and five native precursor
+processes on each approved host with zero oracle failure/growth and complete
+final/cumulative RSS fields. Strict final source `33cd36b` fails closed for
+missing prerequisites, rejects unknown/duplicate modes, preserves explicit
+smoke/debug inventory behavior, and passed independent fix review.
+
+Five fresh bounded final enforcement processes passed on each approved host.
+Final executable SHA-256 is
+`7e48921dfeaa7b0f3a4bb33b9e927eea9e50d75422c570adb6443fd4f32cf190`
+on Apple and
+`aefdfa9cd6a023049b532f650a5493191994b22b3c07b582097ca1146a58d5e4`
+on Windows. Every latency, heap, growth, final RSS, detector-fact, identity,
+cancellation, and cleanup row passed without retry or exclusion.
+
+The profile remains an explicit non-default Rust selection under the named
+runtime/model/fixture/target boundaries. Released Phase 3 default OCR evidence,
+budgets, and constructors remain unchanged.
+
+**Resolution.** Resolved by [ADR 0040](adr/0040-compound-bounded-detector-ceiling.md)
+and [ADR 0041](adr/0041-bounded-detector-target-budgets.md). Any future ceiling
+or budget change requires a new identity or ADR as applicable and fresh
+both-target evidence.
 
 ## G-014
 

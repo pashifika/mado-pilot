@@ -15,6 +15,7 @@ mod loader;
 mod model;
 #[cfg(test)]
 mod native_tests;
+mod profile;
 mod session;
 mod vocabulary;
 
@@ -28,15 +29,15 @@ use mado_pilot_ocr::{
     BackendCandidate, BackendId, BackendRequest, BackendVersion, OcrBackend, OcrBackendDescriptor,
     OcrBackendIdentity, OcrCandidateSink, OcrModelSource,
 };
-use opencv::core::MatTraitConst;
 
 pub use fault::{
     OnnxBackendFacts, OnnxBackendFault, OnnxBackendObservations, OnnxExecutionProvider,
-    OnnxRuntimeCompatibility,
+    OnnxOcrProfile, OnnxRuntimeCompatibility,
 };
 
 use crate::decode::DecodedText;
 use crate::detect::{Detection, Quad};
+use crate::profile::{PreprocessingDescriptor, SelectedProfile};
 use crate::session::SessionPair;
 
 pub(crate) const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
@@ -53,6 +54,7 @@ pub const RUNTIME_PROFILE_ID: &str = "onnxruntime-1.29.0-api17-cpu";
 pub struct OnnxOcrBackend {
     descriptor: OcrBackendDescriptor,
     facts: OnnxBackendFacts,
+    profile: SelectedProfile,
     state: SessionSlot<SessionPair>,
 }
 
@@ -204,6 +206,30 @@ impl OnnxOcrBackend {
         Self::open_initialized(source, operation)
     }
 
+    /// Opens the ADR 0040 bounded-detector profile from one explicit model root
+    /// against one controlled runtime.
+    ///
+    /// This is a non-default selection. It validates the same immutable model
+    /// components as [`Self::open_accepted`] but reports and executes the distinct
+    /// bounded preprocessing identity. No environment, filename, or per-call
+    /// option can select it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a closed [`OnnxBackendFault`] for an invalid or unavailable
+    /// prerequisite, interruption, graph mismatch, or native initialization.
+    pub fn open_bounded_detector(
+        model_root: &Path,
+        runtime_path: &Path,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendFault> {
+        checkpoint(operation)?;
+        loader::initialize(runtime_path)?;
+        checkpoint(operation)?;
+        let source = model::bounded_source(model_root, operation)?;
+        Self::open_initialized(source, operation)
+    }
+
     /// Opens the accepted detector and recognizer against one controlled runtime.
     ///
     /// `runtime_path` must be an absolute canonical path whose target-specific
@@ -230,6 +256,7 @@ impl OnnxOcrBackend {
         source: OcrModelSource,
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendFault> {
+        let profile = SelectedProfile::from_identity(source.identity())?;
         let model_identity = source.identity().clone();
         let sessions = SessionPair::open(source, operation)?;
         let backend_identity = OcrBackendIdentity::new(
@@ -238,7 +265,9 @@ impl OnnxOcrBackend {
         );
         let descriptor =
             OcrBackendDescriptor::new(backend_identity, model_identity, PixelFormat::Bgra8);
+        let preprocessing = profile.preprocessing();
         let facts = OnnxBackendFacts::accepted(
+            preprocessing,
             u64::try_from(image::MAX_TENSOR_BYTES).map_err(|_| OnnxBackendFault::ResourceLimit)?,
             u64::try_from(MAX_OUTPUT_BYTES).map_err(|_| OnnxBackendFault::ResourceLimit)?,
             u32::try_from(detect::MAX_DETECTOR_CANDIDATES)
@@ -249,6 +278,7 @@ impl OnnxOcrBackend {
         Ok(Self {
             descriptor,
             facts,
+            profile,
             state: SessionSlot::new(sessions),
         })
     }
@@ -271,23 +301,19 @@ impl OnnxOcrBackend {
 
     fn recognize_with_pair(
         pair: &mut SessionPair,
+        preprocessing: PreprocessingDescriptor,
         request: &BackendRequest<'_>,
         operation: &OperationContext,
     ) -> Result<Vec<OwnedCandidate>, OnnxBackendFault> {
         pair.record_mapping(request.pixels().bytes().len());
         image::with_bgra_view(request.pixels(), |source| {
             checkpoint(operation)?;
-            let detector_input = image::detector_input(source)?;
+            let detector_input = image::detector_input(source, preprocessing)?;
+            pair.record_detector_input(detector_input.plan);
             checkpoint(operation)?;
-            let source_width =
-                u32::try_from(source.cols()).map_err(|_| OnnxBackendFault::InvalidPixels)?;
-            let source_height =
-                u32::try_from(source.rows()).map_err(|_| OnnxBackendFault::InvalidPixels)?;
             let detections = inference::detector(
                 pair.detector_mut(),
                 &detector_input,
-                source_width,
-                source_height,
                 request.max_candidates(),
                 operation,
             )?;
@@ -361,9 +387,10 @@ impl OcrBackend for OnnxOcrBackend {
         operation: &OperationContext,
     ) -> CoreResult<()> {
         checkpoint(operation).map_err(mado_pilot_core::Error::from)?;
+        let preprocessing = self.profile.preprocessing();
         let candidates = self
             .state
-            .try_with(|pair| Self::recognize_with_pair(pair, request, operation))
+            .try_with(|pair| Self::recognize_with_pair(pair, preprocessing, request, operation))
             .map_err(mado_pilot_core::Error::from)?
             .map_err(mado_pilot_core::Error::from)?;
 
@@ -428,21 +455,67 @@ mod tests {
     use mado_pilot_core::{Clock, MonotonicInstant, OperationContext};
 
     use super::{
-        MAX_OUTPUT_BYTES, OnnxBackendFacts, OnnxBackendFault, OnnxExecutionProvider,
-        OnnxRuntimeCompatibility, RECOGNITION_BATCH, SessionSlot, checkpoint,
+        MAX_OUTPUT_BYTES, OnnxBackendFacts, OnnxBackendFault, OnnxBackendObservations,
+        OnnxExecutionProvider, OnnxOcrProfile, OnnxRuntimeCompatibility, RECOGNITION_BATCH,
+        SessionSlot, checkpoint,
     };
+    use crate::profile::SelectedProfile;
 
     #[test]
     fn facts_are_closed_and_do_not_carry_runtime_paths() {
         let facts = OnnxBackendFacts::accepted(
-            1024,
+            SelectedProfile::BoundedDetector.preprocessing(),
+            u64::try_from(crate::image::MAX_TENSOR_BYTES).expect("tensor ceiling fits"),
             u64::try_from(MAX_OUTPUT_BYTES).expect("output ceiling fits"),
             1000,
             u32::try_from(RECOGNITION_BATCH).expect("batch ceiling fits"),
         );
         assert_eq!(facts.provider(), OnnxExecutionProvider::Cpu);
         assert_eq!(facts.runtime(), OnnxRuntimeCompatibility::Version1_29Api17);
+        assert_eq!(facts.profile(), OnnxOcrProfile::BoundedDetector);
+        assert_eq!(facts.max_detector_width(), Some(1_312));
+        assert_eq!(facts.max_detector_height(), Some(736));
+        assert_eq!(facts.max_detector_tensor_bytes(), 11_587_584);
         assert!(!format!("{facts:?}").contains('/'));
+
+        let native = OnnxBackendFacts::accepted(
+            SelectedProfile::NativeG004.preprocessing(),
+            u64::try_from(crate::image::MAX_TENSOR_BYTES).expect("tensor ceiling fits"),
+            u64::try_from(MAX_OUTPUT_BYTES).expect("output ceiling fits"),
+            1000,
+            u32::try_from(RECOGNITION_BATCH).expect("batch ceiling fits"),
+        );
+        assert_eq!(native.profile(), OnnxOcrProfile::NativeG004);
+        assert_eq!(native.max_detector_width(), None);
+        assert_eq!(native.max_detector_height(), None);
+        assert_eq!(
+            native.max_detector_tensor_bytes(),
+            u64::try_from(crate::image::MAX_TENSOR_BYTES).unwrap()
+        );
+    }
+
+    #[test]
+    fn observations_report_only_bounded_dimensions_counts_and_bytes() {
+        let mut observations = OnnxBackendObservations::opened();
+        observations.record_mapping(33_177_600);
+        observations.record_detector_input(960, 512, 5_898_240);
+        observations.record_detector_run();
+        observations.record_recognizer_run();
+
+        assert_eq!(observations.mapped_bytes(), 33_177_600);
+        assert_eq!(observations.latest_detector_width(), Some(960));
+        assert_eq!(observations.latest_detector_height(), Some(512));
+        assert_eq!(observations.detector_tensor_bytes(), 5_898_240);
+        assert_eq!(observations.detector_resizes(), 1);
+        assert_eq!(observations.detector_runs(), 1);
+        assert_eq!(observations.recognizer_runs(), 1);
+        assert_eq!(observations.session_pairs(), 1);
+        assert_eq!(observations.sessions(), 2);
+
+        let debug = format!("{observations:?}");
+        for sensitive in ["/", ".onnx", "sha256", "魔導士", "NativeFailure"] {
+            assert!(!debug.contains(sensitive));
+        }
     }
 
     #[test]

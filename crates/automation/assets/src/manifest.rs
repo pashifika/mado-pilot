@@ -18,9 +18,10 @@ use std::fmt;
 
 use mado_pilot_core::{CoordinateSpace, PixelExtent};
 use mado_pilot_ocr::{
-    ACCEPTED_G004_MODEL_ID, ACCEPTED_G004_PROFILE_ID, DecoderId, LanguageProfileId,
-    ModelComponentIdentity, ModelId, ModelVersion, NormalizationId, OcrModelIdentity,
-    OcrProfileMetadata, PreprocessingId, ProfileId,
+    ACCEPTED_BOUNDED_MODEL_ID, ACCEPTED_BOUNDED_PROFILE_ID, ACCEPTED_G004_MODEL_ID,
+    ACCEPTED_G004_PROFILE_ID, DecoderId, LanguageProfileId, ModelComponentIdentity, ModelId,
+    ModelVersion, NormalizationId, OcrModelIdentity, OcrProfileMetadata, PreprocessingId,
+    ProfileId,
 };
 use mado_pilot_vision::{MatchDefaults, TemplateId, TemplateSource, VisionFault};
 use serde::Deserialize;
@@ -608,8 +609,9 @@ impl RawOcrModel {
         let id = ModelId::new(required_ocr(self.id)?).map_err(from_ocr_metadata)?;
         let version = ModelVersion::new(required_ocr(self.version)?).map_err(from_ocr_metadata)?;
         let profile = ProfileId::new(required_ocr(self.profile)?).map_err(from_ocr_metadata)?;
-        let claims_accepted =
-            id.as_str() == ACCEPTED_G004_MODEL_ID || profile.as_str() == ACCEPTED_G004_PROFILE_ID;
+        let claims_accepted = [ACCEPTED_G004_MODEL_ID, ACCEPTED_BOUNDED_MODEL_ID]
+            .contains(&id.as_str())
+            || [ACCEPTED_G004_PROFILE_ID, ACCEPTED_BOUNDED_PROFILE_ID].contains(&profile.as_str());
         let language_profile = LanguageProfileId::new(required_ocr(self.language_profile)?)
             .map_err(from_ocr_metadata)?;
         let preprocessing =

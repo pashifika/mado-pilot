@@ -841,3 +841,114 @@ arbitrary-resolution, 4K, multi-region, real-time, renderer, application, or
 game guarantees. Phase 3 default-OCR `G-013` is complete on both release
 targets; watcher scheduling and acceleration remain open until later phases
 introduce those workloads.
+
+## v0.3.1 bounded-detector candidate performance
+
+`crates/backend/onnx/benches/bounded-detector.rs` compares released native G-004
+and the explicit bounded candidate on identical 4K, wide, extreme-wide,
+960×540, odd, dense, boundary-region, and 4K blank inputs. Every iteration
+checks text/count/order, fixture geometry, same-host confidence, complete source
+and profile identity, final detector dimensions/bytes, one direct resize,
+detector/recognizer runs, mapped bytes, one-pair/two-session topology,
+cancellation, and at most 4,096 post-warm live Rust growth. The bounded
+candidate additionally enforces at most 20 MiB attributable live Rust heap.
+Native arbitrary-4K peak is recorded as comparator work under its released
+256 MiB tensor ceiling; it is not judged by the new profile's peak limit.
+
+ADR 0039 separates three phases. `smoke` is the target-independent hosted gate.
+`precursor` runs three warmups and 20 retained samples in five fresh processes,
+enforces all hard correctness/resource rules, and records timing/RSS without a
+numeric verdict. The current executable refuses `--qualify`;
+`enforce-budgets` is added to a fresh executable only after both approved
+targets have precursor evidence and a final budget ADR. Result count does not
+select a cost class: the 3840×2160 blank workload maps and detects 4K input
+despite returning no regions.
+
+The first Apple run at source `2782564`, executable SHA-256
+`3a4bb04477b14092c9b3b34153275819684790d072aa1659e44183bafbd1f8b4`,
+remains rejected. All correctness/resource rows passed, but the procedure
+incorrectly applied the released 64×64 empty-result latency row to the 4K blank
+workload, and one 2.697 ms close exceeded the earlier revision's 2 ms final
+budget. No failed process was removed or relabeled.
+
+Reviewed rectangular-candidate precursor source `cff5338`, executable SHA-256
+`c28257dea60a86fe58d9fe9549670f6615004d3553c2f0bbe0a996a40ef9575d`,
+ran five fresh processes per profile on the approved Apple M1 Pro. Every
+bounded process passed. The native comparator preserved five false executable
+verdicts because the precursor still evaluated its arbitrary-4K peak against
+the bounded-only 20 MiB ceiling. Those false verdicts are retained rather than
+relabeled. All 1,600 retained native/bounded samples otherwise passed with zero
+oracle failures and zero live Rust growth. Worst per-process observations were:
+
+| Workload | Bounded detector | Native detector | Bounded p95 | Native p95 |
+|---|---:|---:|---:|---:|
+| 4K HUD | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 490.454 ms | 2,347.264 ms |
+| Wide menu | 1312×320 / 5,038,080 bytes | 2944×736 / 26,001,408 bytes | 339.375 ms | 787.027 ms |
+| Extreme-wide status | 1312×160 / 2,519,040 bytes | 5888×736 / 52,002,816 bytes | 230.009 ms | 1,282.602 ms |
+| 960×540 HUD | 1312×736 / 11,587,584 bytes | 1312×736 / 11,587,584 bytes | 479.206 ms | 480.257 ms |
+| Dense tooltip | 1312×640 / 10,076,160 bytes | 1472×736 / 13,000,704 bytes | 599.615 ms | 673.754 ms |
+| 4K blank | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 242.689 ms | 2,102.128 ms |
+
+Bounded attributable live Rust peak was 12,695,400 bytes and bounded peak RSS
+was 586,645,504 bytes. The native comparator's attributable peak reached
+108,627,472 bytes under its released 256 MiB tensor ceiling, and its peak RSS
+was 2,454,126,592 bytes. Reference-size work is intentionally unchanged. One
+odd-size bounded process retained a slower p95 despite equal detector
+dimensions, so no general speedup is inferred from the profile name.
+
+The exact Apple process rows and retained native false verdicts are Change
+evidence. The matching approved Windows `cff5338` matrix also passed all five
+bounded correctness/resource verdicts, but ADR 0039's unchanged formula rejected
+the rectangular candidate. Margin-derived p50/p95 ceilings exceeded fixed caps
+for 4K HUD, 960×540 HUD, odd HUD, and dense tooltip; dense maximum also exceeded
+its cap. Cold derived 275 ms above 250 ms. Observed RSS derived 384 MiB above
+320 MiB, although that harness retained all eight source frames and the row is
+not reused as one-operation memory evidence. No cap or expected result was
+relaxed.
+
+ADR 0040 replaces the unreleased `bounded-v1` tuple. Candidate v2 preserves
+1312×736 reference/odd detector pixels, but after an oversized desired detector
+first fits the 1312×736 rectangle, it applies a second 6 MiB aspect-preserving
+tensor fit when needed. Fixed workload dimensions become 960×512 for 4K,
+1024×480 for dense tooltip, and remain 1312×320, 1312×160, 1312×736, and
+576×736 for the other declared shapes. The benchmark constructs and drops one
+source fixture per workload so those frames are not simultaneously live. OS RSS
+is process-lifetime high-water: schema-v3 workload fields are explicitly named
+`process_peak_resident_bytes_after_workload`, and only final report-level RSS
+sets the process budget.
+
+Exact candidate-v2 source `ce658b3`, executable SHA-256
+`dea9cdfbbb66ba75cb490fc3359efa6ca599786726157a520544cf39b38f81eb`,
+ran five fresh bounded and five fresh native schema-v3 processes on the approved
+Apple M1 Pro with alternating pair order. All ten raw verdicts and all 1,600
+retained samples passed with zero oracle failure/growth and complete RSS rows.
+Bounded worst p95 was 372.100 ms for 4K HUD, 476.275 ms for reference HUD,
+474.544 ms for dense tooltip, and 122.430 ms for 4K blank; peak heap was
+12,695,336 bytes and final process RSS was 464,519,168 bytes. Every
+formula-derived Apple candidate fits the unchanged caps.
+
+Exact Windows executable
+`54a10f73970e24e126b4863853c0949610206bb7135579477883ec669ea0b5ed`
+ran the same alternating five bounded/five native schema-v3 matrix on the
+approved Core i7-12700KF. All ten raw verdicts and all 1,600 retained samples
+passed. Bounded worst p95 was 530.211 ms for 4K HUD, 718.100 ms for reference
+HUD, 591.838 ms for dense tooltip, and 244.941 ms for 4K blank; peak heap was
+12,695,272 bytes and final process RSS was 228,741,120 bytes. Every
+formula-derived Windows candidate fits the unchanged caps.
+
+ADR 0041 accepts the exact target budgets in
+`phase-3-1-bounded-ocr-aarch64-apple-darwin.toml` and
+`phase-3-1-bounded-ocr-x86_64-pc-windows-msvc.toml`. Strict final source
+`33cd36b` rejects missing prerequisites, unknown/duplicate modes, and ambiguous
+profiles before work; independent fix review returned no findings.
+
+Apple executable
+`7e48921dfeaa7b0f3a4bb33b9e927eea9e50d75422c570adb6443fd4f32cf190`
+and Windows executable
+`aefdfa9cd6a023049b532f650a5493191994b22b3c07b582097ca1146a58d5e4`
+each passed five fresh bounded `--enforce-budgets` processes without retry or
+exclusion. Worst final process RSS was 464,666,624 bytes on Apple and
+229,089,280 bytes on Windows; all workload latency/heap/growth rows passed.
+The explicit profile is qualified for the named target/runtime/model/fixture
+boundaries. It remains non-default and is not a real-time or arbitrary-workload
+guarantee.
