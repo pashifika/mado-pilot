@@ -242,6 +242,18 @@ impl RunMode {
             "use the explicit --enforce-budgets mode"
         );
         assert!(
+            arguments.iter().all(|argument| {
+                matches!(
+                    argument.as_str(),
+                    "--bench" | "--smoke" | "--precursor" | "--enforce-budgets"
+                ) || matches!(
+                    argument.strip_prefix("--profile="),
+                    Some("native" | "bounded")
+                )
+            }),
+            "unsupported bounded-detector benchmark argument"
+        );
+        assert!(
             usize::from(smoke) + usize::from(precursor) + usize::from(enforce) <= 1,
             "select only one benchmark mode"
         );
@@ -286,17 +298,21 @@ impl RunMode {
 }
 
 fn main() {
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let mode = RunMode::from_arguments(&arguments);
+    let profile = selected_profile(&arguments);
     if [RUNTIME_ENV, MODEL_ROOT_ENV]
         .into_iter()
         .any(|variable| std::env::var_os(variable).is_none())
     {
+        assert!(
+            mode == RunMode::Smoke,
+            "precursor and final enforcement require both reviewed MADO_PILOT_* paths"
+        );
         eprintln!("bounded-detector benchmark skipped: set the two reviewed MADO_PILOT_* paths");
         return;
     }
 
-    let arguments = std::env::args().collect::<Vec<_>>();
-    let mode = RunMode::from_arguments(&arguments);
-    let profile = selected_profile(&arguments);
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
     let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/ocr/g-004");
@@ -322,11 +338,15 @@ fn main() {
 }
 
 fn selected_profile(arguments: &[String]) -> OnnxOcrProfile {
-    let selected = arguments
+    let mut selected = arguments
         .iter()
-        .find_map(|argument| argument.strip_prefix("--profile="))
-        .unwrap_or("bounded");
-    match selected {
+        .filter_map(|argument| argument.strip_prefix("--profile="));
+    let profile = selected.next().unwrap_or("bounded");
+    assert!(
+        selected.next().is_none(),
+        "select exactly one qualification profile"
+    );
+    match profile {
         "native" => OnnxOcrProfile::NativeG004,
         "bounded" => OnnxOcrProfile::BoundedDetector,
         other => panic!("unsupported qualification profile {other}"),

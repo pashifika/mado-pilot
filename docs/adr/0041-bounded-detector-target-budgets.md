@@ -47,7 +47,7 @@ Apple process ceilings are cold open 125 ms, first close 2 ms, reopen-close 100 
 
 Windows process ceilings are cold open 250 ms, first close 8 ms, reopen-close 200 ms, final process RSS 301,989,888 bytes, attributable live Rust peak 20,971,520 bytes, and post-warm growth 4,096 bytes.
 
-The final executable adds explicit `--enforce-budgets` mode. It retains schema 3, the full 3+20 plan, exact identity/resource/cancellation gates, and the same eight workloads. It accepts only the bounded candidate profile, checks every workload appears exactly once in the target budget table, checks p50/p95/maximum and heap, and checks report-level startup/cleanup/RSS plus absolute detector facts. `--precursor` remains available for evidence collection; `--smoke` remains the hosted hard-contract gate.
+The final executable adds explicit `--enforce-budgets` mode. It parses and validates mode/profile arguments before prerequisite handling, rejects unknown or duplicate selections, and fails closed when either reviewed runtime/model path is missing; only hosted `--smoke` may skip absent native prerequisites. It retains schema 3, the full 3+20 plan, exact identity/resource/cancellation gates, and the same eight workloads. It accepts only the bounded candidate profile, checks every workload appears exactly once in the target budget table, checks p50/p95/maximum and heap, and checks report-level startup/cleanup/RSS plus absolute detector facts. `--precursor` remains available for evidence collection; `--smoke` remains the hosted hard-contract gate.
 
 Separate new benchmark profiles record the final source and measurements:
 
