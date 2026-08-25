@@ -300,12 +300,11 @@ engine constructors remain unchanged, while `*_engine_with_default_ocr`,
 `engine_create_with_default_ocr`, and C++ `DefaultOcrOptions` require the caller
 to supply the two controlled paths. ADR 0040 adds only the explicit Rust
 candidate-v2 backend selection; no dependency changes. ADR 0037's native G-004
-budgets remain accepted, and ADR 0039 fixes the bounded precursor/final
-procedure. The rectangular candidate completed both approved-host precursors
-but was rejected by the fixed Windows formula. Candidate-v2 approved Apple
-precursor passes; approved Windows precursor and both-target final budgets
-remain open. Hosted Windows Server smoke remains supporting hard-contract
-evidence only.
+budgets remain accepted, and ADRs 0039/0041 fix the bounded procedure and target
+budgets. The rejected rectangular and accepted candidate-v2 precursors remain
+separate evidence. Both candidate-v2 approved-host precursors pass; final
+enforcement remains open. Hosted Windows Server smoke remains supporting
+hard-contract evidence only.
 
 ### G-003 macOS shim boundary
 

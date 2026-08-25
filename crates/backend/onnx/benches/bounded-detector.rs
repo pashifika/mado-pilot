@@ -15,7 +15,22 @@ use mado_pilot_core::{
     Status,
 };
 use mado_pilot_ocr::{OcrBackend, OcrRecognizer, OcrRegion, OcrRequest, OcrResult};
-use mado_pilot_testkit::bench_harness::{self, Accounting, Plan, Sample};
+use mado_pilot_testkit::bench_harness::{
+    self, Accounting, PHASE3_1_BOUNDED_OCR_HEAP_LIMIT_BYTES,
+    PHASE3_1_BOUNDED_OCR_MAX_DETECTOR_TENSOR_BYTES, Plan, Sample,
+};
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+use mado_pilot_testkit::bench_harness::{
+    PHASE3_1_APPLE_BOUNDED_OCR_CLOSE_LIMIT, PHASE3_1_APPLE_BOUNDED_OCR_COLD_LOAD_LIMIT,
+    PHASE3_1_APPLE_BOUNDED_OCR_LATENCY_BUDGETS, PHASE3_1_APPLE_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
+    PHASE3_1_APPLE_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+};
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
+use mado_pilot_testkit::bench_harness::{
+    PHASE3_1_WINDOWS_BOUNDED_OCR_CLOSE_LIMIT, PHASE3_1_WINDOWS_BOUNDED_OCR_COLD_LOAD_LIMIT,
+    PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS, PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
+    PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+};
 use mado_pilot_testkit::vision_contract;
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual, Size};
 use opencv::imgcodecs::{IMREAD_COLOR, imread};
@@ -36,7 +51,6 @@ const SOURCE_ENV: &str = "MADO_PILOT_BOUNDED_SOURCE_REVISION";
 const HOST_ENV: &str = "MADO_PILOT_BOUNDED_HOST_ID";
 const PROCESS_ENV: &str = "MADO_PILOT_BOUNDED_PROCESS_INDEX";
 const HEAP_GROWTH_LIMIT: i64 = 4_096;
-const HEAP_PEAK_LIMIT_BYTES: usize = 20 * 1024 * 1024;
 const DETECTOR_SHA256: &str = "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9";
 const RECOGNIZER_SHA256: &str = "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884";
 const VOCABULARY_SHA256: &str = "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e";
@@ -213,39 +227,57 @@ struct ProfileReport {
 enum RunMode {
     Smoke,
     Precursor,
+    EnforceBudgets,
 }
 
 impl RunMode {
     fn from_arguments(arguments: &[String]) -> Self {
         let smoke = arguments.iter().any(|argument| argument == "--smoke");
         let precursor = arguments.iter().any(|argument| argument == "--precursor");
+        let enforce = arguments
+            .iter()
+            .any(|argument| argument == "--enforce-budgets");
         assert!(
             !arguments.iter().any(|argument| argument == "--qualify"),
-            "final budgets are not accepted; run --precursor until the final budget ADR lands"
+            "use the explicit --enforce-budgets mode"
         );
         assert!(
-            usize::from(smoke) + usize::from(precursor) <= 1,
+            usize::from(smoke) + usize::from(precursor) + usize::from(enforce) <= 1,
             "select only one benchmark mode"
         );
         if cfg!(debug_assertions) {
-            assert!(!precursor, "debug benchmark execution is smoke-only");
+            assert!(
+                !precursor && !enforce,
+                "debug benchmark execution is smoke-only"
+            );
             return Self::Smoke;
         }
-        if smoke { Self::Smoke } else { Self::Precursor }
+        if smoke {
+            Self::Smoke
+        } else if enforce {
+            Self::EnforceBudgets
+        } else {
+            Self::Precursor
+        }
     }
 
     const fn name(self) -> &'static str {
         match self {
             Self::Smoke => "smoke",
             Self::Precursor => "precursor",
+            Self::EnforceBudgets => "enforce-budgets",
         }
     }
 
     fn plan(self) -> Plan {
         match self {
             Self::Smoke => Plan::smoke(),
-            Self::Precursor => Plan::new(3, 20),
+            Self::Precursor | Self::EnforceBudgets => Plan::new(3, 20),
         }
+    }
+
+    const fn enforces_budgets(self) -> bool {
+        matches!(self, Self::EnforceBudgets)
     }
 
     const fn requires_bound_identity(self) -> bool {
@@ -311,6 +343,10 @@ fn run_profile(
     fixture_manifest_sha256: String,
 ) -> ProfileReport {
     let plan = mode.plan();
+    assert!(
+        !mode.enforces_budgets() || profile == OnnxOcrProfile::BoundedDetector,
+        "final budgets apply only to the bounded candidate"
+    );
     if mode.requires_bound_identity() {
         require_release_target();
         assert!(
@@ -414,7 +450,8 @@ fn run_profile(
         workloads: workload_reports,
         passed: false,
     };
-    report.passed = report_passes(mode, profile, &report);
+    report.passed = report_passes(mode, profile, &report)
+        && (!mode.enforces_budgets() || target_budget_passes(&report));
     report
 }
 
@@ -691,13 +728,92 @@ fn report_passes(mode: RunMode, profile: OnnxOcrProfile, report: &ProfileReport)
                 && workload.all_call_failures == 0
                 && workload.growth_bytes <= HEAP_GROWTH_LIMIT
                 && (profile != OnnxOcrProfile::BoundedDetector
-                    || workload.peak_allocated_bytes <= HEAP_PEAK_LIMIT_BYTES)
+                    || workload.peak_allocated_bytes <= PHASE3_1_BOUNDED_OCR_HEAP_LIMIT_BYTES)
                 && (mode == RunMode::Smoke
                     || workload
                         .process_peak_resident_bytes_after_workload
                         .is_some())
                 && workload.resources.is_some()
         })
+}
+
+struct TargetBudgets {
+    latency: &'static [bench_harness::LatencyBudget],
+    cold_load: Duration,
+    close: Duration,
+    reopen_close: Duration,
+    resident_bytes: u64,
+}
+
+fn report_within_target_budgets(report: &ProfileReport, budgets: &TargetBudgets) -> bool {
+    report.cold_open_ms <= milliseconds(budgets.cold_load)
+        && report.first_close_ms <= milliseconds(budgets.close)
+        && report.reopen_close_ms <= milliseconds(budgets.reopen_close)
+        && report
+            .peak_resident_bytes
+            .is_some_and(|bytes| bytes <= budgets.resident_bytes)
+        && report.max_detector_width == Some(1_312)
+        && report.max_detector_height == Some(736)
+        && report.max_detector_tensor_bytes == PHASE3_1_BOUNDED_OCR_MAX_DETECTOR_TENSOR_BYTES
+        && report.workloads.len() == budgets.latency.len()
+        && report.workloads.iter().all(|workload| {
+            budgets
+                .latency
+                .iter()
+                .filter(|budget| budget.workload() == workload.name)
+                .count()
+                == 1
+        })
+        && budgets.latency.iter().all(|budget| {
+            let mut matching = report
+                .workloads
+                .iter()
+                .filter(|workload| workload.name == budget.workload());
+            let Some(workload) = matching.next() else {
+                return false;
+            };
+            matching.next().is_none()
+                && workload.p50_ms <= milliseconds(budget.p50())
+                && workload.p95_ms <= milliseconds(budget.p95())
+                && workload.maximum_ms <= milliseconds(budget.hard_max())
+                && workload.peak_allocated_bytes <= PHASE3_1_BOUNDED_OCR_HEAP_LIMIT_BYTES
+        })
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+fn target_budget_passes(report: &ProfileReport) -> bool {
+    report_within_target_budgets(
+        report,
+        &TargetBudgets {
+            latency: &PHASE3_1_APPLE_BOUNDED_OCR_LATENCY_BUDGETS,
+            cold_load: PHASE3_1_APPLE_BOUNDED_OCR_COLD_LOAD_LIMIT,
+            close: PHASE3_1_APPLE_BOUNDED_OCR_CLOSE_LIMIT,
+            reopen_close: PHASE3_1_APPLE_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
+            resident_bytes: PHASE3_1_APPLE_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+        },
+    )
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
+fn target_budget_passes(report: &ProfileReport) -> bool {
+    report_within_target_budgets(
+        report,
+        &TargetBudgets {
+            latency: &PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS,
+            cold_load: PHASE3_1_WINDOWS_BOUNDED_OCR_COLD_LOAD_LIMIT,
+            close: PHASE3_1_WINDOWS_BOUNDED_OCR_CLOSE_LIMIT,
+            reopen_close: PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
+            resident_bytes: PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+        },
+    )
+}
+
+#[cfg(not(any(
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")
+)))]
+fn target_budget_passes(_report: &ProfileReport) -> bool {
+    false
 }
 
 #[cfg(any(

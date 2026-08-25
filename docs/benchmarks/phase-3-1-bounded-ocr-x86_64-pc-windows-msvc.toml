@@ -1,0 +1,461 @@
+# Phase 3.1 bounded-detector precursor measured on Core i7-12700KF at exact source
+# ce658b3fcbf4ba2a2e715c8d4b98b6f6a2d68235. ADR 0041 fixes the budgets.
+
+format_version = 1
+
+[benchmark]
+id = "phase-3-1-bounded-ocr-x86_64-pc-windows-msvc"
+workload = "explicit bounded-v2 ONNX CPU OCR 4K, wide, reference, dense, boundary, empty, startup, cleanup, heap, growth, and final process RSS"
+phase = "3.1"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "fixtures/ocr/g-004 fixture-manifest.json and its five SHA-256-bound PNGs plus derived deterministic frames"
+fixture_sha256 = "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF, 12 cores/20 logical processors, 32 GiB class"
+os_version = "Windows 11 Pro 25H2 build family 26200"
+build_profile = "cargo bench, default features, debug_assertions=false; five fresh alternating-order bounded processes"
+warmup_iterations = 3
+sample_count = 20
+process_count = 5
+correctness_oracle = "every warmup and retained sample checks exact text/count/order, fixed fixture geometry/confidence, source/profile identity, detector plan, mapping, runs, sessions, cancellation, heap, growth, and cleanup"
+queue_policy = "one synchronous admitted inference, one session pair, two sessions, CPU provider only, no queue or fallback"
+producer_surface_copy = "not applicable: immutable CPU replay frames own no producer surface"
+notes = "precursor source ce658b3fcbf4ba2a2e715c8d4b98b6f6a2d68235; tree b806af16f228fa8a630f65c0db0ab99c682a67d3; executable sha256 54a10f73970e24e126b4863853c0949610206bb7135579477883ec669ea0b5ed; schema 3; runtime archive sha256 c9b4b7086b529ad814f428c1bad028e20a25d7dc0699836775faace4ab5b78b2; runtime DLL sha256 69d8e6d3879a3b4001cdc74c8ed9ccc7e7f799a5b847059738323404519ec471; detector sha256 d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9; recognizer sha256 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884; vocabulary sha256 f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e; no retry or exclusion; workload RSS fields are cumulative process high-water checkpoints and only final report RSS sets the budget"
+benchmark_executable_sha256 = "54a10f73970e24e126b4863853c0949610206bb7135579477883ec669ea0b5ed"
+deployment_target = "Windows 11 Pro 25H2 build family 26200"
+cold_load_p95_ms = 183.501
+first_close_max_ms = 4.673
+reopen_close_max_ms = 155.030
+peak_resident_bytes = 228741120
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies its text, geometry, order, confidence, source-correlation, and exact resource oracle"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "repeated bounded OCR and result cleanup gives back transient Rust allocations"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 20971520
+rationale = "unchanged 20 MiB hard gate; worst precursor peak was 12,695,272 bytes"
+
+[[budget]]
+measure = "peak_resident_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 301989888
+rationale = "1.25 times the 228,741,120-byte final process high-water, rounded upward to 16 MiB"
+
+[[budget]]
+measure = "cold_load_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 250.0
+rationale = "1.25 times the 183.501 ms worst precursor cold open, rounded upward to 25 ms"
+
+[[budget]]
+measure = "first_close_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 8.0
+rationale = "1.5 times the 4.673 ms worst first close, rounded upward to 1 ms"
+
+[[budget]]
+measure = "reopen_close_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 200.0
+rationale = "1.25 times the 155.030 ms worst reopen-close, rounded upward to 25 ms"
+
+[[budget]]
+measure = "max_detector_tensor_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 11587584
+rationale = "ADR 0040 absolute 1312x736 detector rectangle; fitted high-area tensors are smaller"
+
+[[measurement]]
+workload = "bounded_hud_4k"
+correctness_oracle = "exact eight strings/count/order, 4K fixture geometry, source identity, 960x512 detector, two recognizer runs"
+result_correctness = 0
+latency_p50_ms = 474.560
+latency_p95_ms = 530.211
+latency_max_ms = 548.243
+mapped_bytes_per_result = 33177600
+peak_allocated_bytes = 7005928
+allocated_growth_bytes = 0
+detector_width = 960
+detector_height = 512
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 600.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 675.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 700.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 33177600
+rationale = "one exact 3840x2160 BGRA frame"
+
+[[measurement]]
+workload = "bounded_menu_wide"
+correctness_oracle = "exact wide-menu text/order/geometry/source and 1312x320 detector resources"
+result_correctness = 0
+latency_p50_ms = 429.288
+latency_p95_ms = 485.604
+latency_max_ms = 495.461
+mapped_bytes_per_result = 4000000
+peak_allocated_bytes = 6145760
+allocated_growth_bytes = 0
+detector_width = 1312
+detector_height = 320
+detector_tensor_bytes = 5038080
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 550.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 625.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 625.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4000000
+rationale = "one exact 2000x500 BGRA frame"
+
+[[measurement]]
+workload = "bounded_status_extreme_wide"
+correctness_oracle = "exact extreme-wide text/order/geometry/source and 1312x160 detector resources"
+result_correctness = 0
+latency_p50_ms = 262.470
+latency_p95_ms = 273.757
+latency_max_ms = 289.111
+mapped_bytes_per_result = 3276800
+peak_allocated_bytes = 3626664
+allocated_growth_bytes = 0
+detector_width = 1312
+detector_height = 160
+detector_tensor_bytes = 2519040
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 1
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 350.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 375.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 3276800
+rationale = "one exact 2560x320 BGRA frame"
+
+[[measurement]]
+workload = "bounded_hud_reference"
+correctness_oracle = "zero-tolerance reference HUD text/order/geometry/source and unchanged 1312x736 detector resources"
+result_correctness = 0
+latency_p50_ms = 707.664
+latency_p95_ms = 718.100
+latency_max_ms = 734.752
+mapped_bytes_per_result = 2073600
+peak_allocated_bytes = 12695272
+allocated_growth_bytes = 0
+detector_width = 1312
+detector_height = 736
+detector_tensor_bytes = 11587584
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 925.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "one exact 960x540 BGRA frame"
+
+[[measurement]]
+workload = "bounded_hud_odd"
+correctness_oracle = "exact odd HUD text/order/geometry/source and unchanged 1312x736 detector resources"
+result_correctness = 0
+latency_p50_ms = 705.813
+latency_p95_ms = 723.986
+latency_max_ms = 752.877
+mapped_bytes_per_result = 2254252
+peak_allocated_bytes = 12695272
+allocated_growth_bytes = 0
+detector_width = 1312
+detector_height = 736
+detector_tensor_bytes = 11587584
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 925.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 950.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2254252
+rationale = "one exact 1001x563 BGRA frame"
+
+[[measurement]]
+workload = "bounded_tooltip_dense"
+correctness_oracle = "exact dense-tooltip text/order/geometry/source and 1024x480 detector resources"
+result_correctness = 0
+latency_p50_ms = 575.999
+latency_p95_ms = 591.838
+latency_max_ms = 605.688
+mapped_bytes_per_result = 4147200
+peak_allocated_bytes = 7006488
+allocated_growth_bytes = 0
+detector_width = 1024
+detector_height = 480
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 725.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 750.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 775.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4147200
+rationale = "one exact 1440x720 BGRA frame"
+
+[[measurement]]
+workload = "bounded_mission_boundary"
+correctness_oracle = "exact clipped mission text/order/geometry/source and 576x736 detector resources"
+result_correctness = 0
+latency_p50_ms = 479.035
+latency_p95_ms = 487.730
+latency_max_ms = 500.294
+mapped_bytes_per_result = 1621440
+peak_allocated_bytes = 7816472
+allocated_growth_bytes = 0
+detector_width = 576
+detector_height = 736
+detector_tensor_bytes = 5087232
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 600.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 625.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 650.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 1621440
+rationale = "one exact 563x720 BGRA region"
+
+[[measurement]]
+workload = "bounded_blank_4k"
+correctness_oracle = "exact empty result/source and 960x512 detector resources without recognizer runs"
+result_correctness = 0
+latency_p50_ms = 235.822
+latency_p95_ms = 244.941
+latency_max_ms = 246.350
+mapped_bytes_per_result = 33177600
+peak_allocated_bytes = 6390368
+allocated_growth_bytes = 0
+detector_width = 960
+detector_height = 512
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 300.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 325.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 325.0
+rationale = "ADR 0039 formula"
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 33177600
+rationale = "one exact 3840x2160 BGRA frame"

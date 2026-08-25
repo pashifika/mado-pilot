@@ -1,8 +1,8 @@
 # ADR 0040: Compound bounded-detector ceiling
 
-- **Status:** Accepted candidate; support and budgets remain unqualified
+- **Status:** Accepted profile ceiling; ADR 0041 budgets accepted, final enforcement pending
 - **Date:** 2026-08-25
-- **Resolves gate:** _none_; bounded-profile rows under `G-013` remain open until both release targets pass ADR 0039
+- **Resolves gate:** _none_; bounded-profile support under `G-013` remains open for final enforcement
 - **Supersedes:** ADR 0038's rectangular-only `bounded-v1` candidate; ADRs 0033, 0034, 0037, and the ADR 0039 qualification formula remain unchanged
 
 ## Context
@@ -57,7 +57,7 @@ All ADR 0038 direct-resize, interpolation, half-pixel, channel, normalization, d
 
 ## Consequences
 
-`bounded-v1` remains rejected evidence and is not an alias. Candidate v2 requires fresh exact-source Apple and Windows precursor matrices, a fixed-formula cross-target decision, final revision-bound budget profiles, and five fresh budget-enforcing processes per target. No current support or numeric budget claim follows from local smoke.
+`bounded-v1` remains rejected evidence and is not an alias. Candidate v2 passed exact-source Apple and Windows precursors; ADR 0041 accepts the fixed-formula target budgets and revision-bound profiles. Five fresh budget-enforcing processes per target remain before support.
 
 The secondary rule intentionally preserves reference-size detector pixels while reducing oversized and dense inputs. Source mapping and original-source recognizer crops remain uncapped obligations. Lazy benchmark fixture lifetime reduces measurement contamination but does not change public frame lifetime or producer behavior.
 

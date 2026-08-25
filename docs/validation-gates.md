@@ -615,18 +615,21 @@ cap or expected result was changed.
 ADR 0040 candidate v2 preserves reference/odd 1312×736 detector pixels and adds
 a secondary 6 MiB fit only after oversized desired work required the first
 1312×736 rectangle. It also constructs benchmark fixtures one workload at a
-time. Exact schema-v3 source `ce658b3` passed all five bounded and five native
-processes on the approved Apple M1 Pro with zero oracle failure/growth and
-complete final/cumulative RSS fields. Every formula-derived Apple candidate fits
-the unchanged caps.
+time. Exact schema-v3 source `ce658b3` passed five bounded and five native
+processes on each approved host with zero oracle failure/growth and complete
+final/cumulative RSS fields. All ADR 0039 formula outputs fit the unchanged
+target caps.
 
-This gate remains unresolved. Fresh exact-source candidate-v2 Windows precursor,
-final cross-target budget selection, committed target profiles/registries, and
-five fresh budget-enforcing processes per target remain required. Historical
-Phase 3 default-OCR profiles and status above remain unchanged.
+ADR 0041 accepts separate target budgets, explicit `--enforce-budgets` mode,
+new revision-bound profiles, and drift registries without modifying released
+Phase 3 evidence. This gate remains unresolved only for final proof: five fresh
+bounded enforcement processes must pass on each approved target, followed by
+independent final-source review and protected CI. Historical Phase 3 default-OCR
+profiles and status above remain unchanged.
 
-**Resolution.** Committed benchmark profiles and budgets plus an ADR for each
-budget that is set or relaxed, recording the evidence behind the number.
+**Resolution.** The bounded-profile row resolves when both final enforcement
+matrices pass at the exact final executable; any future budget change requires a
+new ADR and fresh evidence.
 
 ## G-014
 

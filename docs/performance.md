@@ -927,6 +927,17 @@ Bounded worst p95 was 372.100 ms for 4K HUD, 476.275 ms for reference HUD,
 12,695,336 bytes and final process RSS was 464,519,168 bytes. Every
 formula-derived Apple candidate fits the unchanged caps.
 
-Candidate-v2 Windows precursor, cross-target review, a final budget ADR, and
-five fresh budget-enforcing processes per target remain open. No
-bounded-profile numeric budget or support claim is accepted.
+Exact Windows executable
+`54a10f73970e24e126b4863853c0949610206bb7135579477883ec669ea0b5ed`
+ran the same alternating five bounded/five native schema-v3 matrix on the
+approved Core i7-12700KF. All ten raw verdicts and all 1,600 retained samples
+passed. Bounded worst p95 was 530.211 ms for 4K HUD, 718.100 ms for reference
+HUD, 591.838 ms for dense tooltip, and 244.941 ms for 4K blank; peak heap was
+12,695,272 bytes and final process RSS was 228,741,120 bytes. Every
+formula-derived Windows candidate fits the unchanged caps.
+
+ADR 0041 accepts the exact target budgets in
+`phase-3-1-bounded-ocr-aarch64-apple-darwin.toml` and
+`phase-3-1-bounded-ocr-x86_64-pc-windows-msvc.toml`. Five fresh bounded
+`--enforce-budgets` processes per approved target remain required before the
+explicit profile gains a support claim.

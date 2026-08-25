@@ -33,12 +33,12 @@ The `v0.3.1` bounded-detector topic adds a second closed, explicit, non-default
 profile over the same immutable model components. The initial ADR 0038 rectangle
 passed both-target correctness/resource oracles but the fixed ADR 0039 formula
 rejected its Windows latency margins. ADR 0040 replaces that unreleased tuple
-with candidate v2; its exact-source approved Apple precursor passes, while
-approved Windows precursor and final budget enforcement remain open. No
-bounded-profile support or numeric budget is claimed yet. Neither
-profile adds bundling, download, ambient search, provider fallback, scheduling,
-or automatic input. Watchers, scheduling, and release packaging remain future
-work.
+with candidate v2. Exact-source Apple and Windows precursors pass, and ADR 0041
+accepts separate target budgets and revision-bound profiles; five fresh final
+enforcement processes per target remain. Bounded-profile support is withheld
+until that final proof passes. Neither profile adds bundling, download, ambient
+search, provider fallback, scheduling, or automatic input. Watchers,
+scheduling, and release packaging remain future work.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -852,8 +852,8 @@ responsibilities a later phase takes on.
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
-| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds candidate v2 as one distinct closed identity over the same component bytes. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented; bounded-profile support remains unqualified |
-| Exact accepted CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection first fits a `1312x736` rectangle, applies a 6 MiB secondary tensor fit only when that rectangle had to fit oversized desired work, and keeps original-source recognizer crops |
+| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds candidate v2 as one distinct closed identity over the same component bytes; ADR 0041 accepts target budgets pending final enforcement. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented; bounded-profile support remains withheld until final proof |
+| Exact accepted CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection first fits a `1312x736` rectangle, applies a 6 MiB secondary tensor fit only when that rectangle had to fit oversized desired work, keeps original-source recognizer crops, and exposes ADR 0041 final budget enforcement |
 | OCR runtime/facade/ABI one-shot operation and immutable results | Implemented through `mado-pilot-runtime`, the facade, C ABI 1.3, and C++; backend/model/context/frame/region/output space remain explicit, and close/deadline/cancellation arbitrate before publication. The bounded identity is re-exported, but released product default constructors and C/C++ surfaces still select only native G-004 |
 | Accepted default OCR composition | Implemented by ADR 0036 as separate Rust/C/C++ constructors over caller-supplied canonical model-root/runtime paths. Existing constructors still omit OCR, explicit package/backends remain available, missing prerequisites fail construction without fallback or a half-configured engine, and bounded-backend admission does not alter this default |
 | Bounded engine-scoped diagnostic observation | Implemented through Rust, C ABI 1.3, and C++ with allocation-free `Off`, finite `Normal`/`Debug`, strict order, exact level losses, independent readers/batches, and content-redacted OCR admission/terminal records |
