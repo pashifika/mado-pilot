@@ -867,7 +867,7 @@ responsibilities a later phase takes on.
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot` |
 | Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, separate accepted-default constructors, closed `OcrProfile` construction, and borrowed one-to-eight-zone scans; no platform-native type crosses the facade |
 | Default adapter wiring and backend rules | OpenCV matching remains required. Existing engine constructors omit OCR; `*_engine_with_default_ocr` selects native G-004 and `*_engine_with_ocr_profile` selects only the explicit bounded profile from controlled paths. Neither path falls back |
-| C ABI functions, C header, dynamic library | Implemented through ABI 1.4. ABI 1.0, 1.2, and 1.3 remain frozen complete 424-byte, 592-byte, and 648-byte prefixes. ABI 1.4 appends explicit-profile construction, grouped scan, one immutable owner, and two-dimensional accessors at offsets 648–704 for a complete 712-byte table under ADR 0043 |
+| C ABI functions, C header, dynamic library | Implemented through ABI 1.4. ABI 1.0, 1.2, and 1.3 remain frozen complete 424-byte, 592-byte, and 648-byte prefixes. ABI 1.4 appends explicit-profile construction, grouped ownership/accessors, and an engine-selected OCR descriptor at offsets 648–712 for a complete 720-byte table under ADR 0043 |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.4 as a header-only adapter, including owning profile/zone requests with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed views, typed empty groups, and complete negotiated-suffix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
@@ -2534,9 +2534,13 @@ appends 21 entries and ends at 592 bytes. ABI 1.3 appends singular OCR and
 default construction through the complete 648-byte prefix. ABI 1.4 appends
 `engine_create_with_ocr_profile`, `session_scan_ocr_zones`, atomic grouped-result
 retain/release, info, zone, region, and text accessors at offsets 648 through
-704, ending at 712 bytes on both release targets. Standalone size-versioned
-default/profile options leave the frozen 16-byte/alignment-4
-`madopilot_engine_options_t` unchanged. Minimum minor 1 remains unsupported.
+704, then `engine_ocr_descriptor` at offset 712, ending at 720 bytes on both
+release targets. The descriptor writes one complete 88-byte/alignment-8 record
+whose strings borrow from a descriptor retained by the engine handle. A separate
+entry preserves the released 8-byte/alignment-4
+`madopilot_engine_capabilities_t`; standalone default/profile options likewise
+leave the frozen 16-byte/alignment-4 `madopilot_engine_options_t` unchanged.
+Minimum minor 1 remains unsupported.
 
 The C boundary initializes every output before reading inputs. Refusal before
 input admission returns an owned error and no receipt. An admission that returns
@@ -2548,8 +2552,9 @@ input took effect.
 
 Every C entry contains Rust panic unwinding. The C++ header owns and copies only
 according to C lifetimes, requires the complete entry extent before profile
-construction, and requires all 712 bytes before creating a high-level grouped
-owner. One centralized projection rebinds every owned string and zone pointer
+construction, requires 712 bytes before creating a high-level grouped owner, and
+requires 720 bytes before returning engine-borrowed descriptor views. One
+centralized projection rebinds every owned string and zone pointer
 after copy or move. No C++ path adds normalization, scheduling, retry, or
 fallback policy. ADR 0035 records singular ownership/private-fixture isolation;
 ADR 0036 records default construction; ADR 0043 records ABI 1.4 layout,

@@ -23,8 +23,8 @@ replaces one.
 ## This wrapper declares no ABI of its own
 
 The only ABI is the C one. ABI 1.0, 1.2, and 1.3 are frozen complete prefixes.
-ABI 1.4 appends explicit profile construction and grouped OCR ownership through
-the complete 712-byte table under
+ABI 1.4 appends explicit profile construction, grouped OCR ownership, and
+engine-selected descriptor access through the complete 720-byte table under
 [ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md). The wrapper adds
 source compatibility only, governed by ADR 0006's reviewed Rust-side naming
 policy.
@@ -269,6 +269,7 @@ documents the owner that keeps them valid.
 | `BuildInfo::library_version`, `required_backend` | the loaded library |
 | `TargetDescriptor::name`, `provider` | the `TargetList` |
 | `PermissionDiagnostic::platform_namespace`, `context` | the `Engine` |
+| `OcrEngineDescriptor::backend_id`, `backend_version`, `model_id`, `model_version`, `profile_id` | the `Engine` |
 | `PackageInfo::package_id`, `package_version`, `license` | the `Package` |
 | `TemplateInfo::id`, `backend` | the `Template` |
 | `Package::template_id` | the `Package` |
@@ -372,9 +373,10 @@ return the C entry's `MADOPILOT_STATUS_INVALID_ARGUMENT` unchanged.
 
 `OcrRequest` owns model/backend ID and version strings, borrows one `Frame`, and
 optionally borrows a `Package`. Explicit package-backed models set the package;
-integrated construction leaves it unset and uses identities reported by
-`Api::describe_build()`. Every call constructs a fresh `OcrRequest::CView`;
-copy/move operations rebind every view to the projection's own storage.
+integrated construction leaves it unset and uses the selected identity from the
+named engine's lvalue-only `ocr_descriptor()`. Every call constructs a fresh
+`OcrRequest::CView`; copy/move operations rebind every view to the projection's
+own storage.
 
 `DefaultOcrOptions` preserves native G-004 construction. `OcrProfileOptions`
 owns the explicit kind/model-root/runtime values;
@@ -434,9 +436,10 @@ request.event(madopilot::InputEvent::pointer_move(
 
 `Engine::capabilities`, `Engine::permission`,
 `TargetList::input_capability`, `Engine::input_descriptor`, and
-`Session::input_descriptor` project ABI 1.2 records into value types. Optional
-fields remain `std::optional`; an unknown C numeric value stays in its
-fixed-width alias rather than being narrowed into a wrapper enum.
+`Session::input_descriptor` project size-versioned C records into value types.
+`Engine::ocr_descriptor` projects the appended ABI 1.4 descriptor record and is
+lvalue-only because its views borrow the `Engine`. Permission is lvalue-only for
+the same reason. Unknown C numeric values stay in their fixed-width aliases.
 
 ### Engine-scoped diagnostics
 
@@ -555,10 +558,11 @@ wrapper never throws one.
 
 ### Troubleshooting OCR 1.4
 
-- `MADOPILOT_STATUS_UNSUPPORTED` before construction/scan usually means the
-  caller-known or returned table extent omits a required entry. Profile
-  construction needs its complete entry; grouped `Session::scan_ocr_zones`
-  requires all 712 bytes.
+- `MADOPILOT_STATUS_UNSUPPORTED` before construction/scan/descriptor access
+  usually means the caller-known or returned table extent omits a required
+  entry. Profile construction needs its complete entry; grouped
+  `Session::scan_ocr_zones` requires 712 bytes; `Engine::ocr_descriptor`
+  requires all 720 bytes.
 - `MADOPILOT_STATUS_INVALID_ARGUMENT` from profile construction means an unknown
   kind, empty/noncanonical controlled path, or malformed projection. It never
   triggers default fallback.

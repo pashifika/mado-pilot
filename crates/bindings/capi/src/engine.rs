@@ -14,6 +14,7 @@
 use std::ops::Deref;
 #[cfg(feature = "private-fixture")]
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 #[cfg(feature = "private-fixture")]
@@ -21,7 +22,8 @@ use mado_pilot::OcrBackend;
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
     DefaultOcrConfig, DiagnosticLevel, DiagnosticOptions, Engine, FrameDescriptor,
-    MonotonicInstant, OcrProfile, OcrProfileConfig, PixelExtent, TargetDescription, TargetId,
+    MonotonicInstant, OcrBackendDescriptor, OcrProfile, OcrProfileConfig, PixelExtent,
+    TargetDescription, TargetId,
 };
 
 use crate::boundary::{self, Input, Out, Versioned, covers, inputs, prefixes};
@@ -51,15 +53,25 @@ opaque! {
     madopilot_engine_t => EngineHandle
 }
 
-/// The facade engine behind the C handle.
+/// The facade engine and its lazily retained descriptor for C output views.
 #[derive(Debug)]
 pub(crate) struct EngineHandle {
     engine: Engine,
+    ocr_backend: OnceLock<Option<OcrBackendDescriptor>>,
 }
 
 impl EngineHandle {
     pub(crate) fn new(engine: Engine) -> Self {
-        Self { engine }
+        Self {
+            engine,
+            ocr_backend: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn retained_ocr_backend(&self) -> Option<&OcrBackendDescriptor> {
+        self.ocr_backend
+            .get_or_init(|| self.engine.ocr_backend())
+            .as_ref()
     }
 }
 

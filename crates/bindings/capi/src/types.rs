@@ -841,8 +841,8 @@ impl madopilot_pixel_rect_t {
 pub struct madopilot_engine_capabilities_t {
     /// `sizeof(madopilot_engine_capabilities_t)` as the caller's header declares it.
     pub struct_size: u32,
-    /// [`MADOPILOT_ENGINE_DELIVERS_INPUT`] and
-    /// [`MADOPILOT_ENGINE_READS_PERMISSIONS`].
+    /// [`MADOPILOT_ENGINE_DELIVERS_INPUT`],
+    /// [`MADOPILOT_ENGINE_READS_PERMISSIONS`], and [`MADOPILOT_ENGINE_HAS_OCR`].
     pub flags: u32,
 }
 
@@ -1230,6 +1230,29 @@ pub struct madopilot_ocr_profile_options_t {
     pub model_root: madopilot_str_t,
     /// Canonical absolute ONNX Runtime 1.29.0 file.
     pub runtime_path: madopilot_str_t,
+}
+
+/// Exact OCR backend/model/profile identity selected by one engine.
+///
+/// Mandatory prefix: the whole structure. String views remain borrowed while
+/// the engine is retained.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_ocr_engine_descriptor_t {
+    /// `sizeof(madopilot_ocr_engine_descriptor_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; written as zero.
+    pub flags: u32,
+    /// Selected OCR backend identifier.
+    pub backend_id: madopilot_str_t,
+    /// Selected OCR backend implementation version.
+    pub backend_version: madopilot_str_t,
+    /// Selected OCR model identifier.
+    pub model_id: madopilot_str_t,
+    /// Selected OCR model version.
+    pub model_version: madopilot_str_t,
+    /// Selected OCR profile identifier.
+    pub profile_id: madopilot_str_t,
 }
 
 /// Summary of one immutable owned diagnostic batch.

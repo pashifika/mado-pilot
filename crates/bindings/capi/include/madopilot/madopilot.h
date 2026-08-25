@@ -831,6 +831,18 @@ typedef struct madopilot_ocr_profile_options_t {
     madopilot_str_t runtime_path; /* Canonical absolute ORT 1.29.0 file. */
 } madopilot_ocr_profile_options_t;
 
+/* Exact OCR identity selected by one engine. Mandatory prefix: whole.
+ * Every string borrows from the retained engine. */
+typedef struct madopilot_ocr_engine_descriptor_t {
+    uint32_t struct_size;
+    uint32_t flags; /* No bits defined; written as zero. */
+    madopilot_str_t backend_id;
+    madopilot_str_t backend_version;
+    madopilot_str_t model_id;
+    madopilot_str_t model_version;
+    madopilot_str_t profile_id;
+} madopilot_ocr_engine_descriptor_t;
+
 /* Summary of one immutable owned diagnostic batch. */
 typedef struct madopilot_diagnostic_batch_info_t {
     uint32_t struct_size;
@@ -1838,6 +1850,11 @@ typedef struct madopilot_api_t {
         size_t zone_index,
         size_t region_index,
         madopilot_str_t* out_text);
+    /* Initializes the descriptor failure state first. Returns UNSUPPORTED when
+     * the retained engine has no OCR selection. Views borrow from the engine. */
+    madopilot_status_t (*engine_ocr_descriptor)(
+        const madopilot_engine_t* engine,
+        madopilot_ocr_engine_descriptor_t* out_descriptor);
 } madopilot_api_t;
 
 /* The table's mandatory prefix: everything through status_text.
@@ -1928,7 +1945,9 @@ typedef struct madopilot_api_t {
     offsetof(madopilot_api_t, ocr_zone_scan_result_region_at)
 #define MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_REGION_AT \
     offsetof(madopilot_api_t, ocr_zone_scan_result_text_at)
-#define MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT sizeof(madopilot_api_t)
+#define MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT \
+    offsetof(madopilot_api_t, engine_ocr_descriptor)
+#define MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR sizeof(madopilot_api_t)
 
 /* ---------------------------------------------------------------------------
  * The one exported symbol

@@ -175,6 +175,14 @@ struct probes_permission<
            MADOPILOT_PERMISSION_KIND_SCREEN_CAPTURE, std::declval<madopilot::Operation>()))>>
     : std::true_type {};
 
+template <class T, class = void>
+struct reads_ocr_descriptor : std::false_type {};
+
+template <class T>
+struct reads_ocr_descriptor<
+    T, std::void_t<decltype(std::declval<T>().ocr_descriptor())>>
+    : std::true_type {};
+
 } // namespace
 
 static_assert(describes<madopilot::Package&>::value, "a named package describes itself");
@@ -207,6 +215,10 @@ static_assert(probes_permission<madopilot::Engine&>::value,
               "a named engine may return a borrowed permission diagnostic");
 static_assert(!probes_permission<madopilot::Engine>::value,
               "a temporary engine may not return borrowed permission views");
+static_assert(reads_ocr_descriptor<madopilot::Engine&>::value,
+              "a named engine may return borrowed OCR descriptor views");
+static_assert(!reads_ocr_descriptor<madopilot::Engine>::value,
+              "a temporary engine may not return borrowed OCR descriptor views");
 
 /* Requests and fixed-width projections are values a caller composes, copies,
  * and reuses. */
@@ -254,6 +266,8 @@ static_assert(
     "each call-local input projection is a move-only owner");
 static_assert(std::is_copy_constructible_v<madopilot::EngineCapabilities>,
               "EngineCapabilities is a value");
+static_assert(std::is_copy_constructible_v<madopilot::OcrEngineDescriptor>,
+              "OcrEngineDescriptor is a value with engine-borrowed views");
 static_assert(std::is_copy_constructible_v<madopilot::OpenRequest>,
               "OpenRequest owns its input policy");
 static_assert(std::is_copy_constructible_v<madopilot::Permission>,
@@ -1929,6 +1943,26 @@ void old_and_partial_extents_hide_ocr_before_missing_entries(Fixture& fixture)
     check(!final_partial_refusal &&
               final_partial_refusal.status() == MADOPILOT_STATUS_UNSUPPORTED,
           "the 704-byte ABI 1.4 extent refuses grouped OCR before text_at");
+
+    auto no_descriptor_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT);
+    if (!check_ok(no_descriptor_loaded,
+                  "load the grouped ABI 1.4 extent without the descriptor")) {
+        return;
+    }
+    madopilot::Api no_descriptor_api = no_descriptor_loaded.take();
+    auto no_descriptor_built =
+        no_descriptor_api.create_engine(source, fixture.operation);
+    if (!check_ok(no_descriptor_built,
+                  "build through the pre-descriptor ABI 1.4 extent")) {
+        return;
+    }
+    madopilot::Engine no_descriptor_engine = no_descriptor_built.take();
+    const auto no_descriptor = no_descriptor_engine.ocr_descriptor();
+    check(!no_descriptor &&
+              no_descriptor.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "the 712-byte ABI 1.4 extent refuses the appended descriptor entry");
 
     const auto current_zone_call =
         fixture.session.scan_ocr_zones(zone_request, fixture.operation);

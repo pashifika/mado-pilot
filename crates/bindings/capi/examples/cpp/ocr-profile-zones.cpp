@@ -59,7 +59,7 @@ int main(int argc, char** argv)
     auto loaded = madopilot::Api::load();
     madopilot::Api api;
     if (!take(loaded, api, "Api::load") ||
-        api.extent() < MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT) {
+        api.extent() < MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR) {
         return 1;
     }
     const auto build_result = api.describe_build();
@@ -85,6 +85,21 @@ int main(int argc, char** argv)
         source, options, profile, operation);
     madopilot::Engine engine;
     if (!take(built, engine, "create_engine_with_ocr_profile")) return 1;
+    const auto descriptor_result = engine.ocr_descriptor();
+    if (!descriptor_result ||
+        descriptor_result.value().backend_id.view() !=
+            build.default_ocr_backend.view() ||
+        descriptor_result.value().backend_version.view() !=
+            build.default_ocr_backend_version.view() ||
+        descriptor_result.value().model_id.view() !=
+            build.bounded_ocr_model.view() ||
+        descriptor_result.value().model_version.view() !=
+            build.bounded_ocr_model_version.view() ||
+        descriptor_result.value().profile_id.view() !=
+            build.bounded_ocr_profile.view()) {
+        return 1;
+    }
+    const auto& descriptor = descriptor_result.value();
     auto discovered = engine.discover(operation);
     madopilot::TargetList targets;
     if (!take(discovered, targets, "discover")) return 1;
@@ -96,11 +111,26 @@ int main(int argc, char** argv)
     madopilot::Frame frame;
     if (!take(acquired, frame, "acquire_frame")) return 1;
 
+    madopilot::OcrRequest singular_request;
+    singular_request.frame(frame)
+        .model(descriptor.model_id.view())
+        .backend(descriptor.backend_id.view(), descriptor.backend_version.view())
+        .output_space(MADOPILOT_SPACE_CAPTURE_PIXELS);
+    auto recognized = session.recognize(singular_request, operation);
+    madopilot::OcrResult singular_result;
+    if (!take(recognized, singular_result, "recognize")) return 1;
+    const auto singular_info = singular_result.describe();
+    if (!singular_info ||
+        singular_info.value().model_id.view() != descriptor.model_id.view() ||
+        singular_info.value().profile_id.view() != descriptor.profile_id.view()) {
+        return 1;
+    }
+    singular_result.reset();
+
     madopilot::ZoneScanOcrRequest request;
     request.frame(frame)
-        .model(build.bounded_ocr_model.view())
-        .backend(build.default_ocr_backend.view(),
-                 build.default_ocr_backend_version.view())
+        .model(descriptor.model_id.view())
+        .backend(descriptor.backend_id.view(), descriptor.backend_version.view())
         .output_space(MADOPILOT_SPACE_CAPTURE_PIXELS)
         .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 0, 0, 24, 24})
         .zone({MADOPILOT_SPACE_CAPTURE_PIXELS, 40, 0, 64, 24})

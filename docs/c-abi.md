@@ -26,8 +26,9 @@ below still applies to it, because it is the same contract.
 The current header declares ABI 1.4. ADR 0007 freezes ABI 1.0's 424-byte
 capture/matching table; ADR 0023 freezes ABI 1.2's 592-byte input/diagnostic
 table; ADRs 0035/0036 freeze ABI 1.3's singular OCR/default construction at 648
-bytes. ABI 1.4 appends explicit profile construction and grouped scan ownership
-at offsets 648 through 704 for a complete 712-byte table under
+bytes. ABI 1.4 appends explicit profile construction, grouped scan ownership,
+and engine-selected OCR descriptor access at offsets 648 through 712 for a
+complete 720-byte table under
 [ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md).
 The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
@@ -42,9 +43,10 @@ Use the smaller of caller `sizeof(madopilot_api_t)` and the returned
 `struct_size`. ABI 1.0, 1.2, and 1.3 callers negotiate 424, 592, and 648 bytes.
 ABI 1.4 C callers use the per-entry extent macros. Profile construction requires
 `MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROFILE`; a high-level grouped owner
-needs the complete
-`MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT` extent (712 bytes). The C++
-wrapper checks both caller-known and returned extents before reading a pointer.
+needs `MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT` (712 bytes), while
+engine descriptor access needs
+`MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR` (720 bytes). The C++ wrapper checks
+both caller-known and returned extents before reading a pointer.
 
 The released promise is executable. `tests/abi-compat/v1/`, `v1_2/`, and
 `v1_3/` keep exact headers/callers, compile without the working header, link to
@@ -83,9 +85,11 @@ An existing 1.2 caller remains unchanged. To use OCR:
    and release with the module entry; and
 6. keep each borrowed text view only while its result owner remains retained.
 
-For the exact integrated default, `madopilot_ocr_request_t.package` may be null
-when backend/model views match the default identities returned by
-`describe_build`; any explicit package model still requires its package. There
+For the exact integrated profile configured on the engine,
+`madopilot_ocr_request_t.package` may be null when backend/model views match the
+descriptor reported by `engine_ocr_descriptor`. Existing default construction
+reports native G-004; ABI 1.4 explicit construction reports the bounded profile.
+Any explicit package model still requires its package. There
 is no watcher, retry, callback, scheduling, fallback, automatic input, ambient
 runtime/model search, download, or bundling. The feature-gated
 `private-fixture` constructor remains outside the public header/table and absent
@@ -99,8 +103,8 @@ An existing 1.3 caller remains unchanged. To use ABI 1.4:
 2. fill `madopilot_ocr_profile_options_t` with
    `MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR`, canonical controlled model-root and
    runtime views, then call `engine_create_with_ocr_profile`;
-3. read the bounded model/profile identity from `describe_build`; the backend
-   ID/version remain the reported integrated ONNX backend;
+3. call `engine_ocr_descriptor` and read the exact bounded
+   backend/model/profile identity from its engine-borrowed views;
 4. retain one exact frame and supply `1..=8` complete
    `madopilot_ocr_zone_t` elements through a pointer, `size_t` count, and
    aligned byte stride for the synchronous call;
@@ -426,8 +430,9 @@ then nowhere to put the message.
 `session_recognize` initializes both outputs before reading inputs. The session,
 exact frame, request views, and operation record are borrowed for the
 synchronous call. An explicit request also borrows its package, which resolves a
-complete validated model/profile identity. The accepted default may pass a null
-package only with the exact backend/model identity retained by the engine.
+complete validated model/profile identity. A configured integrated profile may
+pass a null package only with the exact backend/model identity retained by the
+engine and reported by `engine_ocr_descriptor`.
 Backend ID/version and model must exactly match the session. A foreign stream,
 missing backend, unknown model, missing required package, malformed view, invalid
 region, deadline, cancellation, close, or backend fault returns one typed status
@@ -472,8 +477,14 @@ release and concurrent const access require one live reference per caller.
 ## Native capabilities and non-prompting permissions
 
 ABI 1.2 makes capability checks explicit before a caller opens anything.
-`engine_capabilities` reports whether the configured source can submit input and
-whether it can read permission state.
+`engine_capabilities` reports whether the configured source can submit input,
+whether it can read permission state, and whether OCR is configured.
+ABI 1.4 appends `engine_ocr_descriptor`, which writes one complete 88-byte
+backend/model/profile identity record whose string views borrow from the retained
+engine. It returns `MADOPILOT_STATUS_UNSUPPORTED` with an initialized empty
+record when that engine has no OCR selection. Appending a table entry instead of
+extending the released 8-byte capability record preserves its alignment and
+allows ABI 1.2/1.3 callers to keep passing their original output.
 `target_list_input_capability` reports one target and operation/route pair:
 compatibility support, exact address scope, focus requirement, accepted pointer
 spaces, related permission, and strongest submission evidence.
@@ -860,10 +871,10 @@ records the standalone default options, preserved engine-options layout, and
 `engine_create_with_default_ocr` at offset 640 completing the table at 648 bytes.
 
 [ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md) records ABI 1.4:
-the frozen 648-byte ABI 1.3 prefix, 712-byte current table, explicit profile
+the frozen 648-byte ABI 1.3 prefix, 720-byte current table, explicit profile
 kind/options, grouped pointer/count/stride validation, independent owner and
-two-dimensional access, C++ rebinding, build-info append, and aggregate-only
-diagnostics.
+two-dimensional access, engine-selected descriptor entry, C++ rebinding,
+build-info append, and aggregate-only diagnostics.
 
 Each released header gets an immutable fixture. New coverage goes in the next
 fixture rather than editing an old caller; the rule is in

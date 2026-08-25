@@ -19,7 +19,7 @@ Runtime adds `Session::scan_ocr_zones`, forwarding one borrowed `OcrZoneScanRequ
 
 ### ABI 1.4 declarations and order
 
-C ABI minor 1.4 adds fixed-width `madopilot_ocr_profile_kind_t`, size-versioned `madopilot_ocr_profile_options_t`, `madopilot_ocr_zone_t`, `madopilot_ocr_zone_scan_request_t`, `madopilot_ocr_zone_scan_result_info_t`, and `madopilot_ocr_zone_result_t`, plus opaque `madopilot_ocr_zone_scan_result_t`.
+C ABI minor 1.4 adds fixed-width `madopilot_ocr_profile_kind_t`, size-versioned `madopilot_ocr_profile_options_t`, `madopilot_ocr_engine_descriptor_t`, `madopilot_ocr_zone_t`, `madopilot_ocr_zone_scan_request_t`, `madopilot_ocr_zone_scan_result_info_t`, and `madopilot_ocr_zone_result_t`, plus opaque `madopilot_ocr_zone_scan_result_t`.
 
 `MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR` is signed 32-bit value 1. Every other profile-kind value is invalid. The record field order is fixed as follows:
 
@@ -28,10 +28,36 @@ C ABI minor 1.4 adds fixed-width `madopilot_ocr_profile_kind_t`, size-versioned 
 - request: `struct_size`, zero `flags`, retained-for-call `frame`, optional integrated-profile `package`, borrowed `model_id`, `backend_id`, `backend_version`, `output_space`, zero `reserved`, borrowed `zones`, `zone_count`, `zone_stride`;
 - result info: `struct_size`, zero `flags`, exact `source`, capture-pixel `source_envelope`, `output_space`, semantic `zone_count`, `unique_candidate_count`, `membership_count`, then owner-borrowed `backend_id`, `backend_version`, `model_id`, `model_version`, and `profile_id`;
 - zone result: `struct_size`, zero `flags`, caller-order `effective_zone`, zero `reserved`, semantic `region_count`.
+- engine descriptor: `struct_size`, zero `flags`, then engine-borrowed `backend_id`, `backend_version`, `model_id`, `model_version`, and `profile_id`;
 
 Every new record's mandatory prefix is the whole declared record. Structure sizes and reported table sizes are `uint32_t`; zone-array counts and strides and accessor indexes are `size_t`; result/group/candidate/membership counts are `uint64_t`; profile and enum values are signed fixed-width. Every conversion is checked before allocation, dereference, or output publication.
 
-Eight function pointers append after the complete 648-byte ABI 1.3 prefix in this permanent order:
+Review first attempted to append descriptor views to the released
+`madopilot_engine_capabilities_t`. The native compatibility gate disproved that
+design: the frozen ABI 1.2 header declares the record as size/alignment 8/4,
+while adding pointer-length views makes the working record 88/8. The current
+library then rejected a valid old-header output for insufficient 8-byte
+alignment. Weakening the generic output alignment check would broaden the unsafe
+boundary and permit underaligned pointer fields.
+
+ABI 1.4 therefore keeps `madopilot_engine_capabilities_t` exactly 8/4 and appends
+a ninth table entry, `engine_ocr_descriptor`, after the eight grouped entries.
+It writes a complete 88/8 `madopilot_ocr_engine_descriptor_t` with offsets
+0, 4, 8, 24, 40, 56, and 72. Views borrow from a descriptor retained by the
+engine handle. An engine without OCR returns `UNSUPPORTED` after initializing
+the record. This is the smallest layout that preserves old caller alignment,
+avoids weakening raw-pointer checks, and pays at most one lazy descriptor clone
+per C engine instead of copying strings on every query.
+
+Singular and grouped null-package OCR share one closed integrated-selection
+predicate. It accepts only the fixed integrated backend/version paired with
+either native G-004 or the bounded model/profile identity already retained by
+that engine, followed by an exact requested-model match. This adds singular OCR
+to engines created through the new bounded-profile constructor without changing
+the existing default constructor, package-backed composition, or ABI 1.3 caller
+behavior.
+
+Nine function pointers append after the complete 648-byte ABI 1.3 prefix in this permanent order:
 
 ```text
 engine_create_with_ocr_profile
@@ -42,20 +68,26 @@ ocr_zone_scan_result_info
 ocr_zone_scan_result_zone_at
 ocr_zone_scan_result_region_at
 ocr_zone_scan_result_text_at
+engine_ocr_descriptor
 ```
 
-On the two 64-bit release targets the predeclared complete extent is 712 bytes, with entries beginning at offsets 648 through 704. Compiled Rust, Apple Clang, and MSVC probes are authoritative; a mismatch fails the Change and requires this ADR to be updated from measured evidence rather than forcing the expected layout.
+On the two 64-bit release targets the corrected complete extent is 720 bytes,
+with entries beginning at offsets 648 through 712. Compiled Rust, Apple Clang,
+and MSVC probes are authoritative; a mismatch fails the Change and requires this
+ADR to be updated from measured evidence rather than forcing the expected
+layout.
 
 The 2026-08-25 Apple Clang 21.0.0 and `rustc 1.97.1` probes agreed on every predeclared value:
 
 | Declaration | Size / alignment | Field offsets in declaration order |
 |---|---:|---|
 | `madopilot_ocr_profile_options_t` | 48 / 8 | 0, 4, 8, 12, 16, 32 |
+| `madopilot_ocr_engine_descriptor_t` | 88 / 8 | 0, 4, 8, 24, 40, 56, 72 |
 | `madopilot_ocr_zone_t` | 32 / 4 | 0, 4, 8, 28 |
 | `madopilot_ocr_zone_scan_request_t` | 104 / 8 | 0, 4, 8, 16, 24, 40, 56, 72, 76, 80, 88, 96 |
 | `madopilot_ocr_zone_scan_result_info_t` | 176 / 8 | 0, 4, 8, 48, 68, 72, 80, 88, 96, 112, 128, 144, 160 |
 | `madopilot_ocr_zone_result_t` | 40 / 8 | 0, 4, 8, 28, 32 |
-| `madopilot_api_t` ABI 1.4 suffix | 712 / 8 | 648, 656, 664, 672, 680, 688, 696, 704 |
+| `madopilot_api_t` ABI 1.4 suffix | 720 / 8 | 648, 656, 664, 672, 680, 688, 696, 704, 712 |
 
 The same C11 probe uses `_Alignof` on Apple Clang and `__alignof` on MSVC, checks fixed-width semantic/count field types with `_Generic`, and is a required native CI row. A differing MSVC result fails the Change; it is not normalized or replaced by the Apple measurement.
 
@@ -69,11 +101,13 @@ C callers may use a partial ABI 1.4 table only through complete per-entry extent
 
 ### C++ projection and diagnostics
 
-C++ `OcrProfileOptions` owns path strings and `ZoneScanOcrRequest` owns identity strings and zone storage. One private rebind helper repairs every projected string, nested view, zone pointer, count, and stride after initial construction, copy construction/assignment, and move construction/assignment; moved-from objects remain safely destructible. Each C call builds and retains its call-local projection for the complete call. `ZoneScanOcrResult` is move-only, clones only through C retain, releases exactly once, and exposes lvalue-only owner-bound zone, region, and text views.
+C++ `OcrProfileOptions` owns path strings and `ZoneScanOcrRequest` owns identity strings and zone storage. One private rebind helper repairs every projected string, nested view, zone pointer, count, and stride after initial construction, copy construction/assignment, and move construction/assignment; moved-from objects remain safely destructible. Each C call builds and retains its call-local projection for the complete call. `ZoneScanOcrResult` is move-only, clones only through C retain, releases exactly once, and exposes lvalue-only owner-bound zone, region, and text views. `Engine::ocr_descriptor` checks the complete 720-byte entry extent and is lvalue-only because its allocation-free views borrow from the engine.
 
 OCR diagnostics append only presence-qualified public profile classification, opaque library model-instance correlation, exact source identity, one shared source-envelope summary, bounded zone/unique-candidate/membership/result-byte aggregates, exact request-scoped detector/recognizer work when available, timing/resource summaries, typed outcome, and exact loss. They never retain caller zone arrays or individual zone geometry, model/runtime paths or hashes, pixels or captured-content hashes, recognized text, labels, backend/runtime names, credentials, raw native identifiers, free-form backend output, or unrelated desktop metadata. Process-wide counter deltas are not accepted as request evidence because concurrent operations make them non-authoritative. `Off` continues to allocate no diagnostic queue.
 
 ## Alternatives
+
+- **Extend the released engine-capability record with descriptor views.** Rejected by the native old-header gate: pointer fields change its alignment from 4 to 8 and make valid ABI 1.2/1.3 callers fail before their 8-byte output can be written. A special underaligned output path would weaken the shared unsafe boundary.
 
 - **Extend `madopilot_default_ocr_options_t` or reuse `engine_create_with_default_ocr`.** Rejected because it would reinterpret a frozen 40-byte default-named contract and make old-library negotiation ambiguous.
 - **Make the bounded detector the `v0.3.1` default.** Rejected because it changes released G-004 behavior and evidence.

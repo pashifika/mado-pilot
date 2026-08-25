@@ -48,6 +48,7 @@ const DECLARED: &[&str] = &[
     "ZoneScanOcrRequest",
     // Fixed-width value projections.
     "EngineCapabilities",
+    "OcrEngineDescriptor",
     "PermissionDiagnostic",
     "Permission",
     "InputCapability",

@@ -501,7 +501,7 @@ pub(crate) fn engine_capabilities(
     if engine.reads_permissions() {
         flags |= MADOPILOT_ENGINE_READS_PERMISSIONS;
     }
-    if engine.ocr_backend().is_some() {
+    if engine.retained_ocr_backend().is_some() {
         flags |= MADOPILOT_ENGINE_HAS_OCR;
     }
     // SAFETY: `out` was validated above.

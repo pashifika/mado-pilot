@@ -1,12 +1,11 @@
 //! One-shot OCR execution and immutable owned result projection.
 //!
 //! A request borrows its session, exact frame, backend/model identity views, and
-//! operation context for one synchronous call. An explicitly injected backend
-//! also borrows a validated package; the integrated default borrows the model
-//! identity already retained by the engine and does not load model bytes twice.
-//! A successful result owns only the facade's immutable `OcrResult`; it retains
-//! no parent handle, frame storage, package bytes, backend buffer, lock, callback,
-//! or worker.
+//! operation context for one synchronous call. An integrated accepted profile
+//! borrows the model identity already retained by the engine and does not load
+//! model bytes twice. A successful result owns only the facade's immutable
+//! `OcrResult`; it retains no parent handle, frame storage, package bytes, backend
+//! buffer, lock, callback, or worker.
 //! Text returned by `ocr_result_text_at` is borrowed from that result owner.
 
 use std::mem::{align_of, size_of};
@@ -18,19 +17,21 @@ use mado_pilot::{
 
 use crate::boundary::{self, Input, Out, Versioned, covers, declared, inputs, prefixes};
 use crate::capture::{FrameHandle, SessionHandle, madopilot_session_t, rect, source_rect, stamp};
+use crate::engine::{EngineHandle, madopilot_engine_t};
 use crate::error::{Fault, madopilot_error_t};
 use crate::handle::opaque;
 use crate::operation;
 use crate::status::{
     MADOPILOT_ERROR_CATEGORY_VISION, MADOPILOT_STATUS_INVALID_ARGUMENT, MADOPILOT_STATUS_OK,
-    madopilot_status_t,
+    MADOPILOT_STATUS_UNSUPPORTED, madopilot_status_t,
 };
 use crate::types::{
     MADOPILOT_CLIP_POLICY_REJECT, MADOPILOT_OCR_HAS_REGION, MADOPILOT_SPACE_CAPTURE_PIXELS,
-    clip_policy, madopilot_frame_stamp_t, madopilot_ocr_point_t, madopilot_ocr_region_t,
-    madopilot_ocr_request_t, madopilot_ocr_result_info_t, madopilot_ocr_zone_result_t,
-    madopilot_ocr_zone_scan_request_t, madopilot_ocr_zone_scan_result_info_t, madopilot_ocr_zone_t,
-    madopilot_operation_t, madopilot_pixel_rect_t, space, space_code,
+    clip_policy, madopilot_frame_stamp_t, madopilot_ocr_engine_descriptor_t, madopilot_ocr_point_t,
+    madopilot_ocr_region_t, madopilot_ocr_request_t, madopilot_ocr_result_info_t,
+    madopilot_ocr_zone_result_t, madopilot_ocr_zone_scan_request_t,
+    madopilot_ocr_zone_scan_result_info_t, madopilot_ocr_zone_t, madopilot_operation_t,
+    madopilot_pixel_rect_t, space, space_code,
 };
 use crate::view::{self, madopilot_str_t};
 use crate::{handle, hooks};
@@ -57,6 +58,16 @@ pub(crate) struct OcrResultHandle {
 #[derive(Debug)]
 pub(crate) struct OcrZoneScanResultHandle {
     result: OcrZoneScanResult,
+}
+
+fn is_integrated_profile(selected: &mado_pilot::OcrBackendDescriptor) -> bool {
+    let integrated_backend = selected.id().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_ID
+        && selected.version().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_VERSION;
+    let integrated_profile = (selected.model().as_str() == mado_pilot::ACCEPTED_G004_MODEL_ID
+        && selected.profile().as_str() == mado_pilot::ACCEPTED_G004_PROFILE_ID)
+        || (selected.model().as_str() == mado_pilot::ACCEPTED_BOUNDED_MODEL_ID
+            && selected.profile().as_str() == mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID);
+    integrated_backend && integrated_profile
 }
 
 inputs! {
@@ -165,6 +176,34 @@ inputs! {
 
         fn presence_bits(&self) -> u32 {
             self.flags
+        }
+    }
+}
+
+impl Versioned for madopilot_ocr_engine_descriptor_t {
+    const MANDATORY: usize = 88;
+    const NAME: &'static str = "madopilot_ocr_engine_descriptor_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_ocr_engine_descriptor_t,
+        struct_size,
+        flags,
+        backend_id,
+        backend_version,
+        model_id,
+        model_version,
+        profile_id,
+    );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
+
+    fn failure(struct_size: u32) -> Self {
+        Self {
+            struct_size,
+            flags: 0,
+            backend_id: madopilot_str_t::empty(),
+            backend_version: madopilot_str_t::empty(),
+            model_id: madopilot_str_t::empty(),
+            model_version: madopilot_str_t::empty(),
+            profile_id: madopilot_str_t::empty(),
         }
     }
 }
@@ -301,6 +340,38 @@ impl Versioned for madopilot_ocr_region_t {
     }
 }
 
+pub(crate) fn engine_ocr_descriptor(
+    engine: *const madopilot_engine_t,
+    out_descriptor: *mut madopilot_ocr_engine_descriptor_t,
+) -> madopilot_status_t {
+    // SAFETY: the caller supplies a writable output structure whose
+    // `struct_size` it has set.
+    let out = match unsafe { Out::begin(out_descriptor) } {
+        Ok(out) => out,
+        Err(fault) => return fault.status(),
+    };
+    hooks::reach(hooks::Site::Entry);
+    // SAFETY: the caller keeps the engine retained for the call.
+    let Some(engine) = (unsafe { handle::borrow::<EngineHandle>(engine) }) else {
+        return MADOPILOT_STATUS_INVALID_ARGUMENT;
+    };
+    let Some(selected) = engine.retained_ocr_backend() else {
+        return MADOPILOT_STATUS_UNSUPPORTED;
+    };
+    let value = madopilot_ocr_engine_descriptor_t {
+        struct_size: out.declared_size(),
+        flags: 0,
+        backend_id: madopilot_str_t::borrowed(selected.id().as_str()),
+        backend_version: madopilot_str_t::borrowed(selected.version().as_str()),
+        model_id: madopilot_str_t::borrowed(selected.model().as_str()),
+        model_version: madopilot_str_t::borrowed(selected.model_identity().version().as_str()),
+        profile_id: madopilot_str_t::borrowed(selected.profile().as_str()),
+    };
+    // SAFETY: `out` was validated; every view borrows the retained engine handle.
+    unsafe { out.commit(value) };
+    MADOPILOT_STATUS_OK
+}
+
 pub(crate) fn session_recognize(
     session: *const madopilot_session_t,
     request: *const madopilot_ocr_request_t,
@@ -362,11 +433,7 @@ fn run_session_recognize(
     }
 
     let package_model = if request.package.is_null() {
-        let integrated_default = selected.id().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_ID
-            && selected.version().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_VERSION
-            && selected.model().as_str() == mado_pilot::ACCEPTED_G004_MODEL_ID
-            && selected.profile().as_str() == mado_pilot::ACCEPTED_G004_PROFILE_ID;
-        if !integrated_default || model_id != selected.model().as_str() {
+        if !is_integrated_profile(selected) || model_id != selected.model().as_str() {
             return Err(ocr_fault(OcrFault::ModelMismatch));
         }
         None
@@ -484,13 +551,7 @@ fn run_session_scan_ocr_zones(
     }
 
     let package_model = if request.package.is_null() {
-        let integrated_backend = selected.id().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_ID
-            && selected.version().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_VERSION;
-        let integrated_profile = (selected.model().as_str() == mado_pilot::ACCEPTED_G004_MODEL_ID
-            && selected.profile().as_str() == mado_pilot::ACCEPTED_G004_PROFILE_ID)
-            || (selected.model().as_str() == mado_pilot::ACCEPTED_BOUNDED_MODEL_ID
-                && selected.profile().as_str() == mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID);
-        if !integrated_backend || !integrated_profile || model_id != selected.model().as_str() {
+        if !is_integrated_profile(selected) || model_id != selected.model().as_str() {
             return Err(ocr_fault(OcrFault::ModelMismatch));
         }
         None

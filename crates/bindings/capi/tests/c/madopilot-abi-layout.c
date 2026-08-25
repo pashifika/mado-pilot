@@ -185,6 +185,15 @@ int main(void)
     FIELD(madopilot_ocr_profile_options_t, reserved);
     FIELD(madopilot_ocr_profile_options_t, model_root);
     FIELD(madopilot_ocr_profile_options_t, runtime_path);
+
+    TYPE(madopilot_ocr_engine_descriptor_t);
+    FIELD(madopilot_ocr_engine_descriptor_t, struct_size);
+    FIELD(madopilot_ocr_engine_descriptor_t, flags);
+    FIELD(madopilot_ocr_engine_descriptor_t, backend_id);
+    FIELD(madopilot_ocr_engine_descriptor_t, backend_version);
+    FIELD(madopilot_ocr_engine_descriptor_t, model_id);
+    FIELD(madopilot_ocr_engine_descriptor_t, model_version);
+    FIELD(madopilot_ocr_engine_descriptor_t, profile_id);
 #endif
 
     TYPE(madopilot_diagnostic_batch_info_t);
@@ -728,6 +737,7 @@ int main(void)
     FIELD(madopilot_api_t, ocr_zone_scan_result_zone_at);
     FIELD(madopilot_api_t, ocr_zone_scan_result_region_at);
     FIELD(madopilot_api_t, ocr_zone_scan_result_text_at);
+    FIELD(madopilot_api_t, engine_ocr_descriptor);
 #endif
 
     HANDLE(madopilot_cancellation_t);

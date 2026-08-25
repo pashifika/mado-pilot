@@ -27,8 +27,8 @@ use crate::table::{
     madopilot_get_api,
 };
 use crate::types::{
-    madopilot_ocr_request_t, madopilot_ocr_zone_scan_request_t, madopilot_ocr_zone_t,
-    madopilot_open_request_t, madopilot_operation_t,
+    madopilot_ocr_engine_descriptor_t, madopilot_ocr_request_t, madopilot_ocr_zone_scan_request_t,
+    madopilot_ocr_zone_t, madopilot_open_request_t, madopilot_operation_t,
 };
 
 const DETECTOR: &[u8] = b"detector-model-bytes";
@@ -344,7 +344,7 @@ fn successful_backend() -> Arc<ControlledOcr> {
     )
 }
 
-fn integrated_default_backend() -> Arc<dyn OcrBackend> {
+fn integrated_backend(model: OcrModelIdentity) -> Arc<dyn OcrBackend> {
     let descriptor = OcrBackendDescriptor::new(
         OcrBackendIdentity::new(
             OcrBackendId::new(mado_pilot::DEFAULT_OCR_BACKEND_ID)
@@ -352,7 +352,7 @@ fn integrated_default_backend() -> Arc<dyn OcrBackend> {
             OcrBackendVersion::new(mado_pilot::DEFAULT_OCR_BACKEND_VERSION)
                 .expect("default backend version is valid"),
         ),
-        OcrModelIdentity::accepted_g004(),
+        model,
         PixelFormat::Rgba8,
     );
     Arc::new(
@@ -367,21 +367,42 @@ fn integrated_default_backend() -> Arc<dyn OcrBackend> {
     )
 }
 
-fn integrated_default_request(
+fn integrated_default_backend() -> Arc<dyn OcrBackend> {
+    integrated_backend(OcrModelIdentity::accepted_g004())
+}
+
+fn integrated_bounded_backend() -> Arc<dyn OcrBackend> {
+    integrated_backend(OcrModelIdentity::accepted_bounded_detector())
+}
+
+fn integrated_request(
     frame: *const crate::capture::madopilot_frame_t,
+    model_id: &'static str,
 ) -> madopilot_ocr_request_t {
     madopilot_ocr_request_t {
         struct_size: struct_size::<madopilot_ocr_request_t>(),
         flags: 0,
         frame,
         package: ptr::null(),
-        model_id: string(mado_pilot::ACCEPTED_G004_MODEL_ID),
+        model_id: string(model_id),
         backend_id: string(mado_pilot::DEFAULT_OCR_BACKEND_ID),
         backend_version: string(mado_pilot::DEFAULT_OCR_BACKEND_VERSION),
         output_space: MADOPILOT_SPACE_CAPTURE_PIXELS,
         clip_policy: MADOPILOT_CLIP_POLICY_REJECT,
         region: madopilot_pixel_rect_t::empty(),
     }
+}
+
+fn integrated_default_request(
+    frame: *const crate::capture::madopilot_frame_t,
+) -> madopilot_ocr_request_t {
+    integrated_request(frame, mado_pilot::ACCEPTED_G004_MODEL_ID)
+}
+
+fn integrated_bounded_request(
+    frame: *const crate::capture::madopilot_frame_t,
+) -> madopilot_ocr_request_t {
+    integrated_request(frame, mado_pilot::ACCEPTED_BOUNDED_MODEL_ID)
 }
 
 fn empty_info() -> madopilot_ocr_result_info_t {
@@ -728,6 +749,179 @@ fn integrated_default_uses_its_retained_model_identity_without_a_duplicate_packa
         unsafe { (fixture.api.ocr_result_release)(result) },
         MADOPILOT_STATUS_OK
     );
+}
+
+#[test]
+fn integrated_bounded_profile_supports_singular_without_a_duplicate_package() {
+    let fixture = opened(integrated_bounded_backend());
+    let request = integrated_bounded_request(fixture.frame);
+    let operation = operation();
+    let mut result = ptr::null_mut();
+    let mut error = ptr::null_mut();
+
+    assert_eq!(
+        // SAFETY: request inputs and outputs remain valid for the synchronous call.
+        unsafe {
+            (fixture.api.session_recognize)(
+                fixture.session,
+                &request,
+                &operation,
+                &mut result,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(!result.is_null());
+    assert!(error.is_null());
+
+    let mut info = empty_info();
+    assert_eq!(
+        // SAFETY: the result is retained and `info` is fully writable.
+        unsafe { (fixture.api.ocr_result_info)(result, &mut info) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(text(info.backend_id), mado_pilot::DEFAULT_OCR_BACKEND_ID);
+    assert_eq!(text(info.model_id), mado_pilot::ACCEPTED_BOUNDED_MODEL_ID);
+    assert_eq!(
+        text(info.model_version),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_VERSION
+    );
+    assert_eq!(
+        text(info.profile_id),
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID
+    );
+
+    assert_eq!(
+        // SAFETY: release gives up the one owned result reference.
+        unsafe { (fixture.api.ocr_result_release)(result) },
+        MADOPILOT_STATUS_OK
+    );
+}
+
+#[test]
+fn engine_ocr_descriptor_borrows_the_exact_retained_selection() {
+    let fixture = opened(integrated_bounded_backend());
+    let mut descriptor = <madopilot_ocr_engine_descriptor_t as Versioned>::failure(struct_size::<
+        madopilot_ocr_engine_descriptor_t,
+    >());
+
+    assert_eq!(
+        // SAFETY: the engine is retained and the full output is writable.
+        unsafe { (fixture.api.engine_ocr_descriptor)(fixture.engine, &mut descriptor) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(
+        text(descriptor.backend_id),
+        mado_pilot::DEFAULT_OCR_BACKEND_ID
+    );
+    assert_eq!(
+        text(descriptor.backend_version),
+        mado_pilot::DEFAULT_OCR_BACKEND_VERSION
+    );
+    assert_eq!(
+        text(descriptor.model_id),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_ID
+    );
+    assert_eq!(
+        text(descriptor.model_version),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_VERSION
+    );
+    assert_eq!(
+        text(descriptor.profile_id),
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID
+    );
+}
+
+#[test]
+fn engine_ocr_descriptor_initializes_failure_before_reading_the_engine() {
+    let poison = madopilot_str_t {
+        data: ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+        len: usize::MAX,
+    };
+    let mut descriptor = madopilot_ocr_engine_descriptor_t {
+        struct_size: struct_size::<madopilot_ocr_engine_descriptor_t>(),
+        flags: u32::MAX,
+        backend_id: poison,
+        backend_version: poison,
+        model_id: poison,
+        model_version: poison,
+        profile_id: poison,
+    };
+
+    assert_eq!(
+        // SAFETY: the engine is deliberately null and the complete output is
+        // writable, exercising failure-state initialization order.
+        unsafe { (api().engine_ocr_descriptor)(ptr::null(), &mut descriptor) },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(descriptor.flags, 0);
+    assert!(descriptor.backend_id.data.is_null());
+    assert!(descriptor.backend_version.data.is_null());
+    assert!(descriptor.model_id.data.is_null());
+    assert!(descriptor.model_version.data.is_null());
+    assert!(descriptor.profile_id.data.is_null());
+}
+
+#[test]
+fn engine_ocr_descriptor_supports_concurrent_const_access_with_owned_references() {
+    let fixture = opened(integrated_bounded_backend());
+    let mut workers = Vec::new();
+    for _ in 0..4 {
+        assert_eq!(
+            // SAFETY: each successful retain transfers one independent engine
+            // reference into the worker that releases it.
+            unsafe { (fixture.api.engine_retain)(fixture.engine) },
+            MADOPILOT_STATUS_OK
+        );
+        let api = fixture.api;
+        let address = fixture.engine as usize;
+        workers.push(thread::spawn(move || {
+            let engine = address as *mut madopilot_engine_t;
+            let mut descriptor =
+                <madopilot_ocr_engine_descriptor_t as Versioned>::failure(struct_size::<
+                    madopilot_ocr_engine_descriptor_t,
+                >());
+            assert_eq!(
+                // SAFETY: this worker owns one engine reference and its output
+                // is fully writable.
+                unsafe { (api.engine_ocr_descriptor)(engine, &mut descriptor) },
+                MADOPILOT_STATUS_OK
+            );
+            let identity = (
+                text(descriptor.backend_id).to_owned(),
+                text(descriptor.backend_version).to_owned(),
+                text(descriptor.model_id).to_owned(),
+                text(descriptor.model_version).to_owned(),
+                text(descriptor.profile_id).to_owned(),
+            );
+            let addresses = (
+                descriptor.backend_id.data.addr(),
+                descriptor.backend_version.data.addr(),
+                descriptor.model_id.data.addr(),
+                descriptor.model_version.data.addr(),
+                descriptor.profile_id.data.addr(),
+            );
+            // SAFETY: every borrowed view has been copied and this worker now
+            // gives up its independent engine reference.
+            assert_eq!(unsafe { (api.engine_release)(engine) }, MADOPILOT_STATUS_OK);
+            (identity, addresses)
+        }));
+    }
+
+    let expected_identity = (
+        mado_pilot::DEFAULT_OCR_BACKEND_ID.to_owned(),
+        mado_pilot::DEFAULT_OCR_BACKEND_VERSION.to_owned(),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_ID.to_owned(),
+        mado_pilot::ACCEPTED_BOUNDED_MODEL_VERSION.to_owned(),
+        mado_pilot::ACCEPTED_BOUNDED_PROFILE_ID.to_owned(),
+    );
+    let mut retained_addresses = None;
+    for worker in workers {
+        let (identity, addresses) = worker.join().expect("descriptor reader completed");
+        assert_eq!(identity, expected_identity);
+        assert_eq!(*retained_addresses.get_or_insert(addresses), addresses);
+    }
 }
 
 #[test]

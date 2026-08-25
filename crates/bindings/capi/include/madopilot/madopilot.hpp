@@ -1264,6 +1264,15 @@ struct EngineCapabilities {
     }
 };
 
+/// Exact OCR identity selected by one engine. All views borrow from the engine.
+struct OcrEngineDescriptor {
+    BorrowedStr backend_id;
+    BorrowedStr backend_version;
+    BorrowedStr model_id;
+    BorrowedStr model_version;
+    BorrowedStr profile_id;
+};
+
 /// Redacted permission diagnostic. Both views borrow from the `Engine`.
 struct PermissionDiagnostic {
     DiagnosticCategory category = MADOPILOT_DIAGNOSTIC_UNSPECIFIED;
@@ -3409,6 +3418,35 @@ public:
                    : Result<EngineCapabilities>::failure(
                          Error::from_status(status));
     }
+
+    /// Reports the exact OCR identity selected by this engine.
+    ///
+    /// Every returned view borrows from the engine, so the accessor is
+    /// lvalue-only.
+    Result<OcrEngineDescriptor> ocr_descriptor() const& {
+        if (api_ == nullptr) {
+            return detail::no_table<OcrEngineDescriptor>();
+        }
+        if (!detail::has_entry(api_, extent_,
+                               MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR)) {
+            return detail::unsupported<OcrEngineDescriptor>();
+        }
+
+        auto value = detail::sized<::madopilot_ocr_engine_descriptor_t>();
+        const Status status = api_->engine_ocr_descriptor(handle_, &value);
+        if (!is_ok(status)) {
+            return Result<OcrEngineDescriptor>::failure(
+                Error::from_status(status));
+        }
+        return Result<OcrEngineDescriptor>::success(OcrEngineDescriptor{
+            BorrowedStr(value.backend_id),
+            BorrowedStr(value.backend_version),
+            BorrowedStr(value.model_id),
+            BorrowedStr(value.model_version),
+            BorrowedStr(value.profile_id),
+        });
+    }
+    Result<OcrEngineDescriptor> ocr_descriptor() const&& = delete;
 
     /// Takes the engine's single diagnostic reader.
     ///

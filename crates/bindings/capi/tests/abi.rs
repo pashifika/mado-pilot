@@ -320,6 +320,27 @@ fn frozen_abi_1_2_engine_options_remain_exact_and_default_ocr_has_its_own_entry(
         MADOPILOT_STATUS_OK
     );
     assert_eq!(capabilities.flags & MADOPILOT_ENGINE_HAS_OCR, 0);
+    let poison = madopilot_str_t {
+        data: ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+        len: usize::MAX,
+    };
+    let mut ocr_descriptor = madopilot_ocr_engine_descriptor_t {
+        struct_size: struct_size::<madopilot_ocr_engine_descriptor_t>(),
+        flags: u32::MAX,
+        backend_id: poison,
+        backend_version: poison,
+        model_id: poison,
+        model_version: poison,
+        profile_id: poison,
+    };
+    // SAFETY: the engine is retained and the descriptor output is writable.
+    assert_eq!(
+        unsafe { (api.engine_ocr_descriptor)(engine, &mut ocr_descriptor) },
+        MADOPILOT_STATUS_UNSUPPORTED
+    );
+    assert_eq!(ocr_descriptor.flags, 0);
+    assert!(ocr_descriptor.backend_id.data.is_null());
+    assert_eq!(ocr_descriptor.backend_id.len, 0);
     // SAFETY: release gives up the one owned engine reference.
     assert_eq!(unsafe { (api.engine_release)(engine) }, MADOPILOT_STATUS_OK);
 

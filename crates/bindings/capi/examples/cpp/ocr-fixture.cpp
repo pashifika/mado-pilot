@@ -38,7 +38,7 @@ int main(int argc, char** argv)
     auto loaded = madopilot::Api::load();
     madopilot::Api api;
     if (!take(loaded, api, "Api::load") ||
-        api.extent() < MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT) {
+        api.extent() < MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR) {
         return 1;
     }
 
@@ -57,6 +57,16 @@ int main(int argc, char** argv)
         api, source, options, operation);
     madopilot::private_fixture::OcrEngine engine;
     if (!take(built, engine, "create_private_ocr_fixture_engine")) return 1;
+    const auto descriptor = engine.ocr_descriptor();
+    if (!descriptor ||
+        descriptor.value().backend_id.view() !=
+            MADOPILOT_FIXTURE_OCR_BACKEND_ID ||
+        descriptor.value().backend_version.view() !=
+            MADOPILOT_FIXTURE_OCR_BACKEND_VERSION ||
+        descriptor.value().model_id.view() != MADOPILOT_FIXTURE_OCR_MODEL_ID) {
+        std::fprintf(stderr, "engine OCR descriptor mismatch\n");
+        return 1;
+    }
     auto reader_result = engine.take_diagnostic_reader();
     if (!reader_result || !reader_result.value().has_value()) {
         std::fprintf(stderr, "diagnostic reader unavailable\n");

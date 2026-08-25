@@ -19,6 +19,12 @@ static madopilot_str_t borrow(const char* text)
     return view;
 }
 
+static int same(madopilot_str_t left, madopilot_str_t right)
+{
+    return left.len == right.len &&
+           (left.len == 0u || memcmp(left.data, right.data, left.len) == 0);
+}
+
 static char* controlled_path(const char* path)
 {
 #ifdef _WIN32
@@ -130,13 +136,12 @@ int main(int argc, char** argv)
     }
     model_root = controlled_model_root;
     runtime_path = controlled_runtime_path;
-
     const madopilot_api_t* api = NULL;
     if (!ok(madopilot_get_api(MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
                               sizeof(madopilot_api_t), &api),
             "madopilot_get_api") ||
         api == NULL ||
-        api->struct_size < MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT) {
+        api->struct_size < MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR) {
         free(controlled_model_root);
         free(controlled_runtime_path);
         return 1;
@@ -176,6 +181,7 @@ int main(int argc, char** argv)
     madopilot_session_t* session = NULL;
     madopilot_frame_t* frame = NULL;
     madopilot_ocr_zone_scan_result_t* result = NULL;
+    madopilot_ocr_result_t* singular_result = NULL;
     madopilot_error_t* error = NULL;
     int success = 0;
 
@@ -185,7 +191,16 @@ int main(int argc, char** argv)
 
     madopilot_build_info_t build = {0};
     build.struct_size = (uint32_t)sizeof(build);
+    madopilot_ocr_engine_descriptor_t descriptor = {0};
+    descriptor.struct_size = (uint32_t)sizeof(descriptor);
     if (!ok(api->describe_build(&build), "describe_build") ||
+        !ok(api->engine_ocr_descriptor(engine, &descriptor),
+            "engine_ocr_descriptor") ||
+        !same(descriptor.backend_id, build.default_ocr_backend) ||
+        !same(descriptor.backend_version, build.default_ocr_backend_version) ||
+        !same(descriptor.model_id, build.bounded_ocr_model) ||
+        !same(descriptor.model_version, build.bounded_ocr_model_version) ||
+        !same(descriptor.profile_id, build.bounded_ocr_profile) ||
         !ok(api->engine_discover(engine, &operation, &targets, &error),
             "engine_discover")) goto cleanup;
 
@@ -196,6 +211,28 @@ int main(int argc, char** argv)
         !ok(api->session_acquire_frame(session, &operation, &frame, &error),
             "session_acquire_frame")) goto cleanup;
 
+    madopilot_ocr_request_t singular_request = {0};
+    singular_request.struct_size = (uint32_t)sizeof(singular_request);
+    singular_request.frame = frame;
+    singular_request.model_id = descriptor.model_id;
+    singular_request.backend_id = descriptor.backend_id;
+    singular_request.backend_version = descriptor.backend_version;
+    singular_request.output_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
+    singular_request.clip_policy = MADOPILOT_CLIP_POLICY_REJECT;
+    if (!ok(api->session_recognize(session, &singular_request, &operation,
+                                   &singular_result, &error),
+            "session_recognize")) goto cleanup;
+    madopilot_ocr_result_info_t singular_info = {0};
+    singular_info.struct_size = (uint32_t)sizeof(singular_info);
+    if (!ok(api->ocr_result_info(singular_result, &singular_info),
+            "ocr_result_info") ||
+        !same(singular_info.model_id, descriptor.model_id) ||
+        !same(singular_info.profile_id, descriptor.profile_id)) {
+        goto cleanup;
+    }
+    api->ocr_result_release(singular_result);
+    singular_result = NULL;
+
     madopilot_ocr_zone_t zones[3];
     zones[0] = zone(0, 0, 24, 24);
     zones[1] = zone(40, 0, 64, 24);
@@ -203,9 +240,9 @@ int main(int argc, char** argv)
     madopilot_ocr_zone_scan_request_t request = {0};
     request.struct_size = (uint32_t)sizeof(request);
     request.frame = frame;
-    request.model_id = build.bounded_ocr_model;
-    request.backend_id = build.default_ocr_backend;
-    request.backend_version = build.default_ocr_backend_version;
+    request.model_id = descriptor.model_id;
+    request.backend_id = descriptor.backend_id;
+    request.backend_version = descriptor.backend_version;
     request.output_space = MADOPILOT_SPACE_CAPTURE_PIXELS;
     request.zones = zones;
     request.zone_count = 3;
@@ -249,6 +286,7 @@ int main(int argc, char** argv)
 
 cleanup:
     if (error != NULL) api->error_release(error);
+    if (singular_result != NULL) api->ocr_result_release(singular_result);
     if (result != NULL) api->ocr_zone_scan_result_release(result);
     if (frame != NULL) api->frame_release(frame);
     if (session != NULL) {

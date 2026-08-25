@@ -592,6 +592,11 @@ table! {
         region_index: usize,
         out_text: *mut madopilot_str_t,
     ) => crate::ocr::zone_result_text_at;
+    /// Reports the exact OCR descriptor selected by a retained engine.
+    engine_ocr_descriptor(
+        engine: *const crate::engine::madopilot_engine_t,
+        out_descriptor: *mut crate::types::madopilot_ocr_engine_descriptor_t,
+    ) => crate::ocr::engine_ocr_descriptor;
 }
 
 /// `sizeof` the complete frozen ABI 1.0 function-table prefix.

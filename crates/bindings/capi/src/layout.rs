@@ -31,14 +31,15 @@ use crate::types::{
     madopilot_frame_stamp_t, madopilot_image_t, madopilot_input_attempt_t,
     madopilot_input_capability_t, madopilot_input_descriptor_t, madopilot_input_event_t,
     madopilot_input_open_request_t, madopilot_input_receipt_info_t, madopilot_input_request_t,
-    madopilot_map_request_t, madopilot_match_options_t, madopilot_match_t, madopilot_ocr_point_t,
-    madopilot_ocr_profile_options_t, madopilot_ocr_region_t, madopilot_ocr_request_t,
-    madopilot_ocr_requested_region_t, madopilot_ocr_result_info_t, madopilot_ocr_zone_result_t,
-    madopilot_ocr_zone_scan_request_t, madopilot_ocr_zone_scan_result_info_t, madopilot_ocr_zone_t,
-    madopilot_open_request_t, madopilot_operation_t, madopilot_package_info_t,
-    madopilot_package_source_t, madopilot_permission_t, madopilot_pixel_rect_t,
-    madopilot_replay_frame_t, madopilot_result_info_t, madopilot_session_info_t,
-    madopilot_source_t, madopilot_target_t, madopilot_template_info_t,
+    madopilot_map_request_t, madopilot_match_options_t, madopilot_match_t,
+    madopilot_ocr_engine_descriptor_t, madopilot_ocr_point_t, madopilot_ocr_profile_options_t,
+    madopilot_ocr_region_t, madopilot_ocr_request_t, madopilot_ocr_requested_region_t,
+    madopilot_ocr_result_info_t, madopilot_ocr_zone_result_t, madopilot_ocr_zone_scan_request_t,
+    madopilot_ocr_zone_scan_result_info_t, madopilot_ocr_zone_t, madopilot_open_request_t,
+    madopilot_operation_t, madopilot_package_info_t, madopilot_package_source_t,
+    madopilot_permission_t, madopilot_pixel_rect_t, madopilot_replay_frame_t,
+    madopilot_result_info_t, madopilot_session_info_t, madopilot_source_t, madopilot_target_t,
+    madopilot_template_info_t,
 };
 use crate::view::{madopilot_bytes_t, madopilot_str_t};
 
@@ -110,6 +111,16 @@ pub const LAYOUT: &[TypeLayout] = &[
         reserved,
         model_root,
         runtime_path,
+    ),
+    measure!(
+        madopilot_ocr_engine_descriptor_t,
+        struct_size,
+        flags,
+        backend_id,
+        backend_version,
+        model_id,
+        model_version,
+        profile_id,
     ),
     measure!(
         madopilot_diagnostic_batch_info_t,
@@ -658,6 +669,7 @@ pub const LAYOUT: &[TypeLayout] = &[
         ocr_zone_scan_result_zone_at,
         ocr_zone_scan_result_region_at,
         ocr_zone_scan_result_text_at,
+        engine_ocr_descriptor,
     ),
 ];
 
