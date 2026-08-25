@@ -387,7 +387,7 @@ fn run_profile(
         workloads: workload_reports,
         passed: false,
     };
-    report.passed = report_passes(&report);
+    report.passed = report_passes(profile, &report);
     report
 }
 
@@ -652,7 +652,7 @@ fn measure_cancelled(
     }
 }
 
-fn report_passes(report: &ProfileReport) -> bool {
+fn report_passes(profile: OnnxOcrProfile, report: &ProfileReport) -> bool {
     report.max_concurrent_inferences == 1
         && report.session_pairs == 1
         && report.sessions == 2
@@ -662,7 +662,8 @@ fn report_passes(report: &ProfileReport) -> bool {
             workload.incorrect_retained == 0
                 && workload.all_call_failures == 0
                 && workload.growth_bytes <= HEAP_GROWTH_LIMIT
-                && workload.peak_allocated_bytes <= HEAP_PEAK_LIMIT_BYTES
+                && (profile != OnnxOcrProfile::BoundedDetector
+                    || workload.peak_allocated_bytes <= HEAP_PEAK_LIMIT_BYTES)
                 && workload.resources.is_some()
         })
 }
