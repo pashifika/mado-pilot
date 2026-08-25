@@ -915,7 +915,16 @@ tensor fit when needed. Fixed workload dimensions become 960×512 for 4K,
 source fixture per workload so RSS no longer includes all fixture frames
 simultaneously.
 
-Hosted and local candidate-v2 smoke are correctness/resource evidence only.
-Fresh exact-source candidate-v2 Apple/Windows precursors, cross-target review, a
-final budget ADR, and five fresh budget-enforcing processes per target remain
-open. No bounded-profile numeric budget or support claim is accepted.
+Exact candidate-v2 source `a647ebb`, executable SHA-256
+`0d133eb8e8dd4a1667fd2a4be76890a2abf7af81e486198397abb875b9cc373a`,
+ran five fresh bounded and five fresh native processes on the approved Apple M1
+Pro with alternating pair order. All ten raw verdicts and all 1,600 retained
+samples passed with zero oracle failure/growth and complete RSS rows. Bounded
+worst p95 was 371.315 ms for 4K HUD, 480.087 ms for reference HUD, 476.614 ms
+for dense tooltip, and 122.390 ms for 4K blank; peak heap was 12,695,336 bytes
+and process RSS was 468,680,704 bytes. Every formula-derived Apple candidate
+fits the unchanged caps.
+
+Candidate-v2 Windows precursor, cross-target review, a final budget ADR, and
+five fresh budget-enforcing processes per target remain open. No
+bounded-profile numeric budget or support claim is accepted.

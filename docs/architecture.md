@@ -33,8 +33,9 @@ The `v0.3.1` bounded-detector topic adds a second closed, explicit, non-default
 profile over the same immutable model components. The initial ADR 0038 rectangle
 passed both-target correctness/resource oracles but the fixed ADR 0039 formula
 rejected its Windows latency margins. ADR 0040 replaces that unreleased tuple
-with candidate v2; approved-host precursor and final budget enforcement remain
-open. No bounded-profile support or numeric budget is claimed yet. Neither
+with candidate v2; its exact-source approved Apple precursor passes, while
+approved Windows precursor and final budget enforcement remain open. No
+bounded-profile support or numeric budget is claimed yet. Neither
 profile adds bundling, download, ambient search, provider fallback, scheduling,
 or automatic input. Watchers, scheduling, and release packaging remain future
 work.

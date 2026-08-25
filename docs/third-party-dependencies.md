@@ -302,9 +302,10 @@ to supply the two controlled paths. ADR 0040 adds only the explicit Rust
 candidate-v2 backend selection; no dependency changes. ADR 0037's native G-004
 budgets remain accepted, and ADR 0039 fixes the bounded precursor/final
 procedure. The rectangular candidate completed both approved-host precursors
-but was rejected by the fixed Windows formula. Candidate-v2 approved-host
-precursors and both-target final budgets remain open. Hosted Windows Server
-smoke remains supporting hard-contract evidence only.
+but was rejected by the fixed Windows formula. Candidate-v2 approved Apple
+precursor passes; approved Windows precursor and both-target final budgets
+remain open. Hosted Windows Server smoke remains supporting hard-contract
+evidence only.
 
 ### G-003 macOS shim boundary
 

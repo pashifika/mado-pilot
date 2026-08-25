@@ -615,14 +615,14 @@ cap or expected result was changed.
 ADR 0040 candidate v2 preserves reference/odd 1312×736 detector pixels and adds
 a secondary 6 MiB fit only after oversized desired work required the first
 1312×736 rectangle. It also constructs benchmark fixtures one workload at a
-time. Local candidate-v2 native contract and bounded smoke pass, but this is not
-approved-host precursor evidence.
+time. Exact source `a647ebb` passed all five bounded and five native processes on
+the approved Apple M1 Pro with zero oracle failure/growth and complete RSS.
+Every formula-derived Apple candidate fits the unchanged caps.
 
-This gate remains unresolved. Fresh exact-source candidate-v2 Apple/Windows
-precursors, final cross-target budget selection, committed target
-profiles/registries, and five fresh budget-enforcing processes per target remain
-required. Historical Phase 3 default-OCR profiles and status above remain
-unchanged.
+This gate remains unresolved. Fresh exact-source candidate-v2 Windows precursor,
+final cross-target budget selection, committed target profiles/registries, and
+five fresh budget-enforcing processes per target remain required. Historical
+Phase 3 default-OCR profiles and status above remain unchanged.
 
 **Resolution.** Committed benchmark profiles and budgets plus an ADR for each
 budget that is set or relaxed, recording the evidence behind the number.
