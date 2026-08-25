@@ -917,15 +917,15 @@ is process-lifetime high-water: schema-v3 workload fields are explicitly named
 `process_peak_resident_bytes_after_workload`, and only final report-level RSS
 sets the process budget.
 
-Exact candidate-v2 source `41ffaf8`, executable SHA-256
-`579016c8345d115fd39d5dfc9efb3caabe7605c5eeeebc31bac6a3295aae763a`,
-ran five fresh bounded and five fresh native processes on the approved Apple M1
-Pro with alternating pair order. All ten raw verdicts and all 1,600 retained
-samples passed with zero oracle failure/growth and complete RSS rows. Bounded
-worst p95 was 371.852 ms for 4K HUD, 477.605 ms for reference HUD, 481.749 ms
-for dense tooltip, and 129.204 ms for 4K blank; peak heap was 12,695,336 bytes
-and process RSS was 466,583,552 bytes. Every formula-derived Apple candidate
-fits the unchanged caps.
+Exact candidate-v2 source `ce658b3`, executable SHA-256
+`dea9cdfbbb66ba75cb490fc3359efa6ca599786726157a520544cf39b38f81eb`,
+ran five fresh bounded and five fresh native schema-v3 processes on the approved
+Apple M1 Pro with alternating pair order. All ten raw verdicts and all 1,600
+retained samples passed with zero oracle failure/growth and complete RSS rows.
+Bounded worst p95 was 372.100 ms for 4K HUD, 476.275 ms for reference HUD,
+474.544 ms for dense tooltip, and 122.430 ms for 4K blank; peak heap was
+12,695,336 bytes and final process RSS was 464,519,168 bytes. Every
+formula-derived Apple candidate fits the unchanged caps.
 
 Candidate-v2 Windows precursor, cross-target review, a final budget ADR, and
 five fresh budget-enforcing processes per target remain open. No

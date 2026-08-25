@@ -615,9 +615,10 @@ cap or expected result was changed.
 ADR 0040 candidate v2 preserves reference/odd 1312×736 detector pixels and adds
 a secondary 6 MiB fit only after oversized desired work required the first
 1312×736 rectangle. It also constructs benchmark fixtures one workload at a
-time. Exact source `41ffaf8` passed all five bounded and five native processes
-on the approved Apple M1 Pro with zero oracle failure/growth and complete RSS.
-Every formula-derived Apple candidate fits the unchanged caps.
+time. Exact schema-v3 source `ce658b3` passed all five bounded and five native
+processes on the approved Apple M1 Pro with zero oracle failure/growth and
+complete final/cumulative RSS fields. Every formula-derived Apple candidate fits
+the unchanged caps.
 
 This gate remains unresolved. Fresh exact-source candidate-v2 Windows precursor,
 final cross-target budget selection, committed target profiles/registries, and
