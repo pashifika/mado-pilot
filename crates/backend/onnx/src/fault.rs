@@ -275,12 +275,20 @@ impl OnnxBackendFacts {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct OnnxBackendObservations {
     mapped_bytes: u64,
+    mapping_calls: u64,
+    latest_mapping_width: Option<u32>,
+    latest_mapping_height: Option<u32>,
     latest_detector_width: Option<u32>,
     latest_detector_height: Option<u32>,
     detector_tensor_bytes: u64,
     detector_resizes: u64,
     detector_runs: u64,
     recognizer_runs: u64,
+    selected_candidates: u64,
+    ignored_candidates: u64,
+    unique_candidates: u64,
+    memberships: u64,
+    cleanup_completions: u64,
     session_pairs: u32,
     sessions: u32,
 }
@@ -289,18 +297,29 @@ impl OnnxBackendObservations {
     pub(crate) const fn opened() -> Self {
         Self {
             mapped_bytes: 0,
+            mapping_calls: 0,
+            latest_mapping_width: None,
+            latest_mapping_height: None,
             latest_detector_width: None,
             latest_detector_height: None,
             detector_tensor_bytes: 0,
             detector_resizes: 0,
             detector_runs: 0,
             recognizer_runs: 0,
+            selected_candidates: 0,
+            ignored_candidates: 0,
+            unique_candidates: 0,
+            memberships: 0,
+            cleanup_completions: 0,
             session_pairs: 1,
             sessions: 2,
         }
     }
 
-    pub(crate) fn record_mapping(&mut self, bytes: usize) {
+    pub(crate) fn record_mapping(&mut self, width: u32, height: u32, bytes: usize) {
+        self.mapping_calls = self.mapping_calls.saturating_add(1);
+        self.latest_mapping_width = Some(width);
+        self.latest_mapping_height = Some(height);
         self.mapped_bytes = self
             .mapped_bytes
             .saturating_add(u64::try_from(bytes).unwrap_or(u64::MAX));
@@ -323,10 +342,54 @@ impl OnnxBackendObservations {
         self.recognizer_runs = self.recognizer_runs.saturating_add(1);
     }
 
+    pub(crate) fn record_interest_filter(
+        &mut self,
+        selected: usize,
+        ignored: usize,
+        memberships: usize,
+    ) {
+        let selected = u64::try_from(selected).unwrap_or(u64::MAX);
+        self.selected_candidates = self.selected_candidates.saturating_add(selected);
+        self.ignored_candidates = self
+            .ignored_candidates
+            .saturating_add(u64::try_from(ignored).unwrap_or(u64::MAX));
+        self.memberships = self
+            .memberships
+            .saturating_add(u64::try_from(memberships).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn record_unique_candidates(&mut self, candidates: usize) {
+        self.unique_candidates = self
+            .unique_candidates
+            .saturating_add(u64::try_from(candidates).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn record_cleanup(&mut self) {
+        self.cleanup_completions = self.cleanup_completions.saturating_add(1);
+    }
+
     /// Returns cumulative mapped pixels presented to native inference.
     #[must_use]
     pub const fn mapped_bytes(self) -> u64 {
         self.mapped_bytes
+    }
+
+    /// Returns cumulative backend calls presented with one source-envelope mapping.
+    #[must_use]
+    pub const fn mapping_calls(self) -> u64 {
+        self.mapping_calls
+    }
+
+    /// Returns the most recently mapped source-envelope width.
+    #[must_use]
+    pub const fn latest_mapping_width(self) -> Option<u32> {
+        self.latest_mapping_width
+    }
+
+    /// Returns the most recently mapped source-envelope height.
+    #[must_use]
+    pub const fn latest_mapping_height(self) -> Option<u32> {
+        self.latest_mapping_height
     }
 
     /// Returns the most recently prepared final detector width.
@@ -363,6 +426,38 @@ impl OnnxBackendObservations {
     #[must_use]
     pub const fn recognizer_runs(self) -> u64 {
         self.recognizer_runs
+    }
+
+    /// Returns cumulative candidates selected for recognition.
+    #[must_use]
+    pub const fn selected_candidates(self) -> u64 {
+        self.selected_candidates
+    }
+
+    /// Returns cumulative detector candidates ignored by grouped interests.
+    #[must_use]
+    pub const fn ignored_candidates(self) -> u64 {
+        self.ignored_candidates
+    }
+
+    /// Returns cumulative unique candidates produced by successful recognition.
+    #[must_use]
+    pub const fn unique_candidates(self) -> u64 {
+        self.unique_candidates
+    }
+
+    /// Returns cumulative candidate-to-zone memberships selected by interests.
+    #[must_use]
+    pub const fn memberships(self) -> u64 {
+        self.memberships
+    }
+
+    /// Returns calls whose native inference scope exited and released image/tensor temporaries.
+    ///
+    /// The caller-owned mapping and returned candidate staging are outside this count.
+    #[must_use]
+    pub const fn cleanup_completions(self) -> u64 {
+        self.cleanup_completions
     }
 
     /// Returns the number of opened detector/recognizer pairs.

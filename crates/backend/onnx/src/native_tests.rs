@@ -5,11 +5,20 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::{OnnxBackendFault, OnnxOcrBackend, OnnxOcrProfile};
+use crate::{OnnxBackendFault, OnnxBackendObservations, OnnxOcrBackend, OnnxOcrProfile};
 use mado_pilot_capture::PixelFormat;
-use mado_pilot_core::{CancellationToken, CoordinateSpace, OperationContext, PixelExtent, Status};
-use mado_pilot_ocr::{OcrBackend, OcrModelIdentity, OcrRecognizer, OcrRegion, OcrRequest};
-use mado_pilot_testkit::{ocr_contract, vision_contract};
+use mado_pilot_core::{
+    CancellationToken, ClipPolicy, CoordinateSpace, OperationContext, PixelExtent, Rect, Status,
+};
+use mado_pilot_ocr::{
+    OcrBackend, OcrModelIdentity, OcrRecognizer, OcrRegion, OcrRequest, OcrZone,
+    OcrZoneScanRequest, OcrZoneScanResult,
+};
+use mado_pilot_testkit::{
+    ManualClock,
+    bench_harness::{self, Plan, Sample},
+    ocr_contract, vision_contract,
+};
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual};
 use opencv::imgcodecs::{IMREAD_COLOR, imread};
 use opencv::imgproc::{COLOR_BGR2BGRA, cvt_color_def};
@@ -51,6 +60,21 @@ const HUD_QUADS: [[(f64, f64); 4]; 8] = [
         (811.0, 453.0),
         (695.0, 453.0),
     ],
+];
+const HUD_EIGHT_ZONES: [(f64, f64, f64, f64); 8] = [
+    (40.0, 45.0, 230.0, 120.0),
+    (680.0, 45.0, 880.0, 120.0),
+    (40.0, 150.0, 350.0, 235.0),
+    (680.0, 150.0, 900.0, 235.0),
+    (40.0, 270.0, 260.0, 350.0),
+    (700.0, 270.0, 880.0, 350.0),
+    (40.0, 395.0, 190.0, 475.0),
+    (680.0, 395.0, 880.0, 475.0),
+];
+const HUD_THREE_ZONES: [(f64, f64, f64, f64); 3] = [
+    (40.0, 45.0, 350.0, 235.0),
+    (680.0, 45.0, 900.0, 235.0),
+    (40.0, 270.0, 260.0, 475.0),
 ];
 const HUD_POINT_TOLERANCE: f64 = 0.0;
 const NATIVE_TERMINATION_BOUND: Duration = Duration::from_millis(250);
@@ -167,6 +191,22 @@ fn accepted_runtime_passes_contract_and_hud_oracle() {
         backend
             .close(&operation)
             .expect("repeated close is idempotent");
+        if profile == OnnxOcrProfile::BoundedDetector {
+            drop(backend);
+            let grouped = Arc::new(
+                open_profile(profile, &model_root, &runtime, &operation)
+                    .expect("bounded grouped backend reopens"),
+            );
+            let retained = assert_grouped_hud_contract(&grouped, &operation);
+            grouped.close(&operation).expect("grouped backend closes");
+            grouped
+                .close(&operation)
+                .expect("grouped backend repeated close is idempotent");
+            assert_eq!(
+                retained.group(0).unwrap().get(0).unwrap().text(),
+                HUD_TEXT[0]
+            );
+        }
     }
 }
 
@@ -192,6 +232,352 @@ fn recognize_hud_result(
         CoordinateSpace::CapturePixels,
         operation,
     ))
+}
+
+fn assert_grouped_hud_contract(
+    backend: &Arc<OnnxOcrBackend>,
+    operation: &OperationContext,
+) -> OcrZoneScanResult {
+    let singular_port: Arc<dyn OcrBackend> = backend.clone();
+    let singular = recognize_hud(singular_port, operation);
+
+    let full = [ocr_zone((0.0, 0.0, 960.0, 540.0))];
+    let before = backend
+        .observations()
+        .expect("grouped observations available");
+    let one = scan_hud_zones(backend, &full, operation).expect("one-zone scan succeeds");
+    let after = backend
+        .observations()
+        .expect("grouped observations available");
+    assert_eq!(one.unique_candidates(), singular.regions());
+    assert_eq!(
+        one.group(0).unwrap().iter().collect::<Vec<_>>(),
+        singular.regions().iter().collect::<Vec<_>>()
+    );
+    assert_grouped_observation_delta(before, after, 960, 540, 8, 0, 8, 2);
+
+    let overlap = [full[0]; 2];
+    let before = after;
+    let overlap_result =
+        scan_hud_zones(backend, &overlap, operation).expect("overlap scan succeeds safely");
+    let after = backend
+        .observations()
+        .expect("grouped observations available");
+    for index in 0..HUD_TEXT.len() {
+        assert!(std::ptr::eq(
+            overlap_result.group(0).unwrap().get(index).unwrap(),
+            overlap_result.group(1).unwrap().get(index).unwrap(),
+        ));
+    }
+    assert_grouped_observation_delta(before, after, 960, 540, 8, 0, 16, 2);
+
+    let three = HUD_THREE_ZONES.map(ocr_zone);
+    let before = after;
+    let three_result =
+        scan_hud_zones(backend, &three, operation).expect("three-zone scan succeeds");
+    let after = backend
+        .observations()
+        .expect("grouped observations available");
+    assert_group_texts(
+        &three_result,
+        &[
+            &[HUD_TEXT[0], HUD_TEXT[2]],
+            &[HUD_TEXT[1], HUD_TEXT[3]],
+            &[HUD_TEXT[4], HUD_TEXT[6]],
+        ],
+    );
+    assert_grouped_observation_delta(before, after, 860, 430, 6, 2, 6, 1);
+
+    let eight = HUD_EIGHT_ZONES.map(ocr_zone);
+    let before = after;
+    let eight_result =
+        scan_hud_zones(backend, &eight, operation).expect("eight-zone scan succeeds");
+    let after = backend
+        .observations()
+        .expect("grouped observations available");
+    let expected = HUD_TEXT.map(|text| [text]);
+    let expected = expected.iter().map(|group| &group[..]).collect::<Vec<_>>();
+    assert_group_texts(&eight_result, &expected);
+    assert_grouped_observation_delta(before, after, 860, 430, 8, 0, 8, 2);
+
+    let cancellation_gate = crate::inference::test_hook::install();
+    let token = CancellationToken::new();
+    let worker_token = token.clone();
+    let worker_backend = backend.clone();
+    let worker_zones = eight;
+    let (cancelled_sender, cancelled_receiver) = mpsc::sync_channel(1);
+    let cancelled = thread::spawn(move || {
+        let context = OperationContext::new().with_cancellation(worker_token);
+        let status = scan_hud_zones(&worker_backend, &worker_zones, &context)
+            .expect_err("cancelled grouped inference cannot publish")
+            .status();
+        cancelled_sender
+            .send(status)
+            .expect("grouped cancellation receiver remains live");
+    });
+    assert!(
+        cancellation_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+        "grouped native run admission timed out"
+    );
+    cancellation_gate.release();
+    assert!(
+        cancellation_gate.wait_until_run_started(NATIVE_GATE_BOUND),
+        "grouped native run start timed out"
+    );
+    let cancellation_started = Instant::now();
+    token.cancel();
+    assert!(
+        cancellation_gate.wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
+        "grouped native termination was not issued within the explicit test bound"
+    );
+    let remaining = NATIVE_TERMINATION_BOUND.saturating_sub(cancellation_started.elapsed());
+    assert_eq!(
+        cancelled_receiver
+            .recv_timeout(remaining)
+            .expect("cancelled grouped run returns within the explicit test bound"),
+        Status::Cancelled
+    );
+    cancelled.join().expect("grouped cancellation worker joins");
+    drop(cancellation_gate);
+    let cancelled_observations = backend
+        .observations()
+        .expect("observations after cancellation");
+    assert_eq!(
+        cancelled_observations.cleanup_completions() - after.cleanup_completions(),
+        1
+    );
+
+    let deadline_gate = crate::inference::test_hook::install();
+    let deadline_clock = Arc::new(ManualClock::new());
+    let worker_clock = deadline_clock.clone();
+    let worker_backend = backend.clone();
+    let worker_zones = eight;
+    let (deadline_sender, deadline_receiver) = mpsc::sync_channel(1);
+    let deadline = thread::spawn(move || {
+        let context = OperationContext::new()
+            .with_clock(worker_clock)
+            .with_timeout(Duration::from_millis(10))
+            .unwrap();
+        let status = scan_hud_zones(&worker_backend, &worker_zones, &context)
+            .expect_err("expired grouped inference cannot publish")
+            .status();
+        deadline_sender
+            .send(status)
+            .expect("grouped deadline receiver remains live");
+    });
+    assert!(
+        deadline_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+        "grouped deadline admission timed out"
+    );
+    deadline_clock.advance(Duration::from_millis(10));
+    assert!(
+        deadline_gate.wait_until_termination_issued(NATIVE_GATE_BOUND),
+        "grouped deadline termination timed out"
+    );
+    deadline_gate.release();
+    assert_eq!(
+        deadline_receiver
+            .recv_timeout(NATIVE_GATE_BOUND)
+            .expect("deadline grouped run returns"),
+        Status::DeadlineExceeded
+    );
+    deadline.join().expect("grouped deadline worker joins");
+    drop(deadline_gate);
+
+    let close_gate = crate::inference::test_hook::install();
+    let worker_backend = backend.clone();
+    let worker_zones = eight;
+    let (raced_sender, raced_receiver) = mpsc::sync_channel(1);
+    let raced = thread::spawn(move || {
+        raced_sender
+            .send(scan_hud_zones(
+                &worker_backend,
+                &worker_zones,
+                &OperationContext::new(),
+            ))
+            .expect("grouped close-race receiver remains live");
+    });
+    assert!(
+        close_gate.wait_until_admitted(NATIVE_GATE_BOUND),
+        "grouped close-race admission timed out"
+    );
+    assert_eq!(
+        backend
+            .close(operation)
+            .expect_err("grouped close does not tear down admitted work")
+            .status(),
+        Status::LimitExceeded
+    );
+    close_gate.release();
+    let raced_result = raced_receiver
+        .recv_timeout(NATIVE_GATE_BOUND)
+        .expect("grouped close-race run returns")
+        .expect("admitted grouped run completes");
+    raced.join().expect("grouped close-race worker joins");
+    drop(close_gate);
+    assert_group_texts(&raced_result, &expected);
+
+    let recovered = scan_hud_zones(backend, &three, operation).expect("grouped backend recovers");
+    assert_group_texts(
+        &recovered,
+        &[
+            &[HUD_TEXT[0], HUD_TEXT[2]],
+            &[HUD_TEXT[1], HUD_TEXT[3]],
+            &[HUD_TEXT[4], HUD_TEXT[6]],
+        ],
+    );
+
+    let workload = bench_harness::measure(
+        "ocr_zone_grouped_scan_allocation_growth",
+        "three caller-order groups remain exact and release per-call Rust storage",
+        Plan::new(2, 10),
+        || GroupedAllocationFixture {
+            backend: backend.clone(),
+            frame: hud_frame(),
+            zones: three,
+        },
+        measure_grouped_allocation,
+    );
+    assert_eq!(workload.incorrect(), 0);
+    assert!(workload.growth_bytes() <= 4_096);
+    assert_eq!(
+        workload.mapped_bytes_per_result(),
+        u64::from(860_u32) * u64::from(430_u32) * 4
+    );
+    recovered
+}
+
+fn ocr_zone((left, top, right, bottom): (f64, f64, f64, f64)) -> OcrZone {
+    OcrZone::new(
+        Rect::new(CoordinateSpace::CapturePixels, left, top, right, bottom).unwrap(),
+        ClipPolicy::Reject,
+    )
+}
+
+fn scan_hud_zones(
+    backend: &Arc<OnnxOcrBackend>,
+    zones: &[OcrZone],
+    operation: &OperationContext,
+) -> mado_pilot_core::Result<OcrZoneScanResult> {
+    let frame = hud_frame();
+    scan_frame_zones(backend, &frame, zones, operation)
+}
+
+fn scan_frame_zones(
+    backend: &Arc<OnnxOcrBackend>,
+    frame: &mado_pilot_capture::Frame,
+    zones: &[OcrZone],
+    operation: &OperationContext,
+) -> mado_pilot_core::Result<OcrZoneScanResult> {
+    let port: Arc<dyn OcrBackend> = backend.clone();
+    let recognizer = OcrRecognizer::new(port);
+    let descriptor = recognizer.descriptor();
+    recognizer.scan_zones(OcrZoneScanRequest::new(
+        frame,
+        descriptor.backend_identity(),
+        descriptor.model_identity(),
+        zones,
+        CoordinateSpace::CapturePixels,
+        operation,
+    )?)
+}
+
+#[derive(Debug)]
+struct GroupedAllocationFixture {
+    backend: Arc<OnnxOcrBackend>,
+    frame: mado_pilot_capture::Frame,
+    zones: [OcrZone; 3],
+}
+
+fn measure_grouped_allocation(fixture: &GroupedAllocationFixture) -> Sample {
+    let started = Instant::now();
+    let result = scan_frame_zones(
+        &fixture.backend,
+        &fixture.frame,
+        &fixture.zones,
+        &OperationContext::new(),
+    );
+    let elapsed = started.elapsed();
+    let correct = result.as_ref().is_ok_and(|result| {
+        group_matches(result, 0, &[HUD_TEXT[0], HUD_TEXT[2]])
+            && group_matches(result, 1, &[HUD_TEXT[1], HUD_TEXT[3]])
+            && group_matches(result, 2, &[HUD_TEXT[4], HUD_TEXT[6]])
+    });
+    Sample::new(
+        elapsed,
+        correct,
+        u64::from(860_u32) * u64::from(430_u32) * 4,
+    )
+}
+
+fn group_matches(actual: &OcrZoneScanResult, group: usize, expected: &[&str]) -> bool {
+    actual.group(group).is_some_and(|actual| {
+        actual.len() == expected.len()
+            && actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.text() == *expected)
+    })
+}
+
+fn assert_group_texts(actual: &OcrZoneScanResult, expected: &[&[&str]]) {
+    assert_eq!(actual.effective_zones().len(), expected.len());
+    for (group, expected) in expected.iter().enumerate() {
+        assert_eq!(
+            actual
+                .group(group)
+                .unwrap()
+                .iter()
+                .map(|region| region.text())
+                .collect::<Vec<_>>(),
+            *expected
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assert_grouped_observation_delta(
+    before: OnnxBackendObservations,
+    after: OnnxBackendObservations,
+    mapping_width: u32,
+    mapping_height: u32,
+    selected: u64,
+    ignored: u64,
+    memberships: u64,
+    recognizer_runs: u64,
+) {
+    assert_eq!(after.mapping_calls() - before.mapping_calls(), 1);
+    assert_eq!(after.latest_mapping_width(), Some(mapping_width));
+    assert_eq!(after.latest_mapping_height(), Some(mapping_height));
+    assert_eq!(
+        after.mapped_bytes() - before.mapped_bytes(),
+        u64::from(mapping_width) * u64::from(mapping_height) * 4
+    );
+    assert_eq!(after.detector_resizes() - before.detector_resizes(), 1);
+    assert_eq!(after.detector_runs() - before.detector_runs(), 1);
+    assert_eq!(
+        after.recognizer_runs() - before.recognizer_runs(),
+        recognizer_runs
+    );
+    assert_eq!(
+        after.selected_candidates() - before.selected_candidates(),
+        selected
+    );
+    assert_eq!(
+        after.ignored_candidates() - before.ignored_candidates(),
+        ignored
+    );
+    assert_eq!(
+        after.unique_candidates() - before.unique_candidates(),
+        selected
+    );
+    assert_eq!(after.memberships() - before.memberships(), memberships);
+    assert_eq!(
+        after.cleanup_completions() - before.cleanup_completions(),
+        1
+    );
+    assert_eq!(after.session_pairs(), 1);
+    assert_eq!(after.sessions(), 2);
 }
 
 fn assert_hud(actual: &mado_pilot_ocr::OcrResult) {
