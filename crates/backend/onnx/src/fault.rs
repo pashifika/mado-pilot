@@ -374,7 +374,7 @@ impl OnnxBackendObservations {
         self.mapped_bytes
     }
 
-    /// Returns cumulative source-envelope mapping calls.
+    /// Returns cumulative backend calls presented with one source-envelope mapping.
     #[must_use]
     pub const fn mapping_calls(self) -> u64 {
         self.mapping_calls

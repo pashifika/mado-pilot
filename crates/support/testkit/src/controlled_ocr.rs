@@ -229,6 +229,56 @@ impl Default for Script {
     }
 }
 
+#[derive(Debug, Default)]
+struct LatestCandidateCounts {
+    generation: usize,
+    selected: usize,
+    ignored: usize,
+}
+
+struct LatestCandidateCountsGuard<'a> {
+    generation: usize,
+    selected: usize,
+    ignored: usize,
+    latest: &'a Mutex<LatestCandidateCounts>,
+}
+
+impl<'a> LatestCandidateCountsGuard<'a> {
+    fn new(latest: &'a Mutex<LatestCandidateCounts>) -> Self {
+        let mut observation = latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = observation
+            .generation
+            .checked_add(1)
+            .expect("controlled OCR call generation exhausted");
+        *observation = LatestCandidateCounts {
+            generation,
+            selected: 0,
+            ignored: 0,
+        };
+        Self {
+            generation,
+            selected: 0,
+            ignored: 0,
+            latest,
+        }
+    }
+}
+
+impl Drop for LatestCandidateCountsGuard<'_> {
+    fn drop(&mut self) {
+        let mut observation = self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if observation.generation == self.generation {
+            observation.selected = self.selected;
+            observation.ignored = self.ignored;
+        }
+    }
+}
+
 /// A backend whose candidates, latency, interruption, failures, and completion are scripted.
 pub struct ControlledOcr {
     descriptor: OcrBackendDescriptor,
@@ -245,8 +295,7 @@ pub struct ControlledOcr {
     last_max_text_bytes: AtomicUsize,
     last_region: Mutex<Option<PixelRect>>,
     last_interests: Mutex<Option<Vec<PixelRect>>>,
-    last_selected_candidates: AtomicUsize,
-    last_ignored_candidates: AtomicUsize,
+    last_candidate_counts: Mutex<LatestCandidateCounts>,
 }
 
 impl ControlledOcr {
@@ -293,8 +342,7 @@ impl ControlledOcr {
             last_max_text_bytes: AtomicUsize::new(0),
             last_region: Mutex::new(None),
             last_interests: Mutex::new(None),
-            last_selected_candidates: AtomicUsize::new(0),
-            last_ignored_candidates: AtomicUsize::new(0),
+            last_candidate_counts: Mutex::new(LatestCandidateCounts::default()),
         }
     }
 
@@ -432,16 +480,22 @@ impl ControlledOcr {
             .clone()
     }
 
-    /// Returns candidates submitted by the latest call.
+    /// Returns candidates submitted by the latest admitted call.
     #[must_use]
     pub fn last_selected_candidates(&self) -> usize {
-        self.last_selected_candidates.load(Ordering::Acquire)
+        self.last_candidate_counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .selected
     }
 
-    /// Returns candidates removed by honored interests in the latest call.
+    /// Returns candidates removed by honored interests in the latest admitted call.
     #[must_use]
     pub fn last_ignored_candidates(&self) -> usize {
-        self.last_ignored_candidates.load(Ordering::Acquire)
+        self.last_candidate_counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ignored
     }
 
     fn script(&self) -> std::sync::MutexGuard<'_, Script> {
@@ -474,6 +528,7 @@ impl OcrBackend for ControlledOcr {
         operation: &OperationContext,
     ) -> Result<()> {
         self.recognitions.fetch_add(1, Ordering::AcqRel);
+        let mut counts = LatestCandidateCountsGuard::new(&self.last_candidate_counts);
         self.last_max_candidates
             .store(request.max_candidates(), Ordering::Release);
         self.last_max_text_bytes
@@ -510,8 +565,6 @@ impl OcrBackend for ControlledOcr {
         if call.behavior == OcrBehavior::Unavailable {
             call.behavior.apply()?;
         }
-        let mut selected = 0_usize;
-        let mut ignored = 0_usize;
         for candidate in &call.candidates {
             if self.honor_interests
                 && let Some(interests) = interests
@@ -522,14 +575,14 @@ impl OcrBackend for ControlledOcr {
                     interests,
                 )?;
                 if membership == 0 {
-                    ignored += 1;
+                    counts.ignored += 1;
                     continue;
                 }
             }
             output.push(candidate.borrowed())?;
-            selected += 1;
+            counts.selected += 1;
             if let Some((token, count)) = &self.cancel_after_candidates
-                && selected == *count
+                && counts.selected == *count
             {
                 token.cancel();
             }
@@ -537,10 +590,6 @@ impl OcrBackend for ControlledOcr {
         if let Some(token) = &self.cancel_after_output {
             token.cancel();
         }
-        self.last_selected_candidates
-            .store(selected, Ordering::Release);
-        self.last_ignored_candidates
-            .store(ignored, Ordering::Release);
         if call.behavior == OcrBehavior::Fail {
             call.behavior.apply()?;
         }

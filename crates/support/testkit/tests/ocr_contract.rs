@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use mado_pilot_capture::{Frame, FrameDescriptor, PixelFormat};
+use mado_pilot_capture::{CpuPixels, Frame, FrameDescriptor, FrameStorage, PixelFormat};
 use mado_pilot_core::{
     CancellationToken, ClipPolicy, Clock, CoordinateSpace, GeometryRevision, IdentityIssuer,
     MonotonicInstant, OperationContext, PixelExtent, PixelRect, Rect, Status, StreamCursor,
@@ -27,6 +27,25 @@ type ScriptedOutput = (&'static [u8], [(f64, f64); 4], u32);
 
 fn frame() -> Frame {
     ocr_contract::frame(PixelExtent::new(32, 24), PixelFormat::Bgra8, 0)
+}
+
+#[derive(Debug)]
+struct PreflightOnlyStorage {
+    descriptor: FrameDescriptor,
+}
+
+impl FrameStorage for PreflightOnlyStorage {
+    fn descriptor(&self) -> FrameDescriptor {
+        self.descriptor
+    }
+
+    fn cpu_pixels(&self) -> Option<Arc<CpuPixels>> {
+        None
+    }
+
+    fn read_cpu(&self, _operation: &OperationContext) -> mado_pilot_core::Result<Arc<CpuPixels>> {
+        panic!("mapping preflight must reject this storage before conversion")
+    }
 }
 
 #[derive(Debug)]
@@ -543,6 +562,51 @@ fn honored_and_ignored_interests_commit_the_same_groups() {
 }
 
 #[test]
+fn controlled_backend_resets_latest_candidate_counts_after_failed_call() {
+    let candidates = vec![
+        candidate_with(
+            b"in-zone",
+            [(1.0, 1.0), (5.0, 1.0), (5.0, 5.0), (1.0, 5.0)],
+            0.9,
+            0,
+        ),
+        candidate_with(
+            b"outside",
+            [(9.0, 1.0), (13.0, 1.0), (13.0, 5.0), (9.0, 5.0)],
+            0.8,
+            1,
+        ),
+    ];
+    let backend = Arc::new(
+        ControlledOcr::new(PixelFormat::Bgra8)
+            .with_calls(vec![
+                ScriptedOcrCall::new(candidates),
+                ScriptedOcrCall::new(Vec::new()).with_behavior(OcrBehavior::Unavailable),
+            ])
+            .honoring_interests(),
+    );
+    let recognizer = OcrRecognizer::new(backend.clone());
+    let source = frame();
+    let zones = [
+        zone(0.0, 0.0, 8.0, 8.0, ClipPolicy::Reject),
+        zone(16.0, 0.0, 20.0, 8.0, ClipPolicy::Reject),
+    ];
+
+    scan_zones(&recognizer, &source, &zones, &OperationContext::new()).unwrap();
+    assert_eq!(backend.last_selected_candidates(), 1);
+    assert_eq!(backend.last_ignored_candidates(), 1);
+
+    assert_eq!(
+        scan_zones(&recognizer, &source, &zones, &OperationContext::new())
+            .unwrap_err()
+            .status(),
+        Status::VisionFailed
+    );
+    assert_eq!(backend.last_selected_candidates(), 0);
+    assert_eq!(backend.last_ignored_candidates(), 0);
+}
+
+#[test]
 fn grouped_scan_clips_every_zone_and_refuses_any_empty_effective_zone_before_backend() {
     let backend = Arc::new(ControlledOcr::new(PixelFormat::Bgra8));
     let recognizer = OcrRecognizer::new(backend.clone());
@@ -806,6 +870,41 @@ fn grouped_scan_accepts_exact_aggregate_bounds_and_refuses_the_next_candidate() 
         .status(),
         Status::VisionFailed
     );
+}
+
+#[test]
+fn grouped_scan_rejects_oversized_source_before_mapping_or_backend_work() {
+    const MAPPING_LIMIT_BYTES: usize = 256 * 1024 * 1024;
+
+    let descriptor = FrameDescriptor::new(
+        PixelExtent::new(1, 1),
+        PixelFormat::Bgra8,
+        MAPPING_LIMIT_BYTES + 1,
+    )
+    .unwrap();
+    let storage: Arc<dyn FrameStorage> = Arc::new(PreflightOnlyStorage { descriptor });
+    let issuer = IdentityIssuer::new();
+    let mut cursor = StreamCursor::new(issuer.issue_stream().unwrap());
+    let stamp = cursor.publish(GeometryRevision::FIRST).unwrap();
+    let source = Frame::from_storage(
+        stamp,
+        MonotonicInstant::ORIGIN,
+        TransformSnapshot::frame_only(GeometryRevision::FIRST, descriptor.extent()),
+        storage,
+    )
+    .unwrap();
+    let backend = Arc::new(ControlledOcr::new(PixelFormat::Bgra8));
+    let port: Arc<dyn OcrBackend> = backend.clone();
+    let recognizer = OcrRecognizer::new(port);
+    let zones = [zone(0.0, 0.0, 1.0, 1.0, ClipPolicy::Reject)];
+
+    assert_eq!(
+        scan_zones(&recognizer, &source, &zones, &OperationContext::new())
+            .unwrap_err()
+            .status(),
+        Status::LimitExceeded
+    );
+    assert_eq!(backend.recognition_count(), 0);
 }
 
 #[test]
@@ -1308,16 +1407,16 @@ fn interruption_is_authoritative_over_backend_normalization_and_close_failures()
 }
 
 #[test]
-fn out_of_order_calls_share_one_recognizer_without_result_replacement() {
+fn out_of_order_calls_keep_results_and_latest_observations_isolated() {
     let old_gate = Arc::new(CompletionGate::new());
     let new_gate = Arc::new(CompletionGate::new());
     let backend = Arc::new(ControlledOcr::new(PixelFormat::Bgra8).with_calls(vec![
-            ScriptedOcrCall::new(vec![candidate(b"old", 0)])
+            ScriptedOcrCall::new(vec![candidate(b"old", 0), candidate(b"old-second", 1)])
                 .with_completion_gate(Arc::clone(&old_gate)),
             ScriptedOcrCall::new(vec![candidate(b"new", 0)])
                 .with_completion_gate(Arc::clone(&new_gate)),
         ]));
-    let port: Arc<dyn OcrBackend> = backend;
+    let port: Arc<dyn OcrBackend> = backend.clone();
     let recognizer = OcrRecognizer::new(port);
     let (old_frame, new_frame) = same_stream_frames();
     let old_stamp = old_frame.stamp();
@@ -1343,8 +1442,11 @@ fn out_of_order_calls_share_one_recognizer_without_result_replacement() {
     let older = old.join().unwrap().unwrap();
     assert_eq!(older.stamp(), old_stamp);
     assert_eq!(older.regions()[0].text(), "old");
+    assert_eq!(older.regions().len(), 2);
     assert_eq!(newer.stamp(), new_stamp);
     assert_eq!(newer.regions()[0].text(), "new");
+    assert_eq!(backend.last_selected_candidates(), 1);
+    assert_eq!(backend.last_ignored_candidates(), 0);
 }
 
 #[test]
@@ -1411,7 +1513,7 @@ fn retained_results_own_data_without_backend_frame_or_model_retention() {
 }
 
 #[test]
-fn retained_grouped_result_releases_backend_frame_mapping_and_script_storage() {
+fn retained_grouped_result_uses_one_mapping_and_releases_backend_frame_and_script_storage() {
     let raw_text: Arc<[u8]> = Arc::from(&b"private-grouped-text"[..]);
     let backend = Arc::new(ControlledOcr::new(PixelFormat::Bgra8).with_candidates(vec![
         ScriptedOcrCandidate::new(
@@ -1440,6 +1542,8 @@ fn retained_grouped_result_releases_backend_frame_mapping_and_script_storage() {
     let zones = [zone(0.0, 0.0, 16.0, 12.0, ClipPolicy::Reject)];
 
     let result = scan_zones(&recognizer, &source, &zones, &OperationContext::new()).unwrap();
+    assert_eq!(producer.conversions(), 1);
+    assert_eq!(backend.recognition_count(), 1);
     assert_eq!(producer.producer_slots_free(), producer.pool());
     assert_eq!(producer.detached_slots_free(), 0);
 

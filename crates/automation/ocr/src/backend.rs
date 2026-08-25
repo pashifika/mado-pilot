@@ -128,14 +128,26 @@ pub fn candidate_interest_membership(
 ) -> Result<u8> {
     let width = f64::from(source_extent.width());
     let height = f64::from(source_extent.height());
-    let mut centroid = (0.0_f64, 0.0_f64);
     for (x, y) in quadrilateral {
         if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 || x > width || y > height {
             return Err(OcrFault::BackendGeometryInvalid.into());
         }
-        centroid.0 += x * 0.25;
-        centroid.1 += y * 0.25;
     }
+    // Opposite vertices stay paired under cyclic rotation and reversal. Averaging
+    // the two diagonal midpoints therefore makes boundary membership independent
+    // of which valid vertex a backend lists first.
+    let diagonal_0 = (
+        (quadrilateral[0].0 + quadrilateral[2].0) * 0.5,
+        (quadrilateral[0].1 + quadrilateral[2].1) * 0.5,
+    );
+    let diagonal_1 = (
+        (quadrilateral[1].0 + quadrilateral[3].0) * 0.5,
+        (quadrilateral[1].1 + quadrilateral[3].1) * 0.5,
+    );
+    let centroid = (
+        (diagonal_0.0 + diagonal_1.0) * 0.5,
+        (diagonal_0.1 + diagonal_1.1) * 0.5,
+    );
     if !centroid.0.is_finite() || !centroid.1.is_finite() {
         return Err(OcrFault::BackendGeometryInvalid.into());
     }
@@ -392,6 +404,39 @@ mod tests {
             candidate_interest_membership([(10.0, 2.0); 4], extent, interests).unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn membership_is_invariant_to_cyclic_and_reversed_vertex_order() {
+        let zones = [
+            PixelRect::new(0, 0, 10, 5).unwrap(),
+            PixelRect::new(10, 0, 20, 5).unwrap(),
+        ];
+        let interests = BackendInterests::new(&zones).unwrap();
+        let extent = PixelExtent::new(20, 5);
+        let points = [
+            (1.000_000_000_000_406_6, 1.0),
+            (18.999_999_999_984_155, 1.0),
+            (19.000_000_000_000_345, 3.0),
+            (1.000_000_000_015_094_4, 3.0),
+        ];
+        let equivalent_orders = [
+            [points[0], points[1], points[2], points[3]],
+            [points[1], points[2], points[3], points[0]],
+            [points[2], points[3], points[0], points[1]],
+            [points[3], points[0], points[1], points[2]],
+            [points[0], points[3], points[2], points[1]],
+            [points[3], points[2], points[1], points[0]],
+            [points[2], points[1], points[0], points[3]],
+            [points[1], points[0], points[3], points[2]],
+        ];
+
+        for quadrilateral in equivalent_orders {
+            assert_eq!(
+                candidate_interest_membership(quadrilateral, extent, interests).unwrap(),
+                0b10
+            );
+        }
     }
 
     #[test]
