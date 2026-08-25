@@ -159,10 +159,15 @@ fn fit_with_tensor_ceiling(
     let fit = (f64::from(max_pixels) / f64::from(pixels)).sqrt();
     let scaled_width = f64_to_u32(f64::from(width) * fit)?;
     let scaled_height = f64_to_u32(f64::from(height) * fit)?;
-    Ok((
-        floor_to_multiple(scaled_width, multiple)?,
-        floor_to_multiple(scaled_height, multiple)?,
-    ))
+    let bounded_width = floor_to_multiple(scaled_width, multiple)?;
+    let bounded_height = floor_to_multiple(scaled_height, multiple)?;
+    if bounded_width
+        .checked_mul(bounded_height)
+        .is_none_or(|bounded_pixels| bounded_pixels > max_pixels)
+    {
+        return Err(OnnxBackendFault::ResourceLimit);
+    }
+    Ok((bounded_width, bounded_height))
 }
 
 fn floor_to_multiple(value: u32, multiple: u32) -> Result<u32, OnnxBackendFault> {

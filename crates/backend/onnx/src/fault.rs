@@ -158,7 +158,7 @@ pub enum OnnxRuntimeCompatibility {
 pub enum OnnxOcrProfile {
     /// Released native G-004 DB736 preprocessing without a final dimension ceiling.
     NativeG004,
-    /// ADR 0038 direct bounded detector sampling with original-source recognition.
+    /// ADR 0040 compound bounded-detector sampling with original-source recognition.
     BoundedDetector,
 }
 
