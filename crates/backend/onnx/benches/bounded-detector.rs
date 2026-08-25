@@ -232,11 +232,21 @@ enum RunMode {
 
 impl RunMode {
     fn from_arguments(arguments: &[String]) -> Self {
-        let smoke = arguments.iter().any(|argument| argument == "--smoke");
-        let precursor = arguments.iter().any(|argument| argument == "--precursor");
-        let enforce = arguments
+        let smoke_count = arguments
             .iter()
-            .any(|argument| argument == "--enforce-budgets");
+            .filter(|argument| argument.as_str() == "--smoke")
+            .count();
+        let precursor_count = arguments
+            .iter()
+            .filter(|argument| argument.as_str() == "--precursor")
+            .count();
+        let enforce_count = arguments
+            .iter()
+            .filter(|argument| argument.as_str() == "--enforce-budgets")
+            .count();
+        let smoke = smoke_count == 1;
+        let precursor = precursor_count == 1;
+        let enforce = enforce_count == 1;
         assert!(
             !arguments.iter().any(|argument| argument == "--qualify"),
             "use the explicit --enforce-budgets mode"
@@ -254,8 +264,11 @@ impl RunMode {
             "unsupported bounded-detector benchmark argument"
         );
         assert!(
-            usize::from(smoke) + usize::from(precursor) + usize::from(enforce) <= 1,
-            "select only one benchmark mode"
+            smoke_count <= 1
+                && precursor_count <= 1
+                && enforce_count <= 1
+                && smoke_count + precursor_count + enforce_count <= 1,
+            "select one non-duplicated benchmark mode"
         );
         if cfg!(debug_assertions) {
             assert!(
@@ -305,8 +318,11 @@ fn main() {
         .into_iter()
         .any(|variable| std::env::var_os(variable).is_none())
     {
+        let explicit_smoke = arguments.iter().any(|argument| argument == "--smoke");
+        let debug_harness_smoke = cfg!(debug_assertions)
+            && (arguments.is_empty() || (arguments.len() == 1 && arguments[0] == "--bench"));
         assert!(
-            mode == RunMode::Smoke,
+            mode == RunMode::Smoke && (explicit_smoke || debug_harness_smoke),
             "precursor and final enforcement require both reviewed MADO_PILOT_* paths"
         );
         eprintln!("bounded-detector benchmark skipped: set the two reviewed MADO_PILOT_* paths");
