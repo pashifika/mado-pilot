@@ -11,7 +11,7 @@ ADR 0038 predeclared an initial 1312×736 final-detector rectangle. Exact source
 
 The caps are not relaxed. Evidence instead narrows detector work. A simple 1152×736 rectangle changed the extreme-wide detector from 1312×160 to 1152×128 and failed every retained Apple oracle. Unconditionally applying 6 MiB or 8 MiB tensor ceilings reduced work but changed the 960×540 detector from 1312×736 and failed the existing zero-tolerance dual-profile native HUD geometry contract. Five Windows unconditional-6-MiB processes are retained only as rejected diagnostics.
 
-The first benchmark also constructed and retained all eight source frames before measuring any workload. That made process high-water include unrelated fixture inventory. Qualification must construct one workload at a time so resident memory describes the operation under measurement; prior RSS remains recorded but is not reused for candidate-v2 acceptance.
+The first benchmark also constructed and retained all eight source frames before measuring any workload. That made process high-water include simultaneous unrelated fixture inventory. Qualification must construct one workload at a time so those frames are not concurrently live. Final process high-water measures the maximum reached across the complete workload sequence; it is not an isolated per-workload value. Prior RSS remains recorded but is not reused for candidate-v2 acceptance.
 
 ## Decision
 
@@ -52,7 +52,7 @@ All ADR 0038 direct-resize, interpolation, half-pixel, channel, normalization, d
 - **Accept the rectangular candidate because quality passed.** Rejected because the fixed cross-target performance gate is part of profile qualification.
 - **Use a smaller rectangle globally.** Rejected by the extreme-wide oracle at 1152×128.
 - **Apply 6 MiB to every source.** Rejected because it changes reference detector geometry and fails the zero-tolerance native contract.
-- **Keep all fixtures resident and subtract their bytes.** Rejected because allocator/OpenCV/ONNX high-water is not a linear accounting quantity; measuring one workload directly is simpler and reproducible.
+- **Keep all fixtures resident and subtract their bytes.** Rejected because allocator/OpenCV/ONNX high-water is not a linear accounting quantity; constructing frames lazily and budgeting the final process high-water is simpler and reproducible.
 - **Fuse resize and planar conversion.** Deferred. Current evidence first removes excess inference work without adding a second unsafe pixel implementation.
 
 ## Consequences
