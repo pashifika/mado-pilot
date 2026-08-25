@@ -593,6 +593,25 @@ cancellation/late-result, cleanup, and 4 KiB growth gates, but its
 timing/resident memory defines no release-host budget. Watcher scheduling and
 acceleration remain open for the later phases that introduce them.
 
+**The v0.3.1 bounded-detector workloads remain open.** ADR 0038 fixes a distinct
+explicit profile and ADR 0039 separates target-independent smoke, exact-source
+precursor measurement, and final budget enforcement. Hosted repository,
+Windows, and macOS jobs pass the native/bounded hard-gate smoke at source
+`d9d2c45`; their timing and RSS establish no release-host budget.
+
+The approved Apple M1 Pro precursor ran five fresh native and five fresh bounded
+processes at executable SHA-256
+`0df83d4de09fb4f62ccec29a7e0a06d8a4189aa413c1f3ea6b13d641f0a64d65`.
+All 1,600 retained samples passed exact quality/source/resource gates with zero
+allocation growth. Bounded 4K/dense/blank worst p95 was
+514.559/610.693/255.017 ms and peak RSS was 593,805,312 bytes; native 4K/blank
+worst p95 was 2,355.197/2,105.442 ms and peak RSS was 2,473,820,160 bytes.
+
+This is precursor evidence, not a resolution. The identical approved Windows
+matrix, final cross-target ceiling ADR, committed target profiles/registries,
+and five fresh budget-enforcing processes per target remain required. Historical
+Phase 3 default-OCR profiles and status above remain unchanged.
+
 **Resolution.** Committed benchmark profiles and budgets plus an ADR for each
 budget that is set or relaxed, recording the evidence behind the number.
 

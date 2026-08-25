@@ -841,3 +841,55 @@ arbitrary-resolution, 4K, multi-region, real-time, renderer, application, or
 game guarantees. Phase 3 default-OCR `G-013` is complete on both release
 targets; watcher scheduling and acceleration remain open until later phases
 introduce those workloads.
+
+## v0.3.1 bounded-detector candidate performance
+
+`crates/backend/onnx/benches/bounded-detector.rs` compares released native G-004
+and the explicit ADR 0038 bounded profile on identical 4K, wide, extreme-wide,
+960×540, odd, dense, boundary-region, and 4K blank inputs. Every iteration
+checks text/count/order, fixture geometry, same-host confidence, complete source
+and profile identity, final detector dimensions/bytes, one direct resize,
+detector/recognizer runs, mapped bytes, one-pair/two-session topology,
+cancellation, and post-warm live Rust growth before latency can be considered.
+
+ADR 0039 separates three modes. `smoke` is the target-independent hosted gate.
+`precursor` runs three warmups and 20 retained samples in five fresh processes,
+enforces all hard correctness/resource rules, and records timing/RSS without a
+numeric verdict. `enforce-budgets` is reserved for a fresh executable after both
+approved targets have precursor evidence and a final budget ADR. Result count
+does not select a cost class: the 3840×2160 blank workload maps and detects 4K
+input despite returning no regions.
+
+The first Apple run at source `2782564`, executable SHA-256
+`3a4bb04477b14092c9b3b34153275819684790d072aa1659e44183bafbd1f8b4`,
+remains rejected. All correctness/resource rows passed, but the procedure
+incorrectly applied the released 64×64 empty-result latency row to the 4K blank
+workload, and one 2.697 ms close exceeded the earlier revision's 2 ms final
+budget. No failed process was removed or relabeled.
+
+Review-fixed precursor source `d9d2c45`, executable SHA-256
+`0df83d4de09fb4f62ccec29a7e0a06d8a4189aa413c1f3ea6b13d641f0a64d65`,
+ran five fresh processes per profile on the approved Apple M1 Pro. All 1,600
+retained native/bounded samples passed with zero oracle failures and zero live
+Rust growth. Worst per-process observations were:
+
+| Workload | Bounded detector | Native detector | Bounded p95 | Native p95 |
+|---|---:|---:|---:|---:|
+| 4K HUD | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 514.559 ms | 2,355.197 ms |
+| Wide menu | 1312×320 / 5,038,080 bytes | 2944×736 / 26,001,408 bytes | 350.142 ms | 781.211 ms |
+| Extreme-wide status | 1312×160 / 2,519,040 bytes | 5888×736 / 52,002,816 bytes | 231.739 ms | 1,981.616 ms |
+| 960×540 HUD | 1312×736 / 11,587,584 bytes | 1312×736 / 11,587,584 bytes | 482.953 ms | 481.910 ms |
+| Dense tooltip | 1312×640 / 10,076,160 bytes | 1472×736 / 13,000,704 bytes | 610.693 ms | 693.956 ms |
+| 4K blank | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 255.017 ms | 2,105.442 ms |
+
+Bounded peak resident high-water was 593,805,312 bytes; the native comparator
+reached 2,473,820,160 bytes. Reference-size work is intentionally unchanged.
+One odd-size bounded process retained a slower p95 despite equal detector
+dimensions, so no general speedup is inferred from the profile name.
+
+The exact Apple process rows and deterministic candidate-budget calculation are
+retained in the Change evidence. Required hosted Windows/macOS smoke passes at
+`d9d2c45`, but hosted timing/RSS is not release-host evidence. Approved Windows
+precursor, cross-target review, a final budget ADR, and five fresh
+budget-enforcing processes on each target remain open. No bounded-profile numeric
+budget or support claim is accepted yet.
