@@ -1,9 +1,9 @@
 # ADR 0041: Bounded-detector target budgets
 
-- **Status:** Accepted budgets; final enforcement evidence pending
+- **Status:** Accepted
 - **Date:** 2026-08-25
-- **Resolves gate:** the budget-selection decision for the v0.3.1 bounded OCR rows under `G-013`; support remains withheld until final enforcement passes
-- **Supersedes:** _none_; ADR 0040 candidate identity/ceiling and all released Phase 3 budgets remain unchanged
+- **Resolves gate:** the v0.3.1 explicit bounded OCR rows under `G-013`
+- **Supersedes:** _none_; ADR 0040 profile identity/ceiling and all released Phase 3 budgets remain unchanged
 
 ## Context
 
@@ -68,14 +68,15 @@ They join drift registries without editing either released Phase 3 profile. Nati
 
 The constants and profiles are revision-bound regression ceilings for the named hosts and fixtures, not arbitrary application, scheduling, throughput, multi-region, or real-time guarantees. Source mapping and original-source recognition remain measured obligations even when detector tensors shrink.
 
-Support remains withheld until five fresh bounded `--enforce-budgets` processes pass on each approved host at the exact final executable, every failed row is retained, strict validation passes, independent final-source review is clear, and protected PR checks pass.
+The explicit candidate-v2 profile is qualified on both release targets for the named runtime/model/fixture/host boundaries. This is not a default change or an arbitrary application, scheduling, throughput, multi-region, or real-time guarantee.
 
 No released native identity, default constructor, C/C++ surface, dependency, model/runtime byte, provider, model storage, session count, network behavior, or historical Phase 3 evidence changes.
 
 ## Verification
 
-- Drift tests compare every committed latency/resource budget to the constants the final benchmark enforces.
-- Hard-budget tests compare correctness and growth predicates in both directions.
-- Hosted macOS and Windows jobs continue to run bounded/native smoke.
-- Five fresh final bounded enforcement processes per approved target remain required before support is claimed.
-- Frozen Phase 3 evidence paths must remain byte-identical to `dabfc3c27d634e19a073f68aa906712479eb1af2`.
+- Drift tests compare every committed latency/resource budget to the constants the final benchmark enforces; hard-budget tests compare correctness and growth predicates in both directions.
+- Strict final source `33cd36ba248d37a422f120537922fa4caba5c07d` fails closed for missing prerequisites, rejects unknown/duplicate modes, preserves explicit smoke/debug inventory behavior, and passed independent fix review with no findings.
+- Apple executable `7e48921dfeaa7b0f3a4bb33b9e927eea9e50d75422c570adb6443fd4f32cf190` passed five fresh bounded enforcement processes.
+- Windows executable `aefdfa9cd6a023049b532f650a5493191994b22b3c07b582097ca1146a58d5e4` passed strict preflights and five fresh bounded enforcement processes.
+- Hosted macOS and Windows jobs pass bounded/native smoke at the final source.
+- Frozen Phase 3 evidence paths remain byte-identical to `dabfc3c27d634e19a073f68aa906712479eb1af2`.

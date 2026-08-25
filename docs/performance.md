@@ -938,6 +938,17 @@ formula-derived Windows candidate fits the unchanged caps.
 
 ADR 0041 accepts the exact target budgets in
 `phase-3-1-bounded-ocr-aarch64-apple-darwin.toml` and
-`phase-3-1-bounded-ocr-x86_64-pc-windows-msvc.toml`. Five fresh bounded
-`--enforce-budgets` processes per approved target remain required before the
-explicit profile gains a support claim.
+`phase-3-1-bounded-ocr-x86_64-pc-windows-msvc.toml`. Strict final source
+`33cd36b` rejects missing prerequisites, unknown/duplicate modes, and ambiguous
+profiles before work; independent fix review returned no findings.
+
+Apple executable
+`7e48921dfeaa7b0f3a4bb33b9e927eea9e50d75422c570adb6443fd4f32cf190`
+and Windows executable
+`aefdfa9cd6a023049b532f650a5493191994b22b3c07b582097ca1146a58d5e4`
+each passed five fresh bounded `--enforce-budgets` processes without retry or
+exclusion. Worst final process RSS was 464,666,624 bytes on Apple and
+229,089,280 bytes on Windows; all workload latency/heap/growth rows passed.
+The explicit profile is qualified for the named target/runtime/model/fixture
+boundaries. It remains non-default and is not a real-time or arbitrary-workload
+guarantee.

@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1, affected Phase 2 workloads, and Phase 3 default OCR on both release targets are resolved by ADRs 0008, 0024–0032, and 0037 |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded OCR on both release targets are resolved by ADRs 0008, 0024–0032, 0037, and 0041 |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -612,24 +612,32 @@ above 320 MiB, but the harness retained all source fixtures simultaneously, so
 that row is preserved and not reused as one-operation memory evidence. No fixed
 cap or expected result was changed.
 
-ADR 0040 candidate v2 preserves reference/odd 1312×736 detector pixels and adds
-a secondary 6 MiB fit only after oversized desired work required the first
-1312×736 rectangle. It also constructs benchmark fixtures one workload at a
-time. Exact schema-v3 source `ce658b3` passed five bounded and five native
+**The v0.3.1 explicit bounded-detector row is resolved.** ADR 0038 retains the
+rejected rectangular candidate. ADR 0040 accepts candidate v2, and ADR 0041
+accepts target budgets derived by the unchanged ADR 0039 formula.
+
+Exact schema-v3 source `ce658b3` passed five bounded and five native precursor
 processes on each approved host with zero oracle failure/growth and complete
-final/cumulative RSS fields. All ADR 0039 formula outputs fit the unchanged
-target caps.
+final/cumulative RSS fields. Strict final source `33cd36b` fails closed for
+missing prerequisites, rejects unknown/duplicate modes, preserves explicit
+smoke/debug inventory behavior, and passed independent fix review.
 
-ADR 0041 accepts separate target budgets, explicit `--enforce-budgets` mode,
-new revision-bound profiles, and drift registries without modifying released
-Phase 3 evidence. This gate remains unresolved only for final proof: five fresh
-bounded enforcement processes must pass on each approved target, followed by
-independent final-source review and protected CI. Historical Phase 3 default-OCR
-profiles and status above remain unchanged.
+Five fresh bounded final enforcement processes passed on each approved host.
+Final executable SHA-256 is
+`7e48921dfeaa7b0f3a4bb33b9e927eea9e50d75422c570adb6443fd4f32cf190`
+on Apple and
+`aefdfa9cd6a023049b532f650a5493191994b22b3c07b582097ca1146a58d5e4`
+on Windows. Every latency, heap, growth, final RSS, detector-fact, identity,
+cancellation, and cleanup row passed without retry or exclusion.
 
-**Resolution.** The bounded-profile row resolves when both final enforcement
-matrices pass at the exact final executable; any future budget change requires a
-new ADR and fresh evidence.
+The profile remains an explicit non-default Rust selection under the named
+runtime/model/fixture/target boundaries. Released Phase 3 default OCR evidence,
+budgets, and constructors remain unchanged.
+
+**Resolution.** Resolved by [ADR 0040](adr/0040-compound-bounded-detector-ceiling.md)
+and [ADR 0041](adr/0041-bounded-detector-target-budgets.md). Any future ceiling
+or budget change requires a new identity or ADR as applicable and fresh
+both-target evidence.
 
 ## G-014
 
