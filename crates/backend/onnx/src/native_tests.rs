@@ -15,6 +15,7 @@ use mado_pilot_ocr::{
     OcrZoneScanRequest, OcrZoneScanResult,
 };
 use mado_pilot_testkit::{
+    ManualClock,
     bench_harness::{self, Plan, Sample},
     ocr_contract, vision_contract,
 };
@@ -347,11 +348,14 @@ fn assert_grouped_hud_contract(
     );
 
     let deadline_gate = crate::inference::test_hook::install();
+    let deadline_clock = Arc::new(ManualClock::new());
+    let worker_clock = deadline_clock.clone();
     let worker_backend = backend.clone();
     let worker_zones = eight;
     let (deadline_sender, deadline_receiver) = mpsc::sync_channel(1);
     let deadline = thread::spawn(move || {
         let context = OperationContext::new()
+            .with_clock(worker_clock)
             .with_timeout(Duration::from_millis(10))
             .unwrap();
         let status = scan_hud_zones(&worker_backend, &worker_zones, &context)
@@ -365,6 +369,7 @@ fn assert_grouped_hud_contract(
         deadline_gate.wait_until_admitted(NATIVE_GATE_BOUND),
         "grouped deadline admission timed out"
     );
+    deadline_clock.advance(Duration::from_millis(10));
     assert!(
         deadline_gate.wait_until_termination_issued(NATIVE_GATE_BOUND),
         "grouped deadline termination timed out"
