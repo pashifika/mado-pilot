@@ -593,30 +593,36 @@ cancellation/late-result, cleanup, and 4 KiB growth gates, but its
 timing/resident memory defines no release-host budget. Watcher scheduling and
 acceleration remain open for the later phases that introduce them.
 
-**The v0.3.1 bounded-detector workloads remain open.** ADR 0038 fixes a distinct
-explicit profile and ADR 0039 separates target-independent smoke, exact-source
-precursor measurement, and final budget enforcement. Hosted repository,
-Windows, and macOS jobs passed the native/bounded hard-gate smoke at precursor
-source `d9d2c45`; their timing and RSS establish no release-host budget.
+**The v0.3.1 bounded-detector workloads remain open.** ADR 0038 records the
+rejected rectangular-only tuple, ADR 0040 fixes candidate v2, and ADR 0039 keeps
+target-independent smoke, exact-source precursor measurement, and final budget
+enforcement separate. Hosted timing/RSS establishes no release-host budget.
 
-The reviewed approved-Apple precursor used source `cff5338` and executable
-SHA-256 `c28257dea60a86fe58d9fe9549670f6615004d3553c2f0bbe0a996a40ef9575d`.
-All five bounded processes passed. All 1,600 retained native/bounded samples
-passed exact quality/source/resource gates with zero allocation growth. Bounded
-4K/dense/blank worst p95 was 490.454/599.615/242.689 ms, attributable peak
-was 12,695,400 bytes, and peak RSS was 586,645,504 bytes.
+The reviewed approved-host rectangular precursor used exact source `cff5338`.
+All five bounded processes passed on both Apple M1 Pro and Windows Core
+i7-12700KF hosts. All 3,200 retained native/bounded samples across both targets
+passed quality/source/resource/session/cancellation/growth oracles; ten native
+raw false verdicts remain retained because that precursor applied the
+bounded-only 20 MiB peak to arbitrary-4K native comparison work.
 
-The five native comparator executable verdicts remain false because their
-arbitrary-4K attributable peak reached 108,627,472 bytes and the precursor
-still evaluated it against the bounded-only 20 MiB ceiling. Its quality,
-source, resource identity, session, cancellation, and growth rows all passed;
-the observations remain governed by the released 256 MiB tensor ceiling rather
-than relabeled as bounded-profile passes.
+ADR 0039's predeclared formula rejected the rectangular candidate on Windows.
+Margin-derived latency ceilings crossed fixed caps for 4K, reference, odd, and
+dense workloads; cold derived 275 ms above 250 ms. Observed RSS derived 384 MiB
+above 320 MiB, but the harness retained all source fixtures simultaneously, so
+that row is preserved and not reused as one-operation memory evidence. No fixed
+cap or expected result was changed.
 
-This is precursor evidence, not a resolution. The identical approved Windows
-matrix, final cross-target ceiling ADR, committed target profiles/registries,
-and five fresh budget-enforcing processes per target remain required.
-Historical Phase 3 default-OCR profiles and status above remain unchanged.
+ADR 0040 candidate v2 preserves reference/odd 1312×736 detector pixels and adds
+a secondary 6 MiB fit only after oversized desired work required the first
+1312×736 rectangle. It also constructs benchmark fixtures one workload at a
+time. Local candidate-v2 native contract and bounded smoke pass, but this is not
+approved-host precursor evidence.
+
+This gate remains unresolved. Fresh exact-source candidate-v2 Apple/Windows
+precursors, final cross-target budget selection, committed target
+profiles/registries, and five fresh budget-enforcing processes per target remain
+required. Historical Phase 3 default-OCR profiles and status above remain
+unchanged.
 
 **Resolution.** Committed benchmark profiles and budgets plus an ADR for each
 budget that is set or relaxed, recording the evidence behind the number.

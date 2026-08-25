@@ -30,12 +30,14 @@ regression profiles. Approved Apple Silicon and Windows 11 Pro hosts reproduce
 the same integrated 42-region quality boundary.
 
 The `v0.3.1` bounded-detector topic adds a second closed, explicit, non-default
-profile over the same immutable model components. Its implementation and hosted
-Windows/macOS smoke pass, and approved Apple precursor quality/resources pass;
-approved Windows precursor and both-target final budget enforcement remain open.
-No bounded-profile support or numeric budget is claimed yet. Neither profile adds
-bundling, download, ambient search, provider fallback, scheduling, or automatic
-input. Watchers, scheduling, and release packaging remain future work.
+profile over the same immutable model components. The initial ADR 0038 rectangle
+passed both-target correctness/resource oracles but the fixed ADR 0039 formula
+rejected its Windows latency margins. ADR 0040 replaces that unreleased tuple
+with candidate v2; approved-host precursor and final budget enforcement remain
+open. No bounded-profile support or numeric budget is claimed yet. Neither
+profile adds bundling, download, ambient search, provider fallback, scheduling,
+or automatic input. Watchers, scheduling, and release packaging remain future
+work.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -849,8 +851,8 @@ responsibilities a later phase takes on.
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
-| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004 and ADR 0038 adds one distinct closed bounded-detector identity over the same component bytes. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented; bounded-profile support remains unqualified |
-| Exact accepted CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0038 selection applies a checked `1312x736` final detector ceiling and original-source recognizer crops |
+| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds candidate v2 as one distinct closed identity over the same component bytes. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented; bounded-profile support remains unqualified |
+| Exact accepted CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection first fits a `1312x736` rectangle, applies a 6 MiB secondary tensor fit only when that rectangle had to fit oversized desired work, and keeps original-source recognizer crops |
 | OCR runtime/facade/ABI one-shot operation and immutable results | Implemented through `mado-pilot-runtime`, the facade, C ABI 1.3, and C++; backend/model/context/frame/region/output space remain explicit, and close/deadline/cancellation arbitrate before publication. The bounded identity is re-exported, but released product default constructors and C/C++ surfaces still select only native G-004 |
 | Accepted default OCR composition | Implemented by ADR 0036 as separate Rust/C/C++ constructors over caller-supplied canonical model-root/runtime paths. Existing constructors still omit OCR, explicit package/backends remain available, missing prerequisites fail construction without fallback or a half-configured engine, and bounded-backend admission does not alter this default |
 | Bounded engine-scoped diagnostic observation | Implemented through Rust, C ABI 1.3, and C++ with allocation-free `Off`, finite `Normal`/`Debug`, strict order, exact level losses, independent readers/batches, and content-redacted OCR admission/terminal records |
@@ -1980,10 +1982,11 @@ or malformed digest refuses the manifest before any model bytes are read.
 Claiming either accepted model or profile ID additionally binds every field to
 one complete closed tuple. Native
 `g-004-rapidocr-ppocrv4-det-v6-rec-small-v1` is fixed by ADR 0033. Explicit
-`phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v1` is fixed by ADR 0038
-and uses preprocessing
-`rapidocr-ppocrv4-det-bgr-db736-fit-1312x736-linear-half-pixel-source-rec-v1`.
-The tuples share model revision, component lengths/digests, language, decoder,
+candidate `phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2` is fixed by
+ADR 0040 and uses preprocessing
+`rapidocr-ppocrv4-det-bgr-db736-fit-1312x736-then-tensor6291456b-linear-half-pixel-source-rec-v2`.
+The rejected ADR 0038 `bounded-v1` tuple is not an alias. The accepted tuples
+share model revision, component lengths/digests, language, decoder,
 normalization, vocabulary count, and vocabulary digest; their model, profile,
 and preprocessing IDs are not interchangeable. Self-consistent manifest hashes
 are not authority for either tuple. Other explicit profile IDs remain
@@ -2332,11 +2335,15 @@ or invoking `Session::run` concurrently.
 `OnnxOcrBackend::open_accepted` retains released native G-004 preprocessing.
 `OnnxOcrBackend::open_bounded_detector` is the only fixed-path bounded
 constructor. It computes source/final dimensions, forward/inverse scale, tensor
-elements, and bytes before allocation; resizes once directly into a final
-detector tensor no larger than `1312x736`/11,587,584 bytes; maps detector output
-back to the original source view; and perspective-crops that original source for
-recognition. Facts and observations expose only the selected closed profile,
-bounded dimensions/counts/bytes, and one-pair/two-session topology.
+elements, and bytes before allocation. Candidate v2 first fits oversized desired
+work within `1312x736`; only after that fit, tensors above 6,291,456 bytes receive
+one second aspect-preserving floor-to-32 fit. Desired work that already fits the
+rectangle, including 960×540 and odd HUD inputs, retains the 11,587,584-byte
+reference detector and exact geometry. The backend resizes directly once, maps
+detector output back to the original source view, and perspective-crops that
+original source for recognition. Facts report the absolute rectangle; per-call
+observations report actual bounded dimensions/counts/bytes and the
+one-pair/two-session topology.
 
 The facade depends on this backend only for separate
 `replay_engine_with_default_ocr`, `windows_engine_with_default_ocr`, and

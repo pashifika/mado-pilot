@@ -1,4 +1,4 @@
-//! Revision-bound quality and resource qualification for ADR 0038.
+//! Revision-bound quality and resource qualification for ADRs 0038–0040.
 
 #[cfg(windows)]
 use std::mem::size_of;
@@ -71,6 +71,31 @@ struct ExpectedRegion {
 struct DetectorDimensions {
     width: u32,
     height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WorkloadKind {
+    Hud4k,
+    MenuWide,
+    StatusExtremeWide,
+    HudReference,
+    HudOdd,
+    TooltipDense,
+    MissionBoundary,
+    Blank4k,
+}
+
+impl WorkloadKind {
+    const ALL: [Self; 8] = [
+        Self::Hud4k,
+        Self::MenuWide,
+        Self::StatusExtremeWide,
+        Self::HudReference,
+        Self::HudOdd,
+        Self::TooltipDense,
+        Self::MissionBoundary,
+        Self::Blank4k,
+    ];
 }
 
 #[derive(Debug, Clone)]
@@ -247,13 +272,13 @@ fn main() {
     let manifest_bytes = std::fs::read(&manifest_path).expect("read tracked OCR fixture manifest");
     let manifest: FixtureManifest =
         serde_json::from_slice(&manifest_bytes).expect("parse tracked OCR fixture manifest");
-    let workloads = build_workloads(&fixture_root, &manifest);
 
     let report = run_profile(
         profile,
         &model_root,
         &runtime,
-        &workloads,
+        &fixture_root,
+        &manifest,
         mode,
         hex_digest(&manifest_bytes),
     );
@@ -280,7 +305,8 @@ fn run_profile(
     profile: OnnxOcrProfile,
     model_root: &Path,
     runtime: &Path,
-    specs: &[WorkloadSpec],
+    fixture_root: &Path,
+    manifest: &FixtureManifest,
     mode: RunMode,
     fixture_manifest_sha256: String,
 ) -> ProfileReport {
@@ -314,18 +340,19 @@ fn run_profile(
     let port: Arc<dyn OcrBackend> = backend.clone();
     let recognizer = OcrRecognizer::new(port);
 
-    let mut workload_reports = Vec::with_capacity(specs.len());
-    for spec in specs {
+    let mut workload_reports = Vec::with_capacity(WorkloadKind::ALL.len());
+    for kind in WorkloadKind::ALL {
         workload_reports.push(measure_workload(
             recognizer.clone(),
             Arc::clone(&backend),
-            spec.clone(),
+            build_workload(fixture_root, manifest, kind),
             profile,
             plan,
         ));
     }
 
-    let cancellation = measure_cancelled(&recognizer, &backend, &specs[0]);
+    let cancellation_spec = build_workload(fixture_root, manifest, WorkloadKind::HudReference);
+    let cancellation = measure_cancelled(&recognizer, &backend, &cancellation_spec);
     let final_observations = backend
         .observations()
         .expect("qualification observes an idle session pair");
@@ -701,131 +728,147 @@ fn open_profile(
 fn profile_name(profile: OnnxOcrProfile) -> &'static str {
     match profile {
         OnnxOcrProfile::NativeG004 => "native-g004",
-        OnnxOcrProfile::BoundedDetector => "bounded-detector-1312x736",
+        OnnxOcrProfile::BoundedDetector => "bounded-detector-fit1312x736-then-tensor6291456b",
     }
 }
 
-fn build_workloads(root: &Path, manifest: &FixtureManifest) -> Vec<WorkloadSpec> {
-    let hud = image(manifest, "hud.png");
-    let menu = image(manifest, "menu.png");
-    let status = image(manifest, "status.png");
-    let tooltip = image(manifest, "tooltip-v3.png");
-    let mission = image(manifest, "mission.png");
-
-    let hud_mat = load_bgra(&root.join("hud.png"), &hud.sha256);
-    let menu_mat = load_bgra(&root.join("menu.png"), &menu.sha256);
-    let status_mat = load_bgra(&root.join("status.png"), &status.sha256);
-    let tooltip_mat = load_bgra(&root.join("tooltip-v3.png"), &tooltip.sha256);
-    let mission_mat = load_bgra(&root.join("mission.png"), &mission.sha256);
-
-    let hud_4k_mat = resize_bgra(&hud_mat, 3_840, 2_160, INTER_NEAREST_EXACT);
-    let hud_odd_mat = resize_bgra(&hud_mat, 1_001, 563, INTER_LINEAR);
-    let status_wide_mat = resize_bgra(&status_mat, 569, 320, INTER_LINEAR);
-    let mission_region = PixelRect::new(877, 0, 1_440, 720).expect("mission region");
-
-    vec![
-        full_workload(
-            "bounded_hud_4k",
-            frame_from_mat(&hud_4k_mat),
-            expected_regions(hud, 4.0, 4.0, 0.0, 0.0),
-            DetectorDimensions {
-                width: 3_840,
-                height: 2_176,
-            },
-            DetectorDimensions {
-                width: 1_312,
-                height: 736,
-            },
-        ),
-        full_workload(
-            "bounded_menu_wide",
-            canvas_frame(&menu_mat, 2_000, 500, 640, 10),
-            expected_regions(menu, 1.0, 1.0, 640.0, 10.0),
-            DetectorDimensions {
-                width: 2_944,
-                height: 736,
-            },
-            DetectorDimensions {
-                width: 1_312,
-                height: 320,
-            },
-        ),
-        full_workload(
-            "bounded_status_extreme_wide",
-            canvas_frame(&status_wide_mat, 2_560, 320, 995, 0),
-            expected_regions(status, 569.0 / 640.0, 320.0 / 360.0, 995.0, 0.0),
-            DetectorDimensions {
-                width: 5_888,
-                height: 736,
-            },
-            DetectorDimensions {
-                width: 1_312,
-                height: 160,
-            },
-        ),
-        full_workload(
-            "bounded_hud_reference",
-            frame_from_mat(&hud_mat),
-            expected_regions(hud, 1.0, 1.0, 0.0, 0.0),
-            DetectorDimensions {
-                width: 1_312,
-                height: 736,
-            },
-            DetectorDimensions {
-                width: 1_312,
-                height: 736,
-            },
-        ),
-        full_workload(
-            "bounded_hud_odd",
-            frame_from_mat(&hud_odd_mat),
-            expected_regions(hud, 1_001.0 / 960.0, 563.0 / 540.0, 0.0, 0.0),
-            DetectorDimensions {
-                width: 1_312,
-                height: 736,
-            },
-            DetectorDimensions {
-                width: 1_312,
-                height: 736,
-            },
-        ),
-        full_workload(
-            "bounded_tooltip_dense",
-            frame_from_mat(&tooltip_mat),
-            expected_regions(tooltip, 1.0, 1.0, 0.0, 0.0),
-            DetectorDimensions {
-                width: 1_472,
-                height: 736,
-            },
-            DetectorDimensions {
-                width: 1_312,
-                height: 640,
-            },
-        ),
-        WorkloadSpec {
-            name: "bounded_mission_boundary",
-            frame: frame_from_mat(&mission_mat),
-            region: OcrRegion::Region {
-                rect: Rect::new(CoordinateSpace::CapturePixels, 877.0, 0.0, 1_440.0, 720.0)
-                    .expect("mission qualification region"),
-                policy: ClipPolicy::Reject,
-            },
-            effective_region: mission_region,
-            expected: expected_regions(mission, 1.0, 1.0, 0.0, 0.0)
-                .into_iter()
-                .filter(|region| region.quad.iter().all(|(x, _)| *x >= 877.0))
-                .collect::<Vec<_>>()
-                .into(),
-            native_detector: DetectorDimensions {
-                width: 736,
-                height: 928,
-            },
-            bounded_detector: DetectorDimensions {
-                width: 576,
-                height: 736,
-            },
-        },
-        full_workload(
+fn build_workload(root: &Path, manifest: &FixtureManifest, kind: WorkloadKind) -> WorkloadSpec {
+    match kind {
+        WorkloadKind::Hud4k => {
+            let hud = image(manifest, "hud.png");
+            let hud_mat = load_bgra(&root.join("hud.png"), &hud.sha256);
+            let hud_4k_mat = resize_bgra(&hud_mat, 3_840, 2_160, INTER_NEAREST_EXACT);
+            full_workload(
+                "bounded_hud_4k",
+                frame_from_mat(&hud_4k_mat),
+                expected_regions(hud, 4.0, 4.0, 0.0, 0.0),
+                DetectorDimensions {
+                    width: 3_840,
+                    height: 2_176,
+                },
+                DetectorDimensions {
+                    width: 960,
+                    height: 512,
+                },
+            )
+        }
+        WorkloadKind::MenuWide => {
+            let menu = image(manifest, "menu.png");
+            let menu_mat = load_bgra(&root.join("menu.png"), &menu.sha256);
+            full_workload(
+                "bounded_menu_wide",
+                canvas_frame(&menu_mat, 2_000, 500, 640, 10),
+                expected_regions(menu, 1.0, 1.0, 640.0, 10.0),
+                DetectorDimensions {
+                    width: 2_944,
+                    height: 736,
+                },
+                DetectorDimensions {
+                    width: 1_312,
+                    height: 320,
+                },
+            )
+        }
+        WorkloadKind::StatusExtremeWide => {
+            let status = image(manifest, "status.png");
+            let status_mat = load_bgra(&root.join("status.png"), &status.sha256);
+            let status_wide_mat = resize_bgra(&status_mat, 569, 320, INTER_LINEAR);
+            full_workload(
+                "bounded_status_extreme_wide",
+                canvas_frame(&status_wide_mat, 2_560, 320, 995, 0),
+                expected_regions(status, 569.0 / 640.0, 320.0 / 360.0, 995.0, 0.0),
+                DetectorDimensions {
+                    width: 5_888,
+                    height: 736,
+                },
+                DetectorDimensions {
+                    width: 1_312,
+                    height: 160,
+                },
+            )
+        }
+        WorkloadKind::HudReference => {
+            let hud = image(manifest, "hud.png");
+            let hud_mat = load_bgra(&root.join("hud.png"), &hud.sha256);
+            full_workload(
+                "bounded_hud_reference",
+                frame_from_mat(&hud_mat),
+                expected_regions(hud, 1.0, 1.0, 0.0, 0.0),
+                DetectorDimensions {
+                    width: 1_312,
+                    height: 736,
+                },
+                DetectorDimensions {
+                    width: 1_312,
+                    height: 736,
+                },
+            )
+        }
+        WorkloadKind::HudOdd => {
+            let hud = image(manifest, "hud.png");
+            let hud_mat = load_bgra(&root.join("hud.png"), &hud.sha256);
+            let hud_odd_mat = resize_bgra(&hud_mat, 1_001, 563, INTER_LINEAR);
+            full_workload(
+                "bounded_hud_odd",
+                frame_from_mat(&hud_odd_mat),
+                expected_regions(hud, 1_001.0 / 960.0, 563.0 / 540.0, 0.0, 0.0),
+                DetectorDimensions {
+                    width: 1_312,
+                    height: 736,
+                },
+                DetectorDimensions {
+                    width: 1_312,
+                    height: 736,
+                },
+            )
+        }
+        WorkloadKind::TooltipDense => {
+            let tooltip = image(manifest, "tooltip-v3.png");
+            let tooltip_mat = load_bgra(&root.join("tooltip-v3.png"), &tooltip.sha256);
+            full_workload(
+                "bounded_tooltip_dense",
+                frame_from_mat(&tooltip_mat),
+                expected_regions(tooltip, 1.0, 1.0, 0.0, 0.0),
+                DetectorDimensions {
+                    width: 1_472,
+                    height: 736,
+                },
+                DetectorDimensions {
+                    width: 1_024,
+                    height: 480,
+                },
+            )
+        }
+        WorkloadKind::MissionBoundary => {
+            let mission = image(manifest, "mission.png");
+            let mission_mat = load_bgra(&root.join("mission.png"), &mission.sha256);
+            let mission_region =
+                PixelRect::new(877, 0, 1_440, 720).expect("mission qualification region");
+            WorkloadSpec {
+                name: "bounded_mission_boundary",
+                frame: frame_from_mat(&mission_mat),
+                region: OcrRegion::Region {
+                    rect: Rect::new(CoordinateSpace::CapturePixels, 877.0, 0.0, 1_440.0, 720.0)
+                        .expect("mission qualification region"),
+                    policy: ClipPolicy::Reject,
+                },
+                effective_region: mission_region,
+                expected: expected_regions(mission, 1.0, 1.0, 0.0, 0.0)
+                    .into_iter()
+                    .filter(|region| region.quad.iter().all(|(x, _)| *x >= 877.0))
+                    .collect::<Vec<_>>()
+                    .into(),
+                native_detector: DetectorDimensions {
+                    width: 736,
+                    height: 928,
+                },
+                bounded_detector: DetectorDimensions {
+                    width: 576,
+                    height: 736,
+                },
+            }
+        }
+        WorkloadKind::Blank4k => full_workload(
             "bounded_blank_4k",
             opaque_black_frame(3_840, 2_160),
             Vec::new(),
@@ -834,11 +877,11 @@ fn build_workloads(root: &Path, manifest: &FixtureManifest) -> Vec<WorkloadSpec>
                 height: 2_176,
             },
             DetectorDimensions {
-                width: 1_312,
-                height: 736,
+                width: 960,
+                height: 512,
             },
         ),
-    ]
+    }
 }
 
 fn full_workload(

@@ -10,6 +10,7 @@ const DETECTOR_MIN_SIDE: u32 = 736;
 const DETECTOR_MULTIPLE: u32 = 32;
 pub(crate) const BOUNDED_MAX_WIDTH: u32 = 1_312;
 pub(crate) const BOUNDED_MAX_HEIGHT: u32 = 736;
+const BOUNDED_LARGE_SOURCE_MAX_TENSOR_BYTES: usize = 6 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectedProfile {
@@ -41,6 +42,7 @@ impl SelectedProfile {
                 multiple: DETECTOR_MULTIPLE,
                 max_width: None,
                 max_height: None,
+                max_tensor_bytes: None,
             },
             Self::BoundedDetector => PreprocessingDescriptor {
                 selected: self,
@@ -48,6 +50,7 @@ impl SelectedProfile {
                 multiple: DETECTOR_MULTIPLE,
                 max_width: Some(BOUNDED_MAX_WIDTH),
                 max_height: Some(BOUNDED_MAX_HEIGHT),
+                max_tensor_bytes: Some(BOUNDED_LARGE_SOURCE_MAX_TENSOR_BYTES),
             },
         }
     }
@@ -60,6 +63,7 @@ pub(crate) struct PreprocessingDescriptor {
     multiple: u32,
     max_width: Option<u32>,
     max_height: Option<u32>,
+    max_tensor_bytes: Option<usize>,
 }
 
 impl PreprocessingDescriptor {
@@ -95,36 +99,81 @@ impl PreprocessingDescriptor {
         let desired_height =
             round_to_multiple(f64_to_u32(f64::from(source_height) * ratio)?, self.multiple)?;
 
-        let (final_width, final_height) = match (self.max_width, self.max_height) {
-            (Some(max_width), Some(max_height))
-                if desired_width > max_width || desired_height > max_height =>
-            {
-                let fit = (f64::from(max_width) / f64::from(desired_width))
-                    .min(f64::from(max_height) / f64::from(desired_height));
-                let width = round_with_ceiling(
-                    f64_to_u32(f64::from(desired_width) * fit)?,
-                    self.multiple,
-                    max_width,
-                )?;
-                let height = round_with_ceiling(
-                    f64_to_u32(f64::from(desired_height) * fit)?,
-                    self.multiple,
-                    max_height,
-                )?;
-                (width, height)
-            }
-            (Some(max_width), Some(max_height)) => {
-                if desired_width > max_width || desired_height > max_height {
-                    return Err(OnnxBackendFault::ResourceLimit);
+        let (final_width, final_height, rectangular_fit_applied) =
+            match (self.max_width, self.max_height) {
+                (Some(max_width), Some(max_height))
+                    if desired_width > max_width || desired_height > max_height =>
+                {
+                    let fit = (f64::from(max_width) / f64::from(desired_width))
+                        .min(f64::from(max_height) / f64::from(desired_height));
+                    let width = round_with_ceiling(
+                        f64_to_u32(f64::from(desired_width) * fit)?,
+                        self.multiple,
+                        max_width,
+                    )?;
+                    let height = round_with_ceiling(
+                        f64_to_u32(f64::from(desired_height) * fit)?,
+                        self.multiple,
+                        max_height,
+                    )?;
+                    (width, height, true)
                 }
-                (desired_width, desired_height)
-            }
-            (None, None) => (desired_width, desired_height),
-            _ => return Err(OnnxBackendFault::ResourceLimit),
-        };
+                (Some(max_width), Some(max_height)) => {
+                    if desired_width > max_width || desired_height > max_height {
+                        return Err(OnnxBackendFault::ResourceLimit);
+                    }
+                    (desired_width, desired_height, false)
+                }
+                (None, None) => (desired_width, desired_height, false),
+                _ => return Err(OnnxBackendFault::ResourceLimit),
+            };
 
+        let (final_width, final_height) = if rectangular_fit_applied {
+            let max_tensor_bytes = self
+                .max_tensor_bytes
+                .ok_or(OnnxBackendFault::ResourceLimit)?;
+            fit_with_tensor_ceiling(final_width, final_height, self.multiple, max_tensor_bytes)?
+        } else {
+            (final_width, final_height)
+        };
         DetectorPlan::checked(source_width, source_height, final_width, final_height)
     }
+}
+
+fn fit_with_tensor_ceiling(
+    width: u32,
+    height: u32,
+    multiple: u32,
+    max_bytes: usize,
+) -> Result<(u32, u32), OnnxBackendFault> {
+    let bytes_per_pixel = 3 * size_of::<f32>();
+    let max_pixels =
+        u32::try_from(max_bytes / bytes_per_pixel).map_err(|_| OnnxBackendFault::ResourceLimit)?;
+    let pixels = width
+        .checked_mul(height)
+        .ok_or(OnnxBackendFault::ResourceLimit)?;
+    if pixels <= max_pixels {
+        return Ok((width, height));
+    }
+
+    let fit = (f64::from(max_pixels) / f64::from(pixels)).sqrt();
+    let scaled_width = f64_to_u32(f64::from(width) * fit)?;
+    let scaled_height = f64_to_u32(f64::from(height) * fit)?;
+    Ok((
+        floor_to_multiple(scaled_width, multiple)?,
+        floor_to_multiple(scaled_height, multiple)?,
+    ))
+}
+
+fn floor_to_multiple(value: u32, multiple: u32) -> Result<u32, OnnxBackendFault> {
+    if multiple == 0 {
+        return Err(OnnxBackendFault::ResourceLimit);
+    }
+    let bounded = value - value % multiple;
+    if bounded < multiple {
+        return Err(OnnxBackendFault::ResourceLimit);
+    }
+    Ok(bounded)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -278,14 +327,17 @@ fn f64_to_u32(value: f64) -> Result<u32, OnnxBackendFault> {
 
 #[cfg(test)]
 mod tests {
-    use super::{BOUNDED_MAX_HEIGHT, BOUNDED_MAX_WIDTH, SelectedProfile, round_to_multiple};
+    use super::{
+        BOUNDED_LARGE_SOURCE_MAX_TENSOR_BYTES, BOUNDED_MAX_HEIGHT, BOUNDED_MAX_WIDTH,
+        SelectedProfile, round_to_multiple,
+    };
     use crate::fault::OnnxBackendFault;
 
     #[test]
     fn bounded_planner_covers_declared_dimensions() {
         let profile = SelectedProfile::BoundedDetector.preprocessing();
         let cases = [
-            ((3_840, 2_160), (1_312, 736)),
+            ((3_840, 2_160), (960, 512)),
             ((2_000, 500), (1_312, 320)),
             ((2_560, 320), (1_312, 160)),
             ((960, 540), (1_312, 736)),
@@ -293,6 +345,7 @@ mod tests {
             ((1_001, 563), (1_312, 736)),
             ((752, 736), (768, 736)),
             ((1_312, 736), (1_312, 736)),
+            ((1_440, 720), (1_024, 480)),
         ];
 
         for ((source_width, source_height), (final_width, final_height)) in cases {
@@ -310,6 +363,7 @@ mod tests {
                 plan.tensor_bytes(),
                 plan.tensor_elements() * size_of::<f32>()
             );
+            assert!(plan.tensor_bytes() <= 11_587_584);
         }
     }
 
@@ -329,17 +383,29 @@ mod tests {
     }
 
     #[test]
-    fn maximum_bounded_plan_has_exact_tensor_ceiling() {
+    fn high_area_plan_respects_the_compound_tensor_ceiling() {
         let plan = SelectedProfile::BoundedDetector
             .preprocessing()
-            .plan(1_312, 736)
+            .plan(3_840, 2_160)
             .unwrap();
-        assert_eq!(plan.tensor_elements(), 2_896_896);
+        assert_eq!((plan.final_width(), plan.final_height()), (960, 512));
+        assert_eq!(plan.tensor_elements(), 1_474_560);
+        assert_eq!(plan.tensor_bytes(), 5_898_240);
+        assert!(plan.tensor_bytes() <= BOUNDED_LARGE_SOURCE_MAX_TENSOR_BYTES);
+        assert_eq!(plan.forward_x(), 960.0 / 3_840.0);
+        assert_eq!(plan.forward_y(), 512.0 / 2_160.0);
+        assert_eq!(plan.inverse_x(), 3_840.0 / 960.0);
+        assert_eq!(plan.inverse_y(), 2_160.0 / 512.0);
+    }
+
+    #[test]
+    fn reference_source_retains_released_detector_geometry() {
+        let plan = SelectedProfile::BoundedDetector
+            .preprocessing()
+            .plan(960, 540)
+            .unwrap();
+        assert_eq!((plan.final_width(), plan.final_height()), (1_312, 736));
         assert_eq!(plan.tensor_bytes(), 11_587_584);
-        assert_eq!(plan.forward_x(), 1.0);
-        assert_eq!(plan.forward_y(), 1.0);
-        assert_eq!(plan.inverse_x(), 1.0);
-        assert_eq!(plan.inverse_y(), 1.0);
     }
 
     #[test]

@@ -298,11 +298,13 @@ schema; no production dependency, model/runtime byte, or license family changes.
 ADR 0036 keeps the default an explicit native G-004 composition choice: ordinary
 engine constructors remain unchanged, while `*_engine_with_default_ocr`,
 `engine_create_with_default_ocr`, and C++ `DefaultOcrOptions` require the caller
-to supply the two controlled paths. ADR 0038 adds only the explicit Rust backend
-selection. ADR 0037's native G-004 budgets remain accepted; ADR 0039 fixes the
-bounded precursor/final procedure. Exact Apple precursor evidence passes, while
-approved Windows precursor and both-target final budgets remain open. Hosted
-Windows Server smoke remains supporting hard-contract evidence only.
+to supply the two controlled paths. ADR 0040 adds only the explicit Rust
+candidate-v2 backend selection; no dependency changes. ADR 0037's native G-004
+budgets remain accepted, and ADR 0039 fixes the bounded precursor/final
+procedure. The rectangular candidate completed both approved-host precursors
+but was rejected by the fixed Windows formula. Candidate-v2 approved-host
+precursors and both-target final budgets remain open. Hosted Windows Server
+smoke remains supporting hard-contract evidence only.
 
 ### G-003 macOS shim boundary
 

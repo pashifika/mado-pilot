@@ -845,7 +845,7 @@ introduce those workloads.
 ## v0.3.1 bounded-detector candidate performance
 
 `crates/backend/onnx/benches/bounded-detector.rs` compares released native G-004
-and the explicit ADR 0038 bounded profile on identical 4K, wide, extreme-wide,
+and the explicit bounded candidate on identical 4K, wide, extreme-wide,
 960×540, odd, dense, boundary-region, and 4K blank inputs. Every iteration
 checks text/count/order, fixture geometry, same-host confidence, complete source
 and profile identity, final detector dimensions/bytes, one direct resize,
@@ -871,7 +871,7 @@ incorrectly applied the released 64×64 empty-result latency row to the 4K blank
 workload, and one 2.697 ms close exceeded the earlier revision's 2 ms final
 budget. No failed process was removed or relabeled.
 
-Reviewed precursor source `cff5338`, executable SHA-256
+Reviewed rectangular-candidate precursor source `cff5338`, executable SHA-256
 `c28257dea60a86fe58d9fe9549670f6615004d3553c2f0bbe0a996a40ef9575d`,
 ran five fresh processes per profile on the approved Apple M1 Pro. Every
 bounded process passed. The native comparator preserved five false executable
@@ -896,9 +896,26 @@ was 2,454,126,592 bytes. Reference-size work is intentionally unchanged. One
 odd-size bounded process retained a slower p95 despite equal detector
 dimensions, so no general speedup is inferred from the profile name.
 
-The exact Apple process rows, retained native false verdicts, and deterministic
-candidate-budget calculation are retained in the Change evidence. Hosted
-Windows/macOS smoke previously passed at `d9d2c45`, but hosted timing/RSS is not
-release-host evidence. Approved Windows precursor, cross-target review, a final
-budget ADR, and five fresh budget-enforcing processes on each target remain
-open. No bounded-profile numeric budget or support claim is accepted yet.
+The exact Apple process rows and retained native false verdicts are Change
+evidence. The matching approved Windows `cff5338` matrix also passed all five
+bounded correctness/resource verdicts, but ADR 0039's unchanged formula rejected
+the rectangular candidate. Margin-derived p50/p95 ceilings exceeded fixed caps
+for 4K HUD, 960×540 HUD, odd HUD, and dense tooltip; dense maximum also exceeded
+its cap. Cold derived 275 ms above 250 ms. Observed RSS derived 384 MiB above
+320 MiB, although that harness retained all eight source frames and the row is
+not reused as one-operation memory evidence. No cap or expected result was
+relaxed.
+
+ADR 0040 replaces the unreleased `bounded-v1` tuple. Candidate v2 preserves
+1312×736 reference/odd detector pixels, but after an oversized desired detector
+first fits the 1312×736 rectangle, it applies a second 6 MiB aspect-preserving
+tensor fit when needed. Fixed workload dimensions become 960×512 for 4K,
+1024×480 for dense tooltip, and remain 1312×320, 1312×160, 1312×736, and
+576×736 for the other declared shapes. The benchmark constructs and drops one
+source fixture per workload so RSS no longer includes all fixture frames
+simultaneously.
+
+Hosted and local candidate-v2 smoke are correctness/resource evidence only.
+Fresh exact-source candidate-v2 Apple/Windows precursors, cross-target review, a
+final budget ADR, and five fresh budget-enforcing processes per target remain
+open. No bounded-profile numeric budget or support claim is accepted.

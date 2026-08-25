@@ -101,16 +101,15 @@ pub const ACCEPTED_G004_DECODER_ID: &str = "rapidocr-ppocrv6-rec-small-greedy-ct
 pub const ACCEPTED_G004_NORMALIZATION_ID: &str = "nfc-trim-stable-detector-order-five-decimal-v1";
 /// Accepted G-004 embedded vocabulary entry count.
 pub const ACCEPTED_G004_VOCABULARY_ENTRIES: u32 = 18_708;
-/// Accepted bounded-detector model identity from ADR 0038.
+/// Accepted bounded-detector model identity from ADR 0040.
 pub const ACCEPTED_BOUNDED_MODEL_ID: &str =
-    "phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v1";
+    "phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2";
 /// Accepted bounded-detector model revision, sharing the immutable RapidOCR source.
 pub const ACCEPTED_BOUNDED_MODEL_VERSION: &str = ACCEPTED_G004_MODEL_VERSION;
-/// Accepted bounded-detector profile identity from ADR 0038.
+/// Accepted bounded-detector profile identity from ADR 0040.
 pub const ACCEPTED_BOUNDED_PROFILE_ID: &str = ACCEPTED_BOUNDED_MODEL_ID;
-/// Accepted bounded-detector preprocessing identity from ADR 0038.
-pub const ACCEPTED_BOUNDED_PREPROCESSING_ID: &str =
-    "rapidocr-ppocrv4-det-bgr-db736-fit-1312x736-linear-half-pixel-source-rec-v1";
+/// Accepted bounded-detector preprocessing identity from ADR 0040.
+pub const ACCEPTED_BOUNDED_PREPROCESSING_ID: &str = "rapidocr-ppocrv4-det-bgr-db736-fit-1312x736-then-tensor6291456b-linear-half-pixel-source-rec-v2";
 /// Maximum bytes accepted for either OCR model component (64 MiB).
 pub const MAX_MODEL_COMPONENT_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -371,7 +370,7 @@ impl OcrModelIdentity {
         .expect("accepted G-004 constants are self-consistent")
     }
 
-    /// Builds the exact accepted bounded-detector identity from ADR 0038 constants.
+    /// Builds the exact accepted bounded-detector identity from ADR 0040 constants.
     #[must_use]
     pub fn accepted_bounded_detector() -> Self {
         Self::new(

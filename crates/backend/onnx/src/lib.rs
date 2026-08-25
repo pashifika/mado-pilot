@@ -206,7 +206,7 @@ impl OnnxOcrBackend {
         Self::open_initialized(source, operation)
     }
 
-    /// Opens the ADR 0038 bounded-detector profile from one explicit model root
+    /// Opens the ADR 0040 bounded-detector profile from one explicit model root
     /// against one controlled runtime.
     ///
     /// This is a non-default selection. It validates the same immutable model
@@ -497,15 +497,15 @@ mod tests {
     #[test]
     fn observations_report_only_bounded_dimensions_counts_and_bytes() {
         let mut observations = OnnxBackendObservations::opened();
-        observations.record_mapping(8_294_400);
-        observations.record_detector_input(1_312, 736, 11_587_584);
+        observations.record_mapping(33_177_600);
+        observations.record_detector_input(960, 512, 5_898_240);
         observations.record_detector_run();
         observations.record_recognizer_run();
 
-        assert_eq!(observations.mapped_bytes(), 8_294_400);
-        assert_eq!(observations.latest_detector_width(), Some(1_312));
-        assert_eq!(observations.latest_detector_height(), Some(736));
-        assert_eq!(observations.detector_tensor_bytes(), 11_587_584);
+        assert_eq!(observations.mapped_bytes(), 33_177_600);
+        assert_eq!(observations.latest_detector_width(), Some(960));
+        assert_eq!(observations.latest_detector_height(), Some(512));
+        assert_eq!(observations.detector_tensor_bytes(), 5_898_240);
         assert_eq!(observations.detector_resizes(), 1);
         assert_eq!(observations.detector_runs(), 1);
         assert_eq!(observations.recognizer_runs(), 1);

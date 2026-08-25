@@ -1,6 +1,6 @@
 # ADR 0038: Bounded detector sampling profile
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0040](0040-compound-bounded-detector-ceiling.md); retained as the rejected rectangular-only candidate
 - **Date:** 2026-08-25
 - **Resolves gate:** _none_; bounded-profile rows under `G-013` remain open until both release targets pass ADR 0039
 - **Supersedes:** _none_; ADRs 0033, 0034, and 0037 remain unchanged for released native G-004
