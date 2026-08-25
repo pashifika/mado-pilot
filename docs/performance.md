@@ -850,8 +850,10 @@ and the explicit ADR 0038 bounded profile on identical 4K, wide, extreme-wide,
 checks text/count/order, fixture geometry, same-host confidence, complete source
 and profile identity, final detector dimensions/bytes, one direct resize,
 detector/recognizer runs, mapped bytes, one-pair/two-session topology,
-cancellation, at most 20 MiB attributable live Rust heap, and at most 4,096
-post-warm live Rust growth before latency can be considered.
+cancellation, and at most 4,096 post-warm live Rust growth. The bounded
+candidate additionally enforces at most 20 MiB attributable live Rust heap.
+Native arbitrary-4K peak is recorded as comparator work under its released
+256 MiB tensor ceiling; it is not judged by the new profile's peak limit.
 
 ADR 0039 separates three phases. `smoke` is the target-independent hosted gate.
 `precursor` runs three warmups and 20 retained samples in five fresh processes,
@@ -869,29 +871,34 @@ incorrectly applied the released 64×64 empty-result latency row to the 4K blank
 workload, and one 2.697 ms close exceeded the earlier revision's 2 ms final
 budget. No failed process was removed or relabeled.
 
-Review-fixed precursor source `d9d2c45`, executable SHA-256
-`0df83d4de09fb4f62ccec29a7e0a06d8a4189aa413c1f3ea6b13d641f0a64d65`,
-ran five fresh processes per profile on the approved Apple M1 Pro. All 1,600
-retained native/bounded samples passed with zero oracle failures and zero live
-Rust growth. Worst per-process observations were:
+Reviewed precursor source `cff5338`, executable SHA-256
+`c28257dea60a86fe58d9fe9549670f6615004d3553c2f0bbe0a996a40ef9575d`,
+ran five fresh processes per profile on the approved Apple M1 Pro. Every
+bounded process passed. The native comparator preserved five false executable
+verdicts because the precursor still evaluated its arbitrary-4K peak against
+the bounded-only 20 MiB ceiling. Those false verdicts are retained rather than
+relabeled. All 1,600 retained native/bounded samples otherwise passed with zero
+oracle failures and zero live Rust growth. Worst per-process observations were:
 
 | Workload | Bounded detector | Native detector | Bounded p95 | Native p95 |
 |---|---:|---:|---:|---:|
-| 4K HUD | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 514.559 ms | 2,355.197 ms |
-| Wide menu | 1312×320 / 5,038,080 bytes | 2944×736 / 26,001,408 bytes | 350.142 ms | 781.211 ms |
-| Extreme-wide status | 1312×160 / 2,519,040 bytes | 5888×736 / 52,002,816 bytes | 231.739 ms | 1,981.616 ms |
-| 960×540 HUD | 1312×736 / 11,587,584 bytes | 1312×736 / 11,587,584 bytes | 482.953 ms | 481.910 ms |
-| Dense tooltip | 1312×640 / 10,076,160 bytes | 1472×736 / 13,000,704 bytes | 610.693 ms | 693.956 ms |
-| 4K blank | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 255.017 ms | 2,105.442 ms |
+| 4K HUD | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 490.454 ms | 2,347.264 ms |
+| Wide menu | 1312×320 / 5,038,080 bytes | 2944×736 / 26,001,408 bytes | 339.375 ms | 787.027 ms |
+| Extreme-wide status | 1312×160 / 2,519,040 bytes | 5888×736 / 52,002,816 bytes | 230.009 ms | 1,282.602 ms |
+| 960×540 HUD | 1312×736 / 11,587,584 bytes | 1312×736 / 11,587,584 bytes | 479.206 ms | 480.257 ms |
+| Dense tooltip | 1312×640 / 10,076,160 bytes | 1472×736 / 13,000,704 bytes | 599.615 ms | 673.754 ms |
+| 4K blank | 1312×736 / 11,587,584 bytes | 3840×2176 / 100,270,080 bytes | 242.689 ms | 2,102.128 ms |
 
-Bounded peak resident high-water was 593,805,312 bytes; the native comparator
-reached 2,473,820,160 bytes. Reference-size work is intentionally unchanged.
-One odd-size bounded process retained a slower p95 despite equal detector
+Bounded attributable live Rust peak was 12,695,400 bytes and bounded peak RSS
+was 586,645,504 bytes. The native comparator's attributable peak reached
+108,627,472 bytes under its released 256 MiB tensor ceiling, and its peak RSS
+was 2,454,126,592 bytes. Reference-size work is intentionally unchanged. One
+odd-size bounded process retained a slower p95 despite equal detector
 dimensions, so no general speedup is inferred from the profile name.
 
-The exact Apple process rows and deterministic candidate-budget calculation are
-retained in the Change evidence. Required hosted Windows/macOS smoke passes at
-`d9d2c45`, but hosted timing/RSS is not release-host evidence. Approved Windows
-precursor, cross-target review, a final budget ADR, and five fresh
-budget-enforcing processes on each target remain open. No bounded-profile numeric
-budget or support claim is accepted yet.
+The exact Apple process rows, retained native false verdicts, and deterministic
+candidate-budget calculation are retained in the Change evidence. Hosted
+Windows/macOS smoke previously passed at `d9d2c45`, but hosted timing/RSS is not
+release-host evidence. Approved Windows precursor, cross-target review, a final
+budget ADR, and five fresh budget-enforcing processes on each target remain
+open. No bounded-profile numeric budget or support claim is accepted yet.
