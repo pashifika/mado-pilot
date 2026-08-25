@@ -42,7 +42,7 @@ The fixed qualification workloads therefore expect bounded detector dimensions:
 
 The profile's absolute detector rectangle remains 1312×736/11,587,584 bytes because reference-size desired work does not invoke the second fit. Backend facts report that absolute bound; per-call observations report the actual final dimensions and bytes. The 6 MiB value is an additional large-desired-input rule bound by the preprocessing identity, not a relabeling of the absolute fact.
 
-The benchmark constructs, hashes, measures, and drops one workload fixture at a time. It reconstructs one reference fixture for cancellation after timed workloads. This changes no production frame ownership or OCR pixels; it prevents unrelated source frames from inflating operation RSS.
+The benchmark constructs, hashes, measures, and drops one workload fixture at a time. It reconstructs one reference fixture for cancellation after timed workloads. This changes no production frame ownership or OCR pixels; it prevents unrelated source frames from being simultaneously live. Target RSS APIs expose process-lifetime high-water rather than resettable workload peaks. Schema version 3 therefore names each diagnostic checkpoint `process_peak_resident_bytes_after_workload`; later values may include earlier peaks. Only the final report-level `peak_resident_bytes` is an independent process-budget input.
 
 All ADR 0038 direct-resize, interpolation, half-pixel, channel, normalization, divide-then-multiply inverse geometry, original-source recognition, explicit selection, one-session-pair, controlled-runtime, privacy, and non-default rules remain unchanged.
 

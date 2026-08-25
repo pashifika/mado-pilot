@@ -912,8 +912,10 @@ first fits the 1312×736 rectangle, it applies a second 6 MiB aspect-preserving
 tensor fit when needed. Fixed workload dimensions become 960×512 for 4K,
 1024×480 for dense tooltip, and remain 1312×320, 1312×160, 1312×736, and
 576×736 for the other declared shapes. The benchmark constructs and drops one
-source fixture per workload so RSS no longer includes all fixture frames
-simultaneously.
+source fixture per workload so those frames are not simultaneously live. OS RSS
+is process-lifetime high-water: schema-v3 workload fields are explicitly named
+`process_peak_resident_bytes_after_workload`, and only final report-level RSS
+sets the process budget.
 
 Exact candidate-v2 source `41ffaf8`, executable SHA-256
 `579016c8345d115fd39d5dfc9efb3caabe7605c5eeeebc31bac6a3295aae763a`,

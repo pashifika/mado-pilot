@@ -46,7 +46,7 @@ The final ceiling ADR may choose a smaller rounded ceiling but cannot exceed thi
 
 ## Consequences
 
-The implementation adds an explicit precursor mode, refuses `--qualify` before final budgets exist, and reports its selected mode in schema version 2. The original schema-version-1 reports remain rejected evidence. Benchmark smoke in CI is unchanged. Support remains withheld until Windows and Apple precursor records pass, a final budget ADR applies the fixed rule, and fresh budget-enforcing runs pass on both targets.
+The implementation adds an explicit precursor mode and refuses `--qualify` before final budgets exist. Schema version 2 first reported the selected mode; candidate-v2 schema version 3 renames workload RSS checkpoints to state their cumulative process-high-water semantics while retaining final report-level RSS as the budget input. Earlier schema-version-1/2 reports remain immutable evidence. Benchmark smoke in CI is unchanged. Support remains withheld until Windows and Apple precursor records pass, a final budget ADR applies the fixed rule, and fresh budget-enforcing runs pass on both targets.
 
 This decision changes qualification procedure only. It does not change profile identity, detector pixels, expected text/geometry, resource ceilings, runtime/model bytes, defaults, or historical Phase 3 evidence.
 

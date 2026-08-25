@@ -161,7 +161,7 @@ struct WorkloadReport {
     growth_bytes: i64,
     peak_allocated_bytes: usize,
     mapped_bytes: u64,
-    peak_resident_bytes: Option<u64>,
+    process_peak_resident_bytes_after_workload: Option<u64>,
     resources: Option<ResourceSignature>,
 }
 
@@ -374,7 +374,7 @@ fn run_profile(
 
     let identity = descriptor.model_identity();
     let mut report = ProfileReport {
-        schema_version: 2,
+        schema_version: 3,
         release_target: bench_harness::RELEASE_TARGET,
         host_id: environment_or(HOST_ENV, "unbound-smoke-host"),
         source_revision: environment_or(SOURCE_ENV, "unbound-smoke-source"),
@@ -455,7 +455,7 @@ fn measure_workload(
         growth_bytes: workload.growth_bytes(),
         peak_allocated_bytes: workload.peak_allocated_bytes(),
         mapped_bytes: workload.mapped_bytes_per_result(),
-        peak_resident_bytes: workload.peak_resident_bytes(),
+        process_peak_resident_bytes_after_workload: workload.peak_resident_bytes(),
         resources: state.resources,
     }
 }
@@ -692,7 +692,10 @@ fn report_passes(mode: RunMode, profile: OnnxOcrProfile, report: &ProfileReport)
                 && workload.growth_bytes <= HEAP_GROWTH_LIMIT
                 && (profile != OnnxOcrProfile::BoundedDetector
                     || workload.peak_allocated_bytes <= HEAP_PEAK_LIMIT_BYTES)
-                && (mode == RunMode::Smoke || workload.peak_resident_bytes.is_some())
+                && (mode == RunMode::Smoke
+                    || workload
+                        .process_peak_resident_bytes_after_workload
+                        .is_some())
                 && workload.resources.is_some()
         })
 }
