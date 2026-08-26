@@ -29,9 +29,9 @@ pub(crate) fn detector(
         .map_err(|_| OnnxBackendFault::ResourceLimit)?;
     let options = Arc::new(RunOptions::new().map_err(|_| OnnxBackendFault::NativeFailure)?);
     let mut monitor = TerminationMonitor::start(Arc::clone(&options), operation.clone())?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "benchmark-instrumentation"))]
     test_hook::at_run_admission();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "benchmark-instrumentation"))]
     test_hook::mark_run_started();
     let run = session.run_with_options(ort::inputs![tensor], options.as_ref());
     if let Some(interruption) = operation.interruption() {
@@ -78,9 +78,9 @@ pub(crate) fn recognizer(
         .map_err(|_| OnnxBackendFault::ResourceLimit)?;
     let options = Arc::new(RunOptions::new().map_err(|_| OnnxBackendFault::NativeFailure)?);
     let mut monitor = TerminationMonitor::start(Arc::clone(&options), operation.clone())?;
-    #[cfg(test)]
+    #[cfg(any(test, feature = "benchmark-instrumentation"))]
     test_hook::at_run_admission();
-    #[cfg(test)]
+    #[cfg(any(test, feature = "benchmark-instrumentation"))]
     test_hook::mark_run_started();
     let run = session.run_with_options(ort::inputs![tensor], options.as_ref());
     if let Some(interruption) = operation.interruption() {
@@ -124,7 +124,7 @@ impl TerminationMonitor {
                 while !monitor_done.load(Ordering::Acquire) {
                     if operation.interruption().is_some() {
                         let _ = options.terminate();
-                        #[cfg(test)]
+                        #[cfg(any(test, feature = "benchmark-instrumentation"))]
                         test_hook::mark_termination_issued();
                         break;
                     }
@@ -173,7 +173,7 @@ fn checkpoint(operation: &OperationContext) -> Result<(), OnnxBackendFault> {
         .map_or(Ok(()), |interruption| Err(interruption.into()))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "benchmark-instrumentation"))]
 pub(crate) mod test_hook {
     use std::ops::Deref;
     use std::sync::{Arc, Condvar, Mutex};
@@ -203,9 +203,14 @@ pub(crate) mod test_hook {
             state: Mutex::new(GateState::default()),
             changed: Condvar::new(),
         });
-        *ACTIVE
+        let mut active = ACTIVE
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&gate));
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            active.is_none(),
+            "only one native-run qualification gate may be active"
+        );
+        *active = Some(Arc::clone(&gate));
         RunGateGuard { gate }
     }
 

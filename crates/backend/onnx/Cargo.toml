@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+benchmark-instrumentation = []
+
 [dependencies]
 libloading = { workspace = true }
 mado-pilot-capture = { path = "../../automation/capture" }
@@ -35,6 +38,7 @@ harness = false
 [[bench]]
 name = "bounded-detector"
 harness = false
+required-features = ["benchmark-instrumentation"]
 
 [lints]
 workspace = true

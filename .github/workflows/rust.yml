@@ -299,8 +299,8 @@ jobs:
           export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
           export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
           export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
-          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=native
-          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded --integrated
+          cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=native
+          cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=bounded --integrated
 
       - name: Run the diagnostic benchmark smoke gate
         shell: bash
@@ -508,8 +508,8 @@ jobs:
           export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
           export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
           export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
-          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=native
-          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded --integrated
+          cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=native
+          cargo bench --locked --package mado-pilot-backend-onnx --features benchmark-instrumentation --bench bounded-detector -- --smoke --profile=bounded --integrated
 
       - name: Run the diagnostic benchmark smoke gate
         shell: bash

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use mado_pilot_backend_onnx::benchmark_instrumentation::install_native_run_gate;
 use mado_pilot_backend_onnx::{
     OnnxBackendFault, OnnxBackendObservations, OnnxOcrBackend, OnnxOcrProfile, RUNTIME_PROFILE_ID,
 };
@@ -59,7 +60,6 @@ const DETECTOR_SHA256: &str = "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29
 const RECOGNIZER_SHA256: &str = "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884";
 const VOCABULARY_SHA256: &str = "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e";
 const GROUPED_RESULT_BYTES_LIMIT: usize = 5_242_880;
-const ACTIVE_CANCELLATION_DELAY: Duration = Duration::from_millis(100);
 const ACTIVE_CANCELLATION_BOUND: Duration = Duration::from_millis(250);
 const ACTIVE_CANCELLATION_GATE_BOUND: Duration = Duration::from_secs(2);
 
@@ -1327,6 +1327,7 @@ fn measure_active_cancellation(
     let worker_recognizer = recognizer.clone();
     let worker_spec = spec.clone();
     let (sender, receiver) = mpsc::sync_channel(1);
+    let gate = install_native_run_gate();
     let worker = thread::spawn(move || {
         let operation = OperationContext::new().with_cancellation(worker_token);
         let descriptor = worker_recognizer.descriptor();
@@ -1348,24 +1349,29 @@ fn measure_active_cancellation(
             .expect("active cancellation receiver remains live");
     });
 
-    let admission_deadline = Instant::now() + ACTIVE_CANCELLATION_GATE_BOUND;
-    loop {
-        match backend.observations() {
-            Err(OnnxBackendFault::Busy) => break,
-            Ok(_) if Instant::now() < admission_deadline => thread::yield_now(),
-            Ok(_) => panic!("active cancellation did not observe backend admission"),
-            Err(fault) => panic!("active cancellation observation failed with {fault}"),
-        }
-    }
-    thread::sleep(ACTIVE_CANCELLATION_DELAY);
+    assert!(
+        gate.wait_until_admitted(ACTIVE_CANCELLATION_GATE_BOUND),
+        "active cancellation native admission timed out"
+    );
+    gate.release();
+    assert!(
+        gate.wait_until_run_started(ACTIVE_CANCELLATION_GATE_BOUND),
+        "active cancellation native run start timed out"
+    );
     let cancellation_started = Instant::now();
     token.cancel();
+    assert!(
+        gate.wait_until_termination_issued(ACTIVE_CANCELLATION_BOUND),
+        "active cancellation native termination timed out"
+    );
+    let remaining = ACTIVE_CANCELLATION_BOUND.saturating_sub(cancellation_started.elapsed());
     let status = receiver
-        .recv_timeout(ACTIVE_CANCELLATION_BOUND)
+        .recv_timeout(remaining)
         .expect("active cancellation returns within the hard bound")
         .expect("active cancellation cannot publish a successful result");
     let cancellation_to_return_ms = milliseconds(cancellation_started.elapsed());
     worker.join().expect("active cancellation worker joins");
+    drop(gate);
     let after = backend
         .observations()
         .expect("active cancellation leaves the backend observable");
