@@ -5,7 +5,12 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::{OnnxBackendFault, OnnxBackendObservations, OnnxOcrBackend, OnnxOcrProfile};
+#[cfg(target_os = "macos")]
+use crate::OnnxProviderFallbackReason;
+use crate::{
+    OnnxBackendFault, OnnxBackendObservations, OnnxExecutionProvider, OnnxExecutionProviderPolicy,
+    OnnxOcrBackend, OnnxOcrProfile,
+};
 use mado_pilot_capture::PixelFormat;
 use mado_pilot_core::{
     CancellationToken, ClipPolicy, CoordinateSpace, OperationContext, PixelExtent, Rect, Status,
@@ -25,6 +30,12 @@ use opencv::imgproc::{COLOR_BGR2BGRA, cvt_color_def};
 
 const RUNTIME_ENV: &str = "MADO_PILOT_ONNX_RUNTIME";
 const MODEL_ROOT_ENV: &str = "MADO_PILOT_G004_MODEL_ROOT";
+#[cfg(all(
+    target_os = "windows",
+    target_arch = "x86_64",
+    feature = "cuda-provider"
+))]
+const CUDA_PROVIDER_ROOT_ENV: &str = "MADO_PILOT_CUDA_PROVIDER_ROOT";
 
 const HUD_TEXT: [&str; 8] = [
     "魔導士",
@@ -208,6 +219,187 @@ fn accepted_runtime_passes_contract_and_hud_oracle() {
             );
         }
     }
+}
+
+#[cfg(feature = "coreml-provider")]
+#[test]
+#[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
+fn rejected_coreml_preference_reports_fresh_cpu_fallback() {
+    let runtime = required_path(RUNTIME_ENV);
+    let model_root = required_path(MODEL_ROOT_ENV);
+    let operation = OperationContext::new();
+    let backend = Arc::new(
+        OnnxOcrBackend::open_accepted_with_provider_policy(
+            &model_root,
+            &runtime,
+            OnnxExecutionProviderPolicy::PreferCoreMl,
+            &operation,
+        )
+        .expect("rejected preferred CoreML constructs a fresh CPU pair"),
+    );
+    let facts = backend.facts();
+    assert_eq!(facts.provider(), OnnxExecutionProvider::Cpu);
+    assert_eq!(
+        facts.requested_provider_policy(),
+        OnnxExecutionProviderPolicy::PreferCoreMl
+    );
+    assert!(facts.initialization_fell_back());
+    assert_eq!(
+        facts.fallback_reason(),
+        Some(OnnxProviderFallbackReason::QualificationRejected)
+    );
+    let result = recognize_hud(backend.clone(), &operation);
+    assert_hud(&result);
+    backend
+        .close(&operation)
+        .expect("fallback CPU backend closes");
+}
+#[cfg(all(
+    target_os = "windows",
+    target_arch = "x86_64",
+    feature = "cuda-provider"
+))]
+#[test]
+#[ignore = "requires explicit reviewed ONNX Runtime, CUDA provider, and G-004 model paths"]
+fn cuda_provider_opens_without_cpu_initialization_fallback() {
+    let runtime = required_path(RUNTIME_ENV);
+    let provider_root = required_path(CUDA_PROVIDER_ROOT_ENV);
+    let model_root = required_path(MODEL_ROOT_ENV);
+    let operation = OperationContext::new();
+    let backend = Arc::new(
+        OnnxOcrBackend::open_accepted_with_provider_config(
+            &model_root,
+            &runtime,
+            OnnxExecutionProviderPolicy::RequireCuda,
+            Some(&provider_root),
+            &operation,
+        )
+        .expect("controlled CUDA provider opens"),
+    );
+    let facts = backend.facts();
+    assert_eq!(facts.provider(), OnnxExecutionProvider::Cuda);
+    assert_eq!(
+        facts.requested_provider_policy(),
+        OnnxExecutionProviderPolicy::RequireCuda
+    );
+    assert!(!facts.initialization_fell_back());
+    assert_eq!(facts.fallback_reason(), None);
+    let result = recognize_hud(backend.clone(), &operation);
+    assert_hud_with_tolerance(&result, 960.0 * 0.025, 540.0 * 0.025);
+    assert_provider_survives_cancelled_inference(
+        &backend,
+        OnnxExecutionProvider::Cuda,
+        &operation,
+        960.0 * 0.025,
+        540.0 * 0.025,
+    );
+    backend.close(&operation).expect("CUDA backend closes");
+}
+
+#[cfg(all(
+    target_os = "windows",
+    target_arch = "x86_64",
+    feature = "cuda-provider"
+))]
+fn assert_provider_survives_cancelled_inference(
+    backend: &Arc<OnnxOcrBackend>,
+    expected: OnnxExecutionProvider,
+    operation: &OperationContext,
+    x_tolerance: f64,
+    y_tolerance: f64,
+) {
+    let gate = crate::inference::test_hook::install();
+    let token = CancellationToken::new();
+    let worker_token = token.clone();
+    let worker_backend: Arc<dyn OcrBackend> = backend.clone();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let cancelled = thread::spawn(move || {
+        let context = OperationContext::new().with_cancellation(worker_token);
+        sender
+            .send(
+                recognize_hud_result(worker_backend, &context)
+                    .expect_err("cancelled provider inference cannot publish")
+                    .status(),
+            )
+            .expect("provider cancellation receiver remains live");
+    });
+    assert!(
+        gate.wait_until_admitted(NATIVE_GATE_BOUND),
+        "provider run admission timed out"
+    );
+    gate.release();
+    assert!(
+        gate.wait_until_run_started(NATIVE_GATE_BOUND),
+        "provider run start timed out"
+    );
+    token.cancel();
+    assert!(
+        gate.wait_until_termination_issued(NATIVE_TERMINATION_BOUND),
+        "provider termination was not issued within the explicit bound"
+    );
+    assert_eq!(
+        receiver
+            .recv_timeout(NATIVE_TERMINATION_BOUND)
+            .expect("cancelled provider inference returns"),
+        Status::Cancelled
+    );
+    cancelled
+        .join()
+        .expect("provider cancellation worker joins");
+    drop(gate);
+
+    assert_eq!(backend.facts().provider(), expected);
+    assert!(!backend.facts().initialization_fell_back());
+    let after = recognize_hud(backend.clone(), operation);
+    assert_hud_with_tolerance(&after, x_tolerance, y_tolerance);
+    assert_eq!(backend.facts().provider(), expected);
+}
+
+#[cfg(all(target_os = "macos", not(feature = "coreml-provider")))]
+#[test]
+#[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
+fn preferred_coreml_without_build_capability_falls_back_to_cpu() {
+    let runtime = required_path(RUNTIME_ENV);
+    let model_root = required_path(MODEL_ROOT_ENV);
+    let operation = OperationContext::new();
+    let backend = Arc::new(
+        OnnxOcrBackend::open_accepted_with_provider_policy(
+            &model_root,
+            &runtime,
+            OnnxExecutionProviderPolicy::PreferCoreMl,
+            &operation,
+        )
+        .expect("preferred CoreML falls back to a fresh CPU pair"),
+    );
+    let facts = backend.facts();
+    assert_eq!(facts.provider(), OnnxExecutionProvider::Cpu);
+    assert!(facts.initialization_fell_back());
+    assert_eq!(
+        facts.fallback_reason(),
+        Some(OnnxProviderFallbackReason::BuildCapabilityUnavailable)
+    );
+    let result = recognize_hud(backend.clone(), &operation);
+    assert_hud(&result);
+    backend
+        .close(&operation)
+        .expect("fallback CPU backend closes");
+}
+
+#[cfg(all(target_os = "macos", not(feature = "coreml-provider")))]
+#[test]
+#[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
+fn required_coreml_without_build_capability_publishes_nothing() {
+    let runtime = required_path(RUNTIME_ENV);
+    let model_root = required_path(MODEL_ROOT_ENV);
+    let operation = OperationContext::new();
+    let fault = OnnxOcrBackend::open_accepted_with_provider_policy(
+        &model_root,
+        &runtime,
+        OnnxExecutionProviderPolicy::RequireCoreMl,
+        &operation,
+    )
+    .expect_err("required CoreML cannot fall back");
+    assert_eq!(fault, OnnxBackendFault::ProviderUnavailable);
 }
 
 fn recognize_hud(
@@ -581,14 +773,22 @@ fn assert_grouped_observation_delta(
 }
 
 fn assert_hud(actual: &mado_pilot_ocr::OcrResult) {
+    assert_hud_with_tolerance(actual, HUD_POINT_TOLERANCE, HUD_POINT_TOLERANCE);
+}
+
+fn assert_hud_with_tolerance(
+    actual: &mado_pilot_ocr::OcrResult,
+    x_tolerance: f64,
+    y_tolerance: f64,
+) {
     assert_eq!(actual.regions().len(), HUD_TEXT.len());
     for (index, region) in actual.regions().iter().enumerate() {
         assert_eq!(region.text(), HUD_TEXT[index]);
         let points = region.geometry().points();
         for (point, (expected_x, expected_y)) in points.into_iter().zip(HUD_QUADS[index]) {
             assert!(
-                (point.x() - expected_x).abs() <= HUD_POINT_TOLERANCE
-                    && (point.y() - expected_y).abs() <= HUD_POINT_TOLERANCE,
+                (point.x() - expected_x).abs() <= x_tolerance
+                    && (point.y() - expected_y).abs() <= y_tolerance,
                 "geometry drift at detector order {index}: ({}, {}) versus ({expected_x}, {expected_y})",
                 point.x(),
                 point.y()

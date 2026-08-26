@@ -4,13 +4,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use mado_pilot_core::OperationContext;
 use mado_pilot_ocr::OcrModelSource;
-use ort::ep::CPU;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{TensorElementType, ValueType};
 
-use crate::fault::{OnnxBackendFault, OnnxBackendObservations};
+use crate::fault::{
+    OnnxBackendFault, OnnxBackendObservations, OnnxExecutionProvider, OnnxProviderFallbackReason,
+};
 use crate::profile::{DetectorPlan, SelectedProfile};
+use crate::provider;
 use crate::vocabulary::Vocabulary;
 
 const DETECTOR_INPUT: &str = "x";
@@ -18,6 +20,44 @@ const DETECTOR_OUTPUT: &str = "sigmoid_0.tmp_0";
 const RECOGNIZER_INPUT: &str = "x";
 const RECOGNIZER_OUTPUT: &str = "fetch_name_0";
 const VOCABULARY_KEY: &str = "character";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProviderOpenFault {
+    fault: OnnxBackendFault,
+    fallback_reason: Option<OnnxProviderFallbackReason>,
+}
+
+impl ProviderOpenFault {
+    pub(crate) const fn terminal(fault: OnnxBackendFault) -> Self {
+        Self {
+            fault,
+            fallback_reason: None,
+        }
+    }
+
+    pub(crate) const fn provider(
+        provider: OnnxExecutionProvider,
+        fault: OnnxBackendFault,
+        reason: OnnxProviderFallbackReason,
+    ) -> Self {
+        Self {
+            fault,
+            fallback_reason: if matches!(provider, OnnxExecutionProvider::Cpu) {
+                None
+            } else {
+                Some(reason)
+            },
+        }
+    }
+
+    pub(crate) const fn fault(self) -> OnnxBackendFault {
+        self.fault
+    }
+
+    pub(crate) const fn fallback_reason(self) -> Option<OnnxProviderFallbackReason> {
+        self.fallback_reason
+    }
+}
 
 static SESSION_PAIR_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -51,45 +91,71 @@ pub(crate) struct SessionPair {
 }
 
 impl SessionPair {
-    pub(crate) fn open(
+    pub(crate) fn open_with_provider(
         source: OcrModelSource,
         operation: &OperationContext,
-    ) -> Result<Self, OnnxBackendFault> {
-        checkpoint(operation)?;
-        SelectedProfile::from_identity(source.identity())?;
+        provider: OnnxExecutionProvider,
+    ) -> Result<Self, ProviderOpenFault> {
+        checkpoint(operation).map_err(ProviderOpenFault::terminal)?;
+        SelectedProfile::from_identity(source.identity()).map_err(ProviderOpenFault::terminal)?;
 
-        let lease = PairLease::acquire()?;
-        let detector = build_session(source.detector())?;
-        checkpoint(operation)?;
+        let lease = PairLease::acquire().map_err(ProviderOpenFault::terminal)?;
+        let detector = build_session(source.detector(), provider, "detector")?;
+        checkpoint(operation).map_err(ProviderOpenFault::terminal)?;
         validate_graph(
             &detector,
             DETECTOR_INPUT,
             &[-1, 3, -1, -1],
             DETECTOR_OUTPUT,
             &[-1, 1, -1, -1],
-        )?;
+        )
+        .map_err(|fault| {
+            ProviderOpenFault::provider(provider, fault, OnnxProviderFallbackReason::GraphRejected)
+        })?;
 
-        let recognizer = build_session(source.recognizer())?;
-        checkpoint(operation)?;
+        let recognizer = build_session(source.recognizer(), provider, "recognizer")?;
+        checkpoint(operation).map_err(ProviderOpenFault::terminal)?;
         validate_graph(
             &recognizer,
             RECOGNIZER_INPUT,
             &[-1, 3, 48, -1],
             RECOGNIZER_OUTPUT,
             &[-1, -1, 18_710],
-        )?;
+        )
+        .map_err(|fault| {
+            ProviderOpenFault::provider(provider, fault, OnnxProviderFallbackReason::GraphRejected)
+        })?;
         let raw_vocabulary = recognizer
             .metadata()
-            .map_err(|_| OnnxBackendFault::GraphMismatch)?
+            .map_err(|_| {
+                ProviderOpenFault::provider(
+                    provider,
+                    OnnxBackendFault::GraphMismatch,
+                    OnnxProviderFallbackReason::GraphRejected,
+                )
+            })?
             .custom(VOCABULARY_KEY)
-            .ok_or(OnnxBackendFault::GraphMismatch)?;
+            .ok_or_else(|| {
+                ProviderOpenFault::provider(
+                    provider,
+                    OnnxBackendFault::GraphMismatch,
+                    OnnxProviderFallbackReason::GraphRejected,
+                )
+            })?;
         let profile = source.profile_metadata();
         let vocabulary = Vocabulary::parse(
             raw_vocabulary,
             profile.vocabulary_entries(),
             profile.vocabulary_sha256(),
-        )?;
-        checkpoint(operation)?;
+        )
+        .map_err(|_| {
+            ProviderOpenFault::provider(
+                provider,
+                OnnxBackendFault::GraphMismatch,
+                OnnxProviderFallbackReason::GraphRejected,
+            )
+        })?;
+        checkpoint(operation).map_err(ProviderOpenFault::terminal)?;
 
         Ok(Self {
             detector,
@@ -146,26 +212,83 @@ impl SessionPair {
     }
 }
 
-fn build_session(model: &[u8]) -> Result<Session, OnnxBackendFault> {
-    Session::builder()
-        .map_err(|_| OnnxBackendFault::NativeFailure)?
-        .with_execution_providers([CPU::default()
-            .with_arena_allocator(false)
-            .build()
-            .error_on_failure()])
-        .map_err(|_| OnnxBackendFault::NativeFailure)?
+#[cfg(feature = "benchmark-instrumentation")]
+impl Drop for SessionPair {
+    fn drop(&mut self) {
+        let _ = self.detector.end_profiling();
+        let _ = self.recognizer.end_profiling();
+    }
+}
+
+#[cfg(feature = "benchmark-instrumentation")]
+static PROFILE_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn build_session(
+    model: &[u8],
+    provider_kind: OnnxExecutionProvider,
+    role: &str,
+) -> Result<Session, ProviderOpenFault> {
+    #[cfg(not(feature = "benchmark-instrumentation"))]
+    let _ = role;
+    let execution_provider = provider::dispatch(provider_kind).map_err(|reason| {
+        ProviderOpenFault::provider(provider_kind, provider::unavailable_fault(reason), reason)
+    })?;
+    let initialization_fault = || {
+        ProviderOpenFault::provider(
+            provider_kind,
+            OnnxBackendFault::ProviderInitializationFailed,
+            OnnxProviderFallbackReason::SessionCreationFailed,
+        )
+    };
+    let builder = Session::builder().map_err(|_| initialization_fault())?;
+    let builder = builder
+        .with_execution_providers([execution_provider])
+        .map_err(|_| {
+            ProviderOpenFault::provider(
+                provider_kind,
+                OnnxBackendFault::ProviderInitializationFailed,
+                OnnxProviderFallbackReason::RegistrationFailed,
+            )
+        })?;
+    let builder = builder
         .with_intra_threads(1)
-        .map_err(|_| OnnxBackendFault::NativeFailure)?
+        .map_err(|_| initialization_fault())?;
+    let builder = builder
         .with_inter_threads(1)
-        .map_err(|_| OnnxBackendFault::NativeFailure)?
+        .map_err(|_| initialization_fault())?;
+    let builder = builder
         .with_parallel_execution(false)
-        .map_err(|_| OnnxBackendFault::NativeFailure)?
+        .map_err(|_| initialization_fault())?;
+    let builder = builder
         .with_memory_pattern(false)
-        .map_err(|_| OnnxBackendFault::NativeFailure)?
+        .map_err(|_| initialization_fault())?;
+    let mut builder = builder
         .with_optimization_level(GraphOptimizationLevel::All)
-        .map_err(|_| OnnxBackendFault::NativeFailure)?
+        .map_err(|_| initialization_fault())?;
+    #[cfg(feature = "benchmark-instrumentation")]
+    if let Some(root) = std::env::var_os("MADO_PILOT_ORT_PROFILE_DIR") {
+        let root = std::path::PathBuf::from(root);
+        let canonical = std::fs::canonicalize(&root).map_err(|_| initialization_fault())?;
+        if canonical != root
+            || !canonical
+                .metadata()
+                .map_err(|_| initialization_fault())?
+                .is_dir()
+        {
+            return Err(initialization_fault());
+        }
+        let sequence = PROFILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let prefix = canonical.join(format!(
+            "mado-pilot-{role}-{}-{sequence}",
+            std::process::id()
+        ));
+        builder = builder
+            .with_profiling(prefix)
+            .map_err(|_| initialization_fault())?;
+    }
+    builder
         .commit_from_memory(model)
-        .map_err(|_| OnnxBackendFault::GraphMismatch)
+        .map_err(|_| initialization_fault())
 }
 
 fn validate_graph(
