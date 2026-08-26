@@ -2400,7 +2400,7 @@ pub const PHASE3_1_WINDOWS_CUDA_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
     ),
 ];
 
-/// Phase 3.1 Windows CUDA grouped OCR latency ceilings from ADR 0048.
+/// Phase 3.1 Windows CUDA grouped OCR ceilings from ADR 0048 and successor ADR 0049.
 pub const PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     LatencyBudget::new(
         "zone_one_full",
@@ -2430,7 +2430,7 @@ pub const PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] 
         "zone_empty_4k",
         Duration::from_millis(25),
         Duration::from_millis(25),
-        Duration::from_millis(25),
+        Duration::from_millis(50),
     ),
 ];
 

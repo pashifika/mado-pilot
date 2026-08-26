@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per future workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded/grouped/provider OCR are resolved by ADRs 0008, 0024–0032, 0037, 0041, 0044, 0047, and 0048 |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per future workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded/grouped/provider OCR are resolved by ADRs 0008, 0024–0032, 0037, 0041, 0044, 0047–0049 |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -252,16 +252,18 @@ recorded sequences kept as regression fixtures.
 
 **Version 0.3.1 OCR decision.** Provider selection is independent from model and
 preprocessing profile. Existing and automatic constructors use CPU on both
-release targets. Explicit Windows CUDA is accepted only for the exact ADR 0048
-target/runtime/dependency boundary. CoreML is release-rejected by ADR 0047.
-Preferred policy may construct one fresh CPU pair only before engine
-publication; required policy publishes no engine on failure. No inference,
-cancellation, deadline, device, or native error switches provider.
+release targets. Explicit Windows CUDA is accepted only for ADR 0049's exact
+successor source over the ADR 0048 target/runtime/dependency boundary. CoreML is
+release-rejected by ADR 0047. Preferred policy may construct one fresh CPU pair
+only before engine publication; required policy publishes no engine on failure.
+No inference, cancellation, deadline, device, or native error switches provider.
 
 **Evidence.** ADR 0046 fixes the policy and controlled dependency contract. ADR
 0047 retains CoreML placement plus geometry/cancellation failures. ADR 0048
-retains Windows CUDA placement, precursor matrices, two stopped tail
-observations, and the terminal five-CUDA/five-fallback 249/249 pass.
+remains historical Windows CUDA evidence. ADR 0049 retains its exact placement
+and loader policy, adds the internal 128 MiB adaptive recognizer bound, rejects
+arena/workspace/preload alternatives on measured gates, and passes the successor
+five-CUDA/five-fallback matrix.
 
 **Status.** The v0.3.1 OCR provider row is resolved. G-006 remains open for
 future accelerator kinds, graphs, targets, automatic defaults, or Phase 5 work.
@@ -680,14 +682,17 @@ cleanup, correctness, heap, and growth gate. Hosted checks passed both release
 targets on that source; their timing/RSS remains non-qualifying.
 
 **The `v0.3.1` OCR provider budget decision is resolved.** ADR 0047 assigns no
-CoreML budget because its correctness/cancellation smoke failed. ADR 0048 adds
-three exact Windows profiles for required CUDA singular/grouped work and the
-preferred-CUDA/missing-root fresh-CPU grouped fallback. The terminal source
-`40e5ec9f1720fbfa5ab0943a3738ccc4a719c68d96532201c6740cca41c6152b`
-passed five CUDA and five fallback processes, 249/249 checks, with zero retry,
-exclusion, priming, overlap, growth failure, or NVRTC diagnostic. Two earlier
-sequences remain retained as stopped tail observations. Every historical CPU
-profile digest and budget is unchanged.
+CoreML budget because its correctness/cancellation smoke failed. ADR 0048's
+three Windows profiles remain immutable historical evidence. ADR 0049 adds
+three successor profiles for required CUDA singular/grouped work and the
+preferred-CUDA/missing-root fresh-CPU grouped fallback. Exact source tree
+`896e037d962610c4abd7a4a7b143d1ae9c90f549` passed five CUDA and five fallback
+processes with zero retry, exclusion, priming, overlap, incorrect result, growth
+failure, or unexpected stderr diagnostic. Minimum workload-median p95
+CPU-over-CUDA speedup was 3.995×. CUDA median RSS remained 4.881× fallback CPU,
+so automatic selection remains CPU. The retained predecessor tail advances only
+the successor CUDA `zone_empty_4k` maximum to 50 ms. Every historical profile
+and frozen ADR 0047/0048 section remains byte-identical.
 
 ## G-014
 

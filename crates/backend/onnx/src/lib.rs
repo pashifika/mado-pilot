@@ -58,7 +58,211 @@ pub use fault::{
 #[cfg(feature = "benchmark-instrumentation")]
 pub mod benchmark_instrumentation {
     use std::fmt;
+    use std::mem::size_of;
+    use std::sync::{Arc, Condvar, Mutex};
     use std::time::Duration;
+
+    /// Explicit private ORT profiling directory used only by placement qualification.
+    pub const ORT_PROFILE_DIR_ENV: &str = "MADO_PILOT_ORT_PROFILE_DIR";
+
+    /// Closed initialization boundaries observable by the qualification bench.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum OpenStage {
+        /// The exact ONNX Runtime library finished initialization.
+        RuntimeInitialized,
+        /// Provider preparation and controlled dependency loading completed.
+        ProviderPrepared,
+        /// Detector session construction and graph validation completed.
+        DetectorSessionReady,
+        /// Recognizer session, graph, and vocabulary validation completed.
+        RecognizerSessionReady,
+    }
+
+    /// Closed ordered boundaries in one fresh memory-attribution process.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MemoryStage {
+        /// Before runtime paths, models, or provider dependencies are opened.
+        ProcessStart,
+        /// The exact ONNX Runtime library finished initialization.
+        RuntimeInitialized,
+        /// Provider preparation and controlled dependency loading completed.
+        ProviderPrepared,
+        /// Detector session construction and graph validation completed.
+        DetectorSessionReady,
+        /// Recognizer session, graph, and vocabulary validation completed.
+        RecognizerSessionReady,
+        /// One complete pass through every fixed singular and grouped workload completed.
+        FirstWarmupPassComplete,
+        /// Two further warmup passes and twenty retained passes completed.
+        RetainedSequenceComplete,
+        /// Session teardown completed while process-global runtime/provider handles remain.
+        Closed,
+    }
+
+    impl From<OpenStage> for MemoryStage {
+        fn from(stage: OpenStage) -> Self {
+            match stage {
+                OpenStage::RuntimeInitialized => Self::RuntimeInitialized,
+                OpenStage::ProviderPrepared => Self::ProviderPrepared,
+                OpenStage::DetectorSessionReady => Self::DetectorSessionReady,
+                OpenStage::RecognizerSessionReady => Self::RecognizerSessionReady,
+            }
+        }
+    }
+
+    /// Validates the complete non-duplicated memory-stage report order.
+    #[must_use]
+    pub fn memory_stage_sequence_is_valid(stages: &[MemoryStage]) -> bool {
+        const EXPECTED: [MemoryStage; 8] = [
+            MemoryStage::ProcessStart,
+            MemoryStage::RuntimeInitialized,
+            MemoryStage::ProviderPrepared,
+            MemoryStage::DetectorSessionReady,
+            MemoryStage::RecognizerSessionReady,
+            MemoryStage::FirstWarmupPassComplete,
+            MemoryStage::RetainedSequenceComplete,
+            MemoryStage::Closed,
+        ];
+        stages == EXPECTED
+    }
+
+    struct OpenStageObserver {
+        callback: Arc<dyn Fn(OpenStage) + Send + Sync>,
+        state: Mutex<OpenStageObserverState>,
+        drained: Condvar,
+    }
+
+    struct OpenStageObserverState {
+        enabled: bool,
+        in_flight: usize,
+    }
+
+    struct OpenStageCall {
+        observer: Arc<OpenStageObserver>,
+    }
+
+    /// Exclusive disable-and-drain fence for one open-stage observer.
+    pub struct OpenStageObserverGuard {
+        observer: Arc<OpenStageObserver>,
+    }
+
+    static OPEN_STAGE_OBSERVER: Mutex<Option<Arc<OpenStageObserver>>> = Mutex::new(None);
+
+    impl fmt::Debug for OpenStageObserverGuard {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("OpenStageObserverGuard")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl OpenStageObserver {
+        fn begin(self: &Arc<Self>) -> Option<OpenStageCall> {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !state.enabled {
+                return None;
+            }
+            state.in_flight += 1;
+            Some(OpenStageCall {
+                observer: Arc::clone(self),
+            })
+        }
+    }
+
+    impl Drop for OpenStageCall {
+        fn drop(&mut self) {
+            let mut state = self
+                .observer
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.in_flight = state
+                .in_flight
+                .checked_sub(1)
+                .expect("an open-stage call owns one in-flight slot");
+            if state.in_flight == 0 {
+                self.observer.drained.notify_all();
+            }
+        }
+    }
+
+    impl Drop for OpenStageObserverGuard {
+        fn drop(&mut self) {
+            {
+                let mut state = self
+                    .observer
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.enabled = false;
+                while state.in_flight != 0 {
+                    state = self
+                        .observer
+                        .drained
+                        .wait(state)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+            }
+            let mut active = OPEN_STAGE_OBSERVER
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if active
+                .as_ref()
+                .is_some_and(|observer| Arc::ptr_eq(observer, &self.observer))
+            {
+                *active = None;
+            }
+        }
+    }
+
+    /// Installs one process-global open-stage observer.
+    ///
+    /// Dropping the returned guard disables observation and waits for any
+    /// synchronous callback already in flight. No callback runs while the
+    /// observer registry lock is held.
+    ///
+    /// # Panics
+    ///
+    /// Panics when another open-stage observer is still installed.
+    #[must_use]
+    pub fn install_open_stage_observer(
+        observe: impl Fn(OpenStage) + Send + Sync + 'static,
+    ) -> OpenStageObserverGuard {
+        let observer = Arc::new(OpenStageObserver {
+            callback: Arc::new(observe),
+            state: Mutex::new(OpenStageObserverState {
+                enabled: true,
+                in_flight: 0,
+            }),
+            drained: Condvar::new(),
+        });
+        let mut active = OPEN_STAGE_OBSERVER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active.is_some() {
+            drop(active);
+            panic!("only one open-stage observer may be active");
+        }
+        *active = Some(Arc::clone(&observer));
+        OpenStageObserverGuard { observer }
+    }
+
+    pub(crate) fn record_open_stage(stage: OpenStage) {
+        let observer = OPEN_STAGE_OBSERVER
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(observer) = observer else {
+            return;
+        };
+        let Some(_call) = observer.begin() else {
+            return;
+        };
+        (observer.callback)(stage);
+    }
 
     /// One exclusive detector/recognizer run gate installed by a qualification process.
     pub struct NativeRunGate {
@@ -106,6 +310,214 @@ pub mod benchmark_instrumentation {
     pub fn install_native_run_gate() -> NativeRunGate {
         NativeRunGate {
             inner: crate::inference::test_hook::install(),
+        }
+    }
+
+    /// Privacy-safe result of one synthetic maximum-width native recognizer probe.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct RecognizerBudgetProbe {
+        /// Number of synthetic accepted-width candidates.
+        pub candidates: usize,
+        /// Number of checked planner batches produced before native admission.
+        pub planned_batches: usize,
+        /// Number of native recognizer submissions observed by the backend.
+        pub native_runs: u64,
+        /// Largest checked output estimate submitted by the probe.
+        pub maximum_estimated_output_bytes: usize,
+        /// Active provider-specific output budget.
+        pub output_budget_bytes: usize,
+    }
+
+    /// Runs six accepted maximum-width tensors through the active CUDA recognizer.
+    ///
+    /// This does not create a public OCR quality fixture. It proves that the
+    /// adaptive planner splits native work before the provider output boundary,
+    /// while the ordinary end-to-end fixture run-count oracles remain unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed backend fault when the active provider is not CUDA, the
+    /// planner or tensor arithmetic exceeds a bound, native execution fails, or
+    /// the extracted output violates its active budget.
+    pub fn run_maximum_width_recognizer_probe(
+        backend: &crate::OnnxOcrBackend,
+        operation: &mado_pilot_core::OperationContext,
+    ) -> Result<RecognizerBudgetProbe, crate::OnnxBackendFault> {
+        const WIDTH: usize = crate::image::MAX_RECOGNIZER_WIDTH;
+        const CANDIDATES: usize = crate::RECOGNITION_BATCH;
+        const CHANNELS: usize = 3;
+        const HEIGHT: usize = 48;
+
+        backend.state.try_with(|pair| {
+            if pair.active_provider() != crate::OnnxExecutionProvider::Cuda {
+                return Err(crate::OnnxBackendFault::ProviderUnavailable);
+            }
+            let budget = crate::provider::recognizer_output_budget(pair.active_provider());
+            let recognition_order = (0..CANDIDATES)
+                .map(|index| (index, WIDTH as f64 / HEIGHT as f64))
+                .collect::<Vec<_>>();
+            let before_runs = pair.observations().recognizer_runs();
+            let mut start = 0;
+            let mut maximum_estimated_output_bytes = 0;
+            let mut planned_batches = 0;
+            while start < recognition_order.len() {
+                let range =
+                    crate::recognition_batch_range(&recognition_order, start, budget, operation)?;
+                let end = range.end;
+                let batch = range.len();
+                planned_batches += 1;
+                let estimated_output_bytes =
+                    crate::decode::estimated_recognizer_output_bytes(batch, WIDTH)?;
+                maximum_estimated_output_bytes =
+                    maximum_estimated_output_bytes.max(estimated_output_bytes);
+                let input_elements = batch
+                    .checked_mul(CHANNELS)
+                    .and_then(|value| value.checked_mul(HEIGHT))
+                    .and_then(|value| value.checked_mul(WIDTH))
+                    .ok_or(crate::OnnxBackendFault::ResourceLimit)?;
+                let input_bytes = input_elements
+                    .checked_mul(size_of::<f32>())
+                    .ok_or(crate::OnnxBackendFault::ResourceLimit)?;
+                if input_bytes > crate::image::MAX_TENSOR_BYTES {
+                    return Err(crate::OnnxBackendFault::ResourceLimit);
+                }
+                let input = crate::image::TensorInput {
+                    data: vec![0.0; input_elements],
+                    shape: [batch, CHANNELS, HEIGHT, WIDTH],
+                };
+                let (recognizer, vocabulary) = pair.recognizer_and_vocabulary_mut();
+                let decoded = crate::inference::recognizer(
+                    recognizer,
+                    vocabulary,
+                    &input,
+                    64 * 1024,
+                    budget,
+                    operation,
+                )?;
+                if decoded.len() != batch {
+                    return Err(crate::OnnxBackendFault::MalformedOutput);
+                }
+                start = end;
+            }
+            let native_runs = pair
+                .observations()
+                .recognizer_runs()
+                .checked_sub(before_runs)
+                .ok_or(crate::OnnxBackendFault::MalformedOutput)?;
+            Ok(RecognizerBudgetProbe {
+                candidates: CANDIDATES,
+                planned_batches,
+                native_runs,
+                maximum_estimated_output_bytes,
+                output_budget_bytes: budget,
+            })
+        })?
+    }
+    #[cfg(test)]
+    mod tests {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::thread;
+        use std::time::Duration;
+
+        use super::{
+            MemoryStage, OpenStage, install_open_stage_observer, memory_stage_sequence_is_valid,
+            record_open_stage,
+        };
+
+        static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+        #[test]
+        fn open_stage_observer_is_exclusive_and_disabled_by_its_guard() {
+            let _test = TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let observed = Arc::new(Mutex::new(Vec::new()));
+            let callback_observed = Arc::clone(&observed);
+            let guard = install_open_stage_observer(move |stage| {
+                callback_observed
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(stage);
+            });
+
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| install_open_stage_observer(|_| {}))).is_err()
+            );
+            record_open_stage(OpenStage::RuntimeInitialized);
+            drop(guard);
+            record_open_stage(OpenStage::ProviderPrepared);
+            assert_eq!(
+                *observed
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                vec![OpenStage::RuntimeInitialized]
+            );
+        }
+
+        #[test]
+        fn open_stage_guard_drains_an_in_flight_callback() {
+            let _test = TEST_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (entered_sender, entered_receiver) = mpsc::channel();
+            let (release_sender, release_receiver) = mpsc::channel();
+            let release_receiver = Arc::new(Mutex::new(release_receiver));
+            let callback_release = Arc::clone(&release_receiver);
+            let guard = install_open_stage_observer(move |_| {
+                entered_sender.send(()).expect("report callback entry");
+                callback_release
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .recv()
+                    .expect("release callback");
+            });
+            let marker = thread::spawn(|| record_open_stage(OpenStage::RuntimeInitialized));
+            entered_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("callback entered");
+
+            let (drained_sender, drained_receiver) = mpsc::channel();
+            let drain = thread::spawn(move || {
+                drop(guard);
+                drained_sender.send(()).expect("report drained guard");
+            });
+            assert!(
+                drained_receiver
+                    .recv_timeout(Duration::from_millis(20))
+                    .is_err(),
+                "guard returned before the callback drained"
+            );
+            release_sender.send(()).expect("release callback");
+            marker.join().expect("stage marker joins");
+            drained_receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("guard drained");
+            drain.join().expect("drain thread joins");
+        }
+
+        #[test]
+        fn memory_stage_sequence_rejects_missing_duplicate_and_out_of_order_rows() {
+            let expected = [
+                MemoryStage::ProcessStart,
+                MemoryStage::RuntimeInitialized,
+                MemoryStage::ProviderPrepared,
+                MemoryStage::DetectorSessionReady,
+                MemoryStage::RecognizerSessionReady,
+                MemoryStage::FirstWarmupPassComplete,
+                MemoryStage::RetainedSequenceComplete,
+                MemoryStage::Closed,
+            ];
+            assert!(memory_stage_sequence_is_valid(&expected));
+            assert!(!memory_stage_sequence_is_valid(&expected[..7]));
+
+            let mut duplicate = expected;
+            duplicate[4] = MemoryStage::DetectorSessionReady;
+            assert!(!memory_stage_sequence_is_valid(&duplicate));
+
+            let mut out_of_order = expected;
+            out_of_order.swap(1, 2);
+            assert!(!memory_stage_sequence_is_valid(&out_of_order));
         }
     }
 }
@@ -356,7 +768,7 @@ impl OnnxOcrBackend {
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
-        loader::initialize(runtime_path)?;
+        initialize_runtime(runtime_path)?;
         checkpoint(operation)?;
         let source = model::accepted_source(model_root, operation)?;
         Self::open_initialized_with_provider_policy(
@@ -408,7 +820,7 @@ impl OnnxOcrBackend {
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
-        loader::initialize(runtime_path)?;
+        initialize_runtime(runtime_path)?;
         checkpoint(operation)?;
         let source = model::bounded_source(model_root, operation)?;
         Self::open_initialized_with_provider_policy(
@@ -454,7 +866,7 @@ impl OnnxOcrBackend {
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
-        loader::initialize(runtime_path)?;
+        initialize_runtime(runtime_path)?;
         checkpoint(operation)?;
         Self::open_initialized_with_provider_policy(
             source,
@@ -477,6 +889,12 @@ impl OnnxOcrBackend {
         let reservation = SessionPair::reserve()?;
         let preparation =
             provider::prepare(provider_policy, provider_root, runtime_path, operation);
+        #[cfg(feature = "benchmark-instrumentation")]
+        if preparation.is_ok() {
+            benchmark_instrumentation::record_open_stage(
+                benchmark_instrumentation::OpenStage::ProviderPrepared,
+            );
+        }
         let candidate_source = source.clone();
         let candidate_reservation = Arc::clone(&reservation);
         let cpu_reservation = Arc::clone(&reservation);
@@ -613,6 +1031,8 @@ impl OnnxOcrBackend {
                 return Ok(Vec::new());
             }
 
+            let recognizer_output_budget =
+                provider::recognizer_output_budget(pair.active_provider());
             let mut recognition_order = detections
                 .iter()
                 .enumerate()
@@ -622,8 +1042,16 @@ impl OnnxOcrBackend {
             let mut decoded: Vec<Option<DecodedText>> =
                 (0..detections.len()).map(|_| None).collect();
 
-            for batch in recognition_order.chunks(RECOGNITION_BATCH) {
-                checkpoint(operation)?;
+            let mut start = 0;
+            while start < recognition_order.len() {
+                let range = recognition_batch_range(
+                    &recognition_order,
+                    start,
+                    recognizer_output_budget,
+                    operation,
+                )?;
+                let end = range.end;
+                let batch = &recognition_order[range];
                 let quads = batch
                     .iter()
                     .map(|(index, _)| detections[*index].quad)
@@ -635,6 +1063,7 @@ impl OnnxOcrBackend {
                     vocabulary,
                     &input,
                     request.max_text_bytes(),
+                    recognizer_output_budget,
                     operation,
                 )?;
                 if batch_output.len() != batch.len() {
@@ -643,6 +1072,7 @@ impl OnnxOcrBackend {
                 for ((index, _), text) in batch.iter().zip(batch_output) {
                     decoded[*index] = Some(text);
                 }
+                start = end;
             }
 
             let candidates = detections
@@ -659,6 +1089,34 @@ impl OnnxOcrBackend {
         pair.record_cleanup();
         outcome
     }
+}
+
+fn recognition_batch_range(
+    recognition_order: &[(usize, f64)],
+    start: usize,
+    max_output_bytes: usize,
+    operation: &OperationContext,
+) -> Result<std::ops::Range<usize>, OnnxBackendFault> {
+    checkpoint(operation)?;
+    if start >= recognition_order.len() {
+        return Err(OnnxBackendFault::ResourceLimit);
+    }
+
+    let mut end = start;
+    while end < recognition_order.len() && end - start < RECOGNITION_BATCH {
+        let candidate_batch = end - start + 1;
+        let candidate_width = image::recognizer_width_for_ratio(recognition_order[end].1)?;
+        let candidate_bytes =
+            decode::estimated_recognizer_output_bytes(candidate_batch, candidate_width)?;
+        if candidate_bytes > max_output_bytes {
+            break;
+        }
+        end += 1;
+    }
+    if end == start {
+        return Err(OnnxBackendFault::ResourceLimit);
+    }
+    Ok(start..end)
 }
 
 impl std::fmt::Debug for OnnxOcrBackend {
@@ -741,6 +1199,15 @@ impl OwnedCandidate {
     }
 }
 
+fn initialize_runtime(runtime_path: &Path) -> Result<(), OnnxBackendFault> {
+    loader::initialize(runtime_path)?;
+    #[cfg(feature = "benchmark-instrumentation")]
+    benchmark_instrumentation::record_open_stage(
+        benchmark_instrumentation::OpenStage::RuntimeInitialized,
+    );
+    Ok(())
+}
+
 fn initialize_provider<T>(
     policy: OnnxExecutionProviderPolicy,
     preparation: Result<provider::PreparedProvider, provider::ProviderPreparationFault>,
@@ -802,10 +1269,12 @@ mod tests {
         MAX_OUTPUT_BYTES, OnnxBackendFacts, OnnxBackendFault, OnnxBackendObservations,
         OnnxBackendOpenFault, OnnxExecutionProvider, OnnxExecutionProviderPolicy, OnnxOcrProfile,
         OnnxProviderFallbackReason, OnnxRuntimeCompatibility, RECOGNITION_BATCH,
-        RUNTIME_PROFILE_ID, SessionSlot, checkpoint, initialize_provider,
+        RUNTIME_PROFILE_ID, SessionSlot, checkpoint, initialize_provider, recognition_batch_range,
     };
     use crate::profile::SelectedProfile;
-    use crate::provider::{PreparedProvider, ProviderPreparationFault};
+    use crate::provider::{
+        CUDA_RECOGNIZER_OUTPUT_BYTES, PreparedProvider, ProviderPreparationFault,
+    };
 
     struct DropProbe<'a>(&'a Cell<u32>);
 
@@ -813,6 +1282,105 @@ mod tests {
         fn drop(&mut self) {
             self.0.set(self.0.get() + 1);
         }
+    }
+
+    fn recognition_ratio_for_width(width: usize) -> f64 {
+        width as f64 / 48.0
+    }
+
+    fn recognition_order(widths: &[usize]) -> Vec<(usize, f64)> {
+        widths
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, width)| (index, recognition_ratio_for_width(width)))
+            .collect()
+    }
+
+    #[test]
+    fn adaptive_batches_keep_ordinary_widths_and_split_maximum_width() {
+        let operation = OperationContext::new();
+        for width in [320, 2_048] {
+            let order = recognition_order(&[width; RECOGNITION_BATCH]);
+            assert_eq!(
+                recognition_batch_range(&order, 0, CUDA_RECOGNIZER_OUTPUT_BYTES, &operation),
+                Ok(0..6)
+            );
+        }
+
+        let order = recognition_order(&[4_096; RECOGNITION_BATCH]);
+        assert_eq!(
+            recognition_batch_range(&order, 0, CUDA_RECOGNIZER_OUTPUT_BYTES, &operation),
+            Ok(0..3)
+        );
+        assert_eq!(
+            recognition_batch_range(&order, 3, CUDA_RECOGNIZER_OUTPUT_BYTES, &operation),
+            Ok(3..6)
+        );
+        assert_eq!(
+            recognition_batch_range(&order, 0, MAX_OUTPUT_BYTES, &operation),
+            Ok(0..6)
+        );
+    }
+
+    #[test]
+    fn adaptive_batches_cover_each_candidate_once_and_restore_index_order() {
+        let operation = OperationContext::new();
+        let mut order = recognition_order(&[4_096, 320, 2_048, 4_096, 1_280, 4_096]);
+        order.sort_by(|left, right| left.1.total_cmp(&right.1));
+        let mut restored = vec![None; order.len()];
+        let mut start = 0;
+        let mut batch_count = 0;
+        while start < order.len() {
+            let range =
+                recognition_batch_range(&order, start, CUDA_RECOGNIZER_OUTPUT_BYTES, &operation)
+                    .expect("accepted batch");
+            assert!(!range.is_empty());
+            assert!(range.len() <= RECOGNITION_BATCH);
+            let end = range.end;
+            for (index, _) in &order[range] {
+                assert!(restored[*index].replace(*index).is_none());
+            }
+            start = end;
+            batch_count += 1;
+        }
+        assert_eq!(restored, (0..order.len()).map(Some).collect::<Vec<_>>());
+        assert_eq!(batch_count, 2);
+    }
+
+    #[test]
+    fn adaptive_batch_planner_rejects_zero_items_and_oversized_single_item() {
+        let operation = OperationContext::new();
+        assert_eq!(
+            recognition_batch_range(&[], 0, CUDA_RECOGNIZER_OUTPUT_BYTES, &operation),
+            Err(OnnxBackendFault::ResourceLimit)
+        );
+        let order = recognition_order(&[4_096]);
+        assert_eq!(
+            recognition_batch_range(&order, 0, 0, &operation),
+            Err(OnnxBackendFault::ResourceLimit)
+        );
+        assert_eq!(
+            recognition_batch_range(&order, 0, CUDA_RECOGNIZER_OUTPUT_BYTES, &operation),
+            Ok(0..1)
+        );
+    }
+
+    #[test]
+    fn cancellation_before_the_next_adaptive_batch_prevents_planning() {
+        let cancellation = CancellationToken::new();
+        let operation = OperationContext::new().with_cancellation(cancellation.clone());
+        let order = recognition_order(&[4_096; RECOGNITION_BATCH]);
+        assert_eq!(
+            recognition_batch_range(&order, 0, CUDA_RECOGNIZER_OUTPUT_BYTES, &operation),
+            Ok(0..3)
+        );
+
+        cancellation.cancel();
+        assert_eq!(
+            recognition_batch_range(&order, 3, CUDA_RECOGNIZER_OUTPUT_BYTES, &operation),
+            Err(OnnxBackendFault::Cancelled)
+        );
     }
 
     #[test]
