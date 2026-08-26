@@ -39,10 +39,10 @@ int main()
                 build.value().library_version.to_string().c_str());
 
 
-    if (api.extent() < MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT ||
+    if (api.extent() < MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR ||
         build.value().bounded_ocr_model.empty() ||
         build.value().bounded_ocr_profile.empty()) {
-        std::fprintf(stderr, "ABI 1.4 grouped OCR surface is incomplete\n");
+        std::fprintf(stderr, "ABI 1.5 OCR provider surface is incomplete\n");
         return 1;
     }
     madopilot::OcrProfileOptions profile(
@@ -63,6 +63,18 @@ int main()
         first_projection.value().zone_count != 3 ||
         first_projection.value().zones == second_projection.value().zones) {
         std::fprintf(stderr, "ABI 1.4 projection ownership is incomplete\n");
+        return 1;
+    }
+    madopilot::OcrProviderOptions provider(
+        MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA,
+        "/controlled/cuda");
+    auto provider_projection = provider.to_c();
+    auto provider_copy = provider_projection;
+    if (provider_projection.value().policy !=
+            MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA ||
+        provider_projection.value().provider_root.data ==
+            provider_copy.value().provider_root.data) {
+        std::fprintf(stderr, "ABI 1.5 provider projection ownership is incomplete\n");
         return 1;
     }
     // One RAII owner, taken and released without a single explicit release call.

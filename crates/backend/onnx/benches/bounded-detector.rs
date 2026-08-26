@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use mado_pilot_backend_onnx::benchmark_instrumentation::install_native_run_gate;
 use mado_pilot_backend_onnx::{
-    OnnxBackendFault, OnnxBackendObservations, OnnxOcrBackend, OnnxOcrProfile, RUNTIME_PROFILE_ID,
+    OnnxBackendObservations, OnnxBackendOpenFault, OnnxExecutionProvider,
+    OnnxExecutionProviderPolicy, OnnxOcrBackend, OnnxOcrProfile, OnnxProviderFallbackReason,
 };
 use mado_pilot_capture::{Frame, PixelFormat};
 use mado_pilot_core::{
@@ -36,6 +37,12 @@ use mado_pilot_testkit::bench_harness::{
     PHASE3_1_WINDOWS_BOUNDED_OCR_CLOSE_LIMIT, PHASE3_1_WINDOWS_BOUNDED_OCR_COLD_LOAD_LIMIT,
     PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS, PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
     PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+    PHASE3_1_WINDOWS_CUDA_FALLBACK_GROUPED_OCR_LATENCY_BUDGETS,
+    PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS,
+    PHASE3_1_WINDOWS_CUDA_OCR_CANCELLATION_LIMIT, PHASE3_1_WINDOWS_CUDA_OCR_CLOSE_LIMIT,
+    PHASE3_1_WINDOWS_CUDA_OCR_COLD_LOAD_LIMIT, PHASE3_1_WINDOWS_CUDA_OCR_LATENCY_BUDGETS,
+    PHASE3_1_WINDOWS_CUDA_OCR_REOPEN_CLOSE_LIMIT, PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES,
+    PHASE3_1_WINDOWS_CUDA_OCR_RETAINED_RESULT_LIMIT,
     PHASE3_1_WINDOWS_GROUPED_OCR_CANCELLATION_LIMIT, PHASE3_1_WINDOWS_GROUPED_OCR_COLD_LOAD_LIMIT,
     PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS,
     PHASE3_1_WINDOWS_GROUPED_OCR_RETAINED_RESULT_LIMIT,
@@ -56,6 +63,7 @@ static ACCOUNTING: Accounting = Accounting;
 
 const RUNTIME_ENV: &str = "MADO_PILOT_ONNX_RUNTIME";
 const MODEL_ROOT_ENV: &str = "MADO_PILOT_G004_MODEL_ROOT";
+const CUDA_PROVIDER_ROOT_ENV: &str = "MADO_PILOT_CUDA_PROVIDER_ROOT";
 const SOURCE_ENV: &str = "MADO_PILOT_BOUNDED_SOURCE_REVISION";
 const HOST_ENV: &str = "MADO_PILOT_BOUNDED_HOST_ID";
 const PROCESS_ENV: &str = "MADO_PILOT_BOUNDED_PROCESS_INDEX";
@@ -320,6 +328,11 @@ struct ProfileReport {
     recognizer_sha256: &'static str,
     vocabulary_sha256: &'static str,
     runtime_profile: &'static str,
+    requested_provider_policy: &'static str,
+    active_provider: &'static str,
+    initialization_fell_back: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback_reason: Option<&'static str>,
     profile: &'static str,
     model_id: String,
     profile_id: String,
@@ -393,6 +406,9 @@ impl RunMode {
                 ) || matches!(
                     argument.strip_prefix("--profile="),
                     Some("native" | "bounded")
+                ) || matches!(
+                    argument.strip_prefix("--provider="),
+                    Some("cpu" | "coreml" | "cuda" | "prefer-cuda-fallback")
                 )
             }),
             "unsupported bounded-detector benchmark argument"
@@ -441,6 +457,68 @@ impl RunMode {
 
     const fn requires_bound_identity(self) -> bool {
         !matches!(self, Self::Smoke)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProfileInputs<'a> {
+    model_root: &'a Path,
+    runtime: &'a Path,
+    provider: ProviderSelection,
+    provider_root: Option<&'a Path>,
+    fixture_root: &'a Path,
+    manifest: &'a FixtureManifest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderSelection {
+    Cpu,
+    CoreMl,
+    Cuda,
+    PreferCudaFallback,
+}
+
+impl ProviderSelection {
+    fn from_arguments(arguments: &[String]) -> Self {
+        let mut selected = arguments
+            .iter()
+            .filter_map(|argument| argument.strip_prefix("--provider="));
+        let provider = selected.next().unwrap_or("cpu");
+        assert!(
+            selected.next().is_none(),
+            "select exactly one qualification provider"
+        );
+        match provider {
+            "cpu" => Self::Cpu,
+            "coreml" => Self::CoreMl,
+            "cuda" => Self::Cuda,
+            "prefer-cuda-fallback" => Self::PreferCudaFallback,
+            other => panic!("unsupported qualification provider {other}"),
+        }
+    }
+
+    const fn policy(self) -> OnnxExecutionProviderPolicy {
+        match self {
+            Self::Cpu => OnnxExecutionProviderPolicy::Cpu,
+            Self::CoreMl => OnnxExecutionProviderPolicy::RequireCoreMl,
+            Self::Cuda => OnnxExecutionProviderPolicy::RequireCuda,
+            Self::PreferCudaFallback => OnnxExecutionProviderPolicy::PreferCuda,
+        }
+    }
+
+    const fn execution_provider(self) -> OnnxExecutionProvider {
+        match self {
+            Self::Cpu | Self::PreferCudaFallback => OnnxExecutionProvider::Cpu,
+            Self::CoreMl => OnnxExecutionProvider::CoreMl,
+            Self::Cuda => OnnxExecutionProvider::Cuda,
+        }
+    }
+
+    const fn fallback_reason(self) -> Option<OnnxProviderFallbackReason> {
+        match self {
+            Self::PreferCudaFallback => Some(OnnxProviderFallbackReason::DependencyUnavailable),
+            Self::Cpu | Self::CoreMl | Self::Cuda => None,
+        }
     }
 }
 
@@ -499,6 +577,7 @@ fn main() {
     let mode = RunMode::from_arguments(&arguments);
     let integrated_order = IntegratedOrder::from_arguments(&arguments);
     let profile = selected_profile(&arguments);
+    let provider = ProviderSelection::from_arguments(&arguments);
     assert!(
         !integrated_order.enabled() || profile == OnnxOcrProfile::BoundedDetector,
         "integrated grouped rows require the bounded profile"
@@ -517,9 +596,20 @@ fn main() {
         eprintln!("bounded-detector benchmark skipped: set the two reviewed MADO_PILOT_* paths");
         return;
     }
+    if provider == ProviderSelection::Cuda {
+        assert!(
+            std::env::var_os(CUDA_PROVIDER_ROOT_ENV).is_some(),
+            "CUDA qualification requires the reviewed MADO_PILOT_CUDA_PROVIDER_ROOT"
+        );
+    }
 
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
+    let provider_root = if provider == ProviderSelection::Cuda {
+        Some(required_path(CUDA_PROVIDER_ROOT_ENV))
+    } else {
+        None
+    };
     let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/ocr/g-004");
     let manifest_path = fixture_root.join("fixture-manifest.json");
     let manifest_bytes = std::fs::read(&manifest_path).expect("read tracked OCR fixture manifest");
@@ -528,10 +618,14 @@ fn main() {
 
     let report = run_profile(
         profile,
-        &model_root,
-        &runtime,
-        &fixture_root,
-        &manifest,
+        ProfileInputs {
+            model_root: &model_root,
+            runtime: &runtime,
+            provider,
+            provider_root: provider_root.as_deref(),
+            fixture_root: &fixture_root,
+            manifest: &manifest,
+        },
         mode,
         integrated_order,
     );
@@ -560,13 +654,18 @@ fn selected_profile(arguments: &[String]) -> OnnxOcrProfile {
 
 fn run_profile(
     profile: OnnxOcrProfile,
-    model_root: &Path,
-    runtime: &Path,
-    fixture_root: &Path,
-    manifest: &FixtureManifest,
+    inputs: ProfileInputs<'_>,
     mode: RunMode,
     integrated_order: IntegratedOrder,
 ) -> ProfileReport {
+    let ProfileInputs {
+        model_root,
+        runtime,
+        provider,
+        provider_root,
+        fixture_root,
+        manifest,
+    } = inputs;
     let integrated = integrated_order.enabled();
     let plan = mode.plan();
     assert!(
@@ -598,12 +697,26 @@ fn run_profile(
     let operation = OperationContext::new();
     let cold_started = Instant::now();
     let backend = Arc::new(
-        open_profile(profile, model_root, runtime, &operation)
-            .expect("selected backend cold-opens"),
+        open_profile(
+            profile,
+            model_root,
+            runtime,
+            provider,
+            provider_root,
+            &operation,
+        )
+        .expect("selected backend cold-opens"),
     );
     let cold_open_ms = milliseconds(cold_started.elapsed());
     let facts = backend.facts();
     assert_eq!(facts.profile(), profile);
+    assert_eq!(facts.requested_provider_policy(), provider.policy());
+    assert_eq!(facts.provider(), provider.execution_provider());
+    assert_eq!(
+        facts.initialization_fell_back(),
+        provider.fallback_reason().is_some()
+    );
+    assert_eq!(facts.fallback_reason(), provider.fallback_reason());
     let descriptor = backend.descriptor();
     let port: Arc<dyn OcrBackend> = backend.clone();
     let recognizer = OcrRecognizer::new(port);
@@ -663,15 +776,22 @@ fn run_profile(
     }
 
     let reopen_started = Instant::now();
-    let reopened = open_profile(profile, model_root, runtime, &operation)
-        .expect("selected backend reopens after cleanup");
+    let reopened = open_profile(
+        profile,
+        model_root,
+        runtime,
+        provider,
+        provider_root,
+        &operation,
+    )
+    .expect("selected backend reopens after cleanup");
     reopened.close(&operation).expect("reopened backend closes");
     let reopen_close_ms = milliseconds(reopen_started.elapsed());
     let peak_resident_bytes = peak_resident_bytes();
 
     let identity = descriptor.model_identity();
     let mut report = ProfileReport {
-        schema_version: if integrated { 4 } else { 3 },
+        schema_version: 5,
         release_target: bench_harness::RELEASE_TARGET,
         host_id: environment_or(HOST_ENV, "unbound-smoke-host"),
         source_revision: environment_or(SOURCE_ENV, "unbound-smoke-source"),
@@ -685,7 +805,11 @@ fn run_profile(
         detector_sha256: DETECTOR_SHA256,
         recognizer_sha256: RECOGNIZER_SHA256,
         vocabulary_sha256: VOCABULARY_SHA256,
-        runtime_profile: RUNTIME_PROFILE_ID,
+        runtime_profile: facts.runtime_profile_id(),
+        requested_provider_policy: provider_policy_name(facts.requested_provider_policy()),
+        active_provider: execution_provider_name(facts.provider()),
+        initialization_fell_back: facts.initialization_fell_back(),
+        fallback_reason: facts.fallback_reason().map(fallback_reason_name),
         profile: profile_name(profile),
         model_id: identity.model().as_str().to_owned(),
         profile_id: identity.profile().as_str().to_owned(),
@@ -709,7 +833,7 @@ fn run_profile(
         max_concurrent_inferences: facts.max_concurrent_inferences(),
         session_pairs: final_observations.session_pairs(),
         sessions: final_observations.sessions(),
-        producer_surface_copy: "not applicable: immutable CPU replay frames own no producer surface",
+        producer_surface_copy: "not applicable: immutable replay frames own no producer surface",
         cancellation,
         active_cancellation,
         retained_result: retained_report,
@@ -1163,25 +1287,43 @@ fn quality_oracle(fixture: &Fixture, result: &OcrResult, state: &mut Measurement
         || result.backend() != &fixture.recognizer.descriptor()
         || result.regions().len() != fixture.spec.expected.len()
     {
+        eprintln!(
+            "bounded-quality-oracle workload={} cause=structure",
+            fixture.spec.name
+        );
         return false;
     }
 
     let extent = fixture.spec.frame.descriptor().extent();
     let mut confidences = Vec::with_capacity(result.regions().len());
     for (actual, expected) in result.regions().iter().zip(fixture.spec.expected.iter()) {
-        if actual.text() != expected.text
-            || !geometry_matches(actual.geometry().points(), expected.quad, extent)
-        {
+        let cause = if actual.text() != expected.text {
+            Some("text")
+        } else if !geometry_matches(actual.geometry().points(), expected.quad, extent) {
+            Some("geometry")
+        } else {
+            let confidence = actual.confidence().get();
+            (!confidence.is_finite() || !(0.0..=1.0).contains(&confidence))
+                .then_some("confidence-range")
+        };
+        if let Some(cause) = cause {
+            eprintln!(
+                "bounded-quality-oracle workload={} cause={cause}",
+                fixture.spec.name
+            );
             return false;
         }
-        let confidence = actual.confidence().get();
-        if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
-            return false;
-        }
-        confidences.push(confidence);
+        confidences.push(actual.confidence().get());
     }
     match state.confidence.as_ref() {
-        Some(baseline) => baseline == &confidences,
+        Some(baseline) if baseline != &confidences => {
+            eprintln!(
+                "bounded-quality-oracle workload={} cause=confidence-stability",
+                fixture.spec.name
+            );
+            false
+        }
+        Some(_) => true,
         None => {
             state.confidence = Some(confidences);
             true
@@ -1637,9 +1779,34 @@ fn target_budget_passes(report: &ProfileReport) -> bool {
 
 #[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 fn target_budget_passes(report: &ProfileReport) -> bool {
-    report_within_target_budgets(
-        report,
-        &TargetBudgets {
+    let budgets = if report.active_provider == "cuda" {
+        TargetBudgets {
+            latency: &PHASE3_1_WINDOWS_CUDA_OCR_LATENCY_BUDGETS,
+            cold_load: PHASE3_1_WINDOWS_CUDA_OCR_COLD_LOAD_LIMIT,
+            close: PHASE3_1_WINDOWS_CUDA_OCR_CLOSE_LIMIT,
+            reopen_close: PHASE3_1_WINDOWS_CUDA_OCR_REOPEN_CLOSE_LIMIT,
+            resident_bytes: PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES,
+            grouped_latency: &PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS,
+            active_cancellation: PHASE3_1_WINDOWS_CUDA_OCR_CANCELLATION_LIMIT,
+            retained_result: PHASE3_1_WINDOWS_CUDA_OCR_RETAINED_RESULT_LIMIT,
+        }
+    } else if report.requested_provider_policy == "prefer-cuda" && report.initialization_fell_back {
+        TargetBudgets {
+            latency: &PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS,
+            cold_load: if report.integrated_zones {
+                PHASE3_1_WINDOWS_GROUPED_OCR_COLD_LOAD_LIMIT
+            } else {
+                PHASE3_1_WINDOWS_BOUNDED_OCR_COLD_LOAD_LIMIT
+            },
+            close: PHASE3_1_WINDOWS_BOUNDED_OCR_CLOSE_LIMIT,
+            reopen_close: PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
+            resident_bytes: PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+            grouped_latency: &PHASE3_1_WINDOWS_CUDA_FALLBACK_GROUPED_OCR_LATENCY_BUDGETS,
+            active_cancellation: PHASE3_1_WINDOWS_GROUPED_OCR_CANCELLATION_LIMIT,
+            retained_result: PHASE3_1_WINDOWS_GROUPED_OCR_RETAINED_RESULT_LIMIT,
+        }
+    } else {
+        TargetBudgets {
             latency: &PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS,
             cold_load: if report.integrated_zones {
                 PHASE3_1_WINDOWS_GROUPED_OCR_COLD_LOAD_LIMIT
@@ -1652,8 +1819,9 @@ fn target_budget_passes(report: &ProfileReport) -> bool {
             grouped_latency: &PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS,
             active_cancellation: PHASE3_1_WINDOWS_GROUPED_OCR_CANCELLATION_LIMIT,
             retained_result: PHASE3_1_WINDOWS_GROUPED_OCR_RETAINED_RESULT_LIMIT,
-        },
-    )
+        }
+    };
+    report_within_target_budgets(report, &budgets)
 }
 
 #[cfg(not(any(
@@ -1682,12 +1850,26 @@ fn open_profile(
     profile: OnnxOcrProfile,
     model_root: &Path,
     runtime: &Path,
+    provider: ProviderSelection,
+    provider_root: Option<&Path>,
     operation: &OperationContext,
-) -> Result<OnnxOcrBackend, OnnxBackendFault> {
+) -> Result<OnnxOcrBackend, OnnxBackendOpenFault> {
     match profile {
-        OnnxOcrProfile::NativeG004 => OnnxOcrBackend::open_accepted(model_root, runtime, operation),
+        OnnxOcrProfile::NativeG004 => OnnxOcrBackend::open_accepted_with_provider_config(
+            model_root,
+            runtime,
+            provider.policy(),
+            provider_root,
+            operation,
+        ),
         OnnxOcrProfile::BoundedDetector => {
-            OnnxOcrBackend::open_bounded_detector(model_root, runtime, operation)
+            OnnxOcrBackend::open_bounded_detector_with_provider_config(
+                model_root,
+                runtime,
+                provider.policy(),
+                provider_root,
+                operation,
+            )
         }
     }
 }
@@ -1696,6 +1878,38 @@ fn profile_name(profile: OnnxOcrProfile) -> &'static str {
     match profile {
         OnnxOcrProfile::NativeG004 => "native-g004",
         OnnxOcrProfile::BoundedDetector => "bounded-detector-fit1312x736-then-tensor6291456b",
+    }
+}
+
+const fn provider_policy_name(policy: OnnxExecutionProviderPolicy) -> &'static str {
+    match policy {
+        OnnxExecutionProviderPolicy::Cpu => "cpu",
+        OnnxExecutionProviderPolicy::AutoPreferAccelerator => "auto-prefer-accelerator",
+        OnnxExecutionProviderPolicy::PreferCuda => "prefer-cuda",
+        OnnxExecutionProviderPolicy::RequireCuda => "require-cuda",
+        OnnxExecutionProviderPolicy::PreferCoreMl => "prefer-coreml",
+        OnnxExecutionProviderPolicy::RequireCoreMl => "require-coreml",
+    }
+}
+
+const fn execution_provider_name(provider: OnnxExecutionProvider) -> &'static str {
+    match provider {
+        OnnxExecutionProvider::Cpu => "cpu",
+        OnnxExecutionProvider::Cuda => "cuda",
+        OnnxExecutionProvider::CoreMl => "coreml",
+    }
+}
+
+const fn fallback_reason_name(reason: OnnxProviderFallbackReason) -> &'static str {
+    match reason {
+        OnnxProviderFallbackReason::UnsupportedTarget => "unsupported-target",
+        OnnxProviderFallbackReason::BuildCapabilityUnavailable => "build-capability-unavailable",
+        OnnxProviderFallbackReason::ProviderUnavailable => "provider-unavailable",
+        OnnxProviderFallbackReason::DependencyUnavailable => "dependency-unavailable",
+        OnnxProviderFallbackReason::RegistrationFailed => "registration-failed",
+        OnnxProviderFallbackReason::SessionCreationFailed => "session-creation-failed",
+        OnnxProviderFallbackReason::GraphRejected => "graph-rejected",
+        OnnxProviderFallbackReason::QualificationRejected => "qualification-rejected",
     }
 }
 

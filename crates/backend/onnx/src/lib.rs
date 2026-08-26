@@ -1,4 +1,4 @@
-//! Bounded ONNX Runtime CPU OCR backend for the accepted G-004 profiles.
+//! Bounded ONNX Runtime OCR backend for accepted G-004 provider profiles.
 //!
 //! The adapter loads one exact host-provided runtime from a caller-supplied
 //! canonical path, validates the accepted detector/recognizer graphs and
@@ -8,9 +8,9 @@
 //! once in existing bounded batches. Path-free observations expose only
 //! dimensions, counts, bytes, runs, memberships, and cleanup.
 //!
-//! It performs no download, ambient library search, provider fallback, default
-//! wiring, public-contract modification, per-zone detector loop, or captured
-//! content logging.
+//! It performs no download, ambient library search, post-publication provider
+//! fallback, default wiring, public-contract modification, per-zone detector
+//! loop, or captured content logging.
 
 mod decode;
 mod detect;
@@ -22,6 +22,7 @@ mod model;
 #[cfg(test)]
 mod native_tests;
 mod profile;
+mod provider;
 mod session;
 mod vocabulary;
 
@@ -32,18 +33,22 @@ static TEST_ACCOUNTING: mado_pilot_testkit::bench_harness::Accounting =
 
 use std::mem::replace;
 use std::path::Path;
-use std::sync::{Mutex, TryLockError};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use mado_pilot_capture::PixelFormat;
 use mado_pilot_core::{OperationContext, Result as CoreResult};
 use mado_pilot_ocr::{
     BackendCandidate, BackendId, BackendRequest, BackendVersion, OcrBackend, OcrBackendDescriptor,
-    OcrBackendIdentity, OcrCandidateSink, OcrModelSource, candidate_interest_membership,
+    OcrBackendIdentity, OcrCandidateSink, OcrExecutionProvider as PublicExecutionProvider,
+    OcrExecutionProviderPolicy as PublicExecutionProviderPolicy, OcrModelSource,
+    OcrProviderDescriptor, OcrProviderFallbackReason as PublicProviderFallbackReason,
+    ProviderProfileId, candidate_interest_membership,
 };
 
 pub use fault::{
-    OnnxBackendFacts, OnnxBackendFault, OnnxBackendObservations, OnnxExecutionProvider,
-    OnnxOcrProfile, OnnxRuntimeCompatibility,
+    OnnxBackendFacts, OnnxBackendFault, OnnxBackendObservations, OnnxBackendOpenFault,
+    OnnxExecutionProvider, OnnxExecutionProviderPolicy, OnnxOcrProfile, OnnxProviderFallbackReason,
+    OnnxRuntimeCompatibility,
 };
 
 /// Deterministic native-run gates for the revision-bound qualification bench.
@@ -112,17 +117,77 @@ use crate::session::SessionPair;
 
 pub(crate) const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const RECOGNITION_BATCH: usize = 6;
-
 /// Stable identity of the integrated CPU OCR backend.
 pub const BACKEND_ID: &str = "onnxruntime-cpu";
+/// Stable identity of the CUDA OCR backend.
+pub const CUDA_BACKEND_ID: &str = "onnxruntime-cuda";
+/// Stable identity of the CoreML OCR backend.
+pub const COREML_BACKEND_ID: &str = "onnxruntime-coreml";
 /// Exact backend implementation identity, including the controlled runtime profile.
 pub const BACKEND_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ort-1.29.0-api17");
-/// Closed identity of the controlled native runtime and provider boundary.
+/// Closed identity of the controlled CPU runtime/provider boundary.
 pub const RUNTIME_PROFILE_ID: &str = "onnxruntime-1.29.0-api17-cpu";
+/// Closed identity of the controlled CUDA runtime/provider boundary.
+pub const CUDA_RUNTIME_PROFILE_ID: &str = "onnxruntime-1.29.0-api17-cuda13-cudnn9";
+/// Closed identity of the controlled CoreML runtime/provider boundary.
+pub const COREML_RUNTIME_PROFILE_ID: &str = "onnxruntime-1.29.0-api17-coreml";
 
-/// One bounded reusable CPU backend for the exact accepted OCR source.
+const fn public_provider(provider: OnnxExecutionProvider) -> PublicExecutionProvider {
+    match provider {
+        OnnxExecutionProvider::Cpu => PublicExecutionProvider::Cpu,
+        OnnxExecutionProvider::Cuda => PublicExecutionProvider::Cuda,
+        OnnxExecutionProvider::CoreMl => PublicExecutionProvider::CoreMl,
+    }
+}
+
+const fn public_provider_policy(
+    policy: OnnxExecutionProviderPolicy,
+) -> PublicExecutionProviderPolicy {
+    match policy {
+        OnnxExecutionProviderPolicy::Cpu => PublicExecutionProviderPolicy::Cpu,
+        OnnxExecutionProviderPolicy::AutoPreferAccelerator => {
+            PublicExecutionProviderPolicy::AutoPreferAccelerator
+        }
+        OnnxExecutionProviderPolicy::PreferCuda => PublicExecutionProviderPolicy::PreferCuda,
+        OnnxExecutionProviderPolicy::RequireCuda => PublicExecutionProviderPolicy::RequireCuda,
+        OnnxExecutionProviderPolicy::PreferCoreMl => PublicExecutionProviderPolicy::PreferCoreMl,
+        OnnxExecutionProviderPolicy::RequireCoreMl => PublicExecutionProviderPolicy::RequireCoreMl,
+    }
+}
+
+const fn public_fallback_reason(
+    reason: OnnxProviderFallbackReason,
+) -> PublicProviderFallbackReason {
+    match reason {
+        OnnxProviderFallbackReason::UnsupportedTarget => {
+            PublicProviderFallbackReason::UnsupportedTarget
+        }
+        OnnxProviderFallbackReason::BuildCapabilityUnavailable => {
+            PublicProviderFallbackReason::BuildCapabilityUnavailable
+        }
+        OnnxProviderFallbackReason::ProviderUnavailable => {
+            PublicProviderFallbackReason::ProviderUnavailable
+        }
+        OnnxProviderFallbackReason::DependencyUnavailable => {
+            PublicProviderFallbackReason::DependencyUnavailable
+        }
+        OnnxProviderFallbackReason::RegistrationFailed => {
+            PublicProviderFallbackReason::RegistrationFailed
+        }
+        OnnxProviderFallbackReason::SessionCreationFailed => {
+            PublicProviderFallbackReason::SessionCreationFailed
+        }
+        OnnxProviderFallbackReason::GraphRejected => PublicProviderFallbackReason::GraphRejected,
+        OnnxProviderFallbackReason::QualificationRejected => {
+            PublicProviderFallbackReason::QualificationRejected
+        }
+    }
+}
+
+/// One bounded reusable ONNX OCR backend with one immutable provider session pair.
 pub struct OnnxOcrBackend {
     descriptor: OcrBackendDescriptor,
+    provider_descriptor: OcrProviderDescriptor,
     facts: OnnxBackendFacts,
     profile: SelectedProfile,
     state: SessionSlot<SessionPair>,
@@ -251,102 +316,219 @@ impl<T> Drop for RunningSession<'_, T> {
 }
 
 impl OnnxOcrBackend {
-    /// Opens the fixed G-004 model pair from one explicit root against one
-    /// controlled runtime.
-    ///
-    /// Only `rapidocr-v3.9.2/ch_PP-OCRv4_det_mobile.onnx` and
-    /// `rapidocr-v3.9.2/PP-OCRv6_rec_small.onnx` are read beneath `model_root`.
-    /// Runtime initialization happens first so an unavailable runtime does not
-    /// allocate or hash the 25.9 MiB model pair. No path is inferred from the
-    /// process environment.
-    ///
-    /// # Errors
-    ///
-    /// Returns a closed [`OnnxBackendFault`] for an invalid or unavailable
-    /// prerequisite, interruption, graph mismatch, or native initialization.
+    /// Opens the fixed G-004 model pair with the released CPU-only policy.
     pub fn open_accepted(
         model_root: &Path,
         runtime_path: &Path,
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendFault> {
+        Self::open_accepted_with_provider_policy(
+            model_root,
+            runtime_path,
+            OnnxExecutionProviderPolicy::Cpu,
+            operation,
+        )
+        .map_err(OnnxBackendOpenFault::fault)
+    }
+
+    /// Opens the fixed G-004 model pair with an explicit initialization policy.
+    pub fn open_accepted_with_provider_policy(
+        model_root: &Path,
+        runtime_path: &Path,
+        provider_policy: OnnxExecutionProviderPolicy,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendOpenFault> {
+        Self::open_accepted_with_provider_config(
+            model_root,
+            runtime_path,
+            provider_policy,
+            None,
+            operation,
+        )
+    }
+
+    /// Opens the fixed model pair with provider policy and an explicit dependency root.
+    pub fn open_accepted_with_provider_config(
+        model_root: &Path,
+        runtime_path: &Path,
+        provider_policy: OnnxExecutionProviderPolicy,
+        provider_root: Option<&Path>,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
         loader::initialize(runtime_path)?;
         checkpoint(operation)?;
         let source = model::accepted_source(model_root, operation)?;
-        Self::open_initialized(source, operation)
+        Self::open_initialized_with_provider_policy(
+            source,
+            provider_policy,
+            provider_root,
+            runtime_path,
+            operation,
+        )
     }
 
-    /// Opens the ADR 0040 bounded-detector profile from one explicit model root
-    /// against one controlled runtime.
-    ///
-    /// This is a non-default selection. It validates the same immutable model
-    /// components as [`Self::open_accepted`] but reports and executes the distinct
-    /// bounded preprocessing identity. No environment, filename, or per-call
-    /// option can select it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a closed [`OnnxBackendFault`] for an invalid or unavailable
-    /// prerequisite, interruption, graph mismatch, or native initialization.
+    /// Opens the bounded-detector profile with the released CPU-only policy.
     pub fn open_bounded_detector(
         model_root: &Path,
         runtime_path: &Path,
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendFault> {
+        Self::open_bounded_detector_with_provider_policy(
+            model_root,
+            runtime_path,
+            OnnxExecutionProviderPolicy::Cpu,
+            operation,
+        )
+        .map_err(OnnxBackendOpenFault::fault)
+    }
+
+    /// Opens the bounded-detector profile with an explicit initialization policy.
+    pub fn open_bounded_detector_with_provider_policy(
+        model_root: &Path,
+        runtime_path: &Path,
+        provider_policy: OnnxExecutionProviderPolicy,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendOpenFault> {
+        Self::open_bounded_detector_with_provider_config(
+            model_root,
+            runtime_path,
+            provider_policy,
+            None,
+            operation,
+        )
+    }
+
+    /// Opens the bounded model pair with provider policy and an explicit dependency root.
+    pub fn open_bounded_detector_with_provider_config(
+        model_root: &Path,
+        runtime_path: &Path,
+        provider_policy: OnnxExecutionProviderPolicy,
+        provider_root: Option<&Path>,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
         loader::initialize(runtime_path)?;
         checkpoint(operation)?;
         let source = model::bounded_source(model_root, operation)?;
-        Self::open_initialized(source, operation)
+        Self::open_initialized_with_provider_policy(
+            source,
+            provider_policy,
+            provider_root,
+            runtime_path,
+            operation,
+        )
     }
 
-    /// Opens the accepted detector and recognizer against one controlled runtime.
-    ///
-    /// `runtime_path` must be an absolute canonical path whose target-specific
-    /// filename and runtime version match ADR 0034. The runtime remains loaded
-    /// until process exit because ONNX API tables contain pointers into it.
-    ///
-    /// # Errors
-    ///
-    /// Returns a closed [`OnnxBackendFault`] for interruption, runtime loading,
-    /// profile/graph mismatch, native initialization, or the process-wide
-    /// one-session-pair ceiling.
+    /// Opens one validated source with the released CPU-only policy.
     pub fn open(
         source: OcrModelSource,
         runtime_path: &Path,
         operation: &OperationContext,
     ) -> Result<Self, OnnxBackendFault> {
+        Self::open_with_provider_policy(
+            source,
+            runtime_path,
+            OnnxExecutionProviderPolicy::Cpu,
+            operation,
+        )
+        .map_err(OnnxBackendOpenFault::fault)
+    }
+
+    /// Opens one validated source with an explicit initialization policy.
+    pub fn open_with_provider_policy(
+        source: OcrModelSource,
+        runtime_path: &Path,
+        provider_policy: OnnxExecutionProviderPolicy,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendOpenFault> {
+        Self::open_with_provider_config(source, runtime_path, provider_policy, None, operation)
+    }
+
+    /// Opens one validated source with provider policy and an explicit dependency root.
+    pub fn open_with_provider_config(
+        source: OcrModelSource,
+        runtime_path: &Path,
+        provider_policy: OnnxExecutionProviderPolicy,
+        provider_root: Option<&Path>,
+        operation: &OperationContext,
+    ) -> Result<Self, OnnxBackendOpenFault> {
         checkpoint(operation)?;
         loader::initialize(runtime_path)?;
         checkpoint(operation)?;
-        Self::open_initialized(source, operation)
+        Self::open_initialized_with_provider_policy(
+            source,
+            provider_policy,
+            provider_root,
+            runtime_path,
+            operation,
+        )
     }
 
-    fn open_initialized(
+    fn open_initialized_with_provider_policy(
         source: OcrModelSource,
+        provider_policy: OnnxExecutionProviderPolicy,
+        provider_root: Option<&Path>,
+        runtime_path: &Path,
         operation: &OperationContext,
-    ) -> Result<Self, OnnxBackendFault> {
+    ) -> Result<Self, OnnxBackendOpenFault> {
         let profile = SelectedProfile::from_identity(source.identity())?;
         let model_identity = source.identity().clone();
-        let sessions = SessionPair::open(source, operation)?;
+        let reservation = SessionPair::reserve()?;
+        let preparation =
+            provider::prepare(provider_policy, provider_root, runtime_path, operation);
+        let candidate_source = source.clone();
+        let candidate_reservation = Arc::clone(&reservation);
+        let cpu_reservation = Arc::clone(&reservation);
+        let (provider, fallback_reason, mut sessions) = initialize_provider(
+            provider_policy,
+            preparation,
+            operation,
+            move |candidate| {
+                SessionPair::open_with_provider(
+                    candidate_source,
+                    operation,
+                    candidate,
+                    candidate_reservation,
+                )
+            },
+            move |cpu| SessionPair::open_with_provider(source, operation, cpu, cpu_reservation),
+        )?;
         let backend_identity = OcrBackendIdentity::new(
-            BackendId::new(BACKEND_ID).map_err(|_| OnnxBackendFault::GraphMismatch)?,
+            BackendId::new(match provider {
+                OnnxExecutionProvider::Cpu => BACKEND_ID,
+                OnnxExecutionProvider::Cuda => CUDA_BACKEND_ID,
+                OnnxExecutionProvider::CoreMl => COREML_BACKEND_ID,
+            })
+            .map_err(|_| OnnxBackendFault::GraphMismatch)?,
             BackendVersion::new(BACKEND_VERSION).map_err(|_| OnnxBackendFault::GraphMismatch)?,
         );
         let descriptor =
             OcrBackendDescriptor::new(backend_identity, model_identity, PixelFormat::Bgra8);
         let preprocessing = profile.preprocessing();
-        let facts = OnnxBackendFacts::accepted(
+        let facts = OnnxBackendFacts::accepted_with_provider(
             preprocessing,
             u64::try_from(image::MAX_TENSOR_BYTES).map_err(|_| OnnxBackendFault::ResourceLimit)?,
             u64::try_from(MAX_OUTPUT_BYTES).map_err(|_| OnnxBackendFault::ResourceLimit)?,
             u32::try_from(detect::MAX_DETECTOR_CANDIDATES)
                 .map_err(|_| OnnxBackendFault::ResourceLimit)?,
             u32::try_from(RECOGNITION_BATCH).map_err(|_| OnnxBackendFault::ResourceLimit)?,
+            provider_policy,
+            provider,
+            fallback_reason,
+        );
+        let provider_descriptor = OcrProviderDescriptor::new(
+            public_provider_policy(provider_policy),
+            public_provider(provider),
+            fallback_reason.map(public_fallback_reason),
+            ProviderProfileId::new(provider.runtime_profile_id())
+                .map_err(|_| OnnxBackendFault::GraphMismatch)?,
         );
         checkpoint(operation)?;
+        sessions.commit_provider()?;
         Ok(Self {
             descriptor,
+            provider_descriptor,
             facts,
             profile,
             state: SessionSlot::new(sessions),
@@ -494,6 +676,10 @@ impl OcrBackend for OnnxOcrBackend {
         self.descriptor.clone()
     }
 
+    fn provider_descriptor(&self) -> Option<OcrProviderDescriptor> {
+        Some(self.provider_descriptor.clone())
+    }
+
     fn recognize(
         &self,
         request: &BackendRequest<'_>,
@@ -555,6 +741,49 @@ impl OwnedCandidate {
     }
 }
 
+fn initialize_provider<T>(
+    policy: OnnxExecutionProviderPolicy,
+    preparation: Result<provider::PreparedProvider, provider::ProviderPreparationFault>,
+    operation: &OperationContext,
+    open_candidate: impl FnOnce(provider::PreparedProvider) -> Result<T, OnnxBackendOpenFault>,
+    open_cpu: impl FnOnce(provider::PreparedProvider) -> Result<T, OnnxBackendOpenFault>,
+) -> Result<(OnnxExecutionProvider, Option<OnnxProviderFallbackReason>, T), OnnxBackendOpenFault> {
+    match preparation {
+        Ok(prepared) => {
+            let candidate_provider = prepared.candidate();
+            match open_candidate(prepared) {
+                Ok(candidate) => Ok((candidate_provider, None, candidate)),
+                Err(attempt) => {
+                    if policy.permits_cpu_fallback() && attempt.provider_reason().is_some() {
+                        checkpoint(operation)?;
+                        let reason = attempt
+                            .provider_reason()
+                            .expect("fallback admission requires a provider reason");
+                        let cpu = open_cpu(provider::PreparedProvider::cpu())
+                            .map_err(|fault| fault.with_provider_reason(reason))?;
+                        Ok((OnnxExecutionProvider::Cpu, Some(reason), cpu))
+                    } else {
+                        Err(attempt)
+                    }
+                }
+            }
+        }
+        Err(provider::ProviderPreparationFault::Terminal(fault)) => Err(fault.into()),
+        Err(provider::ProviderPreparationFault::Provider(reason))
+            if policy.permits_cpu_fallback() =>
+        {
+            checkpoint(operation)?;
+            let cpu = open_cpu(provider::PreparedProvider::cpu())
+                .map_err(|fault| fault.with_provider_reason(reason))?;
+            Ok((OnnxExecutionProvider::Cpu, Some(reason), cpu))
+        }
+        Err(provider::ProviderPreparationFault::Provider(reason)) => {
+            checkpoint(operation)?;
+            Err(provider::unavailable_fault(reason).into())
+        }
+    }
+}
+
 fn checkpoint(operation: &OperationContext) -> Result<(), OnnxBackendFault> {
     operation
         .interruption()
@@ -563,17 +792,219 @@ fn checkpoint(operation: &OperationContext) -> Result<(), OnnxBackendFault> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::sync::Arc;
     use std::time::Duration;
 
-    use mado_pilot_core::{Clock, MonotonicInstant, OperationContext};
+    use mado_pilot_core::{CancellationToken, Clock, MonotonicInstant, OperationContext};
 
     use super::{
         MAX_OUTPUT_BYTES, OnnxBackendFacts, OnnxBackendFault, OnnxBackendObservations,
-        OnnxExecutionProvider, OnnxOcrProfile, OnnxRuntimeCompatibility, RECOGNITION_BATCH,
-        SessionSlot, checkpoint,
+        OnnxBackendOpenFault, OnnxExecutionProvider, OnnxExecutionProviderPolicy, OnnxOcrProfile,
+        OnnxProviderFallbackReason, OnnxRuntimeCompatibility, RECOGNITION_BATCH,
+        RUNTIME_PROFILE_ID, SessionSlot, checkpoint, initialize_provider,
     };
     use crate::profile::SelectedProfile;
+    use crate::provider::{PreparedProvider, ProviderPreparationFault};
+
+    struct DropProbe<'a>(&'a Cell<u32>);
+
+    impl Drop for DropProbe<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    #[test]
+    fn preferred_provider_failures_drop_candidates_before_one_fresh_cpu_open() {
+        for reason in [
+            OnnxProviderFallbackReason::RegistrationFailed,
+            OnnxProviderFallbackReason::SessionCreationFailed,
+            OnnxProviderFallbackReason::SessionCreationFailed,
+            OnnxProviderFallbackReason::GraphRejected,
+        ] {
+            let candidate_calls = Cell::new(0);
+            let cpu_calls = Cell::new(0);
+            let partial_drops = Cell::new(0);
+            let operation = OperationContext::new();
+            let (active, fallback, value) = initialize_provider(
+                OnnxExecutionProviderPolicy::PreferCuda,
+                Ok(PreparedProvider::for_test(OnnxExecutionProvider::Cuda)),
+                &operation,
+                |provider| {
+                    let provider = provider.candidate();
+                    assert_eq!(provider, OnnxExecutionProvider::Cuda);
+                    candidate_calls.set(candidate_calls.get() + 1);
+                    let _partial = DropProbe(&partial_drops);
+                    Err::<&str, _>(OnnxBackendOpenFault::provider(
+                        provider,
+                        OnnxBackendFault::ProviderInitializationFailed,
+                        reason,
+                    ))
+                },
+                |cpu| {
+                    assert_eq!(cpu.candidate(), OnnxExecutionProvider::Cpu);
+                    assert_eq!(
+                        partial_drops.get(),
+                        1,
+                        "the failed accelerator candidate is gone before CPU opens"
+                    );
+                    cpu_calls.set(cpu_calls.get() + 1);
+                    Ok("fresh-cpu")
+                },
+            )
+            .expect("preferred provider falls back during initialization");
+
+            assert_eq!(active, OnnxExecutionProvider::Cpu);
+            assert_eq!(fallback, Some(reason));
+            assert_eq!(value, "fresh-cpu");
+            assert_eq!(candidate_calls.get(), 1);
+            assert_eq!(cpu_calls.get(), 1);
+            assert_eq!(partial_drops.get(), 1);
+        }
+    }
+
+    #[test]
+    fn required_terminal_and_interrupted_provider_failures_never_open_cpu() {
+        let operation = OperationContext::new();
+        for (policy, attempt, expected) in [
+            (
+                OnnxExecutionProviderPolicy::RequireCuda,
+                OnnxBackendOpenFault::provider(
+                    OnnxExecutionProvider::Cuda,
+                    OnnxBackendFault::ProviderInitializationFailed,
+                    OnnxProviderFallbackReason::RegistrationFailed,
+                ),
+                OnnxBackendFault::ProviderInitializationFailed,
+            ),
+            (
+                OnnxExecutionProviderPolicy::PreferCuda,
+                OnnxBackendOpenFault::terminal(OnnxBackendFault::Cancelled),
+                OnnxBackendFault::Cancelled,
+            ),
+        ] {
+            let cpu_calls = Cell::new(0);
+            let fault = initialize_provider(
+                policy,
+                Ok(PreparedProvider::for_test(OnnxExecutionProvider::Cuda)),
+                &operation,
+                |_| Err::<(), _>(attempt),
+                |_| {
+                    cpu_calls.set(cpu_calls.get() + 1);
+                    Ok(())
+                },
+            )
+            .expect_err("required or terminal failure cannot fall back");
+            assert_eq!(fault.fault(), expected);
+            assert_eq!(cpu_calls.get(), 0);
+        }
+
+        let cpu_calls = Cell::new(0);
+        let fault = initialize_provider(
+            OnnxExecutionProviderPolicy::RequireCuda,
+            Err(ProviderPreparationFault::Provider(
+                OnnxProviderFallbackReason::DependencyUnavailable,
+            )),
+            &operation,
+            |_| Ok(()),
+            |_| {
+                cpu_calls.set(cpu_calls.get() + 1);
+                Ok(())
+            },
+        )
+        .expect_err("required preparation failure cannot fall back");
+        assert_eq!(
+            fault.fault(),
+            OnnxBackendFault::ProviderDependencyUnavailable
+        );
+        assert_eq!(cpu_calls.get(), 0);
+
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let cancelled = OperationContext::new().with_cancellation(cancellation);
+        for policy in [
+            OnnxExecutionProviderPolicy::PreferCuda,
+            OnnxExecutionProviderPolicy::RequireCuda,
+        ] {
+            let fault = initialize_provider(
+                policy,
+                Err(ProviderPreparationFault::Provider(
+                    OnnxProviderFallbackReason::DependencyUnavailable,
+                )),
+                &cancelled,
+                |_| Ok(()),
+                |_| {
+                    cpu_calls.set(cpu_calls.get() + 1);
+                    Ok(())
+                },
+            )
+            .expect_err("terminal cancellation supersedes provider failure");
+            assert_eq!(fault.fault(), OnnxBackendFault::Cancelled);
+            assert_eq!(cpu_calls.get(), 0);
+        }
+    }
+
+    #[test]
+    fn failed_cpu_fallback_retains_the_accelerator_reason_and_cpu_fault() {
+        let operation = OperationContext::new();
+        let preparation_fault = initialize_provider(
+            OnnxExecutionProviderPolicy::PreferCuda,
+            Err(ProviderPreparationFault::Provider(
+                OnnxProviderFallbackReason::DependencyUnavailable,
+            )),
+            &operation,
+            |_| Ok(()),
+            |_| {
+                Err::<(), _>(OnnxBackendOpenFault::terminal(
+                    OnnxBackendFault::GraphMismatch,
+                ))
+            },
+        )
+        .expect_err("fresh CPU construction also fails");
+        assert_eq!(preparation_fault.fault(), OnnxBackendFault::GraphMismatch);
+        assert_eq!(
+            preparation_fault.provider_reason(),
+            Some(OnnxProviderFallbackReason::DependencyUnavailable)
+        );
+        assert!(
+            preparation_fault
+                .to_string()
+                .contains("controlled accelerator")
+        );
+        let public_error: mado_pilot_core::Error = preparation_fault.into();
+        assert_eq!(
+            public_error.status(),
+            mado_pilot_core::Status::InvalidArgument
+        );
+        assert!(public_error.detail().contains("controlled accelerator"));
+
+        let candidate_fault = initialize_provider(
+            OnnxExecutionProviderPolicy::PreferCuda,
+            Ok(PreparedProvider::for_test(OnnxExecutionProvider::Cuda)),
+            &operation,
+            |provider| {
+                Err::<(), _>(OnnxBackendOpenFault::provider(
+                    provider.candidate(),
+                    OnnxBackendFault::ProviderInitializationFailed,
+                    OnnxProviderFallbackReason::SessionCreationFailed,
+                ))
+            },
+            |_| {
+                Err::<(), _>(OnnxBackendOpenFault::terminal(
+                    OnnxBackendFault::ProviderInitializationFailed,
+                ))
+            },
+        )
+        .expect_err("candidate and fresh CPU construction both fail");
+        assert_eq!(
+            candidate_fault.fault(),
+            OnnxBackendFault::ProviderInitializationFailed
+        );
+        assert_eq!(
+            candidate_fault.provider_reason(),
+            Some(OnnxProviderFallbackReason::SessionCreationFailed)
+        );
+    }
 
     #[test]
     fn facts_are_closed_and_do_not_carry_runtime_paths() {
@@ -585,6 +1016,17 @@ mod tests {
             u32::try_from(RECOGNITION_BATCH).expect("batch ceiling fits"),
         );
         assert_eq!(facts.provider(), OnnxExecutionProvider::Cpu);
+        assert_eq!(
+            facts.requested_provider_policy(),
+            OnnxExecutionProviderPolicy::Cpu
+        );
+        assert_eq!(facts.fallback_reason(), None);
+        assert!(!facts.initialization_fell_back());
+        assert_eq!(facts.runtime_profile_id(), RUNTIME_PROFILE_ID);
+        assert_eq!(
+            OnnxProviderFallbackReason::DependencyUnavailable.status(),
+            mado_pilot_core::Status::Unsupported
+        );
         assert_eq!(facts.runtime(), OnnxRuntimeCompatibility::Version1_29Api17);
         assert_eq!(facts.profile(), OnnxOcrProfile::BoundedDetector);
         assert_eq!(facts.max_detector_width(), Some(1_312));

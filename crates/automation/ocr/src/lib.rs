@@ -27,6 +27,7 @@
 pub mod backend;
 pub mod fault;
 pub mod model;
+pub mod provider;
 pub mod recognizer;
 pub mod request;
 pub mod result;
@@ -44,7 +45,11 @@ pub use model::{
     BackendId, BackendVersion, DecoderId, LanguageProfileId, MAX_MODEL_COMPONENT_BYTES,
     ModelComponentIdentity, ModelId, ModelVersion, NormalizationId, OcrModelComponent,
     OcrModelIdentity, OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata, PreprocessingId,
-    ProfileId,
+    ProfileId, ProviderProfileId,
+};
+pub use provider::{
+    OcrExecutionProvider, OcrExecutionProviderPolicy, OcrProviderDescriptor,
+    OcrProviderFallbackReason,
 };
 pub use recognizer::{MAX_BACKEND_TEXT_BYTES, MAX_CANDIDATES, MAX_TEXT_BYTES, OcrRecognizer};
 pub use request::{MAX_OCR_ZONES, OcrRegion, OcrRequest, OcrZone, OcrZoneScanRequest};

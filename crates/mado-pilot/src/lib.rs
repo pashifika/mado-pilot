@@ -189,7 +189,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mado_pilot_adapter_replay::{ReplayProvider, ReplaySource};
-use mado_pilot_backend_onnx::OnnxOcrBackend;
+use mado_pilot_backend_onnx::{OnnxExecutionProviderPolicy, OnnxOcrBackend};
 use mado_pilot_backend_opencv::OpenCvBackend;
 use mado_pilot_runtime::{
     CaptureProvider, EngineOptions as RuntimeEngineOptions, EngineWiring, IdentityIssuer, Matcher,
@@ -223,6 +223,10 @@ pub const REQUIRED_BACKEND: &str = mado_pilot_backend_opencv::BACKEND_ID;
 
 /// The only backend selected by the default OCR composition.
 pub const DEFAULT_OCR_BACKEND_ID: &str = mado_pilot_backend_onnx::BACKEND_ID;
+/// Backend identifier selected by an integrated CUDA provider.
+pub const CUDA_OCR_BACKEND_ID: &str = mado_pilot_backend_onnx::CUDA_BACKEND_ID;
+/// Backend identifier selected by an integrated CoreML provider.
+pub const COREML_OCR_BACKEND_ID: &str = mado_pilot_backend_onnx::COREML_BACKEND_ID;
 /// Exact default backend implementation and native compatibility identity.
 pub const DEFAULT_OCR_BACKEND_VERSION: &str = mado_pilot_backend_onnx::BACKEND_VERSION;
 /// Closed runtime/provider profile required by the default OCR composition.
@@ -310,16 +314,109 @@ impl OcrProfileConfig {
     }
 }
 
+/// Model/preprocessing profile used by explicit provider-policy construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OcrProviderProfile {
+    /// Released native G-004 preprocessing and model identity.
+    NativeG004,
+    /// ADR 0040 bounded-detector preprocessing and model identity.
+    BoundedDetector,
+}
+
+const fn backend_provider_policy(
+    policy: OcrExecutionProviderPolicy,
+) -> OnnxExecutionProviderPolicy {
+    match policy {
+        OcrExecutionProviderPolicy::Cpu => OnnxExecutionProviderPolicy::Cpu,
+        OcrExecutionProviderPolicy::AutoPreferAccelerator => {
+            OnnxExecutionProviderPolicy::AutoPreferAccelerator
+        }
+        OcrExecutionProviderPolicy::PreferCuda => OnnxExecutionProviderPolicy::PreferCuda,
+        OcrExecutionProviderPolicy::RequireCuda => OnnxExecutionProviderPolicy::RequireCuda,
+        OcrExecutionProviderPolicy::PreferCoreMl => OnnxExecutionProviderPolicy::PreferCoreMl,
+        OcrExecutionProviderPolicy::RequireCoreMl => OnnxExecutionProviderPolicy::RequireCoreMl,
+    }
+}
+
+/// Controlled prerequisites for one explicit OCR model/provider combination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OcrProviderConfig {
+    profile: OcrProviderProfile,
+    provider_policy: OcrExecutionProviderPolicy,
+    model_root: PathBuf,
+    runtime_path: PathBuf,
+    provider_root: Option<PathBuf>,
+}
+
+impl OcrProviderConfig {
+    /// Selects one model profile and provider initialization policy.
+    pub fn new(
+        profile: OcrProviderProfile,
+        provider_policy: OcrExecutionProviderPolicy,
+        model_root: impl Into<PathBuf>,
+        runtime_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            profile,
+            provider_policy,
+            model_root: model_root.into(),
+            runtime_path: runtime_path.into(),
+            provider_root: None,
+        }
+    }
+
+    /// Supplies the explicit CUDA/ORT provider dependency root.
+    #[must_use]
+    pub fn with_provider_root(mut self, provider_root: impl Into<PathBuf>) -> Self {
+        self.provider_root = Some(provider_root.into());
+        self
+    }
+
+    /// Returns the selected model/preprocessing profile.
+    #[must_use]
+    pub const fn profile(&self) -> OcrProviderProfile {
+        self.profile
+    }
+
+    /// Returns the selected provider initialization policy.
+    #[must_use]
+    pub const fn provider_policy(&self) -> OcrExecutionProviderPolicy {
+        self.provider_policy
+    }
+
+    /// Returns the caller-selected model root.
+    #[must_use]
+    pub fn model_root(&self) -> &Path {
+        &self.model_root
+    }
+
+    /// Returns the caller-selected runtime file.
+    #[must_use]
+    pub fn runtime_path(&self) -> &Path {
+        &self.runtime_path
+    }
+
+    /// Returns the explicit provider dependency root, when applicable.
+    #[must_use]
+    pub fn provider_root(&self) -> Option<&Path> {
+        self.provider_root.as_deref()
+    }
+}
+
 #[derive(Clone, Copy)]
 enum IntegratedOcr<'a> {
     Default(&'a DefaultOcrConfig, &'a OperationContext),
     Profile(&'a OcrProfileConfig, &'a OperationContext),
+    Provider(&'a OcrProviderConfig, &'a OperationContext),
 }
 
 impl<'a> IntegratedOcr<'a> {
     const fn operation(self) -> &'a OperationContext {
         match self {
-            Self::Default(_, operation) | Self::Profile(_, operation) => operation,
+            Self::Default(_, operation)
+            | Self::Profile(_, operation)
+            | Self::Provider(_, operation) => operation,
         }
     }
 }
@@ -350,6 +447,31 @@ fn configured_ocr(
                     config.runtime_path(),
                     operation,
                 ),
+            }
+            .map_err(Error::from)?;
+            Ok(Some(OcrRecognizer::new(Arc::new(backend))))
+        }
+        (None, Some(IntegratedOcr::Provider(config, operation))) => {
+            let policy = backend_provider_policy(config.provider_policy());
+            let backend = match config.profile() {
+                OcrProviderProfile::NativeG004 => {
+                    OnnxOcrBackend::open_accepted_with_provider_config(
+                        config.model_root(),
+                        config.runtime_path(),
+                        policy,
+                        config.provider_root(),
+                        operation,
+                    )
+                }
+                OcrProviderProfile::BoundedDetector => {
+                    OnnxOcrBackend::open_bounded_detector_with_provider_config(
+                        config.model_root(),
+                        config.runtime_path(),
+                        policy,
+                        config.provider_root(),
+                        operation,
+                    )
+                }
             }
             .map_err(Error::from)?;
             Ok(Some(OcrRecognizer::new(Arc::new(backend))))
@@ -516,6 +638,18 @@ pub fn replay_engine_with_ocr_profile(
     replay_engine_inner(
         request.into(),
         Some(IntegratedOcr::Profile(config, operation)),
+    )
+}
+
+/// Builds a replay engine with one explicit model and provider policy.
+pub fn replay_engine_with_ocr_provider(
+    request: impl Into<ReplayEngineRequest>,
+    config: &OcrProviderConfig,
+    operation: &OperationContext,
+) -> Result<Engine> {
+    replay_engine_inner(
+        request.into(),
+        Some(IntegratedOcr::Provider(config, operation)),
     )
 }
 
@@ -687,6 +821,19 @@ pub fn windows_engine_with_ocr_profile(
     )
 }
 
+/// Builds the native Windows engine with one explicit model and provider policy.
+#[cfg(windows)]
+pub fn windows_engine_with_ocr_provider(
+    request: impl Into<NativeEngineRequest>,
+    config: &OcrProviderConfig,
+    operation: &OperationContext,
+) -> Result<Engine> {
+    windows_engine_inner(
+        request.into(),
+        Some(IntegratedOcr::Provider(config, operation)),
+    )
+}
+
 #[cfg(windows)]
 fn windows_engine_inner(
     request: NativeEngineRequest,
@@ -784,6 +931,19 @@ pub fn macos_engine_with_ocr_profile(
     )
 }
 
+/// Builds the native macOS engine with one explicit model and provider policy.
+#[cfg(target_os = "macos")]
+pub fn macos_engine_with_ocr_provider(
+    request: impl Into<NativeEngineRequest>,
+    config: &OcrProviderConfig,
+    operation: &OperationContext,
+) -> Result<Engine> {
+    macos_engine_inner(
+        request.into(),
+        Some(IntegratedOcr::Provider(config, operation)),
+    )
+}
+
 #[cfg(target_os = "macos")]
 fn macos_engine_inner(
     request: NativeEngineRequest,
@@ -845,14 +1005,15 @@ pub use mado_pilot_runtime::{
     MemoryEntry, MemoryPackage, ModelComponentIdentity, ModelId, ModelVersion, Modifier,
     MonotonicInstant, NormalizationId, OcrBackend, OcrBackendDescriptor, OcrBackendId,
     OcrBackendIdentity, OcrBackendRequest, OcrBackendVersion, OcrCandidateSink, OcrDiagnostic,
-    OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrFault, OcrModelComponent, OcrModelIdentity,
-    OcrModelSource, OcrModelSourceRequest, OcrProfileMetadata, OcrQuadrilateral, OcrRegion,
-    OcrRequest, OcrRequestedRegionDiagnostic, OcrResult, OcrZone, OcrZoneGroup, OcrZoneScanRequest,
-    OcrZoneScanResult, OpenRequest, OperationContext, OperationStartedDiagnostic, OverflowPolicy,
-    PackagePath, PackageSource, PermissionDiagnostic, PermissionKind, PermissionOutcome,
-    PermissionReport, PermissionState, PixelExtent, PixelFormat, PixelRect, PlatformCode, Point,
-    PointerButton, PointerGeometry, PreparedTemplate, PreprocessingId, PressedState, ProfileId,
-    Provenance, ProviderId, QueuePolicy, RecognizedRegion, Rect, RedactedDiagnostic,
+    OcrDiagnosticOutcome, OcrDiagnosticProfile, OcrExecutionProvider, OcrExecutionProviderPolicy,
+    OcrFault, OcrModelComponent, OcrModelIdentity, OcrModelSource, OcrModelSourceRequest,
+    OcrProfileMetadata, OcrProviderDescriptor, OcrProviderFallbackReason, OcrQuadrilateral,
+    OcrRegion, OcrRequest, OcrRequestedRegionDiagnostic, OcrResult, OcrZone, OcrZoneGroup,
+    OcrZoneScanRequest, OcrZoneScanResult, OpenRequest, OperationContext,
+    OperationStartedDiagnostic, OverflowPolicy, PackagePath, PackageSource, PermissionDiagnostic,
+    PermissionKind, PermissionOutcome, PermissionReport, PermissionState, PixelExtent, PixelFormat,
+    PixelRect, PlatformCode, Point, PointerButton, PointerGeometry, PreparedTemplate,
+    PreprocessingId, PressedState, ProfileId, Provenance, ProviderId, ProviderProfileId, Rect,
     RegionSelection, Result, RetainedStoragePolicy, RouteAttemptDiagnostic, Scale,
     SearchDiagnostic, SearchDiagnosticOutcome, SearchFrame, SequenceLimits, SequenceOutcome,
     Session, SessionDescription, SessionRequest, Status, StreamEpoch, StreamId, SubmissionEvidence,

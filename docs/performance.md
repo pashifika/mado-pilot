@@ -850,8 +850,8 @@ bytes are not applicable to immutable CPU replay inputs and have no ceiling.
 These are regression ceilings for the named hosts and fixture, not
 arbitrary-resolution, 4K, multi-region, real-time, renderer, application, or
 game guarantees. Phase 3 default-OCR `G-013` is complete on both release
-targets; watcher scheduling and acceleration remain open until later phases
-introduce those workloads.
+targets. Watcher scheduling remains open; the later provider section records the
+independent CoreML rejection and explicit CUDA qualification.
 
 ## v0.3.1 bounded-detector candidate performance
 
@@ -1036,3 +1036,77 @@ bytes, 4.664 ms, and 711.576 ms. Every singular/grouped latency, exact resource,
 ownership, cancellation, cleanup, heap, and growth gate passed. Hosted CI also
 passed both release targets on that exact source; hosted timing and RSS remain
 non-qualifying.
+
+## v0.3.1 ONNX execution-provider qualification
+
+ADR 0046 fixes provider selection and measurement independently from the
+native/bounded preprocessing profile. The schema-v5
+`bounded-detector` benchmark records requested/active provider, initialization
+fallback, runtime profile, startup/lifecycle/RSS, and the unchanged eight
+singular plus five grouped quality/resource rows. Provider registration is not
+accepted as placement: qualification-only ORT profiles are finalized on session
+drop and retained privately, while tracked evidence contains only redacted
+unique CUDA/CoreML/CPU node counts.
+
+CoreML registration and placement succeeded on the approved Apple M1 Pro:
+detector assignment was 6 CoreML / 8 CPU unique nodes and recognizer assignment
+was 27 CoreML / 44 CPU. The fixed smoke gate nevertheless failed every warmup
+and retained `bounded_menu_wide` and `bounded_status_extreme_wide` row on
+geometry, then exceeded the 250 ms active-cancellation return bound. The
+identical CPU smoke passed all thirteen workloads and cancellation gates.
+[ADR 0047](adr/0047-coreml-ocr-provider-qualification.md) therefore rejects
+CoreML support and assigns no CoreML performance budget. No failed row is
+discarded or converted into a latency result.
+
+The approved Windows CUDA precursor used exact base `83ce7e3` plus patch
+SHA-256 `90e9d2ab4fd3b151d56cc1a9ddc08ecfd76120f667e5e41b57e23e5fa24a6135`
+and executable SHA-256
+`29b5be55a43d6eb958ff3932dd320782296041847c4748e86d90efb7c31c4d8a`.
+The controlled ORT 1.29/CUDA 13/cuDNN 9/NVRTC root produced empty provider
+stderr. Placement was 328 CUDA / 0 CPU detector nodes and 181 CUDA / 2 CPU
+recognizer nodes.
+
+Five fresh CPU and five fresh CUDA precursor processes, each with three warmups
+and 20 retained samples, passed in the fixed alternating order. Same-index
+CPU-over-CUDA speedup ranges were 4.326–21.048× p50, 4.115–19.662× p95, and
+4.053–19.279× maximum. Exact final enforcement retained two stopped sequences
+rather than excluding their tails: one CUDA dense-group p95/maximum and one
+interleaved fresh-CPU fallback eight/dense-group p95/maximum. Their
+approximately 1.25× rounded corrections change only the new provider profiles;
+all historical standalone CPU profile bytes and budgets remain unchanged.
+
+The terminal patch
+`40e5ec9f1720fbfa5ab0943a3738ccc4a719c68d96532201c6740cca41c6152b`
+built executable
+`25a0ce6e51bfad48110e118807491d82b3870ac608491f25e86f207244f1c1c7`.
+All five required-CUDA and five preferred-CUDA/missing-root CPU-fallback
+processes passed 249/249 checks in the fixed order with zero retry, exclusion,
+priming, overlap, incorrect retained sample, growth failure, or NVRTC
+diagnostic.
+
+| Measure | Fallback CPU median | CUDA median | CUDA final worst | CUDA ceiling |
+|---|---:|---:|---:|---:|
+| Cold open | 179.724 ms | 323.479 ms | 339.682 ms | 425 ms |
+| First close | 4.908 ms | 15.701 ms | 17.774 ms | 25 ms |
+| Reopen-close | 149.894 ms | 132.928 ms | 134.340 ms | 175 ms |
+| Active cancellation | 4.441 ms | 1.683 ms | 2.133 ms | 25 ms |
+| Retained result | 712.658 ms | 128.416 ms | 147.014 ms | 175 ms |
+| Process peak RSS | 230,543,360 B | 1,121,656,832 B | 1,140,326,400 B | 1,426,063,360 B |
+
+Representative CUDA p50/p95/maximum ceilings are 150/150/175 ms for 4K HUD,
+150/175/175 ms for dense tooltip, 175/200/200 ms for one full-frame group, and
+150/525/1,100 ms for dense grouped work. The separate mixed-provider fallback
+profile keeps the standalone CPU p50 limits and records the retained grouped
+tail ceilings. The three exact schema-v5 profiles and testkit registries enforce
+every workload and scalar ceiling.
+
+Across precursor and terminal evidence, host-wide VRAM was 1,811–1,899 MiB
+during fallback CPU processes and 2,432–2,700 MiB during CUDA processes. The
+conservative cross-process maximum difference was 889 MiB under the configured
+1 GiB provider-arena cap. These host totals are not process attribution.
+
+[ADR 0048](adr/0048-cuda-ocr-provider-qualification.md) accepts explicit CUDA
+and rejects automatic preference: median CUDA process RSS is about 4.9 times
+CPU, above the predeclared 1.5× automatic-selection bound. The latency benefit
+does not relax that memory rule. `AutoPreferAccelerator` therefore remains CPU
+on both release targets.

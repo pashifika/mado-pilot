@@ -30,6 +30,14 @@ pub enum OnnxBackendFault {
     RuntimeIncompatible,
     /// Another process-global ONNX API or environment was initialized first.
     RuntimeConflict,
+    /// The requested provider is unsupported by this target, build, or runtime.
+    ProviderUnavailable,
+    /// Target qualification rejected the requested provider for this release.
+    ProviderQualificationRejected,
+    /// A controlled accelerator dependency was absent or incompatible.
+    ProviderDependencyUnavailable,
+    /// Provider registration or accelerator session initialization failed.
+    ProviderInitializationFailed,
     /// The source did not carry either exact accepted closed profile.
     ProfileMismatch,
     /// The model graph or embedded vocabulary did not match the selected profile.
@@ -66,13 +74,17 @@ impl OnnxBackendFault {
             | Self::RecognizerUnavailable
             | Self::RuntimeUnavailable
             | Self::RuntimeIncompatible
-            | Self::RuntimeConflict => Status::Unsupported,
+            | Self::RuntimeConflict
+            | Self::ProviderUnavailable
+            | Self::ProviderDependencyUnavailable
+            | Self::ProviderQualificationRejected => Status::Unsupported,
             Self::DetectorMismatch | Self::RecognizerMismatch => Status::AssetInvalid,
             Self::ResourceLimit | Self::Busy => Status::LimitExceeded,
             Self::Closed => Status::Closed,
-            Self::InvalidPixels | Self::NativeFailure | Self::MalformedOutput => {
-                Status::VisionFailed
-            }
+            Self::InvalidPixels
+            | Self::NativeFailure
+            | Self::ProviderInitializationFailed
+            | Self::MalformedOutput => Status::VisionFailed,
             Self::Cancelled => Status::Cancelled,
             Self::DeadlineExceeded => Status::DeadlineExceeded,
         }
@@ -102,6 +114,14 @@ impl OnnxBackendFault {
             Self::RuntimeUnavailable => "controlled ONNX runtime is unavailable",
             Self::RuntimeIncompatible => "controlled ONNX runtime is incompatible",
             Self::RuntimeConflict => "a conflicting ONNX runtime is already initialized",
+            Self::ProviderUnavailable => "requested ONNX execution provider is unavailable",
+            Self::ProviderDependencyUnavailable => {
+                "controlled ONNX provider dependency is unavailable"
+            }
+            Self::ProviderQualificationRejected => {
+                "requested ONNX execution provider failed release qualification"
+            }
+            Self::ProviderInitializationFailed => "ONNX execution provider initialization failed",
             Self::ProfileMismatch => "OCR source does not match an accepted closed profile",
             Self::GraphMismatch => "OCR graph metadata does not match the selected profile",
             Self::ResourceLimit => "ONNX backend resource ceiling would be exceeded",
@@ -139,12 +159,204 @@ impl fmt::Display for OnnxBackendFault {
 
 impl std::error::Error for OnnxBackendFault {}
 
-/// The only execution provider this backend can select.
+/// One execution provider exposed by the ONNX OCR backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OnnxExecutionProvider {
     /// ONNX Runtime's built-in CPU execution provider.
     Cpu,
+    /// ONNX Runtime's CUDA execution provider.
+    Cuda,
+    /// ONNX Runtime's CoreML execution provider.
+    CoreMl,
 }
+
+impl OnnxExecutionProvider {
+    /// Returns the closed runtime/provider profile identity.
+    #[must_use]
+    pub const fn runtime_profile_id(self) -> &'static str {
+        match self {
+            Self::Cpu => "onnxruntime-1.29.0-api17-cpu",
+            Self::Cuda => "onnxruntime-1.29.0-api17-cuda13-cudnn9",
+            Self::CoreMl => "onnxruntime-1.29.0-api17-coreml",
+        }
+    }
+}
+
+/// Closed caller policy for provider selection during backend initialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OnnxExecutionProviderPolicy {
+    /// Preserve the released CPU-only behavior.
+    Cpu,
+    /// Prefer the release-qualified target accelerator, otherwise use CPU.
+    AutoPreferAccelerator,
+    /// Prefer CUDA and fall back to CPU before publication.
+    PreferCuda,
+    /// Require CUDA and publish nothing when it cannot initialize.
+    RequireCuda,
+    /// Prefer CoreML and fall back to CPU before publication.
+    PreferCoreMl,
+    /// Require CoreML and publish nothing when it cannot initialize.
+    RequireCoreMl,
+}
+
+impl OnnxExecutionProviderPolicy {
+    /// Returns whether initialization may fall back to a fresh CPU session pair.
+    #[must_use]
+    pub const fn permits_cpu_fallback(self) -> bool {
+        matches!(
+            self,
+            Self::AutoPreferAccelerator | Self::PreferCuda | Self::PreferCoreMl
+        )
+    }
+}
+
+/// Privacy-safe reason an accelerator initialization selected CPU instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OnnxProviderFallbackReason {
+    /// The requested accelerator does not exist on this release target.
+    UnsupportedTarget,
+    /// The binary was built without the requested provider feature.
+    BuildCapabilityUnavailable,
+    /// ONNX Runtime did not make the provider available.
+    ProviderUnavailable,
+    /// A controlled provider dependency was absent or incompatible.
+    DependencyUnavailable,
+    /// Provider registration failed.
+    RegistrationFailed,
+    /// Detector or recognizer session construction failed.
+    SessionCreationFailed,
+    /// Model graph or profile validation rejected the provider session.
+    GraphRejected,
+    /// Target qualification rejected this provider for the release.
+    QualificationRejected,
+}
+
+impl OnnxProviderFallbackReason {
+    /// Returns the public status class used when fallback is not permitted.
+    #[must_use]
+    pub const fn status(self) -> Status {
+        match self {
+            Self::UnsupportedTarget
+            | Self::BuildCapabilityUnavailable
+            | Self::ProviderUnavailable
+            | Self::DependencyUnavailable
+            | Self::QualificationRejected => Status::Unsupported,
+            Self::RegistrationFailed | Self::SessionCreationFailed => Status::VisionFailed,
+            Self::GraphRejected => Status::InvalidArgument,
+        }
+    }
+}
+
+impl OnnxProviderFallbackReason {
+    /// Returns a static, privacy-safe provider failure detail.
+    #[must_use]
+    pub const fn detail(self) -> &'static str {
+        match self {
+            Self::UnsupportedTarget => "accelerator is unsupported on this target",
+            Self::BuildCapabilityUnavailable => "binary lacks the requested accelerator capability",
+            Self::ProviderUnavailable => "runtime does not expose the requested accelerator",
+            Self::DependencyUnavailable => "controlled accelerator dependency is unavailable",
+            Self::RegistrationFailed => "accelerator registration failed",
+            Self::SessionCreationFailed => "accelerator session creation failed",
+            Self::GraphRejected => "accelerator graph validation failed",
+            Self::QualificationRejected => "release qualification rejected the accelerator",
+        }
+    }
+}
+
+/// One provider-policy backend construction failure.
+///
+/// When a preferred accelerator fails and fresh CPU construction also fails,
+/// `provider_reason` retains the original closed accelerator context while
+/// `fault` remains the authoritative CPU failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OnnxBackendOpenFault {
+    fault: OnnxBackendFault,
+    provider_reason: Option<OnnxProviderFallbackReason>,
+}
+
+impl OnnxBackendOpenFault {
+    pub(crate) const fn terminal(fault: OnnxBackendFault) -> Self {
+        Self {
+            fault,
+            provider_reason: None,
+        }
+    }
+
+    pub(crate) const fn provider(
+        provider: OnnxExecutionProvider,
+        fault: OnnxBackendFault,
+        reason: OnnxProviderFallbackReason,
+    ) -> Self {
+        Self {
+            fault,
+            provider_reason: if matches!(provider, OnnxExecutionProvider::Cpu) {
+                None
+            } else {
+                Some(reason)
+            },
+        }
+    }
+
+    pub(crate) const fn with_provider_reason(
+        self,
+        provider_reason: OnnxProviderFallbackReason,
+    ) -> Self {
+        Self {
+            fault: self.fault,
+            provider_reason: Some(provider_reason),
+        }
+    }
+
+    /// Returns the authoritative final construction fault.
+    #[must_use]
+    pub const fn fault(self) -> OnnxBackendFault {
+        self.fault
+    }
+
+    /// Returns bounded accelerator context retained with the final fault.
+    #[must_use]
+    pub const fn provider_reason(self) -> Option<OnnxProviderFallbackReason> {
+        self.provider_reason
+    }
+
+    /// Returns the public status of the authoritative final fault.
+    #[must_use]
+    pub const fn status(self) -> Status {
+        self.fault.status()
+    }
+}
+
+impl From<OnnxBackendFault> for OnnxBackendOpenFault {
+    fn from(fault: OnnxBackendFault) -> Self {
+        Self::terminal(fault)
+    }
+}
+
+impl From<OnnxBackendOpenFault> for Error {
+    fn from(fault: OnnxBackendOpenFault) -> Self {
+        match fault.provider_reason {
+            Some(_) => Error::new(fault.status(), fault.to_string()),
+            None => fault.fault.into(),
+        }
+    }
+}
+
+impl fmt::Display for OnnxBackendOpenFault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.provider_reason {
+            Some(reason) => write!(
+                formatter,
+                "{}; accelerator initialization failure: {}",
+                self.fault.detail(),
+                reason.detail()
+            ),
+            None => self.fault.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for OnnxBackendOpenFault {}
 
 /// The reviewed native compatibility boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -165,7 +377,9 @@ pub enum OnnxOcrProfile {
 /// Privacy-safe, closed observations about one opened backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OnnxBackendFacts {
+    requested_provider_policy: OnnxExecutionProviderPolicy,
     provider: OnnxExecutionProvider,
+    fallback_reason: Option<OnnxProviderFallbackReason>,
     runtime: OnnxRuntimeCompatibility,
     max_concurrent_inferences: u32,
     profile: OnnxOcrProfile,
@@ -179,6 +393,7 @@ pub struct OnnxBackendFacts {
 }
 
 impl OnnxBackendFacts {
+    #[cfg(test)]
     pub(crate) fn accepted(
         preprocessing: PreprocessingDescriptor,
         max_tensor_bytes: u64,
@@ -186,8 +401,33 @@ impl OnnxBackendFacts {
         max_detector_candidates: u32,
         recognition_batch: u32,
     ) -> Self {
+        Self::accepted_with_provider(
+            preprocessing,
+            max_tensor_bytes,
+            max_output_bytes,
+            max_detector_candidates,
+            recognition_batch,
+            OnnxExecutionProviderPolicy::Cpu,
+            OnnxExecutionProvider::Cpu,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn accepted_with_provider(
+        preprocessing: PreprocessingDescriptor,
+        max_tensor_bytes: u64,
+        max_output_bytes: u64,
+        max_detector_candidates: u32,
+        recognition_batch: u32,
+        requested_provider_policy: OnnxExecutionProviderPolicy,
+        provider: OnnxExecutionProvider,
+        fallback_reason: Option<OnnxProviderFallbackReason>,
+    ) -> Self {
         Self {
-            provider: OnnxExecutionProvider::Cpu,
+            requested_provider_policy,
+            provider,
+            fallback_reason,
             runtime: OnnxRuntimeCompatibility::Version1_29Api17,
             profile: preprocessing.selected().public(),
             max_concurrent_inferences: 1,
@@ -210,6 +450,30 @@ impl OnnxBackendFacts {
     #[must_use]
     pub const fn provider(self) -> OnnxExecutionProvider {
         self.provider
+    }
+
+    /// Returns the caller's initialization-time provider policy.
+    #[must_use]
+    pub const fn requested_provider_policy(self) -> OnnxExecutionProviderPolicy {
+        self.requested_provider_policy
+    }
+
+    /// Returns whether initialization fell back to CPU.
+    #[must_use]
+    pub const fn initialization_fell_back(self) -> bool {
+        self.fallback_reason.is_some()
+    }
+
+    /// Returns the bounded initialization fallback reason, when one occurred.
+    #[must_use]
+    pub const fn fallback_reason(self) -> Option<OnnxProviderFallbackReason> {
+        self.fallback_reason
+    }
+
+    /// Returns the active runtime/provider profile identity.
+    #[must_use]
+    pub const fn runtime_profile_id(self) -> &'static str {
+        self.provider.runtime_profile_id()
     }
 
     /// Returns the reviewed runtime compatibility boundary.

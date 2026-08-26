@@ -336,6 +336,12 @@ pub trait OcrBackend: fmt::Debug + Send + Sync {
     /// Returns the backend's exact public identity and required pixel format.
     fn descriptor(&self) -> OcrBackendDescriptor;
 
+    /// Returns immutable execution-provider initialization facts when available.
+    #[must_use]
+    fn provider_descriptor(&self) -> Option<crate::OcrProviderDescriptor> {
+        None
+    }
+
     /// Recognizes text in `request.pixels()` and streams bounded candidates.
     ///
     /// The hard limits in `request` must be enforced before candidate collection

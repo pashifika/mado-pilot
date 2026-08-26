@@ -112,8 +112,8 @@ dependency surface over a framework that pulls in unrelated features.
 | `sha2` 0.11 | `mado-pilot-assets`, `mado-pilot-ocr`, `mado-pilot-backend-onnx` | Verifies package entry digests, immutable OCR model component identities, and the recognizer graph's embedded vocabulary before session admission | MIT OR Apache-2.0 |
 | `unicode-normalization` 0.1.25 | `mado-pilot-ocr` | Applies the accepted G-004 NFC rule once at the platform-neutral OCR commit boundary. Its only dependency is the small `tinyvec`/`tinyvec_macros` pair already pinned in `Cargo.lock` | MIT OR Apache-2.0 |
 | `opencv` 0.99 | `mado-pilot-backend-opencv`, `mado-pilot-backend-onnx` | Binds the OpenCV C++ image-processing API used by the CPU matching profile and the accepted OCR profiles' direct resize, contour, dilation, and original-source perspective-crop rules. Default features **off**; `imgcodecs`, `imgproc`, and `clang-runtime` only | MIT |
-| `ort` 2.0.0-rc.13 | `mado-pilot-backend-onnx` | Exact-pinned safe session/tensor/metadata/run-options wrapper. Default features **off**; only `std`, `alternative-backend`, and `api-17`. No downloader, dynamic-search helper, telemetry feature, GPU provider, or model fetcher is enabled | MIT OR Apache-2.0 |
-| `libloading` 0.8.9 | `mado-pilot-backend-onnx` | Opens one caller-supplied canonical ONNX Runtime file with target-specific restricted flags and retains it for the process-global API lifetime. The version was already resolved by the OpenCV binding generator | ISC |
+| `ort` 2.0.0-rc.13 | `mado-pilot-backend-onnx` | Exact-pinned safe session/tensor/metadata/run-options wrapper. Default features remain **off** with `std`, `alternative-backend`, and `api-17`; target-gated `coreml-provider` and `cuda-provider` features additionally enable only the corresponding registration module. No downloader, dynamic-search helper, telemetry feature, or model fetcher is enabled | MIT OR Apache-2.0 |
+| `libloading` 0.8.9 | `mado-pilot-backend-onnx` | Opens the caller-supplied canonical ONNX Runtime and the fixed Windows CUDA/cuBLAS/cuDNN/NVRTC dependency set with target-specific restricted flags. The runtime and a successful provider set remain live for their process-global API/provider lifetime; failed candidates release their explicit dependency references before fresh CPU construction. It never searches `PATH` | ISC |
 | `libc` 0.2.189 | `mado-pilot-backend-onnx` (macOS benchmark dev-only) | Supplies the target `rusage` layout and `getrusage` declaration used to enforce the Apple OCR process peak-RSS ceiling. The target-gated direct edge adds no crate to the lockfile and is absent from product dependencies | MIT OR Apache-2.0 |
 | `windows` 0.62.2 | `mado-pilot-platform-windows` | Supplies Microsoft-maintained Rust bindings for the picker-free Win32 target inventory, WGC/WinRT interop, D3D11/DXGI ownership, DPI, system input, window messaging, and token-integrity APIs. Default features **off**; only the reviewed namespaces listed in the workspace manifest are enabled, and the dependency is `cfg(windows)`-gated | MIT OR Apache-2.0 |
 | `cc` 1.4 | `mado-pilot-platform-macos` (build) | Compiles the Objective-C shim that owns the macOS native boundary. The package declares the build dependency unconditionally, so Cargo resolves the edge on every host; `build.rs` gates Objective-C compilation and Apple framework link directives on a macOS target. It was already an indirect build dependency through the OpenCV binding generator, so the graph gains an edge rather than a crate | MIT OR Apache-2.0 |
@@ -269,6 +269,29 @@ versioned dylib is 43,184,400 bytes with SHA-256 `68f6e5…`, minimum macOS 14.0
 SDK 26.2, and only system framework/library load commands. These are distinct
 revision-bound observations, not interchangeable hashes. ONNX Runtime is
 MIT-licensed and is not redistributed.
+
+Provider-policy construction under ADR 0046 does not change redistribution:
+
+- CoreML registration uses the explicit ONNX Runtime dylib and macOS system
+  CoreML/Metal frameworks. No framework or provider asset is bundled.
+- CUDA qualification uses the official version-matched ORT 1.29.0 CUDA 13
+  archive plus caller-provided CUDA 13, cuBLAS, cuDNN 9, and NVRTC DLLs in one
+  canonical controlled root. The accepted root is flat, regular-file-only, and
+  includes `onnxruntime.dll`, `onnxruntime_providers_shared.dll`,
+  `onnxruntime_providers_cuda.dll`, CUDA runtime/math DLLs, cuDNN component
+  DLLs, `nvrtc64_130_0.dll`, and `nvrtc-builtins64_130.dll`.
+- ONNX Runtime remains MIT-licensed. CUDA Toolkit/cuBLAS/NVRTC and cuDNN remain
+  subject to NVIDIA's supplied licenses. Qualification retains their source,
+  version, length, SHA-256, signature, and license identity privately.
+- Source releases bundle none of these native files. Product code performs no
+  download, installation, license acceptance, registry mutation, privilege
+  change, or ambient/Python/PyTorch provider preload.
+
+Qualification does not turn every compiled provider feature into support.
+[ADR 0047](adr/0047-coreml-ocr-provider-qualification.md) rejects CoreML after
+geometry and cancellation hard-gate failures. [ADR 0048](adr/0048-cuda-ocr-provider-qualification.md)
+accepts only explicit Windows CUDA for the exact controlled dependency set;
+automatic selection remains CPU because CUDA exceeded the fixed RSS ratio.
 
 The accepted detector and recognizer remain caller-supplied Apache-2.0 model
 bytes. Both `OnnxOcrBackend::open_accepted` and explicit

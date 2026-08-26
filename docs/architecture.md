@@ -13,8 +13,9 @@ test them, so that this document never describes behavior a reader cannot use.
 **Status: Phase 1, Phase 2 native capture/input/observation, and Phase 3
 singular/grouped OCR composition reach Rust, C, and C++.** Platform-neutral
 contracts, deterministic replay, asset loading, OpenCV matching, bounded ONNX
-CPU OCR, runtime orchestration, engine-scoped diagnostics, the Rust facade, C
-ABI 1.4, and the header-only C++ wrapper are implemented.
+OCR with explicit initialization-time provider policy, runtime orchestration,
+engine-scoped diagnostics, the Rust facade, C ABI 1.5, and the header-only C++
+wrapper are implemented.
 The picker-free Windows Adapter implements window/display discovery, WGC/D3D11 capture, system input,
 and explicit exact-window `WindowMessage` submission. The macOS Adapter
 implements discovery, ScreenCaptureKit capture, `CGEvent` system input, and
@@ -39,10 +40,15 @@ accepts exact-candidate cross-target quality and target-specific grouped budgets
 for the fixed non-overlapping layouts. ADR 0045 corrects only the new Apple
 integrated cache-cold startup ceiling after a retained failed source; the later
 exact Apple and Windows final executables pass five fresh enforcement processes
-each. Protected release acceptance remains open.
-Neither profile adds bundling, download, ambient search, provider fallback,
-scheduling, or automatic input. Watchers, scheduling, and release packaging
-remain future work.
+each. The provider-policy extension preserves those CPU profiles and adds
+initialization-only fallback plus Rust/C/C++ observation. ADR 0047 rejects
+CoreML promotion after retained geometry and cancellation failures. ADR 0048
+accepts explicit Windows CUDA and its fresh-CPU initialization fallback after
+terminal target-native enforcement; automatic selection remains CPU because
+CUDA fails the fixed RSS-ratio rule. Protected release acceptance remains open.
+The extension adds no bundling, download, ambient search, per-inference
+fallback, scheduling, or automatic input. Watchers,
+scheduling, and release packaging remain future work.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -290,7 +296,7 @@ prefix.
 | `crates/platform/windows` | `mado-pilot-platform-windows` | Picker-free Windows window/display discovery, WGC/D3D11 capture, system input, ordinary exact-window queue submission with unknown compatibility, and fixture-acknowledged exact-window submission, wired into the runtime and facade by `mado_pilot::windows_engine`; Windows exposes no separate capture/input authorization state, and receipts report integrity/UIPI failures without elevation |
 | `crates/platform/macos` | `mado-pilot-platform-macos` | Non-prompting macOS target discovery, permission probes, ScreenCaptureKit capture, `CGEvent` system input, and gated process-directed input to the retained window's owning process, wired into the runtime and the facade by `mado_pilot::macos_engine` |
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
-| `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 CPU OCR for the exact accepted native G-004 and explicit bounded-detector profiles |
+| `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 OCR for the exact accepted native G-004 and explicit bounded-detector profiles, with CPU defaults and target-gated explicit provider policy |
 | `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
 | `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, backend, and input doubles, synthetic clock, and contract-fixture support |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
@@ -857,9 +863,9 @@ responsibilities a later phase takes on.
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
 | OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts singular target budgets; ADR 0044 accepts fixed non-overlapping grouped quality and budgets. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
-| Exact accepted CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection first fits a `1312x736` rectangle, applies a 6 MiB secondary tensor fit only when that rectangle had to fit oversized desired work, keeps original-source recognizer crops, and enforces ADR 0041 singular plus ADR 0044 grouped target budgets |
-| Accepted OCR composition | Implemented by ADRs 0036 and 0043 as separate Rust/C/C++ constructors over caller-supplied canonical model-root/runtime paths. Existing constructors still omit OCR, default construction remains native G-004, and explicit `OcrProfile::BoundedDetector` construction selects only the ADR 0040 profile governed by ADRs 0041 and 0044. Missing prerequisites, interruption, or identity failure publish no engine and trigger no fallback |
-| Bounded engine-scoped diagnostic observation | Implemented through Rust, C ABI 1.4, and C++ with allocation-free `Off`, finite `Normal`/`Debug`, strict order, exact level losses, independent readers/batches, content-redacted singular OCR, and grouped source-envelope/zone/unique-candidate/membership aggregates. Request-scoped backend-work fields remain absent when the generic backend contract has no authoritative evidence |
+| Exact accepted OCR preprocessing, ONNX inference, decoding, and provider policy | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection keeps its bounded tensor/profile rules and ADR 0041/0044 budgets. ADR 0046 adds target-gated CUDA/CoreML initialization with one same-provider detector/recognizer pair, explicit dependency roots, atomic pre-publication preferred fallback, required-provider failure, immutable provider facts, and no inference retry/provider switching. ADR 0047 rejects CoreML release qualification. ADR 0048 accepts explicit Windows CUDA and its fresh-CPU initialization fallback for the exact qualified boundary; automatic selection remains CPU on both release targets |
+| Accepted OCR composition | Existing constructors still omit OCR or select the released CPU native/bounded profiles with no fallback. New replay/Windows/macOS provider constructors own caller configuration, select model profile independently from provider policy, and publish provider descriptors only with a complete engine. Preferred initialization may build a fresh CPU pair; required policy publishes no engine on failure |
+| Bounded engine-scoped diagnostic and provider observation | The released allocation-free `Off` and finite `Normal`/`Debug` diagnostic stream remains unchanged through ABI 1.5, with strict order, exact losses, independent readers/batches, and content-redacted singular/grouped OCR aggregates. Provider-policy construction is observed separately through engine-owned Rust/C/C++ descriptors; required failure is a typed construction error because it publishes no engine/reader |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
 | Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text and process-directed pointer/keyboard/text with owning-process scope, unknown compatibility, and invocation-only evidence; final candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. No macOS window-message route exists. Both implementations are reached through `mado-pilot-runtime`, the Rust facade, C ABI 1.2/1.3, and C++ |
 | Asset manifests and directory, memory, and archive loading | Implemented in `mado-pilot-assets`; strict schema versions 1 and 2 are readable, with version 2 adding OCR model declarations |
@@ -869,16 +875,16 @@ responsibilities a later phase takes on.
 | Input composition: same-provider adapter pairing, required-versus-optional input admission with bounded release of committed capture, per-controller sequence serialization, the one-terminal-receipt rule, and two-sided close | Implemented in `mado-pilot-runtime`. Selecting a permitted route, arbitrating focus, resolving a coordinate against live geometry, revalidating before each irreversible event, and releasing what a stopped sequence pressed stay in `mado-pilot-input` and the Adapter implementing it |
 | Watcher queues, OCR coalescing, wait-for-text, and scheduling | Not implemented |
 | Public Rust operations for the deterministic replay workflow | Implemented in `mado-pilot` |
-| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, separate accepted-default constructors, closed `OcrProfile` construction, and borrowed one-to-eight-zone scans; no platform-native type crosses the facade |
-| Default adapter wiring and backend rules | OpenCV matching remains required. Existing engine constructors omit OCR; `*_engine_with_default_ocr` selects native G-004 and `*_engine_with_ocr_profile` selects only the explicit bounded profile from controlled paths. Neither path falls back |
-| C ABI functions, C header, dynamic library | Implemented through ABI 1.4. ABI 1.0, 1.2, and 1.3 remain frozen complete 424-byte, 592-byte, and 648-byte prefixes. ABI 1.4 appends explicit-profile construction, grouped ownership/accessors, and an engine-selected OCR descriptor at offsets 648–712 for a complete 720-byte table under ADR 0043 |
+| Public Rust operations for native and replay workflows | Implemented in `mado-pilot`, including explicit optional backend wiring, accepted CPU default/profile constructors, owning provider-policy constructors, immutable provider descriptors, and borrowed one-to-eight-zone scans; no platform-native or `ort` type crosses the facade |
+| Default adapter wiring and backend rules | OpenCV matching remains required. Every pre-provider constructor preserves CPU behavior. `*_engine_with_ocr_provider` is the only integrated provider-policy path; automatic selection uses only a release-qualified target accelerator, preferred fallback is initialization-only, and required/provider inference failure never falls back |
+| C ABI functions, C header, dynamic library | Implemented through ABI 1.5. ABI 1.0, 1.2, 1.3, and 1.4 remain frozen complete 424-, 592-, 648-, and 720-byte prefixes. ABI 1.5 appends provider construction at offset 720 and engine-owned provider descriptor access at offset 728 for a complete 736-byte table under ADR 0046 |
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
-| C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.4 as a header-only adapter, including owning profile/zone requests with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed views, typed empty groups, and complete negotiated-suffix refusal |
+| C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.5 as a header-only adapter, including owning profile/zone/provider options with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed OCR/provider descriptor views, typed empty groups, and complete negotiated-suffix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
 | Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles; Phase 3 default-OCR `G-013` is complete on both release targets. ADRs 0039–0041 accept separate exact-source bounded-v2 singular workload budgets. ADR 0044 accepts integrated grouped latency/resource/lifecycle ceilings; ADR 0045 corrects only the new Apple integrated startup value to 200 ms while preserving historical ADR 0041 profiles. The corrected exact source passes five fresh final enforcement processes on each approved host |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
-| ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, and complete 1.3 headers plus current ABI 1.4. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3 and 1.4 operations before reading missing entries |
+| ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, 1.3, and 1.4 headers against current ABI 1.5. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3, 1.4, and 1.5 operations before reading missing entries |
 
 The existence of a package is not evidence that its behavior exists. Each product
 package documents its own planned responsibility, allowed seam, and implementation
@@ -2515,7 +2521,7 @@ inside the two target-gated constructors. The native workflow is therefore
 written once in platform-neutral vocabulary, and a host that compiles for both
 targets writes it once too.
 
-### The ABI 1.2 input/diagnostic, ABI 1.3 singular OCR, and ABI 1.4 grouped OCR slices
+### The ABI 1.2 input/diagnostic, ABI 1.3 singular OCR, ABI 1.4 grouped OCR, and ABI 1.5 provider slices
 
 Production `mado-pilot-capi` depends only on the public facade and translates no
 platform type. Engine capability and non-prompting permission reads, route-pair
@@ -2544,6 +2550,13 @@ whose strings borrow from a descriptor retained by the engine handle. A separate
 entry preserves the released 8-byte/alignment-4
 `madopilot_engine_capabilities_t`; standalone default/profile options likewise
 leave the frozen 16-byte/alignment-4 `madopilot_engine_options_t` unchanged.
+ABI 1.5 leaves every one of those declarations fixed. It adds a 32-byte provider
+options record, a 40-byte provider descriptor, provider construction at table
+offset 720, and descriptor access at offset 728, ending at 736 bytes. Options
+borrow only for synchronous construction; the engine owns later descriptor
+values. Requested/active provider, initialization fallback, bounded reason, and
+runtime-profile identity cross as fixed-width enums/views. The released
+diagnostic record does not grow.
 Minimum minor 1 remains unsupported.
 
 The C boundary initializes every output before reading inputs. Refusal before
@@ -2555,15 +2568,16 @@ leaves outputs in their documented failure states and does not prove no native
 input took effect.
 
 Every C entry contains Rust panic unwinding. The C++ header owns and copies only
-according to C lifetimes, requires the complete entry extent before profile
-construction, requires 712 bytes before creating a high-level grouped owner, and
-requires 720 bytes before returning engine-borrowed descriptor views. One
-centralized projection rebinds every owned string and zone pointer
-after copy or move. No C++ path adds normalization, scheduling, retry, or
-fallback policy. ADR 0035 records singular ownership/private-fixture isolation;
-ADR 0036 records default construction; ADR 0043 records ABI 1.4 layout,
-grouped ownership, profile selection, diagnostics privacy, and frozen-prefix
-obligations.
+according to C lifetimes, requires the complete entry extent before profile or
+provider construction, requires 712 bytes before creating a high-level grouped
+owner, 720 bytes before returning the frozen OCR descriptor, and all 736 bytes
+before returning provider descriptor views. Centralized projections rebind every
+owned string, provider root, and zone pointer after copy, move, assignment, or
+container relocation. No C++ path adds normalization, scheduling,
+per-inference retry, or provider switching. ADRs 0035/0036 record singular
+ownership/default construction; ADR 0043 records ABI 1.4 layout/grouped
+ownership; ADR 0046 records ABI 1.5 provider construction, descriptor ownership,
+and frozen-prefix obligations.
 
 The source-defined diagnostic benchmark measures capture/mapping, input
 submission, and explicit close/drain with diagnostics `Off`, `Normal`, `Debug`,

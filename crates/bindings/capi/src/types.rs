@@ -627,6 +627,64 @@ pub const MADOPILOT_SEARCH_DIAGNOSTIC_FAILED: madopilot_search_diagnostic_outcom
 pub type madopilot_ocr_profile_kind_t = i32;
 /// ADR 0040/0041 bounded-detector profile.
 pub const MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR: madopilot_ocr_profile_kind_t = 1;
+/// ABI 1.5 explicit accepted G-004 profile selection.
+pub const MADOPILOT_OCR_PROFILE_G004: madopilot_ocr_profile_kind_t = 2;
+
+/// OCR execution-provider selection during engine initialization.
+pub type madopilot_ocr_provider_policy_t = i32;
+/// Use the released CPU-only provider path.
+pub const MADOPILOT_OCR_PROVIDER_POLICY_CPU: madopilot_ocr_provider_policy_t = 1;
+/// Select the release-qualified target accelerator, otherwise use CPU.
+pub const MADOPILOT_OCR_PROVIDER_POLICY_AUTO_PREFER_ACCELERATOR: madopilot_ocr_provider_policy_t =
+    2;
+/// Prefer CUDA and initialize CPU if it fails.
+pub const MADOPILOT_OCR_PROVIDER_POLICY_PREFER_CUDA: madopilot_ocr_provider_policy_t = 3;
+/// Require CUDA and publish no engine if it fails.
+pub const MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA: madopilot_ocr_provider_policy_t = 4;
+/// Prefer CoreML and initialize CPU if it fails.
+pub const MADOPILOT_OCR_PROVIDER_POLICY_PREFER_COREML: madopilot_ocr_provider_policy_t = 5;
+/// Require CoreML and publish no engine if it fails.
+pub const MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_COREML: madopilot_ocr_provider_policy_t = 6;
+
+/// OCR execution provider active for both model sessions.
+pub type madopilot_ocr_execution_provider_t = i32;
+/// No provider is present.
+pub const MADOPILOT_OCR_EXECUTION_PROVIDER_UNSPECIFIED: madopilot_ocr_execution_provider_t = 0;
+/// ONNX Runtime's built-in CPU provider.
+pub const MADOPILOT_OCR_EXECUTION_PROVIDER_CPU: madopilot_ocr_execution_provider_t = 1;
+/// ONNX Runtime's CUDA provider.
+pub const MADOPILOT_OCR_EXECUTION_PROVIDER_CUDA: madopilot_ocr_execution_provider_t = 2;
+/// ONNX Runtime's CoreML provider.
+pub const MADOPILOT_OCR_EXECUTION_PROVIDER_COREML: madopilot_ocr_execution_provider_t = 3;
+
+/// Bounded reason a preferred accelerator initialized CPU instead.
+pub type madopilot_ocr_provider_fallback_reason_t = i32;
+/// No initialization fallback occurred.
+pub const MADOPILOT_OCR_PROVIDER_FALLBACK_NONE: madopilot_ocr_provider_fallback_reason_t = 0;
+/// The provider is not defined for the release target.
+pub const MADOPILOT_OCR_PROVIDER_FALLBACK_UNSUPPORTED_TARGET:
+    madopilot_ocr_provider_fallback_reason_t = 1;
+/// The binary lacks the provider feature.
+pub const MADOPILOT_OCR_PROVIDER_FALLBACK_BUILD_CAPABILITY_UNAVAILABLE:
+    madopilot_ocr_provider_fallback_reason_t = 2;
+/// ONNX Runtime did not make the provider available.
+pub const MADOPILOT_OCR_PROVIDER_FALLBACK_PROVIDER_UNAVAILABLE:
+    madopilot_ocr_provider_fallback_reason_t = 3;
+/// A controlled provider dependency was absent or incompatible.
+pub const MADOPILOT_OCR_PROVIDER_FALLBACK_DEPENDENCY_UNAVAILABLE:
+    madopilot_ocr_provider_fallback_reason_t = 4;
+/// Provider registration failed.
+pub const MADOPILOT_OCR_PROVIDER_FALLBACK_REGISTRATION_FAILED:
+    madopilot_ocr_provider_fallback_reason_t = 5;
+/// Detector or recognizer session creation failed.
+pub const MADOPILOT_OCR_PROVIDER_FALLBACK_SESSION_CREATION_FAILED:
+    madopilot_ocr_provider_fallback_reason_t = 6;
+/// Provider-backed graph or profile validation failed.
+pub const MADOPILOT_OCR_PROVIDER_FALLBACK_GRAPH_REJECTED: madopilot_ocr_provider_fallback_reason_t =
+    7;
+/// Target qualification rejected this provider for the release.
+pub const MADOPILOT_OCR_PROVIDER_FALLBACK_QUALIFICATION_REJECTED:
+    madopilot_ocr_provider_fallback_reason_t = 8;
 
 /// Accepted public OCR profile classification in diagnostics.
 pub type madopilot_ocr_diagnostic_profile_t = i32;
@@ -783,6 +841,9 @@ pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESULT_COUNTS: u32 = 1 << 20;
 pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_RESULT_BYTES: u32 = 1 << 21;
 /// Exact request-scoped detector/recognizer work is populated.
 pub const MADOPILOT_DIAGNOSTIC_RECORD_HAS_OCR_BACKEND_WORK: u32 = 1 << 22;
+
+/// `madopilot_ocr_provider_descriptor_t.fallback_reason` is populated.
+pub const MADOPILOT_OCR_PROVIDER_DESCRIPTOR_HAS_FALLBACK: u32 = 1 << 0;
 
 /// `madopilot_error_detail_t` carries `asset_fault` and `asset_stage`.
 pub const MADOPILOT_ERROR_HAS_ASSET_DETAIL: u32 = 1 << 0;
@@ -1230,6 +1291,49 @@ pub struct madopilot_ocr_profile_options_t {
     pub model_root: madopilot_str_t,
     /// Canonical absolute ONNX Runtime 1.29.0 file.
     pub runtime_path: madopilot_str_t,
+}
+
+/// Explicit initialization-time OCR provider policy.
+///
+/// Mandatory prefix: the whole structure. `provider_root` is borrowed only for
+/// `engine_create_with_ocr_provider`; it must be empty except for CUDA policies.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_ocr_provider_options_t {
+    /// `sizeof(madopilot_ocr_provider_options_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// No bits are defined; the caller sets zero.
+    pub flags: u32,
+    /// Closed provider policy.
+    pub policy: madopilot_ocr_provider_policy_t,
+    /// Reserved; the caller sets zero.
+    pub reserved: u32,
+    /// Canonical absolute controlled CUDA dependency root, or an empty view.
+    pub provider_root: madopilot_str_t,
+}
+
+/// Immutable OCR provider facts selected by one retained engine.
+///
+/// Mandatory prefix: the whole structure. `runtime_profile` remains borrowed
+/// while the engine is retained.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct madopilot_ocr_provider_descriptor_t {
+    /// `sizeof(madopilot_ocr_provider_descriptor_t)` as the caller's header declares it.
+    pub struct_size: u32,
+    /// [`MADOPILOT_OCR_PROVIDER_DESCRIPTOR_HAS_FALLBACK`] when fallback occurred.
+    pub flags: u32,
+    /// Caller-requested initialization policy.
+    pub requested_policy: madopilot_ocr_provider_policy_t,
+    /// Provider active for both detector and recognizer.
+    pub active_provider: madopilot_ocr_execution_provider_t,
+    /// Nonzero exactly when initialization fell back to CPU.
+    pub initialization_fell_back: u32,
+    /// Typed reason when the fallback flag is set; otherwise
+    /// [`MADOPILOT_OCR_PROVIDER_FALLBACK_NONE`].
+    pub fallback_reason: madopilot_ocr_provider_fallback_reason_t,
+    /// Active runtime/provider profile identity.
+    pub runtime_profile: madopilot_str_t,
 }
 
 /// Exact OCR backend/model/profile identity selected by one engine.

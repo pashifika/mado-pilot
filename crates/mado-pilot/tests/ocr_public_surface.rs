@@ -10,6 +10,11 @@ use mado_pilot::{
     OcrRequest, OcrZone, OcrZoneScanRequest, OpenRequest, OperationContext, PixelExtent,
     PixelFormat, PixelRect, Rect, ReplayEngineRequest, Status,
 };
+#[cfg(feature = "coreml-provider")]
+use mado_pilot::{
+    OcrExecutionProvider, OcrExecutionProviderPolicy, OcrProviderConfig, OcrProviderFallbackReason,
+    OcrProviderProfile,
+};
 use mado_pilot_testkit::{ControlledOcr, ManualClock, ScriptedOcrCandidate};
 
 fn blank_source(extent: PixelExtent, format: PixelFormat) -> ReplaySource {
@@ -550,4 +555,51 @@ fn default_ocr_profile_runs_full_and_bounded_replay_regions() {
         eight_result.source_envelope(),
         PixelRect::new(0, 0, 64, 64).expect("valid envelope")
     );
+}
+
+#[cfg(feature = "coreml-provider")]
+#[test]
+#[ignore = "requires explicit reviewed ONNX Runtime and G-004 model root"]
+fn rejected_coreml_preference_is_observable_through_the_engine() {
+    let model_root = std::path::PathBuf::from(
+        std::env::var_os("MADO_PILOT_G004_MODEL_ROOT").expect("model root is explicitly set"),
+    )
+    .canonicalize()
+    .expect("model root is canonicalizable");
+    let runtime = std::path::PathBuf::from(
+        std::env::var_os("MADO_PILOT_ONNX_RUNTIME").expect("runtime path is explicitly set"),
+    )
+    .canonicalize()
+    .expect("runtime path is canonicalizable");
+    let config = OcrProviderConfig::new(
+        OcrProviderProfile::NativeG004,
+        OcrExecutionProviderPolicy::PreferCoreMl,
+        model_root,
+        runtime,
+    );
+    let operation = OperationContext::new();
+    let engine = mado_pilot::replay_engine_with_ocr_provider(
+        ReplayEngineRequest::new(blank_source(PixelExtent::new(64, 64), PixelFormat::Bgra8)),
+        &config,
+        &operation,
+    )
+    .expect("rejected preferred CoreML constructs the complete CPU replay engine");
+    let provider = engine
+        .ocr_provider()
+        .expect("integrated ONNX provider facts are observable");
+    assert_eq!(
+        provider.requested_policy(),
+        OcrExecutionProviderPolicy::PreferCoreMl
+    );
+    assert_eq!(provider.active_provider(), OcrExecutionProvider::Cpu);
+    assert!(provider.initialization_fell_back());
+    assert_eq!(
+        provider.fallback_reason(),
+        Some(OcrProviderFallbackReason::QualificationRejected)
+    );
+    assert_eq!(
+        provider.runtime_profile().as_str(),
+        "onnxruntime-1.29.0-api17-cpu"
+    );
+    drop(engine);
 }

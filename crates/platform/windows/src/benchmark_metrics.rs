@@ -12,9 +12,8 @@ use std::sync::{
     LazyLock,
     atomic::{AtomicU64, Ordering},
 };
-use std::time::Duration;
 #[cfg(feature = "benchmark-instrumentation")]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "benchmark-instrumentation")]
 const CALLBACK_OBSERVATION_CAPACITY: usize = 64;
@@ -712,6 +711,8 @@ impl CallbackCopyTimer {
 
 impl CompletedCallbackCopy {
     pub(crate) fn publish(self, stamp: FrameStamp) {
+        #[cfg(not(feature = "benchmark-instrumentation"))]
+        let _ = stamp;
         #[cfg(feature = "benchmark-instrumentation")]
         if let Some(completion) = self.completion {
             CALLBACK_METRICS.bind(completion, stamp);

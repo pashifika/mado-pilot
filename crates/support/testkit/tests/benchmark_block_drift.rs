@@ -50,6 +50,12 @@ use mado_pilot_testkit::bench_harness::{
     PHASE3_1_WINDOWS_BOUNDED_OCR_COLD_LOAD_LIMIT, PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS,
     PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
     PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+    PHASE3_1_WINDOWS_CUDA_FALLBACK_GROUPED_OCR_LATENCY_BUDGETS,
+    PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS,
+    PHASE3_1_WINDOWS_CUDA_OCR_CANCELLATION_LIMIT, PHASE3_1_WINDOWS_CUDA_OCR_CLOSE_LIMIT,
+    PHASE3_1_WINDOWS_CUDA_OCR_COLD_LOAD_LIMIT, PHASE3_1_WINDOWS_CUDA_OCR_LATENCY_BUDGETS,
+    PHASE3_1_WINDOWS_CUDA_OCR_REOPEN_CLOSE_LIMIT, PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES,
+    PHASE3_1_WINDOWS_CUDA_OCR_RETAINED_RESULT_LIMIT,
     PHASE3_1_WINDOWS_GROUPED_OCR_CANCELLATION_LIMIT, PHASE3_1_WINDOWS_GROUPED_OCR_COLD_LOAD_LIMIT,
     PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS,
     PHASE3_1_WINDOWS_GROUPED_OCR_RETAINED_RESULT_LIMIT, PHASE3_APPLE_OCR_CLOSE_LIMIT,
@@ -67,7 +73,7 @@ use mado_pilot_testkit::bench_harness::{
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 28] = [
+const PROFILES: [(&str, &str); 31] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -224,10 +230,28 @@ const PROFILES: [(&str, &str); 28] = [
             "../../../../docs/benchmarks/phase-3-1-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-bounded-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-bounded-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
 ];
 
 /// Native profiles and the latency ceilings enforced by their benchmark.
-const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 16] = [
+const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 19] = [
     (
         "docs/benchmarks/phase-2-2-controlled-capture-aarch64-apple-darwin.toml",
         include_str!(
@@ -333,6 +357,27 @@ const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 16] = [
             "../../../../docs/benchmarks/phase-3-1-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-bounded-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-bounded-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE3_1_WINDOWS_CUDA_OCR_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS,
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+        &PHASE3_1_WINDOWS_CUDA_FALLBACK_GROUPED_OCR_LATENCY_BUDGETS,
     ),
 ];
 
@@ -926,6 +971,122 @@ fn integrated_ocr_profiles_state_exactly_the_global_budgets_the_benchmark_enforc
                 ),
             ],
             "the {target} integrated OCR profile and executable global ceilings drifted"
+        );
+    }
+}
+
+#[test]
+fn provider_profiles_state_exactly_the_global_budgets_the_benchmark_enforces() {
+    let profiles = [
+        (
+            "CUDA singular",
+            include_str!(
+                "../../../../docs/benchmarks/phase-3-1-cuda-bounded-ocr-x86_64-pc-windows-msvc.toml"
+            ),
+            PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES,
+            PHASE3_1_WINDOWS_CUDA_OCR_COLD_LOAD_LIMIT,
+            PHASE3_1_WINDOWS_CUDA_OCR_CLOSE_LIMIT,
+            PHASE3_1_WINDOWS_CUDA_OCR_REOPEN_CLOSE_LIMIT,
+            PHASE3_1_WINDOWS_CUDA_OCR_CANCELLATION_LIMIT,
+            PHASE3_1_WINDOWS_CUDA_OCR_RETAINED_RESULT_LIMIT,
+        ),
+        (
+            "CUDA grouped",
+            include_str!(
+                "../../../../docs/benchmarks/phase-3-1-cuda-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+            ),
+            PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES,
+            PHASE3_1_WINDOWS_CUDA_OCR_COLD_LOAD_LIMIT,
+            PHASE3_1_WINDOWS_CUDA_OCR_CLOSE_LIMIT,
+            PHASE3_1_WINDOWS_CUDA_OCR_REOPEN_CLOSE_LIMIT,
+            PHASE3_1_WINDOWS_CUDA_OCR_CANCELLATION_LIMIT,
+            PHASE3_1_WINDOWS_CUDA_OCR_RETAINED_RESULT_LIMIT,
+        ),
+        (
+            "preferred-CUDA CPU fallback grouped",
+            include_str!(
+                "../../../../docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+            ),
+            PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+            PHASE3_1_WINDOWS_GROUPED_OCR_COLD_LOAD_LIMIT,
+            PHASE3_1_WINDOWS_BOUNDED_OCR_CLOSE_LIMIT,
+            PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
+            PHASE3_1_WINDOWS_GROUPED_OCR_CANCELLATION_LIMIT,
+            PHASE3_1_WINDOWS_GROUPED_OCR_RETAINED_RESULT_LIMIT,
+        ),
+    ];
+
+    for (
+        target,
+        profile,
+        resident_limit,
+        cold_limit,
+        close_limit,
+        reopen_limit,
+        cancellation_limit,
+        retained_result_limit,
+    ) in profiles
+    {
+        let recorded: Vec<BudgetBlock<'_>> = budget_blocks(profile)
+            .into_iter()
+            .filter(|budget| budget.workload.is_none() && budget.kind == Some("absolute"))
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![
+                absolute_budget(
+                    None,
+                    "peak_allocated_bytes",
+                    "bytes",
+                    exact_limit(
+                        u64::try_from(PHASE3_1_BOUNDED_OCR_HEAP_LIMIT_BYTES)
+                            .expect("bounded OCR heap limit fits u64")
+                    ),
+                ),
+                absolute_budget(
+                    None,
+                    "peak_resident_bytes",
+                    "bytes",
+                    exact_limit(resident_limit),
+                ),
+                absolute_budget(
+                    None,
+                    "cold_load_p95",
+                    "milliseconds",
+                    cold_limit.as_secs_f64() * 1_000.0,
+                ),
+                absolute_budget(
+                    None,
+                    "first_close_max",
+                    "milliseconds",
+                    close_limit.as_secs_f64() * 1_000.0,
+                ),
+                absolute_budget(
+                    None,
+                    "reopen_close_max",
+                    "milliseconds",
+                    reopen_limit.as_secs_f64() * 1_000.0,
+                ),
+                absolute_budget(
+                    None,
+                    "active_cancellation_max",
+                    "milliseconds",
+                    cancellation_limit.as_secs_f64() * 1_000.0,
+                ),
+                absolute_budget(
+                    None,
+                    "retained_result_max",
+                    "milliseconds",
+                    retained_result_limit.as_secs_f64() * 1_000.0,
+                ),
+                absolute_budget(
+                    None,
+                    "max_detector_tensor_bytes",
+                    "bytes",
+                    exact_limit(PHASE3_1_BOUNDED_OCR_MAX_DETECTOR_TENSOR_BYTES),
+                ),
+            ],
+            "the {target} provider profile and executable global ceilings drifted"
         );
     }
 }

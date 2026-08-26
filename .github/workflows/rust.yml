@@ -341,6 +341,7 @@ jobs:
           )
           call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
           cl 2>&1 | findstr /i "Microsoft" || exit /b 1
+          cargo check --locked --package mado-pilot-capi --all-targets --features cuda-provider || exit /b 1
           cargo build --locked --package mado-pilot-capi || exit /b 1
           cargo build --locked --package mado-pilot-platform-windows --bin mado-pilot-windows-input-fixture --bin mado-pilot-windows-window-message-fixture || exit /b 1
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- --label "CI ${{ runner.os }} ${{ runner.arch }}" --windows-native-fixture || exit /b 1
@@ -537,6 +538,7 @@ jobs:
       - name: Check the C ABI and the C++ wrapper
         shell: bash
         run: |
+          cargo check --locked --package mado-pilot-capi --all-targets --features coreml-provider
           cargo build --locked --package mado-pilot-capi
           cargo run --locked --package mado-pilot-capi --example c-abi-check -- \
             --label "CI ${{ runner.os }} ${{ runner.arch }}"

@@ -1,5 +1,5 @@
 /*
- * MadoPilot C ABI — ABI 1.5.
+ * MadoPilot C ABI — ABI 1.4.
  *
  * MadoPilot is a headless visual automation runtime. This header is the whole
  * C contract: one exported symbol, an immutable function table reached through
@@ -7,18 +7,17 @@
  * size-versioned structures with documented mandatory prefixes.
  *
  * ============================================================================
- * ABI 1.5. COMPLETE RELEASED ABI 1.0, 1.2, 1.3, AND 1.4 PREFIXES FROZEN.
+ * ABI 1.4. COMPLETE RELEASED ABI 1.0, 1.2, AND 1.3 PREFIXES FROZEN.
  *
  * Every ABI 1.0 numeric value, structure prefix, field offset, and
  * function-table position is frozen for ABI major 1 by
- * ADR 0007. ABI 1.2 replaces the unreleased
+ * docs/adr/0007-phase-1-c-abi-freeze.md. ABI 1.2 replaced the unreleased ABI
  * 1.1 draft after that boundary with explicit input-submission evidence and
  * bounded caller-owned diagnostics. ABI 1.3 appends one-shot OCR execution and
  * immutable owned OCR results after the complete ABI 1.2 extent. ABI 1.4
  * appends explicit profile construction and grouped zone OCR after the complete
- * 648-byte ABI 1.3 extent. ABI 1.5 appends explicit OCR provider policy and
- * immutable provider facts after the complete 720-byte ABI 1.4 extent. ABI 1.1
- * is intentionally unsupported. Within this major, later minors append only.
+ * 648-byte ABI 1.3 extent. ABI 1.1 is intentionally unsupported. Within this
+ * major, later minors append only.
  *
  * Use the smaller of your sizeof and the returned table's struct_size to decide
  * which members exist. crates/bindings/capi/tests/abi-compat/ keeps every
@@ -61,7 +60,7 @@ extern "C" {
 #define MADOPILOT_ABI_MAJOR 1u
 
 /* The ABI minor version this header declares. ABI 1.1 was never released. */
-#define MADOPILOT_ABI_MINOR 5u
+#define MADOPILOT_ABI_MINOR 4u
 
 /* ---------------------------------------------------------------------------
  * Status
@@ -559,41 +558,8 @@ enum {
 
 typedef int32_t madopilot_ocr_profile_kind_t;
 enum {
-    MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR = 1,
-    MADOPILOT_OCR_PROFILE_G004 = 2
+    MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR = 1
 };
-
-typedef int32_t madopilot_ocr_provider_policy_t;
-enum {
-    MADOPILOT_OCR_PROVIDER_POLICY_CPU = 1,
-    MADOPILOT_OCR_PROVIDER_POLICY_AUTO_PREFER_ACCELERATOR = 2,
-    MADOPILOT_OCR_PROVIDER_POLICY_PREFER_CUDA = 3,
-    MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA = 4,
-    MADOPILOT_OCR_PROVIDER_POLICY_PREFER_COREML = 5,
-    MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_COREML = 6
-};
-
-typedef int32_t madopilot_ocr_execution_provider_t;
-enum {
-    MADOPILOT_OCR_EXECUTION_PROVIDER_UNSPECIFIED = 0,
-    MADOPILOT_OCR_EXECUTION_PROVIDER_CPU = 1,
-    MADOPILOT_OCR_EXECUTION_PROVIDER_CUDA = 2,
-    MADOPILOT_OCR_EXECUTION_PROVIDER_COREML = 3
-};
-
-typedef int32_t madopilot_ocr_provider_fallback_reason_t;
-enum {
-    MADOPILOT_OCR_PROVIDER_FALLBACK_NONE = 0,
-    MADOPILOT_OCR_PROVIDER_FALLBACK_UNSUPPORTED_TARGET = 1,
-    MADOPILOT_OCR_PROVIDER_FALLBACK_BUILD_CAPABILITY_UNAVAILABLE = 2,
-    MADOPILOT_OCR_PROVIDER_FALLBACK_PROVIDER_UNAVAILABLE = 3,
-    MADOPILOT_OCR_PROVIDER_FALLBACK_DEPENDENCY_UNAVAILABLE = 4,
-    MADOPILOT_OCR_PROVIDER_FALLBACK_REGISTRATION_FAILED = 5,
-    MADOPILOT_OCR_PROVIDER_FALLBACK_SESSION_CREATION_FAILED = 6,
-    MADOPILOT_OCR_PROVIDER_FALLBACK_GRAPH_REJECTED = 7,
-    MADOPILOT_OCR_PROVIDER_FALLBACK_QUALIFICATION_REJECTED = 8
-};
-#define MADOPILOT_OCR_PROVIDER_DESCRIPTOR_HAS_FALLBACK 1u
 
 typedef int32_t madopilot_ocr_diagnostic_profile_t;
 enum {
@@ -854,8 +820,8 @@ typedef struct madopilot_default_ocr_options_t {
 } madopilot_default_ocr_options_t;
 
 /* Controlled prerequisites for one explicitly selected product OCR profile.
- * Mandatory prefix: whole. Both views are borrowed only for
- * engine_create_with_ocr_profile or engine_create_with_ocr_provider. */
+ * Mandatory prefix: whole. Both views are borrowed for
+ * engine_create_with_ocr_profile only. */
 typedef struct madopilot_ocr_profile_options_t {
     uint32_t struct_size;
     uint32_t flags; /* No bits defined; the caller sets zero. */
@@ -864,29 +830,6 @@ typedef struct madopilot_ocr_profile_options_t {
     madopilot_str_t model_root;   /* Absolute root of fixed model paths. */
     madopilot_str_t runtime_path; /* Canonical absolute ORT 1.29.0 file. */
 } madopilot_ocr_profile_options_t;
-
-/* Explicit provider policy and optional controlled CUDA dependency root.
- * Mandatory prefix: whole. provider_root is borrowed only for
- * engine_create_with_ocr_provider and is accepted by CUDA or automatic policy. */
-typedef struct madopilot_ocr_provider_options_t {
-    uint32_t struct_size;
-    uint32_t flags; /* No bits defined; the caller sets zero. */
-    madopilot_ocr_provider_policy_t policy;
-    uint32_t reserved; /* Zero. */
-    madopilot_str_t provider_root;
-} madopilot_ocr_provider_options_t;
-
-/* Immutable provider facts selected by one retained engine.
- * Mandatory prefix: whole. runtime_profile borrows from the retained engine. */
-typedef struct madopilot_ocr_provider_descriptor_t {
-    uint32_t struct_size;
-    uint32_t flags; /* MADOPILOT_OCR_PROVIDER_DESCRIPTOR_HAS_FALLBACK */
-    madopilot_ocr_provider_policy_t requested_policy;
-    madopilot_ocr_execution_provider_t active_provider;
-    uint32_t initialization_fell_back;
-    madopilot_ocr_provider_fallback_reason_t fallback_reason;
-    madopilot_str_t runtime_profile;
-} madopilot_ocr_provider_descriptor_t;
 
 /* Exact OCR identity selected by one engine. Mandatory prefix: whole.
  * Every string borrows from the retained engine. */
@@ -1912,26 +1855,6 @@ typedef struct madopilot_api_t {
     madopilot_status_t (*engine_ocr_descriptor)(
         const madopilot_engine_t* engine,
         madopilot_ocr_engine_descriptor_t* out_descriptor);
-
-    /* --- ABI 1.5 explicit OCR provider-policy suffix ------------------ */
-
-    /* Initializes both outputs before reading inputs. profile, provider, and
-     * operation are required. Preferred policies may construct a fresh CPU
-     * engine only when accelerator initialization fails before publication;
-     * required policies and inference failures never fall back. */
-    madopilot_status_t (*engine_create_with_ocr_provider)(
-        const madopilot_source_t* source,
-        const madopilot_engine_options_t* options,
-        const madopilot_ocr_profile_options_t* profile,
-        const madopilot_ocr_provider_options_t* provider,
-        const madopilot_operation_t* operation,
-        madopilot_engine_t** out_engine,
-        madopilot_error_t** out_error);
-    /* Initializes the descriptor failure state first. Returns UNSUPPORTED when
-     * the retained engine has no integrated provider selection. */
-    madopilot_status_t (*engine_ocr_provider_descriptor)(
-        const madopilot_engine_t* engine,
-        madopilot_ocr_provider_descriptor_t* out_descriptor);
 } madopilot_api_t;
 
 /* The table's mandatory prefix: everything through status_text.
@@ -2024,13 +1947,7 @@ typedef struct madopilot_api_t {
     offsetof(madopilot_api_t, ocr_zone_scan_result_text_at)
 #define MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT \
     offsetof(madopilot_api_t, engine_ocr_descriptor)
-#define MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR \
-    offsetof(madopilot_api_t, engine_create_with_ocr_provider)
-#define MADOPILOT_API_SIZE_ABI_1_4 \
-    offsetof(madopilot_api_t, engine_create_with_ocr_provider)
-#define MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROVIDER \
-    offsetof(madopilot_api_t, engine_ocr_provider_descriptor)
-#define MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR sizeof(madopilot_api_t)
+#define MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR sizeof(madopilot_api_t)
 
 /* ---------------------------------------------------------------------------
  * The one exported symbol

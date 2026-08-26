@@ -22,10 +22,10 @@ replaces one.
 
 ## This wrapper declares no ABI of its own
 
-The only ABI is the C one. ABI 1.0, 1.2, and 1.3 are frozen complete prefixes.
-ABI 1.4 appends explicit profile construction, grouped OCR ownership, and
-engine-selected descriptor access through the complete 720-byte table under
-[ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md). The wrapper adds
+The only ABI is the C one. ABI 1.0, 1.2, 1.3, and 1.4 are frozen complete
+prefixes. ABI 1.5 appends explicit OCR provider construction and engine-owned
+provider facts through the complete 736-byte table under
+[ADR 0046](adr/0046-onnx-accelerator-provider-policy.md). The wrapper adds
 source compatibility only, governed by ADR 0006's reviewed Rust-side naming
 policy.
 
@@ -387,6 +387,14 @@ zone pointer, count, and stride after construction, copy, or move, including the
 moved-from projection. Two immutable projections therefore share no backing
 pointer.
 
+`OcrProviderOptions` owns the policy and optional controlled CUDA root.
+Its call-local `CView` repeats the same centralized repair rule: construction,
+copy, move, assignment, and container relocation leave each `provider_root`
+view pointing only into that projection's storage.
+`Api::create_engine_with_ocr_provider` requires the complete 728-byte entry
+extent and keeps both profile and provider projections alive for the synchronous
+call. Existing constructors remain CPU-only.
+
 `Session::recognize` gates on the complete singular owner suffix and returns
 move-only `OcrResult`. `Session::scan_ocr_zones` requires the complete 712-byte
 grouped lifecycle/accessor suffix before reading any ABI 1.4 pointer and returns
@@ -437,9 +445,12 @@ request.event(madopilot::InputEvent::pointer_move(
 `Engine::capabilities`, `Engine::permission`,
 `TargetList::input_capability`, `Engine::input_descriptor`, and
 `Session::input_descriptor` project size-versioned C records into value types.
-`Engine::ocr_descriptor` projects the appended ABI 1.4 descriptor record and is
-lvalue-only because its views borrow the `Engine`. Permission is lvalue-only for
-the same reason. Unknown C numeric values stay in their fixed-width aliases.
+`Engine::ocr_descriptor` projects the frozen ABI 1.4 descriptor record.
+`Engine::ocr_provider_descriptor` requires the complete 736-byte ABI 1.5 table
+and returns requested policy, active provider, fallback state/reason, and the
+engine-borrowed runtime-profile view. Both accessors are lvalue-only because
+their views borrow the `Engine`. Permission is lvalue-only for the same reason.
+Unknown C numeric values stay in their fixed-width aliases.
 
 ### Engine-scoped diagnostics
 
@@ -483,12 +494,13 @@ independent repaired C projection. Clone an immutable result/reader per thread;
 retain/release remain atomic. Mutating a request or destroying the final owner
 concurrently with a call remains invalid caller behavior.
 
-## What ABI 1.4 does not wrap
+## What ABI 1.5 does not wrap
 
-The ABI 1.4 table ends at grouped OCR text access. There is no watcher,
-wait-for-text, query, callback/fence, retry, automatic action/input,
-acceleration, packaging/download, or native-frame extension. OCR and later input
-remain separate facts. `cpp_surface.rs` asserts this inventory.
+The ABI 1.5 table ends at OCR provider descriptor access. There is no watcher,
+wait-for-text, query, callback/fence, per-inference retry, automatic
+action/input, packaging/download, or native-frame extension. Provider
+construction and later input remain separate facts. `cpp_surface.rs` asserts
+this inventory.
 
 `Api::table()` is the escape hatch: it returns the negotiated
 `const madopilot_api_t*` for a caller that needs an entry this wrapper does not
@@ -556,16 +568,21 @@ and put `target\debug` on `PATH` before running. `/EHsc` is needed because the
 standard library the wrapper uses assumes exceptions are enabled, even though the
 wrapper never throws one.
 
-### Troubleshooting OCR 1.4
+### Troubleshooting OCR 1.5
 
-- `MADOPILOT_STATUS_UNSUPPORTED` before construction/scan/descriptor access
+- `MADOPILOT_STATUS_UNSUPPORTED` before construction or descriptor access
   usually means the caller-known or returned table extent omits a required
-  entry. Profile construction needs its complete entry; grouped
-  `Session::scan_ocr_zones` requires 712 bytes; `Engine::ocr_descriptor`
-  requires all 720 bytes.
-- `MADOPILOT_STATUS_INVALID_ARGUMENT` from profile construction means an unknown
-  kind, empty/noncanonical controlled path, or malformed projection. It never
-  triggers default fallback.
+  entry. Provider construction requires 728 bytes;
+  `Engine::ocr_provider_descriptor` requires all 736 bytes.
+- `MADOPILOT_STATUS_INVALID_ARGUMENT` from provider construction means an
+  unknown policy/profile, nonzero flags/reserved value, malformed projection,
+  empty controlled model/runtime path, or a provider root supplied to a
+  non-CUDA policy.
+- A preferred policy may return a CPU engine; inspect
+  `ocr_provider_descriptor()` to distinguish that initialization fallback from
+  explicit CPU. A required policy returns the typed error and no engine.
+- Provider state never changes after publication. Inference failure is returned
+  directly and is not retried on CPU.
 - `MADOPILOT_STATUS_INVALID_ARGUMENT` from grouped scanning includes zero/nine
   zones, malformed geometry/identity, or an incomplete array element. The
   wrapper preserves the C error rather than retrying singular OCR.
