@@ -984,7 +984,7 @@ predeclared 1.25-times/25-ms formula results:
 | dense unique candidates | 600 / 675 / 700 ms | 725 / 750 / 750 ms |
 | empty 4K result | 175 / 175 / 175 ms | 300 / 325 / 325 ms |
 
-ADR 0041 startup/close, 20 MiB attributable live Rust peak, 4 KiB growth,
+ADR 0041 close, 20 MiB attributable live Rust peak, 4 KiB growth,
 11,587,584-byte detector tensor, and target final-RSS ceilings remain unchanged.
 Active native cancellation-to-return is capped at 25 ms on each target.
 Retained one-zone result completion is capped at 625 ms on Apple and 900 ms on
@@ -993,8 +993,22 @@ run, exact mapped and detector bytes, expected zero/one/two recognizer runs,
 exact selected/ignored/unique/membership/result accounting, one cleanup, and no
 retained parent resource.
 
+The first post-budget Apple process at exact source `7835884` is rejected and
+retained. Every workload/lifecycle/resource row passed, but its 149.832 ms first
+backend open exceeded the inherited 125 ms startup ceiling. The same executable
+then measured 84.408–91.766 ms in six explicitly non-qualification warm-cache
+diagnostics. After an authorized macOS disk-buffer-cache purge, the next
+diagnostic reproduced the failure at 130.844 ms. This proves the historical
+process-cold ADR 0041 profile did not control cache state.
+
+[ADR 0045](adr/0045-integrated-ocr-cache-cold-startup-budget.md) therefore sets
+only the new Apple integrated startup ceiling to 200 ms: 1.25 times the retained
+149.832 ms observation, rounded upward to 25 ms. Windows stays at 250 ms.
+Historical ADR 0041 constants and profiles remain unchanged, and the benchmark
+does not prime the runtime/model before timing.
+
 The new integrated benchmark profiles record this separate lineage rather than
 editing either ADR 0041 profile. Five fresh `--enforce-budgets` processes from
-one final executable on each approved host remain required for release
+one later exact executable on each approved host remain required for release
 acceptance. Hosted CI enforces correctness and bounded growth only; its timing
 and RSS do not define either profile.

@@ -1,6 +1,6 @@
 # ADR 0044: Integrated zone OCR target budgets
 
-- **Status:** Accepted
+- **Status:** Accepted; Apple integrated cold-open row superseded by ADR 0045
 - **Date:** 2026-08-26
 - **Resolves gate:** the remaining explicit bounded-profile one-/three-/eight-zone rows under `G-013`
 - **Supersedes:** _none_; ADRs 0037–0043, released native G-004, and ADR 0041 singular budgets remain unchanged
@@ -31,14 +31,14 @@ Each value is 1.25 times the worst corresponding five-process observation, round
 
 | Metric | Apple | Windows |
 |---|---:|---:|
-| cold open | 125 ms | 250 ms |
+| cold open | 125 ms (superseded by ADR 0045) | 250 ms |
 | first close | 2 ms | 8 ms |
 | reopen and close | 100 ms | 200 ms |
 | final process resident high-water | 587,202,560 bytes | 301,989,888 bytes |
 | active cancellation-to-return after native start | 25 ms | 25 ms |
 | retained one-zone result completion | 625 ms | 900 ms |
 
-Startup, close, resident, 20,971,520-byte attributable live-Rust peak, and 4,096-byte post-warm growth ceilings are the existing ADR 0041 gates; integrated work does not raise them. The cancellation ceiling rounds the worst observed 7.057 ms Apple and 4.506 ms Windows durations upward to the next 25 ms. The retained-result ceilings apply the same 1.25-times/25-ms rule to worst observations of 480.789 ms and 702.946 ms. The separate two-second native-admission wait is only a deterministic harness liveness bound and is not a product latency claim.
+ADR 0045 supersedes only the Apple integrated cold-open row with a 200 ms cache-cold ceiling after final enforcement disproved 125 ms; it leaves the historical ADR 0041 profile unchanged. Close, resident, 20,971,520-byte attributable live-Rust peak, and 4,096-byte post-warm growth ceilings remain the existing ADR 0041 gates. The cancellation ceiling rounds the worst observed 7.057 ms Apple and 4.506 ms Windows durations upward to the next 25 ms. The retained-result ceilings apply the same 1.25-times/25-ms rule to worst observations of 480.789 ms and 702.946 ms. The separate two-second native-admission wait is only a deterministic harness liveness bound and is not a product latency claim.
 
 ### Fixed grouped resource ceilings
 

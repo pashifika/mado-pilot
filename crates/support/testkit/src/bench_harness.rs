@@ -2311,6 +2311,12 @@ pub const PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     ),
 ];
 
+/// Phase 3.1 Apple integrated-zone cache-cold startup ceiling from ADR 0045.
+pub const PHASE3_1_APPLE_GROUPED_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(200);
+
+/// Phase 3.1 Windows integrated-zone startup ceiling from ADR 0044.
+pub const PHASE3_1_WINDOWS_GROUPED_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(250);
+
 /// Phase 3.1 Apple integrated-zone active-cancellation ceiling.
 pub const PHASE3_1_APPLE_GROUPED_OCR_CANCELLATION_LIMIT: Duration = Duration::from_millis(25);
 

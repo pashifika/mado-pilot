@@ -656,6 +656,15 @@ equivalence plus the fixed semantically distinct non-overlapping three/eight
 layouts. Duplicate, nearly equal, adjacent, slight-overlap, and complete-overlap
 arrays remain safety-only.
 
+The first post-budget Apple source `7835884` remains rejected: its complete
+process passed every non-startup gate but measured 149.832 ms cold open against
+the inherited 125 ms ceiling. A user-authorized macOS disk-cache purge then
+reproduced the same gate at 130.844 ms while warm-cache diagnostics measured
+84.408–91.766 ms. [ADR 0045](adr/0045-integrated-ocr-cache-cold-startup-budget.md)
+supersedes only the new Apple integrated startup row with a 200 ms cache-cold
+ceiling. It does not retry or relabel the failure, prime before timing, alter
+Windows, or edit historical ADR 0041 profiles.
+
 Fresh five-process integrated budget enforcement on both approved hosts remains
 a release-acceptance check, not an unresolved budget decision. Hosted runner
 timing/RSS and one target's measurements never substitute for approved-host
