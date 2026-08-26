@@ -73,6 +73,10 @@ identifier!(
     "A stable OCR normalization and decoder profile identifier."
 );
 identifier!(
+    ProviderProfileId,
+    "A bounded OCR execution-provider runtime profile identifier."
+);
+identifier!(
     LanguageProfileId,
     "A bounded OCR language-profile identifier."
 );

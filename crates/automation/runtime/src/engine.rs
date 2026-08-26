@@ -19,7 +19,7 @@ use mado_pilot_input::{
     InputController, InputDescriptor, InputFault, InputOpenRequest, InputProvider,
     check_provider_pair,
 };
-use mado_pilot_ocr::{OcrBackendDescriptor, OcrRecognizer};
+use mado_pilot_ocr::{OcrBackendDescriptor, OcrProviderDescriptor, OcrRecognizer};
 use mado_pilot_vision::{BackendDescriptor, Matcher, PreparedTemplate, TemplateSource};
 
 use crate::diagnostic::{
@@ -255,6 +255,14 @@ impl Engine {
     #[must_use]
     pub fn ocr_backend(&self) -> Option<OcrBackendDescriptor> {
         self.ocr.as_ref().map(OcrRecognizer::descriptor)
+    }
+
+    /// Returns immutable execution-provider initialization facts, when available.
+    #[must_use]
+    pub fn ocr_provider(&self) -> Option<OcrProviderDescriptor> {
+        self.ocr
+            .as_ref()
+            .and_then(OcrRecognizer::provider_descriptor)
     }
 
     /// Returns the limits every package loaded through this engine is held to.

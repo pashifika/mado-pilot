@@ -54,6 +54,12 @@ impl OcrRecognizer {
         self.backend.descriptor()
     }
 
+    /// Returns immutable execution-provider initialization facts when available.
+    #[must_use]
+    pub fn provider_descriptor(&self) -> Option<crate::OcrProviderDescriptor> {
+        self.backend.provider_descriptor()
+    }
+
     /// Recognizes one exact immutable frame region.
     ///
     /// One operation context governs admission, pixel mapping, backend work, the
