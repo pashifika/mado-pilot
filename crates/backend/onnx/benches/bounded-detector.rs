@@ -897,8 +897,9 @@ fn scan_zones(fixture: &ZoneFixture) -> Sample {
     let correct = result_matches && resources_match && stable_resources;
     if !correct {
         state.failures += 1;
+        let status = result.as_ref().err().map(|error| error.status());
         eprintln!(
-            "integrated-zone-qualification-failure workload={} result={result:#?} resources={resources:?}",
+            "integrated-zone-qualification-failure workload={} status={status:?} resources={resources:?}",
             fixture.spec.name
         );
     }
@@ -1052,8 +1053,9 @@ fn recognize(fixture: &Fixture) -> Sample {
     let correct = result_matches && resources_match && stable_resources;
     if !correct {
         state.failures += 1;
+        let status = result.as_ref().err().map(|error| error.status());
         eprintln!(
-            "bounded-qualification-failure profile={} workload={} result={result:#?} resources={resources:?}",
+            "bounded-qualification-failure profile={} workload={} status={status:?} resources={resources:?}",
             profile_name(fixture.profile),
             fixture.spec.name
         );
