@@ -77,19 +77,24 @@ remains attributed to `d8336be` and applies by reviewed complete diff;
 exact-candidate hosted checks bind both release targets. Historical profiles and
 hosted CI never substitute for interactive native rows.
 
-The v0.3.0 source candidate has approved Windows 11 and Apple Silicon integrated
-42-region quality plus separate target-native numeric OCR performance profiles.
+Released `v0.3.0` carries approved Windows 11 and Apple Silicon integrated
+42-region default-OCR quality plus separate target-native numeric profiles.
+The `v0.3.1` candidate adds an explicit non-default bounded profile, one-to-eight
+caller-owned grouped zones, C ABI 1.4, and matching Rust/C++ ownership surfaces.
 Hosted Windows Server tests enforce hard correctness and bounded growth, but
-never substitute for those release-host rows or the protected release flow.
+never substitute for approved-host quality/performance or the protected release
+flow.
 
 macOS capture needs Screen Recording and input needs event-post access;
 MadoPilot probes both without prompting. Windows has no permission probe and
 reports integrity/UIPI outcomes without elevation. A green run that skipped a
 permissioned or interactive native scenario is not evidence that scenario ran.
 
-The public workflow recognizes one retained frame through either explicit
-caller-selected OCR wiring or a `*_engine_with_default_ocr` constructor. It does
-not watch for text, schedule work, retry, fall back, or trigger input.
+The public workflow recognizes one retained frame through explicit caller-selected
+OCR wiring, a `*_engine_with_default_ocr` constructor, or the explicit bounded
+profile. It can scan one to eight caller-owned zones through one shared detector
+pass. It does not watch for text, schedule work, retry, fall back, or trigger
+input.
 
 | Area | Status |
 |---|---|
@@ -105,12 +110,12 @@ not watch for text, schedule work, retry, fall back, or trigger input.
 | Native capture | Implemented in both adapters and exposed through Rust, C ABI, and C++; ADR 0030 accepts macOS production capture/transitions, ADR 0031 accepts Windows 1280×720 production capture/transitions, and ADR 0032 accepts Windows mixed-DPI dual-4K production capture |
 | Native input submission | Implemented in both adapters and exposed through Rust, C ABI, and C++; system input, Windows exact-window delivery, and macOS owning-process delivery are explicit, receipts state submission evidence rather than application consumption, and fixture-scoped automatic checks send no uncontrolled desktop input |
 | Bounded diagnostic observation | Implemented through Rust, C ABI, and C++ with allocation-free `Off`, finite `Normal`/`Debug` streams, exact loss counts, and content-redacted OCR records |
-| One-shot OCR public contract | Implemented through Rust, C ABI 1.3, and C++ over explicit backends and the accepted default ONNX CPU profile; support is limited to the documented model/runtime/target boundary, with no watcher, scheduling, fallback, bundling, or download |
+| One-shot OCR public contract | Implemented through Rust, C ABI 1.4, and C++ over explicit backends, the accepted default ONNX CPU profile, and the explicit bounded profile; singular and one-to-eight-zone operations remain separate, with no watcher, scheduling, fallback, bundling, or download |
 | Visual-condition watchers and OCR scheduling | Not implemented |
-| C ABI, tracked C header, dynamic library | Implemented through ABI 1.3 while preserving complete ABI 1.0 and 1.2 prefixes; the OCR owner suffix ends at 640 bytes and the complete default-constructor table at 648 bytes; the unreleased 1.1 draft is intentionally unsupported |
-| Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.3, including `DefaultOcrOptions` and production default composition |
+| C ABI, tracked C header, dynamic library | Implemented through ABI 1.4 while preserving complete ABI 1.0, 1.2, and 1.3 prefixes at 424, 592, and 648 bytes; explicit-profile construction, grouped-result ownership/accessors, and engine OCR descriptors extend the table to 720 bytes; the unreleased 1.1 draft is intentionally unsupported |
+| Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.4, including owning profile/zone request projections, move-only grouped results, explicit clone, and lvalue-only borrowed result views |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts separate Apple M1 Pro and Core i7-12700KF default-OCR profiles with hard correctness/growth/resource gates and executable latency/heap/mapping/cleanup/target-native-resident ceilings |
+| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts separate Apple M1 Pro and Core i7-12700KF explicit bounded-profile budgets. Grouped-zone release budgets remain gated on exact-candidate integrated qualification |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled
@@ -118,13 +123,15 @@ The public Rust names have been reviewed and settled
 [ADR 0006](docs/adr/0006-public-rust-names-and-compatibility-policy.md)), but
 they are not yet a stability promise: that begins at 1.0, and until then a
 rename costs an ADR and a version bump rather than being impossible. The C ABI
-is separately versioned and **is** frozen: ABI 1.0 and ABI 1.2 are permanent
-complete prefixes; ABI 1.3 appends one-shot OCR, immutable owned results, and the
-default constructor without moving either prefix
+is separately versioned and **is** frozen: ABI 1.0, ABI 1.2, and ABI 1.3 are
+permanent complete prefixes. ABI 1.4 appends explicit-profile construction,
+one-to-eight-zone grouped OCR ownership/accessors, and engine OCR descriptors
+without moving them
 ([ADR 0007](docs/adr/0007-phase-1-c-abi-freeze.md),
 [ADR 0023](docs/adr/0023-input-submission-observation-and-abi-1-2.md),
 [ADR 0035](docs/adr/0035-ocr-public-surfaces-and-private-fixture-boundary.md),
-[ADR 0036](docs/adr/0036-default-ocr-composition-and-abi-prefix.md)).
+[ADR 0036](docs/adr/0036-default-ocr-composition-and-abi-prefix.md), and
+[ADR 0043](docs/adr/0043-ocr-profile-and-zone-public-surfaces.md)).
 Within ABI major 1, no released value, field, or function-table entry moves. The
 C++ wrapper declares no ABI of its own and inherits the C one.
 
@@ -136,12 +143,12 @@ the full status table, the package inventory, and the dependency rules.
 [`v0.1.0`](docs/releases/v0.1.0.md) is the published deterministic-workflow
 baseline. [`v0.2.1`](docs/releases/v0.2.1.md) is the published native
 capture/input/observation source release. [`v0.3.0`](docs/releases/v0.3.0.md) is
-the current OCR integration candidate; its approved native evidence is complete,
-but it remains unpublished until the protected release flow finishes. None
-publishes crates to crates.io or provides prebuilt libraries,
-installers, CMake install/export metadata, pkg-config metadata, or bundled
-OpenCV, ONNX Runtime, or model files. A tracked release-note file is the
-canonical release body.
+the published default-OCR source release. [`v0.3.1`](docs/releases/v0.3.1.md) is
+the bounded-profile/grouped-zone release candidate and remains unpublished until
+its protected exact-source qualification and release flow complete. None
+publishes crates to crates.io or provides prebuilt libraries, installers, CMake
+install/export metadata, pkg-config metadata, or bundled OpenCV, ONNX Runtime,
+or model files. A tracked release-note file is the canonical release body.
 
 ## Release targets
 

@@ -292,11 +292,11 @@ jobs:
         shell: bash
         run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
 
-      - name: Run the bounded detector profile smoke gate
+      - name: Run the bounded detector and grouped-zone smoke gates
         shell: bash
         run: |
           cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=native
-          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded
+          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded --integrated
 
       - name: Run the diagnostic benchmark smoke gate
         shell: bash
@@ -497,11 +497,11 @@ jobs:
         shell: bash
         run: cargo bench --locked --package mado-pilot-backend-onnx --bench onnx-cpu -- --smoke
 
-      - name: Run the bounded detector profile smoke gate
+      - name: Run the bounded detector and grouped-zone smoke gates
         shell: bash
         run: |
           cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=native
-          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded
+          cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded --integrated
 
       - name: Run the diagnostic benchmark smoke gate
         shell: bash

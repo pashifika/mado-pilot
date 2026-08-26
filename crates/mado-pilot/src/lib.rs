@@ -140,7 +140,7 @@
 //! extend is already `#[non_exhaustive]`, so keep a fallback arm. Renaming or
 //! removing one of these names is a breaking change and needs an ADR and a
 //! version bump. The stability promise itself begins at 1.0; this package is
-//! at 0.3.0.
+//! at 0.3.1.
 //!
 //! The C ABI beneath this one is versioned separately. ABI 1.0, 1.2, and 1.3
 //! are frozen complete prefixes; ABI 1.4 appends explicit profile construction,

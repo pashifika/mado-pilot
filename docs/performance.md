@@ -952,3 +952,37 @@ exclusion. Worst final process RSS was 464,666,624 bytes on Apple and
 The explicit profile is qualified for the named target/runtime/model/fixture
 boundaries. It remains non-default and is not a real-time or arbitrary-workload
 guarantee.
+
+## v0.3.1 integrated grouped-zone qualification
+
+The accepted bounded-v2 singular profiles above remain revision-bound regression
+gates. Focused grouped-scan and public-surface checks prove one shared mapping,
+one direct detector resize/run, unique recognition, compact memberships, atomic
+publication, independent result ownership, and hard limits for one to eight
+zones. They do not establish target-native grouped latency or process RSS.
+
+The release candidate therefore fixes the integrated matrix before execution:
+unchanged `hud.png` runs as singular bounded OCR, one full-frame zone, three
+semantically distinct sparse zones, and eight separated zones on both approved
+hosts. Duplicate, one-pixel-different, adjacent, slight-overlap, and
+complete-overlap layouts run only deterministic bounded safety checks. They
+receive no quality or latency support claim.
+
+Approved-host precursor and final enforcement each use five fresh processes,
+three warmups, and 20 retained samples per workload/process. Every warmup and
+retained sample checks exact text/count/order/geometry/source/profile,
+source-envelope/zones/memberships, detector/recognizer work, mapping, heap,
+growth, cancellation, retained-result independence, startup, close, cleanup,
+and producer progress before latency is eligible. Hosted CI continues to enforce
+target-independent correctness and bounded growth only.
+
+Existing ADR 0041 singular ceilings cannot increase. New grouped p50/p95/maximum
+ceilings may be accepted only after complete Apple and Windows precursor records:
+1.25 times each target's worst corresponding observation, rounded upward to
+25 ms, capped at 600/750/900 ms on Apple and 900/1,000/1,200 ms on Windows.
+A hard failure or observation beyond the cap rejects or withholds the row rather
+than relaxing it. Cold/startup/cleanup, 20 MiB attributable Rust peak, 4 KiB
+growth, detector/output, grouped semantic storage, and process-RSS limits remain
+bounded by the existing target rules until a reviewed ADR selects equal or
+tighter values. Cross-target inference, retry, sample exclusion, changed oracles,
+and hosted timing/RSS are prohibited.

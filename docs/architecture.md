@@ -29,16 +29,17 @@ canonical model/runtime paths plus separate Apple M1 Pro and Core i7-12700KF
 regression profiles. Approved Apple Silicon and Windows 11 Pro hosts reproduce
 the same integrated 42-region quality boundary.
 
-The `v0.3.1` bounded-detector topic adds a second closed, explicit, non-default
-profile over the same immutable model components. The initial ADR 0038 rectangle
-passed both-target correctness/resource oracles but the fixed ADR 0039 formula
-rejected its Windows latency margins. ADR 0040 replaces that unreleased tuple
-with candidate v2. Exact-source Apple and Windows precursors and strict final
-enforcement pass; ADR 0041 accepts separate target budgets and revision-bound
-profiles. The explicit profile is qualified on both release targets without
-changing defaults. Neither profile adds bundling, download, ambient search,
-provider fallback, scheduling, or automatic input. Watchers, scheduling, and
-release packaging remain future work.
+The `v0.3.1` candidate adds a second closed, explicit, non-default profile over
+the same immutable model components plus one-to-eight caller-owned OCR zones
+that share one mapped source envelope and detector scan. ADR 0040 replaces the
+rejected ADR 0038 tuple with bounded candidate v2; exact-source Apple and Windows
+precursors and strict final enforcement pass under ADR 0041. ADRs 0042 and 0043
+fix grouped semantics, Rust projection, C ABI 1.4, and C++ ownership. The three
+focused Changes are merged on protected `dev/0.3.1`; exact-candidate integrated
+quality, grouped target budgets, and protected release acceptance remain open.
+Neither profile adds bundling, download, ambient search, provider fallback,
+scheduling, or automatic input. Watchers, scheduling, and release packaging
+remain future work.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -540,7 +541,7 @@ document together, with an architecture decision record.
 | Cargo resolver | `3` |
 | Rust edition | `2024` |
 | Pinned toolchain and minimum supported Rust version | `1.97.1` |
-| Package version | `0.3.0` |
+| Package version | `0.3.1` |
 | Package license | `Apache-2.0` |
 | Repository | `https://github.com/pashifika/mado-pilot` |
 
@@ -871,7 +872,7 @@ responsibilities a later phase takes on.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.4 as a header-only adapter, including owning profile/zone requests with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed views, typed empty groups, and complete negotiated-suffix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles with hard correctness/growth gates plus executable inference/startup/heap/mapping/cleanup limits and target-native RSS; Phase 3 default-OCR `G-013` is complete on both release targets. ADR 0039 separates bounded-profile precursor measurement from final budget enforcement; Apple precursor passes, while Windows precursor and all final bounded budgets remain open |
+| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles; Phase 3 default-OCR `G-013` is complete on both release targets. ADRs 0039–0041 accept separate exact-source bounded-v2 singular workload budgets on both targets. Integrated one-/three-/eight-zone latency, grouped-result resource, cancellation, retained-result, startup, and cleanup rows remain open until the `v0.3.1` exact-candidate precursor, reviewed ceiling ADR, and fresh enforcement runs pass on both approved hosts |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, and complete 1.3 headers plus current ABI 1.4. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3 and 1.4 operations before reading missing entries |
