@@ -295,6 +295,10 @@ jobs:
       - name: Run the bounded detector and grouped-zone smoke gates
         shell: bash
         run: |
+          export MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
+          export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
+          export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
           cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=native
           cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded --integrated
 
@@ -500,6 +504,10 @@ jobs:
       - name: Run the bounded detector and grouped-zone smoke gates
         shell: bash
         run: |
+          export MADO_PILOT_BOUNDED_SOURCE_REVISION="$(git rev-parse HEAD)"
+          export MADO_PILOT_BOUNDED_SOURCE_TREE="$(git rev-parse 'HEAD^{tree}')"
+          export MADO_PILOT_BOUNDED_HOST_ID="hosted-ci"
+          export MADO_PILOT_BOUNDED_PROCESS_INDEX="smoke"
           cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=native
           cargo bench --locked --package mado-pilot-backend-onnx --bench bounded-detector -- --smoke --profile=bounded --integrated
 
