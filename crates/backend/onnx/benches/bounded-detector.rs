@@ -2,11 +2,12 @@
 
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use mado_pilot_backend_onnx::{
-    OnnxBackendObservations, OnnxOcrBackend, OnnxOcrProfile, RUNTIME_PROFILE_ID,
+    OnnxBackendFault, OnnxBackendObservations, OnnxOcrBackend, OnnxOcrProfile, RUNTIME_PROFILE_ID,
 };
 use mado_pilot_capture::{Frame, PixelFormat};
 use mado_pilot_core::{
@@ -14,8 +15,8 @@ use mado_pilot_core::{
     Status,
 };
 use mado_pilot_ocr::{
-    OcrBackend, OcrRecognizer, OcrRegion, OcrRequest, OcrResult, OcrZone, OcrZoneScanRequest,
-    OcrZoneScanResult,
+    OcrBackend, OcrBackendDescriptor, OcrRecognizer, OcrRegion, OcrRequest, OcrResult, OcrZone,
+    OcrZoneScanRequest, OcrZoneScanResult,
 };
 use mado_pilot_testkit::bench_harness::{
     self, Accounting, PHASE3_1_BOUNDED_OCR_HEAP_LIMIT_BYTES,
@@ -58,6 +59,9 @@ const DETECTOR_SHA256: &str = "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29
 const RECOGNIZER_SHA256: &str = "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884";
 const VOCABULARY_SHA256: &str = "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e";
 const GROUPED_RESULT_BYTES_LIMIT: usize = 5_242_880;
+const ACTIVE_CANCELLATION_DELAY: Duration = Duration::from_millis(100);
+const ACTIVE_CANCELLATION_BOUND: Duration = Duration::from_millis(250);
+const ACTIVE_CANCELLATION_GATE_BOUND: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Deserialize)]
 struct FixtureManifest {
@@ -278,6 +282,24 @@ struct CancellationReport {
 }
 
 #[derive(Debug, Serialize)]
+struct ActiveCancellationReport {
+    status: String,
+    cancellation_to_return_ms: f64,
+    detector_runs: u64,
+    cleanup_completions: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct RetainedResultReport {
+    elapsed_ms: f64,
+    unique_candidates: usize,
+    memberships: usize,
+    semantic_bytes: usize,
+    resource_oracle_passed: bool,
+    readable_after_close: bool,
+}
+
+#[derive(Debug, Serialize)]
 struct ProfileReport {
     schema_version: u32,
     release_target: &'static str,
@@ -315,6 +337,10 @@ struct ProfileReport {
     sessions: u32,
     producer_surface_copy: &'static str,
     cancellation: CancellationReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    active_cancellation: Option<ActiveCancellationReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retained_result: Option<RetainedResultReport>,
     workloads: Vec<WorkloadReport>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     zone_workloads: Vec<ZoneWorkloadReport>,
@@ -603,6 +629,19 @@ fn run_profile(
 
     let cancellation_spec = build_workload(fixture_root, manifest, WorkloadKind::HudReference);
     let cancellation = measure_cancelled(&recognizer, &backend, &cancellation_spec);
+    let active_cancellation = integrated.then(|| {
+        let spec = build_zone_workload(fixture_root, manifest, ZoneWorkloadKind::OneFull);
+        measure_active_cancellation(&recognizer, &backend, &spec)
+    });
+    let retained_spec =
+        integrated.then(|| build_zone_workload(fixture_root, manifest, ZoneWorkloadKind::OneFull));
+    let (retained_owner, mut retained_report) = match retained_spec.as_ref() {
+        Some(spec) => {
+            let (owner, report) = measure_retained_result(&recognizer, &backend, spec);
+            (Some(owner), Some(report))
+        }
+        None => (None, None),
+    };
     let final_observations = backend
         .observations()
         .expect("qualification observes an idle session pair");
@@ -614,6 +653,13 @@ fn run_profile(
         .expect("selected backend close is idempotent");
     drop(recognizer);
     drop(backend);
+    if let (Some(owner), Some(spec), Some(report)) = (
+        retained_owner.as_ref(),
+        retained_spec.as_ref(),
+        retained_report.as_mut(),
+    ) {
+        report.readable_after_close = retained_result_matches(spec, owner, &descriptor);
+    }
 
     let reopen_started = Instant::now();
     let reopened = open_profile(profile, model_root, runtime, &operation)
@@ -664,6 +710,8 @@ fn run_profile(
         sessions: final_observations.sessions(),
         producer_surface_copy: "not applicable: immutable CPU replay frames own no producer surface",
         cancellation,
+        active_cancellation,
+        retained_result: retained_report,
         workloads: workload_reports,
         zone_workloads: zone_workload_reports,
         passed: false,
@@ -1002,6 +1050,44 @@ fn zone_result_storage(result: &OcrZoneScanResult) -> Option<(usize, usize)> {
     Some((normalized_text_bytes, semantic_bytes))
 }
 
+fn retained_result_matches(
+    spec: &ZoneWorkloadSpec,
+    result: &OcrZoneScanResult,
+    descriptor: &OcrBackendDescriptor,
+) -> bool {
+    if result.stamp() != spec.frame.stamp()
+        || result.source_envelope() != spec.source_envelope
+        || result.effective_zones() != spec.effective_zones.as_ref()
+        || result.output_space() != CoordinateSpace::CapturePixels
+        || result.backend() != descriptor
+        || result.unique_candidates().len() != spec.expected.len()
+    {
+        return false;
+    }
+    let extent = spec.frame.descriptor().extent();
+    if !result
+        .unique_candidates()
+        .iter()
+        .zip(spec.expected.iter())
+        .all(|(actual, expected)| region_matches(actual, expected, extent))
+    {
+        return false;
+    }
+    spec.expected_groups
+        .iter()
+        .enumerate()
+        .all(|(group_index, expected_indexes)| {
+            result.group(group_index).is_some_and(|group| {
+                group.len() == expected_indexes.len()
+                    && group.iter().zip(expected_indexes.iter().copied()).all(
+                        |(actual, expected_index)| {
+                            region_matches(actual, &spec.expected[expected_index], extent)
+                        },
+                    )
+            })
+        })
+}
+
 fn recognize(fixture: &Fixture) -> Sample {
     let descriptor = fixture.recognizer.descriptor();
     let before = fixture
@@ -1228,6 +1314,157 @@ fn measure_cancelled(
     }
 }
 
+fn measure_active_cancellation(
+    recognizer: &OcrRecognizer,
+    backend: &Arc<OnnxOcrBackend>,
+    spec: &ZoneWorkloadSpec,
+) -> ActiveCancellationReport {
+    let before = backend
+        .observations()
+        .expect("active cancellation starts from an idle backend");
+    let token = CancellationToken::new();
+    let worker_token = token.clone();
+    let worker_recognizer = recognizer.clone();
+    let worker_spec = spec.clone();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let worker = thread::spawn(move || {
+        let operation = OperationContext::new().with_cancellation(worker_token);
+        let descriptor = worker_recognizer.descriptor();
+        let request = OcrZoneScanRequest::new(
+            &worker_spec.frame,
+            descriptor.backend_identity(),
+            descriptor.model_identity(),
+            &worker_spec.zones,
+            CoordinateSpace::CapturePixels,
+            &operation,
+        )
+        .expect("active cancellation request is valid");
+        let status = worker_recognizer
+            .scan_zones(request)
+            .err()
+            .map(|error| error.status());
+        sender
+            .send(status)
+            .expect("active cancellation receiver remains live");
+    });
+
+    let admission_deadline = Instant::now() + ACTIVE_CANCELLATION_GATE_BOUND;
+    loop {
+        match backend.observations() {
+            Err(OnnxBackendFault::Busy) => break,
+            Ok(_) if Instant::now() < admission_deadline => thread::yield_now(),
+            Ok(_) => panic!("active cancellation did not observe backend admission"),
+            Err(fault) => panic!("active cancellation observation failed with {fault}"),
+        }
+    }
+    thread::sleep(ACTIVE_CANCELLATION_DELAY);
+    let cancellation_started = Instant::now();
+    token.cancel();
+    let status = receiver
+        .recv_timeout(ACTIVE_CANCELLATION_BOUND)
+        .expect("active cancellation returns within the hard bound")
+        .expect("active cancellation cannot publish a successful result");
+    let cancellation_to_return_ms = milliseconds(cancellation_started.elapsed());
+    worker.join().expect("active cancellation worker joins");
+    let after = backend
+        .observations()
+        .expect("active cancellation leaves the backend observable");
+    ActiveCancellationReport {
+        status: format!("{status:?}"),
+        cancellation_to_return_ms,
+        detector_runs: after
+            .detector_runs()
+            .checked_sub(before.detector_runs())
+            .expect("active cancellation detector count is monotonic"),
+        cleanup_completions: after
+            .cleanup_completions()
+            .checked_sub(before.cleanup_completions())
+            .expect("active cancellation cleanup count is monotonic"),
+    }
+}
+
+fn measure_retained_result(
+    recognizer: &OcrRecognizer,
+    backend: &OnnxOcrBackend,
+    spec: &ZoneWorkloadSpec,
+) -> (OcrZoneScanResult, RetainedResultReport) {
+    let descriptor = recognizer.descriptor();
+    let before = backend
+        .observations()
+        .expect("retained-result workload starts from an idle backend");
+    let operation = OperationContext::new();
+    let started = Instant::now();
+    let request = OcrZoneScanRequest::new(
+        &spec.frame,
+        descriptor.backend_identity(),
+        descriptor.model_identity(),
+        &spec.zones,
+        CoordinateSpace::CapturePixels,
+        &operation,
+    )
+    .expect("retained-result request is valid");
+    let result = recognizer
+        .scan_zones(request)
+        .expect("retained-result workload succeeds");
+    let elapsed_ms = milliseconds(started.elapsed());
+    let after = backend
+        .observations()
+        .expect("retained-result workload leaves the backend idle");
+    let inference = observation_delta(before, after);
+    let memberships = (0..result.effective_zones().len())
+        .map(|index| {
+            result
+                .group(index)
+                .expect("retained-result effective zone has a group")
+                .len()
+        })
+        .sum();
+    let semantic_bytes = zone_result_storage(&result)
+        .map(|(_, bytes)| bytes)
+        .unwrap_or(usize::MAX);
+    let expected_candidates =
+        u64::try_from(spec.expected.len()).expect("retained candidate count fits u64");
+    let expected_memberships =
+        u64::try_from(spec.memberships()).expect("retained membership count fits u64");
+    let resource_oracle_passed = retained_result_matches(spec, &result, &descriptor)
+        && inference.mapped_bytes == spec.mapped_bytes()
+        && inference.detector_resizes == 1
+        && inference.detector_runs == 1
+        && inference.recognizer_runs
+            == u64::try_from(spec.expected.len().div_ceil(6))
+                .expect("retained recognizer count fits u64")
+        && after
+            .selected_candidates()
+            .checked_sub(before.selected_candidates())
+            == Some(expected_candidates)
+        && after
+            .ignored_candidates()
+            .checked_sub(before.ignored_candidates())
+            == Some(
+                u64::try_from(spec.expected_ignored_candidates)
+                    .expect("retained ignored count fits u64"),
+            )
+        && after
+            .unique_candidates()
+            .checked_sub(before.unique_candidates())
+            == Some(expected_candidates)
+        && after.memberships().checked_sub(before.memberships()) == Some(expected_memberships)
+        && after
+            .cleanup_completions()
+            .checked_sub(before.cleanup_completions())
+            == Some(1)
+        && semantic_bytes <= GROUPED_RESULT_BYTES_LIMIT;
+    let report = RetainedResultReport {
+        elapsed_ms,
+        unique_candidates: result.unique_candidates().len(),
+        memberships,
+        semantic_bytes,
+        resource_oracle_passed,
+        readable_after_close: false,
+    };
+    (result, report)
+}
+
 fn report_passes(mode: RunMode, profile: OnnxOcrProfile, report: &ProfileReport) -> bool {
     report.max_concurrent_inferences == 1
         && report.session_pairs == 1
@@ -1241,6 +1478,27 @@ fn report_passes(mode: RunMode, profile: OnnxOcrProfile, report: &ProfileReport)
         && (mode == RunMode::Smoke || report.peak_resident_bytes.is_some())
         && report.cancellation.status == format!("{:?}", Status::Cancelled)
         && report.cancellation.resources_unchanged
+        && if report.integrated_zones {
+            report
+                .active_cancellation
+                .as_ref()
+                .is_some_and(|cancellation| {
+                    cancellation.status == format!("{:?}", Status::Cancelled)
+                        && cancellation.cancellation_to_return_ms
+                            <= milliseconds(ACTIVE_CANCELLATION_BOUND)
+                        && cancellation.detector_runs == 1
+                        && cancellation.cleanup_completions == 1
+                })
+                && report.retained_result.as_ref().is_some_and(|retained| {
+                    retained.unique_candidates == 8
+                        && retained.memberships == 8
+                        && retained.semantic_bytes <= GROUPED_RESULT_BYTES_LIMIT
+                        && retained.resource_oracle_passed
+                        && retained.readable_after_close
+                })
+        } else {
+            report.active_cancellation.is_none() && report.retained_result.is_none()
+        }
         && report.workloads.iter().all(|workload| {
             workload.incorrect_retained == 0
                 && workload.all_call_failures == 0
@@ -1364,7 +1622,7 @@ fn open_profile(
     model_root: &Path,
     runtime: &Path,
     operation: &OperationContext,
-) -> Result<OnnxOcrBackend, mado_pilot_backend_onnx::OnnxBackendFault> {
+) -> Result<OnnxOcrBackend, OnnxBackendFault> {
     match profile {
         OnnxOcrProfile::NativeG004 => OnnxOcrBackend::open_accepted(model_root, runtime, operation),
         OnnxOcrProfile::BoundedDetector => {
