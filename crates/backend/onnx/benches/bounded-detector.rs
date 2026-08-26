@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use mado_pilot_backend_onnx::benchmark_instrumentation::install_native_run_gate;
 use mado_pilot_backend_onnx::{
-    OnnxBackendFault, OnnxBackendObservations, OnnxExecutionProvider, OnnxExecutionProviderPolicy,
-    OnnxOcrBackend, OnnxOcrProfile, OnnxProviderFallbackReason,
+    OnnxBackendObservations, OnnxBackendOpenFault, OnnxExecutionProvider,
+    OnnxExecutionProviderPolicy, OnnxOcrBackend, OnnxOcrProfile, OnnxProviderFallbackReason,
 };
 use mado_pilot_capture::{Frame, PixelFormat};
 use mado_pilot_core::{
@@ -1853,7 +1853,7 @@ fn open_profile(
     provider: ProviderSelection,
     provider_root: Option<&Path>,
     operation: &OperationContext,
-) -> Result<OnnxOcrBackend, OnnxBackendFault> {
+) -> Result<OnnxOcrBackend, OnnxBackendOpenFault> {
     match profile {
         OnnxOcrProfile::NativeG004 => OnnxOcrBackend::open_accepted_with_provider_config(
             model_root,

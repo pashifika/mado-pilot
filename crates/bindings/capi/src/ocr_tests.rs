@@ -344,11 +344,13 @@ fn successful_backend() -> Arc<ControlledOcr> {
     )
 }
 
-fn integrated_backend(model: OcrModelIdentity) -> Arc<dyn OcrBackend> {
+fn integrated_backend_with_id(
+    model: OcrModelIdentity,
+    backend_id: &'static str,
+) -> Arc<dyn OcrBackend> {
     let descriptor = OcrBackendDescriptor::new(
         OcrBackendIdentity::new(
-            OcrBackendId::new(mado_pilot::DEFAULT_OCR_BACKEND_ID)
-                .expect("default backend id is valid"),
+            OcrBackendId::new(backend_id).expect("integrated backend id is valid"),
             OcrBackendVersion::new(mado_pilot::DEFAULT_OCR_BACKEND_VERSION)
                 .expect("default backend version is valid"),
         ),
@@ -367,12 +369,43 @@ fn integrated_backend(model: OcrModelIdentity) -> Arc<dyn OcrBackend> {
     )
 }
 
-fn integrated_default_backend() -> Arc<dyn OcrBackend> {
-    integrated_backend(OcrModelIdentity::accepted_g004())
+fn integrated_backend(model: OcrModelIdentity) -> Arc<dyn OcrBackend> {
+    integrated_backend_with_id(model, mado_pilot::DEFAULT_OCR_BACKEND_ID)
 }
 
 fn integrated_bounded_backend() -> Arc<dyn OcrBackend> {
     integrated_backend(OcrModelIdentity::accepted_bounded_detector())
+}
+
+#[test]
+fn package_free_integrated_profiles_accept_every_product_provider_id() {
+    for backend_id in [
+        mado_pilot::DEFAULT_OCR_BACKEND_ID,
+        mado_pilot::CUDA_OCR_BACKEND_ID,
+        mado_pilot::COREML_OCR_BACKEND_ID,
+    ] {
+        let descriptor = OcrBackendDescriptor::new(
+            OcrBackendIdentity::new(
+                OcrBackendId::new(backend_id).expect("product backend id"),
+                OcrBackendVersion::new(mado_pilot::DEFAULT_OCR_BACKEND_VERSION)
+                    .expect("product backend version"),
+            ),
+            OcrModelIdentity::accepted_g004(),
+            PixelFormat::Bgra8,
+        );
+        assert!(is_integrated_profile(&descriptor));
+    }
+
+    let external = OcrBackendDescriptor::new(
+        OcrBackendIdentity::new(
+            OcrBackendId::new(BACKEND_ID).expect("fixture backend id"),
+            OcrBackendVersion::new(mado_pilot::DEFAULT_OCR_BACKEND_VERSION)
+                .expect("product backend version"),
+        ),
+        OcrModelIdentity::accepted_g004(),
+        PixelFormat::Bgra8,
+    );
+    assert!(!is_integrated_profile(&external));
 }
 
 fn integrated_request(
@@ -711,44 +744,54 @@ fn grouped_result_supports_concurrent_const_access_with_owned_references() {
 }
 
 #[test]
-fn integrated_default_uses_its_retained_model_identity_without_a_duplicate_package() {
-    let fixture = opened(integrated_default_backend());
-    let request = integrated_default_request(fixture.frame);
-    let operation = operation();
-    let mut result = ptr::null_mut();
-    let mut error = ptr::null_mut();
+fn integrated_providers_use_their_retained_model_identity_without_a_duplicate_package() {
+    for backend_id in [
+        mado_pilot::DEFAULT_OCR_BACKEND_ID,
+        mado_pilot::CUDA_OCR_BACKEND_ID,
+        mado_pilot::COREML_OCR_BACKEND_ID,
+    ] {
+        let fixture = opened(integrated_backend_with_id(
+            OcrModelIdentity::accepted_g004(),
+            backend_id,
+        ));
+        let mut request = integrated_default_request(fixture.frame);
+        request.backend_id = string(backend_id);
+        let operation = operation();
+        let mut result = ptr::null_mut();
+        let mut error = ptr::null_mut();
 
-    assert_eq!(
-        // SAFETY: request inputs and outputs remain valid for the synchronous call.
-        unsafe {
-            (fixture.api.session_recognize)(
-                fixture.session,
-                &request,
-                &operation,
-                &mut result,
-                &mut error,
-            )
-        },
-        MADOPILOT_STATUS_OK
-    );
-    assert!(!result.is_null());
-    assert!(error.is_null());
+        assert_eq!(
+            // SAFETY: request inputs and outputs remain valid for the synchronous call.
+            unsafe {
+                (fixture.api.session_recognize)(
+                    fixture.session,
+                    &request,
+                    &operation,
+                    &mut result,
+                    &mut error,
+                )
+            },
+            MADOPILOT_STATUS_OK
+        );
+        assert!(!result.is_null());
+        assert!(error.is_null());
 
-    let mut info = empty_info();
-    assert_eq!(
-        // SAFETY: the result is retained and `info` is fully writable.
-        unsafe { (fixture.api.ocr_result_info)(result, &mut info) },
-        MADOPILOT_STATUS_OK
-    );
-    assert_eq!(text(info.backend_id), mado_pilot::DEFAULT_OCR_BACKEND_ID);
-    assert_eq!(text(info.model_id), mado_pilot::ACCEPTED_G004_MODEL_ID);
-    assert_eq!(text(info.profile_id), mado_pilot::ACCEPTED_G004_PROFILE_ID);
+        let mut info = empty_info();
+        assert_eq!(
+            // SAFETY: the result is retained and `info` is fully writable.
+            unsafe { (fixture.api.ocr_result_info)(result, &mut info) },
+            MADOPILOT_STATUS_OK
+        );
+        assert_eq!(text(info.backend_id), backend_id);
+        assert_eq!(text(info.model_id), mado_pilot::ACCEPTED_G004_MODEL_ID);
+        assert_eq!(text(info.profile_id), mado_pilot::ACCEPTED_G004_PROFILE_ID);
 
-    assert_eq!(
-        // SAFETY: release gives up the one owned result reference.
-        unsafe { (fixture.api.ocr_result_release)(result) },
-        MADOPILOT_STATUS_OK
-    );
+        assert_eq!(
+            // SAFETY: release gives up the one owned result reference.
+            unsafe { (fixture.api.ocr_result_release)(result) },
+            MADOPILOT_STATUS_OK
+        );
+    }
 }
 
 #[test]

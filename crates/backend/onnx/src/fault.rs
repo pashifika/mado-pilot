@@ -247,6 +247,117 @@ impl OnnxProviderFallbackReason {
     }
 }
 
+impl OnnxProviderFallbackReason {
+    /// Returns a static, privacy-safe provider failure detail.
+    #[must_use]
+    pub const fn detail(self) -> &'static str {
+        match self {
+            Self::UnsupportedTarget => "accelerator is unsupported on this target",
+            Self::BuildCapabilityUnavailable => "binary lacks the requested accelerator capability",
+            Self::ProviderUnavailable => "runtime does not expose the requested accelerator",
+            Self::DependencyUnavailable => "controlled accelerator dependency is unavailable",
+            Self::RegistrationFailed => "accelerator registration failed",
+            Self::SessionCreationFailed => "accelerator session creation failed",
+            Self::GraphRejected => "accelerator graph validation failed",
+            Self::QualificationRejected => "release qualification rejected the accelerator",
+        }
+    }
+}
+
+/// One provider-policy backend construction failure.
+///
+/// When a preferred accelerator fails and fresh CPU construction also fails,
+/// `provider_reason` retains the original closed accelerator context while
+/// `fault` remains the authoritative CPU failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OnnxBackendOpenFault {
+    fault: OnnxBackendFault,
+    provider_reason: Option<OnnxProviderFallbackReason>,
+}
+
+impl OnnxBackendOpenFault {
+    pub(crate) const fn terminal(fault: OnnxBackendFault) -> Self {
+        Self {
+            fault,
+            provider_reason: None,
+        }
+    }
+
+    pub(crate) const fn provider(
+        provider: OnnxExecutionProvider,
+        fault: OnnxBackendFault,
+        reason: OnnxProviderFallbackReason,
+    ) -> Self {
+        Self {
+            fault,
+            provider_reason: if matches!(provider, OnnxExecutionProvider::Cpu) {
+                None
+            } else {
+                Some(reason)
+            },
+        }
+    }
+
+    pub(crate) const fn with_provider_reason(
+        self,
+        provider_reason: OnnxProviderFallbackReason,
+    ) -> Self {
+        Self {
+            fault: self.fault,
+            provider_reason: Some(provider_reason),
+        }
+    }
+
+    /// Returns the authoritative final construction fault.
+    #[must_use]
+    pub const fn fault(self) -> OnnxBackendFault {
+        self.fault
+    }
+
+    /// Returns bounded accelerator context retained with the final fault.
+    #[must_use]
+    pub const fn provider_reason(self) -> Option<OnnxProviderFallbackReason> {
+        self.provider_reason
+    }
+
+    /// Returns the public status of the authoritative final fault.
+    #[must_use]
+    pub const fn status(self) -> Status {
+        self.fault.status()
+    }
+}
+
+impl From<OnnxBackendFault> for OnnxBackendOpenFault {
+    fn from(fault: OnnxBackendFault) -> Self {
+        Self::terminal(fault)
+    }
+}
+
+impl From<OnnxBackendOpenFault> for Error {
+    fn from(fault: OnnxBackendOpenFault) -> Self {
+        match fault.provider_reason {
+            Some(_) => Error::new(fault.status(), fault.to_string()),
+            None => fault.fault.into(),
+        }
+    }
+}
+
+impl fmt::Display for OnnxBackendOpenFault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.provider_reason {
+            Some(reason) => write!(
+                formatter,
+                "{}; accelerator initialization failure: {}",
+                self.fault.detail(),
+                reason.detail()
+            ),
+            None => self.fault.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for OnnxBackendOpenFault {}
+
 /// The reviewed native compatibility boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OnnxRuntimeCompatibility {

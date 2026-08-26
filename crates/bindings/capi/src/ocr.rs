@@ -77,7 +77,10 @@ pub(crate) struct OcrZoneScanResultHandle {
 }
 
 fn is_integrated_profile(selected: &mado_pilot::OcrBackendDescriptor) -> bool {
-    let integrated_backend = selected.id().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_ID
+    let backend_id = selected.id().as_str();
+    let integrated_backend = (backend_id == mado_pilot::DEFAULT_OCR_BACKEND_ID
+        || backend_id == mado_pilot::CUDA_OCR_BACKEND_ID
+        || backend_id == mado_pilot::COREML_OCR_BACKEND_ID)
         && selected.version().as_str() == mado_pilot::DEFAULT_OCR_BACKEND_VERSION;
     let integrated_profile = (selected.model().as_str() == mado_pilot::ACCEPTED_G004_MODEL_ID
         && selected.profile().as_str() == mado_pilot::ACCEPTED_G004_PROFILE_ID)

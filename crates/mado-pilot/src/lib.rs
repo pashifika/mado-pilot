@@ -223,6 +223,10 @@ pub const REQUIRED_BACKEND: &str = mado_pilot_backend_opencv::BACKEND_ID;
 
 /// The only backend selected by the default OCR composition.
 pub const DEFAULT_OCR_BACKEND_ID: &str = mado_pilot_backend_onnx::BACKEND_ID;
+/// Backend identifier selected by an integrated CUDA provider.
+pub const CUDA_OCR_BACKEND_ID: &str = mado_pilot_backend_onnx::CUDA_BACKEND_ID;
+/// Backend identifier selected by an integrated CoreML provider.
+pub const COREML_OCR_BACKEND_ID: &str = mado_pilot_backend_onnx::COREML_BACKEND_ID;
 /// Exact default backend implementation and native compatibility identity.
 pub const DEFAULT_OCR_BACKEND_VERSION: &str = mado_pilot_backend_onnx::BACKEND_VERSION;
 /// Closed runtime/provider profile required by the default OCR composition.

@@ -33,6 +33,7 @@ const MODEL_ROOT_ENV: &str = "MADO_PILOT_G004_MODEL_ROOT";
 #[cfg(all(
     target_os = "windows",
     target_arch = "x86_64",
+    target_env = "msvc",
     feature = "cuda-provider"
 ))]
 const CUDA_PROVIDER_ROOT_ENV: &str = "MADO_PILOT_CUDA_PROVIDER_ROOT";
@@ -257,6 +258,7 @@ fn rejected_coreml_preference_reports_fresh_cpu_fallback() {
 #[cfg(all(
     target_os = "windows",
     target_arch = "x86_64",
+    target_env = "msvc",
     feature = "cuda-provider"
 ))]
 #[test]
@@ -299,6 +301,7 @@ fn cuda_provider_opens_without_cpu_initialization_fallback() {
 #[cfg(all(
     target_os = "windows",
     target_arch = "x86_64",
+    target_env = "msvc",
     feature = "cuda-provider"
 ))]
 fn assert_provider_survives_cancelled_inference(
@@ -399,7 +402,7 @@ fn required_coreml_without_build_capability_publishes_nothing() {
         &operation,
     )
     .expect_err("required CoreML cannot fall back");
-    assert_eq!(fault, OnnxBackendFault::ProviderUnavailable);
+    assert_eq!(fault.fault(), OnnxBackendFault::ProviderUnavailable);
 }
 
 fn recognize_hud(

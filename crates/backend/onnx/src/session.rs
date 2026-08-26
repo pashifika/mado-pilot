@@ -1,6 +1,9 @@
 //! Bounded ownership and validation for the accepted detector/recognizer sessions.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use mado_pilot_core::OperationContext;
 use mado_pilot_ocr::OcrModelSource;
@@ -9,10 +12,11 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{TensorElementType, ValueType};
 
 use crate::fault::{
-    OnnxBackendFault, OnnxBackendObservations, OnnxExecutionProvider, OnnxProviderFallbackReason,
+    OnnxBackendFault, OnnxBackendObservations, OnnxBackendOpenFault, OnnxExecutionProvider,
+    OnnxProviderFallbackReason,
 };
 use crate::profile::{DetectorPlan, SelectedProfile};
-use crate::provider;
+use crate::provider::{self, PreparedProvider};
 use crate::vocabulary::Vocabulary;
 
 const DETECTOR_INPUT: &str = "x";
@@ -21,48 +25,10 @@ const RECOGNIZER_INPUT: &str = "x";
 const RECOGNIZER_OUTPUT: &str = "fetch_name_0";
 const VOCABULARY_KEY: &str = "character";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ProviderOpenFault {
-    fault: OnnxBackendFault,
-    fallback_reason: Option<OnnxProviderFallbackReason>,
-}
-
-impl ProviderOpenFault {
-    pub(crate) const fn terminal(fault: OnnxBackendFault) -> Self {
-        Self {
-            fault,
-            fallback_reason: None,
-        }
-    }
-
-    pub(crate) const fn provider(
-        provider: OnnxExecutionProvider,
-        fault: OnnxBackendFault,
-        reason: OnnxProviderFallbackReason,
-    ) -> Self {
-        Self {
-            fault,
-            fallback_reason: if matches!(provider, OnnxExecutionProvider::Cpu) {
-                None
-            } else {
-                Some(reason)
-            },
-        }
-    }
-
-    pub(crate) const fn fault(self) -> OnnxBackendFault {
-        self.fault
-    }
-
-    pub(crate) const fn fallback_reason(self) -> Option<OnnxProviderFallbackReason> {
-        self.fallback_reason
-    }
-}
-
 static SESSION_PAIR_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
-struct PairLease;
+pub(crate) struct PairLease;
 
 impl PairLease {
     fn acquire() -> Result<Self, OnnxBackendFault> {
@@ -87,21 +53,32 @@ pub(crate) struct SessionPair {
     vocabulary: Vocabulary,
     observations: OnnxBackendObservations,
     _source: OcrModelSource,
-    _lease: PairLease,
+    prepared_provider: PreparedProvider,
+    _lease: Arc<PairLease>,
 }
 
 impl SessionPair {
+    pub(crate) fn reserve() -> Result<Arc<PairLease>, OnnxBackendFault> {
+        PairLease::acquire().map(Arc::new)
+    }
+
     pub(crate) fn open_with_provider(
         source: OcrModelSource,
         operation: &OperationContext,
-        provider: OnnxExecutionProvider,
-    ) -> Result<Self, ProviderOpenFault> {
-        checkpoint(operation).map_err(ProviderOpenFault::terminal)?;
-        SelectedProfile::from_identity(source.identity()).map_err(ProviderOpenFault::terminal)?;
+        prepared_provider: PreparedProvider,
+        lease: Arc<PairLease>,
+    ) -> Result<Self, OnnxBackendOpenFault> {
+        let provider = prepared_provider.candidate();
+        checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
+        SelectedProfile::from_identity(source.identity())
+            .map_err(OnnxBackendOpenFault::terminal)?;
 
-        let lease = PairLease::acquire().map_err(ProviderOpenFault::terminal)?;
+        debug_assert!(
+            Arc::strong_count(&lease) >= 2,
+            "the initialization transaction retains its reservation"
+        );
         let detector = build_session(source.detector(), provider, "detector")?;
-        checkpoint(operation).map_err(ProviderOpenFault::terminal)?;
+        checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
         validate_graph(
             &detector,
             DETECTOR_INPUT,
@@ -110,11 +87,15 @@ impl SessionPair {
             &[-1, 1, -1, -1],
         )
         .map_err(|fault| {
-            ProviderOpenFault::provider(provider, fault, OnnxProviderFallbackReason::GraphRejected)
+            OnnxBackendOpenFault::provider(
+                provider,
+                fault,
+                OnnxProviderFallbackReason::GraphRejected,
+            )
         })?;
 
         let recognizer = build_session(source.recognizer(), provider, "recognizer")?;
-        checkpoint(operation).map_err(ProviderOpenFault::terminal)?;
+        checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
         validate_graph(
             &recognizer,
             RECOGNIZER_INPUT,
@@ -123,12 +104,16 @@ impl SessionPair {
             &[-1, -1, 18_710],
         )
         .map_err(|fault| {
-            ProviderOpenFault::provider(provider, fault, OnnxProviderFallbackReason::GraphRejected)
+            OnnxBackendOpenFault::provider(
+                provider,
+                fault,
+                OnnxProviderFallbackReason::GraphRejected,
+            )
         })?;
         let raw_vocabulary = recognizer
             .metadata()
             .map_err(|_| {
-                ProviderOpenFault::provider(
+                OnnxBackendOpenFault::provider(
                     provider,
                     OnnxBackendFault::GraphMismatch,
                     OnnxProviderFallbackReason::GraphRejected,
@@ -136,7 +121,7 @@ impl SessionPair {
             })?
             .custom(VOCABULARY_KEY)
             .ok_or_else(|| {
-                ProviderOpenFault::provider(
+                OnnxBackendOpenFault::provider(
                     provider,
                     OnnxBackendFault::GraphMismatch,
                     OnnxProviderFallbackReason::GraphRejected,
@@ -149,13 +134,13 @@ impl SessionPair {
             profile.vocabulary_sha256(),
         )
         .map_err(|_| {
-            ProviderOpenFault::provider(
+            OnnxBackendOpenFault::provider(
                 provider,
                 OnnxBackendFault::GraphMismatch,
                 OnnxProviderFallbackReason::GraphRejected,
             )
         })?;
-        checkpoint(operation).map_err(ProviderOpenFault::terminal)?;
+        checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
 
         Ok(Self {
             detector,
@@ -163,8 +148,13 @@ impl SessionPair {
             vocabulary,
             observations: OnnxBackendObservations::opened(),
             _source: source,
+            prepared_provider,
             _lease: lease,
         })
+    }
+
+    pub(crate) fn commit_provider(&mut self) -> Result<(), OnnxBackendFault> {
+        self.prepared_provider.commit()
     }
 
     pub(crate) fn record_mapping(&mut self, width: u32, height: u32, bytes: usize) {
@@ -227,14 +217,14 @@ fn build_session(
     model: &[u8],
     provider_kind: OnnxExecutionProvider,
     role: &str,
-) -> Result<Session, ProviderOpenFault> {
+) -> Result<Session, OnnxBackendOpenFault> {
     #[cfg(not(feature = "benchmark-instrumentation"))]
     let _ = role;
     let execution_provider = provider::dispatch(provider_kind).map_err(|reason| {
-        ProviderOpenFault::provider(provider_kind, provider::unavailable_fault(reason), reason)
+        OnnxBackendOpenFault::provider(provider_kind, provider::unavailable_fault(reason), reason)
     })?;
     let initialization_fault = || {
-        ProviderOpenFault::provider(
+        OnnxBackendOpenFault::provider(
             provider_kind,
             OnnxBackendFault::ProviderInitializationFailed,
             OnnxProviderFallbackReason::SessionCreationFailed,
@@ -244,7 +234,7 @@ fn build_session(
     let builder = builder
         .with_execution_providers([execution_provider])
         .map_err(|_| {
-            ProviderOpenFault::provider(
+            OnnxBackendOpenFault::provider(
                 provider_kind,
                 OnnxBackendFault::ProviderInitializationFailed,
                 OnnxProviderFallbackReason::RegistrationFailed,
@@ -330,20 +320,25 @@ fn checkpoint(operation: &OperationContext) -> Result<(), OnnxBackendFault> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, atomic::Ordering};
 
     use ort::value::{Outlet, Shape, SymbolicDimensions, TensorElementType, ValueType};
 
-    use super::{PairLease, SESSION_PAIR_ACTIVE, validate_outlet};
+    use super::{SESSION_PAIR_ACTIVE, SessionPair, validate_outlet};
     use crate::fault::OnnxBackendFault;
 
     #[test]
-    fn session_pair_lease_is_single_and_reusable() {
-        let first = PairLease::acquire().expect("first lease");
-        assert!(matches!(PairLease::acquire(), Err(OnnxBackendFault::Busy)));
-        drop(first);
+    fn session_pair_reservation_is_shared_across_fallback_candidates() {
+        let transaction = SessionPair::reserve().expect("first reservation");
+        let candidate = Arc::clone(&transaction);
+        drop(candidate);
+        assert!(matches!(
+            SessionPair::reserve(),
+            Err(OnnxBackendFault::Busy)
+        ));
+        drop(transaction);
         assert!(!SESSION_PAIR_ACTIVE.load(Ordering::Acquire));
-        assert!(PairLease::acquire().is_ok());
+        assert!(SessionPair::reserve().is_ok());
     }
 
     #[test]
