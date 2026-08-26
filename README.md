@@ -115,7 +115,7 @@ input.
 | C ABI, tracked C header, dynamic library | Implemented through ABI 1.4 while preserving complete ABI 1.0, 1.2, and 1.3 prefixes at 424, 592, and 648 bytes; explicit-profile construction, grouped-result ownership/accessors, and engine OCR descriptors extend the table to 720 bytes; the unreleased 1.1 draft is intentionally unsupported |
 | Header-only C++ RAII wrapper and CMake targets | Implemented through ABI 1.4, including owning profile/zone request projections, move-only grouped results, explicit clone, and lvalue-only borrowed result views |
 | C ABI static library, ABI-major loader names, pkg-config, CMake install | Not implemented |
-| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts separate Apple M1 Pro and Core i7-12700KF explicit bounded-profile budgets. Grouped-zone release budgets remain gated on exact-candidate integrated qualification |
+| Numeric performance budgets | Phase 1 and affected Phase 2 ceilings remain revision-bound and enforced. ADR 0037 accepts default-OCR target profiles; ADR 0041 accepts separate Apple M1 Pro and Core i7-12700KF explicit bounded singular budgets. ADR 0044 accepts target-specific grouped-zone latency, lifecycle, and resource budgets for fixed non-overlapping layouts; fresh final enforcement remains a release gate |
 | Release packaging | Not implemented |
 
 The public Rust names have been reviewed and settled

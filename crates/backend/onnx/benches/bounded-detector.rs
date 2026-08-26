@@ -1,4 +1,4 @@
-//! Revision-bound quality and resource qualification for ADRs 0038–0040.
+//! Revision-bound quality and resource qualification for ADRs 0038–0044.
 
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
@@ -27,13 +27,16 @@ use mado_pilot_testkit::bench_harness::{
 use mado_pilot_testkit::bench_harness::{
     PHASE3_1_APPLE_BOUNDED_OCR_CLOSE_LIMIT, PHASE3_1_APPLE_BOUNDED_OCR_COLD_LOAD_LIMIT,
     PHASE3_1_APPLE_BOUNDED_OCR_LATENCY_BUDGETS, PHASE3_1_APPLE_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
-    PHASE3_1_APPLE_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+    PHASE3_1_APPLE_BOUNDED_OCR_RESIDENT_LIMIT_BYTES, PHASE3_1_APPLE_GROUPED_OCR_CANCELLATION_LIMIT,
+    PHASE3_1_APPLE_GROUPED_OCR_LATENCY_BUDGETS, PHASE3_1_APPLE_GROUPED_OCR_RETAINED_RESULT_LIMIT,
 };
 #[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
 use mado_pilot_testkit::bench_harness::{
     PHASE3_1_WINDOWS_BOUNDED_OCR_CLOSE_LIMIT, PHASE3_1_WINDOWS_BOUNDED_OCR_COLD_LOAD_LIMIT,
     PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS, PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
     PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+    PHASE3_1_WINDOWS_GROUPED_OCR_CANCELLATION_LIMIT, PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS,
+    PHASE3_1_WINDOWS_GROUPED_OCR_RETAINED_RESULT_LIMIT,
 };
 use mado_pilot_testkit::vision_contract;
 use opencv::core::{Mat, MatTraitConst, MatTraitConstManual, Size};
@@ -567,10 +570,6 @@ fn run_profile(
     assert!(
         !mode.enforces_budgets() || profile == OnnxOcrProfile::BoundedDetector,
         "final budgets apply only to the bounded candidate"
-    );
-    assert!(
-        !(integrated && mode.enforces_budgets()),
-        "integrated grouped budgets are not accepted; use --precursor"
     );
     if mode.requires_bound_identity() {
         require_release_target();
@@ -1532,10 +1531,13 @@ fn report_passes(mode: RunMode, profile: OnnxOcrProfile, report: &ProfileReport)
 
 struct TargetBudgets {
     latency: &'static [bench_harness::LatencyBudget],
+    grouped_latency: &'static [bench_harness::LatencyBudget],
     cold_load: Duration,
     close: Duration,
     reopen_close: Duration,
     resident_bytes: u64,
+    active_cancellation: Duration,
+    retained_result: Duration,
 }
 
 fn report_within_target_budgets(report: &ProfileReport, budgets: &TargetBudgets) -> bool {
@@ -1571,6 +1573,43 @@ fn report_within_target_budgets(report: &ProfileReport, budgets: &TargetBudgets)
                 && workload.maximum_ms <= milliseconds(budget.hard_max())
                 && workload.peak_allocated_bytes <= PHASE3_1_BOUNDED_OCR_HEAP_LIMIT_BYTES
         })
+        && if report.integrated_zones {
+            report.zone_workloads.len() == budgets.grouped_latency.len()
+                && report.zone_workloads.iter().all(|workload| {
+                    budgets
+                        .grouped_latency
+                        .iter()
+                        .filter(|budget| budget.workload() == workload.name)
+                        .count()
+                        == 1
+                })
+                && budgets.grouped_latency.iter().all(|budget| {
+                    let mut matching = report
+                        .zone_workloads
+                        .iter()
+                        .filter(|workload| workload.name == budget.workload());
+                    let Some(workload) = matching.next() else {
+                        return false;
+                    };
+                    matching.next().is_none()
+                        && workload.p50_ms <= milliseconds(budget.p50())
+                        && workload.p95_ms <= milliseconds(budget.p95())
+                        && workload.maximum_ms <= milliseconds(budget.hard_max())
+                        && workload.peak_allocated_bytes <= PHASE3_1_BOUNDED_OCR_HEAP_LIMIT_BYTES
+                })
+                && report
+                    .active_cancellation
+                    .as_ref()
+                    .is_some_and(|cancellation| {
+                        cancellation.cancellation_to_return_ms
+                            <= milliseconds(budgets.active_cancellation)
+                    })
+                && report.retained_result.as_ref().is_some_and(|retained| {
+                    retained.elapsed_ms <= milliseconds(budgets.retained_result)
+                })
+        } else {
+            true
+        }
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
@@ -1583,6 +1622,9 @@ fn target_budget_passes(report: &ProfileReport) -> bool {
             close: PHASE3_1_APPLE_BOUNDED_OCR_CLOSE_LIMIT,
             reopen_close: PHASE3_1_APPLE_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
             resident_bytes: PHASE3_1_APPLE_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+            grouped_latency: &PHASE3_1_APPLE_GROUPED_OCR_LATENCY_BUDGETS,
+            active_cancellation: PHASE3_1_APPLE_GROUPED_OCR_CANCELLATION_LIMIT,
+            retained_result: PHASE3_1_APPLE_GROUPED_OCR_RETAINED_RESULT_LIMIT,
         },
     )
 }
@@ -1597,6 +1639,9 @@ fn target_budget_passes(report: &ProfileReport) -> bool {
             close: PHASE3_1_WINDOWS_BOUNDED_OCR_CLOSE_LIMIT,
             reopen_close: PHASE3_1_WINDOWS_BOUNDED_OCR_REOPEN_CLOSE_LIMIT,
             resident_bytes: PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
+            grouped_latency: &PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS,
+            active_cancellation: PHASE3_1_WINDOWS_GROUPED_OCR_CANCELLATION_LIMIT,
+            retained_result: PHASE3_1_WINDOWS_GROUPED_OCR_RETAINED_RESULT_LIMIT,
         },
     )
 }

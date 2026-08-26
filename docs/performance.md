@@ -956,33 +956,45 @@ guarantee.
 ## v0.3.1 integrated grouped-zone qualification
 
 The accepted bounded-v2 singular profiles above remain revision-bound regression
-gates. Focused grouped-scan and public-surface checks prove one shared mapping,
-one direct detector resize/run, unique recognition, compact memberships, atomic
-publication, independent result ownership, and hard limits for one to eight
-zones. They do not establish target-native grouped latency or process RSS.
+gates. Integrated exact source `180c1b1`, tree `479e410`, added the fixed
+one-/three-/eight-zone, dense, and empty rows without changing those profiles.
+The approved Apple M1 Pro executable
+`6ce1df5bba8bc555fa961af366b0386333e6baeebd7c9483b1be9da39f16c792`
+and Windows Core i7-12700KF executable
+`b34b99eb7dcb3870edbd768055428be655e1e45ad125400d3b999bfb4da23398`
+each ran one native comparator and five fresh alternating 3+20 integrated
+processes without retry or exclusion.
 
-The release candidate therefore fixes the integrated matrix before execution:
-unchanged `hud.png` runs as singular bounded OCR, one full-frame zone, three
-semantically distinct sparse zones, and eight separated zones on both approved
-hosts. Duplicate, one-pixel-different, adjacent, slight-overlap, and
-complete-overlap layouts run only deterministic bounded safety checks. They
-receive no quality or latency support claim.
-
-Approved-host precursor and final enforcement each use five fresh processes,
-three warmups, and 20 retained samples per workload/process. Every warmup and
-retained sample checks exact text/count/order/geometry/source/profile,
+Every row passed exact text/count/order/geometry/source/profile,
 source-envelope/zones/memberships, detector/recognizer work, mapping, heap,
-growth, cancellation, retained-result independence, startup, close, cleanup,
-and producer progress before latency is eligible. Hosted CI continues to enforce
-target-independent correctness and bounded growth only.
+growth, cancellation, retained-result independence, startup, close, and cleanup
+oracles. Both targets reported zero incorrect retained samples, zero call
+failures, zero post-warm growth, and identical deterministic resource signatures.
+Duplicate, one-pixel-different, adjacent, slight-overlap, and complete-overlap
+layouts remain bounded safety cases with no quality or latency support claim.
 
-Existing ADR 0041 singular ceilings cannot increase. New grouped p50/p95/maximum
-ceilings may be accepted only after complete Apple and Windows precursor records:
-1.25 times each target's worst corresponding observation, rounded upward to
-25 ms, capped at 600/750/900 ms on Apple and 900/1,000/1,200 ms on Windows.
-A hard failure or observation beyond the cap rejects or withholds the row rather
-than relaxing it. Cold/startup/cleanup, 20 MiB attributable Rust peak, 4 KiB
-growth, detector/output, grouped semantic storage, and process-RSS limits remain
-bounded by the existing target rules until a reviewed ADR selects equal or
-tighter values. Cross-target inference, retry, sample exclusion, changed oracles,
-and hosted timing/RSS are prohibited.
+[ADR 0044](adr/0044-integrated-zone-ocr-target-budgets.md) accepts the
+predeclared 1.25-times/25-ms formula results:
+
+| Workload | Apple p50 / p95 / maximum | Windows p50 / p95 / maximum |
+|---|---:|---:|
+| full-frame one zone | 600 / 600 / 625 ms | 900 / 900 / 900 ms |
+| three sparse zones | 375 / 375 / 375 ms | 525 / 525 / 525 ms |
+| eight distinct zones | 450 / 450 / 475 ms | 600 / 600 / 600 ms |
+| dense unique candidates | 600 / 675 / 700 ms | 725 / 750 / 750 ms |
+| empty 4K result | 175 / 175 / 175 ms | 300 / 325 / 325 ms |
+
+ADR 0041 startup/close, 20 MiB attributable live Rust peak, 4 KiB growth,
+11,587,584-byte detector tensor, and target final-RSS ceilings remain unchanged.
+Active native cancellation-to-return is capped at 25 ms on each target.
+Retained one-zone result completion is capped at 625 ms on Apple and 900 ms on
+Windows. Each fixed grouped row additionally requires one mapping/resize/detector
+run, exact mapped and detector bytes, expected zero/one/two recognizer runs,
+exact selected/ignored/unique/membership/result accounting, one cleanup, and no
+retained parent resource.
+
+The new integrated benchmark profiles record this separate lineage rather than
+editing either ADR 0041 profile. Five fresh `--enforce-budgets` processes from
+one final executable on each approved host remain required for release
+acceptance. Hosted CI enforces correctness and bounded growth only; its timing
+and RSS do not define either profile.

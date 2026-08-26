@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded singular OCR on both release targets are resolved by ADRs 0008, 0024–0032, 0037, and 0041; integrated grouped-zone workloads remain open |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per future workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded singular/grouped OCR on both release targets are resolved by ADRs 0008, 0024–0032, 0037, 0041, and 0044 |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -639,20 +639,27 @@ and [ADR 0041](adr/0041-bounded-detector-target-budgets.md). Any future ceiling
 or budget change requires a new identity or ADR as applicable and fresh
 both-target evidence.
 
-**The `v0.3.1` integrated grouped-zone workloads remain open.** ADR 0042 fixes
-the one-to-eight-zone semantics and safety-only overlap boundary; ADR 0043 fixes
-the Rust/C ABI 1.4/C++ ownership surface. Their focused correctness evidence
-does not establish exact-candidate target latency or resident-memory budgets.
+**The `v0.3.1` integrated grouped-zone budget decision is resolved.** ADR 0042
+fixes the one-to-eight-zone semantics and safety-only overlap boundary; ADR 0043
+fixes the Rust/C ABI 1.4/C++ ownership surface. Exact source `180c1b1` then
+passed the immutable native/singular/one-/three-/eight-zone matrix and five fresh
+alternating 3+20 precursor processes on each approved host with no retry,
+exclusion, incorrect retained sample, call failure, post-warm growth, or
+deterministic resource-signature mismatch.
 
-Release acceptance requires one immutable identical-input singular/one-/three-/
-eight-zone matrix on both approved hosts, followed by five fresh precursor
-processes per target, a reviewed target-specific ceiling/support ADR, and five
-fresh budget-enforcing processes from the final source. Existing ADR 0041
-singular ceilings remain regression gates and cannot be raised by grouped
-observations. Duplicate, nearly equal, adjacent, slight-overlap, and
-complete-overlap arrays remain safety-only and receive no numeric support row.
-Hosted runner timing/RSS and one target's measurements cannot resolve the other
-target.
+[ADR 0044](adr/0044-integrated-zone-ocr-target-budgets.md) accepts separate
+Apple M1 Pro and Windows Core i7-12700KF grouped latency, process, cancellation,
+retained-result, mapping, detector/recognizer, candidate/membership/result,
+heap/growth, and cleanup ceilings. It leaves every ADR 0041 singular ceiling
+unchanged and limits the quality/performance claim to full-frame one-zone
+equivalence plus the fixed semantically distinct non-overlapping three/eight
+layouts. Duplicate, nearly equal, adjacent, slight-overlap, and complete-overlap
+arrays remain safety-only.
+
+Fresh five-process integrated budget enforcement on both approved hosts remains
+a release-acceptance check, not an unresolved budget decision. Hosted runner
+timing/RSS and one target's measurements never substitute for approved-host
+evidence.
 
 ## G-014
 
