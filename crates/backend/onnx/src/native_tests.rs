@@ -1,7 +1,7 @@
 //! Explicit native-runtime conformance and accepted-fixture smoke coverage.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -99,10 +99,18 @@ const HUD_THREE_ZONES: [(f64, f64, f64, f64); 3] = [
 const HUD_POINT_TOLERANCE: f64 = 0.0;
 const NATIVE_TERMINATION_BOUND: Duration = Duration::from_millis(250);
 const NATIVE_GATE_BOUND: Duration = Duration::from_secs(2);
+static NATIVE_RUNTIME_TEST: Mutex<()> = Mutex::new(());
+
+fn serialize_native_runtime_test() -> MutexGuard<'static, ()> {
+    NATIVE_RUNTIME_TEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[test]
 #[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
 fn accepted_runtime_passes_contract_and_hud_oracle() {
+    let _serial = serialize_native_runtime_test();
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
     let operation = OperationContext::new();
@@ -234,6 +242,7 @@ fn accepted_runtime_passes_contract_and_hud_oracle() {
 #[test]
 #[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
 fn rejected_coreml_preference_reports_fresh_cpu_fallback() {
+    let _serial = serialize_native_runtime_test();
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
     let operation = OperationContext::new();
@@ -272,6 +281,7 @@ fn rejected_coreml_preference_reports_fresh_cpu_fallback() {
 #[test]
 #[ignore = "requires explicit reviewed ONNX Runtime, CUDA provider, and G-004 model paths"]
 fn cuda_provider_opens_without_cpu_initialization_fallback() {
+    let _serial = serialize_native_runtime_test();
     let runtime = required_path(RUNTIME_ENV);
     let provider_root = required_path(CUDA_PROVIDER_ROOT_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
@@ -370,6 +380,7 @@ fn assert_provider_survives_cancelled_inference(
 #[test]
 #[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
 fn preferred_coreml_without_build_capability_falls_back_to_cpu() {
+    let _serial = serialize_native_runtime_test();
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
     let operation = OperationContext::new();
@@ -400,6 +411,7 @@ fn preferred_coreml_without_build_capability_falls_back_to_cpu() {
 #[test]
 #[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
 fn required_coreml_without_build_capability_publishes_nothing() {
+    let _serial = serialize_native_runtime_test();
     let runtime = required_path(RUNTIME_ENV);
     let model_root = required_path(MODEL_ROOT_ENV);
     let operation = OperationContext::new();
