@@ -2311,6 +2311,147 @@ pub const PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
     ),
 ];
 
+/// Phase 3.1 preferred-CUDA initialization-fallback grouped latency ceilings from ADR 0048.
+///
+/// These preserve every accepted CPU profile and bound the separate mixed-provider
+/// qualification sequence after its retained interleaved CPU tail observation.
+pub const PHASE3_1_WINDOWS_CUDA_FALLBACK_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
+    LatencyBudget::new(
+        "zone_one_full",
+        Duration::from_millis(900),
+        Duration::from_millis(900),
+        Duration::from_millis(900),
+    ),
+    LatencyBudget::new(
+        "zone_three_sparse",
+        Duration::from_millis(525),
+        Duration::from_millis(525),
+        Duration::from_millis(525),
+    ),
+    LatencyBudget::new(
+        "zone_eight_distinct",
+        Duration::from_millis(600),
+        Duration::from_millis(875),
+        Duration::from_millis(900),
+    ),
+    LatencyBudget::new(
+        "zone_dense_unique",
+        Duration::from_millis(725),
+        Duration::from_millis(1_025),
+        Duration::from_millis(1_200),
+    ),
+    LatencyBudget::new(
+        "zone_empty_4k",
+        Duration::from_millis(300),
+        Duration::from_millis(325),
+        Duration::from_millis(325),
+    ),
+];
+
+/// Phase 3.1 Windows CUDA OCR latency ceilings from ADR 0048.
+pub const PHASE3_1_WINDOWS_CUDA_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
+    LatencyBudget::new(
+        "bounded_hud_4k",
+        Duration::from_millis(150),
+        Duration::from_millis(150),
+        Duration::from_millis(175),
+    ),
+    LatencyBudget::new(
+        "bounded_menu_wide",
+        Duration::from_millis(125),
+        Duration::from_millis(150),
+        Duration::from_millis(150),
+    ),
+    LatencyBudget::new(
+        "bounded_status_extreme_wide",
+        Duration::from_millis(25),
+        Duration::from_millis(50),
+        Duration::from_millis(50),
+    ),
+    LatencyBudget::new(
+        "bounded_hud_reference",
+        Duration::from_millis(150),
+        Duration::from_millis(175),
+        Duration::from_millis(175),
+    ),
+    LatencyBudget::new(
+        "bounded_hud_odd",
+        Duration::from_millis(175),
+        Duration::from_millis(175),
+        Duration::from_millis(175),
+    ),
+    LatencyBudget::new(
+        "bounded_tooltip_dense",
+        Duration::from_millis(150),
+        Duration::from_millis(175),
+        Duration::from_millis(175),
+    ),
+    LatencyBudget::new(
+        "bounded_mission_boundary",
+        Duration::from_millis(150),
+        Duration::from_millis(150),
+        Duration::from_millis(175),
+    ),
+    LatencyBudget::new(
+        "bounded_blank_4k",
+        Duration::from_millis(25),
+        Duration::from_millis(50),
+        Duration::from_millis(50),
+    ),
+];
+
+/// Phase 3.1 Windows CUDA grouped OCR latency ceilings from ADR 0048.
+pub const PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
+    LatencyBudget::new(
+        "zone_one_full",
+        Duration::from_millis(175),
+        Duration::from_millis(200),
+        Duration::from_millis(200),
+    ),
+    LatencyBudget::new(
+        "zone_three_sparse",
+        Duration::from_millis(50),
+        Duration::from_millis(50),
+        Duration::from_millis(50),
+    ),
+    LatencyBudget::new(
+        "zone_eight_distinct",
+        Duration::from_millis(150),
+        Duration::from_millis(150),
+        Duration::from_millis(150),
+    ),
+    LatencyBudget::new(
+        "zone_dense_unique",
+        Duration::from_millis(150),
+        Duration::from_millis(525),
+        Duration::from_millis(1_100),
+    ),
+    LatencyBudget::new(
+        "zone_empty_4k",
+        Duration::from_millis(25),
+        Duration::from_millis(25),
+        Duration::from_millis(25),
+    ),
+];
+
+/// Phase 3.1 Windows CUDA cache-cold startup ceiling from ADR 0048.
+pub const PHASE3_1_WINDOWS_CUDA_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(425);
+
+/// Phase 3.1 Windows CUDA first-close ceiling from ADR 0048.
+pub const PHASE3_1_WINDOWS_CUDA_OCR_CLOSE_LIMIT: Duration = Duration::from_millis(25);
+
+/// Phase 3.1 Windows CUDA reopen-close ceiling from ADR 0048.
+pub const PHASE3_1_WINDOWS_CUDA_OCR_REOPEN_CLOSE_LIMIT: Duration = Duration::from_millis(175);
+
+/// Phase 3.1 Windows CUDA process peak-RSS ceiling from ADR 0048.
+pub const PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES: u64 = 1_426_063_360;
+
+/// Phase 3.1 Windows CUDA active-cancellation ceiling from ADR 0048.
+pub const PHASE3_1_WINDOWS_CUDA_OCR_CANCELLATION_LIMIT: Duration = Duration::from_millis(25);
+
+/// Phase 3.1 Windows CUDA retained-result completion ceiling from ADR 0048.
+pub const PHASE3_1_WINDOWS_CUDA_OCR_RETAINED_RESULT_LIMIT: Duration = Duration::from_millis(175);
+
 /// Phase 3.1 Apple integrated-zone cache-cold startup ceiling from ADR 0045.
 pub const PHASE3_1_APPLE_GROUPED_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(200);
 

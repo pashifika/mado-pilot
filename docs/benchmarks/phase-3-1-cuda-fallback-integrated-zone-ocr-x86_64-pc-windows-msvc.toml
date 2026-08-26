@@ -1,0 +1,365 @@
+# Phase 3.1 explicit Windows CUDA OCR final qualification. ADR 0048 fixes the budgets.
+
+format_version = 1
+
+[benchmark]
+id = "phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc"
+workload = "preferred-CUDA missing-root fresh-CPU fallback grouped-zone qualification"
+phase = "3.1"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "fixtures/ocr/g-004 fixture-manifest.json and its five SHA-256-bound PNGs plus derived deterministic frames"
+fixture_sha256 = "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF, NVIDIA RTX 4080, 32 GiB class"
+os_version = "Windows 11 Pro 25H2 build family 26200"
+build_profile = "cargo bench --release with cuda-provider and bounded benchmark instrumentation; exact final alternating provider sequence"
+requested_provider_policy = "prefer-cuda"
+active_provider = "cpu"
+initialization_fell_back = true
+fallback_reason = "dependency-unavailable"
+runtime_profile = "onnxruntime-1.29.0-api17-cpu"
+source_revision = "83ce7e3a9519c154bda95f3054d9d8f6df811a50"
+source_tree = "3ab59931a3f3778c4d60e0d99b0dc9bcefd40ee9"
+final_patch_sha256 = "40e5ec9f1720fbfa5ab0943a3738ccc4a719c68d96532201c6740cca41c6152b"
+benchmark_executable_sha256 = "25a0ce6e51bfad48110e118807491d82b3870ac608491f25e86f207244f1c1c7"
+evidence_zip_sha256 = "496b1db1208de95b52d8f2ad5767e65d87cc451a7698868fb443b51292ed097c"
+runtime_sha256 = "5458c46e26efe64d7b2f960ba6aff97209b454a007af0f93d682ac2570f7541d"
+profile_id = "phase-3-1-rapidocr-ppocrv4-det-v6-rec-small-bounded-v2"
+preprocessing_id = "rapidocr-ppocrv4-det-bgr-db736-fit-1312x736-then-tensor6291456b-linear-half-pixel-source-rec-v2"
+queue_policy = "one synchronous admitted inference, one fresh CPU fallback pair, two sessions, no queue or post-publication provider switch"
+correctness_oracle = "all warmup and retained singular/grouped samples satisfy exact text, geometry, ordering, identity, resource, cancellation, ownership, and cleanup contracts"
+notes = "representative predeclared middle fallback process (fallback3) from the successful exact-final sequence; no retry, exclusion, priming, or overlap; both stopped exact-final tail observations are retained separately and set the CUDA and mixed-fallback grouped tail budgets"
+warmup_iterations = 3
+sample_count = 20
+process_count = 10
+cold_load_p95_ms = 181.5032
+first_close_max_ms = 4.7214
+reopen_close_max_ms = 149.7829
+active_cancellation_ms = 4.6077
+retained_result_ms = 713.1730
+peak_resident_bytes = 229699584
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies exact content, geometry, ordering, identity, and resource oracles"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "repeated CUDA OCR and result cleanup gives back transient Rust allocations"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 20971520
+rationale = "absolute allocation ceiling"
+
+[[budget]]
+measure = "peak_resident_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 301989888
+rationale = "ADR 0048 CUDA process RSS ceiling"
+
+[[budget]]
+measure = "cold_load_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 250.0
+rationale = "ADR 0048 CUDA cold-open ceiling"
+
+[[budget]]
+measure = "first_close_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 8.0
+rationale = "ADR 0048 CUDA first-close ceiling"
+
+[[budget]]
+measure = "reopen_close_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 200.0
+rationale = "ADR 0048 CUDA reopen-close ceiling"
+
+[[budget]]
+measure = "active_cancellation_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 25.0
+rationale = "ADR 0048 active-cancellation ceiling"
+
+[[budget]]
+measure = "retained_result_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0048 retained-result ceiling"
+
+[[budget]]
+measure = "max_detector_tensor_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 11587584
+rationale = "ADR 0040 absolute detector tensor ceiling"
+
+[[measurement]]
+workload = "zone_one_full"
+correctness_oracle = "exact workload result and resource contract"
+result_correctness = 0
+latency_p50_ms = 709.7939
+latency_p95_ms = 715.0528
+latency_max_ms = 718.2756
+mapped_bytes_per_result = 2073600
+peak_allocated_bytes = 12695304
+allocated_growth_bytes = 0
+detector_width = 1312
+detector_height = 736
+detector_tensor_bytes = 11587584
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 2073600
+rationale = "one exact mapped source envelope"
+
+[[measurement]]
+workload = "zone_three_sparse"
+correctness_oracle = "exact workload result and resource contract"
+result_correctness = 0
+latency_p50_ms = 407.8750
+latency_p95_ms = 424.5907
+latency_max_ms = 442.6141
+mapped_bytes_per_result = 1479200
+peak_allocated_bytes = 8485216
+allocated_growth_bytes = 0
+detector_width = 1024
+detector_height = 480
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 1
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 525.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 525.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 525.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 1479200
+rationale = "one exact mapped source envelope"
+
+[[measurement]]
+workload = "zone_eight_distinct"
+correctness_oracle = "exact workload result and resource contract"
+result_correctness = 0
+latency_p50_ms = 462.6702
+latency_p95_ms = 492.3894
+latency_max_ms = 501.0226
+mapped_bytes_per_result = 1479200
+peak_allocated_bytes = 8485432
+allocated_growth_bytes = 0
+detector_width = 1024
+detector_height = 480
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 600.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 875.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 1479200
+rationale = "one exact mapped source envelope"
+
+[[measurement]]
+workload = "zone_dense_unique"
+correctness_oracle = "exact workload result and resource contract"
+result_correctness = 0
+latency_p50_ms = 578.3619
+latency_p95_ms = 598.6305
+latency_max_ms = 605.7000
+mapped_bytes_per_result = 4147200
+peak_allocated_bytes = 7006340
+allocated_growth_bytes = 0
+detector_width = 1024
+detector_height = 480
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 725.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1025.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 1200.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 4147200
+rationale = "one exact mapped source envelope"
+
+[[measurement]]
+workload = "zone_empty_4k"
+correctness_oracle = "exact workload result and resource contract"
+result_correctness = 0
+latency_p50_ms = 238.8433
+latency_p95_ms = 242.4416
+latency_max_ms = 243.2538
+mapped_bytes_per_result = 33177600
+peak_allocated_bytes = 6390400
+allocated_growth_bytes = 0
+detector_width = 960
+detector_height = 512
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 0
+
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 300.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 325.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 325.0
+rationale = "ADR 0048 explicit CUDA ceiling"
+
+[[measurement.budget]]
+measure = "mapped_bytes_per_result"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 33177600
+rationale = "one exact mapped source envelope"

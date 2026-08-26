@@ -45,14 +45,14 @@ registry is itself a Phase 0 deliverable.
 | [`G-003`](#g-003) | macOS shim language | Before Phase 2 implementation | macOS shim implementation | Resolved by [ADR 0012](adr/0012-macos-shim-language-and-containment.md) |
 | [`G-004`](#g-004) | Default OCR model profile | Before Phase 3 implementation | Default OCR profile identity | Resolved by [ADR 0033](adr/0033-default-ocr-model-profile.md) |
 | [`G-005`](#g-005) | Default change-detection algorithm and threshold | Before Phase 4 implementation | Default watcher policy | Open |
-| [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open |
+| [`G-006`](#g-006) | Acceleration candidates and provider ordering | Before Phase 5 implementation | Acceleration defaults | Open per future accelerator; v0.3.1 OCR resolved by ADRs 0046–0048 |
 | [`G-007`](#g-007) | Native dependency bundling profiles | Before Phase 5 implementation | Release packaging | Open |
 | [`G-008`](#g-008) | Static-library feasibility | Before Phase 5 exit | Static artifact claim only | Open |
 | [`G-009`](#g-009) | Stable public Rust item names | Before Phase 1 exit | Rust stability promise | Resolved by [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) |
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per future workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded singular/grouped OCR on both release targets are resolved by ADRs 0008, 0024–0032, 0037, 0041, and 0044 |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per future workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded/grouped/provider OCR are resolved by ADRs 0008, 0024–0032, 0037, 0041, 0044, 0047, and 0048 |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -250,21 +250,25 @@ recorded sequences kept as regression fixtures.
 
 ## G-006
 
-**Unresolved decision.** The Core ML and Windows acceleration candidates and the
-execution-provider ordering.
+**Version 0.3.1 OCR decision.** Provider selection is independent from model and
+preprocessing profile. Existing and automatic constructors use CPU on both
+release targets. Explicit Windows CUDA is accepted only for the exact ADR 0048
+target/runtime/dependency boundary. CoreML is release-rejected by ADR 0047.
+Preferred policy may construct one fresh CPU pair only before engine
+publication; required policy publishes no engine on failure. No inference,
+cancellation, deadline, device, or native error switches provider.
 
-**Required evidence.** Compatibility and correctness runs for each candidate
-provider on its release target, including the observable behavior when a provider
-is rejected during model loading.
+**Evidence.** ADR 0046 fixes the policy and controlled dependency contract. ADR
+0047 retains CoreML placement plus geometry/cancellation failures. ADR 0048
+retains Windows CUDA placement, precursor matrices, two stopped tail
+observations, and the terminal five-CUDA/five-fallback 249/249 pass.
 
-**Due.** Before Phase 5 implementation.
+**Status.** The v0.3.1 OCR provider row is resolved. G-006 remains open for
+future accelerator kinds, graphs, targets, automatic defaults, or Phase 5 work.
 
-**Blocks.** Acceleration defaults.
-
-**Status.** Open.
-
-**Resolution.** An ADR recording the candidate results and the provider ordering,
-plus the fallback policy that limits fallback to model loading.
+**Resolution.** Any later support or ordering claim needs its own target-native
+correctness, placement, performance, memory, cancellation, cleanup, and
+fallback evidence plus an ADR.
 
 ## G-007
 
@@ -674,6 +678,16 @@ and Windows executable
 passed every singular/grouped latency, process, resource, lifecycle, ownership,
 cleanup, correctness, heap, and growth gate. Hosted checks passed both release
 targets on that source; their timing/RSS remains non-qualifying.
+
+**The `v0.3.1` OCR provider budget decision is resolved.** ADR 0047 assigns no
+CoreML budget because its correctness/cancellation smoke failed. ADR 0048 adds
+three exact Windows profiles for required CUDA singular/grouped work and the
+preferred-CUDA/missing-root fresh-CPU grouped fallback. The terminal source
+`40e5ec9f1720fbfa5ab0943a3738ccc4a719c68d96532201c6740cca41c6152b`
+passed five CUDA and five fallback processes, 249/249 checks, with zero retry,
+exclusion, priming, overlap, growth failure, or NVRTC diagnostic. Two earlier
+sequences remain retained as stopped tail observations. Every historical CPU
+profile digest and budget is unchanged.
 
 ## G-014
 
