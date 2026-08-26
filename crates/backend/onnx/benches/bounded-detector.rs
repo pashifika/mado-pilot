@@ -298,6 +298,8 @@ struct ProfileReport {
     profile_id: String,
     preprocessing_id: String,
     integrated_zones: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    integrated_workload_order: Option<&'static str>,
     mode: &'static str,
     warmup_iterations: usize,
     retained_samples: usize,
@@ -351,7 +353,12 @@ impl RunMode {
             arguments.iter().all(|argument| {
                 matches!(
                     argument.as_str(),
-                    "--bench" | "--smoke" | "--precursor" | "--enforce-budgets" | "--integrated"
+                    "--bench"
+                        | "--smoke"
+                        | "--precursor"
+                        | "--enforce-budgets"
+                        | "--integrated"
+                        | "--zones-first"
                 ) || matches!(
                     argument.strip_prefix("--profile="),
                     Some("native" | "bounded")
@@ -406,18 +413,63 @@ impl RunMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntegratedOrder {
+    Disabled,
+    SingularFirst,
+    ZonesFirst,
+}
+
+impl IntegratedOrder {
+    fn from_arguments(arguments: &[String]) -> Self {
+        let integrated = arguments
+            .iter()
+            .filter(|argument| argument.as_str() == "--integrated")
+            .count();
+        let zones_first = arguments
+            .iter()
+            .filter(|argument| argument.as_str() == "--zones-first")
+            .count();
+        assert!(
+            integrated <= 1 && zones_first <= 1,
+            "select integrated workload options at most once"
+        );
+        assert!(
+            zones_first == 0 || integrated == 1,
+            "--zones-first requires --integrated"
+        );
+        match (integrated, zones_first) {
+            (0, 0) => Self::Disabled,
+            (1, 0) => Self::SingularFirst,
+            (1, 1) => Self::ZonesFirst,
+            _ => unreachable!("validated integrated workload options"),
+        }
+    }
+
+    const fn enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    const fn zones_first(self) -> bool {
+        matches!(self, Self::ZonesFirst)
+    }
+
+    const fn name(self) -> Option<&'static str> {
+        match self {
+            Self::Disabled => None,
+            Self::SingularFirst => Some("singular-first"),
+            Self::ZonesFirst => Some("zones-first"),
+        }
+    }
+}
+
 fn main() {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     let mode = RunMode::from_arguments(&arguments);
-    let integrated_count = arguments
-        .iter()
-        .filter(|argument| argument.as_str() == "--integrated")
-        .count();
-    assert!(integrated_count <= 1, "select --integrated at most once");
-    let integrated = integrated_count == 1;
+    let integrated_order = IntegratedOrder::from_arguments(&arguments);
     let profile = selected_profile(&arguments);
     assert!(
-        !integrated || profile == OnnxOcrProfile::BoundedDetector,
+        !integrated_order.enabled() || profile == OnnxOcrProfile::BoundedDetector,
         "integrated grouped rows require the bounded profile"
     );
     if [RUNTIME_ENV, MODEL_ROOT_ENV]
@@ -450,7 +502,7 @@ fn main() {
         &fixture_root,
         &manifest,
         mode,
-        integrated,
+        integrated_order,
     );
     println!(
         "{}",
@@ -482,8 +534,9 @@ fn run_profile(
     fixture_root: &Path,
     manifest: &FixtureManifest,
     mode: RunMode,
-    integrated: bool,
+    integrated_order: IntegratedOrder,
 ) -> ProfileReport {
+    let integrated = integrated_order.enabled();
     let plan = mode.plan();
     assert!(
         !mode.enforces_budgets() || profile == OnnxOcrProfile::BoundedDetector,
@@ -528,6 +581,11 @@ fn run_profile(
     let port: Arc<dyn OcrBackend> = backend.clone();
     let recognizer = OcrRecognizer::new(port);
 
+    let mut zone_workload_reports = if integrated_order.zones_first() {
+        measure_zone_workloads(&recognizer, &backend, fixture_root, manifest, plan)
+    } else {
+        Vec::new()
+    };
     let mut workload_reports = Vec::with_capacity(WorkloadKind::ALL.len());
     for kind in WorkloadKind::ALL {
         workload_reports.push(measure_workload(
@@ -538,17 +596,9 @@ fn run_profile(
             plan,
         ));
     }
-    let mut zone_workload_reports = Vec::new();
-    if integrated {
-        zone_workload_reports.reserve_exact(ZoneWorkloadKind::ALL.len());
-        for kind in ZoneWorkloadKind::ALL {
-            zone_workload_reports.push(measure_zone_workload(
-                recognizer.clone(),
-                Arc::clone(&backend),
-                build_zone_workload(fixture_root, manifest, kind),
-                plan,
-            ));
-        }
+    if integrated && !integrated_order.zones_first() {
+        zone_workload_reports =
+            measure_zone_workloads(&recognizer, &backend, fixture_root, manifest, plan);
     }
 
     let cancellation_spec = build_workload(fixture_root, manifest, WorkloadKind::HudReference);
@@ -598,6 +648,7 @@ fn run_profile(
             .as_str()
             .to_owned(),
         integrated_zones: integrated,
+        integrated_workload_order: integrated_order.name(),
         mode: mode.name(),
         warmup_iterations: plan.warmup(),
         retained_samples: plan.samples(),
@@ -620,6 +671,25 @@ fn run_profile(
     report.passed = report_passes(mode, profile, &report)
         && (!mode.enforces_budgets() || target_budget_passes(&report));
     report
+}
+
+fn measure_zone_workloads(
+    recognizer: &OcrRecognizer,
+    backend: &Arc<OnnxOcrBackend>,
+    fixture_root: &Path,
+    manifest: &FixtureManifest,
+    plan: Plan,
+) -> Vec<ZoneWorkloadReport> {
+    let mut reports = Vec::with_capacity(ZoneWorkloadKind::ALL.len());
+    for kind in ZoneWorkloadKind::ALL {
+        reports.push(measure_zone_workload(
+            recognizer.clone(),
+            Arc::clone(backend),
+            build_zone_workload(fixture_root, manifest, kind),
+            plan,
+        ));
+    }
+    reports
 }
 
 fn measure_workload(
