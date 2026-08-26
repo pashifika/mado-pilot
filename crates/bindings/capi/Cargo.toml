@@ -33,6 +33,8 @@ harness = false
 
 [features]
 qualification-unsupported-api = ["mado-pilot/qualification-unsupported-api"]
+coreml-provider = ["mado-pilot/coreml-provider"]
+cuda-provider = ["mado-pilot/cuda-provider"]
 # Builds an explicitly non-production OCR fixture constructor used only by
 # local C/C++ examples and ownership probes. It is never enabled by release builds.
 private-fixture = []

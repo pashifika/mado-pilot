@@ -21,15 +21,15 @@ A C++ caller uses the header-only RAII wrapper over this contract rather than
 calling the table directly; see [cpp-wrapper.md](cpp-wrapper.md). Everything
 below still applies to it, because it is the same contract.
 
-## ABI 1.4, with complete released 1.0, 1.2, and 1.3 prefixes preserved
+## ABI 1.5, with complete released 1.0, 1.2, 1.3, and 1.4 prefixes preserved
 
-The current header declares ABI 1.4. ADR 0007 freezes ABI 1.0's 424-byte
+The current header declares ABI 1.5. ADR 0007 freezes ABI 1.0's 424-byte
 capture/matching table; ADR 0023 freezes ABI 1.2's 592-byte input/diagnostic
 table; ADRs 0035/0036 freeze ABI 1.3's singular OCR/default construction at 648
-bytes. ABI 1.4 appends explicit profile construction, grouped scan ownership,
-and engine-selected OCR descriptor access at offsets 648 through 712 for a
-complete 720-byte table under
-[ADR 0043](adr/0043-ocr-profile-and-zone-public-surfaces.md).
+bytes; ADR 0043 freezes ABI 1.4's explicit profile/grouped OCR surface at 720
+bytes. ABI 1.5 appends `engine_create_with_ocr_provider` at offset 720 and
+`engine_ocr_provider_descriptor` at offset 728 for a complete 736-byte table
+under [ADR 0046](adr/0046-onnx-accelerator-provider-policy.md).
 The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
 - no released numeric value changes its number;
@@ -40,23 +40,46 @@ The unreleased 1.1 draft remains intentionally unsupported. Within ABI major 1:
 
 A different ABI major is a different library, and `madopilot_get_api` refuses it.
 Use the smaller of caller `sizeof(madopilot_api_t)` and the returned
-`struct_size`. ABI 1.0, 1.2, and 1.3 callers negotiate 424, 592, and 648 bytes.
-ABI 1.4 C callers use the per-entry extent macros. Profile construction requires
-`MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROFILE`; a high-level grouped owner
-needs `MADOPILOT_API_SIZE_OCR_ZONE_SCAN_RESULT_TEXT_AT` (712 bytes), while
-engine descriptor access needs
-`MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR` (720 bytes). The C++ wrapper checks
-both caller-known and returned extents before reading a pointer.
+`struct_size`. ABI 1.0, 1.2, 1.3, and 1.4 callers negotiate 424, 592, 648, and
+720 bytes. ABI 1.5 provider construction requires
+`MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROVIDER` (728 bytes); provider
+descriptor access requires `MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR`
+(736 bytes). The C++ wrapper checks both caller-known and returned extents before
+reading either pointer.
 
-The released promise is executable. `tests/abi-compat/v1/`, `v1_2/`, and
-`v1_3/` keep exact headers/callers, compile without the working header, link to
-the current library, negotiate only their declared extents, and execute their
-complete flows. Current C++ checks also negotiate partial 1.3/1.4 extents and
-refuse high-level operations before a missing entry is read.
+The released promise is executable. `tests/abi-compat/v1/`, `v1_2/`, `v1_3/`,
+and `v1_4/` keep exact headers/callers, compile without the working header, link
+to the current library, negotiate only their declared extents, and execute their
+complete flows. Current C++ checks also negotiate partial 1.3, 1.4, and 1.5
+extents and refuse high-level operations before a missing entry is read.
+
+## Migrating an ABI 1.4 caller to provider-policy OCR
+
+Existing ABI 1.4 constructors remain CPU-only. To select a provider:
+
+1. negotiate minor 5 and require the complete provider-construction extent;
+2. fill `madopilot_ocr_profile_options_t` with either
+   `MADOPILOT_OCR_PROFILE_G004` or
+   `MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR` and the controlled model/runtime
+   views;
+3. fill the 32-byte `madopilot_ocr_provider_options_t` with one closed policy;
+   CUDA and automatic policies may provide the canonical controlled dependency
+   root, while CPU and CoreML policies require an empty root;
+4. call `engine_create_with_ocr_provider`; preferred policies may construct a
+   fresh CPU pair only after accelerator initialization fails before
+   publication, while required policies return the typed failure;
+5. require the descriptor extent and call `engine_ocr_provider_descriptor`.
+   The 40-byte output reports requested policy, active provider, fallback
+   presence/reason, and an engine-borrowed runtime-profile view.
+
+Provider selection is immutable after publication. Inference failure,
+cancellation, device loss, or native failure does not retry on CPU or change the
+descriptor. Caller option/path storage is borrowed only for synchronous
+construction; a successful engine owns every later descriptor value.
 
 ## Migrating from the unreleased 1.1 draft
 
-The 1.1 header was development-only. Recompile against 1.2, 1.3, or 1.4; do not
+The 1.1 header was development-only. Recompile against 1.2, 1.3, 1.4, or 1.5; do not
 copy its numeric values, layouts, or offsets. Explicit input routes, owned
 receipts, submission evidence, and bounded diagnostics are the ABI 1.2
 replacement. The frozen ABI 1.0 prefix remains compatible; there is no 1.1
@@ -459,10 +482,21 @@ runtime first, then the two fixed accepted model paths, and returns no engine on
 failure. It never changes the behavior of `engine_create`.
 
 `madopilot_ocr_profile_options_t` is the separate explicit counterpart. Unknown
-kind and nonzero reserved/flags fail before path reads. The only ABI 1.4 value is
-`MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR`; construction validates one controlled
-runtime/model tuple under the caller operation and publishes no half-configured
-engine or fallback.
+kind and nonzero reserved/flags fail before path reads. The ABI 1.4
+`engine_create_with_ocr_profile` entry continues to accept only
+`MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR`; the ABI 1.5
+`MADOPILOT_OCR_PROFILE_G004` value is accepted only by provider-policy
+construction. Existing construction validates one controlled runtime/model tuple
+under the caller operation and publishes no half-configured engine or fallback.
+
+`madopilot_ocr_provider_options_t` adds the independent provider axis without
+growing either released option record. Unknown policy, nonzero flags/reserved,
+short/misaligned records, and non-CUDA provider roots fail before native
+provider work. CUDA's root is borrowed only for construction. On success the
+engine owns the immutable provider facts; mutating or freeing caller option/path
+storage cannot change them. Preferred initialization fallback destroys the
+accelerator candidate before a fresh CPU pair; required policy and every
+post-publication inference failure forbid fallback.
 
 `session_scan_ocr_zones` borrows its request and zone array for one synchronous
 call. It validates count, pointer, base/stride alignment, checked span/final
@@ -485,6 +519,12 @@ engine. It returns `MADOPILOT_STATUS_UNSUPPORTED` with an initialized empty
 record when that engine has no OCR selection. Appending a table entry instead of
 extending the released 8-byte capability record preserves its alignment and
 allows ABI 1.2/1.3 callers to keep passing their original output.
+ABI 1.5 appends `engine_ocr_provider_descriptor`, which writes the complete
+40-byte requested/active/fallback/runtime-profile record. Its runtime-profile
+view borrows from the retained engine. An engine built without provider-policy
+OCR returns `MADOPILOT_STATUS_UNSUPPORTED` with the output in its empty failure
+state.
+
 `target_list_input_capability` reports one target and operation/route pair:
 compatibility support, exact address scope, focus requirement, accepted pointer
 spaces, related permission, and strongest submission evidence.
@@ -875,6 +915,12 @@ the frozen 648-byte ABI 1.3 prefix, 720-byte current table, explicit profile
 kind/options, grouped pointer/count/stride validation, independent owner and
 two-dimensional access, engine-selected descriptor entry, C++ rebinding,
 build-info append, and aggregate-only diagnostics.
+
+[ADR 0046](adr/0046-onnx-accelerator-provider-policy.md) records ABI 1.5: the
+frozen 720-byte ABI 1.4 prefix, fixed-width provider vocabulary, 32-byte options,
+40-byte engine-owned descriptor, two-entry 720/728 suffix, complete 736-byte
+table, and C++ provider-root rebinding. ADR 0047 records why CoreML qualification
+is rejected without changing this ABI shape.
 
 Each released header gets an immutable fixture. New coverage goes in the next
 fixture rather than editing an old caller; the rule is in

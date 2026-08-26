@@ -88,6 +88,13 @@ MADOPILOT_FIELD_HAS_TYPE(madopilot_diagnostic_record_t, ocr_membership_count,
 MADOPILOT_FIELD_HAS_TYPE(madopilot_diagnostic_record_t, ocr_result_bytes,
                          uint64_t*);
 #endif
+#if MADOPILOT_ABI_MINOR >= 5
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_options_t, policy, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, requested_policy, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, active_provider, int32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, initialization_fell_back, uint32_t*);
+MADOPILOT_FIELD_HAS_TYPE(madopilot_ocr_provider_descriptor_t, fallback_reason, int32_t*);
+#endif
 #undef MADOPILOT_FIELD_HAS_TYPE
 #endif
 
@@ -116,6 +123,10 @@ FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_zone_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_zone_scan_request_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_zone_scan_result_info_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_zone_result_t);
+#endif
+#if MADOPILOT_ABI_MINOR >= 5
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_provider_options_t);
+FIRST_FIELD_IS_STRUCT_SIZE(madopilot_ocr_provider_descriptor_t);
 #endif
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_package_info_t);
 FIRST_FIELD_IS_STRUCT_SIZE(madopilot_template_info_t);
@@ -185,6 +196,23 @@ int main(void)
     FIELD(madopilot_ocr_profile_options_t, reserved);
     FIELD(madopilot_ocr_profile_options_t, model_root);
     FIELD(madopilot_ocr_profile_options_t, runtime_path);
+#if MADOPILOT_ABI_MINOR >= 5
+    TYPE(madopilot_ocr_provider_options_t);
+    FIELD(madopilot_ocr_provider_options_t, struct_size);
+    FIELD(madopilot_ocr_provider_options_t, flags);
+    FIELD(madopilot_ocr_provider_options_t, policy);
+    FIELD(madopilot_ocr_provider_options_t, reserved);
+    FIELD(madopilot_ocr_provider_options_t, provider_root);
+
+    TYPE(madopilot_ocr_provider_descriptor_t);
+    FIELD(madopilot_ocr_provider_descriptor_t, struct_size);
+    FIELD(madopilot_ocr_provider_descriptor_t, flags);
+    FIELD(madopilot_ocr_provider_descriptor_t, requested_policy);
+    FIELD(madopilot_ocr_provider_descriptor_t, active_provider);
+    FIELD(madopilot_ocr_provider_descriptor_t, initialization_fell_back);
+    FIELD(madopilot_ocr_provider_descriptor_t, fallback_reason);
+    FIELD(madopilot_ocr_provider_descriptor_t, runtime_profile);
+#endif
 
     TYPE(madopilot_ocr_engine_descriptor_t);
     FIELD(madopilot_ocr_engine_descriptor_t, struct_size);
@@ -738,6 +766,10 @@ int main(void)
     FIELD(madopilot_api_t, ocr_zone_scan_result_region_at);
     FIELD(madopilot_api_t, ocr_zone_scan_result_text_at);
     FIELD(madopilot_api_t, engine_ocr_descriptor);
+#endif
+#if MADOPILOT_ABI_MINOR >= 5
+    FIELD(madopilot_api_t, engine_create_with_ocr_provider);
+    FIELD(madopilot_api_t, engine_ocr_provider_descriptor);
 #endif
 
     HANDLE(madopilot_cancellation_t);

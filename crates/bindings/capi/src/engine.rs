@@ -22,7 +22,8 @@ use mado_pilot::OcrBackend;
 use mado_pilot::replay::{ReplayFrame, ReplaySource, ReplayTarget};
 use mado_pilot::{
     DefaultOcrConfig, DiagnosticLevel, DiagnosticOptions, Engine, FrameDescriptor,
-    MonotonicInstant, OcrBackendDescriptor, OcrProfile, OcrProfileConfig, PixelExtent,
+    MonotonicInstant, OcrBackendDescriptor, OcrExecutionProviderPolicy, OcrProfile,
+    OcrProfileConfig, OcrProviderConfig, OcrProviderDescriptor, OcrProviderProfile, PixelExtent,
     TargetDescription, TargetId,
 };
 
@@ -37,13 +38,17 @@ use crate::status::{
 use crate::types::{
     MADOPILOT_DIAGNOSTIC_LEVEL_DEBUG, MADOPILOT_DIAGNOSTIC_LEVEL_NORMAL,
     MADOPILOT_DIAGNOSTIC_LEVEL_OFF, MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR,
-    MADOPILOT_PIXEL_FORMAT_RGBA8, MADOPILOT_SOURCE_NATIVE_MACOS, MADOPILOT_SOURCE_NATIVE_WINDOWS,
+    MADOPILOT_OCR_PROFILE_G004, MADOPILOT_OCR_PROVIDER_POLICY_AUTO_PREFER_ACCELERATOR,
+    MADOPILOT_OCR_PROVIDER_POLICY_CPU, MADOPILOT_OCR_PROVIDER_POLICY_PREFER_COREML,
+    MADOPILOT_OCR_PROVIDER_POLICY_PREFER_CUDA, MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_COREML,
+    MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA, MADOPILOT_PIXEL_FORMAT_RGBA8,
+    MADOPILOT_SOURCE_NATIVE_MACOS, MADOPILOT_SOURCE_NATIVE_WINDOWS,
     MADOPILOT_SOURCE_REPLAY_DIRECTORY, MADOPILOT_SOURCE_REPLAY_MEMORY,
     MADOPILOT_TARGET_HAS_CAPTURE_PERMISSION, MADOPILOT_TARGET_HAS_KIND,
     MADOPILOT_TARGET_SUPPORTS_PLACEMENT, madopilot_default_ocr_options_t,
-    madopilot_engine_options_t, madopilot_ocr_profile_options_t, madopilot_permission_kind_t,
-    madopilot_replay_frame_t, madopilot_source_t, madopilot_target_kind_t, madopilot_target_t,
-    pixel_format, pixel_format_code, space_code,
+    madopilot_engine_options_t, madopilot_ocr_profile_options_t, madopilot_ocr_provider_options_t,
+    madopilot_permission_kind_t, madopilot_replay_frame_t, madopilot_source_t,
+    madopilot_target_kind_t, madopilot_target_t, pixel_format, pixel_format_code, space_code,
 };
 use crate::view::{self, madopilot_bytes_t, madopilot_str_t};
 use crate::{handle, hooks};
@@ -58,6 +63,7 @@ opaque! {
 pub(crate) struct EngineHandle {
     engine: Engine,
     ocr_backend: OnceLock<Option<OcrBackendDescriptor>>,
+    ocr_provider: OnceLock<Option<OcrProviderDescriptor>>,
 }
 
 impl EngineHandle {
@@ -65,12 +71,19 @@ impl EngineHandle {
         Self {
             engine,
             ocr_backend: OnceLock::new(),
+            ocr_provider: OnceLock::new(),
         }
     }
 
     pub(crate) fn retained_ocr_backend(&self) -> Option<&OcrBackendDescriptor> {
         self.ocr_backend
             .get_or_init(|| self.engine.ocr_backend())
+            .as_ref()
+    }
+
+    pub(crate) fn retained_ocr_provider(&self) -> Option<&OcrProviderDescriptor> {
+        self.ocr_provider
+            .get_or_init(|| self.engine.ocr_provider())
             .as_ref()
     }
 }
@@ -201,6 +214,34 @@ inputs! {
                 reserved: 0,
                 model_root: madopilot_str_t::empty(),
                 runtime_path: madopilot_str_t::empty(),
+            }
+        }
+
+        fn presence_bits(&self) -> u32 {
+            self.flags
+        }
+    }
+
+    impl Input for madopilot_ocr_provider_options_t {
+        const MANDATORY: usize = 32;
+        const NAME: &'static str = "madopilot_ocr_provider_options_t";
+        const PREFIXES: &'static [usize] = prefixes!(
+            madopilot_ocr_provider_options_t,
+            struct_size,
+            flags,
+            policy,
+            reserved,
+            provider_root,
+        );
+        const PRESENCE: &'static [(u32, usize)] = &[];
+
+        fn defaults() -> Self {
+            Self {
+                struct_size: 0,
+                flags: 0,
+                policy: MADOPILOT_OCR_PROVIDER_POLICY_CPU,
+                reserved: 0,
+                provider_root: madopilot_str_t::empty(),
             }
         }
 
@@ -369,9 +410,92 @@ unsafe fn profile_ocr_options(
     Ok(OcrProfileConfig::new(profile, model_root, runtime_path))
 }
 
+/// Converts the mandatory profile and provider prerequisite structures.
+///
+/// # Safety
+///
+/// Both structures and every string view remain readable for the call.
+unsafe fn provider_ocr_options(
+    profile: *const madopilot_ocr_profile_options_t,
+    provider: *const madopilot_ocr_provider_options_t,
+) -> Result<OcrProviderConfig, Fault> {
+    // SAFETY: forwarded unchanged from this function's own contract.
+    let profile = unsafe { boundary::read_input(profile) }?;
+    if profile.flags != 0 {
+        return Err(Fault::abi(format!(
+            "madopilot_ocr_profile_options_t sets unknown flags {:#x}",
+            profile.flags
+        )));
+    }
+    if profile.reserved != 0 {
+        return Err(Fault::abi(
+            "madopilot_ocr_profile_options_t reserved must be zero",
+        ));
+    }
+    let profile_kind = match profile.kind {
+        MADOPILOT_OCR_PROFILE_G004 => OcrProviderProfile::NativeG004,
+        MADOPILOT_OCR_PROFILE_BOUNDED_DETECTOR => OcrProviderProfile::BoundedDetector,
+        other => return Err(Fault::abi(format!("unrecognized OCR profile kind {other}"))),
+    };
+
+    // SAFETY: forwarded unchanged from this function's own contract.
+    let provider = unsafe { boundary::read_input(provider) }?;
+    if provider.flags != 0 {
+        return Err(Fault::abi(format!(
+            "madopilot_ocr_provider_options_t sets unknown flags {:#x}",
+            provider.flags
+        )));
+    }
+    if provider.reserved != 0 {
+        return Err(Fault::abi(
+            "madopilot_ocr_provider_options_t reserved must be zero",
+        ));
+    }
+    let policy = match provider.policy {
+        MADOPILOT_OCR_PROVIDER_POLICY_CPU => OcrExecutionProviderPolicy::Cpu,
+        MADOPILOT_OCR_PROVIDER_POLICY_AUTO_PREFER_ACCELERATOR => {
+            OcrExecutionProviderPolicy::AutoPreferAccelerator
+        }
+        MADOPILOT_OCR_PROVIDER_POLICY_PREFER_CUDA => OcrExecutionProviderPolicy::PreferCuda,
+        MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA => OcrExecutionProviderPolicy::RequireCuda,
+        MADOPILOT_OCR_PROVIDER_POLICY_PREFER_COREML => OcrExecutionProviderPolicy::PreferCoreMl,
+        MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_COREML => OcrExecutionProviderPolicy::RequireCoreMl,
+        other => {
+            return Err(Fault::abi(format!(
+                "unrecognized OCR provider policy {other}"
+            )));
+        }
+    };
+
+    // SAFETY: every view remains readable under this function's contract.
+    let model_root = unsafe { view::non_empty_string(profile.model_root, "model_root") }?;
+    // SAFETY: as above.
+    let runtime_path = unsafe { view::non_empty_string(profile.runtime_path, "runtime_path") }?;
+    // SAFETY: as above.
+    let provider_root = unsafe { view::string(provider.provider_root, "provider_root") }?;
+    if !provider_root.is_empty()
+        && matches!(
+            policy,
+            OcrExecutionProviderPolicy::Cpu
+                | OcrExecutionProviderPolicy::PreferCoreMl
+                | OcrExecutionProviderPolicy::RequireCoreMl
+        )
+    {
+        return Err(Fault::abi(
+            "provider_root is accepted only by CUDA-capable provider policies",
+        ));
+    }
+    let mut config = OcrProviderConfig::new(profile_kind, policy, model_root, runtime_path);
+    if !provider_root.is_empty() {
+        config = config.with_provider_root(provider_root);
+    }
+    Ok(config)
+}
+
 enum IntegratedOcrConfig {
     Default(DefaultOcrConfig),
     Profile(OcrProfileConfig),
+    Provider(OcrProviderConfig),
 }
 
 impl Versioned for madopilot_target_t {
@@ -459,6 +583,9 @@ fn native_windows_engine(
         Some(IntegratedOcrConfig::Profile(config)) => {
             mado_pilot::windows_engine_with_ocr_profile(request, config, operation)
         }
+        Some(IntegratedOcrConfig::Provider(config)) => {
+            mado_pilot::windows_engine_with_ocr_provider(request, config, operation)
+        }
         None => mado_pilot::windows_engine(request),
     };
     result.map_err(error::facade(MADOPILOT_ERROR_CATEGORY_ENGINE))
@@ -492,6 +619,9 @@ fn native_macos_engine(
         }
         Some(IntegratedOcrConfig::Profile(config)) => {
             mado_pilot::macos_engine_with_ocr_profile(request, config, operation)
+        }
+        Some(IntegratedOcrConfig::Provider(config)) => {
+            mado_pilot::macos_engine_with_ocr_provider(request, config, operation)
         }
         None => mado_pilot::macos_engine(request),
     };
@@ -613,6 +743,10 @@ enum OcrWiring {
     Backend(Arc<dyn OcrBackend>),
     Default(*const madopilot_default_ocr_options_t),
     Profile(*const madopilot_ocr_profile_options_t),
+    Provider(
+        *const madopilot_ocr_profile_options_t,
+        *const madopilot_ocr_provider_options_t,
+    ),
 }
 
 pub(crate) fn create(
@@ -667,6 +801,25 @@ pub(crate) fn create_with_ocr_profile(
         out_engine,
         out_error,
         OcrWiring::Profile(profile),
+    )
+}
+
+pub(crate) fn create_with_ocr_provider(
+    source: *const madopilot_source_t,
+    options: *const madopilot_engine_options_t,
+    profile: *const madopilot_ocr_profile_options_t,
+    provider: *const madopilot_ocr_provider_options_t,
+    operation: *const crate::types::madopilot_operation_t,
+    out_engine: *mut *mut madopilot_engine_t,
+    out_error: *mut *mut madopilot_error_t,
+) -> madopilot_status_t {
+    create_inner_with_ocr(
+        source,
+        options,
+        operation,
+        out_engine,
+        out_error,
+        OcrWiring::Provider(profile, provider),
     )
 }
 
@@ -725,6 +878,8 @@ fn create_inner_with_ocr(
             Some("default_ocr must not be null")
         }
         OcrWiring::Profile(profile) if profile.is_null() => Some("profile must not be null"),
+        OcrWiring::Provider(profile, _) if profile.is_null() => Some("profile must not be null"),
+        OcrWiring::Provider(_, provider) if provider.is_null() => Some("provider must not be null"),
         _ => None,
     };
     if let Some(message) = missing_options {
@@ -774,6 +929,12 @@ fn build_engine(
             let config = unsafe { profile_ocr_options(profile) }?;
             (None, Some(IntegratedOcrConfig::Profile(config)))
         }
+        OcrWiring::Provider(profile, provider) => {
+            // SAFETY: both required non-null structures and every view remain
+            // readable for this synchronous call.
+            let config = unsafe { provider_ocr_options(profile, provider) }?;
+            (None, Some(IntegratedOcrConfig::Provider(config)))
+        }
     };
 
     // SAFETY: as above. Fields not selected by the source tag remain unread.
@@ -794,6 +955,9 @@ fn build_engine(
                 }
                 Some(IntegratedOcrConfig::Profile(config)) => {
                     mado_pilot::replay_engine_with_ocr_profile(replay, config, context.inner())
+                }
+                Some(IntegratedOcrConfig::Provider(config)) => {
+                    mado_pilot::replay_engine_with_ocr_provider(replay, config, context.inner())
                 }
                 None => mado_pilot::replay_engine(replay),
             };

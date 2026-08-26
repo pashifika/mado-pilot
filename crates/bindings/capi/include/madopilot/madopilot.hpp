@@ -91,6 +91,10 @@ using DiagnosticLevel = ::madopilot_diagnostic_level_t;
 using DiagnosticDrainState = ::madopilot_diagnostic_drain_state_t;
 using OcrDiagnosticProfile = ::madopilot_ocr_diagnostic_profile_t;
 using OcrProfileKind = ::madopilot_ocr_profile_kind_t;
+using OcrProviderPolicy = ::madopilot_ocr_provider_policy_t;
+using OcrExecutionProvider = ::madopilot_ocr_execution_provider_t;
+using OcrProviderFallbackReason =
+    ::madopilot_ocr_provider_fallback_reason_t;
 using OcrDiagnosticOutcome = ::madopilot_ocr_diagnostic_outcome_t;
 using DiagnosticKind = ::madopilot_diagnostic_kind_t;
 using DiagnosticOperationKind = ::madopilot_diagnostic_operation_kind_t;
@@ -801,6 +805,90 @@ inline OcrProfileOptions::CView OcrProfileOptions::to_c() const {
     return CView(*this);
 }
 
+/// Explicit OCR provider policy with owned controlled dependency-root storage.
+class OcrProviderOptions {
+public:
+    class CView;
+
+    explicit OcrProviderOptions(OcrProviderPolicy policy,
+                                std::string_view provider_root = {})
+        : policy_(policy), provider_root_(provider_root) {}
+
+    OcrProviderPolicy policy() const noexcept { return policy_; }
+    CView to_c() const;
+
+private:
+    OcrProviderPolicy policy_ = MADOPILOT_OCR_PROVIDER_POLICY_CPU;
+    std::string provider_root_;
+};
+
+/// Call-local C projection that repairs its provider-root view after every copy
+/// or move.
+class OcrProviderOptions::CView {
+public:
+    explicit CView(const OcrProviderOptions& options)
+        : policy_(options.policy_), provider_root_(options.provider_root_) {
+        value_ = detail::sized<::madopilot_ocr_provider_options_t>();
+        rebind();
+    }
+
+    CView(const CView& other)
+        : policy_(other.policy_), provider_root_(other.provider_root_),
+          value_(other.value_) {
+        rebind();
+    }
+
+    CView& operator=(const CView& other) {
+        if (this != &other) {
+            CView replacement(other);
+            *this = std::move(replacement);
+        }
+        return *this;
+    }
+
+    CView(CView&& other) noexcept
+        : policy_(other.policy_),
+          provider_root_(std::move(other.provider_root_)),
+          value_(other.value_) {
+        rebind();
+        other.rebind();
+    }
+
+    CView& operator=(CView&& other) noexcept {
+        if (this != &other) {
+            policy_ = other.policy_;
+            provider_root_ = std::move(other.provider_root_);
+            value_ = other.value_;
+            rebind();
+            other.rebind();
+        }
+        return *this;
+    }
+
+    const ::madopilot_ocr_provider_options_t& value() const& noexcept {
+        return value_;
+    }
+    const ::madopilot_ocr_provider_options_t& value() const&& = delete;
+    const ::madopilot_ocr_provider_options_t* get() const& noexcept {
+        return &value_;
+    }
+    const ::madopilot_ocr_provider_options_t* get() const&& = delete;
+
+private:
+    void rebind() noexcept {
+        value_.policy = policy_;
+        value_.provider_root = detail::as_str(provider_root_);
+    }
+
+    OcrProviderPolicy policy_ = MADOPILOT_OCR_PROVIDER_POLICY_CPU;
+    std::string provider_root_;
+    ::madopilot_ocr_provider_options_t value_{};
+};
+
+inline OcrProviderOptions::CView OcrProviderOptions::to_c() const {
+    return CView(*this);
+}
+
 /// One replay frame supplied as raw pixels.
 ///
 /// The pixels are borrowed until `Api::create_engine` returns, which copies
@@ -1271,6 +1359,17 @@ struct OcrEngineDescriptor {
     BorrowedStr model_id;
     BorrowedStr model_version;
     BorrowedStr profile_id;
+};
+
+/// Immutable provider initialization facts. The runtime profile view borrows
+/// from the retained engine.
+struct OcrProviderDescriptor {
+    OcrProviderPolicy requested_policy = 0;
+    OcrExecutionProvider active_provider =
+        MADOPILOT_OCR_EXECUTION_PROVIDER_UNSPECIFIED;
+    bool initialization_fell_back = false;
+    std::optional<OcrProviderFallbackReason> fallback_reason;
+    BorrowedStr runtime_profile;
 };
 
 /// Redacted permission diagnostic. Both views borrow from the `Engine`.
@@ -3448,6 +3547,44 @@ public:
     }
     Result<OcrEngineDescriptor> ocr_descriptor() const&& = delete;
 
+    /// Reports immutable OCR provider initialization facts.
+    ///
+    /// The runtime-profile view borrows from the engine, so the accessor is
+    /// lvalue-only.
+    Result<OcrProviderDescriptor> ocr_provider_descriptor() const& {
+        if (api_ == nullptr) {
+            return detail::no_table<OcrProviderDescriptor>();
+        }
+        if (!detail::has_entry(
+                api_, extent_,
+                MADOPILOT_API_SIZE_ENGINE_OCR_PROVIDER_DESCRIPTOR)) {
+            return detail::unsupported<OcrProviderDescriptor>();
+        }
+
+        auto value =
+            detail::sized<::madopilot_ocr_provider_descriptor_t>();
+        const Status status =
+            api_->engine_ocr_provider_descriptor(handle_, &value);
+        if (!is_ok(status)) {
+            return Result<OcrProviderDescriptor>::failure(
+                Error::from_status(status));
+        }
+        std::optional<OcrProviderFallbackReason> fallback;
+        if ((value.flags &
+             MADOPILOT_OCR_PROVIDER_DESCRIPTOR_HAS_FALLBACK) != 0u) {
+            fallback = value.fallback_reason;
+        }
+        return Result<OcrProviderDescriptor>::success(
+            OcrProviderDescriptor{
+                value.requested_policy,
+                value.active_provider,
+                value.initialization_fell_back != 0u,
+                fallback,
+                BorrowedStr(value.runtime_profile),
+            });
+    }
+    Result<OcrProviderDescriptor> ocr_provider_descriptor() const&& = delete;
+
     /// Takes the engine's single diagnostic reader.
     ///
     /// Diagnostics-off engines and repeated takes return an empty optional. The
@@ -3872,6 +4009,41 @@ public:
         const Status status = table_->engine_create_with_ocr_profile(
             &source_c, &options_c, profile_c.get(), &operation_c, &engine,
             &error);
+        if (!is_ok(status)) {
+            return Result<Engine>::failure(
+                detail::take_error(table_, status, error));
+        }
+        if (engine == nullptr) {
+            return Result<Engine>::failure(
+                Error::from_status(MADOPILOT_STATUS_INTERNAL));
+        }
+        return Result<Engine>::success(Engine(table_, extent_, engine));
+    }
+
+    /// Builds an engine with one explicit OCR profile and provider policy.
+    Result<Engine> create_engine_with_ocr_provider(
+        const Source& source, const EngineOptions& options,
+        const OcrProfileOptions& profile,
+        const OcrProviderOptions& provider,
+        const Operation& operation) const {
+        if (table_ == nullptr) {
+            return detail::no_table<Engine>();
+        }
+        if (!detail::has_entry(
+                table_, extent_,
+                MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROVIDER)) {
+            return detail::unsupported<Engine>();
+        }
+        const auto source_c = source.to_c();
+        const auto options_c = options.to_c();
+        const auto profile_c = profile.to_c();
+        const auto provider_c = provider.to_c();
+        const auto operation_c = operation.to_c();
+        ::madopilot_engine_t* engine = nullptr;
+        ::madopilot_error_t* error = nullptr;
+        const Status status = table_->engine_create_with_ocr_provider(
+            &source_c, &options_c, profile_c.get(), provider_c.get(),
+            &operation_c, &engine, &error);
         if (!is_ok(status)) {
             return Result<Engine>::failure(
                 detail::take_error(table_, status, error));

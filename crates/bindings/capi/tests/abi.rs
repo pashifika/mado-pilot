@@ -341,6 +341,33 @@ fn frozen_abi_1_2_engine_options_remain_exact_and_default_ocr_has_its_own_entry(
     assert_eq!(ocr_descriptor.flags, 0);
     assert!(ocr_descriptor.backend_id.data.is_null());
     assert_eq!(ocr_descriptor.backend_id.len, 0);
+    let mut provider_descriptor = madopilot_ocr_provider_descriptor_t {
+        struct_size: struct_size::<madopilot_ocr_provider_descriptor_t>(),
+        flags: u32::MAX,
+        requested_policy: i32::MAX,
+        active_provider: i32::MAX,
+        initialization_fell_back: u32::MAX,
+        fallback_reason: i32::MAX,
+        runtime_profile: poison,
+    };
+    // SAFETY: the engine is retained and the descriptor output is writable.
+    assert_eq!(
+        unsafe { (api.engine_ocr_provider_descriptor)(engine, &mut provider_descriptor) },
+        MADOPILOT_STATUS_UNSUPPORTED
+    );
+    assert_eq!(provider_descriptor.flags, 0);
+    assert_eq!(provider_descriptor.requested_policy, 0);
+    assert_eq!(
+        provider_descriptor.active_provider,
+        MADOPILOT_OCR_EXECUTION_PROVIDER_UNSPECIFIED
+    );
+    assert_eq!(provider_descriptor.initialization_fell_back, 0);
+    assert_eq!(
+        provider_descriptor.fallback_reason,
+        MADOPILOT_OCR_PROVIDER_FALLBACK_NONE
+    );
+    assert!(provider_descriptor.runtime_profile.data.is_null());
+    assert_eq!(provider_descriptor.runtime_profile.len, 0);
     // SAFETY: release gives up the one owned engine reference.
     assert_eq!(unsafe { (api.engine_release)(engine) }, MADOPILOT_STATUS_OK);
 
@@ -481,6 +508,230 @@ fn explicit_ocr_profile_entry_initializes_outputs_and_validates_kind_before_path
     );
     assert!(engine.is_null());
 }
+
+#[test]
+fn provider_policy_entry_initializes_outputs_and_validates_policy_before_paths() {
+    let api = table();
+    let scene = Scene::new();
+    let operation = operation();
+    let options = madopilot_engine_options_t {
+        struct_size: struct_size::<madopilot_engine_options_t>(),
+        flags: 0,
+        diagnostic_level: MADOPILOT_DIAGNOSTIC_LEVEL_OFF,
+        diagnostic_capacity: 0,
+    };
+    let unreadable = madopilot_str_t {
+        data: ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+        len: 1,
+    };
+    let mut profile = madopilot_ocr_profile_options_t {
+        struct_size: struct_size::<madopilot_ocr_profile_options_t>(),
+        flags: 0,
+        kind: MADOPILOT_OCR_PROFILE_G004,
+        reserved: 0,
+        model_root: unreadable,
+        runtime_path: unreadable,
+    };
+    let mut provider = madopilot_ocr_provider_options_t {
+        struct_size: struct_size::<madopilot_ocr_provider_options_t>(),
+        flags: 0,
+        policy: 99,
+        reserved: 0,
+        provider_root: unreadable,
+    };
+    let mut engine = ptr::NonNull::<madopilot_engine_t>::dangling().as_ptr();
+    let mut error = ptr::null_mut();
+
+    // SAFETY: every live input and output remains valid; the provider pointer is
+    // intentionally null and no view may be read.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_ocr_provider)(
+                scene.source(),
+                &options,
+                &profile,
+                ptr::null(),
+                &operation,
+                &mut engine,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(engine.is_null());
+    assert!(!error.is_null());
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
+
+    engine = ptr::NonNull::<madopilot_engine_t>::dangling().as_ptr();
+    error = ptr::null_mut();
+    // SAFETY: the unknown fixed policy is rejected before any deliberately
+    // unreadable path target is accessed.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_ocr_provider)(
+                scene.source(),
+                &options,
+                &profile,
+                &provider,
+                &operation,
+                &mut engine,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(engine.is_null());
+    assert!(!error.is_null());
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
+
+    provider.struct_size = 31;
+    engine = ptr::NonNull::<madopilot_engine_t>::dangling().as_ptr();
+    error = ptr::null_mut();
+    // SAFETY: the undersized provider record and writable outputs remain live.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_ocr_provider)(
+                scene.source(),
+                &options,
+                &profile,
+                &provider,
+                &operation,
+                &mut engine,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(engine.is_null());
+    assert!(!error.is_null());
+    let detail = support::describe_and_release(api, error);
+    assert_eq!(detail.category, MADOPILOT_ERROR_CATEGORY_ABI);
+
+    profile.model_root = madopilot_str_t::empty();
+    profile.runtime_path = madopilot_str_t::empty();
+    provider.struct_size = struct_size::<madopilot_ocr_provider_options_t>();
+    provider.policy = MADOPILOT_OCR_PROVIDER_POLICY_CPU;
+    provider.provider_root = madopilot_str_t::empty();
+    engine = ptr::NonNull::<madopilot_engine_t>::dangling().as_ptr();
+    // SAFETY: both complete records and every empty view remain live.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_ocr_provider)(
+                scene.source(),
+                &options,
+                &profile,
+                &provider,
+                &operation,
+                &mut engine,
+                ptr::null_mut(),
+            )
+        },
+        MADOPILOT_STATUS_INVALID_ARGUMENT
+    );
+    assert!(engine.is_null());
+}
+
+#[cfg(feature = "coreml-provider")]
+#[test]
+#[ignore = "requires explicit reviewed ONNX Runtime and G-004 model paths"]
+fn rejected_coreml_fallback_descriptor_owns_caller_released_paths() {
+    let api = table();
+    let scene = Scene::new();
+    let operation = operation();
+    let options = madopilot_engine_options_t {
+        struct_size: struct_size::<madopilot_engine_options_t>(),
+        flags: 0,
+        diagnostic_level: MADOPILOT_DIAGNOSTIC_LEVEL_OFF,
+        diagnostic_capacity: 0,
+    };
+    let model_root = std::path::PathBuf::from(
+        std::env::var_os("MADO_PILOT_G004_MODEL_ROOT").expect("model root is explicitly set"),
+    )
+    .canonicalize()
+    .expect("model root is canonicalizable")
+    .to_string_lossy()
+    .into_owned();
+    let runtime_path = std::path::PathBuf::from(
+        std::env::var_os("MADO_PILOT_ONNX_RUNTIME").expect("runtime path is explicitly set"),
+    )
+    .canonicalize()
+    .expect("runtime path is canonicalizable")
+    .to_string_lossy()
+    .into_owned();
+    let profile = madopilot_ocr_profile_options_t {
+        struct_size: struct_size::<madopilot_ocr_profile_options_t>(),
+        flags: 0,
+        kind: MADOPILOT_OCR_PROFILE_G004,
+        reserved: 0,
+        model_root: str_view(&model_root),
+        runtime_path: str_view(&runtime_path),
+    };
+    let provider = madopilot_ocr_provider_options_t {
+        struct_size: struct_size::<madopilot_ocr_provider_options_t>(),
+        flags: 0,
+        policy: MADOPILOT_OCR_PROVIDER_POLICY_PREFER_COREML,
+        reserved: 0,
+        provider_root: madopilot_str_t::empty(),
+    };
+    let mut engine = ptr::null_mut();
+    let mut error = ptr::null_mut();
+    // SAFETY: every input and output remains live for the synchronous call.
+    assert_eq!(
+        unsafe {
+            (api.engine_create_with_ocr_provider)(
+                scene.source(),
+                &options,
+                &profile,
+                &provider,
+                &operation,
+                &mut engine,
+                &mut error,
+            )
+        },
+        MADOPILOT_STATUS_OK
+    );
+    assert!(!engine.is_null());
+    assert!(error.is_null());
+    drop(model_root);
+    drop(runtime_path);
+
+    let mut descriptor = madopilot_ocr_provider_descriptor_t {
+        struct_size: struct_size::<madopilot_ocr_provider_descriptor_t>(),
+        flags: u32::MAX,
+        requested_policy: 0,
+        active_provider: MADOPILOT_OCR_EXECUTION_PROVIDER_UNSPECIFIED,
+        initialization_fell_back: u32::MAX,
+        fallback_reason: i32::MAX,
+        runtime_profile: madopilot_str_t::empty(),
+    };
+    // SAFETY: the engine and writable descriptor remain live for the call.
+    assert_eq!(
+        unsafe { (api.engine_ocr_provider_descriptor)(engine, &mut descriptor) },
+        MADOPILOT_STATUS_OK
+    );
+    assert_eq!(
+        descriptor.requested_policy,
+        MADOPILOT_OCR_PROVIDER_POLICY_PREFER_COREML
+    );
+    assert_eq!(
+        descriptor.active_provider,
+        MADOPILOT_OCR_EXECUTION_PROVIDER_CPU
+    );
+    assert_eq!(descriptor.initialization_fell_back, 1);
+    assert_eq!(
+        descriptor.fallback_reason,
+        MADOPILOT_OCR_PROVIDER_FALLBACK_QUALIFICATION_REJECTED
+    );
+    assert_eq!(
+        borrowed_text(descriptor.runtime_profile),
+        "onnxruntime-1.29.0-api17-cpu"
+    );
+    // SAFETY: release gives up the one owned engine reference.
+    assert_eq!(unsafe { (api.engine_release)(engine) }, MADOPILOT_STATUS_OK);
+}
+
 #[test]
 fn an_input_smaller_than_its_mandatory_prefix_is_refused() {
     let api = table();

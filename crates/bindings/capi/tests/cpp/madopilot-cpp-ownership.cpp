@@ -183,6 +183,15 @@ struct reads_ocr_descriptor<
     T, std::void_t<decltype(std::declval<T>().ocr_descriptor())>>
     : std::true_type {};
 
+template <class T, class = void>
+struct reads_ocr_provider_descriptor : std::false_type {};
+
+template <class T>
+struct reads_ocr_provider_descriptor<
+    T, std::void_t<decltype(
+           std::declval<T>().ocr_provider_descriptor())>>
+    : std::true_type {};
+
 } // namespace
 
 static_assert(describes<madopilot::Package&>::value, "a named package describes itself");
@@ -219,6 +228,10 @@ static_assert(reads_ocr_descriptor<madopilot::Engine&>::value,
               "a named engine may return borrowed OCR descriptor views");
 static_assert(!reads_ocr_descriptor<madopilot::Engine>::value,
               "a temporary engine may not return borrowed OCR descriptor views");
+static_assert(reads_ocr_provider_descriptor<madopilot::Engine&>::value,
+              "a named engine may return borrowed provider descriptor views");
+static_assert(!reads_ocr_provider_descriptor<madopilot::Engine>::value,
+              "a temporary engine may not return borrowed provider views");
 
 /* Requests and fixed-width projections are values a caller composes, copies,
  * and reuses. */
@@ -234,6 +247,14 @@ static_assert(std::is_copy_constructible_v<madopilot::OcrProfileOptions::CView>,
 static_assert(
     std::is_nothrow_move_constructible_v<madopilot::OcrProfileOptions::CView>,
     "profile C projection move repairs views without throwing");
+static_assert(std::is_copy_constructible_v<madopilot::OcrProviderOptions>,
+              "OcrProviderOptions owns its controlled provider root");
+static_assert(std::is_copy_constructible_v<madopilot::OcrProviderOptions::CView>,
+              "each provider C projection repairs its own root after copy");
+static_assert(
+    std::is_nothrow_move_constructible_v<
+        madopilot::OcrProviderOptions::CView>,
+    "provider C projection move repairs views without throwing");
 static_assert(std::is_copy_constructible_v<madopilot::FindRequest>,
               "FindRequest is a value");
 static_assert(std::is_copy_constructible_v<madopilot::OcrRequest>,
@@ -1639,6 +1660,51 @@ void profile_and_zone_projections_rebind_after_every_copy_and_move(
                   profile_move_assigned.value().runtime_path.data,
           "profile copy and move rebind both path views");
 
+    const std::string provider_root(96, 'c');
+    madopilot::OcrProviderOptions provider(
+        MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA, provider_root);
+    auto provider_original = provider.to_c();
+    auto provider_copied = provider_original;
+    madopilot::OcrProviderOptions::CView provider_copy_assigned(provider);
+    provider_copy_assigned = provider_original;
+    auto provider_moved = std::move(provider_copy_assigned);
+    madopilot::OcrProviderOptions::CView provider_move_assigned(provider);
+    provider_move_assigned = std::move(provider_copied);
+    check(provider_copy_assigned.value().provider_root.data !=
+                  provider_moved.value().provider_root.data,
+          "provider move construction rebinds the moved-from projection");
+    check(provider_copied.value().provider_root.data !=
+                  provider_move_assigned.value().provider_root.data,
+          "provider move assignment rebinds the moved-from projection");
+    provider = madopilot::OcrProviderOptions(
+        MADOPILOT_OCR_PROVIDER_POLICY_CPU, "mutated");
+    check(equals(provider_original.value().provider_root, provider_root) &&
+              equals(provider_moved.value().provider_root, provider_root) &&
+              equals(provider_move_assigned.value().provider_root,
+                     provider_root),
+          "provider projections own the root after source mutation");
+    check(provider_original.value().provider_root.data !=
+                  provider_moved.value().provider_root.data &&
+              provider_original.value().provider_root.data !=
+                  provider_move_assigned.value().provider_root.data,
+          "provider copy and move rebind every root view");
+
+    std::vector<madopilot::OcrProviderOptions::CView>
+        relocated_provider_views;
+    for (int index = 0; index < 16; ++index) {
+        relocated_provider_views.push_back(provider_original);
+    }
+    bool relocated_valid = true;
+    for (const auto& projection : relocated_provider_views) {
+        relocated_valid =
+            relocated_valid &&
+            equals(projection.value().provider_root, provider_root) &&
+            projection.value().provider_root.data !=
+                provider_original.value().provider_root.data;
+    }
+    check(relocated_valid,
+          "container relocation preserves independently rebound provider roots");
+
     const std::string model(96, 'm');
     const std::string backend(96, 'b');
     const std::string version(96, 'v');
@@ -1963,6 +2029,55 @@ void old_and_partial_extents_hide_ocr_before_missing_entries(Fixture& fixture)
     check(!no_descriptor &&
               no_descriptor.status() == MADOPILOT_STATUS_UNSUPPORTED,
           "the 712-byte ABI 1.4 extent refuses the appended descriptor entry");
+
+    madopilot::OcrProviderOptions provider(
+        MADOPILOT_OCR_PROVIDER_POLICY_CPU);
+    auto no_provider_entry_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_ENGINE_OCR_DESCRIPTOR);
+    if (!check_ok(no_provider_entry_loaded,
+                  "load the complete ABI 1.4 extent")) {
+        return;
+    }
+    madopilot::Api no_provider_entry_api =
+        no_provider_entry_loaded.take();
+    const auto no_provider_entry =
+        no_provider_entry_api.create_engine_with_ocr_provider(
+            source, options, profile, provider, fixture.operation);
+    check(!no_provider_entry &&
+              no_provider_entry.status() == MADOPILOT_STATUS_UNSUPPORTED,
+          "complete ABI 1.4 refuses provider construction before its entry");
+
+    auto provider_entry_loaded = madopilot::Api::load(
+        MADOPILOT_ABI_MAJOR, MADOPILOT_ABI_MINOR,
+        MADOPILOT_API_SIZE_ENGINE_CREATE_WITH_OCR_PROVIDER);
+    if (!check_ok(provider_entry_loaded,
+                  "load the complete provider-construction entry")) {
+        return;
+    }
+    madopilot::Api provider_entry_api = provider_entry_loaded.take();
+    const auto provider_entry_call =
+        provider_entry_api.create_engine_with_ocr_provider(
+            source, options, profile, provider, fixture.operation);
+    check(!provider_entry_call &&
+              provider_entry_call.status() ==
+                  MADOPILOT_STATUS_INVALID_ARGUMENT,
+          "complete provider entry reaches C validation");
+
+    auto pre_provider_descriptor_built =
+        provider_entry_api.create_engine(source, fixture.operation);
+    if (!check_ok(pre_provider_descriptor_built,
+                  "build through the pre-provider-descriptor extent")) {
+        return;
+    }
+    madopilot::Engine pre_provider_descriptor_engine =
+        pre_provider_descriptor_built.take();
+    const auto pre_provider_descriptor =
+        pre_provider_descriptor_engine.ocr_provider_descriptor();
+    check(!pre_provider_descriptor &&
+              pre_provider_descriptor.status() ==
+                  MADOPILOT_STATUS_UNSUPPORTED,
+          "the 728-byte ABI 1.5 extent refuses the missing provider descriptor");
 
     const auto current_zone_call =
         fixture.session.scan_ocr_zones(zone_request, fixture.operation);

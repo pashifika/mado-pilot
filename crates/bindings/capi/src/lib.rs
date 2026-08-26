@@ -39,11 +39,11 @@
 //!
 //! # Implementation status
 //!
-//! ABI 1.3 preserves the complete released ABI 1.0 and 1.2 prefixes. ABI 1.0
-//! covers the deterministic capture/matching flow; ABI 1.2 appends native input,
-//! receipts, activity tags, and bounded diagnostics. ABI 1.3 appends one-shot
-//! OCR execution, immutable owned results, region/text accessors, and
-//! content-redacted OCR diagnostic fields. It contains no watcher, query,
+//! ABI 1.5 preserves the complete released ABI 1.0, 1.2, 1.3, and 1.4
+//! prefixes. ABI 1.0 covers deterministic capture/matching; ABI 1.2 appends
+//! native input and bounded diagnostics; ABI 1.3 appends one-shot OCR; ABI 1.4
+//! appends explicit profiles and grouped OCR; ABI 1.5 appends provider-policy
+//! construction and immutable provider facts. It contains no watcher, query,
 //! callback, automatic-input, or native-frame entry.
 //!
 //! The C++ wrapper covers exactly the negotiated table and declares no ABI of
@@ -53,10 +53,11 @@
 //!
 //! **Every released numeric value, structure prefix, field offset, and table
 //! position is frozen for ABI major 1.** ADR 0007 froze ABI 1.0, ADR 0023 froze
-//! ABI 1.2, and ADR 0035 records the additive ABI 1.3 OCR boundary. Within this
-//! major nothing moves; a later minor appends. `tests/abi-compat/` compiles and
-//! runs every released header against later builds. The unreleased 1.1 draft has
-//! no fixture or compatibility surface.
+//! ABI 1.2, ADR 0035 records ABI 1.3, ADR 0043 records ABI 1.4, and ADR 0046
+//! records the additive ABI 1.5 provider boundary. Within this major nothing
+//! moves; a later minor appends. `tests/abi-compat/` compiles and runs every
+//! released header against later builds. The unreleased 1.1 draft has no fixture
+//! or compatibility surface.
 //!
 //! # Where to start
 //!

@@ -11,8 +11,9 @@
 use std::mem::{align_of, size_of};
 
 use mado_pilot::{
-    AssetPackage, Error, MAX_OCR_ZONES, OcrFault, OcrRegion, OcrRequest, OcrResult, OcrZone,
-    OcrZoneScanRequest, OcrZoneScanResult, Status,
+    AssetPackage, Error, MAX_OCR_ZONES, OcrExecutionProvider, OcrExecutionProviderPolicy, OcrFault,
+    OcrProviderFallbackReason, OcrRegion, OcrRequest, OcrResult, OcrZone, OcrZoneScanRequest,
+    OcrZoneScanResult, Status,
 };
 
 use crate::boundary::{self, Input, Out, Versioned, covers, declared, inputs, prefixes};
@@ -26,8 +27,23 @@ use crate::status::{
     MADOPILOT_STATUS_UNSUPPORTED, madopilot_status_t,
 };
 use crate::types::{
-    MADOPILOT_CLIP_POLICY_REJECT, MADOPILOT_OCR_HAS_REGION, MADOPILOT_SPACE_CAPTURE_PIXELS,
-    clip_policy, madopilot_frame_stamp_t, madopilot_ocr_engine_descriptor_t, madopilot_ocr_point_t,
+    MADOPILOT_CLIP_POLICY_REJECT, MADOPILOT_OCR_EXECUTION_PROVIDER_COREML,
+    MADOPILOT_OCR_EXECUTION_PROVIDER_CPU, MADOPILOT_OCR_EXECUTION_PROVIDER_CUDA,
+    MADOPILOT_OCR_HAS_REGION, MADOPILOT_OCR_PROVIDER_DESCRIPTOR_HAS_FALLBACK,
+    MADOPILOT_OCR_PROVIDER_FALLBACK_BUILD_CAPABILITY_UNAVAILABLE,
+    MADOPILOT_OCR_PROVIDER_FALLBACK_DEPENDENCY_UNAVAILABLE,
+    MADOPILOT_OCR_PROVIDER_FALLBACK_GRAPH_REJECTED, MADOPILOT_OCR_PROVIDER_FALLBACK_NONE,
+    MADOPILOT_OCR_PROVIDER_FALLBACK_PROVIDER_UNAVAILABLE,
+    MADOPILOT_OCR_PROVIDER_FALLBACK_QUALIFICATION_REJECTED,
+    MADOPILOT_OCR_PROVIDER_FALLBACK_REGISTRATION_FAILED,
+    MADOPILOT_OCR_PROVIDER_FALLBACK_SESSION_CREATION_FAILED,
+    MADOPILOT_OCR_PROVIDER_FALLBACK_UNSUPPORTED_TARGET,
+    MADOPILOT_OCR_PROVIDER_POLICY_AUTO_PREFER_ACCELERATOR, MADOPILOT_OCR_PROVIDER_POLICY_CPU,
+    MADOPILOT_OCR_PROVIDER_POLICY_PREFER_COREML, MADOPILOT_OCR_PROVIDER_POLICY_PREFER_CUDA,
+    MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_COREML, MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA,
+    MADOPILOT_SPACE_CAPTURE_PIXELS, clip_policy, madopilot_frame_stamp_t,
+    madopilot_ocr_engine_descriptor_t, madopilot_ocr_point_t, madopilot_ocr_provider_descriptor_t,
+    madopilot_ocr_provider_fallback_reason_t, madopilot_ocr_provider_policy_t,
     madopilot_ocr_region_t, madopilot_ocr_request_t, madopilot_ocr_result_info_t,
     madopilot_ocr_zone_result_t, madopilot_ocr_zone_scan_request_t,
     madopilot_ocr_zone_scan_result_info_t, madopilot_ocr_zone_t, madopilot_operation_t,
@@ -208,6 +224,33 @@ impl Versioned for madopilot_ocr_engine_descriptor_t {
     }
 }
 
+impl Versioned for madopilot_ocr_provider_descriptor_t {
+    const MANDATORY: usize = 40;
+    const NAME: &'static str = "madopilot_ocr_provider_descriptor_t";
+    const PREFIXES: &'static [usize] = prefixes!(
+        madopilot_ocr_provider_descriptor_t,
+        struct_size,
+        flags,
+        requested_policy,
+        active_provider,
+        initialization_fell_back,
+        fallback_reason,
+        runtime_profile,
+    );
+    const ZEROED_PADDING: &'static [(usize, usize)] = &[];
+
+    fn failure(struct_size: u32) -> Self {
+        Self {
+            struct_size,
+            flags: 0,
+            requested_policy: 0,
+            active_provider: crate::types::MADOPILOT_OCR_EXECUTION_PROVIDER_UNSPECIFIED,
+            initialization_fell_back: 0,
+            fallback_reason: MADOPILOT_OCR_PROVIDER_FALLBACK_NONE,
+            runtime_profile: madopilot_str_t::empty(),
+        }
+    }
+}
 impl Versioned for madopilot_ocr_result_info_t {
     const MANDATORY: usize = 168;
     const NAME: &'static str = "madopilot_ocr_result_info_t";
@@ -368,6 +411,96 @@ pub(crate) fn engine_ocr_descriptor(
         profile_id: madopilot_str_t::borrowed(selected.profile().as_str()),
     };
     // SAFETY: `out` was validated; every view borrows the retained engine handle.
+    unsafe { out.commit(value) };
+    MADOPILOT_STATUS_OK
+}
+
+const fn provider_policy_code(
+    policy: OcrExecutionProviderPolicy,
+) -> madopilot_ocr_provider_policy_t {
+    match policy {
+        OcrExecutionProviderPolicy::Cpu => MADOPILOT_OCR_PROVIDER_POLICY_CPU,
+        OcrExecutionProviderPolicy::AutoPreferAccelerator => {
+            MADOPILOT_OCR_PROVIDER_POLICY_AUTO_PREFER_ACCELERATOR
+        }
+        OcrExecutionProviderPolicy::PreferCuda => MADOPILOT_OCR_PROVIDER_POLICY_PREFER_CUDA,
+        OcrExecutionProviderPolicy::RequireCuda => MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_CUDA,
+        OcrExecutionProviderPolicy::PreferCoreMl => MADOPILOT_OCR_PROVIDER_POLICY_PREFER_COREML,
+        OcrExecutionProviderPolicy::RequireCoreMl => MADOPILOT_OCR_PROVIDER_POLICY_REQUIRE_COREML,
+    }
+}
+
+const fn execution_provider_code(provider: OcrExecutionProvider) -> i32 {
+    match provider {
+        OcrExecutionProvider::Cpu => MADOPILOT_OCR_EXECUTION_PROVIDER_CPU,
+        OcrExecutionProvider::Cuda => MADOPILOT_OCR_EXECUTION_PROVIDER_CUDA,
+        OcrExecutionProvider::CoreMl => MADOPILOT_OCR_EXECUTION_PROVIDER_COREML,
+    }
+}
+
+const fn fallback_reason_code(
+    reason: OcrProviderFallbackReason,
+) -> madopilot_ocr_provider_fallback_reason_t {
+    match reason {
+        OcrProviderFallbackReason::UnsupportedTarget => {
+            MADOPILOT_OCR_PROVIDER_FALLBACK_UNSUPPORTED_TARGET
+        }
+        OcrProviderFallbackReason::BuildCapabilityUnavailable => {
+            MADOPILOT_OCR_PROVIDER_FALLBACK_BUILD_CAPABILITY_UNAVAILABLE
+        }
+        OcrProviderFallbackReason::ProviderUnavailable => {
+            MADOPILOT_OCR_PROVIDER_FALLBACK_PROVIDER_UNAVAILABLE
+        }
+        OcrProviderFallbackReason::DependencyUnavailable => {
+            MADOPILOT_OCR_PROVIDER_FALLBACK_DEPENDENCY_UNAVAILABLE
+        }
+        OcrProviderFallbackReason::RegistrationFailed => {
+            MADOPILOT_OCR_PROVIDER_FALLBACK_REGISTRATION_FAILED
+        }
+        OcrProviderFallbackReason::SessionCreationFailed => {
+            MADOPILOT_OCR_PROVIDER_FALLBACK_SESSION_CREATION_FAILED
+        }
+        OcrProviderFallbackReason::GraphRejected => MADOPILOT_OCR_PROVIDER_FALLBACK_GRAPH_REJECTED,
+        OcrProviderFallbackReason::QualificationRejected => {
+            MADOPILOT_OCR_PROVIDER_FALLBACK_QUALIFICATION_REJECTED
+        }
+    }
+}
+
+pub(crate) fn engine_ocr_provider_descriptor(
+    engine: *const madopilot_engine_t,
+    out_descriptor: *mut madopilot_ocr_provider_descriptor_t,
+) -> madopilot_status_t {
+    // SAFETY: the caller supplies a writable output structure whose
+    // `struct_size` it has set.
+    let out = match unsafe { Out::begin(out_descriptor) } {
+        Ok(out) => out,
+        Err(fault) => return fault.status(),
+    };
+    hooks::reach(hooks::Site::Entry);
+    // SAFETY: the caller keeps the engine retained for the call.
+    let Some(engine) = (unsafe { handle::borrow::<EngineHandle>(engine) }) else {
+        return MADOPILOT_STATUS_INVALID_ARGUMENT;
+    };
+    let Some(selected) = engine.retained_ocr_provider() else {
+        return MADOPILOT_STATUS_UNSUPPORTED;
+    };
+    let fallback = selected.fallback_reason();
+    let value = madopilot_ocr_provider_descriptor_t {
+        struct_size: out.declared_size(),
+        flags: if fallback.is_some() {
+            MADOPILOT_OCR_PROVIDER_DESCRIPTOR_HAS_FALLBACK
+        } else {
+            0
+        },
+        requested_policy: provider_policy_code(selected.requested_policy()),
+        active_provider: execution_provider_code(selected.active_provider()),
+        initialization_fell_back: u32::from(selected.initialization_fell_back()),
+        fallback_reason: fallback
+            .map_or(MADOPILOT_OCR_PROVIDER_FALLBACK_NONE, fallback_reason_code),
+        runtime_profile: madopilot_str_t::borrowed(selected.runtime_profile().as_str()),
+    };
+    // SAFETY: `out` was validated; the view borrows the retained engine handle.
     unsafe { out.commit(value) };
     MADOPILOT_STATUS_OK
 }
