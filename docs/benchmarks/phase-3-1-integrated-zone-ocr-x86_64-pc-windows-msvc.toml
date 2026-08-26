@@ -1,0 +1,334 @@
+# Phase 3.1 integrated-zone OCR qualification on Core i7-12700KF. Exact precursor
+# source 180c1b15df1a4c29bd6df14a790b9d18ac831bae; ADR 0044 fixes budgets.
+
+format_version = 1
+
+[benchmark]
+id = "phase-3-1-integrated-zone-ocr-x86_64-pc-windows-msvc"
+workload = "explicit bounded-v2 ONNX CPU singular plus fixed one/three/eight-zone, dense, empty, cancellation, retained-result, startup, cleanup, heap, growth, and final process RSS"
+phase = "3.1"
+status = "measured"
+normative = true
+measurements_recorded = true
+
+[profile]
+fixture = "fixtures/ocr/g-004 fixture-manifest.json and its five SHA-256-bound PNGs plus derived deterministic frames and fixed caller-order non-overlapping zones"
+fixture_sha256 = "a289edb167d45f11f4269cef22ff37d93d2cbe1150201afb9bb3f58439375c4b"
+release_target = "x86_64-pc-windows-msvc"
+hardware = "Intel Core i7-12700KF, 12 cores/20 logical processors, 32 GiB class"
+os_version = "Windows 11 Pro 25H2 build family 26200"
+build_profile = "cargo bench, benchmark-instrumentation feature, debug_assertions=false; five fresh alternating-order integrated processes"
+warmup_iterations = 3
+sample_count = 20
+process_count = 5
+correctness_oracle = "every warmup and retained sample checks exact text/count/order, ordered-point geometry/confidence, source/envelope/zones/profile, mapping, detector/recognizer work, candidates/memberships/result bytes, ownership, cancellation, heap, growth, and cleanup"
+queue_policy = "one synchronous admitted inference, one session pair, two sessions, CPU provider only, no queue or fallback"
+producer_surface_copy = "not applicable: immutable CPU replay frames own no producer surface"
+notes = "precursor source 180c1b15df1a4c29bd6df14a790b9d18ac831bae; tree 479e4109d39c76adfb745d717648948d060c79b2; executable sha256 b34b99eb7dcb3870edbd768055428be655e1e45ad125400d3b999bfb4da23398; schema 4; runtime DLL sha256 69d8e6d3879a3b4001cdc74c8ed9ccc7e7f799a5b847059738323404519ec471; detector sha256 d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9; recognizer sha256 6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884; vocabulary sha256 f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e; no retry or exclusion; rejected source 7835884 was not built or executed"
+benchmark_executable_sha256 = "b34b99eb7dcb3870edbd768055428be655e1e45ad125400d3b999bfb4da23398"
+final_enforcement_source = "1ad20315e356105dcb8658d9ddcf26c9250eb699"
+final_enforcement_tree = "c06a969b0daae212df339b7e3a1bbbdefddf3e5e"
+final_enforcement_executable_sha256 = "cce21732cc7afb5b9c4903b95f732c42e725e7c92591845f6a39482be0ea5504"
+deployment_target = "Windows 11 Pro 25H2 build family 26200"
+cold_load_p95_ms = 177.934
+first_close_max_ms = 4.715
+reopen_close_max_ms = 149.277
+peak_resident_bytes = 231636992
+active_cancellation_max_ms = 4.506
+retained_result_max_ms = 702.946
+
+[[budget]]
+measure = "result_correctness"
+kind = "hard"
+requirement = "every retained sample satisfies exact public output and complete singular/grouped resource, ownership, cancellation, and cleanup oracles"
+predicate = "result_correctness == 0"
+
+[[budget]]
+measure = "allocated_growth_bytes"
+kind = "hard"
+requirement = "repeated integrated OCR and result cleanup gives back transient Rust allocations"
+predicate = "allocated_growth_bytes <= 4096"
+
+[[budget]]
+measure = "peak_allocated_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 20971520
+rationale = "unchanged ADR 0041 20 MiB hard gate; worst precursor peak was 12,695,304 bytes"
+
+[[budget]]
+measure = "peak_resident_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 301989888
+rationale = "unchanged ADR 0041 Windows final process resident ceiling"
+
+[[budget]]
+measure = "cold_load_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 250.0
+rationale = "ADR 0044 keeps the accepted Windows process ceiling; worst precursor was 177.934 ms"
+
+[[budget]]
+measure = "first_close_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 8.0
+rationale = "unchanged ADR 0041 close ceiling"
+
+[[budget]]
+measure = "reopen_close_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 200.0
+rationale = "unchanged ADR 0041 reopen-close ceiling"
+
+[[budget]]
+measure = "max_detector_tensor_bytes"
+kind = "absolute"
+unit = "bytes"
+direction = "at_most"
+limit = 11587584
+rationale = "ADR 0040 absolute 1312x736 detector rectangle"
+
+[[budget]]
+measure = "active_cancellation_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 25.0
+rationale = "ADR 0044 next-25-ms ceiling over every target-native precursor duration"
+
+[[budget]]
+measure = "retained_result_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0044 1.25 times the 702.946 ms worst precursor observation, rounded upward to 25 ms"
+
+[[measurement]]
+workload = "zone_one_full"
+correctness_oracle = "exact singular-result equivalence, full effective zone, one mapping/resize/detector/cleanup, eight selected unique candidates/memberships, two recognizer runs"
+result_correctness = 0
+latency_p50_ms = 705.724
+latency_p95_ms = 712.370
+latency_max_ms = 715.745
+mapped_bytes_per_result = 2073600
+peak_allocated_bytes = 12695304
+allocated_growth_bytes = 0
+detector_width = 1312
+detector_height = 736
+detector_tensor_bytes = 11587584
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+selected_candidates = 8
+ignored_candidates = 0
+unique_candidates = 8
+memberships = 8
+result_semantic_bytes = 1548
+cleanup_completions = 1
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 900.0
+rationale = "ADR 0044 precursor formula"
+
+[[measurement]]
+workload = "zone_three_sparse"
+correctness_oracle = "exact three caller-order groups, six selected/two ignored envelope candidates, one mapping/resize/detector/cleanup, one recognizer run"
+result_correctness = 0
+latency_p50_ms = 410.676
+latency_p95_ms = 416.439
+latency_max_ms = 416.637
+mapped_bytes_per_result = 1479200
+peak_allocated_bytes = 8485216
+allocated_growth_bytes = 0
+detector_width = 1024
+detector_height = 480
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 1
+selected_candidates = 6
+ignored_candidates = 2
+unique_candidates = 6
+memberships = 6
+result_semantic_bytes = 1325
+cleanup_completions = 1
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 525.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 525.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 525.0
+rationale = "ADR 0044 precursor formula"
+
+[[measurement]]
+workload = "zone_eight_distinct"
+correctness_oracle = "exact eight caller-order non-overlapping groups, one mapping/resize/detector/cleanup, eight unique memberships, two recognizer runs"
+result_correctness = 0
+latency_p50_ms = 462.592
+latency_p95_ms = 466.456
+latency_max_ms = 468.698
+mapped_bytes_per_result = 1479200
+peak_allocated_bytes = 8485432
+allocated_growth_bytes = 0
+detector_width = 1024
+detector_height = 480
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+selected_candidates = 8
+ignored_candidates = 0
+unique_candidates = 8
+memberships = 8
+result_semantic_bytes = 1660
+cleanup_completions = 1
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 600.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 600.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 600.0
+rationale = "ADR 0044 precursor formula"
+
+[[measurement]]
+workload = "zone_dense_unique"
+correctness_oracle = "exact dense grouping, one mapping/resize/detector/cleanup, eleven selected unique candidates/memberships, two recognizer runs"
+result_correctness = 0
+latency_p50_ms = 574.161
+latency_p95_ms = 583.327
+latency_max_ms = 583.678
+mapped_bytes_per_result = 4147200
+peak_allocated_bytes = 7006340
+allocated_growth_bytes = 0
+detector_width = 1024
+detector_height = 480
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 2
+selected_candidates = 11
+ignored_candidates = 0
+unique_candidates = 11
+memberships = 11
+result_semantic_bytes = 2022
+cleanup_completions = 1
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 725.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 750.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 750.0
+rationale = "ADR 0044 precursor formula"
+
+[[measurement]]
+workload = "zone_empty_4k"
+correctness_oracle = "exact empty groups/result, one full-frame mapping and bounded detector run, zero candidates/memberships/recognizer work, one cleanup"
+result_correctness = 0
+latency_p50_ms = 239.578
+latency_p95_ms = 244.716
+latency_max_ms = 247.236
+mapped_bytes_per_result = 33177600
+peak_allocated_bytes = 6390400
+allocated_growth_bytes = 0
+detector_width = 960
+detector_height = 512
+detector_tensor_bytes = 5898240
+detector_resizes = 1
+detector_runs = 1
+recognizer_runs = 0
+selected_candidates = 0
+ignored_candidates = 0
+unique_candidates = 0
+memberships = 0
+result_semantic_bytes = 512
+cleanup_completions = 1
+[[measurement.budget]]
+measure = "latency_p50"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 300.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_p95"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 325.0
+rationale = "ADR 0044 precursor formula"
+[[measurement.budget]]
+measure = "latency_max"
+kind = "absolute"
+unit = "milliseconds"
+direction = "at_most"
+limit = 325.0
+rationale = "ADR 0044 precursor formula"

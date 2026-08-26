@@ -112,6 +112,12 @@ A budget names one measure. The version-one vocabulary is:
 | `stale_work_ratio` | ratio | Share of scheduled work that was dropped, coalesced, superseded, rejected, queue-expired, or discarded as stale. |
 | `model_load_time` | milliseconds | Time to load and initialize an OCR model, including provider selection. |
 | `startup_time` | milliseconds | Time from process start to a usable session. |
+| `cold_load_p95` | milliseconds | Worst accepted first backend open across the fresh qualification processes; recorded as a target-specific startup regression gate. |
+| `first_close_max` | milliseconds | Slowest first close after the complete workload set in a fresh process. |
+| `reopen_close_max` | milliseconds | Slowest accepted-model reopen-and-close cycle in a fresh process. |
+| `active_cancellation_max` | milliseconds | Longest interval from cancellation after observed native-run start to the cancelled call returning. |
+| `retained_result_max` | milliseconds | Longest separately measured grouped operation whose immutable result is then checked after parent teardown. |
+| `max_detector_tensor_bytes` | bytes | Largest detector input tensor admitted by the selected profile across the run. |
 | `result_correctness` | count | Retained samples whose output disagreed with the correctness oracle. A hard gate, never a tuned ceiling. |
 | `memory_growth` | bytes | Signed change in resident memory across the sampled run, so a decrease is negative. A hard gate: unbounded growth is a defect, not a slow result, and its predicate bounds growth rather than demanding an exact zero. |
 | `latency_p50` | milliseconds | Median of the per-iteration samples for one workload. |
@@ -138,7 +144,7 @@ one, `peak_allocated_bytes` counts bytes and `_bytes` separates it from a byte
 *rate* — and omits it when the `Unit` column above is the only answer the measure
 can have. `latency_p95` is milliseconds because every latency here is.
 
-Four vocabulary names differ from the key a profile records the value under,
+Nine vocabulary names differ from the key a profile records the value under,
 which is the one place a reader can be caught out:
 
 | Vocabulary name | Recorded as |
@@ -147,6 +153,11 @@ which is the one place a reader can be caught out:
 | `latency_p95` | `latency_p95_ms` |
 | `latency_max` | `latency_max_ms` |
 | `memory_growth` | `allocated_growth_bytes`, when the measure is live heap rather than resident memory |
+| `cold_load_p95` | `cold_load_p95_ms` |
+| `first_close_max` | `first_close_max_ms` |
+| `reopen_close_max` | `reopen_close_max_ms` |
+| `active_cancellation_max` | `active_cancellation_max_ms` |
+| `retained_result_max` | `retained_result_max_ms` |
 
 A budget's `measure` may name either form; committed profiles use the recorded
 key everywhere except `latency_p50`, `latency_p95`, and `latency_max`, where
@@ -952,3 +963,76 @@ exclusion. Worst final process RSS was 464,666,624 bytes on Apple and
 The explicit profile is qualified for the named target/runtime/model/fixture
 boundaries. It remains non-default and is not a real-time or arbitrary-workload
 guarantee.
+
+## v0.3.1 integrated grouped-zone qualification
+
+The accepted bounded-v2 singular profiles above remain revision-bound regression
+gates. Integrated exact source `180c1b1`, tree `479e410`, added the fixed
+one-/three-/eight-zone, dense, and empty rows without changing those profiles.
+The approved Apple M1 Pro executable
+`6ce1df5bba8bc555fa961af366b0386333e6baeebd7c9483b1be9da39f16c792`
+and Windows Core i7-12700KF executable
+`b34b99eb7dcb3870edbd768055428be655e1e45ad125400d3b999bfb4da23398`
+each ran one native comparator and five fresh alternating 3+20 integrated
+processes without retry or exclusion.
+
+Every row passed exact text/count/order/geometry/source/profile,
+source-envelope/zones/memberships, detector/recognizer work, mapping, heap,
+growth, cancellation, retained-result independence, startup, close, and cleanup
+oracles. Both targets reported zero incorrect retained samples, zero call
+failures, zero post-warm growth, and identical deterministic resource signatures.
+Duplicate, one-pixel-different, adjacent, slight-overlap, and complete-overlap
+layouts remain bounded safety cases with no quality or latency support claim.
+
+[ADR 0044](adr/0044-integrated-zone-ocr-target-budgets.md) accepts the
+predeclared 1.25-times/25-ms formula results:
+
+| Workload | Apple p50 / p95 / maximum | Windows p50 / p95 / maximum |
+|---|---:|---:|
+| full-frame one zone | 600 / 600 / 625 ms | 900 / 900 / 900 ms |
+| three sparse zones | 375 / 375 / 375 ms | 525 / 525 / 525 ms |
+| eight distinct zones | 450 / 450 / 475 ms | 600 / 600 / 600 ms |
+| dense unique candidates | 600 / 675 / 700 ms | 725 / 750 / 750 ms |
+| empty 4K result | 175 / 175 / 175 ms | 300 / 325 / 325 ms |
+
+ADR 0041 close, 20 MiB attributable live Rust peak, 4 KiB growth,
+11,587,584-byte detector tensor, and target final-RSS ceilings remain unchanged.
+Active native cancellation-to-return is capped at 25 ms on each target.
+Retained one-zone result completion is capped at 625 ms on Apple and 900 ms on
+Windows. Each fixed grouped row additionally requires one mapping/resize/detector
+run, exact mapped and detector bytes, expected zero/one/two recognizer runs,
+exact selected/ignored/unique/membership/result accounting, one cleanup, and no
+retained parent resource.
+
+The first post-budget Apple process at exact source `7835884` is rejected and
+retained. Every workload/lifecycle/resource row passed, but its 149.832 ms first
+backend open exceeded the inherited 125 ms startup ceiling. The same executable
+then measured 84.408–91.766 ms in six explicitly non-qualification warm-cache
+diagnostics. After an authorized macOS disk-buffer-cache purge, the next
+diagnostic reproduced the failure at 130.844 ms. This proves the historical
+process-cold ADR 0041 profile did not control cache state.
+
+[ADR 0045](adr/0045-integrated-ocr-cache-cold-startup-budget.md) therefore sets
+only the new Apple integrated startup ceiling to 200 ms: 1.25 times the retained
+149.832 ms observation, rounded upward to 25 ms. Windows stays at 250 ms.
+Historical ADR 0041 constants and profiles remain unchanged, and the benchmark
+does not prime the runtime/model before timing.
+
+The new
+`phase-3-1-integrated-zone-ocr-aarch64-apple-darwin.toml` and
+`phase-3-1-integrated-zone-ocr-x86_64-pc-windows-msvc.toml` profiles record this
+separate lineage rather than editing either ADR 0041 profile. Corrected exact
+source `1ad2031`, tree `c06a969`, produced Apple executable
+`9d9941e3a14c7acdea71c8c28c4af215a77a7f143d4cc793a53ef2d1d4d3e1da`
+and Windows executable
+`cce21732cc7afb5b9c4903b95f732c42e725e7c92591845f6a39482be0ea5504`.
+Each passed five fresh alternating integrated `--enforce-budgets` processes
+without retry or exclusion.
+
+Apple worst final cold/close/reopen/RSS/cancellation/retained-result observations
+were 86.591 ms, 1.043 ms, 62.963 ms, 469,565,440 bytes, 6.516 ms, and
+479.335 ms. Windows observed 193.091 ms, 5.341 ms, 152.954 ms, 231,067,648
+bytes, 4.664 ms, and 711.576 ms. Every singular/grouped latency, exact resource,
+ownership, cancellation, cleanup, heap, and growth gate passed. Hosted CI also
+passed both release targets on that exact source; hosted timing and RSS remain
+non-qualifying.

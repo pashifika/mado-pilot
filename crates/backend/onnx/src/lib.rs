@@ -46,6 +46,65 @@ pub use fault::{
     OnnxOcrProfile, OnnxRuntimeCompatibility,
 };
 
+/// Deterministic native-run gates for the revision-bound qualification bench.
+///
+/// This module exists only with the non-default `benchmark-instrumentation`
+/// feature. Product composition does not enable it.
+#[cfg(feature = "benchmark-instrumentation")]
+pub mod benchmark_instrumentation {
+    use std::fmt;
+    use std::time::Duration;
+
+    /// One exclusive detector/recognizer run gate installed by a qualification process.
+    pub struct NativeRunGate {
+        inner: crate::inference::test_hook::RunGateGuard,
+    }
+
+    impl fmt::Debug for NativeRunGate {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter
+                .debug_struct("NativeRunGate")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl NativeRunGate {
+        /// Waits until a native run reaches admission.
+        #[must_use]
+        pub fn wait_until_admitted(&self, timeout: Duration) -> bool {
+            self.inner.wait_until_admitted(timeout)
+        }
+
+        /// Releases the admitted run into the native session.
+        pub fn release(&self) {
+            self.inner.release();
+        }
+
+        /// Waits until the native session call has started.
+        #[must_use]
+        pub fn wait_until_run_started(&self, timeout: Duration) -> bool {
+            self.inner.wait_until_run_started(timeout)
+        }
+
+        /// Waits until the cancellation monitor issues native termination.
+        #[must_use]
+        pub fn wait_until_termination_issued(&self, timeout: Duration) -> bool {
+            self.inner.wait_until_termination_issued(timeout)
+        }
+    }
+
+    /// Installs one process-global native-run gate for deterministic qualification.
+    ///
+    /// Qualification uses one synchronous inference, so installing a second
+    /// overlapping gate is a harness error.
+    #[must_use]
+    pub fn install_native_run_gate() -> NativeRunGate {
+        NativeRunGate {
+            inner: crate::inference::test_hook::install(),
+        }
+    }
+}
+
 use crate::decode::DecodedText;
 use crate::detect::{Detection, Quad};
 use crate::profile::{PreprocessingDescriptor, SelectedProfile};

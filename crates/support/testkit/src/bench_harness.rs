@@ -2243,6 +2243,92 @@ pub const PHASE3_1_WINDOWS_BOUNDED_OCR_LATENCY_BUDGETS: [LatencyBudget; 8] = [
     ),
 ];
 
+/// Phase 3.1 Apple Silicon integrated-zone latency ceilings from ADR 0044.
+pub const PHASE3_1_APPLE_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
+    LatencyBudget::new(
+        "zone_one_full",
+        Duration::from_millis(600),
+        Duration::from_millis(600),
+        Duration::from_millis(625),
+    ),
+    LatencyBudget::new(
+        "zone_three_sparse",
+        Duration::from_millis(375),
+        Duration::from_millis(375),
+        Duration::from_millis(375),
+    ),
+    LatencyBudget::new(
+        "zone_eight_distinct",
+        Duration::from_millis(450),
+        Duration::from_millis(450),
+        Duration::from_millis(475),
+    ),
+    LatencyBudget::new(
+        "zone_dense_unique",
+        Duration::from_millis(600),
+        Duration::from_millis(675),
+        Duration::from_millis(700),
+    ),
+    LatencyBudget::new(
+        "zone_empty_4k",
+        Duration::from_millis(175),
+        Duration::from_millis(175),
+        Duration::from_millis(175),
+    ),
+];
+
+/// Phase 3.1 Windows integrated-zone latency ceilings from ADR 0044.
+pub const PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS: [LatencyBudget; 5] = [
+    LatencyBudget::new(
+        "zone_one_full",
+        Duration::from_millis(900),
+        Duration::from_millis(900),
+        Duration::from_millis(900),
+    ),
+    LatencyBudget::new(
+        "zone_three_sparse",
+        Duration::from_millis(525),
+        Duration::from_millis(525),
+        Duration::from_millis(525),
+    ),
+    LatencyBudget::new(
+        "zone_eight_distinct",
+        Duration::from_millis(600),
+        Duration::from_millis(600),
+        Duration::from_millis(600),
+    ),
+    LatencyBudget::new(
+        "zone_dense_unique",
+        Duration::from_millis(725),
+        Duration::from_millis(750),
+        Duration::from_millis(750),
+    ),
+    LatencyBudget::new(
+        "zone_empty_4k",
+        Duration::from_millis(300),
+        Duration::from_millis(325),
+        Duration::from_millis(325),
+    ),
+];
+
+/// Phase 3.1 Apple integrated-zone cache-cold startup ceiling from ADR 0045.
+pub const PHASE3_1_APPLE_GROUPED_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(200);
+
+/// Phase 3.1 Windows integrated-zone startup ceiling from ADR 0044.
+pub const PHASE3_1_WINDOWS_GROUPED_OCR_COLD_LOAD_LIMIT: Duration = Duration::from_millis(250);
+
+/// Phase 3.1 Apple integrated-zone active-cancellation ceiling.
+pub const PHASE3_1_APPLE_GROUPED_OCR_CANCELLATION_LIMIT: Duration = Duration::from_millis(25);
+
+/// Phase 3.1 Windows integrated-zone active-cancellation ceiling.
+pub const PHASE3_1_WINDOWS_GROUPED_OCR_CANCELLATION_LIMIT: Duration = Duration::from_millis(25);
+
+/// Phase 3.1 Apple integrated-zone retained-result completion ceiling.
+pub const PHASE3_1_APPLE_GROUPED_OCR_RETAINED_RESULT_LIMIT: Duration = Duration::from_millis(625);
+
+/// Phase 3.1 Windows integrated-zone retained-result completion ceiling.
+pub const PHASE3_1_WINDOWS_GROUPED_OCR_RETAINED_RESULT_LIMIT: Duration = Duration::from_millis(900);
+
 /// Phase 3.1 bounded-detector live-Rust-heap ceiling on both targets.
 pub const PHASE3_1_BOUNDED_OCR_HEAP_LIMIT_BYTES: usize = 20 * 1024 * 1024;
 

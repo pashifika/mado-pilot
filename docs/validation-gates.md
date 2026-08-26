@@ -52,7 +52,7 @@ registry is itself a Phase 0 deliverable.
 | [`G-010`](#g-010) | Version-one C ABI status, prefix, and layout | Before Phase 1 exit | ABI compatibility baseline | Resolved by [ADR 0007](adr/0007-phase-1-c-abi-freeze.md) |
 | [`G-011`](#g-011) | Native-frame extension discovery | Future roadmap | Does not block version one | Deferred |
 | [`G-012`](#g-012) | Published Cargo and C build profiles | Before Phase 5 implementation | Release capability matrix | Open |
-| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded OCR on both release targets are resolved by ADRs 0008, 0024–0032, 0037, and 0041 |
+| [`G-013`](#g-013) | Numeric benchmark budgets | Before each affected phase exits | That phase's exit | Open per future workload; Phase 1, affected Phase 2 workloads, Phase 3 default OCR, and Phase 3.1 explicit bounded singular/grouped OCR on both release targets are resolved by ADRs 0008, 0024–0032, 0037, 0041, and 0044 |
 | [`G-014`](#g-014) | Archive safety ceilings | Before Phase 1 implementation | Version-one archive loading | Resolved by [ADR 0001](adr/0001-asset-archive-container-and-safety-ceilings.md) |
 
 ## G-001
@@ -638,6 +638,42 @@ budgets, and constructors remain unchanged.
 and [ADR 0041](adr/0041-bounded-detector-target-budgets.md). Any future ceiling
 or budget change requires a new identity or ADR as applicable and fresh
 both-target evidence.
+
+**The `v0.3.1` integrated grouped-zone budget decision is resolved.** ADR 0042
+fixes the one-to-eight-zone semantics and safety-only overlap boundary; ADR 0043
+fixes the Rust/C ABI 1.4/C++ ownership surface. Exact source `180c1b1` then
+passed the immutable native/singular/one-/three-/eight-zone matrix and five fresh
+alternating 3+20 precursor processes on each approved host with no retry,
+exclusion, incorrect retained sample, call failure, post-warm growth, or
+deterministic resource-signature mismatch.
+
+[ADR 0044](adr/0044-integrated-zone-ocr-target-budgets.md) accepts separate
+Apple M1 Pro and Windows Core i7-12700KF grouped latency, process, cancellation,
+retained-result, mapping, detector/recognizer, candidate/membership/result,
+heap/growth, and cleanup ceilings. It leaves every ADR 0041 singular ceiling
+unchanged and limits the quality/performance claim to full-frame one-zone
+equivalence plus the fixed semantically distinct non-overlapping three/eight
+layouts. Duplicate, nearly equal, adjacent, slight-overlap, and complete-overlap
+arrays remain safety-only.
+
+The first post-budget Apple source `7835884` remains rejected: its complete
+process passed every non-startup gate but measured 149.832 ms cold open against
+the inherited 125 ms ceiling. A user-authorized macOS disk-cache purge then
+reproduced the same gate at 130.844 ms while warm-cache diagnostics measured
+84.408–91.766 ms. [ADR 0045](adr/0045-integrated-ocr-cache-cold-startup-budget.md)
+supersedes only the new Apple integrated startup row with a 200 ms cache-cold
+ceiling. It does not retry or relabel the failure, prime before timing, alter
+Windows, or edit historical ADR 0041 profiles.
+
+Corrected exact source `1ad2031`, tree `c06a969`, then passed five fresh
+integrated `--enforce-budgets` processes on each approved host with alternating
+workload order and no retry or exclusion. Apple executable
+`9d9941e3a14c7acdea71c8c28c4af215a77a7f143d4cc793a53ef2d1d4d3e1da`
+and Windows executable
+`cce21732cc7afb5b9c4903b95f732c42e725e7c92591845f6a39482be0ea5504`
+passed every singular/grouped latency, process, resource, lifecycle, ownership,
+cleanup, correctness, heap, and growth gate. Hosted checks passed both release
+targets on that source; their timing/RSS remains non-qualifying.
 
 ## G-014
 

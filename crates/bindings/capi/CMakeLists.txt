@@ -24,7 +24,7 @@ cmake_minimum_required(VERSION 3.22)
 
 project(
   MadoPilot
-  VERSION 0.3.0
+  VERSION 0.3.1
   DESCRIPTION "Headless visual automation runtime — C ABI and C++ wrapper"
   LANGUAGES C CXX
 )

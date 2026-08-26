@@ -29,16 +29,20 @@ canonical model/runtime paths plus separate Apple M1 Pro and Core i7-12700KF
 regression profiles. Approved Apple Silicon and Windows 11 Pro hosts reproduce
 the same integrated 42-region quality boundary.
 
-The `v0.3.1` bounded-detector topic adds a second closed, explicit, non-default
-profile over the same immutable model components. The initial ADR 0038 rectangle
-passed both-target correctness/resource oracles but the fixed ADR 0039 formula
-rejected its Windows latency margins. ADR 0040 replaces that unreleased tuple
-with candidate v2. Exact-source Apple and Windows precursors and strict final
-enforcement pass; ADR 0041 accepts separate target budgets and revision-bound
-profiles. The explicit profile is qualified on both release targets without
-changing defaults. Neither profile adds bundling, download, ambient search,
-provider fallback, scheduling, or automatic input. Watchers, scheduling, and
-release packaging remain future work.
+The `v0.3.1` candidate adds a second closed, explicit, non-default profile over
+the same immutable model components plus one-to-eight caller-owned OCR zones
+that share one mapped source envelope and detector scan. ADR 0040 replaces the
+rejected ADR 0038 tuple with bounded candidate v2; exact-source Apple and Windows
+precursors and strict final enforcement pass under ADR 0041. ADRs 0042 and 0043
+fix grouped semantics, Rust projection, C ABI 1.4, and C++ ownership. ADR 0044
+accepts exact-candidate cross-target quality and target-specific grouped budgets
+for the fixed non-overlapping layouts. ADR 0045 corrects only the new Apple
+integrated cache-cold startup ceiling after a retained failed source; the later
+exact Apple and Windows final executables pass five fresh enforcement processes
+each. Protected release acceptance remains open.
+Neither profile adds bundling, download, ambient search, provider fallback,
+scheduling, or automatic input. Watchers, scheduling, and release packaging
+remain future work.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -540,7 +544,7 @@ document together, with an architecture decision record.
 | Cargo resolver | `3` |
 | Rust edition | `2024` |
 | Pinned toolchain and minimum supported Rust version | `1.97.1` |
-| Package version | `0.3.0` |
+| Package version | `0.3.1` |
 | Package license | `Apache-2.0` |
 | Repository | `https://github.com/pashifika/mado-pilot` |
 
@@ -852,9 +856,9 @@ responsibilities a later phase takes on.
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
 | Template scaling, rotation, masked matching, GPU execution | Not implemented |
-| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts target budgets after strict both-host final enforcement. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
-| Exact accepted CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection first fits a `1312x736` rectangle, applies a 6 MiB secondary tensor fit only when that rectangle had to fit oversized desired work, keeps original-source recognizer crops, and enforces ADR 0041 target budgets |
-| Accepted OCR composition | Implemented by ADRs 0036 and 0043 as separate Rust/C/C++ constructors over caller-supplied canonical model-root/runtime paths. Existing constructors still omit OCR, default construction remains native G-004, and explicit `OcrProfile::BoundedDetector` construction selects only the ADR 0040/0041 profile. Missing prerequisites, interruption, or identity failure publish no engine and trigger no fallback |
+| OCR model/profile decision and platform-neutral contracts | Implemented in `mado-pilot-ocr`: ADR 0033 fixes released native G-004; ADR 0038 records the rejected rectangular bounded candidate; ADR 0040 adds the accepted candidate-v2 closed identity over the same component bytes; ADR 0041 accepts singular target budgets; ADR 0044 accepts fixed non-overlapping grouped quality and budgets. Immutable model sources, exact-frame requests, normalized source-correlated results, typed failures, and deadline/cancellation-aware commit are implemented |
+| Exact accepted CPU preprocessing, ONNX inference, and decoding | Implemented in `mado-pilot-backend-onnx`. ADR 0034 fixes controlled host-provided ONNX Runtime 1.29.0 loading through API 17 with one session pair, one admitted inference, CPU-only provider, no download/search/fallback, and process-lifetime runtime ownership. Native G-004 keeps released DB736 behavior; explicit ADR 0040 selection first fits a `1312x736` rectangle, applies a 6 MiB secondary tensor fit only when that rectangle had to fit oversized desired work, keeps original-source recognizer crops, and enforces ADR 0041 singular plus ADR 0044 grouped target budgets |
+| Accepted OCR composition | Implemented by ADRs 0036 and 0043 as separate Rust/C/C++ constructors over caller-supplied canonical model-root/runtime paths. Existing constructors still omit OCR, default construction remains native G-004, and explicit `OcrProfile::BoundedDetector` construction selects only the ADR 0040 profile governed by ADRs 0041 and 0044. Missing prerequisites, interruption, or identity failure publish no engine and trigger no fallback |
 | Bounded engine-scoped diagnostic observation | Implemented through Rust, C ABI 1.4, and C++ with allocation-free `Off`, finite `Normal`/`Debug`, strict order, exact level losses, independent readers/batches, content-redacted singular OCR, and grouped source-envelope/zone/unique-candidate/membership aggregates. Request-scoped backend-work fields remain absent when the generic backend contract has no authoritative evidence |
 | Input request, route capability, submission receipt, cleanup bounds, provider, and controller contracts | Implemented in `mado-pilot-input` |
 | Input injection | Implemented in `mado-pilot-platform-windows` for system pointer/keyboard/text, ordinary exact-window `WindowMessage` submission with unknown compatibility and target-queue evidence, and fixture-class acknowledged `WindowMessage` submission. Implemented in `mado-pilot-platform-macos` for `CGEvent` system pointer/keyboard/text and process-directed pointer/keyboard/text with owning-process scope, unknown compatibility, and invocation-only evidence; final candidate `dec43d7` passed the controlled profiles, and independent `single`, exact two-display non-mirrored `same-scale`, and `mixed-scale` matrices passed for all fourteen controlled pairs. No macOS window-message route exists. Both implementations are reached through `mado-pilot-runtime`, the Rust facade, C ABI 1.2/1.3, and C++ |
@@ -871,7 +875,7 @@ responsibilities a later phase takes on.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.4 as a header-only adapter, including owning profile/zone requests with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed views, typed empty groups, and complete negotiated-suffix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles with hard correctness/growth gates plus executable inference/startup/heap/mapping/cleanup limits and target-native RSS; Phase 3 default-OCR `G-013` is complete on both release targets. ADR 0039 separates bounded-profile precursor measurement from final budget enforcement; Apple precursor passes, while Windows precursor and all final bounded budgets remain open |
+| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles; Phase 3 default-OCR `G-013` is complete on both release targets. ADRs 0039–0041 accept separate exact-source bounded-v2 singular workload budgets. ADR 0044 accepts integrated grouped latency/resource/lifecycle ceilings; ADR 0045 corrects only the new Apple integrated startup value to 200 ms while preserving historical ADR 0041 profiles. The corrected exact source passes five fresh final enforcement processes on each approved host |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, and complete 1.3 headers plus current ABI 1.4. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3 and 1.4 operations before reading missing entries |
