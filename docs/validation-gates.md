@@ -665,10 +665,15 @@ supersedes only the new Apple integrated startup row with a 200 ms cache-cold
 ceiling. It does not retry or relabel the failure, prime before timing, alter
 Windows, or edit historical ADR 0041 profiles.
 
-Fresh five-process integrated budget enforcement on both approved hosts remains
-a release-acceptance check, not an unresolved budget decision. Hosted runner
-timing/RSS and one target's measurements never substitute for approved-host
-evidence.
+Corrected exact source `1ad2031`, tree `c06a969`, then passed five fresh
+integrated `--enforce-budgets` processes on each approved host with alternating
+workload order and no retry or exclusion. Apple executable
+`9d9941e3a14c7acdea71c8c28c4af215a77a7f143d4cc793a53ef2d1d4d3e1da`
+and Windows executable
+`cce21732cc7afb5b9c4903b95f732c42e725e7c92591845f6a39482be0ea5504`
+passed every singular/grouped latency, process, resource, lifecycle, ownership,
+cleanup, correctness, heap, and growth gate. Hosted checks passed both release
+targets on that source; their timing/RSS remains non-qualifying.
 
 ## G-014
 

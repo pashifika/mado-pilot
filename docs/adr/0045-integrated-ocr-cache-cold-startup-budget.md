@@ -41,4 +41,4 @@ This decision changes no product code, profile identity, model/runtime bytes, co
 - The controlled cache-cold diagnostic is SHA-256 `70df0436720a09438031261d861d94ec5bbc9f0e7b927eadf26133b78f8809a3` and reports 130.844209 ms from the same executable after `purge`.
 - Testkit exposes a separate 200 ms Apple integrated constant; the benchmark selects it only for integrated enforcement and preserves the ADR 0041 constant for non-integrated runs.
 - New integrated benchmark profiles and drift tests bind the 200/250 ms target values without editing historical Phase 3 or ADR 0041 profile blocks.
-- Release acceptance requires five fresh integrated final-enforcement processes from one later exact executable on each approved host, with no retry or exclusion and every other ADR 0044/0041 gate unchanged.
+- Corrected source `1ad2031` passed five fresh integrated final-enforcement processes on each approved host with no retry or exclusion and every other ADR 0044/0041 gate unchanged. Apple worst final cold open was 86.591 ms; Windows was 193.091 ms.

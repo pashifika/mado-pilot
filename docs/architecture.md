@@ -37,8 +37,9 @@ precursors and strict final enforcement pass under ADR 0041. ADRs 0042 and 0043
 fix grouped semantics, Rust projection, C ABI 1.4, and C++ ownership. ADR 0044
 accepts exact-candidate cross-target quality and target-specific grouped budgets
 for the fixed non-overlapping layouts. ADR 0045 corrects only the new Apple
-integrated cache-cold startup ceiling after a retained final-source failure.
-Fresh final grouped enforcement and protected release acceptance remain open.
+integrated cache-cold startup ceiling after a retained failed source; the later
+exact Apple and Windows final executables pass five fresh enforcement processes
+each. Protected release acceptance remains open.
 Neither profile adds bundling, download, ambient search, provider fallback,
 scheduling, or automatic input. Watchers, scheduling, and release packaging
 remain future work.
@@ -874,7 +875,7 @@ responsibilities a later phase takes on.
 | C ABI static library and ABI-major release loader names | Not implemented; see [c-abi.md](c-abi.md) |
 | C++ RAII wrapper, `MadoPilot::C` and `MadoPilot::Cpp` CMake targets | Implemented through ABI 1.4 as a header-only adapter, including owning profile/zone requests with repaired projections, move-only grouped results, explicit clone, lvalue-only borrowed views, typed empty groups, and complete negotiated-suffix refusal |
 | CMake install and export set, pkg-config file | Not implemented; consumption is from the development tree |
-| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles; Phase 3 default-OCR `G-013` is complete on both release targets. ADRs 0039–0041 accept separate exact-source bounded-v2 singular workload budgets on both targets. ADR 0044 accepts integrated one-/three-/eight-zone latency, grouped-result resource, cancellation, retained-result, startup, and cleanup ceilings from exact-candidate precursors on both approved hosts. ADR 0045 supersedes only the new Apple integrated startup value with a 200 ms cache-cold ceiling while preserving historical ADR 0041 profiles; fresh final enforcement remains a `v0.3.1` release gate |
+| Numeric performance budgets | Phase 1 and the accepted Phase 2 profiles remain revision-bound under ADRs 0008 and 0024–0032. ADR 0037 accepts target-specific Apple M1 Pro and Core i7-12700KF default-OCR profiles; Phase 3 default-OCR `G-013` is complete on both release targets. ADRs 0039–0041 accept separate exact-source bounded-v2 singular workload budgets. ADR 0044 accepts integrated grouped latency/resource/lifecycle ceilings; ADR 0045 corrects only the new Apple integrated startup value to 200 ms while preserving historical ADR 0041 profiles. The corrected exact source passes five fresh final enforcement processes on each approved host |
 | Native permission behavior | Implemented on macOS as non-prompting probes. Windows has no permission probe; its input path performs non-prompting integrity comparison and reports proven UIPI without elevation |
 | Release packaging | Not implemented |
 | ABI compatibility testing | Implemented for frozen ABI 1.0, 1.2, and complete 1.3 headers plus current ABI 1.4. Historical callers compile only against immutable headers, negotiate their exact extents, and execute against the current library; current C++ tests refuse partial 1.3 and 1.4 operations before reading missing entries |

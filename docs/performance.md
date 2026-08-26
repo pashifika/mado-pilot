@@ -112,6 +112,12 @@ A budget names one measure. The version-one vocabulary is:
 | `stale_work_ratio` | ratio | Share of scheduled work that was dropped, coalesced, superseded, rejected, queue-expired, or discarded as stale. |
 | `model_load_time` | milliseconds | Time to load and initialize an OCR model, including provider selection. |
 | `startup_time` | milliseconds | Time from process start to a usable session. |
+| `cold_load_p95` | milliseconds | Worst accepted first backend open across the fresh qualification processes; recorded as a target-specific startup regression gate. |
+| `first_close_max` | milliseconds | Slowest first close after the complete workload set in a fresh process. |
+| `reopen_close_max` | milliseconds | Slowest accepted-model reopen-and-close cycle in a fresh process. |
+| `active_cancellation_max` | milliseconds | Longest interval from cancellation after observed native-run start to the cancelled call returning. |
+| `retained_result_max` | milliseconds | Longest separately measured grouped operation whose immutable result is then checked after parent teardown. |
+| `max_detector_tensor_bytes` | bytes | Largest detector input tensor admitted by the selected profile across the run. |
 | `result_correctness` | count | Retained samples whose output disagreed with the correctness oracle. A hard gate, never a tuned ceiling. |
 | `memory_growth` | bytes | Signed change in resident memory across the sampled run, so a decrease is negative. A hard gate: unbounded growth is a defect, not a slow result, and its predicate bounds growth rather than demanding an exact zero. |
 | `latency_p50` | milliseconds | Median of the per-iteration samples for one workload. |
@@ -138,7 +144,7 @@ one, `peak_allocated_bytes` counts bytes and `_bytes` separates it from a byte
 *rate* — and omits it when the `Unit` column above is the only answer the measure
 can have. `latency_p95` is milliseconds because every latency here is.
 
-Four vocabulary names differ from the key a profile records the value under,
+Nine vocabulary names differ from the key a profile records the value under,
 which is the one place a reader can be caught out:
 
 | Vocabulary name | Recorded as |
@@ -147,6 +153,11 @@ which is the one place a reader can be caught out:
 | `latency_p95` | `latency_p95_ms` |
 | `latency_max` | `latency_max_ms` |
 | `memory_growth` | `allocated_growth_bytes`, when the measure is live heap rather than resident memory |
+| `cold_load_p95` | `cold_load_p95_ms` |
+| `first_close_max` | `first_close_max_ms` |
+| `reopen_close_max` | `reopen_close_max_ms` |
+| `active_cancellation_max` | `active_cancellation_max_ms` |
+| `retained_result_max` | `retained_result_max_ms` |
 
 A budget's `measure` may name either form; committed profiles use the recorded
 key everywhere except `latency_p50`, `latency_p95`, and `latency_max`, where
@@ -1007,8 +1018,21 @@ only the new Apple integrated startup ceiling to 200 ms: 1.25 times the retained
 Historical ADR 0041 constants and profiles remain unchanged, and the benchmark
 does not prime the runtime/model before timing.
 
-The new integrated benchmark profiles record this separate lineage rather than
-editing either ADR 0041 profile. Five fresh `--enforce-budgets` processes from
-one later exact executable on each approved host remain required for release
-acceptance. Hosted CI enforces correctness and bounded growth only; its timing
-and RSS do not define either profile.
+The new
+`phase-3-1-integrated-zone-ocr-aarch64-apple-darwin.toml` and
+`phase-3-1-integrated-zone-ocr-x86_64-pc-windows-msvc.toml` profiles record this
+separate lineage rather than editing either ADR 0041 profile. Corrected exact
+source `1ad2031`, tree `c06a969`, produced Apple executable
+`9d9941e3a14c7acdea71c8c28c4af215a77a7f143d4cc793a53ef2d1d4d3e1da`
+and Windows executable
+`cce21732cc7afb5b9c4903b95f732c42e725e7c92591845f6a39482be0ea5504`.
+Each passed five fresh alternating integrated `--enforce-budgets` processes
+without retry or exclusion.
+
+Apple worst final cold/close/reopen/RSS/cancellation/retained-result observations
+were 86.591 ms, 1.043 ms, 62.963 ms, 469,565,440 bytes, 6.516 ms, and
+479.335 ms. Windows observed 193.091 ms, 5.341 ms, 152.954 ms, 231,067,648
+bytes, 4.664 ms, and 711.576 ms. Every singular/grouped latency, exact resource,
+ownership, cancellation, cleanup, heap, and growth gate passed. Hosted CI also
+passed both release targets on that exact source; hosted timing and RSS remain
+non-qualifying.
