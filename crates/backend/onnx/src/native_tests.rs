@@ -5,12 +5,20 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", feature = "coreml-provider"))]
 use crate::OnnxProviderFallbackReason;
-use crate::{
-    OnnxBackendFault, OnnxBackendObservations, OnnxExecutionProvider, OnnxExecutionProviderPolicy,
-    OnnxOcrBackend, OnnxOcrProfile,
-};
+use crate::{OnnxBackendFault, OnnxBackendObservations, OnnxOcrBackend, OnnxOcrProfile};
+#[cfg(any(
+    target_os = "macos",
+    feature = "coreml-provider",
+    all(
+        target_os = "windows",
+        target_arch = "x86_64",
+        target_env = "msvc",
+        feature = "cuda-provider"
+    )
+))]
+use crate::{OnnxExecutionProvider, OnnxExecutionProviderPolicy};
 use mado_pilot_capture::PixelFormat;
 use mado_pilot_core::{
     CancellationToken, ClipPolicy, CoordinateSpace, OperationContext, PixelExtent, Rect, Status,
