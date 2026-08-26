@@ -1110,3 +1110,49 @@ and rejects automatic preference: median CUDA process RSS is about 4.9 times
 CPU, above the predeclared 1.5× automatic-selection bound. The latency benefit
 does not relax that memory rule. `AutoPreferAccelerator` therefore remains CPU
 on both release targets.
+
+### ADR 0049 successor CUDA remediation
+
+ADR 0049 preserves the ADR 0048 rows above as revision-bound history and adds
+three `phase-3-1-cuda-remediated-*` profiles from exact successor tree
+`896e037d962610c4abd7a4a7b143d1ae9c90f549`. The internal CUDA recognizer output
+limit is 128 MiB. Ordinary accepted widths retain batches of six; six
+4096-pixel candidates form `[3, 3]`, with maximum estimated output 114,954,240
+bytes and actual extracted output checked against the same 134,217,728-byte
+limit.
+
+Adaptive batching passed its five-baseline/five-candidate/five-CPU comparison:
+maximum workload-median `B/A` was 1.004, geometric mean was 0.972, and minimum
+workload-median CPU-over-candidate speedup was 4.288×. This accepts a
+memory-safety bound, not an ordinary RSS reduction. `SameAsRequested` arena
+extension reduced median RSS only 0.016% and worst RSS 0.106%; restricted cuDNN
+workspace stopped on an absolute CPU-reference latency failure. Both were
+removed. Memory-stage attribution opened loader investigation at median
+211,193,856 bytes, but PE imports proved incomplete for known dynamic NVRTC
+requirements, so no preload was removed.
+
+The final five required-CUDA and five preferred-CUDA/missing-root fallback
+processes passed all eight singular and five grouped workloads with three
+warmups and 20 retained samples:
+
+| Measure | Fallback CPU median | CUDA median | CUDA worst | Ceiling |
+|---|---:|---:|---:|---:|
+| Cold open | 181.636 ms | 335.084 ms | 347.779 ms | 425 ms |
+| First close | 4.618 ms | 15.745 ms | 16.472 ms | 25 ms |
+| Reopen-close | 146.005 ms | 133.675 ms | 134.299 ms | 175 ms |
+| Active cancellation | 4.290 ms | 3.729 ms | 4.112 ms | 25 ms |
+| Retained result | 692.142 ms | 135.861 ms | 137.496 ms | 175 ms |
+| Process peak RSS | 229,404,672 B | 1,119,711,232 B | 1,120,923,648 B | 1,426,063,360 B |
+
+Minimum workload-median p95 CPU-over-CUDA speedup was 3.995×. Host-wide
+CUDA-minus-fallback VRAM maxima were 663–671 MiB; these remain temporal host
+observations. CUDA median RSS was 4.881× fallback CPU, so automatic selection
+remains CPU. One retained predecessor process disproved only the inherited
+`zone_empty_4k` 25 ms maximum; its successor p50/p95/maximum ceilings are
+25/25/50 ms under the existing 1.25-times/next-25-ms rule.
+
+Placement remains 328 CUDA / 0 CPU detector nodes and 181 CUDA / 2 CPU
+recognizer nodes. One pre-runtime canonical-path apparatus stop is retained; its
+authorized canonical-spelling replacement changed no source, executable,
+directory contents, workload arguments, or product environment and reproduced
+the exact counts.

@@ -93,6 +93,10 @@ impl SessionPair {
                 OnnxProviderFallbackReason::GraphRejected,
             )
         })?;
+        #[cfg(feature = "benchmark-instrumentation")]
+        crate::benchmark_instrumentation::record_open_stage(
+            crate::benchmark_instrumentation::OpenStage::DetectorSessionReady,
+        );
 
         let recognizer = build_session(source.recognizer(), provider, "recognizer")?;
         checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
@@ -141,6 +145,10 @@ impl SessionPair {
             )
         })?;
         checkpoint(operation).map_err(OnnxBackendOpenFault::terminal)?;
+        #[cfg(feature = "benchmark-instrumentation")]
+        crate::benchmark_instrumentation::record_open_stage(
+            crate::benchmark_instrumentation::OpenStage::RecognizerSessionReady,
+        );
 
         Ok(Self {
             detector,
@@ -155,6 +163,10 @@ impl SessionPair {
 
     pub(crate) fn commit_provider(&mut self) -> Result<(), OnnxBackendFault> {
         self.prepared_provider.commit()
+    }
+
+    pub(crate) const fn active_provider(&self) -> OnnxExecutionProvider {
+        self.prepared_provider.candidate()
     }
 
     pub(crate) fn record_mapping(&mut self, width: u32, height: u32, bytes: usize) {
@@ -256,7 +268,7 @@ fn build_session(
         .with_optimization_level(GraphOptimizationLevel::All)
         .map_err(|_| initialization_fault())?;
     #[cfg(feature = "benchmark-instrumentation")]
-    if let Some(root) = std::env::var_os("MADO_PILOT_ORT_PROFILE_DIR") {
+    if let Some(root) = std::env::var_os(crate::benchmark_instrumentation::ORT_PROFILE_DIR_ENV) {
         let root = std::path::PathBuf::from(root);
         let canonical = std::fs::canonicalize(&root).map_err(|_| initialization_fault())?;
         if canonical != root

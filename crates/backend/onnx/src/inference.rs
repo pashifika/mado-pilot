@@ -1,6 +1,5 @@
 //! Synchronous native runs with joinable deadline/cancellation termination.
 
-use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -58,21 +57,12 @@ pub(crate) fn recognizer(
     vocabulary: &Vocabulary,
     input: &TensorInput,
     max_text_bytes: usize,
+    max_output_bytes: usize,
     operation: &OperationContext,
 ) -> Result<Vec<DecodedText>, OnnxBackendFault> {
     checkpoint(operation)?;
+    preflight_recognizer_output(input, max_output_bytes)?;
     let batch = input.shape[0];
-    let width = input.shape[3];
-    let maximum_output_elements = batch
-        .checked_mul(width.div_ceil(8))
-        .and_then(|value| value.checked_mul(Vocabulary::classes()))
-        .ok_or(OnnxBackendFault::ResourceLimit)?;
-    if maximum_output_elements
-        .checked_mul(size_of::<f32>())
-        .is_none_or(|bytes| bytes > crate::MAX_OUTPUT_BYTES)
-    {
-        return Err(OnnxBackendFault::ResourceLimit);
-    }
 
     let tensor = TensorRef::from_array_view((input.shape, input.data.as_slice()))
         .map_err(|_| OnnxBackendFault::ResourceLimit)?;
@@ -95,11 +85,29 @@ pub(crate) fn recognizer(
     let (shape, values) = output
         .try_extract_tensor::<f32>()
         .map_err(|_| OnnxBackendFault::MalformedOutput)?;
-    let decoded = decode::decode(shape, values, vocabulary, batch, max_text_bytes)?;
+    let decoded = decode::decode(
+        shape,
+        values,
+        vocabulary,
+        batch,
+        max_text_bytes,
+        max_output_bytes,
+    )?;
     drop(outputs);
     monitor.finish()?;
     checkpoint(operation)?;
     Ok(decoded)
+}
+
+fn preflight_recognizer_output(
+    input: &TensorInput,
+    max_output_bytes: usize,
+) -> Result<(), OnnxBackendFault> {
+    let output_bytes = decode::estimated_recognizer_output_bytes(input.shape[0], input.shape[3])?;
+    if output_bytes > max_output_bytes {
+        return Err(OnnxBackendFault::ResourceLimit);
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -314,5 +322,40 @@ pub(crate) mod test_hook {
                 *active = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preflight_recognizer_output;
+    use crate::fault::OnnxBackendFault;
+    use crate::image::TensorInput;
+    use crate::provider::CUDA_RECOGNIZER_OUTPUT_BYTES;
+
+    fn input(batch: usize, width: usize) -> TensorInput {
+        TensorInput {
+            data: Vec::new(),
+            shape: [batch, 3, 48, width],
+        }
+    }
+
+    #[test]
+    fn cuda_preflight_rejects_an_oversized_run_before_tensor_construction() {
+        assert_eq!(
+            preflight_recognizer_output(&input(4, 4_096), CUDA_RECOGNIZER_OUTPUT_BYTES),
+            Err(OnnxBackendFault::ResourceLimit)
+        );
+        assert_eq!(
+            preflight_recognizer_output(&input(3, 4_096), CUDA_RECOGNIZER_OUTPUT_BYTES),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn cpu_preflight_retains_the_existing_256_mib_boundary() {
+        assert_eq!(
+            preflight_recognizer_output(&input(6, 4_096), crate::MAX_OUTPUT_BYTES),
+            Ok(())
+        );
     }
 }

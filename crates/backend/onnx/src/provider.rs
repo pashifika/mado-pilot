@@ -38,6 +38,15 @@ use crate::{
     OnnxProviderFallbackReason,
 };
 
+pub(crate) const CUDA_RECOGNIZER_OUTPUT_BYTES: usize = 128 * 1024 * 1024;
+
+pub(crate) const fn recognizer_output_budget(provider: OnnxExecutionProvider) -> usize {
+    match provider {
+        OnnxExecutionProvider::Cuda => CUDA_RECOGNIZER_OUTPUT_BYTES,
+        OnnxExecutionProvider::Cpu | OnnxExecutionProvider::CoreMl => crate::MAX_OUTPUT_BYTES,
+    }
+}
+
 #[cfg(all(
     target_os = "windows",
     target_arch = "x86_64",
@@ -573,7 +582,8 @@ mod tests {
     use mado_pilot_core::{CancellationToken, OperationContext};
 
     use super::{
-        ProviderPlan, ProviderPreparationFault, build_supports, release_supports, target_supports,
+        CUDA_RECOGNIZER_OUTPUT_BYTES, ProviderPlan, ProviderPreparationFault, build_supports,
+        recognizer_output_budget, release_supports, target_supports,
     };
     use crate::{
         OnnxBackendFault, OnnxExecutionProvider, OnnxExecutionProviderPolicy,
@@ -587,6 +597,22 @@ mod tests {
         assert_eq!(plan.candidate(), OnnxExecutionProvider::Cpu);
         assert!(target_supports(OnnxExecutionProvider::Cpu));
         assert!(build_supports(OnnxExecutionProvider::Cpu));
+    }
+
+    #[test]
+    fn recognizer_output_budget_is_narrower_only_for_cuda() {
+        assert_eq!(
+            recognizer_output_budget(OnnxExecutionProvider::Cuda),
+            CUDA_RECOGNIZER_OUTPUT_BYTES
+        );
+        assert_eq!(
+            recognizer_output_budget(OnnxExecutionProvider::Cpu),
+            crate::MAX_OUTPUT_BYTES
+        );
+        assert_eq!(
+            recognizer_output_budget(OnnxExecutionProvider::CoreMl),
+            crate::MAX_OUTPUT_BYTES
+        );
     }
 
     #[test]

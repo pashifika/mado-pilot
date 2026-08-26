@@ -160,6 +160,18 @@ pub(crate) fn recognition_ratio(quad: &Quad) -> Result<f64, OnnxBackendFault> {
     Ok(ratio)
 }
 
+pub(crate) fn recognizer_width_for_ratio(ratio: f64) -> Result<usize, OnnxBackendFault> {
+    if !ratio.is_finite() || ratio <= 0.0 {
+        return Err(OnnxBackendFault::MalformedOutput);
+    }
+    let minimum_ratio = RECOGNIZER_BASE_WIDTH as f64 / RECOGNIZER_HEIGHT as f64;
+    let width = f64_to_usize(RECOGNIZER_HEIGHT as f64 * ratio.max(minimum_ratio))?;
+    if width == 0 || width > MAX_RECOGNIZER_WIDTH {
+        return Err(OnnxBackendFault::ResourceLimit);
+    }
+    Ok(width)
+}
+
 pub(crate) fn recognition_input(
     source: &Mat,
     quads: &[Quad],
@@ -190,10 +202,7 @@ pub(crate) fn recognition_input(
         crops.push(crop);
     }
 
-    let width = f64_to_usize(RECOGNIZER_HEIGHT as f64 * max_ratio)?;
-    if width == 0 || width > MAX_RECOGNIZER_WIDTH {
-        return Err(OnnxBackendFault::ResourceLimit);
-    }
+    let width = recognizer_width_for_ratio(max_ratio)?;
     let elements = tensor_elements(quads.len(), RECOGNIZER_HEIGHT, width)?;
     let mut data = vec![0.0_f32; elements];
     let plane = RECOGNIZER_HEIGHT
@@ -421,7 +430,10 @@ fn f64_to_i32(value: f64) -> Result<i32, OnnxBackendFault> {
 mod tests {
     use opencv::core::{Mat, Vec4b};
 
-    use super::{MAX_TENSOR_BYTES, detector_tensor_for_plan, normalize, tensor_elements};
+    use super::{
+        MAX_RECOGNIZER_WIDTH, MAX_TENSOR_BYTES, detector_tensor_for_plan, normalize,
+        recognizer_width_for_ratio, tensor_elements,
+    };
     use crate::fault::OnnxBackendFault;
     use crate::profile::DetectorPlan;
 
@@ -474,6 +486,28 @@ mod tests {
             tensor_elements(1, MAX_TENSOR_BYTES, MAX_TENSOR_BYTES),
             Err(OnnxBackendFault::ResourceLimit)
         );
+    }
+
+    #[test]
+    fn recognizer_width_preserves_minimum_truncation_and_ceiling() {
+        let minimum_ratio = 320.0 / 48.0;
+        assert_eq!(recognizer_width_for_ratio(1.0), Ok(320));
+        assert_eq!(recognizer_width_for_ratio(minimum_ratio), Ok(320));
+        assert_eq!(recognizer_width_for_ratio(42.68), Ok(2_048));
+        assert_eq!(
+            recognizer_width_for_ratio((MAX_RECOGNIZER_WIDTH + 1) as f64 / 48.0),
+            Err(OnnxBackendFault::ResourceLimit)
+        );
+    }
+
+    #[test]
+    fn recognizer_width_rejects_nonpositive_and_nonfinite_ratios() {
+        for ratio in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(
+                recognizer_width_for_ratio(ratio),
+                Err(OnnxBackendFault::MalformedOutput)
+            );
+        }
     }
 
     #[test]

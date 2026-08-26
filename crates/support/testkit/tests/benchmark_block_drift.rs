@@ -73,7 +73,7 @@ use mado_pilot_testkit::bench_harness::{
 ///
 /// `example-synthetic.toml` is deliberately absent because it documents the
 /// format with invented numbers rather than recording a measurement.
-const PROFILES: [(&str, &str); 31] = [
+const PROFILES: [(&str, &str); 34] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -248,6 +248,24 @@ const PROFILES: [(&str, &str); 31] = [
             "../../../../docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
     ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-remediated-bounded-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-remediated-bounded-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-remediated-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-remediated-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
 ];
 
 /// Native profiles and the latency ceilings enforced by their benchmark.
@@ -359,23 +377,23 @@ const NATIVE_LATENCY_PROFILES: [(&str, &str, &[LatencyBudget]); 19] = [
         &PHASE3_1_WINDOWS_GROUPED_OCR_LATENCY_BUDGETS,
     ),
     (
-        "docs/benchmarks/phase-3-1-cuda-bounded-ocr-x86_64-pc-windows-msvc.toml",
+        "docs/benchmarks/phase-3-1-cuda-remediated-bounded-ocr-x86_64-pc-windows-msvc.toml",
         include_str!(
-            "../../../../docs/benchmarks/phase-3-1-cuda-bounded-ocr-x86_64-pc-windows-msvc.toml"
+            "../../../../docs/benchmarks/phase-3-1-cuda-remediated-bounded-ocr-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE3_1_WINDOWS_CUDA_OCR_LATENCY_BUDGETS,
     ),
     (
-        "docs/benchmarks/phase-3-1-cuda-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        "docs/benchmarks/phase-3-1-cuda-remediated-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
         include_str!(
-            "../../../../docs/benchmarks/phase-3-1-cuda-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+            "../../../../docs/benchmarks/phase-3-1-cuda-remediated-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE3_1_WINDOWS_CUDA_GROUPED_OCR_LATENCY_BUDGETS,
     ),
     (
-        "docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        "docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
         include_str!(
-            "../../../../docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+            "../../../../docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
         &PHASE3_1_WINDOWS_CUDA_FALLBACK_GROUPED_OCR_LATENCY_BUDGETS,
     ),
@@ -981,7 +999,7 @@ fn provider_profiles_state_exactly_the_global_budgets_the_benchmark_enforces() {
         (
             "CUDA singular",
             include_str!(
-                "../../../../docs/benchmarks/phase-3-1-cuda-bounded-ocr-x86_64-pc-windows-msvc.toml"
+                "../../../../docs/benchmarks/phase-3-1-cuda-remediated-bounded-ocr-x86_64-pc-windows-msvc.toml"
             ),
             PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES,
             PHASE3_1_WINDOWS_CUDA_OCR_COLD_LOAD_LIMIT,
@@ -993,7 +1011,7 @@ fn provider_profiles_state_exactly_the_global_budgets_the_benchmark_enforces() {
         (
             "CUDA grouped",
             include_str!(
-                "../../../../docs/benchmarks/phase-3-1-cuda-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+                "../../../../docs/benchmarks/phase-3-1-cuda-remediated-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
             ),
             PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES,
             PHASE3_1_WINDOWS_CUDA_OCR_COLD_LOAD_LIMIT,
@@ -1005,7 +1023,7 @@ fn provider_profiles_state_exactly_the_global_budgets_the_benchmark_enforces() {
         (
             "preferred-CUDA CPU fallback grouped",
             include_str!(
-                "../../../../docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+                "../../../../docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
             ),
             PHASE3_1_WINDOWS_BOUNDED_OCR_RESIDENT_LIMIT_BYTES,
             PHASE3_1_WINDOWS_GROUPED_OCR_COLD_LOAD_LIMIT,

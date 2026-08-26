@@ -280,6 +280,11 @@ Provider-policy construction under ADR 0046 does not change redistribution:
   includes `onnxruntime.dll`, `onnxruntime_providers_shared.dll`,
   `onnxruntime_providers_cuda.dll`, CUDA runtime/math DLLs, cuDNN component
   DLLs, `nvrtc64_130_0.dll`, and `nvrtc-builtins64_130.dll`.
+- ADR 0049 revalidates the exact 18-DLL projection. Product loading still
+  validates every member, eagerly retains the existing 16 dependency handles,
+  and defers `onnxruntime_providers_cuda.dll` until ONNX Runtime initializes.
+  Offline PE imports contained no external name but omitted known dynamic NVRTC
+  requirements, so no strict preload subset is claimed or adopted.
 - ONNX Runtime remains MIT-licensed. CUDA Toolkit/cuBLAS/NVRTC and cuDNN remain
   subject to NVIDIA's supplied licenses. Qualification retains their source,
   version, length, SHA-256, signature, and license identity privately.
@@ -289,9 +294,11 @@ Provider-policy construction under ADR 0046 does not change redistribution:
 
 Qualification does not turn every compiled provider feature into support.
 [ADR 0047](adr/0047-coreml-ocr-provider-qualification.md) rejects CoreML after
-geometry and cancellation hard-gate failures. [ADR 0048](adr/0048-cuda-ocr-provider-qualification.md)
-accepts only explicit Windows CUDA for the exact controlled dependency set;
-automatic selection remains CPU because CUDA exceeded the fixed RSS ratio.
+geometry and cancellation hard-gate failures. ADR 0048 remains historical CUDA
+evidence; [ADR 0049](adr/0049-cuda-ocr-memory-remediation.md) accepts only the
+exact successor explicit Windows CUDA source over the same controlled
+dependency set. Automatic selection remains CPU because CUDA still exceeds the
+fixed RSS ratio.
 
 The accepted detector and recognizer remain caller-supplied Apache-2.0 model
 bytes. Both `OnnxOcrBackend::open_accepted` and explicit

@@ -21,7 +21,7 @@ use mado_pilot_testkit::bench_harness::{GROWTH_LIMIT_BYTES, HARD_BUDGET_PREDICAT
 ///
 /// `example-synthetic.toml` is deliberately absent because it records no
 /// measurements and therefore gates no run.
-const PROFILES: [(&str, &str); 31] = [
+const PROFILES: [(&str, &str); 34] = [
     (
         "docs/benchmarks/phase-1-deterministic-slice-aarch64-apple-darwin.toml",
         include_str!(
@@ -194,6 +194,24 @@ const PROFILES: [(&str, &str); 31] = [
         "docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
         include_str!(
             "../../../../docs/benchmarks/phase-3-1-cuda-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-remediated-bounded-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-remediated-bounded-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-remediated-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-remediated-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
+        ),
+    ),
+    (
+        "docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml",
+        include_str!(
+            "../../../../docs/benchmarks/phase-3-1-cuda-remediated-fallback-integrated-zone-ocr-x86_64-pc-windows-msvc.toml"
         ),
     ),
 ];

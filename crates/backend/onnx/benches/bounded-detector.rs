@@ -6,7 +6,12 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mado_pilot_backend_onnx::benchmark_instrumentation::install_native_run_gate;
+use mado_pilot_backend_onnx::benchmark_instrumentation::{
+    MemoryStage as ContractMemoryStage, ORT_PROFILE_DIR_ENV, OpenStage, install_native_run_gate,
+    install_open_stage_observer,
+    memory_stage_sequence_is_valid as contract_stage_sequence_is_valid,
+    run_maximum_width_recognizer_probe,
+};
 use mado_pilot_backend_onnx::{
     OnnxBackendObservations, OnnxBackendOpenFault, OnnxExecutionProvider,
     OnnxExecutionProviderPolicy, OnnxOcrBackend, OnnxOcrProfile, OnnxProviderFallbackReason,
@@ -255,6 +260,11 @@ struct ZoneFixture {
     state: Arc<Mutex<ZoneMeasurementState>>,
 }
 
+struct MemoryWorkloads {
+    singular: Vec<Fixture>,
+    zones: Vec<ZoneFixture>,
+}
+
 #[derive(Debug, Serialize)]
 struct ZoneWorkloadReport {
     name: &'static str,
@@ -365,6 +375,117 @@ struct ProfileReport {
     passed: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct ExtremeRecognizerReport {
+    schema_version: u32,
+    release_target: &'static str,
+    host_id: String,
+    source_revision: String,
+    process_index: String,
+    source_tree: String,
+    executable_sha256: String,
+    runtime_sha256: String,
+    detector_sha256: &'static str,
+    recognizer_sha256: &'static str,
+    vocabulary_sha256: &'static str,
+    runtime_profile: &'static str,
+    profile: &'static str,
+    candidates: usize,
+    recognizer_width: usize,
+    planned_batches: usize,
+    native_runs: u64,
+    maximum_estimated_output_bytes: usize,
+    output_budget_bytes: usize,
+    passed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum MemoryStage {
+    ProcessStart,
+    RuntimeInitialized,
+    ProviderPrepared,
+    DetectorSessionReady,
+    RecognizerSessionReady,
+    FirstWarmupPassComplete,
+    RetainedSequenceComplete,
+    Closed,
+}
+
+impl From<OpenStage> for MemoryStage {
+    fn from(stage: OpenStage) -> Self {
+        match stage {
+            OpenStage::RuntimeInitialized => Self::RuntimeInitialized,
+            OpenStage::ProviderPrepared => Self::ProviderPrepared,
+            OpenStage::DetectorSessionReady => Self::DetectorSessionReady,
+            OpenStage::RecognizerSessionReady => Self::RecognizerSessionReady,
+        }
+    }
+}
+
+impl From<MemoryStage> for ContractMemoryStage {
+    fn from(stage: MemoryStage) -> Self {
+        match stage {
+            MemoryStage::ProcessStart => Self::ProcessStart,
+            MemoryStage::RuntimeInitialized => Self::RuntimeInitialized,
+            MemoryStage::ProviderPrepared => Self::ProviderPrepared,
+            MemoryStage::DetectorSessionReady => Self::DetectorSessionReady,
+            MemoryStage::RecognizerSessionReady => Self::RecognizerSessionReady,
+            MemoryStage::FirstWarmupPassComplete => Self::FirstWarmupPassComplete,
+            MemoryStage::RetainedSequenceComplete => Self::RetainedSequenceComplete,
+            MemoryStage::Closed => Self::Closed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct ProcessMemorySnapshot {
+    working_set_bytes: u64,
+    peak_working_set_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct MemoryStageSample {
+    stage: MemoryStage,
+    working_set_bytes: u64,
+    peak_working_set_bytes: u64,
+}
+
+impl MemoryStageSample {
+    const fn new(stage: MemoryStage, snapshot: ProcessMemorySnapshot) -> Self {
+        Self {
+            stage,
+            working_set_bytes: snapshot.working_set_bytes,
+            peak_working_set_bytes: snapshot.peak_working_set_bytes,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct MemoryStageReport {
+    schema_version: u32,
+    release_target: &'static str,
+    host_id: String,
+    source_revision: String,
+    process_index: String,
+    source_tree: String,
+    executable_sha256: String,
+    runtime_sha256: String,
+    detector_sha256: &'static str,
+    recognizer_sha256: &'static str,
+    vocabulary_sha256: &'static str,
+    runtime_profile: &'static str,
+    profile: &'static str,
+    warmup_passes: usize,
+    retained_passes: usize,
+    singular_calls: usize,
+    zone_calls: usize,
+    attribution: &'static str,
+    close_semantics: &'static str,
+    stages: Vec<MemoryStageSample>,
+    passed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunMode {
     Smoke,
@@ -403,6 +524,9 @@ impl RunMode {
                         | "--enforce-budgets"
                         | "--integrated"
                         | "--zones-first"
+                        | "--extreme-recognizer"
+                        | "--memory-stages"
+                        | "--placement-profile"
                 ) || matches!(
                     argument.strip_prefix("--profile="),
                     Some("native" | "bounded")
@@ -572,16 +696,74 @@ impl IntegratedOrder {
     }
 }
 
+fn validate_ort_profile_mode(enabled: bool, mode: RunMode) {
+    let root = std::env::var_os(ORT_PROFILE_DIR_ENV);
+    if !enabled {
+        assert!(
+            root.is_none(),
+            "MADO_PILOT_ORT_PROFILE_DIR requires explicit --placement-profile"
+        );
+        return;
+    }
+    assert!(
+        !mode.enforces_budgets(),
+        "placement profiling is excluded from final budget enforcement"
+    );
+    let root =
+        PathBuf::from(root.expect("--placement-profile requires MADO_PILOT_ORT_PROFILE_DIR"));
+    let canonical = std::fs::canonicalize(&root).expect("placement profile directory must exist");
+    assert!(
+        canonical == root,
+        "placement profile directory must already be canonical"
+    );
+    assert!(
+        canonical
+            .metadata()
+            .expect("read placement profile directory metadata")
+            .is_dir(),
+        "placement profile destination must be a directory"
+    );
+}
+
 fn main() {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    let extreme_recognizer_count = arguments
+        .iter()
+        .filter(|argument| argument.as_str() == "--extreme-recognizer")
+        .count();
+    let memory_stages_count = arguments
+        .iter()
+        .filter(|argument| argument.as_str() == "--memory-stages")
+        .count();
+    let placement_profile_count = arguments
+        .iter()
+        .filter(|argument| argument.as_str() == "--placement-profile")
+        .count();
+    assert!(
+        placement_profile_count <= 1,
+        "select placement profiling at most once"
+    );
+    assert!(
+        extreme_recognizer_count <= 1
+            && memory_stages_count <= 1
+            && extreme_recognizer_count + memory_stages_count <= 1,
+        "select at most one non-duplicated special qualification mode"
+    );
+    let extreme_recognizer = extreme_recognizer_count == 1;
+    let memory_stages = memory_stages_count == 1;
+    let placement_profile = placement_profile_count == 1;
     let mode = RunMode::from_arguments(&arguments);
     let integrated_order = IntegratedOrder::from_arguments(&arguments);
     let profile = selected_profile(&arguments);
     let provider = ProviderSelection::from_arguments(&arguments);
+    validate_ort_profile_mode(placement_profile, mode);
     assert!(
         !integrated_order.enabled() || profile == OnnxOcrProfile::BoundedDetector,
         "integrated grouped rows require the bounded profile"
     );
+    let process_start_memory = memory_stages.then(|| {
+        process_memory_snapshot().expect("memory-stage mode requires a Windows process snapshot")
+    });
     if [RUNTIME_ENV, MODEL_ROOT_ENV]
         .into_iter()
         .any(|variable| std::env::var_os(variable).is_none())
@@ -610,11 +792,80 @@ fn main() {
     } else {
         None
     };
+    if extreme_recognizer {
+        assert!(
+            mode == RunMode::EnforceBudgets,
+            "the extreme recognizer probe requires --enforce-budgets"
+        );
+        assert!(
+            profile == OnnxOcrProfile::BoundedDetector,
+            "the extreme recognizer probe requires the bounded profile"
+        );
+        assert!(
+            provider == ProviderSelection::Cuda,
+            "the extreme recognizer probe requires --provider=cuda"
+        );
+        assert!(
+            !integrated_order.enabled(),
+            "the extreme recognizer probe is a separate process from integrated workloads"
+        );
+        let report = run_extreme_recognizer_profile(
+            profile,
+            &model_root,
+            &runtime,
+            provider,
+            provider_root.as_deref(),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&report).expect("serialize extreme recognizer report")
+        );
+        assert!(
+            report.passed,
+            "extreme recognizer qualification gate failed"
+        );
+        return;
+    }
     let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/ocr/g-004");
     let manifest_path = fixture_root.join("fixture-manifest.json");
     let manifest_bytes = std::fs::read(&manifest_path).expect("read tracked OCR fixture manifest");
     let manifest: FixtureManifest =
         serde_json::from_slice(&manifest_bytes).expect("parse tracked OCR fixture manifest");
+    if memory_stages {
+        assert!(
+            mode == RunMode::EnforceBudgets,
+            "the memory-stage mode requires --enforce-budgets"
+        );
+        assert!(
+            profile == OnnxOcrProfile::BoundedDetector,
+            "the memory-stage mode requires the bounded profile"
+        );
+        assert!(
+            provider == ProviderSelection::Cuda,
+            "the memory-stage mode requires --provider=cuda"
+        );
+        assert!(
+            !integrated_order.enabled(),
+            "the memory-stage mode owns its fixed integrated workload order"
+        );
+        let report = run_memory_stage_profile(
+            profile,
+            ProfileInputs {
+                model_root: &model_root,
+                runtime: &runtime,
+                provider,
+                provider_root: provider_root.as_deref(),
+                fixture_root: &fixture_root,
+                manifest: &manifest,
+            },
+            process_start_memory.expect("memory-stage start snapshot"),
+        );
+        let serialized = serde_json::to_string(&report).expect("serialize memory-stage report");
+        assert_memory_report_redacted(&serialized, &model_root, &runtime, provider_root.as_deref());
+        println!("{serialized}");
+        assert!(report.passed, "memory-stage qualification gate failed");
+        return;
+    }
 
     let report = run_profile(
         profile,
@@ -634,6 +885,316 @@ fn main() {
         serde_json::to_string(&report).expect("serialize bounded qualification report")
     );
     assert!(report.passed, "bounded detector qualification gate failed");
+}
+
+fn require_bound_identity(require_tree: bool) {
+    require_release_target();
+    assert!(
+        std::env::var_os(SOURCE_ENV).is_some(),
+        "qualification requires exact source identity"
+    );
+    assert!(
+        std::env::var_os(HOST_ENV).is_some(),
+        "qualification requires approved host identity"
+    );
+    assert!(
+        std::env::var_os(PROCESS_ENV).is_some(),
+        "qualification requires process index"
+    );
+    if require_tree {
+        assert!(
+            std::env::var_os(SOURCE_TREE_ENV).is_some(),
+            "qualification requires exact source tree identity"
+        );
+    }
+}
+
+fn run_extreme_recognizer_profile(
+    profile: OnnxOcrProfile,
+    model_root: &Path,
+    runtime: &Path,
+    provider: ProviderSelection,
+    provider_root: Option<&Path>,
+) -> ExtremeRecognizerReport {
+    require_bound_identity(true);
+    let operation = OperationContext::new();
+    let backend = OnnxOcrBackend::open_bounded_detector_with_provider_config(
+        model_root,
+        runtime,
+        provider.policy(),
+        provider_root,
+        &operation,
+    )
+    .expect("extreme recognizer backend opens");
+    let facts = backend.facts();
+    assert_eq!(facts.profile(), profile);
+    assert_eq!(facts.provider(), OnnxExecutionProvider::Cuda);
+    let probe = run_maximum_width_recognizer_probe(&backend, &operation)
+        .expect("maximum-width recognizer probe completes");
+    backend
+        .close(&operation)
+        .expect("extreme recognizer backend closes");
+
+    let passed = probe.candidates == 6
+        && probe.planned_batches == 2
+        && probe.native_runs == u64::try_from(probe.planned_batches).expect("batch count fits")
+        && probe.maximum_estimated_output_bytes <= probe.output_budget_bytes
+        && probe.output_budget_bytes == 128 * 1024 * 1024;
+    ExtremeRecognizerReport {
+        schema_version: 1,
+        release_target: bench_harness::RELEASE_TARGET,
+        host_id: environment_or(HOST_ENV, "unbound-host"),
+        source_revision: environment_or(SOURCE_ENV, "unbound-source"),
+        process_index: environment_or(PROCESS_ENV, "unbound-process"),
+        source_tree: environment_or(SOURCE_TREE_ENV, "unbound-tree"),
+        executable_sha256: digest_file(
+            &std::env::current_exe().expect("qualification executable path"),
+        ),
+        runtime_sha256: digest_file(runtime),
+        detector_sha256: DETECTOR_SHA256,
+        recognizer_sha256: RECOGNIZER_SHA256,
+        vocabulary_sha256: VOCABULARY_SHA256,
+        runtime_profile: facts.runtime_profile_id(),
+        profile: profile_name(profile),
+        candidates: probe.candidates,
+        recognizer_width: 4_096,
+        planned_batches: probe.planned_batches,
+        native_runs: probe.native_runs,
+        maximum_estimated_output_bytes: probe.maximum_estimated_output_bytes,
+        output_budget_bytes: probe.output_budget_bytes,
+        passed,
+    }
+}
+
+fn run_memory_stage_profile(
+    profile: OnnxOcrProfile,
+    inputs: ProfileInputs<'_>,
+    process_start: ProcessMemorySnapshot,
+) -> MemoryStageReport {
+    require_bound_identity(true);
+    let ProfileInputs {
+        model_root,
+        runtime,
+        provider,
+        provider_root,
+        fixture_root,
+        manifest,
+    } = inputs;
+    let stages = Arc::new(Mutex::new(vec![MemoryStageSample::new(
+        MemoryStage::ProcessStart,
+        process_start,
+    )]));
+    let observed_stages = Arc::clone(&stages);
+    let observer = install_open_stage_observer(move |stage| {
+        let snapshot =
+            process_memory_snapshot().expect("open-stage callback requires a Windows snapshot");
+        observed_stages
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(MemoryStageSample::new(stage.into(), snapshot));
+    });
+
+    let operation = OperationContext::new();
+    let backend = Arc::new(
+        open_profile(
+            profile,
+            model_root,
+            runtime,
+            provider,
+            provider_root,
+            &operation,
+        )
+        .expect("memory-stage backend opens"),
+    );
+    drop(observer);
+    let facts = backend.facts();
+    assert_eq!(facts.profile(), profile);
+    assert_eq!(facts.provider(), OnnxExecutionProvider::Cuda);
+    let port: Arc<dyn OcrBackend> = backend.clone();
+    let recognizer = OcrRecognizer::new(port);
+    let workloads = memory_workloads(&recognizer, &backend, fixture_root, manifest, profile);
+
+    run_memory_workload_pass(&workloads);
+    push_memory_stage(&stages, MemoryStage::FirstWarmupPassComplete);
+    for _ in 0..2 {
+        run_memory_workload_pass(&workloads);
+    }
+    for _ in 0..20 {
+        run_memory_workload_pass(&workloads);
+    }
+    push_memory_stage(&stages, MemoryStage::RetainedSequenceComplete);
+
+    let singular_calls = workloads
+        .singular
+        .iter()
+        .map(|fixture| {
+            fixture
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .calls
+        })
+        .sum();
+    let zone_calls = workloads
+        .zones
+        .iter()
+        .map(|fixture| {
+            fixture
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .calls
+        })
+        .sum();
+    let workload_oracles_pass = workloads.singular.iter().all(|fixture| {
+        let state = fixture
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.calls == 23 && state.failures == 0
+    }) && workloads.zones.iter().all(|fixture| {
+        let state = fixture
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.calls == 23 && state.failures == 0
+    });
+
+    backend
+        .close(&operation)
+        .expect("memory-stage backend closes");
+    push_memory_stage(&stages, MemoryStage::Closed);
+    let stages = stages
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let resident_limit = memory_stage_resident_limit();
+    let passed = memory_stage_sequence_is_valid(&stages)
+        && workload_oracles_pass
+        && singular_calls == WorkloadKind::ALL.len() * 23
+        && zone_calls == ZoneWorkloadKind::ALL.len() * 23
+        && resident_limit.is_some_and(|limit| {
+            stages
+                .iter()
+                .all(|sample| sample.peak_working_set_bytes <= limit)
+        });
+
+    MemoryStageReport {
+        schema_version: 6,
+        release_target: bench_harness::RELEASE_TARGET,
+        host_id: environment_or(HOST_ENV, "unbound-host"),
+        source_revision: environment_or(SOURCE_ENV, "unbound-source"),
+        process_index: environment_or(PROCESS_ENV, "unbound-process"),
+        source_tree: environment_or(SOURCE_TREE_ENV, "unbound-tree"),
+        executable_sha256: digest_file(
+            &std::env::current_exe().expect("qualification executable path"),
+        ),
+        runtime_sha256: digest_file(runtime),
+        detector_sha256: DETECTOR_SHA256,
+        recognizer_sha256: RECOGNIZER_SHA256,
+        vocabulary_sha256: VOCABULARY_SHA256,
+        runtime_profile: facts.runtime_profile_id(),
+        profile: profile_name(profile),
+        warmup_passes: 3,
+        retained_passes: 20,
+        singular_calls,
+        zone_calls,
+        attribution: "temporal current-working-set deltas, not exclusive component ownership",
+        close_semantics: "session teardown sampled; process-global runtime and CUDA handles remain loaded",
+        stages,
+        passed,
+    }
+}
+
+fn memory_workloads(
+    recognizer: &OcrRecognizer,
+    backend: &Arc<OnnxOcrBackend>,
+    fixture_root: &Path,
+    manifest: &FixtureManifest,
+    profile: OnnxOcrProfile,
+) -> MemoryWorkloads {
+    let singular = WorkloadKind::ALL
+        .into_iter()
+        .map(|kind| Fixture {
+            recognizer: recognizer.clone(),
+            backend: Arc::clone(backend),
+            spec: build_workload(fixture_root, manifest, kind),
+            profile,
+            state: Arc::new(Mutex::new(MeasurementState::default())),
+        })
+        .collect();
+    let zones = ZoneWorkloadKind::ALL
+        .into_iter()
+        .map(|kind| ZoneFixture {
+            recognizer: recognizer.clone(),
+            backend: Arc::clone(backend),
+            spec: build_zone_workload(fixture_root, manifest, kind),
+            state: Arc::new(Mutex::new(ZoneMeasurementState::default())),
+        })
+        .collect();
+    MemoryWorkloads { singular, zones }
+}
+
+fn run_memory_workload_pass(workloads: &MemoryWorkloads) {
+    for fixture in &workloads.singular {
+        let _ = recognize(fixture);
+    }
+    for fixture in &workloads.zones {
+        let _ = scan_zones(fixture);
+    }
+}
+
+fn push_memory_stage(stages: &Mutex<Vec<MemoryStageSample>>, stage: MemoryStage) {
+    let snapshot =
+        process_memory_snapshot().expect("memory-stage mode requires a Windows snapshot");
+    stages
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(MemoryStageSample::new(stage, snapshot));
+}
+
+fn memory_stage_sequence_is_valid(stages: &[MemoryStageSample]) -> bool {
+    let contract = stages
+        .iter()
+        .map(|sample| sample.stage.into())
+        .collect::<Vec<ContractMemoryStage>>();
+    contract_stage_sequence_is_valid(&contract)
+}
+
+fn assert_memory_report_redacted(
+    serialized: &str,
+    model_root: &Path,
+    runtime: &Path,
+    provider_root: Option<&Path>,
+) {
+    for path in [Some(model_root), Some(runtime), provider_root]
+        .into_iter()
+        .flatten()
+    {
+        let encoded = serde_json::to_string(&path.to_string_lossy())
+            .expect("serialize sensitive qualification path");
+        let encoded = encoded
+            .strip_prefix('\"')
+            .and_then(|value| value.strip_suffix('\"'))
+            .expect("serialized string has quotes");
+        assert!(
+            !serialized.contains(encoded),
+            "memory-stage report contains a local path"
+        );
+    }
+    for forbidden in [
+        "device_id",
+        "device_serial",
+        "native_message",
+        "model_content",
+        "pixels",
+        "recognized_text",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "memory-stage report contains forbidden payload field"
+        );
+    }
 }
 
 fn selected_profile(arguments: &[String]) -> OnnxOcrProfile {
@@ -673,25 +1234,7 @@ fn run_profile(
         "final budgets apply only to the bounded candidate"
     );
     if mode.requires_bound_identity() {
-        require_release_target();
-        assert!(
-            std::env::var_os(SOURCE_ENV).is_some(),
-            "qualification requires exact source identity"
-        );
-        assert!(
-            std::env::var_os(HOST_ENV).is_some(),
-            "qualification requires approved host identity"
-        );
-        assert!(
-            std::env::var_os(PROCESS_ENV).is_some(),
-            "qualification requires process index"
-        );
-        if integrated {
-            assert!(
-                std::env::var_os(SOURCE_TREE_ENV).is_some(),
-                "integrated qualification requires exact source tree identity"
-            );
-        }
+        require_bound_identity(integrated);
     }
 
     let operation = OperationContext::new();
@@ -2398,17 +2941,41 @@ fn peak_resident_bytes() -> Option<u64> {
         .filter(|bytes| *bytes > 0)
 }
 
+#[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
+const fn memory_stage_resident_limit() -> Option<u64> {
+    Some(PHASE3_1_WINDOWS_CUDA_OCR_RESIDENT_LIMIT_BYTES)
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")))]
+const fn memory_stage_resident_limit() -> Option<u64> {
+    None
+}
 #[cfg(windows)]
-fn peak_resident_bytes() -> Option<u64> {
+fn process_memory_snapshot() -> Option<ProcessMemorySnapshot> {
     let mut counters = PROCESS_MEMORY_COUNTERS::default();
     let bytes = u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
     counters.cb = bytes;
     // SAFETY: the pseudo handle names this process and `counters` is writable
     // for the complete native structure declared by `bytes`.
     unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, bytes) }.ok()?;
-    u64::try_from(counters.PeakWorkingSetSize)
-        .ok()
-        .filter(|bytes| *bytes > 0)
+    let working_set_bytes = u64::try_from(counters.WorkingSetSize).ok()?;
+    let peak_working_set_bytes = u64::try_from(counters.PeakWorkingSetSize).ok()?;
+    (working_set_bytes > 0 && peak_working_set_bytes >= working_set_bytes).then_some(
+        ProcessMemorySnapshot {
+            working_set_bytes,
+            peak_working_set_bytes,
+        },
+    )
+}
+
+#[cfg(not(windows))]
+fn process_memory_snapshot() -> Option<ProcessMemorySnapshot> {
+    None
+}
+
+#[cfg(windows)]
+fn peak_resident_bytes() -> Option<u64> {
+    process_memory_snapshot().map(|snapshot| snapshot.peak_working_set_bytes)
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
