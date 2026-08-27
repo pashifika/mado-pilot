@@ -74,6 +74,53 @@ fn wait_progress(
     }
 }
 
+fn coalescing_matcher(blocker_gates: &[Arc<CompletionGate>]) -> ControlledMatcher {
+    let blocker_calls = blocker_gates
+        .iter()
+        .map(|gate| ScriptedMatchCall::new(Vec::new()).with_completion_gate(Arc::clone(gate)));
+    ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
+        .with_calls(blocker_calls.chain([ScriptedMatchCall::new(vec![Candidate::new(1, 1, 0.99)])]))
+}
+
+fn occupy_match_workers(harness: &Harness, blocker_gates: &[Arc<CompletionGate>]) {
+    let blocker_session = open_unpublished(harness);
+    let blockers: Vec<_> = (0..blocker_gates.len())
+        .map(|_| {
+            let (template, options) = request(harness);
+            blocker_session
+                .start_template_watch(TemplateWatchRequest::new(
+                    template,
+                    options,
+                    OperationContext::new(),
+                ))
+                .expect("started blocker query")
+        })
+        .collect();
+    harness
+        .capture
+        .publish(0x30, Continuity::Continuous)
+        .expect("published blocker frame");
+    for gate in blocker_gates {
+        assert!(gate.wait_until_entered(Duration::from_secs(2)));
+    }
+    assert_eq!(harness.matcher.find_count(), blocker_gates.len());
+    for query in &blockers {
+        assert!(matches!(
+            query.cancel().as_ref(),
+            TemplateTerminalOutcome::Cancelled
+        ));
+    }
+}
+
+fn release_match_workers(blocker_gates: &[Arc<CompletionGate>]) {
+    for gate in blocker_gates {
+        gate.release();
+    }
+    for gate in blocker_gates {
+        assert!(gate.wait_until_completed(Duration::from_secs(2)));
+    }
+}
+
 fn wait_context() -> OperationContext {
     OperationContext::new()
         .with_timeout(Duration::from_secs(2))
@@ -667,10 +714,10 @@ fn source_end_allows_an_already_pending_last_frame_to_complete() {
 
 #[test]
 fn exact_queries_coalesce_backend_work_without_sharing_terminal_state() {
-    let harness = Harness::new(
-        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
-            .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
-    );
+    let blocker_gates: Vec<_> = (0..2).map(|_| Arc::new(CompletionGate::new())).collect();
+    let harness = Harness::new(coalescing_matcher(&blocker_gates));
+    occupy_match_workers(&harness, &blocker_gates);
+
     let session = open_unpublished(&harness);
     let (template, options) = request(&harness);
     let first = session
@@ -691,7 +738,10 @@ fn exact_queries_coalesce_backend_work_without_sharing_terminal_state() {
         .capture
         .publish(0x40, Continuity::Continuous)
         .expect("published shared frame");
+    let _ = wait_progress(&first, |progress| progress.pending_count() == 1);
+    let _ = wait_progress(&second, |progress| progress.pending_count() == 1);
 
+    release_match_workers(&blocker_gates);
     assert!(matches!(
         first
             .wait(&wait_context())
@@ -706,7 +756,7 @@ fn exact_queries_coalesce_backend_work_without_sharing_terminal_state() {
             .as_ref(),
         TemplateTerminalOutcome::Matched(_)
     ));
-    assert_eq!(harness.matcher.find_count(), 1);
+    assert_eq!(harness.matcher.find_count(), blocker_gates.len() + 1);
     assert_ne!(first.id(), second.id());
 }
 
@@ -790,10 +840,10 @@ fn separately_prepared_instances_with_one_public_id_do_not_coalesce() {
 
 #[test]
 fn equal_effective_regions_coalesce() {
-    let harness = Harness::new(
-        ControlledMatcher::new(mado_pilot_runtime::PixelFormat::Rgba8)
-            .with_candidates(vec![Candidate::new(1, 1, 0.99)]),
-    );
+    let blocker_gates: Vec<_> = (0..2).map(|_| Arc::new(CompletionGate::new())).collect();
+    let harness = Harness::new(coalescing_matcher(&blocker_gates));
+    occupy_match_workers(&harness, &blocker_gates);
+
     let session = open_unpublished(&harness);
     let (template, options) = request(&harness);
     let full_pixels = RegionSelection::pixels(
@@ -818,14 +868,17 @@ fn equal_effective_regions_coalesce() {
         .capture
         .publish(0x40, Continuity::Continuous)
         .expect("published frame");
+    let _ = wait_progress(&implicit, |progress| progress.pending_count() == 1);
+    let _ = wait_progress(&explicit, |progress| progress.pending_count() == 1);
 
+    release_match_workers(&blocker_gates);
     implicit
         .wait(&wait_context())
         .expect("implicit query completed");
     explicit
         .wait(&wait_context())
         .expect("explicit query completed");
-    assert_eq!(harness.matcher.find_count(), 1);
+    assert_eq!(harness.matcher.find_count(), blocker_gates.len() + 1);
 }
 
 #[test]
