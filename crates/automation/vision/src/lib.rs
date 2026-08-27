@@ -40,6 +40,10 @@
 //! `mado-pilot-testkit` and the OpenCV CPU adapter in
 //! `mado-pilot-backend-opencv`, which both pass the same contract suite.
 //!
+//! Phase 4 adds the closed, stateless change-detection policy and immutable
+//! authority descriptor selected by the recorded-sequence `G-005` gate. It adds
+//! no watcher, scheduler, callback, runtime worker, or facade operation.
+//!
 //! Preprocessing descriptors are not implemented and are not reserved as an
 //! empty seam. See `docs/architecture.md`.
 //!
@@ -77,6 +81,7 @@
 //! ```
 
 pub mod backend;
+pub mod change;
 pub mod fault;
 pub mod matcher;
 pub mod prepared;
@@ -85,6 +90,11 @@ pub mod result;
 pub mod template;
 
 pub use backend::{BackendDescriptor, BackendRequest, Candidate, MatchBackend, TemplatePayload};
+pub use change::{
+    ANALYSIS_ALWAYS_POLICY_CODE, ChangeDecision, ChangeDetectionDescriptor, ChangeDetectionPolicy,
+    ChangeDetector, DEFAULT_CHANGE_DETECTION_DESCRIPTOR, EXACT_RGBA_POLICY_CODE,
+    UnsupportedChangeDetectionPolicy,
+};
 pub use fault::VisionFault;
 pub use matcher::Matcher;
 pub use prepared::{BackendId, PreparedTemplate};

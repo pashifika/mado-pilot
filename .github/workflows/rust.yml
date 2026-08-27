@@ -269,6 +269,13 @@ jobs:
         shell: bash
         run: cargo test --locked --workspace --all-targets
 
+      - name: Reproduce the frozen G-005 change-detection report
+        shell: bash
+        run: |
+          report="${RUNNER_TEMP}/g-005-change-detection-report.json"
+          cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
+          diff -u docs/evidence/g-005/accepted-report.json "${report}"
+
       - name: Test the accepted ONNX CPU OCR backend
         shell: bash
         run: cargo test --locked --package mado-pilot-backend-onnx --lib -- --ignored --nocapture
@@ -478,6 +485,13 @@ jobs:
       - name: Test the workspace
         shell: bash
         run: cargo test --locked --workspace --all-targets
+
+      - name: Reproduce the frozen G-005 change-detection report
+        shell: bash
+        run: |
+          report="${RUNNER_TEMP}/g-005-change-detection-report.json"
+          cargo run --locked --package mado-pilot-testkit --example change-detection-evaluator > "${report}"
+          diff -u docs/evidence/g-005/accepted-report.json "${report}"
 
       - name: Test the accepted ONNX CPU OCR backend
         shell: bash

@@ -373,6 +373,8 @@ dependencies = [
  "mado-pilot-input",
  "mado-pilot-ocr",
  "mado-pilot-vision",
+ "serde",
+ "serde_json",
  "sha2",
 ]
 

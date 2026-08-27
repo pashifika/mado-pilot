@@ -56,8 +56,9 @@
 //! diagnostics include content-redacted OCR admission and terminal records.
 //!
 //! There is no watcher, scheduling queue, coalescing policy, retry, automatic
-//! input, or default OCR backend. The default change-detection policy remains
-//! unresolved; see gate `G-005` in `docs/validation-gates.md`.
+//! input, or default OCR backend. ADR 0050 selects the closed exact-RGBA
+//! change-detection default in `mado-pilot-vision`; this runtime has no watcher
+//! consumer for it yet.
 //!
 //! **The public names here are reviewed, not yet stable.**
 //! `docs/adr/0006-public-rust-names-and-compatibility-policy.md` records the

@@ -28,11 +28,14 @@
 //! permission, and input doubles, manual and controlled clocks, shared contract
 //! suites, fixture writers, and the benchmark harness exist. `ControlledOcr`
 //! scripts candidates, failures, latency, cancellation, close, and completion
-//! gates so deadline and out-of-order behavior are deterministic. Target
-//! lifecycle scripts do not exist.
+//! gates so deadline and out-of-order behavior are deterministic. Phase 4 adds
+//! the strict, bounded, content-redacted offline `G-005` recorded-sequence
+//! evaluator; it remains test/evidence support and is never a production
+//! dependency. Target lifecycle scripts do not exist.
 
 pub mod bench_harness;
 pub mod capture_contract;
+pub mod change_detection;
 pub mod clock;
 pub mod controlled_capture;
 pub mod controlled_input;

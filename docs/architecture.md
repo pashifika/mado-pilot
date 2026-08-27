@@ -52,6 +52,14 @@ remains open.
 The extension adds no bundling, download, ambient search, per-inference
 fallback, scheduling, or automatic input. Watchers,
 scheduling, and release packaging remain future work.
+
+The Phase 4 change-detection Change adds a closed platform-neutral exact-RGBA
+policy seam and deterministic offline `G-005` evaluator over repository-owned
+recorded sequences. ADR 0050 accepts exact RGBA with zero false skips after both
+hosted release targets reproduced canonical report v2 and independent
+correctness, security/privacy, and specification re-review returned CLEAN.
+Every lower-admitted-work candidate is rejected by a false skip. No watcher,
+query, scheduler, callback, facade, C, or C++ surface exists.
 See [Implementation status](#implementation-status).
 
 ## Product definition
@@ -291,7 +299,7 @@ prefix.
 | `crates/automation/core` | `mado-pilot-core` | Platform-neutral identities, geometry, time, capabilities, errors, and status types |
 | `crates/automation/capture` | `mado-pilot-capture` | Capture, frame, mapping, and stream-policy contracts |
 | `crates/automation/input` | `mado-pilot-input` | Input operation, route capability, focus, submission receipt, and error contracts |
-| `crates/automation/vision` | `mado-pilot-vision` | Template source, preprocessing, matching request, and result contracts |
+| `crates/automation/vision` | `mado-pilot-vision` | Template source, preprocessing, matching request/result, and closed change-detection policy contracts |
 | `crates/automation/ocr` | `mado-pilot-ocr` | OCR source, model, request, result, and text-normalization contracts |
 | `crates/automation/runtime` | `mado-pilot-runtime` | Session orchestration, cancellation, input-result arbitration, and bounded engine-scoped diagnostics |
 | `crates/automation/assets` | `mado-pilot-assets` | Versioned manifest, validation, deterministic loading, and source-resolution contracts |
@@ -301,7 +309,7 @@ prefix.
 | `crates/backend/opencv` | `mado-pilot-backend-opencv` | OpenCV CPU template matching |
 | `crates/backend/onnx` | `mado-pilot-backend-onnx` | Bounded ONNX Runtime 1.29 OCR for the exact accepted native G-004 and explicit bounded-detector profiles, with CPU defaults and target-gated explicit provider policy |
 | `crates/bindings/capi` | `mado-pilot-capi` | Separately versioned C ABI and ownership boundary, and the header-only C++ wrapper and CMake targets over it |
-| `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, backend, and input doubles, synthetic clock, and contract-fixture support |
+| `crates/support/testkit` | `mado-pilot-testkit` | Controlled capture, storage, permission, backend, and input doubles, synthetic clock, contract-fixture support, and the deterministic offline `G-005` evaluator |
 | `tools/dependency-check` | `mado-pilot-dependency-check` | Repository maintenance: workspace inventory and dependency-direction checking |
 
 Every package in this table is `publish = false`. Publication is enabled for an
@@ -782,7 +790,7 @@ records `G-001` through `G-014` with the decision, the required evidence, the du
 phase, the blocking scope, the status, and the resolution rule for each. No gate
 blocked Phase 0.
 
-Six remain open, one is deferred, and seven are resolved. The deferred one is
+Five remain open, one is deferred, and eight are resolved. The deferred one is
 [`G-011`](validation-gates.md#g-011), native-frame extension discovery, which
 sits on the future roadmap and does not block version one. `G-009` is resolved by
 [ADR 0006](adr/0006-public-rust-names-and-compatibility-policy.md) and `G-010` by
@@ -861,6 +869,7 @@ responsibilities a later phase takes on.
 | Native window and display capture | Implemented on both targets, and reachable from the public composition root through the target-specific facade constructors |
 | Template sources, prepared templates, requests, results, backend contract | Implemented in `mado-pilot-vision` |
 | Deterministic result ordering, suppression, and limiting | Implemented in `mado-pilot-vision` |
+| Closed change-detection policy and recorded-sequence evaluator | Implemented in `mado-pilot-vision` and `mado-pilot-testkit`. ADR 0050 selects exact RGBA for compatible mapped regions, keeps analysis-always as fail-safe, and limits unchanged authority to routine-analysis admission. Both hosted release targets reproduced canonical report v2 and independent review is clean; no watcher or public facade operation exists |
 | Template preprocessing descriptors | Not implemented |
 | Template matching against a real image | Implemented in `mado-pilot-backend-opencv` for the Phase 1 profile |
 | OpenCV matching profile, public score mapping, candidate extraction | Implemented; decided in [ADR 0003](adr/0003-opencv-matching-profile-and-public-score.md) |
@@ -2644,6 +2653,7 @@ against.
 | Numeric runtime performance budgets | Implemented for Phase 1 and accepted target-specific Phase 2 workloads by ADRs 0008 and 0024–0032. ADR 0037 additionally accepts Apple M1 Pro and Core i7-12700KF default-OCR profiles with executable correctness, growth, inference, startup, heap, mapping/copy, tensor/session, cleanup, and target-native resident accounting. Phase 3 default-OCR `G-013` is complete on both release targets |
 | ABI layout and old-header compatibility | Implemented. The cross-language layout probe compares `rustc` against the platform C compiler field by field; immutable ABI 1.0 and 1.2 callers negotiate only their 424-byte and 592-byte extents and run against ABI 1.3. The OCR owner/accessor suffix ends at 640 bytes; the default constructor completes ABI 1.3 at 648 bytes while frozen `madopilot_engine_options_t` remains 16-byte/alignment-4. Partial-prefix C++ tests refuse before reading missing entries. The unreleased 1.1 draft remains unsupported |
 | Capture, mapping, and matching contract suites | Implemented for the contracts Phase 1 has. Both capture adapters pass the shared capture contract suite, and the vision contract suite covers the matching backend | Not applicable; no contract was implemented |
+| Change-detection policy and recorded-sequence contracts | The frozen `G-005` loader/evaluator tests cover strict manifests, exact fixture digests, ROI clipping, repeated pixels, geometry/epoch discontinuity, malformed/duplicate/reordered inputs, overflow, bounded content-redacted transition ids, candidate failure, deterministic aggregate output, privacy, report/runtime descriptor parity, and accepted ADR 0050 drift. The closed runtime policy tests cover exact pixels, sequence gaps, fail-safe identity/geometry/ROI/format boundaries, unsupported policy codes, stable defaults, thread safety, and absence of worker state. Both hosted release targets reproduced canonical report v2 and independent correctness, security/privacy, and specification review is clean | Not applicable |
 | OCR, watcher, input, and diagnostic contract suites | OCR contract/backend/runtime/facade/C/C++ tests cover accepted default and explicit composition, identity, clipping, normalization, malformed output, deadline/cancellation, out-of-order completion, close, immutable ownership, initialized ABI outputs, frozen-prefix negotiation, request projection rebinding, repeated cleanup, and content-redacted diagnostics. Both hosted native jobs run default Rust/C/C++/CMake smoke and hard OCR benchmark gates. Approved Windows 11 and Apple Silicon quality/performance rows pass at their recorded revisions. Watcher suites remain not applicable | Not applicable |
 | Native permission behavior and permission probes | Implemented on macOS and enforceable: Screen Recording and event-post access are read separately through non-prompting checks, discovery and open preflight capture authorization, macOS input re-reads the public `CGPreflightPostEventAccess` decision before every irreversible event on both routes and treats an unavailable or unreadable state as unauthorized, the legacy Accessibility observation is retained only as a paired qualification fact, and no permission-request API is called. The facade, C ABI, and C++ wrapper expose the same non-prompting states. Windows advertises no permission-probe capability; its input path compares integrity non-promptingly, proves the same-integrity dedicated fixture path and higher-integrity ordinary refusal path natively, and retains controlled-driver coverage for receipt edge cases | Not applicable; no permission was requested or probed |
 | Windows capture ownership and native resource lifetime | Implemented and enforceable in `mado-pilot-platform-windows` for staged current/previous discovery generations, two-frame WGC detachment, an extent-derived process-shared retained maximum capped at 40, checked 128 MiB surfaces and 2 GiB session / 4 GiB process retained-byte ceilings, deterministic multi-session contention/release behavior, producer leases bound to queued/quarantined native ownership, lock-free drop debt, lazy mapping, resize generations, callback admission fencing, apartment-safe asynchronous native teardown, typed terminal loss, runtime-resolved optional exports, and retryable close. Controlled common and Windows-native tests are linked from [windows-capture-contract-tests.md](windows-capture-contract-tests.md). ADR 0031 accepts the revision-bound 1280×720 production matrix and ADR 0032 accepts the exact two-display mixed-DPI dual-4K matrix, including callback-copy/staging/resident observations and lifecycle/resource budgets | Not applicable; no native capture existed |
